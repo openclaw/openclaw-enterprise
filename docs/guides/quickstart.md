@@ -26,8 +26,7 @@ Expected output includes:
 - the API URL, normally `http://127.0.0.1:3000`
 - the server-assigned Installation ID
 - the service-key file path, pointing at an owner-readable JSON file
-- a `Next authenticated check` command with `OCC_URL` and
-  `OCC_SERVICE_KEY_FILE` set for one request
+- a command you can copy to check that the API accepts your service key
 
 The default administrator is `admin@openclaw.local` with password
 `openclaw-development-password`. These credentials are for loopback development
@@ -38,9 +37,9 @@ passwords.
 
 ## Read the Installation with the bootstrap service key
 
-`dev-up` runs this check before it reports success. To repeat it, run the
-printed `Next authenticated check` command, or export both values and call the
-helper:
+`dev-up` runs this check before it reports success. To run it again, copy the
+command under `Check API access again` in the output. It already includes your
+API URL and service-key file path. You can also set them yourself:
 
 ```bash
 export OCC_URL='http://127.0.0.1:3000'

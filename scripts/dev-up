@@ -461,7 +461,7 @@ API URL: $api_url
 Installation ID: $installation_id
 Service key file: $key_output
 
-Next authenticated check:
+Check API access again:
   $next_check_command
 
 Cleanup:
