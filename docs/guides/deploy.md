@@ -122,19 +122,35 @@ test "$BOOTSTRAP_CLAIM" = "$(yq e -r '.metadata.name' "$OCC_INPUT_DIRECTORY/boot
 
 `$KUBECONFIG_FILE` must select the same cluster as `$CONTEXT`.
 
-Create the protected input files referenced by the examples before installing:
+Prepare these local files under `/secure/occ`. Their contents become Kubernetes
+Secret values in the next step; each file contains one raw value, without quotes
+or a variable name such as `OCC_DATABASE_URL=`.
+
+| File                  | Contents and source                                                                                                                                                                                                                                                             |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `occ-application-url` | PostgreSQL connection URL for the limited application role, used by bootstrap, the API, and the worker. Obtain it from your database administrator or provider. Example shape: `postgresql://occ_app:<url-encoded-password>@<postgres-host>:5432/<database>`.                   |
+| `occ-migration-url`   | Connection URL for a separate role allowed to apply schema migrations. It targets the same database. Example shape: `postgresql://occ_migrator:<url-encoded-password>@<postgres-host>:5432/<database>`. Obtain this credential separately; do not give it to the API or worker. |
+| `occ-auth-secret`     | A random secret used to sign and verify Better Auth sessions. Generate it once for this Installation with the command below, then retain it across redeployments. It is separate from the administrator password, service API key, and model-provider key.                      |
+
+Save the two complete database URLs using your secret manager or a protected
+editor, replacing the example placeholders and preserving provider-required TLS
+options. Generate the auth secret for a new Installation; this command refuses
+to overwrite an existing file:
 
 ```bash
-touch /secure/occ/occ-application-url /secure/occ/occ-migration-url
-touch /secure/occ/occ-auth-secret
+(
+  umask 077
+  set -C
+  openssl rand -hex 32 > /secure/occ/occ-auth-secret
+)
 chmod 600 /secure/occ/occ-application-url /secure/occ/occ-migration-url \
   /secure/occ/occ-auth-secret
+test -s /secure/occ/occ-application-url
+test -s /secure/occ/occ-migration-url
 ```
 
-Populate the first two files with the PostgreSQL application and migration
-URLs and the auth file with a high-entropy controller secret. Do not store those
-values in Helm values, Installation YAML, Configurations, shell history, or this
-repository.
+Keep these values out of Helm values, Installation YAML, Configurations, shell
+history, and this repository.
 
 ### Provision system Secrets and install
 
