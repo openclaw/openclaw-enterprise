@@ -42,6 +42,7 @@ startup internals, see the [development startup flow](../flows/development-start
 
 - Explicit Kubernetes context, enforcing NetworkPolicies, Helm, `kubectl`, and
   Python 3.
+- `yq` v4 for validating and reading the protected YAML copies.
 - Approved immutable controller, gateway, and Agent image digests.
 - External PostgreSQL with separate migrator and application roles.
 - Operator-managed HTTPS access for approved clients; the chart does not create TLS or Ingress.
@@ -50,30 +51,76 @@ startup internals, see the [development startup flow](../flows/development-start
 
 ### Configure the Installation
 
-Set the production shell inputs before the first Kubernetes command. The
-controller image must match `images.controller` in `/secure/occ/values.yaml`.
-`/secure/occ/kubeconfig` must select the same cluster as `$CONTEXT`.
-For a local Kubernetes trial, [build and import the test images](#build-images-for-local-kubernetes)
-to produce YAML copies with real image digests. Production clusters need the
-same images published to a registry they can pull from.
+Set the production shell inputs before the first Kubernetes command. For a local
+Kubernetes trial, [build and import the test images](#build-images-for-local-kubernetes)
+to produce YAML copies with real image digests, then set
+`OCC_INPUT_DIRECTORY` to that generated directory and keep those files.
+Production clusters need the same images published to a registry they can pull
+from.
 
 ```bash
 umask 077
-export KUBECONFIG_FILE='/secure/occ/kubeconfig'
+export OCC_INPUT_DIRECTORY="${OCC_INPUT_DIRECTORY:-/secure/occ}"
+export KUBECONFIG_FILE="$OCC_INPUT_DIRECTORY/kubeconfig"
 export CONTEXT='<production-context>'
-export CONTROLLER_IMAGE='<controller-image>@sha256:<digest>'
-mkdir -p /secure/occ
-cp deploy/examples/production/values.yaml /secure/occ/values.yaml
-cp deploy/examples/production/installation.yaml /secure/occ/installation.yaml
-cp deploy/examples/production/bootstrap-pvc.yaml /secure/occ/bootstrap-pvc.yaml
-chmod 600 "$KUBECONFIG_FILE" /secure/occ/values.yaml \
-  /secure/occ/installation.yaml /secure/occ/bootstrap-pvc.yaml
+install -d -m 700 "$OCC_INPUT_DIRECTORY"
+install -d -m 700 /secure/occ
+test -e "$OCC_INPUT_DIRECTORY/values.yaml" || \
+  install -m 600 deploy/examples/production/values.yaml "$OCC_INPUT_DIRECTORY/values.yaml"
+test -e "$OCC_INPUT_DIRECTORY/installation.yaml" || \
+  install -m 600 deploy/examples/production/installation.yaml "$OCC_INPUT_DIRECTORY/installation.yaml"
+test -e "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml" || \
+  install -m 600 deploy/examples/production/bootstrap-pvc.yaml "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml"
+chmod 600 "$KUBECONFIG_FILE" "$OCC_INPUT_DIRECTORY/values.yaml" \
+  "$OCC_INPUT_DIRECTORY/installation.yaml" "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml"
 ```
 
 The default examples use native API-key operation. Helm values own the
 controller image, API endpoint, Secret names, bootstrap claim, and network
 selectors. Installation YAML owns gateway/Agent images, Driver selection,
 projected identity, and runtime networking/storage.
+
+Edit the protected YAML copies before provisioning anything:
+
+- `$OCC_INPUT_DIRECTORY/values.yaml`: set `images.controller` to the approved
+  controller digest, `auth.baseUrl` to the production OCC URL,
+  `bootstrap.adminEmail` to the first administrator, `database.cidr` to the
+  exact PostgreSQL endpoint CIDR, `cluster.cidr` to the Kubernetes API endpoint
+  CIDR, `api.clients` to approved client selectors, and
+  `bootstrap.password.claimName` to the bootstrap PVC name.
+- `$OCC_INPUT_DIRECTORY/installation.yaml`: set `occ.cluster`, both
+  `drivers.compute.configuration.images` digests, the DNS and gateway-client
+  selectors, the service-principal token settings, the runtime Secret prefixes,
+  and `runtime.gatewayStorageClassName`. Keep
+  `drivers.compute.configuration.images.requireImmutableDigest: true`.
+- `$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml`: set the bootstrap PVC name,
+  namespace, size, and protected `storageClassName` for the cluster.
+
+Validate the configured copies, render the Helm chart, and derive the helper
+image from the same Helm values file:
+
+```bash
+yq e -e '.images.controller | test("@sha256:[a-f0-9]{64}$")' \
+  "$OCC_INPUT_DIRECTORY/values.yaml" >/dev/null
+yq e -e '.auth.baseUrl != "" and .bootstrap.adminEmail != "" and
+  .database.cidr != "" and .cluster.cidr != "" and (.api.clients | length > 0)' \
+  "$OCC_INPUT_DIRECTORY/values.yaml" >/dev/null
+yq e -e '.drivers.compute.configuration.images.requireImmutableDigest == true and
+  (.drivers.compute.configuration.images.gateway | test("@sha256:[a-f0-9]{64}$")) and
+  (.drivers.compute.configuration.images.agent | test("@sha256:[a-f0-9]{64}$")) and
+  .drivers.compute.configuration.runtime.gatewayStorageClassName != ""' \
+  "$OCC_INPUT_DIRECTORY/installation.yaml" >/dev/null
+yq e -e '.metadata.namespace == "openclaw-system" and .spec.storageClassName != ""' \
+  "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml" >/dev/null
+helm template oce deploy/helm/openclaw-enterprise \
+  --namespace openclaw-system -f "$OCC_INPUT_DIRECTORY/values.yaml" \
+  >/tmp/oce-rendered.yaml
+export CONTROLLER_IMAGE="$(yq e -r '.images.controller' "$OCC_INPUT_DIRECTORY/values.yaml")"
+export BOOTSTRAP_CLAIM="$(yq e -r '.bootstrap.password.claimName' "$OCC_INPUT_DIRECTORY/values.yaml")"
+test "$BOOTSTRAP_CLAIM" = "$(yq e -r '.metadata.name' "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml")"
+```
+
+`$KUBECONFIG_FILE` must select the same cluster as `$CONTEXT`.
 
 Create the protected input files referenced by the examples before installing:
 
@@ -95,8 +142,12 @@ Create the namespace and system Secrets from protected files:
 
 ```bash
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" create namespace openclaw-system
+kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
+  apply --dry-run=server -f /tmp/oce-rendered.yaml
+kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
+  apply --dry-run=server -f "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml"
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
-  create secret generic occ-installation-startup --from-file=installation.yaml=/secure/occ/installation.yaml
+  create secret generic occ-installation-startup --from-file=installation.yaml="$OCC_INPUT_DIRECTORY/installation.yaml"
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
   create secret generic occ-database --from-file=application-url=/secure/occ/occ-application-url --from-file=migration-url=/secure/occ/occ-migration-url
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
@@ -113,10 +164,10 @@ with the same immutable Node-capable image selected for the controller:
 
 ```bash
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  -n openclaw-system apply -f /secure/occ/bootstrap-pvc.yaml
+  -n openclaw-system apply -f "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml"
 
 scripts/prepare-bootstrap-volume --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  --namespace openclaw-system --claim occ-bootstrap-admin-password --image "$CONTROLLER_IMAGE"
+  --namespace openclaw-system --claim "$BOOTSTRAP_CLAIM" --image "$CONTROLLER_IMAGE"
 ```
 
 The helper refuses any nonfresh mounted root except filesystem-owned
@@ -130,7 +181,7 @@ Install the chart with native values:
 ```bash
 helm upgrade --install oce deploy/helm/openclaw-enterprise \
   --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CONTEXT" \
-  --namespace openclaw-system -f /secure/occ/values.yaml \
+  --namespace openclaw-system -f "$OCC_INPUT_DIRECTORY/values.yaml" \
   --wait --timeout 5m
 ```
 
@@ -361,21 +412,69 @@ bound Secrets.
 
 ### Prepare each Agent
 
-Create each Agent with an exact same-Namespace Configuration:
+Prepare Agent deployment after the Namespace is ready. The operator shell must
+have `OCC_URL`, `OCC_SERVICE_KEY_FILE`, `NAMESPACE_ID`,
+`TENANT_NAMESPACE`, `KUBECONFIG_FILE`, and `CONTEXT` set. `TENANT_NAMESPACE`
+is the Kubernetes namespace created by the driver or the existing namespace
+accepted during [Namespace preparation](#prepare-each-namespace).
 
-```json
-{
-  "name": "production-codex-agent",
-  "configurationId": "cfg_<exact-namespace-owned-configuration>",
-  "executionMode": "dedicated"
-}
+### Configure the Agent runtime
+
+Choose one runtime mode and write the matching Namespace-owned
+`kind: "agent"` Configuration. Use `embedded` for built-in OpenClaw:
+
+```bash
+export AGENT_EXECUTION_MODE='embedded'
+cat > configuration.json <<'JSON'
+{"kind":"agent","values":{"gateway":{"mode":"local","bind":"lan","auth":{"mode":"token","token":"${OPENCLAW_GATEWAY_TOKEN}"}},"agents":{"defaults":{"model":"openai/gpt-5.6-sol","skipBootstrap":true,"models":{"openai/gpt-5.6-sol":{"agentRuntime":{"id":"openclaw"}}}}},"models":{"providers":{"openai":{"baseUrl":"https://api.openai.com/v1","api":"openai-responses","models":[{"id":"gpt-5.6-sol","name":"gpt-5.6-sol"}]}}}}}
+JSON
 ```
 
-Use `executionMode: "embedded"` for built-in OpenClaw. Mismatched Harness and
-mode pairs fail before deployment. Optional `serviceAccountId` must identify a
-same-Namespace service account the caller can read.
+Or use `dedicated` for the Codex runtime and its app-server placeholders. The
+Configuration keeps transport placeholders separate from the model Secret and
+does not contain `OPENAI_API_KEY`:
 
-For every Agent, create its tenant transport Secret using the Agent ID suffix:
+```bash
+export AGENT_EXECUTION_MODE='dedicated'
+cat > configuration.json <<'JSON'
+{
+  "kind": "agent",
+  "values": {
+    "gateway": {"mode": "local", "bind": "lan", "controlUi": {"enabled": false}, "auth": {"mode": "token", "token": "${OPENCLAW_GATEWAY_TOKEN}"}, "http": {"endpoints": {"chatCompletions": {"enabled": true}}}},
+    "agents": {"defaults": {"model": "codex/gpt-5.6-sol", "skipBootstrap": true, "models": {"codex/gpt-5.6-sol": {"agentRuntime": {"id": "codex"}}}}},
+    "models": {"providers": {"codex": {"baseUrl": "http://127.0.0.1:9", "api": "openai-responses", "models": [{"id": "gpt-5.6-sol", "name": "gpt-5.6-sol"}]}}},
+    "plugins": {"allow": ["codex"], "entries": {"codex": {"enabled": true, "config": {"appServer": {
+      "mode": "guardian", "approvalPolicy": "on-request", "sandbox": "read-only",
+      "transport": "websocket", "url": "${APP_SERVER_URL}", "authToken": "${APP_SERVER_TOKEN}"
+    }}}}}
+  }
+}
+JSON
+```
+
+Post the Configuration and capture the server-generated ID:
+
+```bash
+CONFIGURATION_RESPONSE="$(scripts/occ-api POST "/namespaces/$NAMESPACE_ID/configurations" configuration.json)"
+CONFIGURATION_ID="$(printf '%s' "$CONFIGURATION_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["id"])')"
+export CONFIGURATION_ID
+```
+
+Create the Agent with the captured Configuration ID and the matching execution
+mode. Mismatched Harness and mode pairs fail before deployment. Optional
+`serviceAccountId` must identify a same-Namespace service account the caller can
+read.
+
+```bash
+: "${AGENT_EXECUTION_MODE:?choose embedded or dedicated above}"
+printf '{"name":"production-agent","configurationId":"%s","executionMode":"%s"}\n' \
+  "$CONFIGURATION_ID" "$AGENT_EXECUTION_MODE" > agent.json
+AGENT_RESPONSE="$(scripts/occ-api POST "/namespaces/$NAMESPACE_ID/agents" agent.json)"
+AGENT_ID="$(printf '%s' "$AGENT_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["id"])')"
+export AGENT_ID
+```
+
+Create the tenant transport Secret using the Agent ID suffix:
 
 ```bash
 umask 077
@@ -402,11 +501,6 @@ nonempty:
 : "${OPERATOR_OPENAI_API_KEY_FILE:?set the protected source key path}"
 install -m 600 "$OPERATOR_OPENAI_API_KEY_FILE" /secure/occ/openai-api-key
 test -s /secure/occ/openai-api-key
-```
-
-Then create the separate Agent model Secret with the same suffix:
-
-```bash
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
   -n "$TENANT_NAMESPACE" create secret generic "openclaw-agent-model-$AGENT_SUFFIX" \
   --from-file=OPENAI_API_KEY=/secure/occ/openai-api-key
@@ -415,49 +509,21 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
 Do not store the native API key in Helm values, Installation YAML,
 Configurations, shell history, or this repository.
 
-### Configure the Agent runtime
-
-Create or patch a Namespace-owned `kind: "agent"` Configuration, then deploy:
+Deploy the Agent and capture the immutable revision ID:
 
 ```bash
-scripts/occ-api POST "/namespaces/$NAMESPACE_ID/configurations" configuration.json
-scripts/occ-api POST "/namespaces/$NAMESPACE_ID/agents" agent.json
-scripts/occ-api POST "/namespaces/$NAMESPACE_ID/agents/$AGENT_ID/deploy"
+REVISION_RESPONSE="$(scripts/occ-api POST "/namespaces/$NAMESPACE_ID/agents/$AGENT_ID/deploy")"
+REVISION_ID="$(printf '%s' "$REVISION_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["id"])')"
+export REVISION_ID
+printf '%s' "$REVISION_RESPONSE" | python3 -c 'import json,os,sys; data=json.load(sys.stdin)["data"]; assert data["id"] == os.environ["REVISION_ID"] and data["agentId"] == os.environ["AGENT_ID"] and data["configurationId"] == os.environ["CONFIGURATION_ID"]'
 ```
 
-For embedded OpenClaw, write the minimum model section before posting it:
-
-```bash
-cat > configuration.json <<'JSON'
-{"kind":"agent","values":{"gateway":{"mode":"local","bind":"lan","auth":{"mode":"token","token":"${OPENCLAW_GATEWAY_TOKEN}"}},"agents":{"defaults":{"model":"openai/gpt-5.6-sol","skipBootstrap":true,"models":{"openai/gpt-5.6-sol":{"agentRuntime":{"id":"openclaw"}}}}},"models":{"providers":{"openai":{"baseUrl":"https://api.openai.com/v1","api":"openai-responses","models":[{"id":"gpt-5.6-sol","name":"gpt-5.6-sol"}]}}}}}
-JSON
-```
-
-For dedicated Codex, use the Codex runtime and its app-server placeholders. The
-Configuration keeps transport placeholders separate from the model Secret; it
-does not contain `OPENAI_API_KEY`:
-
-```bash
-cat > configuration.json <<'JSON'
-{
-  "kind": "agent",
-  "values": {
-    "gateway": {"mode": "local", "bind": "lan", "controlUi": {"enabled": false}, "auth": {"mode": "token", "token": "${OPENCLAW_GATEWAY_TOKEN}"}, "http": {"endpoints": {"chatCompletions": {"enabled": true}}}},
-    "agents": {"defaults": {"model": "codex/gpt-5.6-sol", "skipBootstrap": true, "models": {"codex/gpt-5.6-sol": {"agentRuntime": {"id": "codex"}}}}},
-    "models": {"providers": {"codex": {"baseUrl": "http://127.0.0.1:9", "api": "openai-responses", "models": [{"id": "gpt-5.6-sol", "name": "gpt-5.6-sol"}]}}},
-    "plugins": {"allow": ["codex"], "entries": {"codex": {"enabled": true, "config": {"appServer": {
-      "mode": "guardian", "approvalPolicy": "on-request", "sandbox": "read-only",
-      "transport": "websocket", "url": "${APP_SERVER_URL}", "authToken": "${APP_SERVER_TOKEN}"
-    }}}}}
-  }
-}
-JSON
-```
-
-Secret bindings require caller `operate` on every selected Secret and matching
-Agent service-principal grants before deploy. Binding changes are authorized by
-OCC IAM; Kubernetes RoleBindings only allow the API to materialize the backing
-tenant Secret.
+`scripts/occ-api` exits on non-2xx responses; deploy returns HTTP `202` with
+the AgentRevision as `data`. If `configuration.json` includes OCC
+`secretBindings`, the caller and Agent service principal must have `operate` on
+every selected Secret before deploy. Binding changes are authorized by OCC IAM;
+Kubernetes RoleBindings only allow the API to materialize backing tenant
+Secrets.
 
 ### Verify production workloads
 
@@ -612,6 +678,7 @@ Installation-scoped principal:
 ```bash
 umask 077
 export OCC_SERVICE_KEY_DIRECTORY='/secure/occ/service-keys'
+install -d -m 700 "$OCC_SERVICE_KEY_DIRECTORY"
 export OCC_SERVICE_KEY_FILE="$(mktemp "$OCC_SERVICE_KEY_DIRECTORY/key.XXXXXX")"
 curl --fail --silent --show-error --cookie "$OCC_SESSION_COOKIE_JAR" \
   "$OCC_URL/api/auth/service-keys" -H 'Content-Type: application/json' \
