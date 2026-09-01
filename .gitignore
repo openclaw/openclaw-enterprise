@@ -20,3 +20,6 @@ output/playwright/
 
 # Keep the testing guide visible when a global ignore matches its name.
 !/docs/testing.md
+
+# Private setup state and delivered credentials.
+.deployment/

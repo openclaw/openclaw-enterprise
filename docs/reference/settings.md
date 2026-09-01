@@ -143,7 +143,7 @@ Missing, invalid, expired, or revoked sessions or service keys return `401`; an
 authenticated Principal or ServicePrincipal without the exact existing IAM grant
 receives `403`. Neither credential grants rights without IAM. See
 [Authentication](authentication.md#service-api-keys) for service-key issuance,
-scope, and revocation, and the [deployment guide](../guides/deploy.md#service-api-keys-for-automation)
+scope, and revocation, and the [deployment guide](authentication.md#service-api-keys-for-automation)
 for the procedure. Normal issuance and verification require no additional
 settings; initial-key delivery uses the bootstrap settings below.
 Auth-secret rotation takes effect after
@@ -163,7 +163,7 @@ human and service administrators before starting the API or worker. Its separate
 init container receives only `OCC_MIGRATION_DATABASE_URL`; the bootstrap
 container receives the application-role `OCC_DATABASE_URL`, Better Auth
 settings, and the following bootstrap settings. The Job sets `backoffLimit: 0`;
-failed initialization requires [manual repair](../guides/deploy.md#recover-an-incomplete-bootstrap)
+failed initialization requires [manual repair](setup.md#incomplete-bootstrap)
 before another attempt.
 
 | Variable                          | Required value or format                                                                                |
@@ -183,7 +183,7 @@ Helm sets the key path from `bootstrap.password.mountPath` and
 `bootstrap.serviceKey.fileName` (default `initial-admin-service-key.json`). The
 key filename must be a simple basename distinct from `bootstrap.password.fileName`.
 Both use the existing `bootstrap.password.claimName` PVC. Reruns do not inspect,
-replace, or regenerate output; see [recovery](../guides/deploy.md#recover-an-incomplete-bootstrap).
+replace, or regenerate output; see [recovery](setup.md#incomplete-bootstrap).
 
 ## Optional controller environment
 

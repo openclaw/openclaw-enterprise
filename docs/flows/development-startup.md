@@ -17,7 +17,8 @@ requests and the Docker-backed worker begins polling durable work.
 
 For prerequisites, startup commands, and production differences, use the
 [deployment guide](../guides/deploy.md). The [quickstart](../guides/quickstart.md)
-owns the first authenticated API request.
+owns the first model-backed TUI conversation. The [setup flow](setup.md) wraps
+this startup with credential retrieval, provisioning, and TUI attachment.
 
 ## Entry Points
 

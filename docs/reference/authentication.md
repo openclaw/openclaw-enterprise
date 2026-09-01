@@ -9,9 +9,9 @@ identity to an explicitly provisioned Principal or ServicePrincipal and owns
 
 This page defines the currently supported authentication behavior. For a
 working sign-in procedure, see the
-[quickstart](../guides/quickstart.md#sign-in-and-read-the-installation) or
-[production deployment](../guides/deploy.md#authenticate-to-the-production-api).
-For non-Agent automation, see the [service-key procedure](../guides/deploy.md#service-api-keys-for-automation).
+[quickstart](authentication.md#sign-in-as-a-human-administrator) or
+[production deployment](authentication.md#sign-in-as-a-human-administrator).
+For non-Agent automation, see the [service-key procedure](authentication.md#service-api-keys-for-automation).
 There is no login UI. Public signup, OIDC, and bearer credentials are not
 supported controller API authentication paths.
 
@@ -47,8 +47,8 @@ response. OCC creates no Kubernetes Secret or PVC for delivery.
 In Helm, `bootstrap.password.claimName` selects the existing protected PVC.
 Only the initialization Job mounts it; `bootstrap.password.fileName` and
 `bootstrap.serviceKey.fileName` are written under `bootstrap.password.mountPath`.
-See [initial-key retrieval](../guides/deploy.md#retrieve-the-bootstrap-service-key)
-and [bootstrap recovery](../guides/deploy.md#recover-an-incomplete-bootstrap).
+See [initial-key retrieval](setup.md#credential-retrieval-and-replacement)
+and [bootstrap recovery](setup.md#incomplete-bootstrap).
 
 The shared `scripts/bootstrap-installation.mjs` initializer runs after migration
 and before either API or worker startup in Compose and Helm. Development
@@ -60,7 +60,7 @@ password output file or rotate an existing account's password. Compose stores
 the service-key JSON on the bootstrap-only `occ_bootstrap_data` volume. The API
 and worker do not mount it. Direct development runs the same initializer with
 an explicit private key-file path before starting the API or worker.
-The [quickstart](../guides/quickstart.md) uses the service key for its API check.
+The [setup command](setup.md) uses the service key for provisioning and reconnect.
 
 An already-bootstrapped Installation receives no new identity, grants, key, or
 output, including installations created before initial-key delivery existed.
@@ -76,7 +76,7 @@ The Helm initialization Job uses `backoffLimit: 0` and does not retry a failed
 attempt. Better Auth persistence and the Installation/IAM commit are separate;
 an error does not establish whether the transaction committed. Operators must
 resolve that outcome before manual repair, or explicitly reset an identified
-disposable Installation. See [incomplete bootstrap recovery](../guides/deploy.md#recover-an-incomplete-bootstrap).
+disposable Installation. See [incomplete bootstrap recovery](setup.md#incomplete-bootstrap).
 File existence alone is not proof of successful initialization.
 
 ## Session lifecycle
@@ -235,7 +235,7 @@ non-secret key/principal IDs, never plaintext credentials. If issuance audit
 persistence fails, the controller returns `503` without disclosing the key and
 attempts to remove it. This cleanup is best effort, not an atomic transaction
 with the audit sink. A failed revocation audit returns `503` but never restores
-a deleted key. See the [deployment guide](../guides/deploy.md#revoke-or-rotate-a-service-key)
+a deleted key. See the [deployment guide](authentication.md#revoke-or-rotate-a-service-key)
 for rotation procedures using a human session or service key.
 
 ### Service-key failures
@@ -247,6 +247,109 @@ for rotation procedures using a human session or service key.
 | Unknown, Agent-owned, or incorrectly scoped principal at issuance; unsupported fields or invalid name/lifetime         | `400 INVALID_REQUEST`.                                                                      |
 | Unknown or already removed key at revocation                                                                           | `404 NOT_FOUND`.                                                                            |
 | Required authentication, IAM, or audit dependency unavailable                                                          | `503 DEPENDENCY_UNAVAILABLE`; do not retry with a different identity or broader credential. |
+
+## Service API keys for automation
+
+Setup uses the bootstrap key for provisioning. Full key scope,
+issuance fields, expiry, and errors are defined in the
+[service API key contract](#service-api-keys).
+
+### Sign in as a human administrator
+
+Set `OCC_URL` to the API URL saved in `.deployment/state.json`. Development
+uses the original `OPENCLAW_DEV_EMAIL` and `OPENCLAW_DEV_PASSWORD` (defaults:
+`admin@openclaw.local` and `openclaw-development-password`). Production uses
+`adminEmail` from the setup configuration and the private
+`.deployment/initial-admin-password` file. Setup also retains the original
+production password on the protected bootstrap PVC. Do not regenerate it.
+
+Enter those credentials at the prompts; the password is hidden:
+
+```bash
+set -o pipefail
+umask 077
+: "${OCC_URL:?Set the deployment API URL first.}"
+OCC_SESSION_DIRECTORY="$(mktemp -d)"
+export OCC_SESSION_COOKIE_JAR="$OCC_SESSION_DIRECTORY/cookies"
+
+python3 -c '
+import getpass
+import json
+import sys
+
+print("Administrator email: ", end="", file=sys.stderr, flush=True)
+email = sys.stdin.readline().strip()
+password = getpass.getpass("Administrator password: ")
+print(json.dumps({"email": email, "password": password}))
+' | curl --fail-with-body --silent --show-error \
+  --cookie-jar "$OCC_SESSION_COOKIE_JAR" \
+  "$OCC_URL/api/auth/sign-in/email" \
+  -H 'Content-Type: application/json' --data-binary @- --output /dev/null
+
+curl --fail-with-body --silent --show-error \
+  --cookie "$OCC_SESSION_COOKIE_JAR" "$OCC_URL/installation"
+```
+
+Expect HTTP `200` and JSON containing the Installation's server-assigned `id`
+and name. Use `--cookie "$OCC_SESSION_COOKIE_JAR"` for subsequent protected
+requests. If sign-in fails after changing the configured password, the existing
+database still expects its original account password; startup does not reset it.
+
+### Issue a service key
+
+Use the recorded non-Agent service principal ID from the original key file.
+The controller has no public IAM-management API; new principals and grants
+must first be provisioned through your selected IAM authority.
+
+```bash
+export OCC_SERVICE_KEY_FILE="$(mktemp "$OCC_SESSION_DIRECTORY/key.XXXXXX")"
+curl --fail --silent --show-error --cookie "$OCC_SESSION_COOKIE_JAR" \
+  "$OCC_URL/api/auth/service-keys" -H 'Content-Type: application/json' \
+  --data '{"servicePrincipalId":"<existing-service-principal-id>","name":"operator","expiresIn":2592000}' \
+  --output "$OCC_SERVICE_KEY_FILE"
+chmod 600 "$OCC_SERVICE_KEY_FILE"
+scripts/occ-api GET /installation
+```
+
+Expect issuance HTTP `201` and a successful Installation read. The example is
+Installation-scoped. Namespace keys also require the exact `namespaceId` in
+the request and can access only that principal's granted scope.
+
+### Revoke or rotate a service key
+
+For planned rotation, issue a replacement, switch the client, verify its granted
+operation, then revoke the old non-secret key ID. For exposure, revoke first.
+
+```bash
+OCC_OLD_KEY_ID='<old-key-id>'
+curl --fail --silent --show-error --cookie "$OCC_SESSION_COOKIE_JAR" \
+  --request DELETE "$OCC_URL/api/auth/service-keys/$OCC_OLD_KEY_ID"
+```
+
+Expect `data.revoked: true`; an authenticated read using the old file must now
+return `401`. Deleting the local JSON does not revoke a key. Revocation does not
+cascade to keys an administrator issued; investigate those separately after
+exposure. An existing Installation-scoped service administrator can also manage
+keys with `x-api-key`, per the [same API contract](#issuance).
+
+If both the bootstrap file and IDs are lost, there is no discovery endpoint.
+Use approved database access to inspect only non-secret `occ.apikey` fields
+(`id`, `reference_id`, `name`, `metadata`, `expires_at`), match `reference_id`
+to `occ.iam_identities.id`, and verify Installation and current
+`occ.iam_access_bindings`/`occ.iam_roles` ownership. Never dump keys, password
+hashes, or sessions. Key issuance cannot restore removed IAM authority; loss of
+all administrator credentials requires operator recovery.
+
+Sign out when finished:
+
+```bash
+curl --fail --silent --show-error --cookie "$OCC_SESSION_COOKIE_JAR" \
+  --request POST "$OCC_URL/api/auth/sign-out" --output /dev/null
+rm -- "$OCC_SESSION_COOKIE_JAR"
+```
+
+Import any replacement key into protected storage before removing its delivery
+file and the now-empty temporary directory.
 
 ## Evidence and related references
 
@@ -271,7 +374,7 @@ do not prove a production installation; their commands and required
 [service API key flow](../flows/service-api-keys.md#debugging-and-verification).
 
 - [Service API key flow](../flows/service-api-keys.md)
-- [Deployment procedure](../guides/deploy.md#service-api-keys-for-automation)
+- [Deployment procedure](authentication.md#service-api-keys-for-automation)
 - [Authorization](authorization.md)
 - [Generated API reference](api.md)
 - [Controller settings](settings.md)

@@ -6,37 +6,18 @@ The open control plane for deploying and managing Agents. Under active construct
 
 ## Getting Started
 
-Requires Docker Engine and Docker Compose. Build the runtime image and create
-`.env` if it does not already exist:
+Requires Node.js 24+, Docker Engine with Docker Compose, and an authorized
+OpenAI model/key. From the repository root:
 
 ```sh
-docker build -f deploy/runtime/Dockerfile \
-  --tag openclaw-enterprise-runtime:quickstart deploy/runtime
-umask 077
-test -f .env || cp .env.example .env
+# Load OPENAI_API_KEY into this shell using your credential manager.
+node scripts/setup.mjs dev --model gpt-5.1
 ```
 
-Set `OCC_DOCKER_RUNTIME_IMAGE=openclaw-enterprise-runtime:quickstart` in `.env`,
-then start the stack:
-
-```sh
-docker compose up --build -d
-docker compose ps -a
-```
-
-Wait for PostgreSQL and the controller to be healthy, the migration to exit with
-code `0`, and the worker to be running. The API defaults to `http://127.0.0.1:3000`.
-Follow the [quickstart](docs/guides/quickstart.md#sign-in-and-read-the-installation)
-to sign in and make an authenticated request. To deploy an Agent and attach the
-OpenClaw terminal UI to a real model-backed runtime, continue to
-[Development end-to-end TUI](docs/guides/deploy.md#development-end-to-end-tui).
-A model credential is required to run Agent model turns, but not to start the
-stack.
-
-The local worker has Docker host access through the Docker socket. Use the
-[deployment guide](docs/guides/deploy.md) for host requirements and production
-Kubernetes setup; the [runtime image recipe](deploy/runtime/README.md) documents
-image versions and build options.
+Choose a model your key can access. Setup builds the runtime image when needed,
+starts the controller, deploys an Agent, and opens its terminal UI. Follow the
+[quickstart](docs/guides/quickstart.md) to verify a conversation, or the
+[deployment guide](docs/guides/deploy.md) for production Kubernetes setup.
 
 ## Develop
 

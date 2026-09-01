@@ -188,7 +188,7 @@ read the Agent again and repeats discovery because
 the matching ConfigMap and possibly the gateway Pod UID have changed. Removing
 a temporary local service-key copy does not revoke the credential, and exiting
 the TUI does not rotate or revoke it. Deliberate rotation and revocation follow
-the [service-key procedure](../guides/deploy.md#revoke-or-rotate-a-service-key).
+the [service-key procedure](../reference/authentication.md#revoke-or-rotate-a-service-key).
 
 Automated coverage for this exact lifecycle is
 `tests/integration/production-tui-k3d-real.test.mjs`. It uses

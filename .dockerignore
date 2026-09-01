@@ -29,3 +29,6 @@ output/playwright
 tests/
 specs/
 docs/
+
+# Private setup state must never enter a Docker build context.
+.deployment

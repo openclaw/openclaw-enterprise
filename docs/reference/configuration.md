@@ -19,8 +19,8 @@ startup YAML and never stores them in tenant ConfigMaps.
 Set `OCC_CONFIG_PATH` to the absolute path of a trusted YAML file. Production
 requires this setting; development can omit it to retain its existing local
 defaults. When provided, both API and worker processes must read the same file.
-The [production Kubernetes deployment guide](../guides/deploy.md#configure-the-installation)
-owns the complete bundled-Driver Installation example, including immutable
+The [setup command](setup.md#generated-configuration)
+generates the complete bundled-Driver Installation configuration, including immutable
 images, workload isolation, and projected ServiceAccount credentials. The
 [Driver package installation guide](drivers/selection.md#select-the-installed-driver)
 owns the installed IAM, Compute, and Configuration selection contract.
@@ -203,7 +203,7 @@ the worker binds its tenant identity before the platform Namespace becomes
 `ready`. Wait for readiness before creating the first Configuration; an
 external Namespace that is still provisioning rejects its creation with `409`.
 See
-[existing-namespace setup](../guides/deploy.md#use-an-existing-kubernetes-namespace).
+[existing-namespace setup](drivers/kubernetes-compute.md#namespaces-and-isolation).
 Its data contains exactly one entry:
 
 ```json

@@ -94,7 +94,7 @@ drivers:
 ```
 
 This example shows only the Compute Driver portion of the Installation
-configuration. See the [complete production Installation example](../../guides/deploy.md#configure-the-installation)
+configuration. See the [generated production Installation configuration](../setup.md#generated-configuration)
 for the other required Drivers and settings.
 
 ### Authentication
@@ -187,7 +187,7 @@ worker permissions keep provisioning pending; missing API permissions prevent
 Configuration access. Docker and external Compute Drivers reject
 existing-namespace selection with `409`.
 
-See [existing-namespace onboarding](../../guides/deploy.md#use-an-existing-kubernetes-namespace)
+See [existing-namespace onboarding](kubernetes-compute.md#namespaces-and-isolation)
 for operator preparation, tenant ownership requirements, and Configuration
 readiness.
 

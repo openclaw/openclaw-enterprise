@@ -18,6 +18,7 @@ procedure needs a public Docker-only OpenClaw/Codex runtime image.
 
 | Reference                                  | Owns                                                                                 |
 | ------------------------------------------ | ------------------------------------------------------------------------------------ |
+| [Setup](setup.md)                          | Deployment CLI, production inputs, private state, and recovery.                      |
 | [Namespaces](namespaces.md)                | Tenant identity, placement, readiness, and deletion.                                 |
 | [Agents](agents.md)                        | Agent identity, mutable selection, and immutable revisions.                          |
 | [Configuration](configuration.md)          | Native documents, generations, references, and snapshots.                            |

@@ -19,8 +19,9 @@ ends when both Deployments become ready and an authorized client can establish
 a controller session.
 
 The [deployment guide](../guides/deploy.md) owns the prerequisites, protected
-input preparation, and complete Helm commands. This document traces what the
-chart and controller processes execute after those inputs are supplied.
+inputs and setup command. The [setup flow](setup.md) generates the chart inputs
+and provisions the first Agent. This document traces what the chart and
+controller processes execute after those inputs are supplied.
 
 ## Entry Points
 

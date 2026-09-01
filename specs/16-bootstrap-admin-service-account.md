@@ -100,7 +100,7 @@ Abrupt termination can leave auth accounts, key hashes, or partial output withou
 
 Use path-only `OCC_BOOTSTRAP_SERVICE_KEY_FILE`, required on fresh direct initialization. Production requires a distinct sibling of `OCC_BOOTSTRAP_PASSWORD_FILE`. The protected file helper uses the exclusive-create pattern: reject unsafe parents/symlinks and existing destinations, open with `O_EXCL`, enforce `0600`, write complete JSON, and fsync file and parent directory before OCC commit. The protected directory is writable only by the runtime identity and trusted storage administrators. Never overwrite output.
 
-Use the existing response-compatible shape so [service-key client examples](../docs/guides/deploy.md#use-a-service-key) can consume `data.key`:
+Use the existing response-compatible shape so [service-key client examples](../docs/reference/setup.md#credential-retrieval-and-replacement) can consume `data.key`:
 
 ```json
 {"data":{"id":"<key-id>","servicePrincipalId":"<spn_uuid>","name":"bootstrap-admin","expiresAt":"<UTC-expiry>","key":"<generated-occ-key>"},"meta":{"installationId":"<installation-id>"}}

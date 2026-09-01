@@ -48,7 +48,7 @@ returned in the Namespace response. The worker verifies and binds that exact
 operator-prepared Kubernetes namespace without adopting another tenant's
 resources. Its external lifecycle, restricted Pod Security labels, and
 tenant-local RoleBindings must already be in place; see
-[existing-namespace deployment](../guides/deploy.md#use-an-existing-kubernetes-namespace).
+[existing-namespace deployment](drivers/kubernetes-compute.md#namespaces-and-isolation).
 Docker and external Compute Drivers reject this option with
 `409`; ordinary creation without the option remains supported. Creating a
 Configuration in an explicitly selected external Namespace returns

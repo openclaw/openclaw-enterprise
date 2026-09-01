@@ -309,7 +309,7 @@ without processing work. The worker does not expose an HTTP health endpoint.
   or Helm initialization Job succeeded against the API/worker database. For
   direct-process setup, run `scripts/bootstrap-installation.mjs` with the selected
   environment's protected output settings before starting either process.
-  Resolve [failed initialization](../guides/deploy.md#recover-an-incomplete-bootstrap)
+  Resolve [failed initialization](setup.md#incomplete-bootstrap)
   manually before another attempt; bootstrap does not clean up or retry.
 - **Startup YAML is missing or rejected:** Set production `OCC_CONFIG_PATH` to
   the same absolute, readable file for API and worker. Remove unknown Driver

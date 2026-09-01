@@ -145,7 +145,7 @@ drivers:
 ```
 
 Include the existing required `occ` settings and use the
-[complete production Installation example](../../guides/deploy.md#configure-the-installation)
+[generated production Installation configuration](../setup.md#generated-configuration)
 as the baseline for the selected Drivers. Each Driver owns its closed
 configuration schema; bundled Kubernetes settings apply only when that bundled
 Driver is selected. Startup YAML can select Secret storage but must not contain

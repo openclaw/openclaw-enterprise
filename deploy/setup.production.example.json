@@ -1,0 +1,43 @@
+{
+  "model": "gpt-5.1",
+  "modelKeyFile": "/secure/openclaw/model-openai-api-key",
+  "kubeconfig": "/secure/openclaw/kubeconfig",
+  "context": "openclaw-production",
+  "url": "https://openclaw.example.com",
+  "controllerImage": "registry.example.com/openclaw-enterprise-controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "runtimeImage": "registry.example.com/openclaw-runtime@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "adminEmail": "admin@example.com",
+  "clusterName": "openclaw-enterprise-production",
+  "systemNamespace": "openclaw-system",
+  "release": "oce",
+  "gatewayStorageClass": "openclaw-gateway-rwo",
+  "bootstrapStorageClass": "openclaw-bootstrap-rwo",
+  "database": {
+    "applicationUrlFile": "/secure/openclaw/database-application-url",
+    "migrationUrlFile": "/secure/openclaw/database-migration-url",
+    "cidr": "10.10.20.15/32",
+    "port": 5432
+  },
+  "apiClient": {
+    "namespace": "openclaw-system",
+    "podLabels": {
+      "app.kubernetes.io/name": "approved-gateway-client"
+    }
+  },
+  "kubernetesApi": {
+    "cidr": "10.10.0.1/32",
+    "port": 443
+  },
+  "gatewayClient": {
+    "namespace": "openclaw-system",
+    "podLabels": {
+      "app.kubernetes.io/name": "approved-gateway-client"
+    }
+  },
+  "dns": {
+    "namespace": "kube-system",
+    "podLabels": {
+      "k8s-app": "kube-dns"
+    }
+  }
+}

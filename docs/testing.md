@@ -209,8 +209,8 @@ OCC_TEST_RUNTIME_IMAGE=openclaw-enterprise-runtime:test \
 This starts an embedded gateway with a fresh runtime home and checks readiness
 and Codex plugin discovery. It does not make a model call.
 
-Build the controller image using the [production prerequisites](guides/deploy.md#production-prerequisites),
-then set `OCC_TEST_PRODUCTION_IMAGE` to the local tag you built:
+Build the controller image with `docker build --target production -t
+openclaw-enterprise:reviewed .`, then set `OCC_TEST_PRODUCTION_IMAGE` to the local tag you built:
 
 ```sh
 OCC_TEST_PRODUCTION_IMAGE=openclaw-enterprise:reviewed \
@@ -443,3 +443,30 @@ remain; provider-account cleanup failures require explicit follow-up.
 - [Deployment guide](guides/deploy.md)
 - [Runtime image recipe](../deploy/runtime/README.md)
 - [Contributor integration boundaries](../AGENTS.md#running-integration-tests)
+
+## Setup command integration
+
+`node --test tests/integration/setup-cli.test.mjs` checks CLI input and private
+state boundaries. For real development setup, provide `OPENAI_API_KEY` and a
+local runtime image, then run:
+
+```sh
+OCC_TEST_SETUP_DOCKER_REAL=1 \
+  node --test tests/integration/setup-cli.test.mjs
+```
+
+This creates a disposable Compose project, invokes the shipped setup CLI twice,
+checks exact resource/revision reuse, and verifies two assistant replies through
+its TUI reconnect command. Cleanup targets only that test's resources.
+
+`tests/integration/setup-production-k3d-real.test.mjs` invokes the same shipped
+production command against an explicitly selected disposable k3d cluster. Set
+`OCC_TEST_SETUP_PRODUCTION_REAL=1`, the existing Kubernetes context/kubeconfig
+selection, `OPENAI_API_KEY`, and these imported immutable image references:
+`OCC_TEST_PRODUCTION_CONTROLLER_IMAGE`, `OCC_TEST_KUBERNETES_RUNTIME_IMAGE`,
+`OCC_TEST_PRODUCTION_POSTGRES_IMAGE`, and `OCC_TEST_PRODUCTION_NODE_IMAGE`.
+Alternatively, `OCC_TEST_PRODUCTION_IMAGES_FILE` names JSON containing those four
+keys. Helm and kubectl must be on `PATH`. The test supplies only infrastructure
+prerequisites (database and TLS proxy); setup owns control-plane installation,
+credentials, tenant access, and Agent provisioning. It checks a successful rerun
+and two TUI assistant replies. Neither suite runs against a production cluster.

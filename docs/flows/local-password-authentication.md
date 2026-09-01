@@ -105,7 +105,7 @@ attempt IDs before manual repair; file existence or another Installation is
 insufficient. An uncertain commit can already have persisted the seed, so an
 error never authorizes an automatic wipe. A deliberate reset must identify the
 disposable Installation and its dedicated storage. The
-[recovery procedure](../guides/deploy.md#recover-an-incomplete-bootstrap) owns
+[recovery procedure](../reference/setup.md#incomplete-bootstrap) owns
 those operator actions.
 
 After confirmed success, the operator retrieves/imports the existing file and
@@ -161,7 +161,7 @@ implicit permissions.
   `GET /installation` and Namespace create/read to check current authority.
   A `401` indicates credential rejection; `403` indicates identity/scope/policy
   denial. Preserve failed bootstrap artifacts and compare safe IDs through
-  [operator recovery](../guides/deploy.md#recover-an-incomplete-bootstrap).
+  [operator recovery](../reference/setup.md#incomplete-bootstrap).
 - `pnpm typecheck`, `pnpm format:check`, and `pnpm check:workspace` validate source
   and workspace structure. Compose/PVC permission checks require real runtime
   execution; chart rendering alone does not prove storage access.

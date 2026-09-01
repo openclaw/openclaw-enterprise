@@ -20,7 +20,7 @@ worker has reconciled Docker-backed runtimes, the TUI client has exited, and
 cleanup for development resources is understood.
 
 Use the [deployment guide](../guides/deploy.md) for setup and shutdown and the
-[quickstart](../guides/quickstart.md) for authenticated API commands. The
+[quickstart](../guides/quickstart.md) for setup and the first TUI conversation. The
 [development startup flow](development-startup.md) ends at control-plane
 readiness; this trace continues through Docker workload creation and cleanup.
 
@@ -181,11 +181,10 @@ network.
 `apps/controller/src/drivers/compute/docker/index.ts:DockerComputeDriver`,
 `tests/integration/docker-compute-real.test.mjs:tuiDockerCommand`
 
-The [deployment guide](../guides/deploy.md#development-end-to-end-tui) owns the
-service-key-authenticated provisioning commands, Docker label selection, and
-cleanup of the temporary local key copy. Cleanup does not revoke the key or
-remove its shared initialization output. After that guide has selected the active embedded gateway container,
-`docker exec -it` starts `node /app/openclaw.mjs tui` in that same container.
+The [setup command](setup.md) retrieves the private service credential,
+provisions the Agent, and selects the container for its current active revision.
+`docker exec -it` starts `node /app/openclaw.mjs tui` in that gateway container.
+The private key copy remains in the setup state directory for reconnect.
 
 The Docker driver has already written the gateway configuration to
 `OPENCLAW_CONFIG_PATH`, started `/app/openclaw.mjs gateway` on
@@ -237,7 +236,7 @@ PostgreSQL and can be retried by the worker.
 - `docker ps --filter label=org.openclaw.enterprise.compute-driver=docker`
   should show one embedded gateway container or a dedicated gateway plus Codex
   container for deployed revisions.
-- The deployment guide owns gateway discovery and local service-key copy cleanup
+- The setup command owns gateway discovery and retains the private service-key copy
   before TUI attach; this flow records the selected container's runtime path after that
   operator procedure completes.
 - `tests/integration/docker-compute-real.test.mjs:assertInteractiveTuiConversation`
@@ -254,7 +253,7 @@ PostgreSQL and can be retried by the worker.
 ## Related docs
 
 - [Deployment guide: development and production](../guides/deploy.md)
-- [Deployment guide: development end-to-end TUI](../guides/deploy.md#development-end-to-end-tui)
+- [Deployment guide: development end-to-end TUI](../guides/deploy.md#development)
 - [Quickstart](../guides/quickstart.md)
 - [Development startup flow](development-startup.md)
 - [Controller worker execution flow](controller-worker.md)

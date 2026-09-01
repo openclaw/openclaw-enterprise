@@ -206,7 +206,7 @@ These commands describe the proof hooks, not a new runtime execution record.
 ## Related docs
 
 - [Authentication reference](../reference/authentication.md#service-api-keys)
-- [Deployment procedure](../guides/deploy.md#service-api-keys-for-automation)
+- [Deployment procedure](../reference/authentication.md#service-api-keys-for-automation)
 - [Human password/session flow](local-password-authentication.md)
 - [Authorization reference](../reference/authorization.md)
 - [Platform identity and authority](../design.md#iam-and-authority)
