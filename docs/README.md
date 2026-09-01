@@ -5,7 +5,7 @@ OpenClaw Enterprise is the open platform for managing agents.
 ## Start and deploy
 
 - [Quickstart](guides/quickstart.md): start locally, sign in, and make an authenticated request.
-- [Deploy](guides/deploy.md): configure Docker Compose or Kubernetes, verify your deployment, run the development end-to-end TUI proof, and troubleshoot startup.
+- [Deploy](guides/deploy.md): deploy with Docker Compose or Kubernetes, provision an Agent, and exchange messages in its gateway TUI.
 - [Testing](testing.md): choose test suites, prepare credentials and infrastructure, and interpret results.
 
 ## Architecture
