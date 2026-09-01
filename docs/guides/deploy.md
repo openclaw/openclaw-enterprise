@@ -22,7 +22,9 @@ URL, Installation ID, private key path, next check, and cleanup command.
 
 ### Verify development
 
-To repeat the authenticated check:
+`dev-up` runs this check before reporting success. To run it again, copy the
+command under `Check API access again` in the output. It includes your API URL
+and service-key file path. You can also set them yourself:
 
 ```bash
 OCC_URL='http://127.0.0.1:3000' \
