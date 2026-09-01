@@ -29,10 +29,11 @@ Compose quickstart. The Docker Compute Driver uses the same image for embedded
 OpenClaw gateways and dedicated Codex app-server containers.
 
 The image preserves the installed `openclaw` package under
-`/app/node_modules/openclaw` and exposes `/app/openclaw.mjs`, `/app/dist`, and
-`/app/skills` as symlinks into that package. Do not flatten the package into
-`/app`; OpenClaw resolves package-local runtime dependencies from its installed
-package root.
+`/app/node_modules/openclaw` and exposes `/app/openclaw.mjs` and `/app/dist` as
+symlinks into that package. `/app/skills` is copied into a real directory so the
+Kubernetes gateway entrypoint can publish it into the shared runtime-assets
+volume for dedicated Codex Pods. Do not flatten `/app/dist`; OpenClaw resolves
+package-local runtime dependencies from its installed package root.
 
 Production Kubernetes installations can use this recipe as a starting point,
 but must push the resulting image to an operator-controlled registry and
@@ -58,10 +59,13 @@ OCC_TEST_RUNTIME_IMAGE=openclaw-enterprise-runtime:quickstart \
 ```
 
 The smoke starts task-owned containers with the Docker Compute Driver gateway
-entrypoint, UID `1000:1000`, a read-only root filesystem, and tmpfs-backed
-`/home/node` and `/tmp`. Passing means an embedded OpenClaw gateway reaches
-`/readyz` from a fresh home and the bundled Codex plugin can be discovered
-without missing package dependencies. It does not make a model call.
+entrypoint and the Kubernetes Compute Driver gateway entrypoint, UID
+`1000:1000`, a read-only root filesystem, and tmpfs-backed runtime directories.
+Passing means an embedded OpenClaw gateway reaches `/readyz` from a fresh home,
+the bundled Codex plugin can be discovered without missing package
+dependencies, and the Kubernetes dedicated-gateway startup path publishes the
+bundled skills directory into `/home/node/openclaw-runtime-assets`. It does not
+make a model call.
 
 The Codex plugin is copied into `/app/dist/extensions/codex`, where OpenClaw
 discovers it as a bundled plugin when Enterprise starts an Agent with a fresh

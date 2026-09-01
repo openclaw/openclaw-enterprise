@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
+import { GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
 const execute = promisify(execFile);
@@ -43,6 +45,15 @@ async function dockerGatewayEntrypoint() {
   const match = source.match(/const GATEWAY_RUNTIME_ENTRYPOINT = String\.raw`([\s\S]*?)`;/);
   assert.ok(match, "Docker gateway runtime entrypoint must remain discoverable");
   return match[1];
+}
+
+async function temporaryGatewayConfiguration(t, harnessId) {
+  const directory = await mkdtemp(join(tmpdir(), "oce-runtime-image-config-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+
+  const path = join(directory, "openclaw.json");
+  await writeFile(path, JSON.stringify(createHarnessConfiguration(harnessId, "gpt-4.1")));
+  return path;
 }
 
 async function waitForGatewayReady(containerName) {
@@ -109,20 +120,30 @@ function assertBundledCodexPluginLoaded(pluginList) {
   assert.deepEqual(codexPlugin.dependencyStatus?.missing, []);
 }
 
-async function runGatewaySmoke(t, harnessId) {
+async function runGatewaySmoke(t, harnessId, options = {}) {
+  const {
+    configurationPath,
+    entrypoint = await dockerGatewayEntrypoint(),
+    extraEnvironment = [],
+    tmpfs = ["/home/node:size=1024m,uid=1000,gid=1000,mode=700"],
+    volumes = [],
+  } = options;
   const containerName = `oce-runtime-image-${harnessId}-${randomBytes(6).toString("hex")}`;
   t.after(() => runDocker(["rm", "-f", containerName]).catch(() => {}));
 
   const configuration = createHarnessConfiguration(harnessId, "gpt-4.1");
   const environment = [
-    "OPENCLAW_CONFIG_PATH=/home/node/.openclaw/openclaw.json",
-    `OPENCLAW_CONFIG_JSON=${JSON.stringify(configuration)}`,
+    `OPENCLAW_CONFIG_PATH=${configurationPath ?? "/home/node/.openclaw/openclaw.json"}`,
+    ...(configurationPath === undefined
+      ? [`OPENCLAW_CONFIG_JSON=${JSON.stringify(configuration)}`]
+      : []),
     "OPENCLAW_GATEWAY_PORT=8080",
     "OPENCLAW_GATEWAY_TOKEN=openclaw-runtime-image-smoke-token",
     "OPENCLAW_STATE_DIR=/home/node/.openclaw",
     "APP_SERVER_URL=ws://127.0.0.1:9",
     "APP_SERVER_TOKEN=openclaw-runtime-image-app-server-token",
     "HOME=/home/node",
+    ...extraEnvironment,
   ];
 
   await runDocker(["rm", "-f", containerName]).catch(() => {});
@@ -138,18 +159,18 @@ async function runGatewaySmoke(t, harnessId) {
     "ALL",
     "--security-opt",
     "no-new-privileges",
-    "--tmpfs",
-    "/home/node:size=1024m,uid=1000,gid=1000,mode=700",
+    ...tmpfs.flatMap((value) => ["--tmpfs", value]),
     "--tmpfs",
     "/tmp:size=64m,uid=1000,gid=1000,mode=1777",
     "--network",
     "none",
+    ...volumes.flatMap((value) => ["--volume", value]),
     ...environment.flatMap((value) => ["-e", value]),
     "--entrypoint",
     "node",
     image,
     "-e",
-    await dockerGatewayEntrypoint(),
+    entrypoint,
   ]);
 
   try {
@@ -157,6 +178,7 @@ async function runGatewaySmoke(t, harnessId) {
     const pluginList = harnessId === "codex" ? await listGatewayPlugins(containerName) : undefined;
     const logs = await runDocker(["logs", containerName]);
     return {
+      containerName,
       logs: `${logs.stdout}\n${logs.stderr}`,
       pluginList,
     };
@@ -164,6 +186,33 @@ async function runGatewaySmoke(t, harnessId) {
     const logs = await runDocker(["logs", containerName]).catch((logsError) => logsError);
     throw new Error(`${error.message}\n${commandOutput(logs)}`);
   }
+}
+
+async function assertDedicatedRuntimeAssets(containerName) {
+  const { stdout } = await runDocker([
+    "exec",
+    containerName,
+    "node",
+    "-e",
+    `
+const { lstatSync, readdirSync } = require("node:fs");
+const appSkills = lstatSync("/app/skills");
+if (!appSkills.isDirectory() || appSkills.isSymbolicLink()) {
+  throw new Error("/app/skills must be a real directory in the runtime image.");
+}
+const bundled = readdirSync("/home/node/openclaw-runtime-assets/bundled-skills");
+if (bundled.length === 0) {
+  throw new Error("Kubernetes gateway entrypoint did not publish bundled skills.");
+}
+const plugin = lstatSync("/home/node/openclaw-runtime-assets/plugin-skills");
+if (!plugin.isDirectory()) {
+  throw new Error("Kubernetes gateway entrypoint did not publish plugin skills directory.");
+}
+process.stdout.write(JSON.stringify({ bundledCount: bundled.length }));
+`,
+  ]);
+
+  assert.ok(JSON.parse(stdout).bundledCount > 0);
 }
 
 test(
@@ -187,6 +236,29 @@ test(
     assert.match(logs, /\[gateway\] ready/);
     assert.match(logs, /agent model: codex\/gpt-4\.1/);
     assertBundledCodexPluginLoaded(pluginList);
+    assertNoPackagingFailure(logs);
+  },
+);
+
+test(
+  "runtime image publishes dedicated assets with the Kubernetes gateway entrypoint",
+  imageTestOptions,
+  async (t) => {
+    const configurationPath = await temporaryGatewayConfiguration(t, "codex");
+    const { logs, containerName } = await runGatewaySmoke(t, "codex", {
+      configurationPath: "/etc/openclaw/openclaw.json",
+      entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+      extraEnvironment: ["OPENCLAW_WORKSPACE_DIR=/home/node/workspace"],
+      tmpfs: [
+        "/home/node:size=1024m,uid=1000,gid=1000,mode=700",
+        "/home/node/workspace:size=1024m,uid=1000,gid=1000,mode=700",
+      ],
+      volumes: [`${configurationPath}:/etc/openclaw/openclaw.json:ro`],
+    });
+
+    assert.match(logs, /\[gateway\] ready/);
+    assert.match(logs, /agent model: codex\/gpt-4\.1/);
+    await assertDedicatedRuntimeAssets(containerName);
     assertNoPackagingFailure(logs);
   },
 );

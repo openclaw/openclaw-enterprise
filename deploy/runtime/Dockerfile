@@ -19,12 +19,15 @@ RUN npm init -y >/dev/null \
     "@openai/codex@${OPENAI_CODEX_VERSION}" \
   && npm cache clean --force
 
-RUN mkdir -p node_modules/openclaw/dist/extensions ./plugin-skills \
+RUN mkdir -p node_modules/openclaw/dist/extensions ./plugin-skills /etc/openclaw \
   && cp -R node_modules/@openclaw/codex node_modules/openclaw/dist/extensions/codex \
   && ln -s node_modules/openclaw/openclaw.mjs ./openclaw.mjs \
   && ln -s node_modules/openclaw/dist ./dist \
-  && ln -s node_modules/openclaw/skills ./skills \
+  && cp -R node_modules/openclaw/skills ./skills \
   && chmod -R a+rX /app \
+  && test -L /app/dist \
+  && test -d /app/skills \
+  && test ! -L /app/skills \
   && node /app/openclaw.mjs --version \
   && codex --version \
   && test -f /app/dist/extensions/codex/openclaw.plugin.json

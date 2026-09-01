@@ -1,6 +1,8 @@
 # Installation startup configuration mounted from the
 # occ-installation-startup Secret at key installation.yaml.
 # Replace example image digests, selectors, and StorageClass names before use.
+# Build deploy/runtime/Dockerfile once for both image slots. For local k3d,
+# docs/guides/deploy.md#build-images-for-local-kubernetes fills real digests.
 occ:
   cluster: production-west
 
@@ -21,8 +23,8 @@ drivers:
       authentication:
         mode: inCluster
       images:
-        gateway: registry.example.invalid/openclaw/gateway@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-        agent: registry.example.invalid/openclaw/codex-agent@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+        gateway: registry.example.invalid/openclaw-enterprise/runtime@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+        agent: registry.example.invalid/openclaw-enterprise/runtime@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
         requireImmutableDigest: true
       resources:
         gateway:
