@@ -28,13 +28,6 @@ Expected output includes:
 - the service-key file path, pointing at an owner-readable JSON file
 - a command you can copy to check that the API accepts your service key
 
-The default administrator is `admin@openclaw.local` with password
-`openclaw-development-password`. These credentials are for loopback development
-only. Set `OPENCLAW_DEV_EMAIL`, `OPENCLAW_DEV_PASSWORD`, `OPENCLAW_DEV_PORT`, or
-runtime image variables before first startup when you need a nondefault local
-stack. Reusing an existing database preserves its original accounts and
-passwords.
-
 ## Read the Installation with the bootstrap service key
 
 `dev-up` runs this check before it reports success. To run it again, copy the
@@ -78,42 +71,5 @@ For environment configuration, production installation, and optional Agent/TUI
 proof, continue to [Deploy OpenClaw Enterprise](deploy.md). For supported
 resource operations, see the [feature reference](../reference/README.md).
 
-## Sign in and read the Installation
-
-Use this optional human sign-in for key recovery, key issuance with human
-authority, or account-only APIs. The startup and TUI path above uses the
-bootstrap service key. After the controller is healthy, enter the original
-configured development credentials at the prompts below. Python JSON-encodes
-them and pipes them directly to curl; the password is hidden during entry. The
-session cookie stays in a unique private directory.
-
-```bash
-set -o pipefail
-umask 077
-export OCC_URL="http://$(docker compose port controller 3000)"
-OCC_SESSION_DIRECTORY="$(mktemp -d)"
-export OCC_SESSION_COOKIE_JAR="$OCC_SESSION_DIRECTORY/cookies"
-python3 -c 'import getpass, json, sys; print("Administrator email: ", end="", file=sys.stderr, flush=True); email=sys.stdin.readline().strip(); password=getpass.getpass("Administrator password: "); print(json.dumps({"email": email, "password": password}))' |
-  curl --fail-with-body --silent --show-error --cookie-jar "$OCC_SESSION_COOKIE_JAR" "$OCC_URL/api/auth/sign-in/email" -H 'Content-Type: application/json' --data-binary @- --output /dev/null
-curl --fail-with-body --silent --show-error --cookie "$OCC_SESSION_COOKIE_JAR" "$OCC_URL/installation"
-```
-
-Expect HTTP `200` and JSON containing the Installation's server-assigned `id`
-and name. Use `--cookie "$OCC_SESSION_COOKIE_JAR"` only for the protected
-requests that need this human session. If sign-in fails after a password change,
-the database still expects the original bootstrapped account password.
-
-### Sign out and stop
-
-```bash
-curl --fail-with-body --silent --show-error \
-  --cookie "$OCC_SESSION_COOKIE_JAR" --cookie-jar "$OCC_SESSION_COOKIE_JAR" \
-  --request POST "$OCC_URL/api/auth/sign-out" --output /dev/null
-rm -- "$OCC_SESSION_COOKIE_JAR"
-rmdir -- "$OCC_SESSION_DIRECTORY"
-docker compose down
-```
-
-Stopping Compose preserves the database, Configuration, and bootstrap-key
-volumes. For startup errors, see
+For startup errors, see
 [development verification](deploy.md#verify-development).

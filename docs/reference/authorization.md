@@ -223,7 +223,7 @@ failures without orphaned state. The current policy implementation is
 [the IAM package](../../packages/iam/src/index.ts).
 
 For a working authenticated request, see the
-[quickstart](../guides/quickstart.md#sign-in-and-read-the-installation).
+[quickstart](../guides/quickstart.md#read-the-installation-with-the-bootstrap-service-key).
 
 - [API reference](api.md)
 - [Namespaces](namespaces.md)
