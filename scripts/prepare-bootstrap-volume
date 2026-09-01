@@ -1,0 +1,260 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: scripts/prepare-bootstrap-volume --kubeconfig FILE --context NAME --namespace NAME --claim NAME --image IMAGE@sha256:DIGEST
+
+Prepare an existing fresh bootstrap-output PersistentVolumeClaim for the
+production initialization Job. The helper creates one temporary Pod, sets only
+the mounted root to UID/GID 1000 and mode 0700, deletes that Pod after verified
+success, and leaves a failed Pod for diagnosis.
+EOF
+}
+
+die() {
+  printf 'prepare-bootstrap-volume: %s\n' "$1" >&2
+  exit "${2:-1}"
+}
+
+quote_command() {
+  local quoted=()
+  local value
+  for value in "$@"; do
+    printf -v value '%q' "$value"
+    quoted+=("$value")
+  done
+  printf '%s' "${quoted[*]}"
+}
+
+is_dns_label() {
+  local value=$1
+  [[ "$value" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && ${#value} -le 63 ]]
+}
+
+is_dns_subdomain() {
+  local value=$1
+  local label
+  [[ ${#value} -le 253 ]] || return 1
+  [[ "$value" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$ ]] ||
+    return 1
+  IFS='.' read -r -a labels <<<"$value"
+  for label in "${labels[@]}"; do
+    is_dns_label "$label" || return 1
+  done
+}
+
+kubeconfig=
+context=
+namespace=
+claim=
+image=
+
+while (($#)); do
+  case "$1" in
+    --kubeconfig)
+      (($# >= 2)) || die "--kubeconfig requires a file path."
+      kubeconfig=$2
+      shift 2
+      ;;
+    --context)
+      (($# >= 2)) || die "--context requires a context name."
+      context=$2
+      shift 2
+      ;;
+    --namespace)
+      (($# >= 2)) || die "--namespace requires a Kubernetes namespace."
+      namespace=$2
+      shift 2
+      ;;
+    --claim)
+      (($# >= 2)) || die "--claim requires an existing PersistentVolumeClaim name."
+      claim=$2
+      shift 2
+      ;;
+    --image)
+      (($# >= 2)) || die "--image requires an immutable Node-capable image reference."
+      image=$2
+      shift 2
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage
+      die "unsupported argument $1."
+      ;;
+  esac
+done
+
+[[ -n "$kubeconfig" ]] || die "--kubeconfig is required."
+[[ -f "$kubeconfig" ]] || die "--kubeconfig must identify a readable file."
+[[ -n "$context" ]] || die "--context is required."
+[[ -n "$namespace" ]] || die "--namespace is required."
+[[ -n "$claim" ]] || die "--claim is required."
+[[ -n "$image" ]] || die "--image is required."
+is_dns_label "$namespace" ||
+  die "--namespace must be a DNS label."
+is_dns_subdomain "$claim" ||
+  die "--claim must be a DNS subdomain."
+[[ "$image" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[A-Fa-f0-9]{64}$ ]] ||
+  die "--image must be an approved immutable SHA-256 image reference."
+
+suffix=$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 10 || true)
+[[ -n "$suffix" ]] || suffix=$$
+pod="occ-bootstrap-volume-prep-${suffix}"
+
+kubectl_args=(
+  --kubeconfig "$kubeconfig"
+  --context "$context"
+  --namespace "$namespace"
+)
+diagnostic_describe=(kubectl "${kubectl_args[@]}" --request-timeout 10s describe pod "$pod")
+diagnostic_logs=(kubectl "${kubectl_args[@]}" --request-timeout 10s logs "$pod" --container prepare)
+
+print_failure_context() {
+  local reason=$1
+  printf 'prepare-bootstrap-volume: %s\n' "$reason" >&2
+  printf 'Preparation Pod retained for diagnosis: %s/%s\n' "$namespace" "$pod" >&2
+  printf 'Inspect Pod: %s\n' "$(quote_command "${diagnostic_describe[@]}")" >&2
+  printf 'Inspect logs: %s\n' "$(quote_command "${diagnostic_logs[@]}")" >&2
+}
+
+kubectl "${kubectl_args[@]}" --request-timeout 10s get persistentvolumeclaim "$claim" --output name >/dev/null
+kubectl "${kubectl_args[@]}" --request-timeout 10s create --filename - <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${pod}
+  namespace: ${namespace}
+  labels:
+    app.kubernetes.io/name: openclaw-enterprise
+    app.kubernetes.io/component: bootstrap-volume-preparation
+  annotations:
+    openclaw.dev/bootstrap-claim: "${claim}"
+spec:
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  restartPolicy: Never
+  securityContext:
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: prepare
+      image: ${image}
+      command: ["node"]
+      args:
+        - -e
+        - |
+          const fs = require("node:fs");
+          const root = process.argv[1];
+          const fail = (message) => {
+            process.stderr.write(JSON.stringify({ event: "bootstrap-volume.rejected", error: message }) + "\n");
+            process.exit(1);
+          };
+          const rootStat = fs.lstatSync(root);
+          if (rootStat.isSymbolicLink()) fail("mounted root is a symbolic link");
+          if (!rootStat.isDirectory()) fail("mounted root is not a directory");
+          for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+            if (entry.name !== "lost+found") fail("mounted root is not fresh");
+            if (!entry.isDirectory()) fail("lost+found is not a directory");
+          }
+          fs.chownSync(root, 1000, 1000);
+          fs.chmodSync(root, 0o700);
+          const prepared = fs.statSync(root);
+          const mode = prepared.mode & 0o777;
+          if (prepared.uid !== 1000 || prepared.gid !== 1000 || mode !== 0o700) {
+            fail("mounted root ownership or mode did not match UID/GID 1000 mode 0700");
+          }
+          process.stdout.write(JSON.stringify({
+            event: "bootstrap-volume.prepared",
+            uid: prepared.uid,
+            gid: prepared.gid,
+            mode: "0700"
+          }) + "\n");
+        - /bootstrap
+      volumeMounts:
+        - name: bootstrap-output
+          mountPath: /bootstrap
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+          add: ["CHOWN", "FOWNER"]
+  volumes:
+    - name: bootstrap-output
+      persistentVolumeClaim:
+        claimName: "${claim}"
+EOF
+
+deadline=$((SECONDS + 120))
+phase=
+last_status_error=
+while ((SECONDS < deadline)); do
+  remaining=$((deadline - SECONDS))
+  ((remaining > 0)) || break
+  request_seconds=$((remaining < 10 ? remaining : 10))
+  status_output=$(kubectl "${kubectl_args[@]}" --request-timeout "${request_seconds}s" get pod "$pod" --output jsonpath='{.status.phase}' 2>&1) || {
+    last_status_error=$status_output
+    phase=
+    sleep 2
+    continue
+  }
+  phase=$status_output
+  case "$phase" in
+    Succeeded)
+      break
+      ;;
+    Failed)
+      print_failure_context "preparation Pod failed."
+      exit 1
+      ;;
+  esac
+  sleep 2
+done
+
+if [[ "$phase" != "Succeeded" ]]; then
+  print_failure_context "preparation Pod did not succeed within 120 seconds."
+  if [[ -n "$last_status_error" ]]; then
+    printf 'Last status error: %s\n' "$last_status_error" >&2
+  fi
+  exit 1
+fi
+
+if ! result=$(kubectl "${kubectl_args[@]}" --request-timeout 10s logs "$pod" --container prepare); then
+  print_failure_context "preparation Pod logs were unavailable."
+  exit 1
+fi
+if ! PREPARE_BOOTSTRAP_VOLUME_RESULT=$result python3 <<'EOF'
+import json
+import os
+import sys
+
+try:
+    record = json.loads(os.environ.get("PREPARE_BOOTSTRAP_VOLUME_RESULT", ""))
+except json.JSONDecodeError:
+    sys.stderr.write("prepare-bootstrap-volume: preparation Pod did not report exactly one JSON success record.\n")
+    sys.exit(1)
+
+if (
+    not isinstance(record, dict)
+    or record.get("event") != "bootstrap-volume.prepared"
+    or record.get("uid") != 1000
+    or record.get("gid") != 1000
+    or record.get("mode") != "0700"
+    or set(record.keys()) != {"event", "uid", "gid", "mode"}
+):
+    sys.stderr.write("prepare-bootstrap-volume: preparation Pod did not report the expected UID/GID 1000 mode 0700 success record.\n")
+    sys.exit(1)
+EOF
+then
+  print_failure_context "preparation Pod reported an unverifiable result."
+  exit 1
+fi
+
+kubectl "${kubectl_args[@]}" --request-timeout 10s delete pod "$pod" --wait=false
+printf 'Prepared bootstrap volume claim %s/%s with UID/GID 1000 mode 0700.\n' "$namespace" "$claim"

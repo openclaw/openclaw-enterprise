@@ -1,272 +1,176 @@
 ---
 created: 2026-08-25
 updated: 2026-09-01
-last_updated_session: codex/01a05d6b-e21d-7fc0-b1bd-b5cb15b365c6
+last_updated_session: codex/01a05e87-6c64-7960-b9c2-f444d4a3d737
 ---
 
 # Production Startup Flow
 
 ## Overview
 
-Start the production OpenClaw Control Center (OCC) through its reviewed
-Kubernetes Helm chart. Operators first supply approved images, trusted Driver
-configuration, separate database credentials, a Better Auth signing secret,
-and protected storage for the first password and service key. Helm then runs the
-Installation initialization Job and starts separate internal-only API and
-controller-worker Deployments. An optional ChatGPT ServiceAccount Driver keeps
-its provider-admin credential and provider client in the API only. This flow
-ends when both Deployments become ready and an authorized client can establish
-a controller session.
+Production startup begins after an operator supplies approved images,
+PostgreSQL credentials, authentication material, trusted Installation startup
+YAML, network policy inputs, and protected bootstrap storage. The supported path
+prepares a fresh bootstrap PVC, installs the Helm chart, waits for the private
+API and worker, then proves authenticated `/installation` access with the
+retrieved bootstrap service key. This flow ends at control-plane access; tenant
+Agent deployment and model-backed TUI proof are later flows.
 
-The [deployment guide](../guides/deploy.md) owns the prerequisites, protected
-input preparation, and complete Helm commands. This document traces what the
-chart and controller processes execute after those inputs are supplied.
+For the operator commands, use the [deployment guide](../guides/deploy.md). The
+chart owns migration/bootstrap ordering and controller readiness. It does not
+provision cloud infrastructure, publish images, create TLS, retrieve keys, or
+prepare application Secrets automatically.
 
 ## Entry Points
 
-- Trigger: Run `helm upgrade --install oce deploy/helm/openclaw-enterprise`
-  against an explicitly approved Kubernetes cluster.
-- Source: `deploy/helm/openclaw-enterprise/templates/jobs.yaml:8`,
-  `apps/controller/src/server.mjs:start`, and
-  `apps/controller/src/worker.ts:ControllerWorker.start`.
-- Assumptions: An enforcing Kubernetes cluster, external PostgreSQL, approved
-  digest-pinned images, operator-managed startup/database/authentication
-  Secrets, an existing protected bootstrap-output PersistentVolumeClaim, and
-  exact approved network destinations and client selectors.
+- Trigger: Run `scripts/prepare-bootstrap-volume`, then
+  `helm upgrade --install oce deploy/helm/openclaw-enterprise`.
+- Source: `scripts/prepare-bootstrap-volume:53`,
+  `deploy/helm/openclaw-enterprise/templates/jobs.yaml:8`, and
+  `apps/controller/src/composition/production.ts:28`.
+- Assumptions: Explicit kubeconfig/context, enforcing NetworkPolicies, external
+  PostgreSQL, approved immutable images, protected operator files, fresh
+  bootstrap PVC, exact API/client selectors, and an approved private OCC URL.
 
 ## Flow
 
 ```mermaid
 graph TD
-    subgraph Operator["Operator-owned production inputs"]
-        A["Provide approved images, startup YAML, and protected Secrets"]
-        B["Provide an existing protected bootstrap-output volume"]
+    subgraph Operator["Operator-owned preparation"]
+        A["Edit native values, Installation YAML, and bootstrap PVC manifest"]
+        B["Create system namespace and file-backed Secrets"]
+        C["Create fresh bootstrap PVC"]
+        D["prepare-bootstrap-volume verifies empty output and root permissions"]
     end
-
-    subgraph Initialization["Helm initialization Job"]
-        C["Run initialization with the isolated database migrator role"]
-        D["Prepare human and service administrators"]
-        E["Write private password/key files; commit Installation and IAM"]
+    subgraph Helm["Helm-owned startup"]
+        D --> E["Render chart with native values"]
+        E --> F["Run initialization Job with migrator and application roles"]
+        F --> G["Bootstrap administrators and write protected key output"]
+        G --> H["Start private API Deployment"]
+        G --> I["Start independent worker Deployment"]
     end
-
-    subgraph API["Private OCC API Deployment"]
-        F["Validate production settings and selected Drivers"]
-        G["Load persisted Installation, IAM policy, and Better Auth"]
-        H["Serve private API traffic and database-backed readiness"]
+    subgraph Proof["Operator-owned authenticated proof"]
+        H --> J["Retrieve service-key response from protected storage"]
+        I --> J
+        J --> K["scripts/occ-api GET /installation from approved client"]
     end
-
-    subgraph Worker["Independent controller-worker Deployment"]
-        I["Load the same Installation and selected Drivers"]
-        J["Validate IAM and run required Compute preflight"]
-        K["Poll durable work and refresh worker readiness"]
-    end
-
-    A --> C
-    B --> D
-    C --> D
-    D --> E
-    E --> F
-    E --> I
-    F --> G --> H
-    I --> J --> K
 ```
 
 ## Execution Trace
 
-### 1. Helm renders the reviewed production boundary
+### 1. Prepare native production inputs
 
-`deploy/helm/openclaw-enterprise/values.yaml:1`,
-`deploy/helm/openclaw-enterprise/templates/deployments.yaml:1`
+`deploy/helm/openclaw-enterprise/values.yaml:1`
 
-The [canonical Helm chart](../../deploy/helm/openclaw-enterprise) consumes
-operator-supplied immutable images, trusted Installation YAML, separate
-application/migrator database credentials, authentication settings, and an
-existing protected bootstrap-output volume. Exact API-client selectors
-and database/Kubernetes API destinations become NetworkPolicy rules.
+The operator copies and edits the production example values, Installation YAML,
+and bootstrap PVC manifest outside the checkout. Helm values select the
+controller image, API endpoint, Secret names, bootstrap claim, API-client
+selectors, and egress destinations. The Installation YAML selects IAM,
+Configuration, Compute, optional Provider, gateway/Agent images, projected
+workload identity, and runtime networking/storage.
 
-The Installation YAML selects reviewed IAM, Compute, and Configuration
-Drivers. Optional `drivers.sandbox` selects the Sandbox Driver loaded by the
-shared composition. An optional `provider` array entry with `type: chatgpt`
-and its matching `drivers.service_account` selection enables the API-owned
-Provider client and its required member Driver. The
-ChatGPT provider-admin Secret and provider egress must be separately supplied
-when selected; the worker receives neither.
+The operator creates file-backed Kubernetes Secrets for Installation startup,
+database URLs, Better Auth signing material, and optional ChatGPT Provider
+administrator credentials. These are prepared inputs, not recurring
+synchronization targets. The chart does not infer gateway/Agent images from Helm
+values or rewrite Driver configuration.
 
-The bundled Kubernetes Compute Driver also consumes approved runtime images,
-projected workload identity, and exact runtime Secret references. These inputs
-are validated before either controller process becomes ready. The production
-API remains behind an internal `ClusterIP` Service and a default-deny
-NetworkPolicy; the chart does not create a public entrypoint.
+### 2. Prepare the fresh bootstrap volume
 
-### 2. Run isolated initialization and bootstrap both administrators
+`scripts/prepare-bootstrap-volume:124`
+
+Before the first install, the operator creates the bootstrap PVC named by
+`bootstrap.password.claimName` and runs the helper with explicit kubeconfig,
+context, namespace, claim, and approved Node-capable image. The helper launches a
+bounded preparation Pod, verifies the mounted root is fresh except for
+filesystem-owned `lost+found`, sets UID/GID `1000` with mode `0700`, and
+refuses to continue on any other entry.
+
+If cluster policy forbids the helper Pod, storage administration owns the same
+state transition through an approved storage workflow. A preprepared claim goes
+directly to Helm. The helper does not create the PVC, repair a used claim,
+retrieve generated credentials, or change controller configuration.
+
+### 3. Run Helm initialization
 
 `deploy/helm/openclaw-enterprise/templates/jobs.yaml:8`
 
-Helm first runs its `pre-install,pre-upgrade` initialization Job. Its init
-container receives only the dedicated database-migrator credential; the
-following bootstrap container receives the lower-privilege application
-credential, Better Auth configuration, first administrator email, singleton
-Installation name, and protected password/service-key output paths.
+`helm upgrade --install --wait --timeout 5m` renders the chart with native
+values. The initialization hook first runs migrations with the dedicated
+migrator credential, then runs bootstrap with the lower-privilege application
+credential, Better Auth settings, first administrator email, Installation name,
+and protected output paths.
 
-[`scripts/bootstrap-installation.mjs`](../../scripts/bootstrap-installation.mjs)
-runs with `NODE_ENV=production`, using the same initializer as development. It
-creates the human Better Auth account and native IAM seed with a non-Agent
-service administrator bound to the same Role. It issues the initial service key
-through Better Auth, writes and syncs both private files on the existing PVC,
-then commits the Installation/IAM/audit transaction. Better Auth persistence is
-independent of that transaction. An existing output file, unsafe directory,
-inconsistent account, or incorrect IAM identity fails closed.
+`scripts/bootstrap-installation.mjs` creates or verifies the singleton
+Installation, human administrator, service administrator, IAM seed, audit
+evidence, and initial service key. It writes password and service-key files only
+from the bootstrap container to the protected PVC. Existing output, unsafe
+storage permissions, inconsistent accounts, or mismatched IAM identity fail the
+Job; Helm failure does not imply the database hook was rolled back.
 
-`bootstrap.serviceKey.fileName` selects the key basename beside the password;
-only this bootstrap container mounts their PVC. The Job uses
-`fsGroupChangePolicy: OnRootMismatch` so later mounts preserve existing `0600`
-files instead of recursively adding group permissions. `backoffLimit: 0` prevents
-automatic Job retries. Any initializer error preserves created accounts, keys,
-and files, emits `installation.bootstrap-failed`, and exits unsuccessfully.
-Follow the [bootstrap flow](local-password-authentication.md) for manual repair
-and the credential boundaries. Neither secret appears in logs,
-bootstrap responses, audit, or chart-created Kubernetes Secrets.
+### 4. Start private API and worker Deployments
 
-Repeated initialization accepts the existing Installation only when the exact
-configured administrator account and IAM Principal still match, without issuing
-keys or changing output. The API and worker are not production-ready until
-initialization succeeds.
+`apps/controller/src/server.mjs:138`, `apps/controller/src/worker.ts:312`
 
-### 3. Launch separate production API and worker Deployments
+After successful initialization, Kubernetes starts separate API and worker
+Deployments. The API validates production listener settings, Better Auth,
+database access, trusted Installation YAML, selected Drivers, Provider
+membership, and Kubernetes Compute preflight before readiness. It serves private
+controller routes, `/healthz`, and database-backed `/readyz` behind the
+operator-managed endpoint.
 
-`deploy/helm/openclaw-enterprise/templates/deployments.yaml:1`
+The worker independently validates production settings, opens the same
+application-role database, loads the selected Driver bundle, validates IAM, runs
+Compute preflight, emits `worker.started`, and polls durable Namespace and
+AgentRevision work. Worker readiness depends on fresh queue-health observations.
+Neither process mounts the bootstrap PVC.
 
-The chart creates `openclaw-enterprise-api` and
-`openclaw-enterprise-worker` from the same approved immutable controller image.
-Both receive `NODE_ENV=production`, the same application-role
-`OCC_DATABASE_URL`, and the same absolute `OCC_CONFIG_PATH` pointing to the
-mounted trusted Installation YAML.
+### 5. Retrieve the key and prove authenticated access
 
-Only the API receives `OCC_HOST` from its exact Pod IP, `OCC_PORT`, the mounted
-`OCC_AUTH_SECRET`, and `OCC_AUTH_BASE_URL`. When the optional ChatGPT
-ServiceAccount Driver is selected, only the API also mounts the dedicated
-provider-admin Secret and receives restricted provider egress. The worker never
-receives that Secret or an initialized provider client.
+`scripts/occ-api:34`
 
-Only the worker receives its bounded readiness-marker path and queue timing
-settings. Each Deployment uses its own Kubernetes ServiceAccount and constructs
-separate process-local IAM, Compute, Configuration, and optional Sandbox
-Driver instances representing the same selected capability identities.
+After Helm readiness, the operator retrieves
+`initial-admin-service-key.json` from protected bootstrap storage through an
+approved reader path and stores it in an owner-readable file. A completed Job is
+not an exec endpoint, and the API and worker cannot retrieve this file for the
+operator.
 
-The containers execute `apps/controller/src/server.mjs` and
-`apps/controller/src/worker.mjs` independently. Running the API never starts a
-worker. The Helm chart injects each process's distinct inputs; direct-process
-setup belongs in the [deployment guide](../guides/deploy.md).
-
-### 4. Compose the private API from persisted production state
-
-`apps/controller/src/composition/production.ts:composeProduction`
-
-The [API entrypoint](../../apps/controller/src/server.mjs) rejects missing
-production settings, wildcard/loopback listener addresses, invalid PostgreSQL
-URLs, and missing Better Auth configuration. It loads the trusted Installation
-YAML, validates the exact selected Driver configuration, and enters
-[`composeProduction`](../../apps/controller/src/composition/production.ts).
-
-Production composition opens its own application-role PostgreSQL pool and
-requires an already bootstrapped singleton Installation. It initializes Better
-Auth with the persisted Installation, reloads native IAM state, requires a
-resolvable existing Principal, constructs the selected IAM Driver, and validates
-the selected Compute and Configuration Drivers. The bundled Kubernetes Compute
-Driver must complete its cluster-access preflight before the API can serve.
-
-When trusted Installation configuration selects the ChatGPT ServiceAccount
-Driver, the API additionally loads its exact mounted administrator credential,
-constructs `Provider<ChatGPTClient>`, injects it into the bundled Driver, and
-registers the selected service-account capability. A missing credential,
-mismatched Driver selection, or Compute Driver without exact credential-storage
-support fails startup. Saved Provider references are checked at use; stale
-records do not prevent startup or authorized repair through the API. The
-worker neither constructs this provider client nor receives provider-admin
-authority.
-
-The resulting Fastify application exposes the internal controller routes,
-`/healthz`, and database-backed `/readyz`. Better Auth sessions authenticate
-callers; the selected IAM Driver separately authorizes each exact resource
-operation. API readiness proves controller/database availability, not tenant
-gateway execution.
-
-### 5. Start independent durable reconciliation and declare readiness
-
-`apps/controller/src/worker.ts:ControllerWorker.start`
-
-The [worker entrypoint](../../apps/controller/src/worker.mjs) independently
-validates production mode, the shared application-role database URL, trusted
-Installation YAML, and queue timing settings. It opens its own database pool,
-constructs the selected Driver bundle, and creates `ControllerWorker`.
-
-`ControllerWorker.start()` reloads the existing singleton Installation,
-validates persisted IAM policy, attaches lifecycle ownership to its selected
-Drivers, including selected Configuration, Sandbox, and IAM lifecycle hooks,
-and runs the required bundled Compute preflight. The Sandbox Driver is supplied
-to Kubernetes Compute by shared startup composition; the worker still dispatches
-infrastructure work through Compute. It then emits
-`worker.started` and begins polling durable Namespace and AgentRevision work.
-Successful queue-health observations emit `worker.health` and refresh the
-private readiness marker used by the Deployment's exec-based probe.
-
-The API liveness probe calls `/healthz`, and its readiness probe calls
-`/readyz`; the worker has no HTTP listener. Agent-owned gateways, workload
-Pods, and model turns belong to later tenant deployment flows and do not run
-merely because the control plane starts. The
-[controller worker flow](controller-worker.md) continues from the durable queue
-through reauthorization, infrastructure effects, and result persistence.
+From an approved client environment, `scripts/occ-api GET /installation` reads
+the key file, sends `data.key` as `x-api-key`, and validates the response. The
+production startup proof succeeds only when HTTP `200` returns an Installation
+whose `data.id` matches the key response's `meta.installationId`. Agent runtime,
+gateway WebSocket authentication, and model calls remain unproven until the
+tenant deployment and TUI procedures run.
 
 ## Debugging and Verification
 
-- Wait for both controller Deployments:
-
-  ```bash
-  kubectl -n openclaw-system rollout status deployment/openclaw-enterprise-api
-  kubectl -n openclaw-system rollout status deployment/openclaw-enterprise-worker
-  kubectl -n openclaw-system get deployments,services,jobs,networkpolicies
-  ```
-
-- Expect one completed `oce-initialization` Job, one private controller
-  Service, and separate ready API and worker Deployments. The API emits
-  `listening`; the worker emits `worker.started` followed by `worker.health`.
-- Inspect initialization and process failures without printing credentials:
-
-  ```bash
-  kubectl -n openclaw-system logs job/oce-initialization -c bootstrap
-  kubectl -n openclaw-system logs deployment/openclaw-enterprise-api
-  kubectl -n openclaw-system logs deployment/openclaw-enterprise-worker
-  ```
-
-- Sign in from an approved internal client with the generated administrator
-  password and retain the Better Auth session cookie. Missing or invalid
-  sessions return `401`; authenticated callers without exact IAM permissions
-  return `403`.
-- A failing initialization Job commonly indicates missing or unsafe protected
-  storage, existing password/key output, incorrect database role, invalid
-  authentication origin, or administrator/IAM mismatch. API or worker startup
-  can also reject missing trusted Driver configuration or unavailable
-  Kubernetes access.
-- Focused packaging and startup checks are
-  `node --test tests/integration/production-kubernetes-packaging.test.mjs` and
-  `node --test tests/integration/configuration-startup.test.mjs`. These checks
-  do not establish a live Helm installation, enforced NetworkPolicies, tenant
-  workload execution, or a real model turn.
+- `scripts/prepare-bootstrap-volume` should exit `0` only for a fresh claim with
+  no bootstrap output files and UID/GID `1000`, mode `0700` root state.
+- `kubectl -n openclaw-system wait --for=condition=complete job/oce-initialization`
+  should succeed before API and worker rollout checks.
+- The API should emit `listening`; the worker should emit `worker.started`
+  followed by `worker.health`.
+- `kubectl -n openclaw-system logs job/oce-initialization -c bootstrap` is the
+  first check for unsafe output storage, existing output files, database-role
+  failures, auth origin errors, and administrator/IAM mismatch.
+- `scripts/occ-api GET /installation` must return HTTP `200` with
+  `data.id == meta.installationId` from the retrieved key file.
+- Changing an external startup Secret alone does not restart the API or worker;
+  run an explicit rollout and repeat readiness plus authenticated proof.
+- Packaging checks such as
+  `node --test tests/integration/production-kubernetes-packaging.test.mjs`
+  render chart behavior but do not prove a live Helm install, protected storage
+  retrieval, tenant runtime, or model turn.
 
 ## Related docs
 
+- [Deployment guide: production](../guides/deploy.md#production)
+- [Settings reference](../reference/settings.md)
+- [Kubernetes Compute Driver](../reference/drivers/kubernetes-compute.md)
 - [Provider and Driver lifecycle](provider-driver-lifecycle.md)
-
-- [Deployment guide: development and production](../guides/deploy.md)
 - [Controller worker execution flow](controller-worker.md)
-- [Controller and Installation configuration](../reference/settings.md)
-- [Controller worker operation](../reference/controller.md)
-- [Kubernetes security controls](../reference/security.md)
-- [Service accounts and ChatGPT Provider](../reference/service-accounts.md)
-- [Service Account Driver credential delivery](service-account-driver-credential-delivery.md)
-- [Shared platform startup flow](platform-startup.md)
-- [Development startup flow](development-startup.md)
-- [Harness execution topology](harness-execution-topology.md)
+- [Production TUI flow](production-tui.md)
+- [Local password authentication flow](local-password-authentication.md)
 - [Authoritative platform design](../design.md)
 
 ## Manual Notes
@@ -275,16 +179,11 @@ through reauthorization, infrastructure effects, and result persistence.
 
 ## Changelog
 
+- 2026-09-01 12:58: Trace production bootstrap-volume preparation, Helm startup, and authenticated Installation proof. (codex/01a05e87-6c64-7960-b9c2-f444d4a3d737 - bdb846c38d5dae6085a8841f720c93068ba8ad15)
 - 2026-09-01 10:19: Validate Provider configuration at startup and exact saved ownership at use, preserving API repair access. (01a05d6b-e21d-7fc0-b1bd-b5cb15b365c6 - 1c7eae4d11e6c474cc7f1bbbb05d2c2e7052a158)
-
 - 2026-09-01 08:47: Trace Provider membership, API-only client injection, and persisted ownership checks. (01a05d97-f2b0-71d0-bfc3-01ee7d6d58f9 - b079c4b755ef336a9c65bb4eb737e3aedbfdaa7d)
-
 - 2026-08-31 22:29: Remove automatic bootstrap recovery; preserve artifacts after any error and require manual repair. (01a05a3d-526f-7553-8cd8-070bd1847acb - 94a5440898bf331987148d7733f0075506af64a6)
-
 - 2026-08-31 20:33: Trace the shared installation initializer, startup ordering, and initializer-owned credential delivery. (01a05a3d-526f-7553-8cd8-070bd1847acb - b6f213cbcee11ba3dd69886c936c7e5abe233eb3)
-
 - 2026-08-31 17:43: Document fresh human/service administrator bootstrap, private key delivery, and operator recovery. (codex/01a05a69-3fbe-7441-9e6d-20394758cf94 - 0797098646028ac00cb26cd4afcbc9b2cf8bcb24)
-
 - 2026-08-28 17:54: Separated Helm execution from the deployment walkthrough and included optional Sandbox Driver startup ownership. (01a036f4-cf1d-7cc1-bbc1-000879038ac8 - 4270aa29b7015562049f46c6027962fd85b584a9)
-- 2026-08-26 23:13: Documented optional ChatGPT ServiceAccount integration, dedicated provider-admin credentials, API-only initialization, and restricted provider egress. (01a036f4-cf1d-7cc1-bbc1-000879038ac8 - 02638f10ed52b413d41378ae0f6b45ca19b8b149)
 - 2026-08-25 03:43: Added the production Helm initialization, protected administrator bootstrap, private OCC API, independent worker, and readiness startup flow. (01a036f4-cf1d-7cc1-bbc1-000879038ac8 - 2e9769c751d7)

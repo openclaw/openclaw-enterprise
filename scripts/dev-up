@@ -1,0 +1,469 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+DEFAULT_RUNTIME_IMAGE="openclaw-enterprise-runtime:quickstart"
+BOOTSTRAP_SERVICE_KEY_SOURCE="bootstrap:/var/lib/openclaw/bootstrap/initial-admin-service-key.json"
+STARTUP_TIMEOUT_SECONDS=300
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$script_dir/.." && pwd)"
+cd "$repo_root"
+
+usage() {
+  echo "usage: scripts/dev-up [--key-output PATH] [-- COMPOSE_GLOBAL_OPTIONS...]" >&2
+}
+
+quote_command() {
+  local first=1
+  local arg
+  for arg in "$@"; do
+    if [ "$first" -eq 0 ]; then
+      printf ' '
+    fi
+    printf '%q' "$arg"
+    first=0
+  done
+}
+
+fail() {
+  local stage="$1"
+  local message="$2"
+  shift 2
+  echo "dev-up: ${stage} failed: ${message}" >&2
+  if [ "$#" -gt 0 ]; then
+    printf 'diagnostic: ' >&2
+    quote_command "$@" >&2
+    printf '\n' >&2
+  fi
+  exit 1
+}
+
+usage_error() {
+  local stage="$1"
+  local message="$2"
+  echo "dev-up: ${stage} failed: ${message}" >&2
+  usage
+  exit 2
+}
+
+key_output=""
+compose_args=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --key-output)
+      if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+        usage_error "arguments" "--key-output requires a path"
+      fi
+      key_output="$2"
+      shift 2
+      ;;
+    --)
+      shift
+      compose_args=("$@")
+      break
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage_error "arguments" "unknown option: $1"
+      ;;
+  esac
+done
+
+require_command() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    fail "prerequisite" "$1 is required on PATH"
+  fi
+}
+
+require_command docker
+require_command curl
+require_command python3
+
+temporary_directory="$(mktemp -d "${TMPDIR:-/tmp}/openclaw-dev-up.XXXXXXXXXX")"
+chmod 700 "$temporary_directory"
+cleanup() {
+  rm -rf -- "$temporary_directory"
+}
+trap cleanup EXIT
+
+validate_key_output() {
+  python3 - "$1" <<'PY'
+import os
+import pathlib
+import stat
+import sys
+
+path = pathlib.Path(sys.argv[1])
+if not path.is_absolute():
+    raise SystemExit("key output must be an absolute path")
+if path.exists() or path.is_symlink():
+    raise SystemExit("destination already exists")
+parent = path.parent
+try:
+    parent_stat = parent.stat()
+except FileNotFoundError:
+    raise SystemExit("parent directory does not exist")
+if not stat.S_ISDIR(parent_stat.st_mode):
+    raise SystemExit("parent path is not a directory")
+if parent_stat.st_uid != os.geteuid():
+    raise SystemExit("parent directory must be owned by the current user")
+if stat.S_IMODE(parent_stat.st_mode) & 0o077:
+    raise SystemExit("parent directory must be private to the current user")
+PY
+}
+
+if [ -z "$key_output" ]; then
+  key_directory="$(mktemp -d "${TMPDIR:-/tmp}/openclaw-dev-up-key.XXXXXXXXXX")"
+  chmod 700 "$key_directory"
+  key_output="$key_directory/initial-admin-service-key.json"
+else
+  if ! key_output_error="$(validate_key_output "$key_output" 2>&1)"; then
+    usage_error "key output" "$key_output_error"
+  fi
+fi
+
+if ! docker compose version >/dev/null 2>&1; then
+  fail "prerequisite" "Docker Compose is required" docker compose version
+fi
+
+compose() {
+  docker compose "${compose_args[@]}" "$@"
+}
+
+compose_config="$temporary_directory/compose-config.json"
+if ! compose config --format json >"$compose_config" 2>"$temporary_directory/compose-config.err"; then
+  fail "configuration" "docker compose config failed" docker compose "${compose_args[@]}" config --quiet
+fi
+
+compose_analysis="$temporary_directory/compose-analysis"
+compose_analysis_error="$temporary_directory/compose-analysis.err"
+if ! python3 - "$compose_config" >"$compose_analysis" 2>"$compose_analysis_error" <<'PY'
+import json
+import sys
+
+config = json.load(open(sys.argv[1], encoding="utf-8"))
+services = config.get("services")
+if not isinstance(services, dict):
+    raise SystemExit("Compose configuration does not define services.")
+
+
+def service(name):
+    value = services.get(name)
+    if not isinstance(value, dict):
+        raise SystemExit(f"Compose configuration does not define the {name} service.")
+    return value
+
+
+def environment(service_config):
+    raw = service_config.get("environment", {})
+    if isinstance(raw, dict):
+        return {str(key): "" if value is None else str(value) for key, value in raw.items()}
+    raise SystemExit("Compose JSON environment must be a resolved object.")
+
+
+def selected(value):
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def controller_url(controller):
+    controller_publications = []
+    for port in controller.get("ports", []):
+        if not isinstance(port, dict):
+            raise SystemExit("Compose JSON ports must be resolved objects.")
+        host = selected(port.get("host_ip"))
+        published = selected(port.get("published"))
+        target = selected(port.get("target"))
+        protocol = selected(port.get("protocol")) or "tcp"
+        if not published:
+            continue
+        if host not in ("127.0.0.1", "::1"):
+            raise SystemExit("Compose controller port must publish only on loopback.")
+        if target == "3000" and protocol == "tcp":
+            controller_publications.append((host, published))
+    if not controller_publications:
+        raise SystemExit("Compose controller service must publish container port 3000 on loopback.")
+    host, published = controller_publications[0]
+    if host == "::1":
+        return f"http://[::1]:{published}"
+    return f"http://127.0.0.1:{published}"
+
+
+def reject_public_database_ports(postgres):
+    for port in postgres.get("ports", []):
+        if not isinstance(port, dict):
+            raise SystemExit("Compose JSON ports must be resolved objects.")
+        published = selected(port.get("published"))
+        if not published:
+            continue
+        host = selected(port.get("host_ip"))
+        if host not in ("127.0.0.1", "::1"):
+            raise SystemExit("Compose PostgreSQL port must publish only on loopback.")
+
+
+worker_environment = environment(service("worker"))
+shared = selected(worker_environment.get("OCC_DOCKER_RUNTIME_IMAGE"))
+gateway = selected(worker_environment.get("OCC_DOCKER_GATEWAY_IMAGE")) or shared
+agent = selected(worker_environment.get("OCC_DOCKER_AGENT_IMAGE")) or shared
+
+if gateway or agent:
+    if not gateway:
+        raise SystemExit("Docker gateway image must be explicitly configured.")
+    if not agent:
+        raise SystemExit("Docker Codex Agent image must be explicitly configured.")
+    mode = "custom"
+    images = [gateway]
+    if agent != gateway:
+        images.append(agent)
+else:
+    mode = "default"
+    images = []
+
+reject_public_database_ports(service("postgres"))
+print(controller_url(service("controller")))
+print(mode)
+for image in images:
+    print(image)
+PY
+then
+  analysis_error="$(cat "$compose_analysis_error" 2>/dev/null || true)"
+  if [ -z "$analysis_error" ]; then
+    analysis_error="could not inspect Docker Compose services"
+  fi
+  fail "configuration" "$analysis_error" docker compose "${compose_args[@]}" config --quiet
+fi
+
+api_url="$(sed -n '1p' "$compose_analysis")"
+runtime_mode="$(sed -n '2p' "$compose_analysis")"
+runtime_images="$(sed -n '3,$p' "$compose_analysis")"
+
+if [ "$runtime_mode" = "default" ]; then
+  export OCC_DOCKER_RUNTIME_IMAGE="$DEFAULT_RUNTIME_IMAGE"
+  if ! docker image inspect "$DEFAULT_RUNTIME_IMAGE" >/dev/null 2>&1; then
+    if ! docker build -f deploy/runtime/Dockerfile --tag "$DEFAULT_RUNTIME_IMAGE" deploy/runtime; then
+      fail "runtime image" "could not build $DEFAULT_RUNTIME_IMAGE" docker build -f deploy/runtime/Dockerfile --tag "$DEFAULT_RUNTIME_IMAGE" deploy/runtime
+    fi
+  fi
+elif [ "$runtime_mode" = "custom" ]; then
+  while IFS= read -r image; do
+    if [ -z "$image" ]; then
+      continue
+    fi
+    if ! docker image inspect "$image" >/dev/null 2>&1; then
+      fail "runtime image" "selected image is not available locally: $image" docker image inspect "$image"
+    fi
+  done <<EOF
+$runtime_images
+EOF
+else
+  fail "configuration" "unknown runtime image selection"
+fi
+
+if ! compose config --quiet >"$temporary_directory/compose-validated" 2>"$temporary_directory/compose-validate.err"; then
+  fail "configuration" "docker compose config validation failed" docker compose "${compose_args[@]}" config --quiet
+fi
+
+if ! compose up --build -d; then
+  fail "startup" "docker compose up failed" docker compose "${compose_args[@]}" ps -a
+fi
+
+poll_services() {
+  local output="$temporary_directory/ps-all.json"
+  if ! compose ps --all --format json >"$output" 2>"$temporary_directory/ps-all.err"; then
+    return 1
+  fi
+  python3 - "$output" <<'PY'
+import json
+import sys
+
+raw = open(sys.argv[1], encoding="utf-8").read().strip()
+if not raw:
+    raise SystemExit("missing compose service status")
+payload = []
+for line in raw.splitlines():
+    entry = json.loads(line)
+    if not isinstance(entry, dict):
+        raise SystemExit("Compose service status records must be JSON objects.")
+    payload.append(entry)
+services = {}
+for entry in payload:
+    for field in ("Service", "State", "ExitCode", "Health"):
+        if field not in entry:
+            raise SystemExit(f"Compose service status is missing {field}.")
+    services[str(entry["Service"])] = entry
+
+
+def entry(name):
+    value = services.get(name)
+    if value is None:
+        print(f"fail\tstartup\tcould not inspect {name}\tps\t{name}")
+        raise SystemExit(0)
+    return value
+
+
+def state(value):
+    return str(value.get("State") or "").lower()
+
+
+def exit_code(value):
+    code = value.get("ExitCode")
+    return "" if code is None else str(code)
+
+
+for name in ("migrate", "bootstrap"):
+    current = entry(name)
+    current_state = state(current)
+    current_exit = exit_code(current)
+    if current_state == "exited" and current_exit == "0":
+        continue
+    if current_state in ("exited", "dead"):
+        print(f"fail\tstartup\t{name} exited with {current_exit or 'unknown'}\tps\t{name}")
+        raise SystemExit(0)
+    print(f"wait\tstartup\t{name} has not completed\tps\t{name}")
+    raise SystemExit(0)
+
+controller = entry("controller")
+controller_state = state(controller)
+if controller_state == "running" and str(controller.get("Health") or "").lower() == "healthy":
+    pass
+elif controller_state in ("exited", "dead"):
+    print(f"fail\tstartup\tcontroller exited with {exit_code(controller) or 'unknown'}\tlogs\tcontroller")
+    raise SystemExit(0)
+else:
+    print("wait\tstartup\tcontroller is not healthy\tlogs\tcontroller")
+    raise SystemExit(0)
+
+worker = entry("worker")
+worker_state = state(worker)
+if worker_state == "running":
+    print("probe\treadiness\tworker is running\tlogs\tworker")
+elif worker_state in ("exited", "dead"):
+    print(f"fail\tstartup\tworker exited with {exit_code(worker) or 'unknown'}\tlogs\tworker")
+else:
+    print("wait\tstartup\tworker is not running\tlogs\tworker")
+PY
+}
+
+deadline=$((SECONDS + STARTUP_TIMEOUT_SECONDS))
+startup_ready=0
+while [ "$SECONDS" -le "$deadline" ]; do
+  if ! service_report="$(poll_services)"; then
+    fail "startup" "could not inspect Compose services" docker compose "${compose_args[@]}" ps --all
+  fi
+  IFS=$'\t' read -r service_status service_stage service_message diagnostic_kind diagnostic_service <<<"$service_report"
+  if [ "$service_status" = "fail" ]; then
+    if [ "$diagnostic_kind" = "logs" ]; then
+      fail "$service_stage" "$service_message" docker compose "${compose_args[@]}" logs "$diagnostic_service"
+    fi
+    fail "$service_stage" "$service_message" docker compose "${compose_args[@]}" ps --all "$diagnostic_service"
+  fi
+  if [ "$service_status" = "probe" ]; then
+    if compose exec -T worker node scripts/production-healthcheck.mjs worker ready >/dev/null 2>"$temporary_directory/worker-readiness.err"; then
+      startup_ready=1
+      break
+    fi
+    if ! service_report="$(poll_services)"; then
+      fail "readiness" "worker readiness probe did not pass" docker compose "${compose_args[@]}" logs worker
+    fi
+    IFS=$'\t' read -r service_status service_stage service_message diagnostic_kind diagnostic_service <<<"$service_report"
+    if [ "$service_status" = "fail" ]; then
+      fail "readiness" "worker readiness probe did not pass" docker compose "${compose_args[@]}" logs worker
+    fi
+  fi
+  sleep 2
+done
+
+if [ "$startup_ready" -ne 1 ]; then
+  fail "readiness" "worker readiness probe did not pass within ${STARTUP_TIMEOUT_SECONDS}s" docker compose "${compose_args[@]}" logs worker
+fi
+
+if [ -e "$key_output" ] || [ -L "$key_output" ]; then
+  usage_error "key output" "destination already exists"
+fi
+key_copy_temp="$(mktemp "$(dirname "$key_output")/.dev-up-service-key.XXXXXXXXXX")"
+chmod 600 "$key_copy_temp"
+if ! compose cp "$BOOTSTRAP_SERVICE_KEY_SOURCE" "$key_copy_temp"; then
+  fail "key copy" "could not copy bootstrap service key from stopped bootstrap container" docker compose "${compose_args[@]}" ps --all bootstrap
+fi
+chmod 600 "$key_copy_temp"
+if ! python3 - "$key_copy_temp" "$key_output" <<'PY'
+import os
+import pathlib
+import shutil
+import sys
+
+source = pathlib.Path(sys.argv[1])
+destination = pathlib.Path(sys.argv[2])
+with source.open("rb") as reader:
+    descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "wb") as writer:
+        shutil.copyfileobj(reader, writer)
+PY
+then
+  fail "key output" "destination already exists; copied key remains at $key_copy_temp"
+fi
+rm -f -- "$key_copy_temp"
+
+if ! key_installation_id="$(
+  python3 - "$key_output" 2>"$temporary_directory/key-validation.err" <<'PY'
+import json
+import pathlib
+import sys
+
+payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+installation_id = payload.get("meta", {}).get("installationId")
+key = payload.get("data", {}).get("key")
+if not isinstance(installation_id, str) or not installation_id:
+    raise SystemExit("bootstrap service key file does not include meta.installationId")
+if not isinstance(key, str) or not key.strip():
+    raise SystemExit("bootstrap service key file does not include data.key")
+print(installation_id)
+PY
+)"; then
+  key_error="$(cat "$temporary_directory/key-validation.err" 2>/dev/null || true)"
+  fail "key copy" "${key_error:-copied bootstrap service key is invalid}" docker compose "${compose_args[@]}" ps --all bootstrap
+fi
+
+installation_response="$temporary_directory/installation-response.json"
+if ! OCC_URL="$api_url" OCC_SERVICE_KEY_FILE="$key_output" scripts/occ-api GET /installation >"$installation_response"; then
+  fail "authorization" "scripts/occ-api could not read /installation" scripts/occ-api GET /installation
+fi
+
+if ! installation_id="$(
+  python3 - "$installation_response" "$key_installation_id" 2>"$temporary_directory/installation-match.err" <<'PY'
+import json
+import pathlib
+import sys
+
+payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+expected = sys.argv[2]
+observed = payload.get("data", {}).get("id")
+if observed != expected:
+    raise SystemExit(f"Installation ID mismatch: key belongs to {expected}, API returned {observed}")
+print(observed)
+PY
+)"; then
+  match_error="$(cat "$temporary_directory/installation-match.err" 2>/dev/null || true)"
+  fail "authorization" "${match_error:-Installation ID mismatch}" scripts/occ-api GET /installation
+fi
+
+cleanup_command="$(quote_command docker compose "${compose_args[@]}" down)"
+next_check_command="$(quote_command "OCC_URL=$api_url" "OCC_SERVICE_KEY_FILE=$key_output" scripts/occ-api GET /installation)"
+
+cat <<EOF
+OpenClaw Enterprise development stack is ready.
+API URL: $api_url
+Installation ID: $installation_id
+Service key file: $key_output
+
+Next authenticated check:
+  $next_check_command
+
+Cleanup:
+  $cleanup_command
+EOF

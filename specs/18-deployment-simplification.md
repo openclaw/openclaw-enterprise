@@ -1,7 +1,9 @@
 # Feature Spec: Deployment Simplification
 
-**Date:** 2026-09-01  
-**Status:** Accepted for implementation  
+**Date:** 2026-09-01
+
+**Status:** Implemented
+
 **Owner:** OpenClaw Enterprise deployment tooling and documentation
 
 ## Problem and Decision
@@ -118,5 +120,6 @@ OCC_URL=https://occ.example.internal OCC_SERVICE_KEY_FILE=/secure/occ/session-ke
 
 ## Changelog
 
+- 2026-09-01 13:45: Implemented both helpers, native examples, and the 150-line default deployment path. Real Compose startup/rerun/customization, Helm initialization/authentication, used-volume refusal, and the 300-second timeout passed. Current operator behavior is owned by the [deployment guide](../docs/guides/deploy.md) and [settings reference](../docs/reference/settings.md); Agent/model and external HTTPS proof remain outside this control-plane change. (01a05e59-7e72-7370-88f6-dbf09eed8a4f - a222ae3182a3dfd7dd8cd56c34f20b0e9b5ed09e)
 - 2026-09-01 12:50: Accepted implementation direction and tightened optional procedures into compact runnable recipes after independent reviews. (01a05e59-7e72-7370-88f6-dbf09eed8a4f - a222ae3182a3dfd7dd8cd56c34f20b0e9b5ed09e)
 - 2026-09-01 12:07: Draft deployment simplification using existing Compose/Helm lifecycles, native customization, and two bounded Bash helpers. (01a05e59-7e72-7370-88f6-dbf09eed8a4f - a222ae3182a3dfd7dd8cd56c34f20b0e9b5ed09e)

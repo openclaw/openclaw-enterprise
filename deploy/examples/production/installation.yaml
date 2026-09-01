@@ -1,0 +1,75 @@
+# Installation startup configuration mounted from the
+# occ-installation-startup Secret at key installation.yaml.
+# Replace example image digests, selectors, and StorageClass names before use.
+occ:
+  cluster: production-west
+
+provider: []
+
+drivers:
+  configuration:
+    id: config-kubernetes
+    configuration:
+      authentication:
+        mode: inCluster
+  iam:
+    id: native-iam
+    configuration: {}
+  compute:
+    id: compute-kubernetes
+    configuration:
+      authentication:
+        mode: inCluster
+      images:
+        gateway: registry.example.invalid/openclaw/gateway@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+        agent: registry.example.invalid/openclaw/codex-agent@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+        requireImmutableDigest: true
+      resources:
+        gateway:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        agent:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        namespace:
+          quota:
+            pods: "10"
+          containerDefaults:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      network:
+        dns:
+          namespace: kube-system
+          podLabels:
+            k8s-app: kube-dns
+        gatewayPort: 8080
+        gatewayClients:
+          - namespace: openclaw-system
+            podLabels:
+              app.kubernetes.io/name: openclaw-enterprise
+              app.kubernetes.io/component: api
+      servicePrincipalCredentials:
+        mode: projectedServiceAccountToken
+        audience: openclaw-enterprise
+        expirationSeconds: 900
+      runtime:
+        gatewayStorageClassName: occ-gateway-rwo
+        transportSecretPrefix: openclaw-agent-transport
+        modelSecretPrefix: openclaw-agent-model
+  secret:
+    id: secret-kubernetes
+    configuration:
+      authentication:
+        mode: inCluster

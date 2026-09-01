@@ -1,0 +1,25 @@
+# Production Helm values for an OpenClaw Enterprise control plane.
+# Replace example domains, selectors, CIDRs, Secret names, and image digests
+# with reviewed site-specific values before installing.
+images:
+  controller: registry.example.invalid/openclaw-enterprise/controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+auth:
+  baseUrl: https://occ.example.internal
+
+bootstrap:
+  adminEmail: admin@example.invalid
+  password:
+    claimName: occ-bootstrap-admin-password
+
+database:
+  cidr: 10.45.0.12/32
+
+api:
+  clients:
+    - namespace: operator-tools
+      podLabels:
+        app: occ-operator
+
+cluster:
+  cidr: 10.43.0.1/32

@@ -1,0 +1,19 @@
+# Fresh protected output volume for the production initialization Job.
+# If policy denies the preparation Pod, have the storage administrator prepare
+# the mounted root with UID/GID 1000 and mode 0700 through the approved storage
+# workflow, then install Helm with the same claim name.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: occ-bootstrap-admin-password
+  namespace: openclaw-system
+  labels:
+    app.kubernetes.io/name: openclaw-enterprise
+    app.kubernetes.io/component: bootstrap-output
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: occ-protected-rwo
+  resources:
+    requests:
+      storage: 1Gi

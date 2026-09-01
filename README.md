@@ -6,36 +6,25 @@ The open control plane for deploying and managing Agents. Under active construct
 
 ## Getting Started
 
-Requires Docker Engine and Docker Compose. Build the runtime image and create
-`.env` if it does not already exist:
+Requires Docker Engine with Docker Compose, Bash, `curl`, and Python 3. Start
+the local stack and run the first authenticated Installation read with:
 
-```sh
-docker build -f deploy/runtime/Dockerfile \
-  --tag openclaw-enterprise-runtime:quickstart deploy/runtime
-umask 077
-test -f .env || cp .env.example .env
+```bash
+./scripts/dev-up
 ```
 
-Set `OCC_DOCKER_RUNTIME_IMAGE=openclaw-enterprise-runtime:quickstart` in `.env`,
-then start the stack:
-
-```sh
-docker compose up --build -d
-docker compose ps -a
-```
-
-Wait for PostgreSQL and the controller to be healthy, the migration to exit with
-code `0`, and the worker to be running. The API defaults to `http://127.0.0.1:3000`.
-Follow the [quickstart](docs/guides/quickstart.md#sign-in-and-read-the-installation)
-to sign in and make an authenticated request. To deploy an Agent and attach the
-OpenClaw terminal UI to a real model-backed runtime, continue to
+The helper uses Docker Compose, prepares the default quickstart runtime image
+when needed, and prints the loopback OCC URL, Installation ID, and private
+service-key file path. To deploy an Agent and attach the OpenClaw terminal UI
+to a real model-backed runtime, continue to
 [Development end-to-end TUI](docs/guides/deploy.md#development-end-to-end-tui).
 A model credential is required to run Agent model turns, but not to start the
 stack.
 
 The local worker has Docker host access through the Docker socket. Use the
+[quickstart](docs/guides/quickstart.md) for the first local API request, the
 [deployment guide](docs/guides/deploy.md) for host requirements and production
-Kubernetes setup; the [runtime image recipe](deploy/runtime/README.md) documents
+Kubernetes setup, and the [runtime image recipe](deploy/runtime/README.md) for
 image versions and build options.
 
 ## Develop

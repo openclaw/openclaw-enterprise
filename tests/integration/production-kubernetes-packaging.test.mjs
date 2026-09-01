@@ -1,11 +1,19 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 
 const execute = promisify(execFile);
 const repository = fileURLToPath(new URL("../../", import.meta.url));
+const controllerRequire = createRequire(
+  new URL("../../apps/controller/package.json", import.meta.url),
+);
+const { loadYaml } = controllerRequire("@kubernetes/client-node");
+const productionExamples = new URL("../../deploy/examples/production/", import.meta.url);
 const helm = process.env.OCC_HELM_BIN ?? "helm";
 const values = {
   "images.controller": `registry.example.invalid/controller@sha256:${"a".repeat(64)}`,
@@ -76,6 +84,54 @@ async function composeConfiguration() {
   );
   return JSON.parse(stdout);
 }
+
+test("production native examples satisfy the current Helm, Installation, and PVC schemas", async () => {
+  const installationPath = fileURLToPath(new URL("installation.yaml", productionExamples));
+  const drivers = await loadInstallationConfiguration({
+    mode: "production",
+    environment: { OCC_CONFIG_PATH: installationPath },
+  });
+  assert.equal(drivers.installation.occ.cluster, "production-west");
+  assert.deepEqual(drivers.installation.provider, []);
+  assert.equal(drivers.computeDriver.id, "compute-kubernetes");
+  assert.equal(drivers.configurationDriver.id, "config-kubernetes");
+  assert.equal(drivers.secretDriver.id, "secret-kubernetes");
+  assert.equal(Object.hasOwn(drivers.installation.drivers, "service_account"), false);
+
+  const bootstrapClaim = loadYaml(
+    await readFile(new URL("bootstrap-pvc.yaml", productionExamples), "utf8"),
+  );
+  assert.equal(bootstrapClaim.kind, "PersistentVolumeClaim");
+  assert.equal(bootstrapClaim.metadata.name, "occ-bootstrap-admin-password");
+  assert.equal(bootstrapClaim.metadata.namespace, "openclaw-system");
+  assert.deepEqual(bootstrapClaim.spec.accessModes, ["ReadWriteOnce"]);
+  assert.equal(bootstrapClaim.spec.resources.requests.storage, "1Gi");
+});
+
+test("production Helm values example renders the providerless default chart", tooling, async () => {
+  const { stdout } = await execute(
+    helm,
+    [
+      "template",
+      "oce",
+      "deploy/helm/openclaw-enterprise",
+      "--namespace",
+      "openclaw-system",
+      "--values",
+      "deploy/examples/production/values.yaml",
+    ],
+    { cwd: repository, maxBuffer: 2_000_000 },
+  );
+  const objects = await resources(stdout);
+  assert.ok(
+    objects.some(
+      ({ kind, metadata }) =>
+        kind === "Job" && metadata.labels?.["app.kubernetes.io/component"] === "initialization",
+    ),
+  );
+  assert.equal(objects.filter(({ kind }) => kind === "Secret").length, 0);
+  assert.ok(!objects.some(({ metadata }) => metadata.name.endsWith("-api-chatgpt-egress")));
+});
 
 test(
   "the production Helm chart renders private least-privilege runtime and ordered bootstrap",

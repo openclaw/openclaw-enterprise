@@ -66,11 +66,12 @@ SandboxDriver.
 
 ## Deployment and startup
 
-The [deployment guide](../guides/deploy.md) owns the development and production
-startup procedures. Use the [quickstart](../guides/quickstart.md) for a local
-Installation and an authenticated first request. The tables below define the
-supported settings; procedure examples do not override their defaults or
-security requirements.
+The [quickstart](../guides/quickstart.md) owns the default local
+`./scripts/dev-up` path and authenticated first request. The
+[deployment guide](../guides/deploy.md) owns production preparation, Helm
+installation, Agent/TUI recipes, and recovery procedures. The tables below
+define supported settings; helper scripts and examples do not override their
+defaults, precedence, or security requirements.
 
 ## Required development controller environment
 
@@ -91,7 +92,7 @@ worker require initialized state and do not read those credentials or output.
 | `OPENCLAW_DEV_PASSWORD`               | String from `12` through `128` characters.                                   | Initializer input selecting the development administrator sign-in password; defaults to `openclaw-development-password`.                                                                                          |
 | `OCC_DOCKER_GATEWAY_IMAGE`            | Image reference.                                                             | Existing OpenClaw gateway image with Node 24.15+, `/app/openclaw.mjs`, bundled skills, and the Codex plugin. Required unless `OCC_DOCKER_RUNTIME_IMAGE` supplies both runtimes.                                   |
 | `OCC_DOCKER_AGENT_IMAGE`              | Image reference.                                                             | Existing Codex Agent image with Node 24.15+, `codex` on `PATH`, and `codex app-server`. Required unless `OCC_DOCKER_RUNTIME_IMAGE` supplies both runtimes.                                                        |
-| `OCC_DOCKER_RUNTIME_IMAGE`            | Image reference.                                                             | Optional shared image used for both gateway and Agent runtimes when it contains both entrypoints; the quickstart recipe builds `openclaw-enterprise-runtime:quickstart`.                                          |
+| `OCC_DOCKER_RUNTIME_IMAGE`            | Image reference.                                                             | Optional shared image used for both gateway and Agent runtimes when it contains both entrypoints; `scripts/dev-up` selects `openclaw-enterprise-runtime:quickstart` for its default invocation.                   |
 | `OPENCLAW_DEV_PORT`                   | TCP port; defaults to `3000`.                                                | Publishes the controller on host `127.0.0.1:<port>`.                                                                                                                                                              |
 | `OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR` | CIDR block.                                                                  | Explicit Compose bridge range admitted as local development traffic while keeping forwarded headers rejected.                                                                                                     |
 | `OCC_DEVELOPMENT_CONFIGURATION_ROOT`  | Absolute path.                                                               | Development filesystem Configuration Driver root. Compose sets `/app/.development/configurations` from the controller-only `occ_configuration_data` volume.                                                       |
@@ -100,7 +101,8 @@ worker require initialized state and do not read those credentials or output.
 
 Generate `OCC_AUTH_SECRET` with `openssl rand -hex 32`; do not commit it, log
 it, or reuse another installation's secret. Local `.env` files are ignored by
-Git, but they still need to be loaded explicitly.
+Git. Docker Compose reads them through native Compose precedence; do not source
+`.env` as shell.
 
 Caller-supplied identity headers, forwarded requests, trusted proxies, bearer
 credentials, and non-loopback clients are rejected. The Compose bridge CIDR is
@@ -245,10 +247,14 @@ impose a Namespace-wide Agent limit.
 ## Local Compose and PostgreSQL configuration
 
 The root Compose development stack starts PostgreSQL 18.6, migrations,
-bootstrap, API, and worker. [`compose.postgres.yaml`](../../compose.postgres.yaml)
-remains the focused database-only helper for tests and manual PostgreSQL
-debugging. Both bind the PostgreSQL host port to loopback only. The following
-value controls Docker Compose port substitution:
+bootstrap, API, and worker. `scripts/dev-up` is the recommended wrapper for the
+full stack because it validates Compose configuration, waits for startup, copies
+the bootstrap service-key response to a private file, and proves authenticated
+access. Direct `docker compose` commands remain supported.
+[`compose.postgres.yaml`](../../compose.postgres.yaml) remains the focused
+database-only helper for tests and manual PostgreSQL debugging. Both bind the
+PostgreSQL host port to loopback only. The following value controls Docker
+Compose port substitution:
 
 | Variable            | Default | Behavior                                                                                              |
 | ------------------- | ------- | ----------------------------------------------------------------------------------------------------- |
@@ -307,7 +313,8 @@ and native development Configuration documents in the `occ_configuration_data`
 named volume. The configuration volume is mounted only into the controller at
 `/app/.development/configurations`; it is not mounted into the worker or
 runtime containers. Initial service-key output uses a third bootstrap-only
-volume, `occ_bootstrap_data`, at `/var/lib/openclaw/bootstrap`.
+volume, `occ_bootstrap_data`, at `/var/lib/openclaw/bootstrap`; the API and
+worker do not mount it.
 `docker compose down` retains all three volumes; `docker compose down --volumes`
 deletes them, including the initial credential delivery copy.
 
@@ -824,5 +831,6 @@ generated Markdown against the checked-in OpenAPI contract without loading
 controller dependencies, run `node scripts/generate-occ-api-reference.mjs --check`.
 
 See the [architecture guide](../ARCHITECTURE.md) for ownership and runtime
-boundaries and the [quickstart](../guides/quickstart.md) for an authenticated API
-request.
+boundaries, the [quickstart](../guides/quickstart.md) for the default local
+startup helper, and the [deployment guide](../guides/deploy.md) for production
+example files and Helm installation.

@@ -1,122 +1,92 @@
 # Quickstart
 
 Start OpenClaw Control Center (OCC) locally and read its Installation through
-an authenticated API request. This proves the controller is usable; it does
-not deploy an Agent or make a model call. To continue through an Agent
-deployment and an interactive model-backed terminal UI (TUI) session, keep the
-authenticated shell open and follow
-[Development end-to-end TUI](deploy.md#development-end-to-end-tui).
+an authenticated API request. This proves the controller is usable; it does not
+deploy an Agent or make a model call.
 
-You need Docker Engine with Docker Compose, `curl`, and Python 3. The quickstart builds a
-public local runtime image from Docker and npm; no host Node installation is
-needed. The [deployment guide](deploy.md#development-prerequisites) defines the
-runtime image contract and Docker socket access risk. Run commands from the
-repository root.
-
-## Build the runtime image
-
-Build the combined runtime image used by the worker for embedded OpenClaw and
-dedicated Codex Agent execution:
-
-```bash
-docker build -f deploy/runtime/Dockerfile \
-  --tag openclaw-enterprise-runtime:quickstart \
-  deploy/runtime
-```
-
-This recipe installs public `openclaw`, `@openclaw/codex`, and `@openai/codex`
-packages. It checks that `node /app/openclaw.mjs --version` and
-`codex --version` work before the image is complete. See
-[`deploy/runtime`](../../deploy/runtime/README.md) for pinned package inputs
-and production digest guidance.
+You need Docker Engine with Docker Compose, Bash, `curl`, and Python 3. Run
+commands from the repository root.
 
 ## Start the local stack
 
-Preserve an existing `.env`, or create one from the example:
+Run the helper:
 
 ```bash
-umask 077
-test -f .env || cp .env.example .env
+./scripts/dev-up
 ```
 
-Edit `.env` to select the local runtime image:
+On the default path, the helper creates a local quickstart runtime image only
+when it is needed, validates Docker Compose configuration without logging
+expanded credentials, starts PostgreSQL, migration, bootstrap, API, and worker
+services, then copies the bootstrap service-key response into a private local
+file.
 
-```dotenv
-OCC_DOCKER_RUNTIME_IMAGE=openclaw-enterprise-runtime:quickstart
-```
+Expected output includes:
+
+- the API URL, normally `http://127.0.0.1:3000`
+- the server-assigned Installation ID
+- the service-key file path, pointing at an owner-readable JSON file
+- a `Next authenticated check` command with `OCC_URL` and
+  `OCC_SERVICE_KEY_FILE` set for one request
 
 The default administrator is `admin@openclaw.local` with password
-`openclaw-development-password`. These defaults are for loopback development
-only. You can set `OPENCLAW_DEV_EMAIL` and `OPENCLAW_DEV_PASSWORD` before the
-first startup; reusing a database retains its existing account and password.
-A model credential is not needed for this quickstart.
-
-```bash
-docker compose up --build -d
-docker compose ps -a
-```
-
-Wait for PostgreSQL and the controller to be healthy and the worker to remain
-running. The `migrate` and `bootstrap` services should both exit with code `0`.
-On a new database, the initializer creates the singleton Installation and both
-administrators before the API starts. Its initial service API key stays in a
-private JSON file on a bootstrap-only volume. Do not call the bootstrap endpoint
-again. After
-startup succeeds, retrieve that key for the API check below.
+`openclaw-development-password`. These credentials are for loopback development
+only. Set `OPENCLAW_DEV_EMAIL`, `OPENCLAW_DEV_PASSWORD`, `OPENCLAW_DEV_PORT`, or
+runtime image variables before first startup when you need a nondefault local
+stack. Reusing an existing database preserves its original accounts and
+passwords.
 
 ## Read the Installation with the bootstrap service key
 
-Set the API URL from the running controller's loopback port:
+`dev-up` runs this check before it reports success. To repeat it, run the
+printed `Next authenticated check` command, or export both values and call the
+helper:
 
 ```bash
-export OCC_URL="http://$(docker compose port controller 3000)"
+export OCC_URL='http://127.0.0.1:3000'
+export OCC_SERVICE_KEY_FILE='/private/path/initial-admin-service-key.json'
+scripts/occ-api GET /installation
 ```
 
-Follow [Retrieve the bootstrap service key](deploy.md#retrieve-the-bootstrap-service-key)
-to copy the JSON from the bootstrap-only volume into a private local directory,
-then run `scripts/occ-api GET /installation` from the repository root. The helper
-reads
-`data.key` and sends it as `x-api-key` without exposing the key in process
+Expect HTTP `200` and JSON containing the Installation `id` and name. The
+Installation ID must match `meta.installationId` in the service-key response.
+The helper sends the key as `x-api-key` without exposing it in process
 arguments or terminal output.
 
-Expect HTTP `200` and JSON containing the Installation's server-assigned `id`
-and name. Keep this shell and protected file if you are continuing to
+Export `OCC_URL` and `OCC_SERVICE_KEY_FILE` if you are continuing to
 [Development end-to-end TUI](deploy.md#development-end-to-end-tui). The OCC key
 stays with the operator; it is separate from the Agent gateway token and model
 credential and must never enter a workload or TUI.
 
-If the key is expired or revoked, use [human administrator sign-in](#sign-in-and-read-the-installation)
-to issue a replacement. See [development verification](deploy.md#verify-development)
-for startup errors.
-
 ## Clean up and stop
 
-If you are stopping after this API check, remove the temporary local key copy
-and stop Compose:
+If you are stopping after this API check, remove only the temporary local key
+copy printed by `dev-up`, then stop Compose. If you exported the variables above:
 
 ```bash
 rm -- "$OCC_SERVICE_KEY_FILE"
-rmdir -- "$OCC_SERVICE_KEY_DIRECTORY"
+test -z "${OCC_SERVICE_KEY_DIRECTORY:-}" || rmdir -- "$OCC_SERVICE_KEY_DIRECTORY"
 unset OCC_SERVICE_KEY_FILE OCC_SERVICE_KEY_DIRECTORY
 docker compose down
 ```
 
-Local cleanup does not revoke the service key. Keep the original bootstrap
-output or imported key in protected storage; revoke or rotate it deliberately
-when retiring the credential. Stopping Compose preserves the database,
-Configuration, and bootstrap-key volumes. Do not add `--volumes` unless you
-intend to erase them. For environment configuration and production installation,
-continue to [Deploy OpenClaw Enterprise](deploy.md). For supported resource
-operations, see the [feature reference](../reference/README.md).
+Local cleanup does not revoke the service key. `docker compose down` preserves
+the database, Configuration, and bootstrap-key volumes. Use
+`docker compose down --volumes` only when intentionally deleting the local
+Installation.
+
+For environment configuration, production installation, and optional Agent/TUI
+proof, continue to [Deploy OpenClaw Enterprise](deploy.md). For supported
+resource operations, see the [feature reference](../reference/README.md).
 
 ## Sign in and read the Installation
 
 Use this optional human sign-in for key recovery, key issuance with human
-authority, or account-only APIs. The deployment and TUI path above uses the
+authority, or account-only APIs. The startup and TUI path above uses the
 bootstrap service key. After the controller is healthy, enter the original
 configured development credentials at the prompts below. Python JSON-encodes
-them and pipes them directly to curl; the password is hidden during entry.
-The session cookie stays in a unique, private temporary directory.
+them and pipes them directly to curl; the password is hidden during entry. The
+session cookie stays in a unique private directory.
 
 ```bash
 set -o pipefail
@@ -124,35 +94,17 @@ umask 077
 export OCC_URL="http://$(docker compose port controller 3000)"
 OCC_SESSION_DIRECTORY="$(mktemp -d)"
 export OCC_SESSION_COOKIE_JAR="$OCC_SESSION_DIRECTORY/cookies"
-
-python3 -c '
-import getpass
-import json
-import sys
-
-print("Administrator email: ", end="", file=sys.stderr, flush=True)
-email = sys.stdin.readline().strip()
-password = getpass.getpass("Administrator password: ")
-print(json.dumps({"email": email, "password": password}))
-' | curl --fail-with-body --silent --show-error \
-  --cookie-jar "$OCC_SESSION_COOKIE_JAR" \
-  "$OCC_URL/api/auth/sign-in/email" \
-  -H 'Content-Type: application/json' --data-binary @- --output /dev/null
-
-curl --fail-with-body --silent --show-error \
-  --cookie "$OCC_SESSION_COOKIE_JAR" "$OCC_URL/installation"
+python3 -c 'import getpass, json, sys; print("Administrator email: ", end="", file=sys.stderr, flush=True); email=sys.stdin.readline().strip(); password=getpass.getpass("Administrator password: "); print(json.dumps({"email": email, "password": password}))' |
+  curl --fail-with-body --silent --show-error --cookie-jar "$OCC_SESSION_COOKIE_JAR" "$OCC_URL/api/auth/sign-in/email" -H 'Content-Type: application/json' --data-binary @- --output /dev/null
+curl --fail-with-body --silent --show-error --cookie "$OCC_SESSION_COOKIE_JAR" "$OCC_URL/installation"
 ```
 
 Expect HTTP `200` and JSON containing the Installation's server-assigned `id`
-and name. Use `--cookie "$OCC_SESSION_COOKIE_JAR"` for subsequent protected
-requests. If sign-in fails after changing the configured password, the existing
-database still expects its original account password; startup does not reset it.
-See [development verification](deploy.md#verify-development) for startup errors.
-Use this session for the [service-key issuance or revocation procedures](deploy.md#service-api-keys-for-automation).
+and name. Use `--cookie "$OCC_SESSION_COOKIE_JAR"` only for the protected
+requests that need this human session. If sign-in fails after a password change,
+the database still expects the original bootstrapped account password.
 
 ### Sign out and stop
-
-Sign out to revoke this session, then remove its local cookie file:
 
 ```bash
 curl --fail-with-body --silent --show-error \
@@ -163,7 +115,6 @@ rmdir -- "$OCC_SESSION_DIRECTORY"
 docker compose down
 ```
 
-Stopping Compose preserves the database, Configuration, and bootstrap-key volumes. Do not add
-`--volumes` unless you intend to erase them. For environment configuration and
-production installation, continue to [Deploy OpenClaw Enterprise](deploy.md).
-For supported resource operations, see the [feature reference](../reference/README.md).
+Stopping Compose preserves the database, Configuration, and bootstrap-key
+volumes. For startup errors, see
+[development verification](deploy.md#verify-development).
