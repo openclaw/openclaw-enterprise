@@ -2217,7 +2217,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         schema: {
           operationId: "signInEmail",
           summary: "Sign in with email and password",
-          description: "Authenticates a local account and issues a Better Auth session cookie.",
+          description: "Authenticates a local account and issues a user session cookie.",
           tags: ["Authentication"],
           security: [],
           body: {
@@ -2245,7 +2245,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         schema: {
           operationId: "signOut",
           summary: "Sign out of the current session",
-          description: "Revokes the current Better Auth session cookie.",
+          description: "Revokes the current user session cookie.",
           tags: ["Authentication"],
           security: [{ sessionCookie: [] }],
           response: responses({ type: "object", additionalProperties: true }),

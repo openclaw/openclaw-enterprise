@@ -140,7 +140,7 @@ attempts, and failure recovery.
 `apps/controller/src/drivers/configuration/filesystem/index.ts:FilesystemConfigurationDriver`
 
 The API starts in `NODE_ENV=development`, binds inside the Compose network, and
-publishes its host port only on `127.0.0.1`. `OCC_AUTH_SECRET` signs Better Auth
+publishes its host port only on `127.0.0.1`. `OCC_AUTH_SECRET` signs user
 sessions and `OCC_AUTH_BASE_URL` fixes the cookie origin.
 
 Development accepts the explicitly configured Compose bridge CIDR as local

@@ -127,7 +127,7 @@ and controller Drivers are never exposed to tenant workloads.
 
 Production [API composition](../../apps/controller/src/composition/production.ts)
 opens its own PostgreSQL pool, loads the already-bootstrapped Installation and
-IAM policy, validates its Better Auth session configuration, constructs the
+IAM policy, validates its user session configuration, constructs the
 exact bundled or installed IAM Driver with platform state, and structurally
 verifies the selected Compute and Configuration Drivers. It runs a selected
 Compute preflight when present; bundled Kubernetes Compute must provide one.

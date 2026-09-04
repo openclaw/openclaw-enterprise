@@ -65,7 +65,7 @@ missing files, unknown fields, unavailable implementations, or plaintext
 credentials fail closed. See the [Configuration guide](configuration.md).
 
 The API additionally requires `OCC_AUTH_SECRET` and `OCC_AUTH_BASE_URL`.
-Better Auth sessions authenticate controller API callers; ordinary
+User sessions authenticate controller API callers; ordinary
 exact-resource IAM permissions and Restrictions still authorize every
 operation. Operators must expose the API only through an internal `ClusterIP`
 Service and enforce default-deny ingress with explicitly approved namespace and

@@ -19,7 +19,7 @@ continues to own identity lookup and exact-resource authorization.
 - Backend-only email/password sign-in, sign-out, persisted revocable sessions, and protected API access.
 - Installation bootstrap of the first administrator, its random initial password, and existing IAM binding.
 - Administrator-authorized backend creation of additional accounts and explicit existing IAM bindings.
-- Better Auth sessions replace every development and production controller/API bearer-authentication path.
+- User sessions replace every development and production controller/API bearer-authentication path.
 
 **Does not change**
 
@@ -38,7 +38,7 @@ Better Auth validates email/password credentials and issues an opaque, revocable
 controller exposes only the supported backend sign-in, sign-out, and session capabilities; public
 signup is disabled. Human and programmatic API clients use the same verified session mechanism.
 
-For each protected request, resolve the stable Better Auth session user ID and installation-owned
+For each protected request, resolve the user session's stable Better Auth user ID and installation-owned
 issuer through the selected [`IAMDriver`](../../packages/contracts/src/index.ts), then authorize the
 exact server-owned resource through that same driver. Email is not the authorization identity. OCC
 continues to own Principals, roles, bindings, and audit attribution; authentication never creates
@@ -72,7 +72,7 @@ unauthenticated callers, nonadministrators, duplicate accounts, invalid bindings
 ### Session security
 
 Use the existing PostgreSQL-backed persistence and the configuration needed for durable, revocable
-Better Auth sessions. Session cookies must be HTTP-only, appropriately same-site protected, and secure
+user sessions. Session cookies must be HTTP-only, appropriately same-site protected, and secure
 in production. Sign-out revokes the session. Authentication secrets must remain protected; never trust
 caller-supplied identity headers or fall back to development or production bearer authentication.
 
@@ -83,7 +83,7 @@ caller-supplied identity headers or fall back to development or production beare
    Enable only backend email/password sign-in, sign-out, session handling, and supported server-side
    account creation; disable public signup.
 2. Replace controller [admission](../../apps/controller/src/admission) and
-   [composition](../../apps/controller/src/composition) bearer checks with verified Better Auth sessions,
+   [composition](../../apps/controller/src/composition) bearer checks with verified user sessions,
    installation-owned issuer/user-ID identity lookup, and existing selected-driver IAM authorization.
 3. Extend [installation bootstrap](../../scripts/bootstrap-production.mjs) to create the randomly generated
    first administrator, protected credential delivery, and existing administrator Principal/binding.
@@ -110,7 +110,7 @@ caller-supplied identity headers or fall back to development or production beare
 
 ## Changelog
 
-- [2026-08-24 12:00]: Specify backend-only Better Auth email/password sessions, generated bootstrap administrator credentials, explicit IAM ownership, and complete bearer removal. (01a03507-d209-7ca0-83ce-e93bfca3b97d - 2e9769c)
+- [2026-08-24 12:00]: Specify backend-only user sessions established through email/password sign-in, generated bootstrap administrator credentials, explicit IAM ownership, and complete bearer removal. (01a03507-d209-7ca0-83ce-e93bfca3b97d - 2e9769c)
 - [2026-08-24 12:16]: Simplify bootstrap delivery, session integration, IAM-owned account provisioning, and controller bearer removal while preserving internal transport tokens. (01a0352c-debe-73b1-baa6-379855af874f - 2e9769c)
 - [2026-08-24 12:39]: Define protected bootstrap credential handoff and require real bootstrap-to-authenticated-installation integration proof. (01a0352c-debe-73b1-baa6-379855af874f - 2e9769c)
-- [2026-08-24 13:49]: Complete Better Auth sessions, protected administrator bootstrap, explicit-role account provisioning, atomic IAM audit, and real PostgreSQL integration proof. (01a0352c-debe-73b1-baa6-379855af874f - 3b349dd)
+- [2026-08-24 13:49]: Complete user sessions, protected administrator bootstrap, explicit-role account provisioning, atomic IAM audit, and real PostgreSQL integration proof. (01a0352c-debe-73b1-baa6-379855af874f - 3b349dd)

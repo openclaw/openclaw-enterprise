@@ -76,7 +76,7 @@ without the optional endpoint capability cannot serve this file feature.
 
 ### 2. OCC admits one exact-Agent file operation
 
-`apps/controller/src/index.ts:createFastifyApp` requires a valid Better Auth
+`apps/controller/src/index.ts:createFastifyApp` requires a valid user
 session or scoped service API key. Native Agent credentials cannot invoke this
 administration surface. `GET` needs Agent `read`; `PUT` needs Agent `operate`
 and, for session callers, passes the browser CSRF boundary. OCC resolves the

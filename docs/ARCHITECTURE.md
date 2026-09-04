@@ -160,7 +160,7 @@ sequenceDiagram
     participant Runtime
 
     Client->>API: Create Namespace
-    API->>API: Check direct transport and Better Auth session
+    API->>API: Check direct transport and user session
     API->>IAM: Lookup Principal and authorize Namespace create
     IAM-->>API: Allowed with evidence
     API->>OCC: Create Namespace in provisioning
@@ -173,7 +173,7 @@ sequenceDiagram
     Worker->>DB: Persist Namespace readiness and audit
 
     Client->>API: Create Configuration, create Agent, deploy Agent
-    API->>API: Check direct transport and Better Auth session
+    API->>API: Check direct transport and user session
     API->>IAM: Authorize exact Agent and referenced resources
     API->>OCC: Admit immutable AgentRevision
     OCC->>DB: Persist revision, audit, and work

@@ -197,7 +197,7 @@ Sign in with email and password
 
 **Operation ID:** `signInEmail`
 
-**Permissions:** Authenticates a local account and issues a Better Auth session cookie.
+**Permissions:** Authenticates a local account and issues a user session cookie.
 
 #### Request body
 
@@ -233,7 +233,7 @@ Sign out of the current session
 
 **Operation ID:** `signOut`
 
-**Permissions:** Revokes the current Better Auth session cookie.
+**Permissions:** Revokes the current user session cookie.
 
 #### Responses
 

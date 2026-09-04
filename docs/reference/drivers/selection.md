@@ -212,7 +212,7 @@ that installed Compute isolates workloads; operator review remains mandatory.
 
 [Packaged-driver integration](../../../tests/integration/driver-plugin-installation.test.mjs) installs scoped, precompiled IAM, Compute, and Configuration tarballs
 with real pnpm and lifecycle scripts disabled into an isolated dependency root.
-It selects all three through production startup and Better Auth session
+It selects all three through production startup and user session
 admission backed by in-memory OCC state. Checks include `401`/`403` responses,
 audited IAM identity and restriction evidence, Configuration CRUD, public signup
 remaining unavailable, and Namespace reconciliation writing its identity to

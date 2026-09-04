@@ -81,7 +81,7 @@ support `setLifecycleDrivers`; invalid or unavailable selected capabilities stop
 startup. Production then runs Compute preflight before emitting `worker.started`
 and starting `run()`.
 
-The worker has no HTTP listener, Better Auth session service, or provider-admin
+The worker has no HTTP listener, user session service, or provider-admin
 client. Compose and Helm keep it separate from the API process. See the
 [development](docker-compose-development.md) and
 [production](production-startup.md) startup flows for their input boundaries.

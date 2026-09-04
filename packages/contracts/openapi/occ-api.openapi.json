@@ -970,7 +970,7 @@
     },
     "/api/auth/sign-in/email": {
       "post": {
-        "description": "Authenticates a local account and issues a Better Auth session cookie.",
+        "description": "Authenticates a local account and issues a user session cookie.",
         "operationId": "signInEmail",
         "requestBody": {
           "content": {
@@ -1084,7 +1084,7 @@
     },
     "/api/auth/sign-out": {
       "post": {
-        "description": "Revokes the current Better Auth session cookie.",
+        "description": "Revokes the current user session cookie.",
         "operationId": "signOut",
         "responses": {
           "200": {

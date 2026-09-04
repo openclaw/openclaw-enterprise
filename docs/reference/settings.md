@@ -6,7 +6,7 @@ and integration tests. Development retains local admission and uses PostgreSQL
 plus bundled Docker Compute and filesystem Configuration Drivers by default.
 Production reads Installation settings and selected Driver options from
 trusted startup YAML and requires durable state, the singleton Installation,
-and Better Auth session authentication. Both development and production
+and user session authentication. Both development and production
 support reviewed bundled and installed IAM, Compute, Sandbox, and Configuration
 Drivers. Production and explicit `OCC_CONFIG_PATH` Kubernetes startup
 configurations select the bundled Secret Driver for Namespace-owned Secret storage.
@@ -104,7 +104,7 @@ worker require initialized state and do not read those credentials or output.
 | `NODE_ENV`                            | Exactly `development`.                                                       | Selects local development admission; production has separate required inputs below.                                                                                                                               |
 | `OCC_HOST`                            | Host-process development: exactly `127.0.0.1` or `::1`; Compose: `0.0.0.0`.  | Host-process development must bind loopback. Compose may bind `0.0.0.0` inside its private bridge only because the published host port remains `127.0.0.1` and `OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR` is explicit. |
 | `OCC_PORT`                            | Decimal integer from `1` through `65535`.                                    | Selects the controller TCP port; no default is supplied.                                                                                                                                                          |
-| `OCC_AUTH_SECRET`                     | High-entropy secret string.                                                  | Signs and verifies Better Auth session material; do not reuse across installations.                                                                                                                               |
+| `OCC_AUTH_SECRET`                     | High-entropy secret string.                                                  | Signs and verifies user session material; do not reuse across installations.                                                                                                                                      |
 | `OCC_AUTH_BASE_URL`                   | Absolute controller base URL.                                                | Defines the Better Auth base URL and cookie origin for backend auth endpoints.                                                                                                                                    |
 | `OPENCLAW_DEV_EMAIL`                  | Email address.                                                               | Initializer input selecting the development administrator sign-in email; defaults to `admin@openclaw.local`.                                                                                                      |
 | `OPENCLAW_DEV_INSTALLATION_NAME`      | `OpenClaw Local Development`.                                                | Development-only Installation name used by the initializer when the database is fresh.                                                                                                                            |
