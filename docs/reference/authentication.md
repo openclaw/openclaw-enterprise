@@ -1,11 +1,11 @@
 # Authentication
 
-OpenClaw Control Center (OCC) authenticates human and programmatic controller
-API clients with user sessions established through email/password sign-in or
-service API keys. Better Auth owns password verification, revocable session
-cookies, and hashed API-key storage. The selected IAM Driver resolves the
-authenticated account or service
-identity to an explicitly provisioned Principal or ServicePrincipal and owns
+OpenClaw Control Center (OCC) authenticates human controller API clients with
+user sessions established through email/password sign-in. Programmatic
+non-Agent automation authenticates with service API keys. Better Auth owns
+password verification, revocable session cookies, and hashed API-key storage.
+The selected IAM Driver resolves the authenticated account or service identity
+to an explicitly provisioned Principal or ServicePrincipal and owns
 [authorization](authorization.md).
 
 This page defines the currently supported authentication behavior. For a

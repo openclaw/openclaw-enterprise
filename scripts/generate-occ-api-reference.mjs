@@ -204,6 +204,17 @@ export function generateApiReference(document) {
       "Run `pnpm openapi:generate` after changing an API route or schema;",
       "`pnpm openapi:check` verifies both generated artifacts.",
     ].join("\n"),
+    [
+      "The exported contract comes from the development-enabled OCC app, which is",
+      "why the generated title is `Development OCC API`. Use",
+      "`POST /installation/bootstrap` only for development or bootstrap flows",
+      "that create the first Installation; production bootstraps through the",
+      "[Helm initialization Job](../guides/deploy.md#provision-system-secrets-and-install)",
+      "before serving requests.",
+      "After bootstrap, production uses the same authenticated controller resource",
+      "operations through the selected Drivers and settings described in",
+      "[settings](settings.md).",
+    ].join("\n"),
     "See [authentication](authentication.md) for supported credentials and their scope.",
   ];
 
