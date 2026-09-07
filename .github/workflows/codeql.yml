@@ -20,9 +20,55 @@ concurrency:
 # explicitly approved, licensed GitHub Code Security with advanced setup and
 # the repository variable CODEQL_ENABLED=true. This workflow changes no settings.
 jobs:
+  preflight:
+    name: Check current CodeQL eligibility
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    outputs:
+      eligible: ${{ steps.eligibility.outputs.eligible }}
+    steps:
+      - name: Read current repository visibility
+        id: eligibility
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CODEQL_ENABLED: ${{ vars.CODEQL_ENABLED == 'true' }}
+        run: |
+          node --input-type=commonjs <<'NODE'
+          const { execFileSync } = require('node:child_process');
+          const { appendFileSync } = require('node:fs');
+
+          let repository;
+          try {
+            repository = JSON.parse(execFileSync('gh', [
+              'api',
+              '--hostname', 'github.com',
+              '--method', 'GET',
+              '-H', 'Accept: application/vnd.github+json',
+              '-H', 'X-GitHub-Api-Version: 2022-11-28',
+              `repos/${process.env.GITHUB_REPOSITORY}`,
+            ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
+          } catch {
+            console.error('::error::Could not read current repository visibility. Check the preflight GITHUB_TOKEN permissions and GitHub API availability, then rerun.');
+            process.exit(1);
+          }
+
+          const visibility = repository?.visibility;
+          if (!['public', 'private', 'internal'].includes(visibility)) {
+            console.error('::error::GitHub returned invalid repository visibility. Check the repository metadata, then rerun.');
+            process.exit(1);
+          }
+
+          // Visibility is authoritative at preflight time, not locked for the analysis.
+          const eligible = visibility === 'public' || process.env.CODEQL_ENABLED === 'true';
+          appendFileSync(process.env.GITHUB_OUTPUT, `eligible=${eligible}\n`);
+          NODE
+
   not-enabled:
     name: CodeQL not enabled (no analysis performed)
-    if: github.event.repository.visibility != 'public' && vars.CODEQL_ENABLED != 'true'
+    needs: preflight
+    if: needs.preflight.result == 'success' && needs.preflight.outputs.eligible == 'false'
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
@@ -34,14 +80,15 @@ jobs:
             printf '%s\n' ''
             printf '%s\n' 'No security analysis was performed. This notice is not a clean scan or security approval.'
             printf '%s\n' ''
-            printf '%s\n' 'Public visibility was not established from the event metadata, and private scanning was not explicitly enabled.'
-            printf '%s\n' 'Public repositories run analysis automatically when the event establishes public visibility. Private analysis requires separately approved, licensed GitHub Code Security with advanced setup and the repository variable CODEQL_ENABLED set to true.'
+            printf '%s\n' 'The current repository visibility checked by preflight is private or internal, and scanning was not explicitly enabled.'
+            printf '%s\n' 'Public repositories run analysis automatically when preflight confirms public visibility. Private or internal analysis requires separately approved, licensed GitHub Code Security with advanced setup and the repository variable CODEQL_ENABLED set to true.'
             printf '%s\n' 'Verify successful analysis for both languages before requiring CodeQL checks or treating scanning as operational.'
           } >> "$GITHUB_STEP_SUMMARY"
 
   analyze:
     name: CodeQL (${{ matrix.language }})
-    if: github.event.repository.visibility == 'public' || vars.CODEQL_ENABLED == 'true'
+    needs: preflight
+    if: needs.preflight.result == 'success' && needs.preflight.outputs.eligible == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
