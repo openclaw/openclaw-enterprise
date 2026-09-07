@@ -6,6 +6,8 @@
 # Required code-owner approval is a repository setting, not enabled by this file.
 /.github/CODEOWNERS @openclaw/openclaw-secops
 /.github/maintenance.md @openclaw/openclaw-secops
+/.github/containers.md @openclaw/openclaw-secops
+/.github/container-promotion.md @openclaw/openclaw-secops
 /.github/workflows/ @openclaw/openclaw-secops
 /.github/actions/ @openclaw/openclaw-secops
 /.github/codeql/ @openclaw/openclaw-secops

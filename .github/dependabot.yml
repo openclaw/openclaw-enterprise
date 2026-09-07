@@ -17,7 +17,10 @@ updates:
       prefix: chore
       include: scope
   - package-ecosystem: github-actions
-    directory: /
+    directories:
+      - /
+      - /.github/actions/run-ci-lane
+      - /.github/actions/setup-test-docker
     schedule:
       interval: weekly
       day: monday
