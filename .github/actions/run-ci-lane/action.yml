@@ -16,11 +16,11 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+    - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
       with:
         node-version: ${{ inputs.node-version }}
     - id: pnpm-store
-      uses: openclaw/openclaw/.github/actions/setup-pnpm-store-cache@97abb65691d97ee95c977a9a4ede2ef221d6929c
+      uses: openclaw/openclaw/.github/actions/setup-pnpm-store-cache@0f22cb304de7760de58ecc4d277de6a19d4c3fac
       with:
         node-version: ${{ inputs.node-version }}
         cache-mode: read-write
