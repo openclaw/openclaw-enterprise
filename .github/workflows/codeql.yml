@@ -1,6 +1,7 @@
 name: CodeQL
 
 on:
+  public:
   pull_request:
   push:
     branches:
@@ -15,13 +16,13 @@ concurrency:
   group: codeql-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-# Private analysis requires licensed GitHub Code Security. After an
-# administrator enables it and selects advanced setup, they may set the
-# repository variable CODEQL_ENABLED=true. This workflow does not enable it.
+# Public repositories run analysis automatically. Private analysis requires
+# explicitly approved, licensed GitHub Code Security with advanced setup and
+# the repository variable CODEQL_ENABLED=true. This workflow changes no settings.
 jobs:
   not-enabled:
     name: CodeQL not enabled (no analysis performed)
-    if: vars.CODEQL_ENABLED != 'true'
+    if: github.event.repository.visibility != 'public' && vars.CODEQL_ENABLED != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
@@ -33,13 +34,14 @@ jobs:
             printf '%s\n' ''
             printf '%s\n' 'No security analysis was performed. This notice is not a clean scan or security approval.'
             printf '%s\n' ''
-            printf '%s\n' 'An administrator must approve and enable licensed GitHub Code Security with advanced setup, then set the repository variable CODEQL_ENABLED to true.'
+            printf '%s\n' 'Public visibility was not established from the event metadata, and private scanning was not explicitly enabled.'
+            printf '%s\n' 'Public repositories run analysis automatically when the event establishes public visibility. Private analysis requires separately approved, licensed GitHub Code Security with advanced setup and the repository variable CODEQL_ENABLED set to true.'
             printf '%s\n' 'Verify successful analysis for both languages before requiring CodeQL checks or treating scanning as operational.'
           } >> "$GITHUB_STEP_SUMMARY"
 
   analyze:
     name: CodeQL (${{ matrix.language }})
-    if: vars.CODEQL_ENABLED == 'true'
+    if: github.event.repository.visibility == 'public' || vars.CODEQL_ENABLED == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
