@@ -39,12 +39,12 @@
     "test:postgres": "node scripts/verify-workspace-boundary.mjs && node --test --test-concurrency=1 tests/integration/postgres-*.test.mjs"
   },
   "devDependencies": {
-    "@types/node": "24.13.3",
+    "@types/node": "26.4.1",
     "@types/pg": "8.21.0",
     "drizzle-kit": "0.31.10",
     "pg": "8.23.0",
     "playwright": "1.62.1",
     "prettier": "3.9.4",
-    "typescript": "6.0.3"
+    "typescript": "7.0.2"
   }
 }
