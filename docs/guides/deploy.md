@@ -69,6 +69,10 @@ API or operator procedures outside the console.
 
 ### Build and publish production images
 
+Repository maintainers can use the separately approved
+[private container publication workflow](../../.github/containers.md).
+The manual operator-controlled registry path below remains available.
+
 Build and push two images to a registry your cluster can access:
 
 | Image      | Source                                                                                                 | Used by                                          |

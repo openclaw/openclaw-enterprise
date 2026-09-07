@@ -152,6 +152,9 @@
         },
         {
           "path": "tests/integration/ci-logging.test.mjs"
+        },
+        {
+          "path": "tests/integration/container-release.test.mjs"
         }
       ]
     },

@@ -1,0 +1,166 @@
+name: Enterprise Containers
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full main SHA, which must equal the selected workflow revision
+        required: true
+        type: string
+      ci_run_id:
+        description: Successful main push run of CI for exactly source_sha
+        required: true
+        type: string
+      publish:
+        description: Publish prepared images after container-publish environment approval
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_SHA: ${{ inputs.source_sha }}
+  CI_RUN_ID: ${{ inputs.ci_run_id }}
+  NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      ci_attempt: ${{ steps.gate.outputs.ci_attempt }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: "24.16.0"
+      - name: Validate trusted source and exact successful CI
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLISH: ${{ inputs.publish }}
+        run: node scripts/ci/container-release.mjs validate
+
+  prepare:
+    name: Prepare ${{ matrix.image }} OCI image
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: controller
+            context: .
+            file: Dockerfile
+            target: runtime
+          - image: runtime
+            context: deploy/runtime
+            file: deploy/runtime/Dockerfile
+            target: ""
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: "24.16.0"
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - name: Prepare OCI output directory
+        run: mkdir -p "$RUNNER_TEMP/oci"
+      - name: Build without registry credentials or publication
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          target: ${{ matrix.target }}
+          platforms: linux/amd64
+          build-args: NODE_BASE_IMAGE=${{ env.NODE_BASE_IMAGE }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/openclaw/openclaw-enterprise
+            org.opencontainers.image.revision=${{ inputs.source_sha }}
+          outputs: type=oci,dest=${{ runner.temp }}/oci/image.tar
+          provenance: false
+          push: false
+      - name: Install existing smoke test prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y skopeo
+          skopeo --version | grep -Fx 'skopeo version 1.13.3'
+          corepack pnpm install --frozen-lockfile --ignore-scripts
+      - name: Smoke the prepared OCI bytes without rebuilding
+        env:
+          IMAGE: ${{ matrix.image }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: node scripts/ci/container-release.mjs smoke "$RUNNER_TEMP/oci"
+      - name: Seal exact OCI archive
+        env:
+          IMAGE: ${{ matrix.image }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          CI_ATTEMPT: ${{ needs.validate.outputs.ci_attempt }}
+        run: node scripts/ci/container-release.mjs seal "$RUNNER_TEMP/oci"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: container-${{ matrix.image }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/oci
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+
+  publish:
+    name: Publish exact OCI digests to private GHCR
+    if: ${{ inputs.publish }}
+    needs: [validate, prepare]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: container-publish
+    concurrency:
+      group: enterprise-container-publish
+      cancel-in-progress: false
+    permissions:
+      actions: read
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: "24.16.0"
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          pattern: container-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/prepared
+      - name: Install OCI transport
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y skopeo
+          skopeo --version | grep -Fx 'skopeo version 1.13.3'
+      - name: Revalidate approval, private packages, CI and bytes before transfer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_ATTEMPT: ${{ needs.validate.outputs.ci_attempt }}
+          GHCR_CONTROLLER_IMAGE: ${{ vars.GHCR_CONTROLLER_IMAGE }}
+          GHCR_RUNTIME_IMAGE: ${{ vars.GHCR_RUNTIME_IMAGE }}
+          PUBLISH: "true"
+        run: node scripts/ci/container-release.mjs publish "$RUNNER_TEMP/prepared"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: container-publication-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/prepared/publication.json
+          if-no-files-found: error
+          retention-days: 30
