@@ -155,6 +155,9 @@
         },
         {
           "path": "tests/integration/container-release.test.mjs"
+        },
+        {
+          "path": "tests/integration/container-promote.test.mjs"
         }
       ]
     },

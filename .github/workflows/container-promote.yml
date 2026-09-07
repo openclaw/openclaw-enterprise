@@ -1,0 +1,73 @@
+name: Promote Enterprise Containers to Docker Hub
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full main source SHA from the successful GHCR publication
+        required: true
+        type: string
+      publication_run_id:
+        description: Successful Enterprise Containers publication run ID
+        required: true
+        type: string
+      publication_attempt:
+        description: Exact successful publication attempt
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: container-publish
+    concurrency:
+      group: enterprise-container-publish
+      cancel-in-progress: false
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      PUBLICATION_RUN_ID: ${{ inputs.publication_run_id }}
+      PUBLICATION_ATTEMPT: ${{ inputs.publication_attempt }}
+      NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: "24.16.0"
+      - name: Validate trusted publication producer after approval
+        id: producer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/container-promote.mjs validate
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          artifact-ids: ${{ steps.producer.outputs.artifact_id }}
+          repository: openclaw/openclaw-enterprise
+          run-id: ${{ inputs.publication_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/publication
+          merge-multiple: true
+      - name: Install OCI transport
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y skopeo
+          skopeo --version | grep -Fx 'skopeo version 1.13.3'
+      - name: Verify private destinations and promote without rebuilding
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.producer.outputs.artifact_id }}
+          DOCKERHUB_CONTROLLER_IMAGE: ${{ vars.DOCKERHUB_CONTROLLER_IMAGE }}
+          DOCKERHUB_RUNTIME_IMAGE: ${{ vars.DOCKERHUB_RUNTIME_IMAGE }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: node scripts/ci/container-promote.mjs promote "$RUNNER_TEMP/publication/publication.json"

@@ -61,6 +61,9 @@ is not transactional; on a partial failure inspect each recorded registry digest
 before deciding on recovery. The publisher's concurrency lock serializes these
 workflow writes, not external registry administrators.
 
+For a separately authorized copy of these digests to private Docker Hub
+repositories, use [Docker Hub promotion](container-promotion.md).
+
 ## Proof boundaries
 
 The existing CI Images and Packaging lane gates the selected source. Preparation
