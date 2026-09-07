@@ -6,6 +6,24 @@ controller (`Dockerfile`, target `runtime`) and combined gateway/Agent runtime
 the current CI image lane and deployment example. It does not change recipes,
 package versions, Kubernetes deployment, or the existing CI test matrix.
 
+## Source visibility
+
+No-push preparation supports private or public source in
+`openclaw/openclaw-enterprise` only when this workflow receives `publish: false`
+(`PUBLISH` is the exact string `"false"`). The trusted main workflow, immutable
+source SHA, successful exact-source CI, and approved base-image checks still apply.
+Actual GHCR publication and Docker Hub promotion continue to require private
+source and private linked GHCR packages. From public source, both remain blocked
+pending an explicitly reviewed package-access and credential design.
+
+[GitHub warns](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility#ensuring-workflow-access-to-your-package)
+that granting a public repository Actions access to private packages can expose
+those packages to forks. These workflow guards do not revoke existing package
+grants or inherited access. Before any repository visibility transition, an
+operator must review package permissions, Actions grants, credentials, and
+retained artifacts; private package visibility alone is not a confidentiality
+guarantee.
+
 ## Operator setup
 
 Publication is disabled until an operator independently authorizes and completes
@@ -29,6 +47,9 @@ these prerequisites. Adding the workflow does not authorize publication.
 
 The publishing job uses its short-lived `GITHUB_TOKEN` with `packages: write`;
 preparation has only `contents: read`, no environment or registry credentials.
+No-push preparation needs the approved base-image variable and trusted source/CI,
+not the publishing environment or package-access grants. Do not apply the
+private-package setup above to a public source repository.
 Missing settings, inaccessible metadata, wrong package linkage, or nonprivate
 visibility stop publication. Repository-level secrets/variables alone do not
 describe effective organization/environment credentials.
@@ -54,6 +75,13 @@ describe effective organization/environment credentials.
    image tags cannot be replaced by different bytes.
 
 OCI archives are retained for seven days and publication receipts for 30 days.
+Uploaded archives follow the repository's
+[workflow-artifact access](https://docs.github.com/en/actions/managing-workflow-runs/downloading-workflow-artifacts):
+repository readers can download them. Public-source preparation can therefore
+expose the built images to public repository readers even with `publish: false`.
+No registry push does not mean artifact confidentiality; review the image
+contents and artifact audience before dispatch.
+
 A new dispatch rebuilds, so rerunning publication for the same source may be
 rejected if registry-resolved dependencies changed the bytes. Do not delete or
 overwrite existing tags to evade that rejection. Publication of the two images

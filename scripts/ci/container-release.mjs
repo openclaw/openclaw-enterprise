@@ -17,7 +17,10 @@ const integerPattern = /^[1-9][0-9]*$/;
 export function validateContext(env, repo, workflow = publishWorkflow) {
   assert.equal(env.GITHUB_REPOSITORY, repository, "Only the Enterprise repository may publish.");
   assert.equal(repo.full_name, repository);
-  assert.equal(repo.private, true, "Publication requires the private Enterprise repository.");
+  assert.equal(typeof repo.private, "boolean", "Repository privacy must be a boolean.");
+  if (workflow !== publishWorkflow || env.PUBLISH !== "false") {
+    assert.equal(repo.private, true, "Publication requires the private Enterprise repository.");
+  }
   assert.equal(repo.default_branch, "main");
   assert.equal(env.GITHUB_EVENT_NAME, "workflow_dispatch", "Only manual dispatch is supported.");
   assert.equal(env.GITHUB_REF, "refs/heads/main", "Select the trusted main workflow.");

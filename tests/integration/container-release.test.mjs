@@ -24,19 +24,63 @@ const env = {
 };
 const repo = { full_name: repository, private: true, default_branch: "main" };
 
-test("container release accepts only manual execution of the private main workflow", () => {
-  validateContext(env, repo);
-  for (const patch of [
-    { GITHUB_EVENT_NAME: "pull_request" },
-    { GITHUB_REF: "refs/tags/main" },
-    { GITHUB_WORKFLOW_REF: `${repository}/${publishWorkflow}@refs/heads/contributor` },
-    { GITHUB_SHA: "b".repeat(40) },
-    { SOURCE_SHA: "main" },
-    { GITHUB_REPOSITORY: "other/enterprise" },
+test("container release requires manual execution of the trusted main workflow", () => {
+  for (const context of [
+    { env, repo },
+    { env: { ...env, PUBLISH: "false" }, repo: { ...repo, private: false } },
   ]) {
-    assert.throws(() => validateContext({ ...env, ...patch }, repo));
+    validateContext(context.env, context.repo);
+    for (const patch of [
+      { GITHUB_EVENT_NAME: "pull_request" },
+      { GITHUB_REF: "refs/tags/main" },
+      { GITHUB_WORKFLOW_REF: `${repository}/${publishWorkflow}@refs/heads/contributor` },
+      { GITHUB_WORKFLOW_SHA: "main" },
+      { GITHUB_SHA: "b".repeat(40) },
+      { SOURCE_SHA: "main" },
+      { GITHUB_REPOSITORY: "other/enterprise" },
+    ]) {
+      assert.throws(() => validateContext({ ...context.env, ...patch }, context.repo));
+    }
+    for (const patch of [{ full_name: "other/enterprise" }, { default_branch: "other" }]) {
+      assert.throws(() => validateContext(context.env, { ...context.repo, ...patch }));
+    }
   }
-  assert.throws(() => validateContext(env, { ...repo, private: false }));
+});
+
+test("public container preparation requires the exact false string", () => {
+  validateContext({ ...env, PUBLISH: "false" }, { ...repo, private: false });
+  validateContext({ ...env, PUBLISH: "false" }, repo);
+  for (const PUBLISH of ["true", undefined, "", "FALSE", "0", false]) {
+    validateContext({ ...env, PUBLISH }, repo);
+    assert.throws(
+      () => validateContext({ ...env, PUBLISH }, { ...repo, private: false }),
+      /Publication requires the private Enterprise repository/,
+    );
+  }
+});
+
+test("container promotion retains private source and workflow identity even with PUBLISH false", () => {
+  const workflow = ".github/workflows/container-promote.yml";
+  const promotion = {
+    ...env,
+    GITHUB_WORKFLOW_REF: `${repository}/${workflow}@refs/heads/main`,
+  };
+  for (const PUBLISH of [undefined, "true", "false"]) {
+    validateContext({ ...promotion, PUBLISH }, repo, workflow);
+    assert.throws(
+      () => validateContext({ ...promotion, PUBLISH }, { ...repo, private: false }, workflow),
+      /Publication requires the private Enterprise repository/,
+    );
+  }
+  assert.throws(() => validateContext({ ...env, PUBLISH: "false" }, repo, workflow));
+});
+
+test("container context rejects malformed repository privacy in preparation and publication", () => {
+  for (const privateValue of [undefined, null, "false", "true", 0, 1, {}, []]) {
+    for (const PUBLISH of ["false", "true", undefined]) {
+      assert.throws(() => validateContext({ ...env, PUBLISH }, { ...repo, private: privateValue }));
+    }
+  }
 });
 
 test("container release requires exact successful CI identity and its aggregate job", () => {
@@ -108,6 +152,7 @@ test("container publication rejects unprotected environments and public or unrel
   };
   validatePackage(pkg, image);
   assert.throws(() => validatePackage({ ...pkg, visibility: "public" }, image));
+  assert.throws(() => validatePackage({ ...pkg, repository: { ...repo, private: false } }, image));
   assert.throws(() =>
     validatePackage({ ...pkg, repository: { full_name: "openclaw/openclaw" } }, image),
   );
