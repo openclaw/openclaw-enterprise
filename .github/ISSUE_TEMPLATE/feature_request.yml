@@ -1,0 +1,35 @@
+name: Feature request
+description: Propose a focused OpenClaw Enterprise improvement.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check existing issues and PRs first. Keep customer data and private
+        infrastructure details out of examples. Report suspected vulnerabilities
+        privately to security@openclaw.ai, not through this form.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Who is affected, and what task cannot be completed today?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Expected outcome
+      description: Describe observable behavior and how success would be verified.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Explain scope, affected components, and any authorization or isolation implications.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and related work
+      description: Existing workarounds, other approaches, and relevant issues or PRs.

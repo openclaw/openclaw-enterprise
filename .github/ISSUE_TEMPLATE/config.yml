@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security issue privately
+    url: https://github.com/openclaw/openclaw/security/policy#report-a-security-issue
+    about: Email security@openclaw.ai and identify OpenClaw Enterprise. Do not file an ordinary issue.

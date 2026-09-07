@@ -1,0 +1,48 @@
+name: Bug report
+description: Report a reproducible OpenClaw Enterprise defect.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For suspected vulnerabilities, email security@openclaw.ai and identify
+        OpenClaw Enterprise. Do not disclose security issues in this form.
+        Remove credentials, tenant data, private hostnames, and personal paths.
+  - type: input
+    id: revision
+    attributes:
+      label: Commit or version
+      description: Identify the exact revision you tested.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Deployment mode, selected Drivers, and relevant runtime or tool versions.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Minimal steps with synthetic data and any necessary non-secret configuration.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include redacted errors and explain the impact.
+    validations:
+      required: true
+  - type: textarea
+    id: related
+    attributes:
+      label: Related work
+      description: Link relevant issues or PRs and note any workaround.
