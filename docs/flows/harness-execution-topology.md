@@ -85,6 +85,16 @@ Production embedded OpenClaw starts one combined gateway/Harness with the exact 
 ServiceAccount, projected token, operator-materialized Agent-specific model key, and initially
 nonserving gateway route; no Codex workload or app-server credential exists.
 
+When a selected SandboxDriver provisions the dedicated Harness,
+`providerHarnessReady` lists Pods using the same Agent/revision/role labels as
+the active Service. It validates the complete observation and requires exactly
+one nonterminating candidate with the supplied Harness labels and `Ready=True`.
+An unready second live candidate blocks readiness even when the first is Ready.
+Malformed or incomplete observations throw through the existing preparation
+cleanup path. `activateRevision` repeats this check before changing routing.
+See the [Kubernetes readiness contract](../reference/drivers/kubernetes-compute.md)
+for candidate rules and the limits of this observation.
+
 ### 3. Publish safely and complete activation once
 
 `apps/controller/src/worker.ts:ControllerWorker`

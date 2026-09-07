@@ -1,0 +1,70 @@
+name: CodeQL
+
+on:
+  public:
+  pull_request:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "43 3 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: codeql-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# Public repositories run analysis automatically. Private analysis requires
+# explicitly approved, licensed GitHub Code Security with advanced setup and
+# the repository variable CODEQL_ENABLED=true. This workflow changes no settings.
+jobs:
+  not-enabled:
+    name: CodeQL not enabled (no analysis performed)
+    if: github.event.repository.visibility != 'public' && vars.CODEQL_ENABLED != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Report the missing scanning prerequisite
+        run: |
+          printf '%s\n' '::warning::CodeQL is not enabled. No security analysis was performed.'
+          {
+            printf '%s\n' '## CodeQL not enabled'
+            printf '%s\n' ''
+            printf '%s\n' 'No security analysis was performed. This notice is not a clean scan or security approval.'
+            printf '%s\n' ''
+            printf '%s\n' 'Public visibility was not established from the event metadata, and private scanning was not explicitly enabled.'
+            printf '%s\n' 'Public repositories run analysis automatically when the event establishes public visibility. Private analysis requires separately approved, licensed GitHub Code Security with advanced setup and the repository variable CODEQL_ENABLED set to true.'
+            printf '%s\n' 'Verify successful analysis for both languages before requiring CodeQL checks or treating scanning as operational.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  analyze:
+    name: CodeQL (${{ matrix.language }})
+    if: github.event.repository.visibility == 'public' || vars.CODEQL_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language:
+          - javascript-typescript
+          - actions
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          queries: security-extended
+      - name: Analyze and upload findings
+        uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        with:
+          category: "/language:${{ matrix.language }}"

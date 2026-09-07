@@ -1,0 +1,63 @@
+# Default review routing.
+* @openclaw/maintainer
+
+# Keep security-only rules last: GitHub uses the last matching line.
+# Multiple owners on one line mean either owner, not approval from both.
+# Required code-owner approval is a repository setting, not enabled by this file.
+/.github/CODEOWNERS @openclaw/openclaw-secops
+/.github/maintenance.md @openclaw/openclaw-secops
+/.github/workflows/ @openclaw/openclaw-secops
+/.github/actions/ @openclaw/openclaw-secops
+/.github/codeql/ @openclaw/openclaw-secops
+/.github/dependabot.yml @openclaw/openclaw-secops
+/SECURITY.md @openclaw/openclaw-secops
+/AGENTS.md @openclaw/openclaw-secops
+/CLAUDE.md @openclaw/openclaw-secops
+/.githooks/ @openclaw/openclaw-secops
+/scripts/install-git-hooks.mjs @openclaw/openclaw-secops
+/scripts/ci/ @openclaw/openclaw-secops
+
+# Dependency inputs and build-context controls.
+**/package.json @openclaw/openclaw-secops
+/pnpm-lock.yaml @openclaw/openclaw-secops
+/pnpm-workspace.yaml @openclaw/openclaw-secops
+/.npmrc @openclaw/openclaw-secops
+/.gitignore @openclaw/openclaw-secops
+/.dockerignore @openclaw/openclaw-secops
+/Dockerfile @openclaw/openclaw-secops
+/compose*.yaml @openclaw/openclaw-secops
+/deploy/ @openclaw/openclaw-secops
+
+# Authentication, authorization, credential delivery, and execution isolation.
+/apps/controller/src/auth/ @openclaw/openclaw-secops
+/apps/controller/src/index.ts @openclaw/openclaw-secops
+/apps/controller/src/composition/ @openclaw/openclaw-secops
+/apps/controller/src/providers/ @openclaw/openclaw-secops
+/apps/controller/src/drivers/secret/ @openclaw/openclaw-secops
+/apps/controller/src/drivers/service-account/ @openclaw/openclaw-secops
+/apps/controller/src/drivers/compute/ @openclaw/openclaw-secops
+/apps/controller/src/drivers/sandbox/ @openclaw/openclaw-secops
+/apps/controller/src/drivers/kubernetes/ @openclaw/openclaw-secops
+/packages/iam/ @openclaw/openclaw-secops
+/packages/audit/ @openclaw/openclaw-secops
+/packages/contracts/src/secret-bindings.ts @openclaw/openclaw-secops
+/packages/contracts/src/api/ @openclaw/openclaw-secops
+/scripts/bootstrap-installation.mjs @openclaw/openclaw-secops
+/scripts/prepare-bootstrap-volume @openclaw/openclaw-secops
+
+# Living security contracts and deployment procedures.
+/docs/reference/authentication.md @openclaw/openclaw-secops
+/docs/reference/authorization.md @openclaw/openclaw-secops
+/docs/reference/security.md @openclaw/openclaw-secops
+/docs/reference/service-accounts.md @openclaw/openclaw-secops
+/docs/reference/drivers/iam.md @openclaw/openclaw-secops
+/docs/reference/drivers/kubernetes-secret.md @openclaw/openclaw-secops
+/docs/reference/drivers/service-account.md @openclaw/openclaw-secops
+/docs/reference/drivers/sandbox.md @openclaw/openclaw-secops
+/docs/reference/drivers/openshell-sandbox.md @openclaw/openclaw-secops
+/docs/flows/secret-storage-and-delivery.md @openclaw/openclaw-secops
+/docs/flows/service-api-keys.md @openclaw/openclaw-secops
+/docs/flows/local-password-authentication.md @openclaw/openclaw-secops
+/docs/flows/native-service-account-credential-delivery.md @openclaw/openclaw-secops
+/docs/flows/service-account-driver-credential-delivery.md @openclaw/openclaw-secops
+/docs/guides/deploy.md @openclaw/openclaw-secops

@@ -49,6 +49,25 @@ OpenShell init or sidecar containers must be allowed only through an
 operator-approved RuntimeClass or equivalent admission exemption with a
 matching fail-closed policy; the Harness container itself remains unprivileged.
 
+For a provider-owned dedicated Harness, readiness requires exactly one live Pod
+in the resolved namespace with the Agent, revision, and `agent` workload-role
+labels used by the active Service selector. The Pod must also carry all supplied
+Harness requirement labels and report `Ready=True`. Zero candidates, multiple
+live candidates (including one Ready and one unready), or a single unready
+candidate leave preparation at `ready: false` and prevent activation. Pods with
+a valid deletion timestamp are excluded; Pods in another namespace or with
+another Agent, revision, or role do not count.
+
+Malformed or incomplete Pod-list observations raise an error, including invalid
+identity or condition fields, duplicate condition types, contradictory Harness
+requirement labels, and pagination indicating more results. Missing optional
+Pod status or conditions means not ready. Preparation errors run the existing
+workload cleanup hooks; activation errors occur before changing routing.
+Cancellation of the observation cannot yield a successful readiness result.
+This checks Kubernetes workload readiness and label uniqueness; it does not
+attest a provider Sandbox ID or Pod UID, authenticate the guest, or fence a
+runtime generation.
+
 Shared Kubernetes clusters are not currently supported.
 
 ## Configuration

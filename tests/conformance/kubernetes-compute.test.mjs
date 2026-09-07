@@ -4,12 +4,17 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import {
   createKubernetesComputeDriver,
   KubernetesComputeDriver,
   kubernetesNamespaceName,
   resolveKubernetesNamespace,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import {
+  currentComputeAbortSignal,
+  withComputeAbortSignal,
+} from "../../apps/controller/src/drivers/compute/operation-context.ts";
 
 const kubeconfigPath = "/tmp/openclaw-enterprise-conformance/kubeconfig";
 const contextName = "openclaw-enterprise-local";
@@ -1995,6 +2000,435 @@ test("provider-owned Harness requirements preserve the exact projected ServicePr
     () => withoutProjection.harnessRequirementsFromDeployment(unprojected),
     /projected ServicePrincipal token/i,
   );
+});
+
+function providerReadinessFixture({ provisionHarness, lifecycleDrivers = [] } = {}) {
+  const driver = new KubernetesComputeDriver(
+    options({
+      runtime: {
+        transportSecretPrefix: "transport",
+        gatewayStorageClassName: "local-path",
+        modelSecretPrefix: "model",
+      },
+      servicePrincipalCredentials: {
+        mode: "projectedServiceAccountToken",
+        audience: "openclaw-controller",
+        expirationSeconds: 900,
+      },
+    }),
+    {
+      lifecycleDrivers,
+      sandboxDriver: {
+        id: "sandbox-provider",
+        async provisionHarness(context) {
+          if (provisionHarness !== undefined) return provisionHarness(context);
+          assert.fail("activation must only observe the previously provisioned Harness");
+        },
+      },
+    },
+  );
+  const revision = routedRevision(driver, {
+    sandboxDriverId: "sandbox-provider",
+    configuration: admitLoggingConfiguration(
+      { gateway: { controlUi: { enabled: false } } },
+      "info",
+    ),
+  });
+  const namespace = kubernetesNamespaceName(tenant.id);
+  const agentName = `agent-${digest(revision.agentId)}`;
+  const deployment = driver.deployment(
+    `${agentName}-rev-${digest(revision.id)}`,
+    {
+      namespaceId: tenant.id,
+      agentId: revision.agentId,
+      revisionId: revision.id,
+      servicePrincipalId: revision.servicePrincipalId,
+    },
+    namespace,
+    "agent:local",
+    agentName,
+    "agent",
+    {},
+    "info",
+  );
+  const { labels } = driver.harnessRequirementsFromDeployment(deployment);
+  const requests = [];
+  let observe = () => ({ apiVersion: "v1", kind: "PodList", items: [] });
+  const core = {
+    async listNamespace() {
+      return { items: [] };
+    },
+    async listNamespacedPod(request) {
+      requests.push(request);
+      assert.equal(request.namespace, namespace);
+      assert.deepEqual(
+        Object.fromEntries(request.labelSelector.split(",").map((entry) => entry.split("="))),
+        {
+          "openclaw.dev/agent": revision.agentId,
+          "openclaw.dev/revision": revision.id,
+          "openclaw.dev/workload-role": "agent",
+        },
+      );
+      assert.equal(request.timeoutSeconds, 10);
+      return observe();
+    },
+  };
+  // Only the Kubernetes transport returns fixture data. Candidate selection, validation,
+  // request cancellation, and revision activation all execute the production driver.
+  driver.apiClients = Promise.resolve({ core });
+  return {
+    driver,
+    revision,
+    namespace,
+    labels,
+    requests,
+    core,
+    pod(name, ready = "True") {
+      return {
+        apiVersion: "v1",
+        kind: "Pod",
+        metadata: { name, namespace, labels: { ...labels } },
+        status: { conditions: [{ type: "Ready", status: ready }] },
+      };
+    },
+    setObservation(value) {
+      observe = typeof value === "function" ? value : () => structuredClone(value);
+    },
+    ready() {
+      return driver.providerHarnessReady(revision, namespace, labels);
+    },
+  };
+}
+
+test("provider Harness readiness requires exactly one live matching Pod", async (t) => {
+  const fixture = providerReadinessFixture();
+  const ready = fixture.pod("harness-ready");
+  const unready = fixture.pod("harness-starting", "False");
+  const terminating = fixture.pod("harness-terminating");
+  terminating.metadata.deletionTimestamp = new Date("2026-08-25T00:00:00Z");
+  const cases = [
+    ["no Pods", [], false],
+    ["one Ready Pod", [ready], true],
+    ["one unready Pod", [unready], false],
+    ["one unknown Pod", [fixture.pod("harness-unknown", "Unknown")], false],
+    ["two Ready Pods", [ready, fixture.pod("harness-other")], false],
+    ["Ready then unready", [ready, unready], false],
+    ["unready then Ready", [unready, ready], false],
+    ["two unready Pods", [unready, fixture.pod("harness-other", "False")], false],
+    ["repeated Pod entry", [ready, ready], false],
+    ["only terminating", [terminating], false],
+    ["Ready plus terminating", [ready, terminating], true],
+    ["unready plus terminating", [unready, terminating], false],
+    ["all terminating", [terminating, terminating], false],
+  ];
+  for (const missing of ["status", "conditions"]) {
+    const waiting = fixture.pod(`harness-no-${missing}`);
+    if (missing === "status") delete waiting.status;
+    else delete waiting.status.conditions;
+    cases.push([`missing optional ${missing}`, [waiting], false]);
+  }
+  for (const [field, value] of [
+    ["namespace", "another-namespace"],
+    ["openclaw.dev/agent", "another-agent"],
+    ["openclaw.dev/revision", "another-revision"],
+    ["openclaw.dev/workload-role", "gateway"],
+  ]) {
+    const unrelated = fixture.pod("unrelated");
+    if (field === "namespace") unrelated.metadata.namespace = value;
+    else unrelated.metadata.labels[field] = value;
+    cases.push([`wrong ${field}`, [unrelated], false]);
+    cases.push([`Ready plus wrong ${field}`, [ready, unrelated], true]);
+  }
+  const unlabeled = fixture.pod("unlabeled");
+  delete unlabeled.metadata.labels;
+  cases.push(["no labels", [unlabeled], false]);
+  const noTypeMetadata = fixture.pod("typed-sdk-pod");
+  delete noTypeMetadata.apiVersion;
+  delete noTypeMetadata.kind;
+  cases.push(["optional Pod type metadata omitted", [noTypeMetadata], true]);
+  const stringTimestamp = structuredClone(terminating);
+  stringTimestamp.metadata.deletionTimestamp = "2026-08-25T00:00:00Z";
+  cases.push(["serialized deletion timestamp", [ready, stringTimestamp], true]);
+
+  for (const [name, items, expected] of cases) {
+    await t.test(name, async () => {
+      fixture.setObservation({ apiVersion: "v1", kind: "PodList", items });
+      assert.equal(await fixture.ready(), expected);
+    });
+  }
+});
+
+test("provider Harness readiness rejects malformed or incomplete Pod observations", async (t) => {
+  const fixture = providerReadinessFixture();
+  const ready = fixture.pod("harness-ready");
+  const invalid = /invalid or incomplete provider Harness Pod list/;
+  for (const [name, response] of [
+    ["null response", null],
+    ["missing items", {}],
+    ["object items", { items: {} }],
+    ["null items", { items: null }],
+    ["wrong list kind", { kind: "ServiceList", items: [ready] }],
+    ["wrong list version", { apiVersion: "apps/v1", items: [ready] }],
+    ["malformed list metadata", { metadata: [], items: [ready] }],
+    ["continuation", { metadata: { continue: "next-page" }, items: [ready] }],
+    ["SDK continuation", { metadata: { _continue: "next-page" }, items: [ready] }],
+    ["remaining items", { metadata: { remainingItemCount: 1 }, items: [ready] }],
+  ]) {
+    await t.test(name, async () => {
+      fixture.setObservation(response);
+      await assert.rejects(fixture.ready(), invalid);
+    });
+  }
+  for (const [name, mutate] of [
+    ["wrong kind", (pod) => (pod.kind = "Service")],
+    ["wrong version", (pod) => (pod.apiVersion = "apps/v1")],
+    ["missing metadata", (pod) => delete pod.metadata],
+    ["array metadata", (pod) => (pod.metadata = [])],
+    ["missing name", (pod) => delete pod.metadata.name],
+    ["empty namespace", (pod) => (pod.metadata.namespace = "")],
+    ["array labels", (pod) => (pod.metadata.labels = [])],
+    ["nonstring label", (pod) => (pod.metadata.labels.extra = 1)],
+    [
+      "contradictory selector label",
+      (pod) => (pod.metadata.labels["openclaw.dev/service-principal"] = "another-principal"),
+    ],
+    ["null deletion timestamp", (pod) => (pod.metadata.deletionTimestamp = null)],
+    ["invalid deletion date", (pod) => (pod.metadata.deletionTimestamp = new Date(NaN))],
+    ["invalid deletion string", (pod) => (pod.metadata.deletionTimestamp = "0")],
+    ["null status", (pod) => (pod.status = null)],
+    ["array status", (pod) => (pod.status = [])],
+    ["object conditions", (pod) => (pod.status.conditions = {})],
+    ["null condition", (pod) => pod.status.conditions.push(null)],
+    ["nonstring condition type", (pod) => pod.status.conditions.push({ type: 1, status: "True" })],
+    ["nonstring condition status", (pod) => (pod.status.conditions[0].status = true)],
+    ["invalid condition status", (pod) => (pod.status.conditions[0].status = "true")],
+    ["duplicate Ready", (pod) => pod.status.conditions.push({ type: "Ready", status: "True" })],
+    ["conflicting Ready", (pod) => pod.status.conditions.push({ type: "Ready", status: "False" })],
+  ]) {
+    await t.test(name, async () => {
+      const malformed = fixture.pod("harness-malformed");
+      mutate(malformed);
+      // A valid Ready entry must not hide invalid observations before or after it.
+      for (const items of [[malformed], [ready, malformed], [malformed, ready]]) {
+        fixture.setObservation({ items });
+        await assert.rejects(fixture.ready(), invalid);
+      }
+    });
+  }
+  for (const malformed of [null, false, "pod", [], {}]) {
+    fixture.setObservation({ items: [ready, malformed] });
+    await assert.rejects(fixture.ready(), invalid);
+  }
+  fixture.setObservation({ metadata: { continue: "", remainingItemCount: 0 }, items: [ready] });
+  assert.equal(await fixture.ready(), true);
+});
+
+test("provider Harness activation fails before routing on absent, ambiguous, or malformed Pods", async () => {
+  const fixture = providerReadinessFixture();
+  for (const items of [
+    [],
+    [fixture.pod("starting", "False")],
+    [fixture.pod("ready"), fixture.pod("starting", "False")],
+    [fixture.pod("ready"), fixture.pod("also-ready")],
+  ]) {
+    fixture.setObservation({ items });
+    await assert.rejects(
+      fixture.driver.activateRevision(fixture.revision),
+      /The exact AgentRevision workload is not ready/,
+    );
+  }
+  fixture.setObservation({ items: [fixture.pod("ready"), null] });
+  await assert.rejects(fixture.driver.activateRevision(fixture.revision), /invalid or incomplete/);
+  assert.equal(fixture.requests.length, 5);
+});
+
+test("provider Harness preparation preserves readiness and cleanup contracts", async () => {
+  const hooks = [];
+  const provisions = [];
+  const fixture = providerReadinessFixture({
+    async provisionHarness(context) {
+      provisions.push(context);
+      return {
+        namespaceName: context.namespace.name,
+        resourceName: "provider-sandbox",
+        agentId: context.revision.agentId,
+        revisionId: context.revision.id,
+      };
+    },
+    lifecycleDrivers: [
+      {
+        id: "configuration-lifecycle",
+        capability: "configuration",
+        implementation: "conformance-lifecycle",
+        computeLifecycleHooks: {
+          async beforeWorkloadStart() {
+            hooks.push("start");
+          },
+          async beforeWorkloadStop() {
+            hooks.push("stop");
+          },
+        },
+      },
+    ],
+  });
+  const { driver, revision, namespace, core } = fixture;
+  const gatewayName = `gateway-${digest(revision.agentId)}`;
+  const gatewayOwnership = { namespaceId: tenant.id, agentId: revision.agentId };
+  const objects = new Map();
+  const key = (kind, name) => `${kind}:${name}`;
+  const save = (object) =>
+    objects.set(key(object.kind, object.metadata.name), structuredClone(object));
+  save({
+    ...driver.manifest("v1", "Namespace", namespace, { namespaceId: tenant.id }),
+    status: { phase: "Active" },
+  });
+  for (const policy of driver.networkPolicies({ namespaceId: tenant.id }, namespace)) save(policy);
+  // Seed an already-ready gateway; the fixture never derives readiness from a write.
+  const gateway = driver.deployment(
+    gatewayName,
+    gatewayOwnership,
+    namespace,
+    options().images.gateway,
+    gatewayName,
+    "gateway",
+    {},
+    "info",
+    driver.gatewayConfiguration(revision),
+  );
+  gateway.metadata.generation = 1;
+  gateway.status = { observedGeneration: 1, readyReplicas: 1 };
+  save(gateway);
+  const clients = {
+    core,
+    apps: {},
+    networking: {},
+    discovery: {
+      async listNamespacedEndpointSlice() {
+        return {
+          items: [
+            {
+              metadata: { labels: { "kubernetes.io/service-name": gatewayName } },
+              endpoints: [{ conditions: { ready: true } }],
+            },
+          ],
+        };
+      },
+    },
+  };
+  core.readNamespace = async ({ name }) => structuredClone(objects.get(key("Namespace", name)));
+  const writes = [];
+  for (const [api, kinds] of [
+    [core, ["ConfigMap", "Service", "ServiceAccount", "PersistentVolumeClaim"]],
+    [clients.apps, ["Deployment"]],
+    [clients.networking, ["NetworkPolicy"]],
+  ]) {
+    for (const kind of kinds) {
+      api[`readNamespaced${kind}`] = async ({ name, namespace: requestedNamespace }) => {
+        assert.equal(requestedNamespace, namespace);
+        const object = objects.get(key(kind, name));
+        if (object === undefined) throw Object.assign(new Error("not found"), { statusCode: 404 });
+        return structuredClone(object);
+      };
+      api[`patchNamespaced${kind}`] = async ({ body, namespace: requestedNamespace }) => {
+        assert.equal(requestedNamespace, namespace);
+        writes.push(structuredClone(body));
+        const previous = objects.get(key(kind, body.metadata.name));
+        if (kind === "Deployment") {
+          assert.deepEqual(
+            body.spec,
+            previous?.spec,
+            "fixture readiness requires an unchanged gateway",
+          );
+        }
+        save({ ...previous, ...body, metadata: { ...previous?.metadata, ...body.metadata } });
+      };
+    }
+  }
+  driver.apiClients = Promise.resolve(clients);
+  const expected = { namespaceId: tenant.id, agentId: revision.agentId, revisionId: revision.id };
+  for (const [items, ready] of [
+    [[], false],
+    [[fixture.pod("starting", "False")], false],
+    [[fixture.pod("ready"), fixture.pod("starting", "False")], false],
+    [[fixture.pod("ready")], true],
+  ]) {
+    fixture.setObservation({ items });
+    assert.deepEqual(await driver.prepareRevision(revision), { ...expected, ready });
+  }
+  assert.deepEqual(hooks, ["start", "start", "start", "start"]);
+  assert.equal(provisions.length, 4);
+  assert.deepEqual(provisions[0].requirements.labels, fixture.labels);
+  const agentServiceName = `agent-${digest(revision.agentId)}`;
+  assert.equal(
+    objects.get(key("Service", agentServiceName)).spec.selector["app.kubernetes.io/name"],
+    `${agentServiceName}-inactive`,
+  );
+
+  fixture.setObservation({ items: [fixture.pod("ready"), null] });
+  await assert.rejects(driver.prepareRevision(revision), /invalid or incomplete/);
+  assert.deepEqual(hooks.slice(-2), ["start", "stop"]);
+  const writesBeforeActivation = writes.length;
+  await assert.rejects(driver.activateRevision(revision), /invalid or incomplete/);
+  assert.equal(writes.length, writesBeforeActivation);
+
+  fixture.setObservation({ items: [fixture.pod("ready")] });
+  await driver.activateRevision(revision);
+  assert.deepEqual(objects.get(key("Service", agentServiceName)).spec.selector, {
+    "openclaw.dev/agent": revision.agentId,
+    "openclaw.dev/revision": revision.id,
+    "openclaw.dev/workload-role": "agent",
+  });
+});
+
+test("provider Harness readiness preserves API errors and owner cancellation", async () => {
+  const fixture = providerReadinessFixture();
+  const denied = Object.assign(new Error("Pod observation denied"), { statusCode: 403 });
+  fixture.setObservation(() => {
+    throw denied;
+  });
+  await assert.rejects(fixture.ready(), (error) => error === denied);
+  assert.equal(fixture.requests.length, 1);
+  const unavailable = Object.assign(new Error("Pod observation unavailable"), { statusCode: 503 });
+  fixture.setObservation(() => {
+    throw unavailable;
+  });
+  await assert.rejects(fixture.ready(), (error) => error === unavailable);
+  assert.equal(fixture.requests.length, 4);
+
+  const cancellation = new Error("revision observation cancelled");
+  const alreadyAborted = new AbortController();
+  alreadyAborted.abort(cancellation);
+  await assert.rejects(
+    withComputeAbortSignal(alreadyAborted.signal, () => fixture.ready()),
+    (error) => error === cancellation,
+  );
+  assert.equal(fixture.requests.length, 4);
+  for (const lateSuccess of [false, true]) {
+    const owner = new AbortController();
+    let release;
+    let started;
+    const observing = new Promise((resolve) => {
+      started = resolve;
+    });
+    fixture.setObservation(() => {
+      const signal = currentComputeAbortSignal();
+      started(signal);
+      return new Promise((resolve, reject) => {
+        release = () => resolve({ items: [fixture.pod("late-ready")] });
+        if (!lateSuccess)
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    });
+    // Manual owner cancellation exercises the driver context; it is not database lease-loss proof.
+    const readiness = withComputeAbortSignal(owner.signal, () => fixture.ready());
+    const rejected = assert.rejects(readiness, (error) => error === cancellation);
+    const requestSignal = await observing;
+    owner.abort(cancellation);
+    assert.equal(requestSignal.aborted, true);
+    if (lateSuccess) release();
+    await rejected;
+  }
+  assert.equal(fixture.requests.length, 6);
 });
 
 test("revision lifecycle rejects another driver or missing identity before cluster access", async () => {

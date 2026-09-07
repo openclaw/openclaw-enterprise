@@ -2091,33 +2091,102 @@ export class KubernetesComputeDriver implements ComputeDriver {
       await this.request(() =>
         clients.core.listNamespacedPod({
           namespace,
-          labelSelector: labelsToSelector(labels),
+          // Observe every Pod the active Agent Service could route to, even if an
+          // additional provider requirement label is missing or contradictory.
+          labelSelector: labelsToSelector({
+            "openclaw.dev/agent": revision.agentId,
+            "openclaw.dev/revision": revision.id,
+            "openclaw.dev/workload-role": "agent",
+          }),
           timeoutSeconds: Math.ceil(REQUEST_TIMEOUT_MS / 1000),
         }),
       ),
     );
-    const items = Array.isArray(pods?.items) ? pods.items : [];
-    return items.some((item) => {
+    currentComputeAbortSignal()?.throwIfAborted();
+    const invalidObservation = () =>
+      new Error(
+        "The Kubernetes client returned an invalid or incomplete provider Harness Pod list.",
+      );
+    const listMetadata = asRecord(pods?.metadata);
+    if (
+      !Array.isArray(pods?.items) ||
+      (pods.apiVersion !== undefined && pods.apiVersion !== "v1") ||
+      (pods.kind !== undefined && pods.kind !== "PodList") ||
+      (pods.metadata !== undefined && listMetadata === undefined) ||
+      (listMetadata?.continue !== undefined && listMetadata.continue !== "") ||
+      (listMetadata?._continue !== undefined && listMetadata._continue !== "") ||
+      (listMetadata?.remainingItemCount !== undefined && listMetadata.remainingItemCount !== 0)
+    ) {
+      throw invalidObservation();
+    }
+    let candidates = 0;
+    let candidateReady = false;
+    // Validate the whole observation before trusting uniqueness, including entries after a Ready Pod.
+    for (const item of pods.items) {
       const pod = asRecord(item);
       const metadata = asRecord(pod?.metadata);
+      const podLabels = asRecord(metadata?.labels);
       const status = asRecord(pod?.status);
-      if (metadata?.namespace !== namespace || metadata.deletionTimestamp !== undefined) {
-        return false;
-      }
-      const podLabels = asRecord(metadata.labels);
       if (
+        pod === undefined ||
+        (pod.apiVersion !== undefined && pod.apiVersion !== "v1") ||
+        (pod.kind !== undefined && pod.kind !== "Pod") ||
+        metadata === undefined ||
+        !isNonEmptyString(metadata.name) ||
+        !isNonEmptyString(metadata.namespace) ||
+        (metadata.labels !== undefined && podLabels === undefined) ||
+        Object.values(podLabels ?? {}).some((value) => typeof value !== "string") ||
+        (pod.status !== undefined && status === undefined) ||
+        (status?.conditions !== undefined && !Array.isArray(status.conditions))
+      ) {
+        throw invalidObservation();
+      }
+      const deletedAt = metadata.deletionTimestamp;
+      if (
+        deletedAt !== undefined &&
+        !(
+          (deletedAt instanceof Date && Number.isFinite(deletedAt.getTime())) ||
+          (typeof deletedAt === "string" &&
+            /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(
+              deletedAt,
+            ) &&
+            Number.isFinite(Date.parse(deletedAt)))
+        )
+      ) {
+        throw invalidObservation();
+      }
+      const conditionTypes = new Set<string>();
+      let ready = false;
+      for (const condition of (status?.conditions ?? []) as unknown[]) {
+        const observed = asRecord(condition);
+        if (
+          observed === undefined ||
+          !isNonEmptyString(observed.type) ||
+          typeof observed.status !== "string" ||
+          !["True", "False", "Unknown"].includes(observed.status) ||
+          conditionTypes.has(observed.type)
+        ) {
+          throw invalidObservation();
+        }
+        conditionTypes.add(observed.type);
+        if (observed.type === "Ready") ready = observed.status === "True";
+      }
+      if (
+        metadata.namespace !== namespace ||
+        deletedAt !== undefined ||
         podLabels?.["openclaw.dev/agent"] !== revision.agentId ||
         podLabels?.["openclaw.dev/revision"] !== revision.id ||
         podLabels?.["openclaw.dev/workload-role"] !== "agent"
       ) {
-        return false;
+        continue;
       }
-      const conditions = Array.isArray(status?.conditions) ? status.conditions : [];
-      return conditions.some((condition) => {
-        const observed = asRecord(condition);
-        return observed?.type === "Ready" && observed.status === "True";
-      });
-    });
+      if (Object.entries(labels).some(([key, value]) => podLabels?.[key] !== value)) {
+        throw invalidObservation();
+      }
+      candidates += 1;
+      candidateReady = ready;
+    }
+    return candidates === 1 && candidateReady;
   }
 
   private harnessRequirementsFromDeployment(
