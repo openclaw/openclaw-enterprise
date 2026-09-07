@@ -6,13 +6,13 @@ import {
   mkdir,
   mkdtemp,
   readFile,
-  realpath,
   rm,
   stat,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
@@ -121,21 +121,28 @@ test("hook installation refuses to replace an existing unmanaged native hook", a
 });
 
 test("the native pre-push hook runs installed Prettier directly and blocks formatting failures", async (t) => {
+  const { format } = await import("prettier");
   const fixtureRoot = await createRepositoryFixture(t);
   const install = installHooks(fixtureRoot);
   assert.equal(install.status, 0, install.stderr);
 
+  for (const filename of [".prettierrc.json", ".prettierignore"]) {
+    await copyFile(join(repositoryRoot, filename), join(fixtureRoot, filename));
+  }
+  const formattingOptions = JSON.parse(
+    await readFile(join(fixtureRoot, ".prettierrc.json"), "utf8"),
+  );
+
   const binariesPath = join(fixtureRoot, "bin");
   await mkdir(binariesPath);
-  const prettierPath = join(fixtureRoot, "node_modules/prettier/bin/prettier.cjs");
-  await mkdir(join(fixtureRoot, "node_modules/prettier/bin"), { recursive: true });
-  await writeFile(prettierPath, "");
-  const nodePath = join(binariesPath, "node");
-  await writeFile(
-    nodePath,
-    '#!/bin/sh\nprintf "%s\\n" "$@" > "$HOOK_INVOCATION_LOG"\nexit "${HOOK_EXIT_CODE:-0}"\n',
+  await symlink(process.execPath, join(binariesPath, "node"));
+  await mkdir(join(fixtureRoot, "node_modules"));
+  const prettierDirectory = join(fixtureRoot, "node_modules/prettier");
+  await symlink(
+    dirname(fileURLToPath(import.meta.resolve("prettier/package.json"))),
+    prettierDirectory,
+    "dir",
   );
-  await chmod(nodePath, 0o755);
   const packageManagerPath = join(binariesPath, "pnpm");
   await writeFile(
     packageManagerPath,
@@ -143,38 +150,69 @@ test("the native pre-push hook runs installed Prettier directly and blocks forma
   );
   await chmod(packageManagerPath, 0o755);
 
-  const invocationLog = join(fixtureRoot, "node-invocation.log");
   const packageManagerInvocationLog = join(fixtureRoot, "pnpm-invocation.log");
   const nativeHookPath = join(fixtureRoot, ".git/hooks/pre-push");
   const environment = {
     ...process.env,
     PATH: `${binariesPath}${delimiter}${process.env.PATH ?? ""}`,
-    HOOK_INVOCATION_LOG: invocationLog,
     PACKAGE_MANAGER_INVOCATION_LOG: packageManagerInvocationLog,
   };
-  const expectedInvocation = [
-    await realpath(prettierPath),
-    "--check",
-    "{apps,packages,scripts,tests}/**/*.{ts,mjs,json}",
-    "*.{json,yaml,yml,md}",
-    "",
-  ].join("\n");
-
-  for (const expectedExitCode of [0, 23]) {
-    const result = spawnSync(nativeHookPath, ["origin", "https://example.test/repository"], {
+  const runHook = () =>
+    spawnSync(nativeHookPath, ["origin", "https://example.test/repository"], {
       cwd: fixtureRoot,
       encoding: "utf8",
-      env: {
-        ...environment,
-        HOOK_EXIT_CODE: String(expectedExitCode),
-      },
+      env: environment,
     });
 
-    assert.equal(result.status, expectedExitCode, result.stderr);
-    assert.equal(await readFile(invocationLog, "utf8"), expectedInvocation);
+  const cases = [
+    ["packages/utils/src/example.ts", "export const answer={value:42};\n"],
+    ["package.json", '{ "name":"hook-fixture","private":true }\n'],
+    ["apps/console/public/index.html", "<!doctype html><html><body><p>Example</p></body></html>\n"],
+    ["apps/console/public/styles.css", "body{color:red}\n"],
+    ["docs/guides/example.md", "# Example\n\n-   item\n"],
+    [".github/workflows/check.yml", "name: Checks\non: [ push,pull_request ]\n"],
+    [
+      ".github/actions/example/action.yml",
+      "name: Example\ndescription: Example\nruns: {using: composite,steps: []}\n",
+    ],
+  ];
+  for (const [relativePath, unformatted] of cases) {
+    const path = join(fixtureRoot, relativePath);
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, await format(unformatted, { ...formattingOptions, filepath: path }));
   }
 
-  await rm(prettierPath);
+  // Generated API documentation is checked by openapi:check, not Prettier.
+  const generatedPath = join(fixtureRoot, "docs/reference/api.md");
+  const generatedContent = "# Generated API\n\n-   generated entry\n";
+  await mkdir(dirname(generatedPath), { recursive: true });
+  await writeFile(generatedPath, generatedContent);
+  const baseline = runHook();
+  assert.equal(baseline.status, 0, baseline.stdout + baseline.stderr);
+
+  for (const [relativePath, unformatted] of cases) {
+    await t.test(relativePath, async () => {
+      const path = join(fixtureRoot, relativePath);
+      const formatted = await readFile(path, "utf8");
+      try {
+        await writeFile(path, unformatted);
+        const rejected = runHook();
+        assert.equal(
+          rejected.status,
+          1,
+          `Expected ${relativePath} to block the push.\n${rejected.stdout}${rejected.stderr}`,
+        );
+        assert.ok(rejected.stderr.includes(relativePath), rejected.stderr);
+      } finally {
+        await writeFile(path, formatted);
+      }
+      const accepted = runHook();
+      assert.equal(accepted.status, 0, accepted.stdout + accepted.stderr);
+    });
+  }
+  assert.equal(await readFile(generatedPath, "utf8"), generatedContent);
+
+  await rm(prettierDirectory);
   const missingPrettier = spawnSync(nativeHookPath, [], {
     cwd: fixtureRoot,
     encoding: "utf8",
@@ -182,6 +220,5 @@ test("the native pre-push hook runs installed Prettier directly and blocks forma
   });
   assert.equal(missingPrettier.status, 1);
   assert.match(missingPrettier.stderr, /installed Prettier executable is unavailable/);
-  assert.equal(await readFile(invocationLog, "utf8"), expectedInvocation);
   await assert.rejects(stat(packageManagerInvocationLog), { code: "ENOENT" });
 });
