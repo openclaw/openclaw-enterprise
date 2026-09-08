@@ -22,3 +22,5 @@ runs:
         # Production Compose mounts this socket; CLI and controller must use one daemon.
         sudo ln -sfn "$docker_socket_path" /var/run/docker.sock
         test "$(docker version --format '{{.Server.Version}}')" = "29.4.0"
+    # Keep both post actions in this composite so Buildx is removed before Docker stops.
+    - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0

@@ -27,7 +27,9 @@ runs:
     - uses: ./.github/actions/setup-test-docker
       if: inputs.lane == 'docker-model' || inputs.lane == 'logging-collector'
     - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
-      if: inputs.profile == 'full' || inputs.profile == 'images' || inputs.profile == 'k3d'
+      if: >-
+        (inputs.profile == 'full' || inputs.profile == 'images' || inputs.profile == 'k3d') &&
+        inputs.lane != 'docker-model' && inputs.lane != 'logging-collector'
     - name: Set up CI tools
       shell: bash
       run: bash scripts/ci/setup-tools.sh "${{ inputs.profile }}"
