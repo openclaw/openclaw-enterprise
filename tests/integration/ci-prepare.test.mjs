@@ -36,6 +36,244 @@ function runPrepare(args, env = {}) {
   });
 }
 
+async function fixtureImageCommands(t, scenario) {
+  const root = await fixture(t);
+  const bin = join(root, "bin");
+  const home = join(root, "home");
+  await mkdir(bin);
+  await mkdir(home);
+  const commandSource = `#!${process.execPath}\n${String.raw`
+import assert from "node:assert/strict";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, join } from "node:path";
+
+const root = process.env.CI_FIXTURE_ROOT;
+const scenario = process.env.CI_FIXTURE_SCENARIO;
+const command = basename(process.argv[1], ".mjs");
+const args = process.argv.slice(2);
+const statePath = join(root, "commands-state.json");
+const state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, "utf8")) : {};
+const equals = (actual, expected) => JSON.stringify(actual) === JSON.stringify(expected);
+const configId = "sha256:" + "b".repeat(64);
+const manifestDigest = "sha256:" + "c".repeat(64);
+appendFileSync(join(root, "commands.jsonl"), JSON.stringify({
+  command, args, envPublished: existsSync(join(root, "github.env")),
+}) + "\n");
+function finish(stdout = "") {
+  writeFileSync(statePath, JSON.stringify(state));
+  process.stdout.write(stdout);
+  process.exit(0);
+}
+
+if (command === "docker") {
+  if (equals(args, ["version", "--format", "{{.Server.Version}}"])) finish("29.4.0\n");
+  if (args[0] === "compose" && args[1] === "-f" && args[3] === "-p") {
+    assert.match(args[4], /^openclaw_ci_pg_/);
+    if (equals(args.slice(5), ["up", "-d", "--wait"])) finish();
+    if (equals(args.slice(5), ["down", "--volumes", "--remove-orphans"])) finish();
+  }
+  if (equals(args.slice(0, 3), ["build", "--pull=false", "-t"]) && args.length === 5) {
+    assert.equal(args[3], "localhost/" + state.cluster + "/fixture:local");
+    state.tag = args[3];
+    finish();
+  }
+  if (equals(args, ["image", "inspect", state.tag])) finish("[]\n");
+  if (equals(args, ["image", "inspect", "--format", "{{.Id}}", state.tag])) finish(configId + "\n");
+  if (equals(args, ["image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", state.tag])) finish("linux/amd64\n");
+  if (equals(args.slice(0, 5), ["image", "save", "--platform", "linux/amd64", "--output"]) &&
+      args.length === 7 && args[6] === state.tag) {
+    state.archive = args[5];
+    writeFileSync(state.archive, "synthetic image archive\n");
+    finish();
+  }
+  if (equals(args, ["image", "rm", "-f", state.tag])) finish();
+  if (args[0] === "exec" && args[1] === "k3d-" + state.cluster + "-server-0") {
+    const ctr = ["ctr", "-n", "k8s.io", "images"];
+    if (equals(args.slice(2), [...ctr, "list"])) {
+      const references = [state.imported && state.tag, state.alias].filter(Boolean);
+      finish("REF TYPE DIGEST SIZE PLATFORMS LABELS\n" + references.map((ref) =>
+        ref + " application/vnd.oci.image.manifest.v1+json " + manifestDigest + " 1 linux/amd64 -\n",
+      ).join(""));
+    }
+    if (equals(args.slice(2, 8), [...ctr, "tag", state.tag]) && args.length === 9) {
+      if (scenario !== "missing-alias") state.alias = args[8];
+      finish();
+    }
+    if (equals(args.slice(2, 7), [...ctr, "rm"]) && args.length === 8 &&
+        [state.tag, state.alias].includes(args[7])) finish();
+    if (equals(args.slice(2), ["crictl", "inspecti", state.alias]) && state.alias) {
+      if (scenario === "missing-cri") {
+        process.stderr.write("synthetic CRI image not found\n");
+        process.exit(19);
+      }
+      finish(JSON.stringify({ status: { id: configId, repoDigests: [state.alias] } }));
+    }
+  }
+}
+if (command === "k3d") {
+  if (equals(args, ["version"])) finish("k3d version v5.8.3\n");
+  if (equals(args.slice(0, 2), ["cluster", "create"]) && args.length === 11) {
+    assert.match(args[2], /^openclaw-k8s-/);
+    assert.deepEqual(args.slice(3, 8), ["--servers", "1", "--agents", "0", "--api-port"]);
+    assert.match(args[8], /^127\.0\.0\.1:\d+$/);
+    assert.deepEqual(args.slice(9), ["--kubeconfig-update-default=false", "--kubeconfig-switch-context=false"]);
+    state.cluster = args[2];
+    finish();
+  }
+  if (equals(args, ["kubeconfig", "get", state.cluster])) finish("apiVersion: v1\n");
+  if (equals(args, ["cluster", "delete", state.cluster])) finish();
+  if (equals(args.slice(0, 2), ["image", "import"]) &&
+      equals(args.slice(3), ["-c", state.cluster])) {
+    assert.ok(args[2] === state.archive || args[2] === state.tag);
+    if (args[2] === state.archive) assert.ok(existsSync(state.archive));
+    if (scenario === "nonzero-import") {
+      process.stderr.write("synthetic import command failure\n");
+      process.exit(17);
+    }
+    if (scenario === "missing-tag") {
+      process.stderr.write("failed to import images in node: synthetic missing content\n");
+      finish();
+    }
+    state.imported = true;
+    finish();
+  }
+}
+if (command === "kubectl") {
+  if (equals(args, ["version", "--client=true"])) finish("{}\n");
+  if (args[0] === "--kubeconfig" && args[2] === "--context" &&
+      args[3] === "k3d-" + state.cluster) {
+    if (equals(args.slice(4), ["config", "view", "--minify", "--flatten", "-o", "json"])) {
+      finish(JSON.stringify({ clusters: [{ cluster: { server: "https://127.0.0.1:6443" } }] }));
+    }
+    if (equals(args.slice(4), ["wait", "--for=condition=Ready", "nodes", "--all", "--timeout=120s"])) finish();
+  }
+}
+throw new Error("Unexpected external command: " + command + " " + JSON.stringify(args));
+`}`;
+  for (const command of ["docker", "k3d", "kubectl"]) {
+    await writeFile(join(bin, `${command}.mjs`), commandSource, { mode: 0o700 });
+  }
+  const statePath = join(root, "state.json");
+  const githubEnv = join(root, "github.env");
+  // No inherited credentials, infrastructure selectors, or real command fallback.
+  const env = {
+    HOME: home,
+    PATH: bin,
+    TMPDIR: root,
+    TMP: root,
+    TEMP: root,
+    RUNNER_TEMP: root,
+    CI_FIXTURE_ROOT: root,
+    CI_FIXTURE_SCENARIO: scenario,
+    OCC_DOCKER_BIN: join(bin, "docker.mjs"),
+    OPENCLAW_CI_K3D_BIN: join(bin, "k3d.mjs"),
+    OCC_KUBECTL_BIN: join(bin, "kubectl.mjs"),
+  };
+  const run = (script, args) =>
+    spawnSync(process.execPath, [join(repositoryRoot, "scripts/ci", script), ...args], {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+      timeout: 30_000,
+      env,
+    });
+  return {
+    statePath,
+    githubEnv,
+    prepare: () =>
+      run("prepare.mjs", [
+        "--lane",
+        "k3d-fixture-configuration",
+        "--state",
+        statePath,
+        "--github-env",
+        githubEnv,
+      ]),
+    cleanup: () => run("cleanup.mjs", ["--state", statePath]),
+    commands: async () =>
+      (await readFile(join(root, "commands.jsonl"), "utf8")).trim().split("\n").map(JSON.parse),
+  };
+}
+
+for (const { scenario, error } of [
+  { scenario: "success" },
+  { scenario: "missing-tag", error: /Unable to find imported OCI manifest digest/ },
+  {
+    scenario: "missing-alias",
+    error: /Unable to find imported OCC_TEST_KUBERNETES_IMAGE reference/,
+  },
+  { scenario: "missing-cri", error: /synthetic CRI image not found/ },
+  { scenario: "nonzero-import", error: /synthetic import command failure/ },
+]) {
+  test(`fixture image CLI verifies runtime registration and cleanup: ${scenario}`, async (t) => {
+    const commands = await fixtureImageCommands(t, scenario);
+    const result = commands.prepare();
+    assert.equal(result.error, undefined);
+    const state = JSON.parse(await readFile(commands.statePath, "utf8"));
+
+    if (error) {
+      assert.equal(result.status, 1, "preparation must reject an unusable imported fixture");
+      assert.match(result.stderr, error);
+      assert.equal(state.env, undefined);
+      await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
+    } else {
+      assert.equal(result.status, 0, result.stderr);
+    }
+
+    const cluster = state.resources.find((resource) => resource.kind === "k3d-cluster");
+    const localImage = state.resources.find((resource) => resource.kind === "image-tag");
+    const importedImage = state.resources.find((resource) => resource.kind === "k3d-image");
+    assert.equal(localImage.status, "ready");
+    assert.equal(importedImage.status, error ? "planned" : "ready");
+    assert.notEqual(localImage.id, importedImage.id);
+    assert.equal(importedImage.sourceImage, localImage.name);
+    assert.equal(importedImage.cluster, cluster.name);
+    assert.equal(importedImage.hostImageId, `sha256:${"b".repeat(64)}`);
+    for (const resource of state.resources) assert.equal(resource.owner, state.prefix);
+
+    const preparation = await commands.commands();
+    const save = preparation.find(
+      ({ command, args }) => command === "docker" && args[0] === "image" && args[1] === "save",
+    );
+    assert.ok(save, "registration must export a task-owned archive");
+    await assert.rejects(() => stat(save.args[5]), { code: "ENOENT" });
+    assert.equal(
+      preparation.every(({ envPublished }) => !envPublished),
+      true,
+    );
+    if (!error) {
+      const expected = `localhost/${cluster.name}/fixture@sha256:${"c".repeat(64)}`;
+      assert.equal(importedImage.reference, expected);
+      assert.equal(state.env.OCC_TEST_KUBERNETES_IMAGE, expected);
+      assert.ok(
+        (await readFile(commands.githubEnv, "utf8"))
+          .split("\n")
+          .includes(`OCC_TEST_KUBERNETES_IMAGE=${expected}`),
+      );
+      assert.ok(
+        preparation.some(
+          ({ command, args }) =>
+            command === "docker" && args[2] === "crictl" && args[4] === expected,
+        ),
+      );
+    }
+
+    const cleanup = commands.cleanup();
+    assert.equal(cleanup.error, undefined);
+    assert.equal(cleanup.status, 0, cleanup.stderr);
+    await assert.rejects(() => stat(commands.statePath), { code: "ENOENT" });
+    await assert.rejects(() => stat(cluster.directory), { code: "ENOENT" });
+    const cleanupCalls = (await commands.commands()).slice(preparation.length);
+    const localRemoval = cleanupCalls.findIndex(
+      ({ command, args }) => command === "docker" && args[0] === "image" && args[1] === "rm",
+    );
+    const clusterRemoval = cleanupCalls.findIndex(
+      ({ command, args }) => command === "k3d" && args[0] === "cluster" && args[1] === "delete",
+    );
+    assert.ok(localRemoval > 0, "imported image cleanup must precede local tag cleanup");
+    assert.ok(clusterRemoval > localRemoval, "the cluster must outlive image cleanup");
+  });
+}
+
 const digest = "a".repeat(64);
 const immutableImage = `registry.example/openclaw/runtime@sha256:${digest}`;
 const mutableImage = "registry.example/openclaw/runtime:latest";
