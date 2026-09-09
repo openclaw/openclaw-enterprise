@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { createControllerAuth } from "../../apps/controller/src/auth/index.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
@@ -8,6 +14,9 @@ import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { signInWithEmailPassword } from "../helpers/auth-session.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+
+const run = promisify(execFile);
+const occApi = fileURLToPath(new URL("../../scripts/occ-api", import.meta.url));
 
 // Real Fastify HTTP, Better Auth plugin/storage, OCC, and native IAM. This test
 // does not claim PostgreSQL or Agent runtime coverage.
@@ -84,18 +93,21 @@ test("service API keys authenticate scoped automation without replacing sessions
   const principal = { kind: "service_principal", id: `sp_${randomUUID()}`, namespaceId };
   policy.identities.push(principal);
   policy.roles.push({
-    id: "tenant-reader",
+    id: "tenant-automation",
     namespaceId,
-    permissions: [{ action: "read", resourceKind: "namespace" }],
+    permissions: [
+      { action: "read", resourceKind: "namespace" },
+      { action: "delete", resourceKind: "configuration" },
+    ],
   });
   policy.bindings.push({
-    id: "service-reader",
+    id: "service-automation",
     namespaceId,
     subjectKind: "identity",
     subjectId: principal.id,
-    roleId: "tenant-reader",
+    roleId: "tenant-automation",
   });
-  const body = { servicePrincipalId: principal.id, namespaceId, name: "tenant-reader" };
+  const body = { servicePrincipalId: principal.id, namespaceId, name: "tenant-automation" };
   const issue = () => request("POST", "/api/auth/service-keys", { body });
   const issued = await issue();
   assert.equal(issued.status, 201);
@@ -115,6 +127,24 @@ test("service API keys authenticate scoped automation without replacing sessions
       assert.equal((await request("GET", "/installation")).status, 200);
     },
   );
+
+  await t.test("occ-api accepts a real bodyless Configuration deletion", async (t) => {
+    const created = await request("POST", `/namespaces/${namespaceId}/configurations`, {
+      body: { kind: "agent", values: { model: "gpt-test" } },
+    });
+    assert.equal(created.status, 201);
+    const configurationPath = `/namespaces/${namespaceId}/configurations/${created.data.id}`;
+    const directory = await mkdtemp(join(tmpdir(), "openclaw-occ-api-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const keyFile = join(directory, "service-key.json");
+    await writeFile(keyFile, JSON.stringify(issued), { mode: 0o600 });
+    const env = { ...process.env, OCC_URL: origin, OCC_SERVICE_KEY_FILE: keyFile };
+
+    // Exercise the supported shell client against the real Configuration DELETE route.
+    const deleted = await run(occApi, ["DELETE", configurationPath], { env });
+    assert.equal(deleted.stdout, "");
+    assert.equal((await request("GET", configurationPath)).status, 404);
+  });
 
   await t.test(
     "invalid credentials fail closed even alongside a valid administrator cookie",

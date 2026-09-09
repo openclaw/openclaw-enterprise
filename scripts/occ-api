@@ -59,6 +59,11 @@ http_status = int(sys.argv[1] or 0)
 curl_rc = int(sys.argv[2])
 response_file = pathlib.Path(sys.argv[3])
 body = response_file.read_text() if response_file.exists() else ""
+if http_status == 204:
+    # Successful deletions return no content; there is no envelope to validate.
+    if curl_rc != 0:
+        raise SystemExit(f"curl failed with exit {curl_rc}")
+    sys.exit(0)
 try:
     payload = json.loads(body)
 except json.JSONDecodeError:
