@@ -63,6 +63,49 @@ Prepare infrastructure only on a disposable host or through the reviewed CI help
 
 See the [execution flow](flows/github-actions-testing.md) for entrypoints, result accounting, cleanup and failure interpretation. Existing suite-specific setup below remains the local reproduction contract.
 
+### Integration tests outside automatic CI
+
+The ten integration files below are not selected by [CI](../.github/workflows/ci.yml)
+on pull requests, pushes to `main`, merge groups, or manual dispatch of that
+workflow. A green `CI Required` check does not establish their coverage. This
+inventory describes workflow selection, not whether a test has ever passed in a
+local or manually dispatched run.
+
+#### Manual Full Integration lanes
+
+In GitHub Actions, these nine files run only when explicitly selected in
+[Full Integration](../.github/workflows/full-integration.yml) from `main`, using
+the listed lane or `all`. The model/service lanes require their configured
+credentials, infrastructure, and protected-environment approval. `helper-timeout`
+has no environment approval gate; it is separate because it spends five minutes
+testing the real helper deadline.
+
+| Lane               | Integration test file                                                                                         | Coverage absent from automatic CI                                                                                        |
+| ------------------ | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `docker-model`     | [docker-compute-real.test.mjs](../tests/integration/docker-compute-real.test.mjs)                             | Docker Compose deployment and real embedded OpenClaw/dedicated Codex model turns.                                        |
+| `k3d-model`        | [harness-topology-k3d-real.test.mjs](../tests/integration/harness-topology-k3d-real.test.mjs)                 | Dedicated Codex continuity across Pod replacement and embedded model turns with persisted credentials or the Secret API. |
+| `gateway-routing`  | [harness-topology-k3d-routing-real.test.mjs](../tests/integration/harness-topology-k3d-routing-real.test.mjs) | Dedicated Codex consumption of workspace files through the real Envoy/OCC route.                                         |
+| `production-tui`   | [production-tui-k3d-real.test.mjs](../tests/integration/production-tui-k3d-real.test.mjs)                     | Helm-installed production control plane, interactive TUI, and revision cutover.                                          |
+| `slack`            | [harness-topology-k3d-slack-real.test.mjs](../tests/integration/harness-topology-k3d-slack-real.test.mjs)     | Real Slack ingress and a gateway-authored reply through the approved proxy and Codex Agent.                              |
+| `provider-account` | [service-account-driver-real.test.mjs](../tests/integration/service-account-driver-real.test.mjs)             | Actual ChatGPT service-account creation, credential delivery, and a dedicated Codex model turn.                          |
+| `openshell`        | [sandbox-driver-openshell-k3d-real.test.mjs](../tests/integration/sandbox-driver-openshell-k3d-real.test.mjs) | Provider-owned dedicated Codex Harness and real OpenShell sandbox enforcement.                                           |
+| `helper-timeout`   | [dev-up-timeout.test.mjs](../tests/integration/dev-up-timeout.test.mjs)                                       | Full 300-second readiness deadline for a running but unready worker.                                                     |
+| `k3d-otel`         | [harness-topology-k3d-otel-real.test.mjs](../tests/integration/harness-topology-k3d-otel-real.test.mjs)       | Actual OTLP logs emitted during embedded and dedicated runtime model turns.                                              |
+
+#### No GitHub workflow entrypoint
+
+[ssh-compute-real.test.mjs](../tests/integration/ssh-compute-real.test.mjs) belongs
+to the `ssh-host` lane, which is excluded from both the `ci` and `full` groups
+and is not a Full Integration dispatch option. No current workflow provisions
+its disposable Linux/systemd SSH host or invokes that lane. It proves real-host
+readiness, revision cutover, state isolation/persistence, and deletion, without a
+model call. Follow [SSH raw hosts](#ssh-raw-hosts) for the disposable host,
+required environment settings, and direct test command.
+
+Every current `tests/integration/*.test.mjs` file has a suite-map owner. Ownership
+alone does not mean a workflow runs it; keep this list aligned with both the
+suite-map groups and workflow entrypoints.
+
 ## Console browser checks
 
 The [console](reference/console.md) uses real controller routes in
@@ -329,8 +372,8 @@ for separate gateway and Agent images.
 
 The `checks-baseline` CI lane runs SSH conformance and startup coverage. The
 `ssh-host` lane selects the real-host test with required operator-provided SSH
-settings: `node scripts/ci/run-tests.mjs run ssh-host`. It is not part of the
-automatic `ci` or `full` groups because those jobs do not provision an SSH host.
+settings. It is not part of the `ci` or `full` groups because those jobs do not
+provision an SSH host.
 Prepare the disposable rig below before selecting this lane; missing inputs or
 skipped tests fail the lane.
 
