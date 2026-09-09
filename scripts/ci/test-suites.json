@@ -25,6 +25,9 @@
           "path": "tests/conformance/kubernetes-compute.test.mjs"
         },
         {
+          "path": "tests/conformance/kubernetes-runtime-credentials.test.mjs"
+        },
+        {
           "path": "tests/conformance/kubernetes-configuration.test.mjs"
         },
         {
@@ -100,6 +103,9 @@
           "path": "tests/integration/secret-api.test.mjs"
         },
         {
+          "path": "tests/integration/runtime-credentials-api.test.mjs"
+        },
+        {
           "path": "tests/integration/secret-driver-startup.test.mjs"
         },
         {
@@ -146,6 +152,9 @@
         },
         {
           "path": "tests/browser/console-agents.test.mjs"
+        },
+        {
+          "path": "tests/browser/console-runtime-credentials.test.mjs"
         },
         {
           "path": "tests/browser/console.test.mjs"

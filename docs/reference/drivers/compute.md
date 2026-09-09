@@ -135,3 +135,26 @@ cancelled rollback receives a bounded cleanup signal.
 - [Docker Compose development flow](../../flows/docker-compose-development.md)
 - [ComputeDriver lifecycle-hook execution flow](../../flows/compute-driver-lifecycle-hooks.md)
 - [Harness execution topology flow](../../flows/harness-execution-topology.md)
+
+## Optional initial runtime credential provisioning
+
+`getAgentRuntimeCredentialStatus(binding)` reports whether the admitted Agent's
+transport, model, and Slack credential groups are stored. The
+`transportConfigured`, `modelConfigured`, and `slackConfigured` flags describe
+complete, correctly owned storage; they do not probe provider authentication or
+workload readiness.
+
+`provisionAgentRuntimeCredentials(binding, input)` supports initial transport,
+OpenAI API key, and optional Slack credential setup. OCC authorizes the exact
+Agent and holds Namespace and Agent locks while checking that no historical
+revision exists and invoking the selected Driver. Drivers receive admitted
+`ComputeAgentBinding`, never caller-selected physical storage names. Unsupported
+Drivers fail explicitly.
+
+The bundled Kubernetes implementation creates missing whole Secrets and generates
+transport tokens and a local gateway password internally. It rejects foreign or malformed objects and
+conflicting supplied values, preserves complete matching groups on retry, and
+never rotates or deletes credentials. Partial external writes survive database
+or audit failure; callers must refresh stored status before retrying. Credential
+values must not appear in response metadata, Configuration, audit, or errors.
+See the [console workflow](../console.md#initial-runtime-credentials).

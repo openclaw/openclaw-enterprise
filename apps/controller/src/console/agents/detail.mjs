@@ -1,0 +1,416 @@
+import { element, button } from "../dom.mjs";
+import { renderChannels } from "../channels.mjs";
+import { renderWorkspaceFiles } from "./workspace.mjs";
+import { displayDate, shortId, namespacePath, link, message } from "./list.mjs";
+import {
+  createRuntimeCredentialsPanel,
+  hasRequiredRuntimeCredentials,
+  runtimeCredentialBlockReason,
+} from "./credentials.mjs";
+
+function errorPanel(error, context, retry) {
+  if (error.status === 401) {
+    context.onExpired();
+    return element("div");
+  }
+  return element(
+    "section",
+    { className: "state-panel", role: "alert" },
+    element("h2", {}, "Configuration unavailable"),
+    element("p", {}, message(error)),
+    error.requestId
+      ? element("p", { className: "request-id" }, `Request ID: ${error.requestId}`)
+      : null,
+    button("Retry", retry),
+  );
+}
+
+function summary(values, details) {
+  const model = values?.agents?.defaults?.model;
+  const primary = typeof model === "string" ? model : model?.primary;
+  const list = element("dl", { className: "configuration-summary" });
+  for (const [name, value] of [["Model", primary ?? "Not specified"], ...details])
+    list.append(element("dt", {}, name), element("dd", {}, value ?? "None"));
+  return list;
+}
+
+function nativeDocument(values, label) {
+  return element(
+    "details",
+    { className: "native-document" },
+    element("summary", {}, label),
+    element("pre", { tabindex: "0" }, JSON.stringify(values, null, 2)),
+  );
+}
+
+export async function renderAgentDetail(context) {
+  const { view, namespaceId, agentId, request, url } = context;
+  const path = `${namespacePath(namespaceId)}/agents/${encodeURIComponent(agentId)}`;
+  const agent = await request(path);
+  if (!context.isCurrent()) return;
+  context.setTitle(agent.name);
+  const selected = url.searchParams.get("revision") ?? agent.activeRevisionId ?? "draft";
+  const tab = url.searchParams.get("tab");
+  const tabsForSelection = [
+    "configuration",
+    "channels",
+    ...(selected === "draft" ? ["credentials"] : []),
+    "workspace",
+  ];
+  const selectedTab = tabsForSelection.includes(tab) ? tab : "configuration";
+  const target = (revision = selected, tab = selectedTab) =>
+    `agents/${agentId}?revision=${encodeURIComponent(revision)}&tab=${tab}`;
+  const change = (revision, tab) => context.navigate(target(revision, tab));
+  const header = element(
+    "div",
+    { className: "agent-toolbar" },
+    link("← Agents", "agents", context),
+    element(
+      "span",
+      { className: "badge" },
+      agent.activeRevisionId
+        ? `Selected revision · ${shortId(agent.activeRevisionId)}`
+        : "No selected revision",
+    ),
+  );
+  const identity = element("p", { className: "resource-id" }, agent.id);
+  const selector = element("section", { className: "agent-card revision-selector" });
+  const content = element("div");
+  const tabs = element("nav", {
+    className: "agent-tabs",
+    "aria-label": "Agent configuration views",
+  });
+  for (const [id, label] of [
+    ["configuration", "Configuration"],
+    ["channels", "Channels"],
+    ...(selected === "draft" ? [["credentials", "Credentials"]] : []),
+    ["workspace", "Workspace files"],
+  ])
+    tabs.append(
+      button(label, () => change(selected, id), {
+        ...(id === selectedTab ? { "aria-current": "page" } : {}),
+      }),
+    );
+  // TODO: consume authenticated serving observations when the lifecycle status API ships.
+  const serving = element(
+    "section",
+    { className: "agent-card", "aria-label": "Serving observation" },
+    element("h2", {}, "Serving status unavailable"),
+    element(
+      "p",
+      { className: "muted" },
+      "The API supplies no serving observation. Selecting or admitting a revision does not confirm runtime health, completed cutover, or shutdown. An operator must verify the installed runtime separately.",
+    ),
+  );
+  if (selectedTab === "workspace") {
+    view.replaceChildren(
+      header,
+      identity,
+      serving,
+      tabs,
+      renderWorkspaceFiles(context, agent, path),
+    );
+    return;
+  }
+  view.replaceChildren(header, identity, serving, selector, tabs, content);
+  const results = await Promise.allSettled([
+    request(`${path}/revisions`),
+    request(
+      selected === "draft"
+        ? `${namespacePath(namespaceId)}/configurations/${encodeURIComponent(agent.configurationId)}`
+        : `${path}/revisions/${encodeURIComponent(selected)}`,
+    ),
+  ]);
+  if (!context.isCurrent()) return;
+  if (results.some((result) => result.status === "rejected" && result.reason.status === 401)) {
+    context.onExpired();
+    return;
+  }
+  const revisionResult = results[0];
+  const revisions =
+    revisionResult.status === "fulfilled"
+      ? [...revisionResult.value].sort((a, b) => b.revision - a.revision)
+      : [];
+  const snapshot = results[1].status === "fulfilled" ? results[1].value : null;
+  const activeRevision = revisions.find((revision) => revision.id === agent.activeRevisionId);
+  if (activeRevision)
+    header.lastChild.textContent = `Selected revision · v${activeRevision.revision}`;
+  const chooser = element(
+    "select",
+    { id: "revision-selector", "aria-label": "AgentRevision" },
+    element("option", { value: "draft" }, "Saved draft · editable Configuration"),
+  );
+  for (const revision of revisions)
+    chooser.append(
+      element(
+        "option",
+        { value: revision.id },
+        `v${revision.revision} · ${displayDate(revision.createdAt)} · ${revision.id === agent.activeRevisionId ? "Selected by Agent" : "Not selected by Agent"}`,
+      ),
+    );
+  if (selected !== "draft" && !revisions.some((revision) => revision.id === selected))
+    chooser.append(
+      element(
+        "option",
+        { value: selected },
+        snapshot ? `v${snapshot.revision} · Viewed snapshot` : "Viewed snapshot unavailable",
+      ),
+    );
+  chooser.value = selected;
+  chooser.addEventListener("change", () => change(chooser.value));
+  const position = revisions.findIndex((revision) => revision.id === selected);
+  const older = button("Older revision", () => change(revisions[position + 1].id));
+  older.disabled = position < 0 || position >= revisions.length - 1;
+  const newer = button("Newer revision", () => change(revisions[position - 1].id));
+  newer.disabled = position <= 0;
+  selector.append(
+    ...[
+      element(
+        "h2",
+        {},
+        selected === "draft"
+          ? "Saved draft"
+          : snapshot
+            ? `AgentRevision v${snapshot.revision}`
+            : "AgentRevision unavailable",
+      ),
+      revisions.length || selected !== "draft"
+        ? element("label", { for: "revision-selector" }, "AgentRevision")
+        : null,
+      revisions.length || selected !== "draft" ? chooser : null,
+      element(
+        "div",
+        { className: "form-actions" },
+        selected !== "draft" && revisions.length > 1 ? older : null,
+        selected !== "draft" && revisions.length > 1 ? newer : null,
+        selected !== "draft" ? button("Saved draft", () => change("draft")) : null,
+        agent.activeRevisionId && selected !== agent.activeRevisionId
+          ? button("View selected revision", () => change(agent.activeRevisionId))
+          : null,
+      ),
+    ].filter(Boolean),
+  );
+  if (revisionResult.status === "rejected")
+    selector.append(
+      element(
+        "p",
+        { className: "error", role: "alert" },
+        `Revision history unavailable. ${message(revisionResult.reason)}`,
+      ),
+    );
+  else if (!revisions.length)
+    selector.append(
+      element(
+        "p",
+        { className: "muted" },
+        "No readable AgentRevisions. Creation alone does not create a revision.",
+      ),
+    );
+  if (!snapshot) {
+    content.replaceChildren(errorPanel(results[1].reason, context, () => change(selected)));
+    return;
+  }
+  const draft = selected === "draft";
+  const values = draft ? snapshot.values : snapshot.configuration;
+  const executionMode = draft ? agent.executionMode : snapshot.harness.mode;
+  let deploy;
+  let deployPending = false;
+  let deployStatus;
+  const credentials =
+    draft && revisionResult.status === "fulfilled"
+      ? createRuntimeCredentialsPanel({
+          context,
+          path,
+          values,
+          revisionsLoaded: true,
+          revisionCount: revisions.length,
+          onStatusChange: updateDeployControls,
+        })
+      : draft
+        ? createRuntimeCredentialsPanel({
+            context,
+            path,
+            values,
+            revisionsLoaded: false,
+            revisionCount: 0,
+            onStatusChange: updateDeployControls,
+          })
+        : null;
+  function updateDeployControls() {
+    if (!deploy || !deployStatus || !credentials) return;
+    deploy.disabled = deployPending || !credentials.canDeploy();
+    if (!deployPending) deployStatus.textContent = credentials.deployGateMessage();
+  }
+  if (draft) {
+    deployStatus = element("p", { className: "muted", role: "status" });
+    deploy = button("Deploy saved draft", async () => {
+      deploy.disabled = true;
+      deployPending = true;
+      deployStatus.textContent = "Checking the saved draft…";
+      let submitted = false;
+      try {
+        const [freshAgent, freshConfig, freshCredentials] = await Promise.all([
+          request(path),
+          request(
+            `${namespacePath(namespaceId)}/configurations/${encodeURIComponent(snapshot.id)}`,
+          ),
+          request(`${path}/runtime-credentials`),
+        ]);
+        if (!context.isCurrent()) return;
+        if (
+          freshAgent.configurationId !== snapshot.id ||
+          freshConfig.generation !== snapshot.generation
+        ) {
+          deployStatus.textContent = "The saved draft changed. Refresh before deploying.";
+          return;
+        }
+        const credentialBlockReason = runtimeCredentialBlockReason(freshConfig.values);
+        if (credentialBlockReason !== null) {
+          deployStatus.textContent = credentialBlockReason;
+          return;
+        }
+        if (!hasRequiredRuntimeCredentials(freshCredentials, freshConfig.values)) {
+          deployStatus.textContent =
+            "Runtime credential metadata changed. Refresh status before deploying.";
+          return;
+        }
+        submitted = true;
+        deployStatus.textContent = "Requesting deployment…";
+        const revision = await request(`${path}/deploy`, { method: "POST" });
+        if (context.isCurrent()) change(revision.id, "workspace");
+      } catch (error) {
+        if (!context.isCurrent()) return;
+        if (error.status === 401) {
+          context.onExpired();
+          return;
+        }
+        deployStatus.textContent = message(error, submitted);
+        if (!submitted || [400, 403, 404, 409, 429].includes(error.status)) deployPending = false;
+      } finally {
+        if (context.isCurrent()) {
+          if (!submitted) deployPending = false;
+          updateDeployControls();
+        }
+      }
+    });
+    updateDeployControls();
+    if (credentials) void credentials.loadStatus();
+    selector.append(
+      element(
+        "p",
+        { className: "muted" },
+        "Deploy the saved Configuration to create an immutable revision. Workspace files become available when its gateway is ready.",
+      ),
+      deploy,
+      deployStatus,
+    );
+  }
+  if (!draft) selector.append(element("p", { className: "resource-id" }, snapshot.id));
+  selector.append(
+    element(
+      "p",
+      { className: "muted" },
+      `${draft ? "Configuration" : "Source Configuration"} ${draft ? snapshot.id : snapshot.configurationId} · generation ${draft ? snapshot.generation : snapshot.configurationGeneration}`,
+    ),
+  );
+  content.append(
+    element(
+      "p",
+      { className: "notice", role: "status" },
+      draft
+        ? "Saved draft. Changes affect future deployments using this Configuration. Admitted AgentRevisions stay unchanged."
+        : selected === agent.activeRevisionId
+          ? "Selected AgentRevision · read-only admitted snapshot. Selection does not confirm that this revision is serving."
+          : "Unselected AgentRevision · read-only admitted snapshot. Browsing this snapshot does not change the Agent's selected revision.",
+    ),
+  );
+  if (selectedTab === "channels") {
+    const channels = renderChannels({
+      values,
+      executionMode,
+      readOnly: !draft,
+      onSave: async (updatedValues) => {
+        let mutationStarted = false;
+        try {
+          const [freshAgent, freshConfig] = await Promise.all([
+            request(path),
+            request(
+              `${namespacePath(namespaceId)}/configurations/${encodeURIComponent(snapshot.id)}`,
+            ),
+          ]);
+          if (!context.isCurrent())
+            throw new Error("This view has changed. Reopen the Configuration before saving.");
+          if (
+            freshAgent.configurationId !== snapshot.id ||
+            freshConfig.generation !== snapshot.generation
+          )
+            throw new Error(
+              "The saved Configuration changed while you were editing. Close this editor and refresh before saving.",
+            );
+          mutationStarted = true;
+          await request(
+            `${namespacePath(namespaceId)}/configurations/${encodeURIComponent(snapshot.id)}`,
+            {
+              method: "PATCH",
+              body: { values: updatedValues },
+            },
+          );
+          if (context.isCurrent()) change("draft", "channels");
+        } catch (error) {
+          if (!context.isCurrent()) throw error;
+          if (error.status === 401) {
+            context.onExpired();
+            throw new Error("Your session has expired.");
+          }
+          if (
+            error.status !== undefined ||
+            error.name === "TimeoutError" ||
+            error.name === "TypeError"
+          )
+            error.message = message(error, mutationStarted);
+          error.outcomeUnknown =
+            mutationStarted && ![400, 403, 404, 409, 429].includes(error.status);
+          throw error;
+        }
+      },
+    });
+    content.append(channels);
+  } else if (selectedTab === "credentials" && credentials) {
+    content.append(credentials.section);
+  } else {
+    const details = [
+      ["Execution mode", executionMode === "dedicated" ? "Dedicated" : "Embedded"],
+      ["Provider", draft ? agent.providerId : snapshot.providerId],
+      ["Service account", draft ? agent.serviceAccountId : snapshot.serviceAccount?.id],
+      ["Created", displayDate(snapshot.createdAt)],
+    ];
+    if (!draft)
+      details.push(
+        ["Harness", `${snapshot.harness.id} · ${snapshot.harness.version}`],
+        ["Compute", `${snapshot.compute.id} · ${snapshot.compute.implementation}`],
+      );
+    content.append(
+      element(
+        "section",
+        { className: "agent-card" },
+        element("h2", {}, draft ? "Editable Configuration" : "Configuration snapshot"),
+        summary(values, details),
+        nativeDocument(
+          values,
+          draft ? "View native Configuration" : "View admitted native configuration",
+        ),
+      ),
+    );
+  }
+  const deletion = element(
+    "section",
+    { className: "agent-card deletion-note" },
+    element("h2", {}, "Delete Agent"),
+    element(
+      "p",
+      { className: "muted" },
+      "Agent deletion is unavailable in the current API. This Agent and its revision history cannot be deleted from the console.",
+    ),
+  );
+  view.append(deletion);
+}

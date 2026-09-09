@@ -57,9 +57,9 @@ ClusterIP/network boundary and secure cookie settings.
 The browser uses the human administrator session path, not service keys. The
 [console reference](../reference/console.md) describes Namespace selection,
 Agent creation with editable starter Configuration JSON, Agent draft and revision
-inspection, supported channel draft edits, and error recovery. Deployment,
-rollback, Agent deletion, Configuration listing, and live gateway health remain
-API or operator procedures outside the console.
+inspection, channel draft edits, initial Kubernetes runtime credential provisioning,
+deployment, and live workspace-file editing. Rollback, Agent deletion,
+Configuration listing, and live gateway health remain API or operator procedures.
 
 ## Production
 
@@ -593,6 +593,12 @@ AGENT_ID="$(printf '%s' "$AGENT_RESPONSE" | python3 -c 'import json,sys; print(j
 export AGENT_ID
 ```
 
+For an Agent without any revisions, the console can provision initial transport,
+OpenAI API key, and Slack credentials through the exact-Agent API. See
+[initial runtime credentials](../reference/console.md#initial-runtime-credentials).
+The operator commands below remain available for installations using externally
+provisioned inputs. Do not use both paths to replace an existing credential group.
+
 Create the tenant transport Secret using the Agent ID suffix. Token-mode
 gateways use `gateway-token`; dedicated Codex also uses `app-server-token`.
 For native `gateway.auth.mode: "trusted-proxy"`, omit `gateway.auth.token`.
@@ -613,8 +619,10 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
 
 Embedded OpenClaw uses only the gateway token. Dedicated Codex uses both
 transport tokens. Model credentials stay in an Agent-owned model Secret or an
-immutable service-account credential, never in the controller, fixture output,
-or shell history.
+immutable service-account credential. They are not installed in controller runtime
+environment, fixture output, or shell history. Console provisioning carries the
+key transiently through the authorized API write without persisting it in the
+controller database or logs.
 
 For native API-key model turns through the native model Secret path, copy the
 operator's protected source key into the private input file and require it to be

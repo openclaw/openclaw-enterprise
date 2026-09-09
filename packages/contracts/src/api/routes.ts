@@ -2,6 +2,7 @@ import { Type } from "typebox";
 
 import {
   AgentParams,
+  AgentRuntimeCredentialsBody,
   ConfigurationParams,
   CreateAgentBody,
   CreateConfigurationBody,
@@ -24,6 +25,7 @@ import {
 } from "./common.ts";
 import {
   AgentListResponse,
+  AgentRuntimeCredentialResponse,
   AgentResponse,
   AgentRevisionListResponse,
   AgentRevisionResponse,
@@ -477,6 +479,39 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: AgentParams,
       response: { 200: AgentResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "getAgentRuntimeCredentials",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/runtime-credentials",
+    action: "openclaw.agents.runtime_credentials.read",
+    iamAction: "read",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Get metadata for one Agent's provisioned runtime credentials",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: AgentParams,
+      response: { 200: AgentRuntimeCredentialResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "provisionAgentRuntimeCredentials",
+    method: "POST",
+    path: "/namespaces/:namespaceId/agents/:agentId/runtime-credentials",
+    action: "openclaw.agents.runtime_credentials.provision",
+    iamAction: "operate",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Provision initial runtime credentials for one undeployed Agent",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: AgentParams,
+      body: AgentRuntimeCredentialsBody,
+      response: { 200: AgentRuntimeCredentialResponse, ...createErrors },
     },
   },
   {
