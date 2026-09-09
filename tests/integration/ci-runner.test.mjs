@@ -464,6 +464,44 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
       `  error.code = "${secret}-code";`,
       "  throw error;",
       "});",
+      'test("allowlisted controller HTTP diagnostic", () => {',
+      "  try {",
+      "    assert.equal(503, 201);",
+      "  } catch (error) {",
+      "    error.openclawCiDiagnostic = {",
+      '      kind: "controller-http",',
+      "      status: 503,",
+      "      expectedStatus: 201,",
+      '      occErrorCode: "DEPENDENCY_UNAVAILABLE",',
+      "      upstream: {",
+      '        kind: "chatgpt-admin-http",',
+      '        operation: "create-service-account",',
+      "        status: 403,",
+      `        body: "${secret}-body",`,
+      "      },",
+      `      identity: "${secret}-identity",`,
+      "    };",
+      "    throw error;",
+      "  }",
+      "});",
+      'test("rejects unsafe controller HTTP diagnostic", () => {',
+      "  try {",
+      "    assert.equal(500, 201);",
+      "  } catch (error) {",
+      "    error.openclawCiDiagnostic = {",
+      '      kind: "controller-http",',
+      "      status: 500,",
+      "      expectedStatus: 201,",
+      `      occErrorCode: "${secret}-code",`,
+      "      upstream: {",
+      '        kind: "chatgpt-admin-http",',
+      `        operation: "${secret}-operation",`,
+      "        status: 401,",
+      "      },",
+      "    };",
+      "    throw error;",
+      "  }",
+      "});",
       "",
     ].join("\n"),
   );
@@ -515,6 +553,20 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
   assert.equal(customFailure.status, "failed");
   assert.equal(customFailure.error.cause, undefined);
   assert.equal(customFailure.error.location.line, 11);
+  const httpFailure = summary.files[0].tests.find(
+    (entry) => entry.name === "allowlisted controller HTTP diagnostic",
+  );
+  assert.deepEqual(httpFailure.error.diagnostic, {
+    kind: "controller-http",
+    status: 503,
+    expectedStatus: 201,
+    occErrorCode: "DEPENDENCY_UNAVAILABLE",
+    upstream: { kind: "chatgpt-admin-http", operation: "create-service-account", status: 403 },
+  });
+  const unsafeFailure = summary.files[0].tests.find(
+    (entry) => entry.name === "rejects unsafe controller HTTP diagnostic",
+  );
+  assert.equal(unsafeFailure.error.diagnostic, undefined);
 });
 
 test("audit rejects obsolete manifest selectors", async (t) => {

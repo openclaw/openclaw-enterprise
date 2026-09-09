@@ -1,3 +1,72 @@
+const safeOccErrorCodes = new Set([
+  "INVALID_REQUEST",
+  "UNAUTHENTICATED",
+  "FORBIDDEN",
+  "NOT_FOUND",
+  "METHOD_NOT_ALLOWED",
+  "INSTALLATION_EXISTS",
+  "RESOURCE_CONFLICT",
+  "NAMESPACE_NOT_READY",
+  "NAMESPACE_NOT_EMPTY",
+  "PAYLOAD_TOO_LARGE",
+  "UNSUPPORTED_MEDIA_TYPE",
+  "UNKNOWN_OUTCOME",
+  "INTERNAL_ERROR",
+  "DEPENDENCY_UNAVAILABLE",
+]);
+
+const safeChatGptOperations = new Set([
+  "create-service-account",
+  "delete-service-account",
+  "create-credential",
+  "delete-credential",
+]);
+
+function isRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function safeStatus(value) {
+  return Number.isInteger(value) && value >= 100 && value <= 599 ? value : undefined;
+}
+
+function failureDiagnostic(error) {
+  const diagnostic = error?.openclawCiDiagnostic;
+  if (!isRecord(diagnostic) || diagnostic.kind !== "controller-http") return undefined;
+  const status = safeStatus(diagnostic.status);
+  const expectedStatus = safeStatus(diagnostic.expectedStatus);
+  const occErrorCode = diagnostic.occErrorCode;
+  if (
+    status === undefined ||
+    expectedStatus === undefined ||
+    typeof occErrorCode !== "string" ||
+    !safeOccErrorCodes.has(occErrorCode)
+  ) {
+    return undefined;
+  }
+  return {
+    kind: "controller-http",
+    status,
+    expectedStatus,
+    occErrorCode,
+    upstream: upstreamDiagnostic(diagnostic.upstream),
+  };
+}
+
+function upstreamDiagnostic(value) {
+  if (!isRecord(value) || value.kind !== "chatgpt-admin-http") return undefined;
+  const status = safeStatus(value.status);
+  const operation = value.operation;
+  if (
+    status === undefined ||
+    typeof operation !== "string" ||
+    !safeChatGptOperations.has(operation)
+  ) {
+    return undefined;
+  }
+  return { kind: "chatgpt-admin-http", operation, status };
+}
+
 function location(data = {}) {
   const error = data.details?.error;
   const cause = error?.cause ?? error;
@@ -32,6 +101,7 @@ function location(data = {}) {
               ? { code: "ERR_ASSERTION", name: "AssertionError" }
               : undefined,
           location: failureLocation,
+          diagnostic: failureDiagnostic(cause),
         }
       : undefined,
     durationMs:
