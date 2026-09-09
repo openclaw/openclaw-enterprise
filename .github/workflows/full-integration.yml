@@ -236,7 +236,7 @@ jobs:
 
   provider-account:
     name: Provider Account
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     needs: preflight
     if: github.event_name == 'push' || inputs.lane == 'all' || inputs.lane == 'provider-account'
     timeout-minutes: 25
