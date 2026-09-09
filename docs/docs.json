@@ -73,7 +73,8 @@
                   "reference/drivers/openshell-sandbox",
                   "reference/drivers/sandbox",
                   "reference/drivers/selection",
-                  "reference/drivers/service-account"
+                  "reference/drivers/service-account",
+                  "reference/drivers/ssh-compute"
                 ]
               }
             ]
@@ -102,7 +103,8 @@
                   "flows/secret-storage-and-delivery",
                   "flows/service-account-driver-credential-delivery",
                   "flows/service-api-keys",
-                  "flows/workspace-files"
+                  "flows/workspace-files",
+                  "flows/pr-24-ssh-compute"
                 ]
               }
             ]
