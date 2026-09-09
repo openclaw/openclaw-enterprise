@@ -539,12 +539,33 @@ export interface ComputeAgentBinding {
   readonly agent: Readonly<Agent>;
 }
 
+export interface AgentRuntimeCredentialsInput {
+  readonly modelApiKey?: string;
+  readonly slack?: {
+    readonly appToken: string;
+    readonly botToken: string;
+  };
+}
+
+export interface AgentRuntimeCredentialStatus {
+  readonly transportConfigured: boolean;
+  readonly modelConfigured: boolean;
+  readonly slackConfigured: boolean;
+}
+
 export interface ComputeDriver extends Driver {
   readonly capability: "compute";
   readonly activationOrder?: "beforeCommit" | "afterCommit";
   readonly maintenanceIntervalMs?: number;
   setLifecycleDrivers?(drivers: readonly Driver[]): void;
   bindAgent?(binding: ComputeAgentBinding): void | Promise<void>;
+  getAgentRuntimeCredentialStatus?(
+    binding: ComputeAgentBinding,
+  ): Promise<AgentRuntimeCredentialStatus>;
+  provisionAgentRuntimeCredentials?(
+    binding: ComputeAgentBinding,
+    input: AgentRuntimeCredentialsInput,
+  ): Promise<AgentRuntimeCredentialStatus>;
   getGatewayEndpoint?(revision: AgentRevision): string | undefined;
   ensureNamespace(namespace: Namespace): Promise<NamespaceEnsureResult>;
   deleteNamespace(namespace: Namespace): Promise<NamespaceDeleteResult>;

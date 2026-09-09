@@ -9,8 +9,11 @@ procedures belong in the [deployment guide](../../guides/deploy.md).
 
 ## Supported selections
 
-Trusted Installation YAML uses the bundled Kubernetes Configuration, native IAM,
-and Kubernetes Compute implementations when their `package` fields are omitted.
+Trusted Installation YAML uses bundled Kubernetes Configuration and native IAM
+when their `package` fields are omitted. Packageless Compute selects
+[SSH Compute](ssh-compute.md) for the exact reserved id `compute-ssh`;
+`compute-kubernetes` is the default bundled Kubernetes id, and every other
+packageless Compute id continues to select Kubernetes.
 Default Compose development instead selects filesystem Configuration, native
 IAM, and Docker Compute without Installation YAML and does not select a
 SecretDriver. An operator can select installed IAM, Compute, Configuration, or
@@ -20,8 +23,8 @@ Sandbox packages in trusted YAML in either mode.
 | ----------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
 | `configuration`   | [ConfigurationDriver](configuration.md)    | Required in Installation YAML; bundled Kubernetes or installed package.                              |
 | `iam`             | [IAMDriver](iam.md)                        | Required in Installation YAML; bundled native IAM or installed package.                              |
-| `compute`         | [ComputeDriver](compute.md)                | Required in Installation YAML; bundled Kubernetes or installed package.                              |
-| `secret`          | [SecretDriver](kubernetes-secret.md)       | Required in trusted Kubernetes Installation YAML; bundled Kubernetes only.                           |
+| `compute`         | [ComputeDriver](compute.md)                | Required in Installation YAML; bundled Kubernetes, bundled SSH, or installed package.                |
+| `secret`          | [SecretDriver](kubernetes-secret.md)       | Required in trusted Installation YAML, including SSH; bundled Kubernetes only.                       |
 | `sandbox`         | [SandboxDriver](sandbox.md)                | Optional; bundled OpenShell or installed package, and currently requires bundled Kubernetes Compute. |
 | `service_account` | [ServiceAccountDriver](service-account.md) | Optional bundled ChatGPT Provider member; no installed-package selector.                             |
 
@@ -31,6 +34,12 @@ OCC asks selected IAM to authorize operations, but malicious IAM can disregard
 persisted policy and malicious Compute can violate workload isolation. Operator
 review of installed code is the security boundary; lockfile integrity does not
 establish publisher trust.
+
+SSH supports embedded OpenClaw on preprovisioned Linux hosts. Kubernetes-only
+production image, Codex runtime, and projected-credential checks apply only to
+bundled Kubernetes Compute. `drivers.sandbox` with `compute-ssh` fails startup;
+OCC Secret delivery to SSH hosts is unsupported even though the Installation
+contract still requires the Secret selection.
 
 ## Provider membership
 

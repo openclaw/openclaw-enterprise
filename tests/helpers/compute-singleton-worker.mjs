@@ -176,12 +176,17 @@ async function setup(context) {
     });
   }
 
-  function start(computeDriver, leaseDurationMs = 30_000, convergenceTimeoutMs = 900_000) {
+  function start(
+    computeDriver,
+    leaseDurationMs = 30_000,
+    convergenceTimeoutMs = 900_000,
+    mode = "production",
+  ) {
     const configuration = createInstallationDriverConfiguration();
     configuration.drivers.compute.id = computeDriver.id;
     worker = createControllerWorker({
       pool: workerPool,
-      mode: "production",
+      mode,
       drivers: {
         installation: configuration,
         computeDriver,

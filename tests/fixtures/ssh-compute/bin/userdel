@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+: "${OCC_SSH_FIXTURE_STATE:?fixture state required}"
+name=${1:-}
+file="$OCC_SSH_FIXTURE_STATE/accounts/users/$name"
+[ -f "$file" ] || exit 1
+rm -f "$file"
+printf 'userdel %s\n' "$name" >> "$OCC_SSH_FIXTURE_STATE/accounts.log"

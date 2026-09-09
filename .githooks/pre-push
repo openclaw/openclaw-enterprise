@@ -13,7 +13,7 @@ if [ ! -f "$prettier_binary" ]; then
 fi
 
 exec node "$prettier_binary" --check \
-  '{apps,packages,scripts,tests}/**/*.{ts,mjs,json,html,css}' \
+  '{apps,packages,scripts,tests}/**/*.{ts,mjs,cjs,json,html,css}' \
   '*.{json,yaml,yml,md}' \
   'docs/**/*.md' \
   '!docs/reference/api.md' \
