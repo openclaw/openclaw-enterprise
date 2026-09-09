@@ -36,7 +36,11 @@
     "test:conformance": "node scripts/verify-workspace-boundary.mjs && node --test tests/conformance/*.test.mjs",
     "test:integration": "node scripts/verify-workspace-boundary.mjs && node --test tests/integration/*.test.mjs",
     "test:console-browser": "node --test tests/browser/*.test.mjs",
-    "test:postgres": "node scripts/verify-workspace-boundary.mjs && node --test --test-concurrency=1 tests/integration/postgres-*.test.mjs"
+    "test:postgres": "node scripts/verify-workspace-boundary.mjs && node --test --test-concurrency=1 tests/integration/postgres-*.test.mjs",
+    "docs:build": "node scripts/docs-site/build.mjs && scripts/docs-site/node_modules/.bin/pagefind --site dist/docs",
+    "docs:dev": "npm run docs:build && node scripts/docs-site/serve.mjs",
+    "docs:check": "node --test tests/docs/*.test.mjs",
+    "docs:install": "pnpm --dir scripts/docs-site --ignore-workspace install --frozen-lockfile --ignore-scripts"
   },
   "devDependencies": {
     "@types/node": "26.4.1",
