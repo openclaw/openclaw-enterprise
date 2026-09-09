@@ -67,6 +67,10 @@ OpenClaw Enterprise is the open platform for managing agents.
 - [SSH Compute lifecycle](flows/pr-24-ssh-compute.md): host preparation,
   revision activation, and cleanup.
 
+## Contribute documentation
+
+- [Local preview](local-preview.md): render, check, and edit these pages locally.
+
 ## Implementation history
 
 [Spec archive](../specs/README.md): proposals, delivery records, and recorded statuses.
