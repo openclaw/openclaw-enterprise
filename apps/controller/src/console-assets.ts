@@ -10,6 +10,54 @@ const CONSOLE_ROOT = new URL("./console/", import.meta.url);
 const CONSOLE_SHELL = new URL("index.html", CONSOLE_ROOT);
 const CONSOLE_ASSETS = new Map(
   Object.entries({
+    "/console/api-client.mjs": {
+      path: new URL("api-client.mjs", CONSOLE_ROOT),
+      contentType: "text/javascript; charset=utf-8",
+    },
+    "/console/view-lifetime.mjs": {
+      path: new URL("view-lifetime.mjs", CONSOLE_ROOT),
+      contentType: "text/javascript; charset=utf-8",
+    },
+    "/console/navigation.mjs": {
+      path: new URL("navigation.mjs", CONSOLE_ROOT),
+      contentType: "text/javascript; charset=utf-8",
+    },
+    "/console/shell.mjs": {
+      path: new URL("shell.mjs", CONSOLE_ROOT),
+      contentType: "text/javascript; charset=utf-8",
+    },
+    "/console/agents/list.mjs": {
+      path: new URL("agents/list.mjs", CONSOLE_ROOT),
+      contentType: "text/javascript; charset=utf-8",
+    },
+    "/console/agents/create.mjs": {
+      path: new URL("agents/create.mjs", CONSOLE_ROOT),
+      contentType: "text/javascript; charset=utf-8",
+    },
+    "/console/agents/workspace.mjs": {
+      path: new URL("agents/workspace.mjs", CONSOLE_ROOT),
+      contentType: "text/javascript; charset=utf-8",
+    },
+    "/console/agents/detail.mjs": {
+      path: new URL("agents/detail.mjs", CONSOLE_ROOT),
+      contentType: "text/javascript; charset=utf-8",
+    },
+    "/console/agents/credentials.mjs": {
+      path: new URL("agents/credentials.mjs", CONSOLE_ROOT),
+      contentType: "text/javascript; charset=utf-8",
+    },
+    "/console/channels/slack.mjs": {
+      path: new URL("channels/slack.mjs", CONSOLE_ROOT),
+      contentType: "text/javascript; charset=utf-8",
+    },
+    "/console/channels/teams.mjs": {
+      path: new URL("channels/teams.mjs", CONSOLE_ROOT),
+      contentType: "text/javascript; charset=utf-8",
+    },
+    "/console/channels/shared-ui.mjs": {
+      path: new URL("channels/shared-ui.mjs", CONSOLE_ROOT),
+      contentType: "text/javascript; charset=utf-8",
+    },
     "/console/console.css": {
       path: new URL("console.css", CONSOLE_ROOT),
       contentType: "text/css; charset=utf-8",

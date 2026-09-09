@@ -166,6 +166,7 @@ test("the native pre-push hook runs installed Prettier directly and blocks forma
 
   const cases = [
     ["packages/utils/src/example.ts", "export const answer={value:42};\n"],
+    ["apps/controller/src/drivers/compute/ssh/example.cjs", "module.exports={value:42};\n"],
     ["package.json", '{ "name":"hook-fixture","private":true }\n'],
     ["apps/console/public/index.html", "<!doctype html><html><body><p>Example</p></body></html>\n"],
     ["apps/console/public/styles.css", "body{color:red}\n"],

@@ -53,7 +53,8 @@ must satisfy. It is part of the reference, not another document lifecycle.
   [SecretDriver](drivers/kubernetes-secret.md), and
   [ServiceAccountDriver](drivers/service-account.md): capability contracts.
 - [Docker Compute](drivers/docker-compute.md),
-  [Kubernetes Compute](drivers/kubernetes-compute.md), and
+  [Kubernetes Compute](drivers/kubernetes-compute.md),
+  [SSH Compute](drivers/ssh-compute.md), and
   [OpenShell Sandbox](drivers/openshell-sandbox.md): implementation settings,
   supported behavior, and limitations.
 

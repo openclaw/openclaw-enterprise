@@ -370,13 +370,25 @@ its owned claims using their exact Kubernetes UIDs before deleting the
 gateway; PVC protection completes deletion after Pods unmount. Agent deletion
 is not currently a supported API operation.
 
+Before the first AgentRevision, the [console credential workflow](../console.md#initial-runtime-credentials)
+can create initial per-Agent transport, OpenAI API key, and Slack Secrets through
+the selected Driver. It derives their names internally, checks Namespace and
+Agent ownership, and creates missing whole Secrets without replacing existing
+values. Provider-managed credentials and Configuration Secret bindings retain
+their separate provisioning paths.
+
 Before deploying an Agent, provision its Agent-specific transport Secret using
 the configured `runtime.transportSecretPrefix`. The Secret name appends the
 first 12 hexadecimal characters of `sha256(agentId)`. Token-mode gateways use
 `gateway-token`; dedicated Agents additionally require `app-server-token`. When
 native Configuration explicitly selects `gateway.auth.mode: "trusted-proxy"`,
 the generated Secret may still contain a `gateway-token` key, but the Driver
-does not project it into the gateway environment.
+does not project it into the gateway environment. The initial credential API also
+generates `gateway-password`. The Driver projects it as `OPENCLAW_GATEWAY_PASSWORD`
+only when `gateway.auth.password` explicitly uses an environment SecretRef with
+that ID. This supports native local-direct password access alongside trusted-proxy
+authentication; the API never returns the password. Plaintext password Configuration
+is rejected.
 
 The selected model credential determines how model access is configured:
 

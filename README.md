@@ -63,6 +63,10 @@ see [Testing](docs/testing.md) for suite coverage, credentials, setup, and comma
 
 ## Documentation
 
+Run `npm run docs:install` once, then `npm run docs:dev` to preview the docs at <http://127.0.0.1:4173>.
+Use `npm run docs:build` for the full static build. See the
+[local preview instructions](docs/local-preview.md) for setup and checks.
+
 - [Concepts](docs/guides/concepts.md): tenancy, revisions, execution, [configuration and Secrets](docs/guides/concepts.md#configuration-and-secrets), and access.
 - [Documentation map](docs/README.md): guides, references, and runtime flows.
 - [Observability](docs/guides/observability.md): configure operational log export, Collector metrics, and delivery checks.

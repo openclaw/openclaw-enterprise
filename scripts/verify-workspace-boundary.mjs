@@ -12,6 +12,7 @@ const activeSourceRoots = [
   "scripts",
   "tests/conformance",
   "tests/integration",
+  "tests/docs",
 ];
 
 async function sourceFiles(directory) {
@@ -19,7 +20,10 @@ async function sourceFiles(directory) {
   const files = await Promise.all(
     entries.map(async (entry) => {
       const path = join(directory, entry.name);
-      if (entry.isDirectory()) return sourceFiles(path);
+      if (entry.isDirectory()) {
+        if (entry.name === "node_modules" || entry.name === "dist") return [];
+        return sourceFiles(path);
+      }
       return entry.isFile() && /\.(?:ts|mjs)$/.test(entry.name) ? [path] : [];
     }),
   );

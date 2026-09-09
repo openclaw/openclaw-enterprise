@@ -1,0 +1,26 @@
+#!/bin/sh
+set -eu
+: "${OCC_SSH_FIXTURE_STATE:?fixture state required}"
+name=
+for argument in "$@"; do name=$argument; done
+group=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --gid)
+      shift
+      group=${1:-}
+      ;;
+  esac
+  shift || :
+done
+[ -n "$group" ] || exit 1
+group_file="$OCC_SSH_FIXTURE_STATE/accounts/groups/$group"
+[ -f "$group_file" ] || exit 1
+users="$OCC_SSH_FIXTURE_STATE/accounts/users"
+mkdir -p "$users"
+[ ! -e "$users/$name" ] || exit 1
+{
+  node -p 'process.getuid()'
+  cat "$group_file"
+} > "$users/$name"
+printf 'useradd %s %s\n' "$name" "$group" >> "$OCC_SSH_FIXTURE_STATE/accounts.log"

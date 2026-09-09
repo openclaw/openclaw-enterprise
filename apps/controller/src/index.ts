@@ -18,11 +18,13 @@ import { AuditEventFactory, type AuditSink } from "@openclaw-enterprise/audit";
 import { AuthAccountRoleNotFoundError, type AuthPrincipalSeed } from "@openclaw-enterprise/iam";
 import {
   ErrorResponse,
+  AgentRuntimeCredentialResponse,
   JsonValue,
   SecretResponse,
   occApiRoutes,
   type Agent,
   type AgentRevision,
+  type AgentRuntimeCredentialsBody,
   type AuditEvent,
   type AuthorizationEvidence,
   type ConfigurationDriver,
@@ -360,6 +362,13 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
         scope: "requested",
         condition: "bound_secret",
       },
+    ];
+  }
+
+  if (operation.operationId === "provisionAgentRuntimeCredentials") {
+    return [
+      { ...permission, scope: "requested" },
+      { action: "read", resourceKind: "agent", scope: "requested" },
     ];
   }
 
@@ -1712,6 +1721,44 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
+    if (operation.operationId === "getAgentRuntimeCredentials") {
+      const status = await controller.getAgentRuntimeCredentialStatus(
+        context.actorId,
+        namespaceId,
+        agentId,
+      );
+      reply.send({ data: status, meta: { requestId: request.id } });
+      return;
+    }
+
+    if (operation.operationId === "provisionAgentRuntimeCredentials") {
+      requireWorkspaceFileCsrf(request, true);
+      const status = await controller.transact(async (unit) => {
+        const provisioned = await controller!.provisionAgentRuntimeCredentials(
+          context.actorId,
+          namespaceId,
+          agentId,
+          body as unknown as AgentRuntimeCredentialsBody,
+        );
+        try {
+          await unit.audit.append(
+            event(
+              operation,
+              request,
+              { kind: "agent", id: agentId, namespaceId },
+              "mutation",
+              context,
+            ),
+          );
+        } catch {
+          throw dependencyUnavailable();
+        }
+        return provisioned;
+      });
+      reply.send({ data: status, meta: { requestId: request.id } });
+      return;
+    }
+
     if (operation.operationId === "deployAgent") {
       try {
         const revision = await controller.transact(async (unit) => {
@@ -2360,6 +2407,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
   void app.register(async (routes) => {
     routes.addSchema(ErrorResponse);
+    routes.addSchema(AgentRuntimeCredentialResponse);
     routes.addSchema(SecretResponse);
     for (const operation of occApiRoutes) {
       const permissions = requiredPermissions(operation);

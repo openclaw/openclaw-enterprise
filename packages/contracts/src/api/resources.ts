@@ -82,6 +82,15 @@ export const SecretSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const AgentRuntimeCredentialStatusSchema = Type.Object(
+  {
+    transportConfigured: Type.Boolean(),
+    modelConfigured: Type.Boolean(),
+    slackConfigured: Type.Boolean(),
+  },
+  { additionalProperties: false },
+);
+
 export const ServiceAccountSchema = Type.Object(
   {
     id: ServiceAccountId,
@@ -138,6 +147,11 @@ export const ServiceAccountListResponse = Type.Object(
 export const AgentResponse = Type.Object(
   { data: AgentSchema, meta: Meta },
   { additionalProperties: false },
+);
+
+export const AgentRuntimeCredentialResponse = Type.Object(
+  { data: AgentRuntimeCredentialStatusSchema, meta: Meta },
+  { $id: "AgentRuntimeCredentialResponse", additionalProperties: false },
 );
 
 export const AgentListResponse = Type.Object(
@@ -240,6 +254,9 @@ export type SecretWire = Type.Static<typeof SecretSchema>;
 export type ServiceAccountWire = Type.Static<typeof ServiceAccountSchema>;
 export type ProviderSummaryWire = Type.Static<typeof ProviderSummarySchema>;
 export type AgentWire = Type.Static<typeof AgentSchema>;
+export type AgentRuntimeCredentialStatusWire = Type.Static<
+  typeof AgentRuntimeCredentialStatusSchema
+>;
 export type AgentRevisionWire = Type.Static<typeof AgentRevisionSchema>;
 export type InstallationResponse = Type.Static<typeof InstallationResponse>;
 export type NamespaceResponse = Type.Static<typeof NamespaceResponse>;
@@ -249,6 +266,7 @@ export type SecretResponse = Type.Static<typeof SecretResponse>;
 export type ServiceAccountResponse = Type.Static<typeof ServiceAccountResponse>;
 export type ServiceAccountListResponse = Type.Static<typeof ServiceAccountListResponse>;
 export type AgentResponse = Type.Static<typeof AgentResponse>;
+export type AgentRuntimeCredentialResponse = Type.Static<typeof AgentRuntimeCredentialResponse>;
 export type AgentListResponse = Type.Static<typeof AgentListResponse>;
 export type ProviderListResponse = Type.Static<typeof ProviderListResponse>;
 export type AgentRevisionResponse = Type.Static<typeof AgentRevisionResponse>;

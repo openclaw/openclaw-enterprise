@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-09-01
-last_updated_session: codex/01a05f95-dd80-7011-990f-d1c46b5bb3cc
+updated: 2026-09-08
+last_updated_session: codex/01a07d92-d866-7731-afe5-abab67d8966c
 ---
 
 # Controller Worker Flow
@@ -195,8 +195,8 @@ incomplete deletion does not publish successful deletion.
 
 Revision activation crosses a separate infrastructure boundary. Once preparation
 is ready, a Driver selecting `activationOrder: beforeCommit` activates before
-the database pointer changes. Otherwise production activation runs after the
-claim-protected compare-and-set of `Agent.activeRevisionId`; the first dedicated
+the database pointer changes. Otherwise an implemented activation stage runs in both development and
+production after the claim-protected compare-and-set of `Agent.activeRevisionId`; the first dedicated
 revision is staged inactive until that commit. A changed active pointer causes
 `ACTIVE_REVISION_CHANGED` and retry instead of overwriting a concurrent result.
 
@@ -274,6 +274,8 @@ aborts in-flight work, waits for the loop, closes PostgreSQL, and emits
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-08 07:53: Include optional development activation and retry in the post-commit handoff. (01a07d92-d866-7731-afe5-abab67d8966c - 4d83087229961f3665b923d2581c0b71b988cc9c)
 
 - 2026-09-01 19:09: Preserve providerless API-key execution and document Provider metadata checks before workload effects. (01a05d97-f2b0-71d0-bfc3-01ee7d6d58f9 - b079c4b755ef336a9c65bb4eb737e3aedbfdaa7d) (01a05f95-dd80-7011-990f-d1c46b5bb3cc - aa366c49c44834d59f74994c5fd37fb8096f169f)
 - 2026-08-28 17:56: Converted the worker overview into a source-ordered execution trace covering startup, admission, lease ownership, current authorization, Compute and Sandbox delegation, activation, and retry. (01a036f4-cf1d-7cc1-bbc1-000879038ac8 - 4270aa29b7015562049f46c6027962fd85b584a9)
