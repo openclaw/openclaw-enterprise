@@ -204,10 +204,11 @@ option as shown below.
 
 Model suites make real provider requests. Set `OCC_TEST_OPENAI_MODEL` explicitly
 to an authorized model that supports Codex custom tools; the Kubernetes examples
-use `gpt-5.1`. Docker defaults to `gpt-5.6-sol`, OpenShell to `gpt-5.6-sol`, and
-the Kubernetes Harness and ChatGPT account suites currently default to `gpt-4.1`.
-The latter default does not support the documented dedicated Codex request
-shape; override it when running those suites.
+use `gpt-5.1`. Docker, OpenShell, and ChatGPT account suites default to
+`gpt-5.6-sol`. The Kubernetes Harness defaults to `gpt-4.1`, which does not
+support the documented dedicated Codex request shape; override it when running
+that suite. ChatGPT account tests require a model available to the issued
+account's Codex credentials.
 
 ## Local checks
 
@@ -657,6 +658,10 @@ the test creates a real provider account and issues its model credential. For a
 direct local `node --test` run, import approved gateway and Agent images first
 and export their immutable `image@sha256:<digest>` references as shown in
 [Kubernetes model turns and Secrets](#kubernetes-model-turns-and-secrets).
+
+The test configures shared-filesystem provisioning in that disposable k3d
+cluster and grants its controller identities the production worker's volume
+and Pod observation permissions. The worker remains unable to read Secrets.
 
 The protected `provider-account` GitHub Actions lane builds the checked-in
 runtime image and imports it into the run-owned k3d cluster when either

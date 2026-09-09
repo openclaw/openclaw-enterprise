@@ -9,6 +9,7 @@ import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mj
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   assertGatewayModelTurn,
+  configureExistingK3dLocalPathSharedFileSystem,
   createKubernetesInstallationConfiguration,
   createRealKubernetesFixture,
   kubernetesHash as hash,
@@ -24,7 +25,7 @@ const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 let adminKey = process.env.OCC_TEST_CHATGPT_ADMIN_KEY;
 const adminKeySourcePath = process.env.OCC_TEST_CHATGPT_ADMIN_KEY_PATH;
 const workspaceId = process.env.OCC_TEST_CHATGPT_WORKSPACE_ID;
-const providerModel = (process.env.OCC_TEST_OPENAI_MODEL ?? "gpt-4.1").replace(
+const providerModel = (process.env.OCC_TEST_OPENAI_MODEL ?? "gpt-5.6-sol").replace(
   /^(?:openai|codex)\//,
   "",
 );
@@ -100,6 +101,7 @@ test(
   },
   async (context) => {
     const kubeconfig = await prerequisites();
+    await configureExistingK3dLocalPathSharedFileSystem({ kubeconfigPath, kubernetesContext });
     const suffix = hash(randomUUID());
     const platformNamespace = `oce-service-account-driver-${suffix}`;
     const directory = await mkdtemp(join(tmpdir(), "oce-service-account-driver-real-"));
@@ -185,6 +187,30 @@ test(
       `oce-sa-driver-tenant-${suffix}`,
       "--verb=create,get,list,patch,update,delete",
       "--resource=deployments.apps,services,serviceaccounts,configmaps,endpointslices.discovery.k8s.io,networkpolicies.networking.k8s.io,resourcequotas,limitranges",
+    );
+    // Match the production worker: persistent state precedes Pods, whose readiness is observed.
+    await kubectl(
+      "patch",
+      "clusterrole",
+      `oce-sa-driver-tenant-${suffix}`,
+      "--type=json",
+      "-p",
+      JSON.stringify([
+        {
+          op: "add",
+          path: "/rules/-",
+          value: {
+            apiGroups: [""],
+            resources: ["persistentvolumeclaims"],
+            verbs: ["get", "create", "patch", "delete"],
+          },
+        },
+        {
+          op: "add",
+          path: "/rules/-",
+          value: { apiGroups: [""], resources: ["pods"], verbs: ["get", "list", "watch"] },
+        },
+      ]),
     );
     await kubectl(
       "create",
