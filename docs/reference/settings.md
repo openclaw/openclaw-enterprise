@@ -736,8 +736,9 @@ prerequisites then fail rather than skip.
 | `OCC_TEST_DATABASE_URL`                 | Migrated disposable loopback PostgreSQL database named `openclaw_k8s_*`.                 |
 
 This scenario uses its newly issued access token, not `OPENAI_API_KEY`. Its
-optional `OCC_TEST_OPENAI_MODEL` defaults to `gpt-4.1`; set it to an authorized
-custom-tool-capable model, such as `gpt-5.1`, for dedicated Codex execution.
+optional `OCC_TEST_OPENAI_MODEL` defaults to `gpt-5.6-sol`; select a model
+available to the issued ChatGPT account's Codex credentials. API-key model
+availability does not establish support for this authentication mode.
 When using the file path, unset `OCC_TEST_CHATGPT_ADMIN_KEY` first so the test
 actually reads the protected file. See the
 [ChatGPT service-account testing guide](../testing.md#chatgpt-service-accounts)
