@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
-updated: 2026-09-08
-last_updated_session: codex/01a07d92-d866-7731-afe5-abab67d8966c
+updated: 2026-09-09
+last_updated_session: codex/01a08326-8d46-70c1-bd36-dcdfdd7cc25c
 ---
 
 # GitHub Actions testing flow
@@ -13,7 +13,7 @@ GitHub Actions selects explicit test lanes, prepares disposable resources, runs 
 ## Entry Points
 
 - `.github/workflows/ci.yml:jobs`: PR, main push, merge-group and manual checks on ephemeral runners.
-- `.github/workflows/full-integration.yml:jobs`: main-only manual protected integration, bound to the dispatched commit.
+- `.github/workflows/full-integration.yml:jobs`: automatic `provider-account` on every main push, plus manual main-only integration, bound to the event commit.
 - `scripts/ci/run-tests.mjs:main`: local or workflow `audit`, `run` and `aggregate` commands; the suite map is the coverage owner.
 
 ## Flow
@@ -22,8 +22,8 @@ GitHub Actions selects explicit test lanes, prepares disposable resources, runs 
 graph TD
   subgraph Actions["GitHub Actions"]
     A["PR or main event"] --> B["PR-safe jobs"]
-    C["Main integration dispatch"] --> D["Environment protection preflight"]
-    D -->|approved environment| E["Protected jobs"]
+    C["Main push or integration dispatch"] --> D["Environment protection preflight"]
+    D -->|main-only provider or approved other lane| E["Protected jobs"]
     D -->|missing protection| X["Failed check"]
   end
   subgraph Runner["Disposable job runner"]
@@ -47,9 +47,10 @@ graph TD
 
 ### 1. Select one source revision and coverage group
 
-`.github/workflows/ci.yml:jobs` and `.github/workflows/full-integration.yml:jobs`
+`.github/workflows/ci.yml:jobs`, `.github/workflows/full-integration.yml:jobs`, and
+`scripts/ci/full-integration-preflight.mjs:validateFullIntegrationPreflight`
 
-The PR workflow uses the event checkout and supplies no external service credentials. Its aggregate requires exactly five lanes: `checks-baseline`, `postgres`, `images-packaging`, `k3d-fixture-configuration`, and `logging-collector`. The protected workflow admits only a main dispatch, checks configured environment protection, and checks out the immutable dispatched SHA. Review approval binds that SHA. A targeted integration run has a narrower claim than a full inventory run.
+The PR workflow uses the event checkout and supplies no external service credentials. Its aggregate requires exactly five lanes: `checks-baseline`, `postgres`, `images-packaging`, `k3d-fixture-configuration`, and `logging-collector`. Full Integration admits only `refs/heads/main`, checks configured environment protection, and checks out the immutable event SHA. A main push selects only `provider-account`; a manual dispatch selects its requested lane or `all`. Automatic runs use distinct concurrency groups so every push is retained. The provider environment must allow exactly the `main` branch and needs no per-run reviewer approval. Other credentialed environments still require reviewers with self-review prevention. No PR event enters this credentialed workflow. A targeted integration run has a narrower claim than a full inventory run.
 
 Both workflows call the shared [run-ci-lane action](../../.github/actions/run-ci-lane/action.yml) after checkout. It owns tool and dependency setup, baseline checks when selected, lane preparation, execution, unconditional cleanup, and sanitized result upload. Callers keep the source revision, timeout, protected environment and explicit credentials.
 
@@ -108,6 +109,8 @@ The aggregate runs after success or failure and checks expected job outcomes plu
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-09: Run provider-account automatically for every main push, preserve main-only credentials, and retain per-run approvals for other credentialed lanes.
 
 - 2026-09-08 07:42: Distinguish the explicit SSH host lane from automatic CI and full-group coverage. (01a07d92-d866-7731-afe5-abab67d8966c - 4d83087229961f3665b923d2581c0b71b988cc9c)
 

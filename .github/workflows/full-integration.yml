@@ -1,6 +1,9 @@
 name: Full Integration
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       lane:
@@ -27,7 +30,7 @@ permissions:
   deployments: read
 
 concurrency:
-  group: full-integration
+  group: ${{ github.event_name == 'push' && format('full-integration-push-{0}', github.run_id) || 'full-integration' }}
   cancel-in-progress: false
 
 env:
@@ -41,83 +44,24 @@ jobs:
     timeout-minutes: 10
     outputs:
       run_all: ${{ steps.select.outputs.run_all }}
+      selected_lane: ${{ steps.select.outputs.selected_lane }}
     steps:
-      - name: Require main dispatch
+      - name: Require main source
         if: github.ref != 'refs/heads/main'
         run: |
-          echo "Full integration must be dispatched from main at the approved github.sha."
+          echo "Full integration must run from main at the approved github.sha."
           exit 1
-      - name: Validate lane selection
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate lane and environment policy
         id: select
         env:
-          LANE: ${{ inputs.lane }}
+          GITHUB_TOKEN: ${{ github.token }}
+          INPUT_LANE: ${{ inputs.lane }}
         run: |
-          node <<'NODE'
-          const lane = process.env.LANE;
-          const lanes = new Set(["docker-model", "k3d-model", "gateway-routing", "production-tui", "slack", "provider-account", "openshell", "helper-timeout", "logging-collector", "k3d-otel", "all"]);
-          if (!lanes.has(lane)) {
-            throw new Error(`Unknown lane: ${lane}`);
-          }
-          require("fs").appendFileSync(process.env.GITHUB_OUTPUT, `run_all=${lane === "all"}\n`);
-          NODE
-      - name: Verify protected environments exist
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          LANE: ${{ inputs.lane }}
-        run: |
-          node --input-type=module <<'NODE'
-          const repository = process.env.REPOSITORY;
-          const selected = process.env.LANE;
-          const laneEnvironments = {
-            "docker-model": "integration-model",
-            "k3d-model": "integration-model",
-            "production-tui": "integration-model",
-            "k3d-otel": "integration-otel",
-            "gateway-routing": "integration-routing",
-            slack: "integration-slack",
-            "provider-account": "integration-provider-account",
-            openshell: "integration-openshell",
-          };
-          const required = [...new Set(Object.entries(laneEnvironments)
-            .filter(([lane]) => selected === "all" || selected === lane)
-            .map(([, environment]) => environment))];
-          async function github(path) {
-            const response = await fetch(`https://api.github.com/repos/${repository}${path}`, {
-              headers: {
-                Accept: "application/vnd.github+json",
-                Authorization: `Bearer ${process.env.GH_TOKEN}`,
-                "X-GitHub-Api-Version": "2022-11-28",
-                "User-Agent": "openclaw-enterprise-full-integration",
-              },
-            });
-            if (!response.ok) {
-              throw new Error(`GitHub API ${path} returned ${response.status}.`);
-            }
-            return response.json();
-          }
-          for (const environment of required) {
-            const body = await github(`/environments/${environment}`);
-            const requiredReviewers = body.protection_rules?.find((rule) => rule.type === "required_reviewers");
-            if (!requiredReviewers) {
-              throw new Error(`Protected environment ${environment} has no required reviewers.`);
-            }
-            if (requiredReviewers.prevent_self_review !== true) {
-              throw new Error(`Protected environment ${environment} does not prevent self-review.`);
-            }
-            const policy = body.deployment_branch_policy;
-            if (policy?.protected_branches === true) {
-              continue;
-            }
-            if (policy?.custom_branch_policies !== true) {
-              throw new Error(`Protected environment ${environment} is not restricted to protected branches or main.`);
-            }
-            const policies = await github(`/environments/${environment}/deployment-branch-policies`);
-            if (!policies.branch_policies?.some((branch) => branch.name === "main")) {
-              throw new Error(`Protected environment ${environment} has no main deployment branch policy.`);
-            }
-          }
-          NODE
+          node scripts/ci/full-integration-preflight.mjs
 
   pr-safe-same-sha:
     name: Same-SHA ${{ matrix.title }}
@@ -294,7 +238,7 @@ jobs:
     name: Provider Account
     runs-on: ubuntu-24.04
     needs: preflight
-    if: inputs.lane == 'all' || inputs.lane == 'provider-account'
+    if: github.event_name == 'push' || inputs.lane == 'all' || inputs.lane == 'provider-account'
     timeout-minutes: 25
     environment: integration-provider-account
     env:
@@ -443,11 +387,12 @@ jobs:
         env:
           NEEDS_JSON: ${{ toJson(needs) }}
           LANE: ${{ inputs.lane }}
+          SELECTED_LANE: ${{ needs.preflight.outputs.selected_lane || (github.event_name == 'push' && 'provider-account' || inputs.lane) }}
         run: |
           node <<'NODE'
           const fs = require("fs");
           const needs = JSON.parse(process.env.NEEDS_JSON);
-          const lane = process.env.LANE;
+          const lane = process.env.SELECTED_LANE || process.env.LANE;
           const out = { preflight: needs.preflight };
           if (lane === "all") {
             for (const name of ["checks-baseline", "postgres", "images-packaging", "k3d-fixture-configuration", "logging-collector"]) {
@@ -465,7 +410,7 @@ jobs:
           NODE
       - name: Aggregate targeted runtime results
         if: needs.preflight.outputs.run_all != 'true'
-        run: node scripts/ci/run-tests.mjs aggregate "${{ inputs.lane }}" --results-dir "$RUNNER_TEMP/results" --needs "$RUNNER_TEMP/needs.json"
+        run: node scripts/ci/run-tests.mjs aggregate "${{ needs.preflight.outputs.selected_lane || (github.event_name == 'push' && 'provider-account' || inputs.lane) }}" --results-dir "$RUNNER_TEMP/results" --needs "$RUNNER_TEMP/needs.json"
       - name: Aggregate full suite
         if: needs.preflight.outputs.run_all == 'true'
         run: node scripts/ci/run-tests.mjs aggregate full --results-dir "$RUNNER_TEMP/results" --needs "$RUNNER_TEMP/needs.json"

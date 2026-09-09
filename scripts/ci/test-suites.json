@@ -142,6 +142,9 @@
           "path": "tests/integration/ci-runner.test.mjs"
         },
         {
+          "path": "tests/integration/full-integration-preflight.test.mjs"
+        },
+        {
           "path": "tests/integration/ci-cleanup.test.mjs"
         },
         {
