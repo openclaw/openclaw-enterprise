@@ -805,6 +805,8 @@ async function registerImageInK3d(statePath, state, cluster, image, envName) {
     await execFile(process.env.OPENCLAW_CI_K3D_BIN ?? "k3d", [
       "image",
       "import",
+      "--mode",
+      "direct",
       archive,
       "-c",
       cluster.name,

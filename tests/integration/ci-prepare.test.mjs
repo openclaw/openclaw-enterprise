@@ -122,10 +122,10 @@ if (command === "k3d") {
   }
   if (equals(args, ["kubeconfig", "get", state.cluster])) finish("apiVersion: v1\n");
   if (equals(args, ["cluster", "delete", state.cluster])) finish();
-  if (equals(args.slice(0, 2), ["image", "import"]) &&
-      equals(args.slice(3), ["-c", state.cluster])) {
-    assert.ok(args[2] === state.archive || args[2] === state.tag);
-    if (args[2] === state.archive) assert.ok(existsSync(state.archive));
+  if (equals(args.slice(0, 4), ["image", "import", "--mode", "direct"]) &&
+      equals(args.slice(5), ["-c", state.cluster])) {
+    assert.equal(args[4], state.archive);
+    assert.ok(existsSync(state.archive));
     if (scenario === "nonzero-import") {
       process.stderr.write("synthetic import command failure\n");
       process.exit(17);
