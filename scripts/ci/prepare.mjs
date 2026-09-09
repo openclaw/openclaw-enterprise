@@ -1058,7 +1058,7 @@ async function prepareLane({ lane, statePath }) {
       break;
     case "provider-account":
       await ensurePostgresServer(resolvedStatePath, state);
-      await prepareK3dModelLane(resolvedStatePath, state, env, { buildRuntime: false });
+      await prepareK3dModelLane(resolvedStatePath, state, env, { buildRuntime: true });
       break;
     case "openshell": {
       await ensurePostgresServer(resolvedStatePath, state);

@@ -598,7 +598,16 @@ ordinary runtime file for both coverage groups. See [Slack test settings](refere
 
 Use the same disposable cluster, migrated database, and immutable runtime
 images. Supply a protected admin-key file and the exact authorized workspace ID;
-the test creates a real provider account and issues its model credential.
+the test creates a real provider account and issues its model credential. For a
+direct local `node --test` run, import approved gateway and Agent images first
+and export their immutable `image@sha256:<digest>` references as shown in
+[Kubernetes model turns and Secrets](#kubernetes-model-turns-and-secrets).
+
+The protected `provider-account` GitHub Actions lane builds the checked-in
+runtime image and imports it into the run-owned k3d cluster when either
+`OCC_TEST_KUBERNETES_GATEWAY_IMAGE` or `OCC_TEST_KUBERNETES_AGENT_IMAGE` is
+unset. If both image variables are set, the lane uses those explicit references
+after validating that each is immutable.
 
 ```sh
 (

@@ -392,6 +392,37 @@ test("prepareFile applies the images packaging Node base default without hiding 
   assert.match(invalid.stderr, /NODE_BASE_IMAGE must be an immutable/);
 });
 
+test("provider-account preparation accepts absent image inputs before prepared state exists", async (t) => {
+  const root = await fixture(t);
+  const adminKeyPath = join(root, "chatgpt-admin.key");
+  const statePath = join(root, "missing-state.json");
+  await writeFile(adminKeyPath, "admin key\n", { mode: 0o600 });
+  await chmod(adminKeyPath, 0o600);
+
+  const result = runPrepare(
+    [
+      "--lane",
+      "provider-account",
+      "--file",
+      "tests/integration/service-account-driver-real.test.mjs",
+      "--state",
+      statePath,
+    ],
+    {
+      OCC_TEST_OPENAI_MODEL: "gpt-test",
+      OCC_TEST_CHATGPT_WORKSPACE_ID: "workspace-test",
+      OCC_TEST_CHATGPT_ADMIN_KEY_PATH: adminKeyPath,
+      OCC_TEST_KUBERNETES_GATEWAY_IMAGE: "",
+      OCC_TEST_KUBERNETES_AGENT_IMAGE: "",
+    },
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /requires a prior prepareLane/);
+  assert.doesNotMatch(result.stderr, /OCC_TEST_KUBERNETES_.*IMAGE/);
+  await assert.rejects(() => stat(statePath), { code: "ENOENT" });
+});
+
 test("prepareLane rejects mutable Kubernetes image inputs before creating state", async (t) => {
   const root = await fixture(t);
   const adminKeyPath = join(root, "admin.key");
