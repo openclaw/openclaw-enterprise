@@ -650,15 +650,15 @@ async function prepareFixtureImage(statePath, state, cluster) {
     image,
     fixtureDockerContext,
   ]);
-  await execFile(process.env.OPENCLAW_CI_K3D_BIN ?? "k3d", [
-    "image",
-    "import",
-    image,
-    "-c",
-    cluster.name,
-  ]);
   await markResourceReady(statePath, state, resource);
-  return { image, resourceId: resource.id };
+  const registered = await registerImageInK3d(
+    statePath,
+    state,
+    cluster,
+    image,
+    "OCC_TEST_KUBERNETES_IMAGE",
+  );
+  return { image: registered.reference, resourceId: resource.id };
 }
 
 function immutableDigest(image) {
