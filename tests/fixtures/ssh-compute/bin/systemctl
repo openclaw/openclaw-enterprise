@@ -1,0 +1,57 @@
+#!/bin/sh
+set -eu
+: "${OCC_SSH_FIXTURE_STATE:?fixture state required}"
+: "${OCC_SSH_FIXTURE_UNIT_DIRECTORY:?fixture unit directory required}"
+printf '%s\n' "$*" >> "$OCC_SSH_FIXTURE_STATE/systemctl.log"
+operation=$1
+shift
+if [ "${1:-}" = '--quiet' ]; then shift; fi
+if [ "$operation" = 'show' ]; then
+  [ "${1:-}" = '-p' ] && shift
+  [ "${1:-}" = 'ActiveState' ] && shift
+  [ "${1:-}" = '--value' ] && shift
+fi
+unit=${1:-}
+pidfile="$OCC_SSH_FIXTURE_STATE/$unit.pid"
+enabled="$OCC_SSH_FIXTURE_STATE/$unit.enabled"
+active() {
+  [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null
+}
+stop() {
+  if active; then kill "$(cat "$pidfile")" 2>/dev/null || :; fi
+  rm -f "$pidfile"
+}
+case "$operation" in
+  --version) printf '%s\n' 'systemd SSH conformance fixture' ;;
+  daemon-reload) : ;;
+  enable) : > "$enabled" ;;
+  disable) rm -f "$enabled" ;;
+  is-enabled) [ -f "$enabled" ] ;;
+  stop) stop ;;
+  is-active) active ;;
+  show) if active; then printf '%s\n' active; else printf '%s\n' inactive; fi ;;
+  restart|start)
+    if [ "$operation" = start ] && active; then exit 0; fi
+    stop
+    port=$(sed -n 's/^Environment=OPENCLAW_GATEWAY_PORT=//p' "$OCC_SSH_FIXTURE_UNIT_DIRECTORY/$unit")
+    node -e '
+      const { spawn } = require("node:child_process");
+      const { writeFileSync, openSync, closeSync } = require("node:fs");
+      const [port, pidfile, state] = process.argv.slice(1);
+      const log = openSync(state + "/listener.log", "a", 0o600);
+      const listener = spawn(process.execPath, ["-e", `
+        const { createServer } = require("node:http");
+        const { appendFileSync } = require("node:fs");
+        createServer((request, response) => {
+          appendFileSync(process.argv[2] + "/readyz.log", request.method + " " + request.url + "\\n");
+          response.writeHead(request.method === "GET" && request.url === "/readyz" ? 200 : 404);
+          response.end();
+        }).listen(Number(process.argv[1]), "127.0.0.1");
+      `, port, state], { detached: true, stdio: ["ignore", log, log] });
+      writeFileSync(pidfile, String(listener.pid), { mode: 0o600 });
+      closeSync(log);
+      listener.unref();
+    ' "$port" "$pidfile" "$OCC_SSH_FIXTURE_STATE"
+    ;;
+  *) printf '%s\n' 'Unsupported fixture systemctl invocation' >&2; exit 1 ;;
+esac

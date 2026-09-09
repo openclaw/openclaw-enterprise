@@ -576,3 +576,43 @@ summary:focus-visible {
     monospace;
   tab-size: 2;
 }
+
+.workspace-files .configuration-editor {
+  min-height: 200px;
+}
+
+.runtime-credentials {
+  max-width: 760px;
+}
+.credential-status-list {
+  display: grid;
+  grid-template-columns: 130px minmax(0, 1fr);
+  gap: 10px 16px;
+  margin: 18px 0 4px;
+}
+.credential-status-list dt {
+  color: var(--muted);
+}
+.credential-status-list dd {
+  margin: 0;
+}
+.credential-status {
+  display: inline-block;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.credential-status.stored {
+  background: #e8f0e9;
+  color: var(--accent);
+}
+.credential-status.missing {
+  background: #f8ebe7;
+  color: #9b4638;
+}
+.credential-actions {
+  justify-content: flex-start;
+}
+.credential-form {
+  margin-top: 12px;
+}

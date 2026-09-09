@@ -25,6 +25,9 @@
           "path": "tests/conformance/kubernetes-compute.test.mjs"
         },
         {
+          "path": "tests/conformance/kubernetes-runtime-credentials.test.mjs"
+        },
+        {
           "path": "tests/conformance/kubernetes-configuration.test.mjs"
         },
         {
@@ -100,6 +103,9 @@
           "path": "tests/integration/secret-api.test.mjs"
         },
         {
+          "path": "tests/integration/runtime-credentials-api.test.mjs"
+        },
+        {
           "path": "tests/integration/secret-driver-startup.test.mjs"
         },
         {
@@ -148,6 +154,9 @@
           "path": "tests/browser/console-agents.test.mjs"
         },
         {
+          "path": "tests/browser/console-runtime-credentials.test.mjs"
+        },
+        {
           "path": "tests/browser/console.test.mjs"
         },
         {
@@ -158,6 +167,12 @@
         },
         {
           "path": "tests/integration/container-promote.test.mjs"
+        },
+        {
+          "path": "tests/conformance/ssh-compute.test.mjs"
+        },
+        {
+          "path": "tests/integration/ssh-compute-startup.test.mjs"
         }
       ]
     },
@@ -694,6 +709,26 @@
             "production embedded runtime emits actual OTLP logs during a real model turn",
             "production dedicated runtime emits actual OTLP logs during a real model turn"
           ]
+        }
+      ]
+    },
+    "ssh-host": {
+      "env": {
+        "OCC_TEST_SSH_REAL": "1"
+      },
+      "requiredEnv": [
+        "OCC_TEST_SSH_ADDRESS",
+        "OCC_TEST_SSH_PORT",
+        "OCC_TEST_SSH_USER",
+        "OCC_TEST_SSH_IDENTITY_FILE",
+        "OCC_TEST_SSH_KNOWN_HOSTS_FILE",
+        "OCC_TEST_SSH_NODE_PATH",
+        "OCC_TEST_SSH_OPENCLAW_PATH",
+        "OCC_TEST_SSH_RUNTIME_USER"
+      ],
+      "files": [
+        {
+          "path": "tests/integration/ssh-compute-real.test.mjs"
         }
       ]
     }

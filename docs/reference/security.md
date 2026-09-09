@@ -144,21 +144,33 @@ approval or supply-chain attestation.
 
 Fixture-based infrastructure tests prove only their documented Pod and network
 model. A live Agent turn additionally requires real OpenClaw and Codex images,
-operator-provisioned tenant Secrets, enforcing NetworkPolicy, and a model API
+tenant Secrets provisioned through the authorized initial credential API or
+operator workflow, enforcing NetworkPolicy, and a model API
 credential.
 
 ## Temporary runtime credential exceptions
 
-Every Agent retains one operator-owned transport Secret in its exact tenant
-namespace. It contains a gateway admission token. Dedicated Codex additionally
+Every Agent retains one Agent-specific transport Secret in its exact tenant
+namespace, provisioned by the selected Compute Driver through the initial
+credential API or by an operator. It contains a gateway admission token. Dedicated Codex additionally
 receives a distinct `APP_SERVER_TOKEN`: its separate gateway connects only to
 its exact Agent Service over same-Namespace `ws://`, and the real app-server
 verifies the capability token's SHA-256 digest. Embedded OpenClaw has no
 app-server transport.
 
+The initial credential API requires exact Agent read and operate access, a ready
+Namespace, and no historical revisions. It generates transport tokens and a local gateway password internally
+and stores supplied model and Slack values in correctly owned Kubernetes Secrets.
+Those values pass transiently through the authorized API; they are excluded from
+Configuration, database records, audit fields, responses, and logs. Provisioning
+creates missing whole Secrets only and rejects foreign, malformed, or conflicting
+existing groups. It provides no credential readback, rotation, or deletion API.
+A failed request can leave completed Secret creates in place; recovery reads
+metadata and never deletes them as a rollback.
+
 There are two supported model-credential paths:
 
-- **Existing API key:** An operator-owned, Agent-specific model Secret supplies
+- **Existing API key:** An Agent-specific model Secret supplies
   `OPENAI_API_KEY` only to dedicated Codex or the combined embedded OpenClaw
   gateway/Harness. When a native account references an existing source Secret,
   an independently authorized operator materializes that exact source into the

@@ -44,8 +44,11 @@ No service key is needed for browser login.
 
 The [console](../reference/console.md) lists accessible Agents, Providers, and
 Namespaces. It can create an Agent with editable starter Configuration JSON and edit
-supported Slack or Microsoft Teams channel settings on the saved Configuration
-draft. It does not list Configurations, deploy Agents, delete Agents, or report
+supported Slack or Microsoft Teams channel settings during creation and on the saved
+Configuration draft. On Kubernetes, provision initial OpenAI and Slack credentials
+from the saved Agent draft, then select **Deploy saved draft**,
+then open **Workspace files** to edit the four supported files once the gateway is ready.
+It does not list Configurations, delete Agents, or report
 live gateway health. A fresh Installation has a `default` Namespace and no
 Agents; provision resources and access through the API procedures in the
 deployment guide. Use the bottom **OpenClaw Enterprise** menu to select a

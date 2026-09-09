@@ -79,7 +79,7 @@ The optional `drivers.sandbox` selection currently supports the bundled
 [OpenShell SandboxDriver](drivers/openshell-sandbox.md) with the bundled Kubernetes
 Compute Driver. It is loaded from the same startup YAML, injected into the
 Kubernetes Compute Driver before workers reconcile revisions, and fails startup
-when paired with an installed Compute Driver. OpenShell-selected Agents must use
+when paired with SSH or an installed Compute Driver. OpenShell-selected Agents must use
 dedicated Codex execution; embedded OpenClaw remains unsupported for this
 SandboxDriver.
 
@@ -529,6 +529,32 @@ support fails the TUI helper before that embedded proof can pass. Do not replace
 this path with controller-only shortcuts, a mocked Docker API, or readiness-only
 checks.
 
+### SSH real-host test environment
+
+`node --test tests/integration/ssh-compute-real.test.mjs` is selected only by
+`OCC_TEST_SSH_REAL=1`. Otherwise it explicitly skips and lists its inputs. When
+selected, missing inputs or unavailable hosts fail; there is no fixture fallback.
+
+| Variable                        | Meaning                                                                 |
+| ------------------------------- | ----------------------------------------------------------------------- |
+| `OCC_TEST_SSH_REAL`             | Set to `1` for a disposable Linux systemd/sshd host with real OpenClaw. |
+| `OCC_TEST_SSH_ADDRESS`          | Required host address.                                                  |
+| `OCC_TEST_SSH_PORT`             | Required SSH port, `1`–`65535`.                                         |
+| `OCC_TEST_SSH_USER`             | Required; currently `root`.                                             |
+| `OCC_TEST_SSH_IDENTITY_FILE`    | Required absolute private-key path on the test worker.                  |
+| `OCC_TEST_SSH_KNOWN_HOSTS_FILE` | Required absolute verified known-hosts path on the test worker.         |
+| `OCC_TEST_SSH_NODE_PATH`        | Required absolute Node.js 24 executable path on the host.               |
+| `OCC_TEST_SSH_OPENCLAW_PATH`    | Required absolute OpenClaw entrypoint path on the host.                 |
+| `OCC_TEST_SSH_RUNTIME_USER`     | Required prefix for Driver-managed per-Agent Unix accounts.             |
+| `OCC_TEST_SSH_ROOT`             | Optional host state root, default `/var/lib/openclaw-enterprise`.       |
+| `OCC_TEST_SSH_UNIT_DIRECTORY`   | Optional host unit directory, default `/etc/systemd/system`.            |
+
+The suite uses ports `18800`–`18899`, creates unique Namespace/Agent identities,
+verifies readiness through SSH, cuts over two revisions, checks private Agent
+UID/GID isolation and state persistence, retires the first snapshot, and deletes its Namespace. It requires
+no model credential and proves no model turn. Use the
+[container rig](../testing.md#ssh-raw-hosts) or a disposable host of your own.
+
 ### Kubernetes fixture test environment
 
 Real-cluster integration is opt-in for ordinary development and required when
@@ -877,6 +903,26 @@ production Harness receives only its own Agent's projected identity and
 operator-owned model key. See the
 [Kubernetes Compute Driver guide](drivers/kubernetes-compute.md) for the exact options,
 installation prerequisites, and k3d verification.
+
+### SSH Compute Driver
+
+[`SshComputeDriver` and `createSshComputeDriver`](../../apps/controller/src/drivers/compute/ssh/index.ts)
+accept `ssh`, a `hosts` map keyed by exact Namespace name, `runtime`, and
+`network.gatewayPortRange` as documented in the
+[SSH reference](drivers/ssh-compute.md#requirements-and-configuration). The
+closed static schema and `validateConfiguration` reject unknown keys, unsafe
+paths, non-root SSH users, and invalid ports/ranges. `runtime.user` is the prefix
+for Driver-managed per-Agent system users and private groups, rather than an
+existing shared gateway account. The Driver refuses to adopt unowned accounts.
+
+The optional constructor/factory `selection` accepts `id`, `implementation`,
+`lifecycleDrivers`, and the internal `SshCommandExecutor` transport seam.
+Defaults are `compute-ssh` and `occ/ssh`. Installation YAML cannot inject an
+executor or lifecycle owners. Production selection skips Kubernetes-only
+Compute configuration checks, retains the required Secret selection, and
+rejects `drivers.sandbox`. `preflight` probes configured hosts; `bindAgent`
+captures server-owned Namespace and ServicePrincipal identity before revisions.
+There is no gateway endpoint resolver or periodic runtime maintenance.
 
 ### Kubernetes Configuration Driver
 

@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+: "${OCC_SSH_FIXTURE_STATE:?fixture state required}"
+database=${1:-}
+name=${2:-}
+[ "$database" = group ] || exit 1
+file="$OCC_SSH_FIXTURE_STATE/accounts/groups/$name"
+[ -f "$file" ] || exit 1
+gid=$(cat "$file")
+printf '%s:x:%s:\n' "$name" "$gid"

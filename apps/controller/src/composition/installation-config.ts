@@ -26,6 +26,7 @@ import {
   type KubernetesComputeDriverOptions,
 } from "../drivers/compute/kubernetes/index.ts";
 import { currentComputeAbortSignal } from "../drivers/compute/operation-context.ts";
+import { SshComputeDriver, type SshComputeDriverOptions } from "../drivers/compute/ssh/index.ts";
 import {
   KubernetesConfigurationDriver,
   type KubernetesConfigurationDriverOptions,
@@ -506,6 +507,13 @@ export async function loadInstallationConfiguration(options: {
     packageRoot,
     options.packageRoot !== undefined,
   );
+  const sshCompute = computePackage === undefined && computeSelection.id === "compute-ssh";
+  const kubernetesCompute = computePackage === undefined && !sshCompute;
+  if (sshCompute && sandboxSelection !== undefined) {
+    throw new Error(
+      "drivers.sandbox is unsupported with compute-ssh; it requires the bundled Kubernetes Compute Driver.",
+    );
+  }
   const sandboxPackage =
     sandboxSelection === undefined
       ? undefined
@@ -535,8 +543,8 @@ export async function loadInstallationConfiguration(options: {
   const compute = selected(
     computeSelection,
     "compute",
-    computePackage?.implementation ?? "occ/kubernetes",
-    computePackage?.module ?? KubernetesComputeDriver,
+    computePackage?.implementation ?? (sshCompute ? "occ/ssh" : "occ/kubernetes"),
+    computePackage?.module ?? (sshCompute ? SshComputeDriver : KubernetesComputeDriver),
   );
   const secret = selected(
     secretSelection,
@@ -556,7 +564,7 @@ export async function loadInstallationConfiguration(options: {
   if (sandbox !== undefined && computePackage !== undefined) {
     throw new Error("drivers.sandbox requires the bundled Kubernetes Compute Driver.");
   }
-  if (options.mode === "production" && computePackage === undefined) {
+  if (options.mode === "production" && kubernetesCompute) {
     const kubernetes = compute.configuration as unknown as KubernetesComputeDriverOptions;
     if (kubernetes.images.requireImmutableDigest !== true) {
       throw new Error("Production Kubernetes workloads require immutable image digests.");
@@ -605,18 +613,33 @@ export async function loadInstallationConfiguration(options: {
               implementation: sandbox.implementation,
             })
           : (createExternalDriver(sandboxPackage.module, sandbox, "sandbox") as SandboxDriver);
-  const computeDriver =
-    computePackage === undefined
-      ? new KubernetesComputeDriver(
-          compute.configuration as unknown as KubernetesComputeDriverOptions,
-          {
-            id: compute.id,
-            implementation: compute.implementation,
-            lifecycleDrivers: [configurationDriver],
-            ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
-          },
-        )
-      : (createExternalDriver(computePackage.module, compute, "compute") as ComputeDriver);
+  let computeDriver: ComputeDriver;
+  if (computePackage !== undefined) {
+    computeDriver = createExternalDriver(
+      computePackage.module,
+      compute,
+      "compute",
+    ) as ComputeDriver;
+  } else if (sshCompute) {
+    computeDriver = new SshComputeDriver(
+      compute.configuration as unknown as SshComputeDriverOptions,
+      {
+        id: compute.id,
+        implementation: compute.implementation,
+        lifecycleDrivers: [configurationDriver],
+      },
+    );
+  } else {
+    computeDriver = new KubernetesComputeDriver(
+      compute.configuration as unknown as KubernetesComputeDriverOptions,
+      {
+        id: compute.id,
+        implementation: compute.implementation,
+        lifecycleDrivers: [configurationDriver],
+        ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
+      },
+    );
+  }
   const secretDriver = new KubernetesSecretDriver(
     secret.configuration as unknown as KubernetesSecretDriverOptions,
     { id: secret.id, implementation: secret.implementation },

@@ -68,6 +68,13 @@ Driver's closed schema before implementation-owned semantic validation;
 invalid package exports, identity, capability, or lifecycle wiring reject
 startup without fallback.
 
+For packageless Compute, the exact id `compute-ssh` selects `SshComputeDriver`
+with implementation `occ/ssh`. Every other packageless id retains Kubernetes
+selection. The [SSH reference](../reference/drivers/ssh-compute.md) owns the host
+contract. Its helper is read at module import and sent through bounded SSH
+operations; `bindAgent` supplies authoritative Namespace and ServicePrincipal
+identity before revision operations.
+
 Installed packages run arbitrary, unsandboxed code with controller database,
 credential, Kubernetes, tenant, and authorization authority. An untrusted or
 malicious package can violate authorization and tenant isolation; package
@@ -80,15 +87,16 @@ validation and lockfile integrity do not establish publisher trust.
 The loader constructs Configuration, optional Sandbox, Compute, and Secret
 Drivers and returns them with the validated Installation and required
 `createIAMDriver(state)` function. A selected Sandbox Driver is passed to bundled
-Kubernetes Compute; selecting it with packaged Compute rejects startup. Bundled and
+Kubernetes Compute; selecting it with SSH or packaged Compute rejects startup. Bundled and
 packaged IAM receive the same controller-owned platform state. The bundled IAM
 Driver loads current policy for each identity lookup and authorization decision;
 packaged Drivers must do the same, which operator review verifies because the
 runtime cannot enforce package internals. Packaged factories must return their exact server-owned capability
 and identity.
 
-Kubernetes-specific image, projected-credential, and preflight requirements
-apply only to bundled Kubernetes Compute. Startup enforces the
+Kubernetes-specific image and projected-credential requirements apply only to
+bundled Kubernetes Compute. SSH preflight verifies local SSH files and probes
+each configured host. Startup enforces the
 [production revision-stage contract](../reference/drivers/compute.md#production-revision-stages)
 before returning any production runtime; development can use a four-operation
 Driver, and the worker still fails closed if a required stage becomes unavailable.

@@ -454,6 +454,17 @@ export class ControllerWorker {
     await stage.call(this.compute, revision, context);
   }
 
+  private shouldActivateAfterCommit(compute: ComputeDriver): boolean {
+    return (
+      compute.activationOrder !== "beforeCommit" &&
+      (this.mode === "production" || typeof compute.activateRevision === "function")
+    );
+  }
+
+  private shouldActivatePublishedRevision(compute: ComputeDriver): boolean {
+    return this.mode === "production" || typeof compute.activateRevision === "function";
+  }
+
   private async authorize(
     claim: ClaimedWork,
     namespace: Readonly<Namespace>,
@@ -667,7 +678,7 @@ export class ControllerWorker {
               return;
             }
           }
-          if (this.mode === "production") {
+          if (this.shouldActivatePublishedRevision(compute)) {
             await this.withClaimHeartbeat(claim, () =>
               this.stagedRevision("activateRevision", revision, secretContext.context),
             );
@@ -998,7 +1009,7 @@ export class ControllerWorker {
     const compute = this.compute;
     if (activated !== undefined) {
       try {
-        if (this.mode === "production" && compute.activationOrder !== "beforeCommit") {
+        if (this.shouldActivateAfterCommit(compute)) {
           await this.withClaimHeartbeat(claim, () =>
             this.stagedRevision("activateRevision", activated!, resolved.context),
           );
