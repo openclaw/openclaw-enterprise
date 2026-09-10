@@ -5,7 +5,8 @@ Start locally, install a production control plane, or look up supported behavior
 
 ## Start and deploy
 
-- [Quickstart](guides/quickstart.md): start locally, sign in, and verify API access.
+- [Quickstart](guides/quickstart.md): start locally on Docker or Podman, sign in,
+  and verify API access.
 - [Deploy](guides/deploy.md): choose a deployment and follow its installation steps.
 - [Concepts](guides/concepts.md): understand Namespaces, Agents, revisions, and credentials.
 - [Observability](guides/observability.md): export logs and check Collector health.
@@ -27,7 +28,8 @@ including capabilities that have not shipped.
 
 ## Understand the code
 
-Start with [platform startup](flows/platform-startup.md) or the
+Start with [Docker or Podman Compose development](flows/docker-compose-development.md),
+[platform startup](flows/platform-startup.md), or the
 [controller worker](flows/controller-worker.md). The **Understand the code** tab
 lists runtime traces for authentication, configuration, Drivers, and Agent execution.
 The [Agent plugin flow](flows/agent-plugins.md) traces desired state through

@@ -77,19 +77,19 @@ run `KUBECONFIG="$KUBECONFIG_FILE" k3d cluster delete "$CLUSTER"`.
 
 ## Stop development safely
 
-```bash
-docker compose down
-```
+Run the exact command under `Cleanup` in the `dev-up` output. The Podman form
+includes its detected API socket and `compose.podman.yaml`; the Docker form
+remains `docker compose down` plus any forwarded global options.
 
-This preserves PostgreSQL, Configuration, and bootstrap-key volumes. Use
-`docker compose down --volumes` only when deliberately deleting the local
+This preserves PostgreSQL, Configuration, and bootstrap-key volumes. Add
+`--volumes` only when deliberately deleting the local
 Installation after accounting for Agent containers and tenant networks owned by
 Docker Compute.
 
 ## Development end-to-end TUI
 
-Prerequisites: completed [development startup](../deploy.md#development), exported
-`OCC_URL` and `OCC_SERVICE_KEY_FILE` from the `dev-up` output,
+Prerequisites: completed [development startup](../deploy.md#development) with
+Docker selected, exported `OCC_URL` and `OCC_SERVICE_KEY_FILE` from the `dev-up` output,
 `OPENAI_API_KEY` available to the worker, and the quickstart runtime image.
 
 Recreate the worker when it was already running without the model credential:

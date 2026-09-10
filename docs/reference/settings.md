@@ -1,6 +1,6 @@
 # Settings reference
 
-Configure the OpenClaw Enterprise Docker Compose development stack,
+Configure the OpenClaw Enterprise Compose development stack on Docker or Podman,
 internal-only production controller, PostgreSQL database, database migrations,
 and runtime configuration. Development retains local admission and uses PostgreSQL
 plus bundled Docker Compute and filesystem Configuration Drivers by default.

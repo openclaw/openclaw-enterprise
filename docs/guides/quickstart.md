@@ -5,8 +5,9 @@ locally, sign in to the console, and read the Installation through an
 authenticated API request. This proves controller access; it does not deploy an
 [Agent](concepts.md#agents-and-revisions) or make a model call.
 
-You need Docker Engine with Docker Compose, Bash, `curl`, and Python 3. Run
-commands from the repository root.
+You need either Docker Engine with Docker Compose, or Podman with
+`podman-compose` and `yq` v4. Bash, `curl`, and Python 3 are also required.
+Podman needs no `docker` alias. Run commands from the repository root.
 
 ## Start the local stack
 
@@ -14,9 +15,11 @@ commands from the repository root.
 ./scripts/dev-up
 ```
 
-The helper starts PostgreSQL, migration, bootstrap, API, and worker services,
-then copies the bootstrap service-key response into a private local file. Fresh
-bootstrap also creates the initial platform
+The helper selects a usable Docker Engine or falls back to Podman, validates the
+resolved Compose configuration without logging expanded credentials, starts
+PostgreSQL, migration, bootstrap, API, and worker services, then copies the
+bootstrap service-key response into a private local file. Fresh bootstrap also
+creates the initial platform
 [Namespace](concepts.md#tenancy) named `default`.
 
 The helper reuses the local quickstart runtime image tag. After changing the
@@ -26,6 +29,7 @@ before rerunning it.
 Expected output includes:
 
 - `OpenClaw Enterprise development stack is ready.`
+- the selected container engine
 - the API URL, usually `http://127.0.0.1:3000`
 - the Installation ID
 - the owner-readable service-key file path
@@ -80,20 +84,21 @@ an Agent.
 ## Clean up and stop
 
 If you are stopping after this API check, remove only the temporary local key
-copy printed by `dev-up`, then stop Compose:
+copy printed by `dev-up`, then run the exact command under `Cleanup` in its
+output. That command includes the Podman socket and override when Podman was
+selected:
 
 ```bash
 rm -- "$OCC_SERVICE_KEY_FILE"
 test -z "${OCC_SERVICE_KEY_DIRECTORY:-}" || rmdir -- "$OCC_SERVICE_KEY_DIRECTORY"
 unset OCC_SERVICE_KEY_FILE OCC_SERVICE_KEY_DIRECTORY
-docker compose down
+# Run the Cleanup command printed by dev-up.
 ```
 
-Local cleanup does not revoke the service key. `docker compose down` preserves
-the database, [Configuration](concepts.md#configuration-and-secrets), and
-bootstrap-key volumes. Use
-`docker compose down --volumes` only when intentionally deleting the local
-Installation.
+Local cleanup does not revoke the service key. Compose `down` preserves the
+database, [Configuration](concepts.md#configuration-and-secrets), and
+bootstrap-key volumes. Add `--volumes` to the printed cleanup command only when
+intentionally deleting the local Installation.
 
 Next, use [Deploy OpenClaw Enterprise](deploy.md) for production installation,
 customization, Agent/TUI proof, and startup-error diagnosis. For supported

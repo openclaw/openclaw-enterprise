@@ -4,16 +4,20 @@ updated: 2026-09-09
 last_updated_session: codex/01a08890-87c8-7293-bd75-d7fc58e52cf2
 ---
 
-# Docker Compose Development Flow
+# Docker or Podman Compose Development Flow
 
 ## Overview
 
 `scripts/dev-up` is the supported local OpenClaw Enterprise development entry
-point. The helper performs host preflight, selects or verifies runtime images,
-wraps Docker Compose, waits for PostgreSQL migration, Installation bootstrap,
+point. The helper performs host preflight, selects Docker Engine or Podman,
+selects or verifies runtime images, wraps the selected Compose implementation,
+waits for PostgreSQL migration, Installation bootstrap,
 API health, and worker readiness, then proves authenticated `/installation`
 access with a protected local copy of the bootstrap service key. That startup
-proof does not create an Agent, deploy an AgentRevision, or start a TUI.
+proof does not create an Agent, deploy an AgentRevision, or start a TUI. The
+verified Podman trace stops after control-plane startup, worker API preflight,
+and authenticated Installation access; the Agent runtime and TUI path remain
+Docker-verified.
 
 After startup, the operator uses authenticated API calls to select a Namespace,
 create a Configuration and Agent, then deploy it. The worker then claims durable
@@ -33,12 +37,13 @@ the first authenticated development API checks.
 
 - Trigger: `./scripts/dev-up [--key-output PATH] [-- COMPOSE_GLOBAL_OPTIONS...]`
   from the repository root, followed by authenticated API calls and optional
-  `docker exec -it` TUI attachment.
-- Source: `scripts/dev-up`, `compose.yaml`,
+  Docker-only Agent provisioning and `docker exec -it` TUI attachment.
+- Source: `scripts/dev-up`, `compose.yaml`, `compose.podman.yaml`,
   `apps/controller/src/server.mjs:start`,
   `apps/controller/src/worker.ts:ControllerWorker`, and
   `apps/controller/src/drivers/compute/docker/index.ts:DockerComputeDriver`.
-- Assumptions: Docker Engine, Docker Compose, Bash, `curl`, and Python 3 are
+- Assumptions: Docker Engine with Docker Compose, or Podman with
+  `podman-compose` and `yq` v4, is available; Bash, `curl`, and Python 3 are
   available; PostgreSQL can write `occ_postgres_data`; the controller can write
   `occ_configuration_data` at `/app/.development/configurations`; runtime
   images are supplied through `OCC_DOCKER_GATEWAY_IMAGE` and
@@ -54,7 +59,7 @@ the first authenticated development API checks.
 graph TD
   A["scripts/dev-up"] --> B["Preflight host tools and resolved Compose config"]
   B --> C["Select quickstart runtime image or validate custom images"]
-  C --> D["Docker Compose starts PostgreSQL, migrate, bootstrap, API, and worker"]
+  C --> D["Selected Compose starts PostgreSQL, migrate, bootstrap, API, and worker"]
   D --> E["Copy bootstrap service-key response to private local file"]
   E --> F["scripts/occ-api GET /installation proves authenticated access"]
   F --> G["Operator sends authenticated API provisioning and deploy calls"]
@@ -77,7 +82,7 @@ graph TD
 
 ### 1–5. Start and initialize the local stack
 
-[Docker Compose startup](docker-compose-development/startup.md) covers image selection, PostgreSQL/migration/bootstrap ordering, local API admission, and worker startup.
+[Docker or Podman Compose startup](docker-compose-development/startup.md) covers engine and image selection, PostgreSQL/migration/bootstrap ordering, local API admission, and worker startup.
 
 ### 6–11. Deploy an Agent, run the TUI, and clean up
 
@@ -90,6 +95,9 @@ graph TD
   fresh-database initialization, `worker.started` with `computeDriverId` set to
   `compute-docker-development`, a private copied service-key path, and a
   successful authenticated `/installation` proof.
+- Podman startup verification should show Podman as the selected engine, mount
+  only its reported API socket into the worker, and complete the same
+  authenticated Installation proof without a `docker` alias.
 - `docker network ls --filter label=org.openclaw.enterprise.compute-driver=docker`
   should show one owned network for each ready development Namespace.
 - `docker ps --filter label=org.openclaw.enterprise.compute-driver=docker`
@@ -115,7 +123,7 @@ graph TD
 - [Deployment guide: development end-to-end TUI](../guides/deploy/local-operations.md#development-end-to-end-tui)
 - [Quickstart](../guides/quickstart.md)
 - [Controller worker execution flow](controller-worker.md)
-- [Docker Compute Driver](../reference/drivers/docker-compute.md)
+- [Docker Compute Driver on Docker or Podman](../reference/drivers/docker-compute.md)
 - [Controller worker](../reference/controller.md)
 - [Configuration reference](../reference/settings.md)
 - [ComputeDriver contract](../reference/drivers/compute.md)
@@ -127,6 +135,10 @@ graph TD
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-09: Added automatic Podman selection, API socket delivery, Podman
+  status and bootstrap-copy handling, and the Docker-only Fluentd and Agent
+  runtime verification boundaries while retaining the Docker Compose path.
 
 - 2026-09-01 22:09: Document explicit runtime image rebuilding and link packaged-plugin and Codex compatibility checks. (01a05f89-ff1c-7643-a77f-7e1e3aed9e5f - 5fa47a6)
 

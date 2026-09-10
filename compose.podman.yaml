@@ -1,0 +1,6 @@
+services:
+  worker:
+    security_opt:
+      - label=disable
+    volumes:
+      - ${OCC_CONTAINER_ENGINE_SOCKET:?Podman API socket path is required}:/var/run/docker.sock

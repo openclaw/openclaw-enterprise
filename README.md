@@ -7,15 +7,18 @@ for deploying and managing [Agents](docs/guides/concepts.md#agents-and-revisions
 
 ## Getting Started
 
-Requires Docker Engine with Docker Compose, Bash, `curl`, and Python 3. Start
-the local stack and run with:
+Requires either Docker Engine with Docker Compose, or Podman with
+`podman-compose` and `yq` v4. Bash, `curl`, and Python 3 are also required. Start
+the local stack with:
 
 ```bash
 ./scripts/dev-up
 ```
 
-The helper uses Docker Compose, prepares the default quickstart runtime image
-when needed, and prints the loopback OCC URL, Installation ID, and private
+The helper prefers a usable Docker Engine and otherwise selects Podman directly;
+a `docker` compatibility alias is not required. It prepares the default
+quickstart runtime image when needed and prints the selected engine, loopback
+OCC URL, Installation ID, and private
 [service-key](docs/guides/concepts.md#identity-and-access) file path. Open the
 printed API URL with `/console/` to sign in, browse accessible Agents, Providers,
 and Namespaces, create Agents with editable Configuration JSON, and edit supported
@@ -25,7 +28,12 @@ continue to [development docs](docs/guides/deploy/local-operations.md#developmen
 A model credential is required to run Agent model turns, but not to start the
 stack.
 
-The local worker has Docker host access through the Docker socket. Use the
+The verified Podman boundary is control-plane startup, worker access to the
+Podman API, and the authenticated Installation check. The Agent runtime and TUI
+procedure remains Docker-verified.
+
+The local worker has access to the selected engine's Docker-compatible API
+socket. Use the
 [quickstart](docs/guides/quickstart.md) for the first local API request, the
 [deployment guide](docs/guides/deploy.md) for host requirements and production
 Kubernetes setup, and the [runtime image recipe](deploy/runtime/README.md) for
