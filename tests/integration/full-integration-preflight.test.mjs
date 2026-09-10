@@ -43,9 +43,13 @@ const mainOnlyPolicies = Object.freeze({
   branch_policies: [{ name: "main", type: "branch" }],
 });
 
-test("full integration preflight selects provider-account for every main push", async () => {
-  assert.equal(selectLane({ eventName: "push", inputLane: "all" }), "provider-account");
+test("full integration preflight selects only manual workflow lanes", async () => {
   assert.equal(selectLane({ eventName: "workflow_dispatch", inputLane: "all" }), "all");
+  assert.equal(
+    selectLane({ eventName: "workflow_dispatch", inputLane: "provider-account" }),
+    "provider-account",
+  );
+  assert.throws(() => selectLane({ eventName: "push", inputLane: "all" }));
   assert.throws(() => selectLane({ eventName: "pull_request", inputLane: "provider-account" }));
   assert.doesNotThrow(() => assertMainRef("refs/heads/main"));
   assert.throws(() => assertMainRef("refs/pull/1/merge"), /must run from main/);
@@ -137,13 +141,13 @@ test("non-provider integration environments still require reviewers", () => {
   );
 });
 
-test("preflight fetches only the provider environment for automatic pushes", async () => {
+test("preflight fetches only the provider environment for manual provider runs", async () => {
   const fetched = [];
   const result = await validateFullIntegrationPreflight({
     env: {
       GITHUB_REF: "refs/heads/main",
-      GITHUB_EVENT_NAME: "push",
-      INPUT_LANE: "all",
+      GITHUB_EVENT_NAME: "workflow_dispatch",
+      INPUT_LANE: "provider-account",
       GITHUB_REPOSITORY: "openclaw/openclaw-enterprise",
       GITHUB_TOKEN: "token",
     },

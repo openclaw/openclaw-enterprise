@@ -28,7 +28,6 @@ const laneEnvironments = Object.freeze({
 });
 
 export function selectLane({ eventName, inputLane }) {
-  if (eventName === "push") return "provider-account";
   if (eventName === "workflow_dispatch") return inputLane;
   throw new Error(`Unsupported full integration event: ${eventName}`);
 }

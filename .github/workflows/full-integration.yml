@@ -1,9 +1,6 @@
 name: Full Integration
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
     inputs:
       lane:
@@ -30,7 +27,7 @@ permissions:
   deployments: read
 
 concurrency:
-  group: ${{ github.event_name == 'push' && format('full-integration-push-{0}', github.run_id) || 'full-integration' }}
+  group: full-integration
   cancel-in-progress: false
 
 env:
@@ -238,7 +235,7 @@ jobs:
     name: Provider Account
     runs-on: blacksmith-8vcpu-ubuntu-2404
     needs: preflight
-    if: github.event_name == 'push' || inputs.lane == 'all' || inputs.lane == 'provider-account'
+    if: inputs.lane == 'all' || inputs.lane == 'provider-account'
     timeout-minutes: 25
     environment: integration-provider-account
     env:
@@ -387,7 +384,7 @@ jobs:
         env:
           NEEDS_JSON: ${{ toJson(needs) }}
           LANE: ${{ inputs.lane }}
-          SELECTED_LANE: ${{ needs.preflight.outputs.selected_lane || (github.event_name == 'push' && 'provider-account' || inputs.lane) }}
+          SELECTED_LANE: ${{ needs.preflight.outputs.selected_lane || inputs.lane }}
         run: |
           node <<'NODE'
           const fs = require("fs");
@@ -410,7 +407,7 @@ jobs:
           NODE
       - name: Aggregate targeted runtime results
         if: needs.preflight.outputs.run_all != 'true'
-        run: node scripts/ci/run-tests.mjs aggregate "${{ needs.preflight.outputs.selected_lane || (github.event_name == 'push' && 'provider-account' || inputs.lane) }}" --results-dir "$RUNNER_TEMP/results" --needs "$RUNNER_TEMP/needs.json"
+        run: node scripts/ci/run-tests.mjs aggregate "${{ needs.preflight.outputs.selected_lane || inputs.lane }}" --results-dir "$RUNNER_TEMP/results" --needs "$RUNNER_TEMP/needs.json"
       - name: Aggregate full suite
         if: needs.preflight.outputs.run_all == 'true'
         run: node scripts/ci/run-tests.mjs aggregate full --results-dir "$RUNNER_TEMP/results" --needs "$RUNNER_TEMP/needs.json"
