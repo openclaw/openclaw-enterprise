@@ -29,7 +29,7 @@
     "@openclaw-enterprise/occ": "workspace:*",
     "@openclaw-enterprise/utils": "workspace:*",
     "ajv-formats": "3.0.1",
-    "better-auth": "1.6.11",
+    "better-auth": "1.6.22",
     "fastify": "5.12.1",
     "pino": "10.3.1",
     "pg": "8.23.0",
