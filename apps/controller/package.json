@@ -19,7 +19,7 @@
     "@better-auth/api-key": "1.6.11",
     "@fastify/swagger": "9.8.0",
     "@fastify/type-provider-typebox": "6.1.0",
-    "@grpc/grpc-js": "1.14.0",
+    "@grpc/grpc-js": "1.14.4",
     "@grpc/proto-loader": "0.8.0",
     "@kubernetes/client-node": "2.0.0",
     "@openclaw/gateway-client": "2026.8.1-beta.3",
