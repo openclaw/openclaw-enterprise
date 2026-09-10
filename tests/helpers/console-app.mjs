@@ -147,7 +147,36 @@ export async function createConsoleAppFixture(t, options = {}) {
   if (providerSummaries !== undefined) appOptions.providerSummaries = providerSummaries;
   const app = createFastifyApp(appOptions);
   await app.listen({ host: "127.0.0.1", port });
-  t.after(() => app.close());
+  const cleanupBeforeAppClose = [];
+  let appClosed = false;
+
+  function registerCleanupBeforeAppClose(cleanup) {
+    cleanupBeforeAppClose.push(cleanup);
+  }
+
+  async function close() {
+    if (appClosed) return;
+    appClosed = true;
+    let cleanupError;
+    try {
+      for (const cleanup of cleanupBeforeAppClose) {
+        try {
+          await cleanup();
+        } catch (error) {
+          cleanupError ??= error;
+        }
+      }
+    } finally {
+      try {
+        await app.close();
+      } catch (error) {
+        cleanupError ??= error;
+      }
+    }
+    if (cleanupError) throw cleanupError;
+  }
+
+  t.after(close);
 
   async function rawRequest(method, path, { headers = {}, body, timeout = 5000 } = {}) {
     const response = await fetch(`${origin}${path}`, {
@@ -336,5 +365,6 @@ export async function createConsoleAppFixture(t, options = {}) {
     seedActiveAgentRevision,
     createSecret,
     createAccountWithPolicy,
+    registerCleanupBeforeAppClose,
   };
 }

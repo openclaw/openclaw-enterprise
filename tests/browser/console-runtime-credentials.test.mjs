@@ -20,7 +20,7 @@ async function artifactDirectory(t) {
   return directory;
 }
 
-async function launchBrowser(t) {
+async function launchBrowser() {
   const browserExecutable =
     process.env.OCC_TEST_BROWSER_EXECUTABLE === undefined ||
     process.env.OCC_TEST_BROWSER_EXECUTABLE.length === 0
@@ -30,15 +30,29 @@ async function launchBrowser(t) {
     ...(browserExecutable === undefined ? {} : { executablePath: browserExecutable }),
     headless: true,
   });
-  t.after(() => browser.close());
   return browser;
 }
 
-async function newPage(t) {
+async function newPage(t, fixture) {
   const artifacts = await artifactDirectory(t);
-  const browser = await launchBrowser(t);
-  const context = await browser.newContext();
-  t.after(() => context.close());
+  const browser = await launchBrowser();
+  let context;
+  fixture.registerCleanupBeforeAppClose(async () => {
+    let cleanupError;
+    try {
+      await context?.close();
+    } catch (error) {
+      cleanupError ??= error;
+    } finally {
+      try {
+        await browser.close();
+      } catch (error) {
+        cleanupError ??= error;
+      }
+    }
+    if (cleanupError) throw cleanupError;
+  });
+  context = await browser.newContext();
   return { page: await context.newPage(), artifacts };
 }
 
@@ -146,7 +160,7 @@ test("draft Agent deploy waits for stored runtime credential metadata", async (t
     modelConfigured: false,
     slackConfigured: false,
   };
-  const { page, artifacts } = await newPage(t);
+  const { page, artifacts } = await newPage(t, fixture);
   await routeRuntimeCredentials(page, fixture, namespace.id, agent.id, async (route, request) => {
     if (request.method() === "POST") {
       requests.push(request.postDataJSON());
@@ -214,7 +228,7 @@ test("transport-only credential recovery can save an empty body", async (t) => {
     modelConfigured: true,
     slackConfigured: false,
   };
-  const { page } = await newPage(t);
+  const { page } = await newPage(t, fixture);
   await routeRuntimeCredentials(page, fixture, namespace.id, agent.id, async (route, request) => {
     if (request.method() === "POST") {
       requests.push(request.postDataJSON());
@@ -253,7 +267,7 @@ test("Slack credential gate treats omitted enabled as enabled", async (t) => {
     nativeValuesWithImplicitSlack("implicit-slack"),
     { executionMode: "dedicated" },
   );
-  const { page } = await newPage(t);
+  const { page } = await newPage(t, fixture);
   await routeRuntimeCredentials(page, fixture, namespace.id, agent.id, async (route) => {
     await route.fulfill({
       status: 200,
@@ -289,7 +303,7 @@ test("Teams-enabled drafts keep console deploy blocked", async (t) => {
     nativeValuesWithImplicitTeams("implicit-teams"),
     { executionMode: "dedicated" },
   );
-  const { page } = await newPage(t);
+  const { page } = await newPage(t, fixture);
   await routeRuntimeCredentials(page, fixture, namespace.id, agent.id, async (route) => {
     await route.fulfill({
       status: 200,
@@ -333,7 +347,7 @@ test("Slack credential fields appear only when Slack is enabled and unknown save
     slackConfigured: false,
   };
   const hostileBackendMessage = "sk-hostile-backend-error-sentinel";
-  const { page } = await newPage(t);
+  const { page } = await newPage(t, fixture);
   await routeRuntimeCredentials(page, fixture, namespace.id, agent.id, async (route, request) => {
     if (request.method() === "POST") {
       postCount += 1;
