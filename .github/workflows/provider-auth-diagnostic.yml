@@ -66,6 +66,12 @@ jobs:
             if (allowedErrorCodes.has(diagnostic.upstreamErrorCode)) {
               safe.upstreamErrorCode = diagnostic.upstreamErrorCode;
             }
+            if (/^(?:req_[a-f0-9]{32}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})$/i.test(diagnostic.requestId ?? "")) {
+              safe.requestId = diagnostic.requestId;
+            }
+            if (/^[a-f0-9]{16}-[A-Z]{3}$/.test(diagnostic.cfRay ?? "")) {
+              safe.cfRay = diagnostic.cfRay;
+            }
             return safe;
           }
 
@@ -131,6 +137,8 @@ jobs:
             throw new Error("Provider auth diagnostic request failed.");
           }
           diagnostic.status = response.status;
+          diagnostic.requestId = response.headers.get("x-request-id");
+          diagnostic.cfRay = response.headers.get("cf-ray");
           let responseText;
           try {
             responseText = await boundedText(response);
