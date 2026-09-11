@@ -1,5 +1,8 @@
 # Review changes with autoreview
 
+For test audits, proof selection, and cleanup before review, see
+[Developer skills](developer-skills.md).
+
 When the user or owning workflow requests independent developer review, read the
 [vendored skill](../../.agents/skills/autoreview/SKILL.md), then run from the
 Enterprise repository root:

@@ -20,6 +20,10 @@ output/playwright/
 .agents/skills/*
 !.agents/skills/autoreview/
 !.agents/skills/LICENSE.agent-skills
+!.agents/skills/test-audit/
+!.agents/skills/deslop/
+!.agents/skills/enterprise-testing/
+!.agents/skills/LICENSE.openclaw
 __pycache__/
 *.pyc
 .vscode/settings.json
