@@ -256,76 +256,13 @@ and optional native `approvals_reviewer`, translated from Enterprise
 `allow_all_plugins:false`, and includes one entry per selected plugin. Empty
 desired state keeps apps/plugins disabled.
 
-### Real-runtime test hooks
+### Verification boundary
 
-Target-port implementation is complete on branch `dev/kevinlin/plugin-driver-port`
-from base `5c58b95c` and source commit
-`185afba1608260adfa5b1fe9bda9ee700a4d9fee` in
-[PR #121](https://github.com/openclaw/openclaw-enterprise/pull/121), but Codex
-Calendar live-runtime acceptance is still incomplete. Current target-port
-verification passed workspace, build, OpenAPI, format, docs, and flow
-validation; 495 baseline checks passed, then one real activation regression was
-fixed and the full Kubernetes suite passed with 89 tests. Focused coverage
-passed API integration (17), contracts (7), plugin Compute plus SSH (34), Driver
-plus startup (14), and real PostgreSQL (5 tests, zero skips; evidence
-`/tmp/plugin-driver-postgres-platform-state-port.log`).
-
-The latest target-port native proof attempt used OpenClaw `2026.9.1` and Codex
-`0.152.1`. The fresh OpenClaw Kubernetes plugin proof passed on source commit
-`185afba1608260adfa5b1fe9bda9ee700a4d9fee`: one test, zero failures/skips,
-187.3 seconds, native OpenClaw `2026.9.1`, Codex `0.152.1`, evidence
-`/tmp/plugin-driver-openclaw-k8s-port-live-v6.log`. The Google Calendar
-scenario is currently blocked before the normal Agent turn because the
-designated service account returned `403` during the native service-account
-authentication `whoami` check. Keep the historical Calendar result historical
-until that account/authentication issue is resolved and the proof is rerun.
-
-Historical source-implementation proof from PR #57 passed the real Google
-Calendar Kubernetes normal-Agent-turn test on 2026-09-09 with the designated
-service account: one test, zero failures/skips, 196 seconds, Codex `0.149.0`,
-OpenClaw `1391f7c`, Calendar `1.2.7`, and model `gpt-5.6-sol`. It verified
-catalog discovery, native installation/configuration readiness, and a successful
-`list_calendars(max_results:1)` call/result. Evidence:
-`/tmp/plugin-driver-calendar-k8s-live.log`. The historical source OpenClaw
-Kubernetes proof also passed after the startup-policy ordering fix: one test,
-zero failures/skips, 227 seconds, covering Diffs installation, a normal tool
-call, disable/removal on later deployments, and sibling isolation. Evidence:
-`/tmp/plugin-driver-openclaw-k8s-final-live.log`.
-
-`tests/integration/plugin-driver-real.test.mjs` is the opt-in proof entrypoint.
-Set `OCC_TEST_PLUGIN_DRIVER_OPENCLAW_REAL=1` for the OpenClaw scenario,
-`OCC_TEST_PLUGIN_DRIVER_CODEX_CALENDAR_REAL=1` for the Calendar scenario, or
-`OCC_TEST_PLUGIN_DRIVER_REAL=1` to require scenario-specific databases for both.
-These hooks require real native runtimes, model credentials, and curated proof
-prompts; skipped or fixture-only runs do not establish plugin runtime support.
-
-Both native plugin scenarios use Kubernetes. The embedded OpenClaw scenario also requires `OPENAI_API_KEY` in the process environment.
-
-The Kubernetes backend requires `OCC_TEST_KUBERNETES_KUBECONFIG`,
-`OCC_TEST_KUBERNETES_CONTEXT`, `OCC_TEST_KUBERNETES_GATEWAY_IMAGE`, and a
-scenario-specific database such as
-`OCC_TEST_PLUGIN_DRIVER_OPENCLAW_DATABASE_URL` or
-`OCC_TEST_PLUGIN_DRIVER_CODEX_CALENDAR_DATABASE_URL`. Dedicated Codex Google
-Calendar also requires a Codex runtime image through
-`OCC_TEST_KUBERNETES_AGENT_IMAGE` or `OCC_TEST_KUBERNETES_CODEX_IMAGE`, an
-injected `CODEX_ACCESS_TOKEN` for the existing test account,
-`OCC_TEST_CODEX_CALENDAR_TOOL_NAME`, and
-`OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT`. Set `OCC_TEST_OPENAI_MODEL` to a model
-supported by the service account's Codex path (the acceptance fixture uses
-`gpt-5.6-sol`). Set `OCC_TEST_CODEX_PLUGIN_CATALOG_CODEX_EXECUTABLE` and
-`OCC_TEST_CODEX_PLUGIN_CATALOG_CODEX_HOME` to the executable and dedicated
-authenticated profile used by the controller's
-[native catalog reader](drivers/plugin.md#selection-and-catalogs). The Calendar
-proof checks this real reader before selecting the plugin. The proof prompt uses
-`list_calendars(max_results:1)`.
-
-The Calendar fixture uses a narrow test-only ServiceAccount import that
-preserves the designated existing account token from
-`~/.secrets/.env.claw-kevinlin-svc-acct`, binds it to the matching Provider, and
-then runs the normal Agent create/deploy/API path. It does not prove native
-ChatGPT account creation, upstream credential issuance, workspace administrator
-credentials, or creating a new upstream account. Credential values must not be
-printed.
+Source, schema, and fixture tests establish API and translation behavior. Native
+runtime compatibility requires opt-in Kubernetes proof with a real Agent turn,
+followed by a later deployment that disables or removes the selection and leaves
+another Agent unchanged. Contributor fixture setup, service-account boundaries,
+and current proof notes live in [Agent plugin testing](../testing/plugins.md).
 
 This page documents the nested plugin wire contract. The
 [generated API reference](api.md) summarizes routes and top-level schemas;
@@ -367,16 +304,8 @@ the deployment/startup candidate when the selected Driver cannot represent them.
 - `409`: ordinary Agent conflict, such as duplicate name.
 - `503`: temporarily unavailable platform dependency.
 
-Errors use `{error,meta:{requestId}}`, with no `data` field:
-
-| Error response field   | Type                                        | Meaning                                                                                                                                        |
-| ---------------------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `error.code`           | String                                      | Platform error code, such as `INVALID_REQUEST`, `FORBIDDEN`, `NOT_FOUND`, `RESOURCE_CONFLICT`, `NOT_IMPLEMENTED`, or `DEPENDENCY_UNAVAILABLE`. |
-| `error.message`        | String, 1–256 characters                    | Human-readable failure summary.                                                                                                                |
-| `error.details`        | Optional array, at most 32 entries          | Structured request validation failures.                                                                                                        |
-| `error.details[].path` | JSON Pointer string, at most 512 characters | Field location; an empty string identifies the whole document.                                                                                 |
-| `error.details[].code` | String enum                                 | `REQUIRED`, `UNKNOWN_FIELD`, `INVALID_TYPE`, `INVALID_FORMAT`, `INVALID_VALUE`, `TOO_LONG`, or `TOO_DEEP`.                                     |
-| `meta.requestId`       | Request ID string                           | Same correlation-ID format as successful responses.                                                                                            |
+Errors use `{error,meta:{requestId}}`, with no `data` field. The
+[generated API reference](api.md) owns the full error envelope shape.
 
 Structurally invalid Agent writes fail atomically before save. Catalog
 membership, native metadata, and policy representability are startup concerns:
@@ -395,4 +324,5 @@ An approval setting does not grant filesystem access or isolate plugin code.
 
 - [PluginDriver](drivers/plugin.md): selection, catalogs, mapping, and runtime limits.
 - [Agent plugin flow](../flows/agent-plugins.md): request, admission, and preparation.
+- [Agent plugin testing](../testing/plugins.md): contributor fixtures and proof notes.
 - [Agent lifecycle](agents.md) and [deployment](../guides/deploy.md).

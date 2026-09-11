@@ -68,7 +68,11 @@ An `Agent` is the stable, user-configured platform resource. Its explicit
 `ServiceAccount`, `Channel`, `Secret`, and `SandboxPolicy` references belong to
 its Namespace; its native Configuration selects a Harness approved for the same
 Installation. Its optional `providerId` references Installation-owned Provider
-configuration; null preserves providerless Agents.
+configuration; null preserves providerless Agents. It can also own desired
+plugin selections independently of its reusable Configuration. One
+Installation-selected PluginDriver validates and renders those selections during
+revision startup.
+
 Editing an Agent or one of its referenced resources changes only
 the inputs available to a future deployment; it does not change an existing
 `AgentRevision` or running Agent workload.
@@ -95,10 +99,10 @@ Deploying an Agent follows one path.
    bundled Kubernetes Driver, that infrastructure is the backing namespace in
    the selected cluster.
 7. OCC creates an immutable `AgentRevision` from the admitted Agent,
-   configuration, references including nullable `providerId`, server-approved Harness identity/version and
-   explicit mode, sandbox policy, and selected compute and sandbox
-   implementations.
-8. OCC gives both selected Drivers the same revision, exact Namespace, and
+   configuration, references including nullable `providerId`, requested plugin
+   selections, server-approved Harness identity/version and explicit mode,
+   sandbox policy, and selected compute, sandbox, and plugin implementations.
+8. OCC gives selected Drivers the same revision, exact Namespace, and
    stable Agent `WorkloadIdentity`. The worker rechecks Provider metadata and
    managed credential ownership after current IAM authorization and before effects.
 9. The selected Compute Driver invokes revision-scoped `prepareRevision` to

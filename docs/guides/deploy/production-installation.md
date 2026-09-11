@@ -121,6 +121,9 @@ Edit the protected YAML copies before provisioning anything:
   selectors, the service-principal token settings, the runtime Secret prefixes,
   and `runtime.gatewayStorageClassName`. Keep
   `drivers.compute.configuration.images.requireImmutableDigest: true`.
+  If enabling Agent plugins, set one compatible bundled `drivers.plugin` selector
+  and any required Codex catalog-reader configuration. See the
+  [PluginDriver reference](../../reference/drivers/plugin.md#selection-and-catalogs).
   For dedicated Codex command execution on nodes whose default syscall policy
   blocks user namespaces, install a reviewed compatibility profile on every
   eligible node and set `runtime.codexSeccompProfile` to its relative kubelet

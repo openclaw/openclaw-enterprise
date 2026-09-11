@@ -165,7 +165,12 @@
               },
               {
                 "group": "External services",
-                "pages": ["testing/slack", "testing/service-accounts", "testing/openshell"]
+                "pages": [
+                  "testing/slack",
+                  "testing/service-accounts",
+                  "testing/plugins",
+                  "testing/openshell"
+                ]
               }
             ]
           }

@@ -173,18 +173,9 @@ and Kubernetes gateway state database retain their Agent-owned lifecycle.
 - Prove behavior with a model-chosen plugin call during a normal Agent turn,
   then disable/remove on a later deployment and verify another Agent is unchanged.
   Source or fixture tests alone do not establish native runtime compatibility.
-- Use `tests/integration/plugin-driver-real.test.mjs` for opt-in native proof.
-  It skips unless the scenario-specific `OCC_TEST_PLUGIN_DRIVER_*_REAL=1` flag
-  or global `OCC_TEST_PLUGIN_DRIVER_REAL=1` is set; a skip is not a pass.
-- The Kubernetes proof backend requires an explicit kubeconfig/context, immutable
-  gateway image, scenario-specific dedicated PostgreSQL database URL, and, for
-  dedicated Codex Google Calendar, a Codex runtime image plus injected
-  `CODEX_ACCESS_TOKEN`, exact Calendar tool name, and expected tool-result
-  pattern. The Calendar case must prove `list_calendars(max_results:1)` in a
-  normal Agent turn. Use a supported Codex model through `OCC_TEST_OPENAI_MODEL`,
-  such as `gpt-5.6-sol`. See
-  [Agent plugin verification](../reference/agent-plugins.md#real-runtime-test-hooks)
-  for proof prerequisites and historical source-implementation evidence.
+- Use the opt-in real-runtime lane in [Agent plugin testing](../testing/plugins.md)
+  for Kubernetes, database, credential, native-runtime, and historical proof
+  details. A skipped native lane is not proof.
 
 ## Related docs
 
@@ -193,6 +184,7 @@ and Kubernetes gateway state database retain their Agent-owned lifecycle.
 - [Controller worker](controller-worker.md).
 - [Harness execution topology](harness-execution-topology.md).
 - [Deployment guide](../guides/deploy.md).
+- [Agent plugin testing](../testing/plugins.md).
 
 ## Manual Notes
 

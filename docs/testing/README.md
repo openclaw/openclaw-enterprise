@@ -30,7 +30,7 @@ and coverage limits. See [GitHub Actions](ci.md) for CI coverage.
 | Local source, API, and browser | [Local checks](local.md#local-checks) and [console browser checks](local.md#console-browser-checks)            |
 | Persistence and packaging      | [PostgreSQL](postgresql.md), [Images and Helm](images.md), and [Docker Compose](docker.md)                     |
 | Real runtime or host execution | [SSH](ssh.md), [Kubernetes](kubernetes.md), [Production TUI](production-tui.md), and [OpenShell](openshell.md) |
-| External provider integrations | [Slack](slack.md) and [ChatGPT service accounts](service-accounts.md)                                          |
+| External provider integrations | [Slack](slack.md), [ChatGPT service accounts](service-accounts.md), and [Agent plugins](plugins.md)            |
 
 ## Requirements and credentials
 

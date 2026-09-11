@@ -105,9 +105,10 @@ app/tool policy.
 The [API policy vocabulary](../agent-plugins.md#approval-policy) retains independent
 trigger and reviewer semantics for representable implementations. Native Codex
 `auto` and app reviewer settings are used for supported curated Codex apps.
-`always` uses the bridge's existing automatic acceptance with the default or `user` reviewer.
-Explicit `auto_review` with `always`, `prompt`, category overrides, and tool overrides remain unsupported at startup.
-Unsafe approval schemas and ambiguous ownership continue to be declined. See [Agent plugin verification](../agent-plugins.md#real-runtime-test-hooks) for native proof prerequisites and results.
+`always` uses the bridge's existing automatic acceptance with the default or
+`user` reviewer. Explicit `auto_review` with `always`, `prompt`, category
+overrides, and tool overrides remain unsupported at startup. Unsafe approval
+schemas and ambiguous ownership continue to be declined.
 
 Dedicated Codex starts without user plugins/apps, including when no PluginDriver
 is selected. Compute writes the safe baseline into the Agent's isolated
@@ -154,17 +155,10 @@ Codex apps, applies the separate OpenClaw Codex bridge configuration with
 installation and readiness path; the PluginDriver only translates requested state
 after native discovery.
 
-Credentials use the existing Harness/ServiceAccount path at runtime. The
-Calendar proof fixture imports the designated existing account token into a
-test-only ServiceAccount record with a matching Provider binding, then runs the
-normal Agent create/deploy/API path. It does not prove native ChatGPT account
-creation, upstream credential issuance, workspace administrator credentials, or
-creating a new upstream account. The required Codex live integration now uses
-Google Calendar and must prove a harmless model-chosen
-`list_calendars(max_results:1)` read in a normal Agent turn. The Linear
-reauthentication diagnostic is historical evidence for that connector, not the
-current acceptance target. A direct MCP call, package listing, or rendered
-bridge configuration cannot prove the Calendar outcome.
+Credentials use the existing Harness/ServiceAccount path at runtime. A direct
+MCP call, package listing, or rendered bridge configuration cannot prove native
+Agent behavior; contributor fixture setup and proof notes live in
+[Agent plugin testing](../../testing/plugins.md).
 
 Agent plugin approval is separate from platform IAM and workload containment.
 This Driver adds no sandbox, egress grant, filesystem grant, approval service,
@@ -177,10 +171,9 @@ not write the shared native registry while the prior gateway is running.
 - [Bundled implementations](../../../apps/controller/src/drivers/plugin/index.ts).
 - [Trusted selection](../../../apps/controller/src/composition/installation-config.ts).
 - [Agent plugin runtime flow](../../flows/agent-plugins.md).
-- [Deployment guide](../../guides/deploy.md) and [implementation proof requirements](../../../specs/16-plugin-driver.md#verification).
+- [Deployment guide](../../guides/deploy.md), [testing guide](../../testing/plugins.md), and [implementation proof requirements](../../../specs/16-plugin-driver.md#verification).
 
 Source and contract tests do not establish compatibility with every runtime
-image. A live proof must record the actual image/native versions, successful
-normal-turn tool execution, and disabled/removed behavior on a later deployment.
+image. Native proof requires the testing guide's opt-in real-runtime lane.
 
 Disabled and `never` selections remain installed. Native remote installation can enable a plugin on the credential’s account; Agent-local app configuration and the OpenClaw bridge still block its execution. Agent enablement does not manage account-wide installation state.
