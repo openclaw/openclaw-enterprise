@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import test from "node:test";
 import {
   composeInvocations,
@@ -315,6 +315,45 @@ test("dev-up selects Podman when no docker command exists and completes the supp
     ),
   );
   assert.equal(await readJsonLines(fixture.dockerLog).then((entries) => entries.length), 0);
+});
+
+test("dev-up starts Podman without Compose options on Bash 3.2", async (t) => {
+  // The documented no-options invocation must not trip nounset on an empty Bash array.
+  const fixture = await createFixture(t, { engine: "podman" });
+  const keyOutput = join(fixture.directory, "podman-no-options-service-key.json");
+
+  const result = runDevUp(["--key-output", keyOutput], fixture.env);
+
+  assert.equal(result.status, 0, result.stderr ?? result.error?.message ?? "dev-up did not exit");
+  assert.match(result.stdout, /OpenClaw Enterprise development stack is ready/);
+  assert.match(result.stdout, /Container engine: Podman/);
+});
+
+test("dev-up preserves Compose files selected through COMPOSE_FILE for Podman", async (t) => {
+  // A security override selected through the environment must participate in validation.
+  const fixture = await createFixture(t, { engine: "podman" });
+  const keyOutput = join(fixture.directory, "podman-compose-file-service-key.json");
+  const override = await publicControllerOverride(fixture);
+  const env = {
+    ...fixture.env,
+    COMPOSE_FILE: ["compose.yaml", override].join(delimiter),
+  };
+
+  const result = runDevUp(
+    ["--key-output", keyOutput, "--", "--project-name", "oce-dev-up-compose-file-test"],
+    env,
+  );
+
+  assert.notEqual(result.status, 0);
+  assert.match(
+    result.stderr,
+    /configuration failed: Compose controller port must publish only on loopback/,
+  );
+  const invocations = await readJsonLines(fixture.podmanLog);
+  assert.equal(
+    invocations.some((entry) => entry.args.includes("up")),
+    false,
+  );
 });
 
 test("dev-up recognizes a docker command backed by Podman and uses the Podman path", async (t) => {

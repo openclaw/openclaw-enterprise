@@ -174,19 +174,44 @@ if [ -z "$container_engine" ] && command -v podman >/dev/null 2>&1; then
     export OCC_CONTAINER_ENGINE_SOCKET="$podman_socket"
 
     compose_file_selected=0
+    if [ "${#compose_args[@]}" -gt 0 ]; then
+      for arg in "${compose_args[@]}"; do
+        case "$arg" in
+          -f | --file | --file=*) compose_file_selected=1 ;;
+        esac
+      done
+    fi
+    if [ "$compose_file_selected" -eq 0 ]; then
+      compose_file_args=()
+      if [ -n "${COMPOSE_FILE:-}" ]; then
+        compose_environment_files=()
+        IFS="${COMPOSE_PATH_SEPARATOR:-:}" read -r -a compose_environment_files <<<"$COMPOSE_FILE"
+        for compose_file in "${compose_environment_files[@]}"; do
+          if [ -z "$compose_file" ]; then
+            fail "configuration" "COMPOSE_FILE contains an empty file path"
+          fi
+          compose_file_args+=(-f "$compose_file")
+        done
+        unset COMPOSE_FILE
+      else
+        compose_file_args=(-f compose.yaml)
+      fi
+      if [ "${#compose_args[@]}" -eq 0 ]; then
+        compose_args=("${compose_file_args[@]}")
+      else
+        compose_args=("${compose_file_args[@]}" "${compose_args[@]}")
+      fi
+    fi
+
     podman_override_selected=0
     for arg in "${compose_args[@]}"; do
       case "$arg" in
         *compose.logging.yaml)
           fail "configuration" "Docker Fluentd logging is not supported with Podman"
           ;;
-        -f | --file | --file=*) compose_file_selected=1 ;;
         *compose.podman.yaml) podman_override_selected=1 ;;
       esac
     done
-    if [ "$compose_file_selected" -eq 0 ]; then
-      compose_args=(-f compose.yaml "${compose_args[@]}")
-    fi
     if [ "$podman_override_selected" -eq 0 ]; then
       compose_args+=(-f "$repo_root/compose.podman.yaml")
     fi
