@@ -1,10 +1,10 @@
 # Driver selection and package contracts
 
 Trusted Installation configuration selects one Driver for each required
-capability and can select optional Sandbox and ServiceAccount Drivers. Trusted
+capability and can select optional Sandbox, ServiceAccount, and Plugin Drivers. Trusted
 Kubernetes startup configuration must also select the bundled Secret Driver.
 Only the Installation operator can add dependencies, publish controller images,
-or select Drivers. Tenants cannot install or activate packages. Startup
+or select Drivers. Tenants cannot install or activate controller Driver packages. Startup
 procedures belong in the [deployment guide](../../guides/deploy.md).
 
 ## Supported selections
@@ -27,6 +27,7 @@ Sandbox packages in trusted YAML in either mode.
 | `secret`          | [SecretDriver](kubernetes-secret.md)       | Required in trusted Installation YAML, including SSH; bundled Kubernetes only.                       |
 | `sandbox`         | [SandboxDriver](sandbox.md)                | Optional; bundled OpenShell or installed package, and currently requires bundled Kubernetes Compute. |
 | `service_account` | [ServiceAccountDriver](service-account.md) | Optional bundled ChatGPT Provider member; no installed-package selector.                             |
+| `plugin`          | [PluginDriver](plugin.md)                  | Optional bundled `occ-plugin` or `codex-plugin`; no installed-package selector.                      |
 
 Installed packages run unsandboxed with control-plane authority and
 access to controller credentials, database state, and Kubernetes identity.

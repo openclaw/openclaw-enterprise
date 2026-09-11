@@ -90,6 +90,14 @@ Trusted Installation YAML can also select the
 [SSH Compute Driver](../reference/drivers/ssh-compute.md); that reference owns
 host configuration, credentials, and operational limits.
 
+Trusted Installation YAML can select a
+[PluginDriver](../reference/drivers/plugin.md) for Agent plugin resolution. Agent
+create/update stores structurally valid plugin maps; deployment startup validates
+catalog membership and policy support. SSH Compute rejects nonempty plugin maps,
+so use Kubernetes Compute for plugin-enabled runtime proof. See
+[Agent plugins](../reference/agent-plugins.md) for the current contract and
+[testing](../testing/README.md) for fixture prerequisites.
+
 ## Related
 
 - [Service API keys, rotation, and bootstrap recovery](deploy/service-keys.md)

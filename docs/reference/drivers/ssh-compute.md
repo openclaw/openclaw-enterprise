@@ -56,6 +56,12 @@ the control plane; SSH does not provision Kubernetes namespaces for bundled
 ConfigMap or Secret storage. SSH selection does not add a raw-host control-plane
 installer or alter the existing production API security requirements.
 
+SSH Compute currently rejects AgentRevisions with any nonempty requested plugin
+map before applying host effects. Agent create/update can still save structurally
+valid plugin selections, but deployment to SSH cannot start until the requested
+plugin map is empty. Use Kubernetes Compute for the bundled PluginDriver proof
+paths.
+
 | Setting                                  | Contract                                                                                                                                               |
 | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `ssh.identityFile`, `ssh.knownHostsFile` | Required absolute worker-local file paths.                                                                                                             |

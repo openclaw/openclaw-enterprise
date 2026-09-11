@@ -176,6 +176,15 @@
         },
         {
           "path": "tests/integration/ssh-compute-startup.test.mjs"
+        },
+        {
+          "path": "tests/conformance/plugin-compute.test.mjs"
+        },
+        {
+          "path": "tests/conformance/plugin-driver.test.mjs"
+        },
+        {
+          "path": "tests/integration/plugin-driver-startup.test.mjs"
         }
       ]
     },
@@ -730,6 +739,25 @@
       "files": [
         {
           "path": "tests/integration/ssh-compute-real.test.mjs"
+        }
+      ]
+    },
+    "plugin-model": {
+      "env": {
+        "OCC_TEST_PLUGIN_DRIVER_REAL": "1"
+      },
+      "requiredEnv": [
+        "OCC_TEST_KUBERNETES_KUBECONFIG",
+        "OCC_TEST_KUBERNETES_CONTEXT",
+        "OCC_TEST_PLUGIN_DRIVER_OPENCLAW_DATABASE_URL",
+        "OCC_TEST_PLUGIN_DRIVER_CODEX_CALENDAR_DATABASE_URL",
+        "CODEX_ACCESS_TOKEN",
+        "OCC_TEST_CODEX_PLUGIN_CATALOG_CODEX_EXECUTABLE",
+        "OCC_TEST_CODEX_PLUGIN_CATALOG_CODEX_HOME"
+      ],
+      "files": [
+        {
+          "path": "tests/integration/plugin-driver-real.test.mjs"
         }
       ]
     }

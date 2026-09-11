@@ -48,10 +48,14 @@ not broaden access.
 
 ## Agent creation and deployment
 
-The console creates an Agent and reusable Configuration, provisions supported
-initial runtime credentials, and deploys the saved draft. Follow
+The console creates an Agent and reusable Configuration, records optional
+Agent-owned plugin selections, provisions supported initial runtime credentials,
+and deploys the saved draft. Follow
 [Create and deploy Agents](console/create-and-deploy.md) for the complete
 workflow, channel constraints, and recovery after partial or uncertain writes.
+Plugin selections use the same Agent create/update contract as the API: omitted
+updates preserve the map, `{}` clears it, and deployment startup reports
+unsupported catalog or policy choices.
 
 ## Inspect detail, revisions, and channel drafts
 
@@ -74,6 +78,8 @@ Configuration draft. Saving patches only `values`, so existing
 extended; an omitted allowlist stays omitted. Because a Configuration can be
 shared by multiple Agents, channel edits can affect future deployments of other
 Agents that reference the same Configuration.
+These channel allowlist edits are native Configuration changes and are separate
+from Agent-owned plugin selections.
 
 Before saving, the browser rereads the Agent and Configuration and checks that
 the Agent still references the same Configuration and its generation is unchanged.

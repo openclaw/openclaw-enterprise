@@ -61,6 +61,20 @@ matching Provider and private account binding at admission and reconciliation;
 see [Provider deployment checks](providers.md#agent-association-and-immutable-deployment).
 Creating an Agent does not create a provider account or issue credentials.
 
+## Plugin selections
+
+An Agent can own an optional `plugins` map keyed by qualified curated catalog ID,
+such as `google-calendar@openai-curated-remote`. Omission at creation enables no
+plugins. PATCH omission preserves the saved plugin map, `{}` clears every desired
+plugin, and a nonempty map replaces the entire desired plugin set.
+
+Agent create/update validates only structural shape. Catalog membership, native
+identity resolution, and approval-policy support are checked when a deployment
+starts the revision; unsupported selections fail that startup rather than
+partially mutating the Agent. AgentRevision snapshots retain the requested
+plugin IDs and policy. See [Agent plugins](agent-plugins.md) for field semantics
+and the selected-only runtime contract.
+
 ## Workspace files
 
 Read, create, or replace `AGENTS.md`, `SOUL.md`, `IDENTITY.md`, and `USER.md`
@@ -143,9 +157,10 @@ native nested document through its own exact-resource PATCH endpoint; see
 [Configuration CRUD](configuration.md#create-read-update-and-delete). Changing
 the Agent reference or Configuration values does not queue Compute work,
 change the active revision, or mutate earlier revisions. Agent create and update
-accept a Configuration reference, optional execution mode, and optional service
-account and Provider associations; they do not accept an inline configuration
-document or competing gateway settings. Multiple Agents can
+accept a Configuration reference, optional execution mode, optional service
+account and Provider associations, and optional Agent-owned plugin selections;
+they do not accept an inline configuration document or competing gateway
+settings. Multiple Agents can
 share the same Configuration;
 each deployed Agent still owns its own gateway and stable service principal.
 
@@ -163,6 +178,7 @@ combinations are rejected.
 ## Failure semantics
 
 - `400 INVALID_REQUEST`: The Provider ID is malformed or empty.
+- `400 INVALID_REQUEST`: The plugin map is structurally invalid.
 - `404 NOT_FOUND`: The nonempty Provider ID does not name a configured Provider.
 - `401`: The session cookie is missing, invalid, expired, or revoked.
 - `403`: Your principal lacks the exact permission for the Agent or Namespace.
@@ -189,6 +205,7 @@ combinations are rejected.
 - [Controller worker](controller.md)
 - [Namespace Configuration and immutable snapshots](configuration.md)
 - [Service accounts](service-accounts.md)
+- [Agent plugins](agent-plugins.md)
 - [Kubernetes Compute Driver](drivers/kubernetes-compute.md)
 - [IAM](authorization.md)
 - [Controller configuration](settings.md)

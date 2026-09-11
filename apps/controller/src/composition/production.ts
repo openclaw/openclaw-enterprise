@@ -41,6 +41,7 @@ export async function composeProduction(config: ProductionConfig) {
     configurationDriver,
     secretDriver,
     sandboxDriver,
+    pluginDriver,
     createIAMDriver,
   } = config.drivers;
   if (
@@ -141,6 +142,12 @@ export async function composeProduction(config: ProductionConfig) {
       throw new Error("The configured Configuration Driver was not selected correctly.");
     }
     config.serviceAccountDriverFactory?.(controller, state);
+    if (pluginDriver !== undefined) {
+      controller.registerDriver(pluginDriver);
+      if (controller.selectDriver("plugin", pluginDriver.id) !== pluginDriver) {
+        throw new Error("The configured Plugin Driver was not selected correctly.");
+      }
+    }
     await controller.validateProviderConfiguration();
 
     let workspaceFilesAccess = config.workspaceFilesAccess;

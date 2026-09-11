@@ -75,3 +75,13 @@ export class DriverSelectionError extends Error {
     this.name = "DriverSelectionError";
   }
 }
+
+export class NotImplementedError extends Error {
+  readonly operation: string;
+
+  constructor(operation: string, message = "The requested platform operation is not implemented.") {
+    super(message);
+    this.name = "NotImplementedError";
+    this.operation = operation;
+  }
+}

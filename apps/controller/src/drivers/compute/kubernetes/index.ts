@@ -50,6 +50,18 @@ import { createKubernetesClientConfiguration } from "../../kubernetes/client.ts"
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
 import { currentComputeAbortSignal, withComputeAbortSignal } from "../operation-context.ts";
 import {
+  PLUGIN_RUNTIME_DIRECTORY,
+  PLUGIN_RUNTIME_CODEX_CONFIG,
+  PLUGIN_RUNTIME_CODEX_CONFIG_ENVIRONMENT,
+  PLUGIN_RUNTIME_MANIFEST,
+  PLUGIN_RUNTIME_MANIFEST_ENVIRONMENT,
+  PLUGIN_RUNTIME_READY_MARKER,
+  PLUGIN_RUNTIME_READY_MARKER_ENVIRONMENT,
+  type PluginRuntimeSpec,
+  pluginRuntimeConfigMapData,
+  pluginRuntimeSpecForRevision,
+} from "../plugin-runtime.ts";
+import {
   AGENT_READINESS_ENTRYPOINT,
   AGENT_RUNTIME_ENTRYPOINT,
   GATEWAY_RUNTIME_ENTRYPOINT,
@@ -194,6 +206,11 @@ interface GatewayConfigurationSnapshot {
   readonly loggingLevel: LoggingLevel;
 }
 
+interface PluginRuntimeSnapshot {
+  readonly name: string;
+  readonly runtime: PluginRuntimeSpec;
+}
+
 class OwnershipFailure extends Error {}
 class ConfigurationFailure extends Error {}
 
@@ -224,6 +241,7 @@ const TOKEN_PATH = "/var/run/secrets/openclaw/service-principal";
 const CONFIGURATION_DIRECTORY = "/etc/openclaw";
 const CONFIGURATION_DOCUMENT = "openclaw.json";
 const CONFIGURATION_VOLUME = "openclaw-configuration";
+const PLUGIN_RUNTIME_VOLUME = "openclaw-plugin-runtime";
 const AGENT_REVISION_ANNOTATION = "openclaw.dev/agent-revision";
 const AGENT_REVISION_ID_ANNOTATION = "openclaw.dev/agent-revision-id";
 const APPLY_CONTENT_TYPE = "application/apply-patch+yaml";
@@ -1243,6 +1261,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       agentId: revision.agentId,
       servicePrincipalId: revision.servicePrincipalId,
     };
+    const pluginRuntime = this.pluginRuntimeSnapshot(revision);
     const document = JSON.stringify(revision.configuration);
     const configuration = this.gatewayConfiguration(revision);
     const existingGateway = await this.getOwned(
@@ -1305,6 +1324,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
       gatewayOwnership,
       namespace,
     );
+    if (pluginRuntime !== undefined) {
+      const pluginOwnership = this.pluginRuntimeOwnership(revision);
+      await this.reconcile(
+        this.pluginRuntimeConfigMap(pluginRuntime, pluginOwnership, namespace),
+        pluginOwnership,
+        namespace,
+      );
+    }
     const gatewayAccountName = embedded ? agentName : gatewayName;
     const gatewayAccountOwnership = embedded ? agentOwnership : gatewayOwnership;
     await this.reconcile(
@@ -1321,6 +1348,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
       gatewayAccountOwnership,
       namespace,
     );
+    if (embedded) {
+      for (const policy of this.agentNetworkPolicies(revision, namespace)) {
+        await this.reconcile(policy, gatewayOwnership, namespace);
+      }
+    }
     if (!embedded) {
       await this.reconcile(
         this.sharedWorkspaceClaim(revision.agentId, gatewayOwnership, namespace),
@@ -1368,6 +1400,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
             undefined,
             channels,
             secretEnvironment,
+            pluginRuntime,
           ),
           gatewayOwnership,
           namespace,
@@ -1454,6 +1487,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
         false,
         undefined,
         revision.serviceAccount,
+        [],
+        [],
+        pluginRuntime,
       );
       if (sandboxDriver?.provisionHarness !== undefined) {
         const requirements = this.harnessRequirementsFromDeployment(agentDeployment);
@@ -1503,6 +1539,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (this.options.runtime === undefined) return;
     this.verifyGatewayRoutingConfiguration(revision);
     const channels = this.enabledChannels(revision);
+    const pluginRuntime = this.pluginRuntimeSnapshot(revision);
     const { name: namespace } = await this.resolveNamespace(revision.namespaceId);
     const secretEnvironment = this.secretEnvironmentForRevision(revision, context, namespace);
     const agentName = `agent-${sha256Hex(revision.agentId, 12)}`;
@@ -1561,6 +1598,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
               undefined,
               channels,
               secretEnvironment,
+              pluginRuntime,
             ),
             gatewayOwnership,
             namespace,
@@ -1602,6 +1640,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
       false,
       undefined,
       revision.serviceAccount,
+      [],
+      [],
+      pluginRuntime,
     );
     if (sandboxDriver?.provisionHarness === undefined) {
       const deployment = await this.getOwned("Deployment", revisionName, namespace, {
@@ -1643,6 +1684,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
         undefined,
         undefined,
         channels,
+        [],
+        pluginRuntime,
       ),
       gatewayOwnership,
       namespace,
@@ -3209,6 +3252,45 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (route !== undefined) await this.reconcile(route, ownership, namespace);
   }
 
+  private pluginRuntimeSnapshot(revision: AgentRevision): PluginRuntimeSnapshot | undefined {
+    let runtime: PluginRuntimeSpec | undefined;
+    try {
+      runtime = pluginRuntimeSpecForRevision(revision);
+    } catch (error) {
+      throw new ConfigurationFailure(
+        error instanceof Error
+          ? error.message
+          : "AgentRevision plugin runtime artifacts are invalid.",
+      );
+    }
+    if (runtime === undefined) return undefined;
+    return {
+      name: `plugin-runtime-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`,
+      runtime,
+    };
+  }
+
+  private pluginRuntimeOwnership(revision: AgentRevision): Ownership {
+    return {
+      namespaceId: revision.namespaceId,
+      agentId: revision.agentId,
+      servicePrincipalId: revision.servicePrincipalId,
+      revisionId: revision.id,
+    };
+  }
+
+  private pluginRuntimeConfigMap(
+    snapshot: PluginRuntimeSnapshot,
+    ownership: Ownership,
+    namespace: string,
+  ): ManagedKubernetesObject<"ConfigMap"> {
+    return {
+      ...this.manifest("v1", "ConfigMap", snapshot.name, ownership, namespace),
+      immutable: true,
+      data: pluginRuntimeConfigMapData(snapshot.runtime),
+    };
+  }
+
   private sharedWorkspaceClaimName(agentId: string): string {
     return `workspace-${sha256Hex(agentId, 12)}`;
   }
@@ -3678,6 +3760,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     serviceAccount?: AgentRevision["serviceAccount"],
     enabledChannels: readonly ChannelRequirements[] = [],
     secretEnvironment: readonly SecretEnvironmentProjection[] = [],
+    pluginRuntime?: PluginRuntimeSnapshot,
   ): ManagedKubernetesObject {
     const metadata = this.ownershipMetadata(ownership);
     const workloadMetadata =
@@ -3730,6 +3813,50 @@ export class KubernetesComputeDriver implements ComputeDriver {
         name: "OPENCLAW_CONFIG_PATH",
         value: `${CONFIGURATION_DIRECTORY}/${CONFIGURATION_DOCUMENT}`,
       });
+    }
+    const needsPluginRuntime =
+      pluginRuntime !== undefined &&
+      ((pluginRuntime.runtime.kind === "openclaw" && role === "gateway" && embedded) ||
+        (pluginRuntime.runtime.kind === "codex" && role === "agent" && runtime !== undefined) ||
+        (pluginRuntime.runtime.kind === "codex" &&
+          role === "gateway" &&
+          !embedded &&
+          Object.keys(pluginRuntime.runtime.selections).length > 0));
+    if (needsPluginRuntime) {
+      volumes.push({
+        name: PLUGIN_RUNTIME_VOLUME,
+        configMap: {
+          name: pluginRuntime.name,
+          items: [
+            { key: PLUGIN_RUNTIME_MANIFEST, path: PLUGIN_RUNTIME_MANIFEST },
+            ...(pluginRuntime.runtime.kind === "codex" && role === "agent"
+              ? [{ key: PLUGIN_RUNTIME_CODEX_CONFIG, path: PLUGIN_RUNTIME_CODEX_CONFIG }]
+              : []),
+          ],
+          optional: false,
+        },
+      });
+      volumeMounts.push({
+        name: PLUGIN_RUNTIME_VOLUME,
+        mountPath: PLUGIN_RUNTIME_DIRECTORY,
+        readOnly: true,
+      });
+      variables.push({
+        name: PLUGIN_RUNTIME_MANIFEST_ENVIRONMENT,
+        value: `${PLUGIN_RUNTIME_DIRECTORY}/${PLUGIN_RUNTIME_MANIFEST}`,
+      });
+      if (pluginRuntime.runtime.kind === "codex" && role === "agent") {
+        variables.push(
+          {
+            name: PLUGIN_RUNTIME_CODEX_CONFIG_ENVIRONMENT,
+            value: `${PLUGIN_RUNTIME_DIRECTORY}/${PLUGIN_RUNTIME_CODEX_CONFIG}`,
+          },
+          {
+            name: PLUGIN_RUNTIME_READY_MARKER_ENVIRONMENT,
+            value: PLUGIN_RUNTIME_READY_MARKER,
+          },
+        );
+      }
     }
     if (projected !== undefined) {
       volumes.push({
@@ -4063,13 +4190,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
       }
       if (desired.kind === "ConfigMap") {
         const annotations = desired.metadata.annotations ?? {};
+        const data = desired.data ?? {};
+        const existingData = existing.data ?? {};
         if (
           existing.immutable !== true ||
           Object.entries(annotations).some(
             ([name, value]) => existing.metadata.annotations?.[name] !== value,
           ) ||
-          existing.data?.[CONFIGURATION_DOCUMENT] !== desired.data?.[CONFIGURATION_DOCUMENT] ||
-          Object.keys(existing.data ?? {}).length !== 1 ||
+          Object.keys(existingData).length !== Object.keys(data).length ||
+          Object.entries(data).some(([name, value]) => existingData[name] !== value) ||
           Object.keys(existing.binaryData ?? {}).length !== 0
         ) {
           throw new OwnershipFailure(

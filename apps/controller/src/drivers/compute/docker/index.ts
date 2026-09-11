@@ -17,7 +17,15 @@ import { currentComputeAbortSignal, withComputeAbortSignal } from "../operation-
 import {
   AGENT_READINESS_ENTRYPOINT,
   AGENT_RUNTIME_ENTRYPOINT,
+  PLUGIN_RUNTIME_HELPERS,
 } from "../kubernetes/runtime-entrypoints.ts";
+import {
+  PLUGIN_RUNTIME_READY_MARKER,
+  PLUGIN_RUNTIME_READY_MARKER_ENVIRONMENT,
+  type PluginRuntimeSpec,
+  pluginRuntimeEnvironment,
+  pluginRuntimeSpecForRevision,
+} from "../plugin-runtime.ts";
 
 export interface DockerComputeDriverOptions {
   readonly images: {
@@ -102,6 +110,8 @@ const GATEWAY_RUNTIME_ENTRYPOINT = String.raw`
 const { mkdirSync, writeFileSync } = require("node:fs");
 const { spawn } = require("node:child_process");
 
+${PLUGIN_RUNTIME_HELPERS}
+
 function forwardTermination(child) {
   let terminating = false;
   const forward = (signal) => {
@@ -119,6 +129,8 @@ mkdirSync("/home/node/workspace", { recursive: true });
 writeFileSync(process.env.OPENCLAW_CONFIG_PATH, process.env.OPENCLAW_CONFIG_JSON, { mode: 0o600 });
 delete process.env.OPENCLAW_CONFIG_JSON;
 delete process.env.OPENCLAW_LOG_LEVEL;
+const pluginRuntime = readGatewayPluginRuntime();
+if (pluginRuntime !== undefined) installOpenClawPlugins(pluginRuntime);
 const child = spawn(
   "node",
   ["/app/openclaw.mjs", "gateway", "--port", process.env.OPENCLAW_GATEWAY_PORT],
@@ -329,6 +341,7 @@ export class DockerComputeDriver implements ComputeDriver {
 
     const loggingLevel = admittedLoggingLevel(revision.configuration);
     const prepared = immutableCopy(revision);
+    const pluginRuntime = this.pluginRuntimeForRevision(revision);
     let launchPrepared = false;
     let agentCreated: string | undefined;
     let gatewayCreated: string | undefined;
@@ -340,6 +353,7 @@ export class DockerComputeDriver implements ComputeDriver {
         const gateway = await this.reconcileGateway(prepared, network, {
           ...provider,
           ...launch.environment,
+          ...this.pluginRuntimeEnvironmentForWorkload(pluginRuntime, "gateway", true),
         });
         gatewayCreated = gateway.created ? gateway.containerName : undefined;
         return { ...result, ready: gateway.ready };
@@ -349,12 +363,14 @@ export class DockerComputeDriver implements ComputeDriver {
       const agent = await this.reconcileAgent(prepared, network, appServerToken, loggingLevel, {
         ...provider,
         ...launch.environment,
+        ...this.pluginRuntimeEnvironmentForWorkload(pluginRuntime, "agent", false),
       });
       agentCreated = agent.created ? agent.containerName : undefined;
       if (!agent.ready) return result;
       const gateway = await this.reconcileGateway(prepared, network, {
         APP_SERVER_URL: `ws://${agent.containerName}:${AGENT_TRANSPORT_PORT}`,
         APP_SERVER_TOKEN: appServerToken,
+        ...this.pluginRuntimeEnvironmentForWorkload(pluginRuntime, "gateway", false),
       });
       gatewayCreated = gateway.created ? gateway.containerName : undefined;
       return { ...result, ready: gateway.ready };
@@ -635,6 +651,50 @@ export class DockerComputeDriver implements ComputeDriver {
       );
     }
     return { [MODEL_API_KEY]: credential };
+  }
+
+  private pluginRuntimeForRevision(
+    revision: Readonly<AgentRevision>,
+  ): PluginRuntimeSpec | undefined {
+    try {
+      return pluginRuntimeSpecForRevision(revision);
+    } catch (error) {
+      throw new ConfigurationFailure(
+        error instanceof Error
+          ? error.message
+          : "AgentRevision plugin runtime artifacts are invalid.",
+      );
+    }
+  }
+
+  private pluginRuntimeEnvironmentForWorkload(
+    runtime: PluginRuntimeSpec | undefined,
+    role: "agent" | "gateway",
+    embedded: boolean,
+  ): Readonly<Record<string, string>> {
+    if (runtime === undefined) return {};
+    const applies =
+      (runtime.kind === "openclaw" && role === "gateway" && embedded) ||
+      (runtime.kind === "codex" && role === "agent" && !embedded) ||
+      (runtime.kind === "codex" &&
+        role === "gateway" &&
+        !embedded &&
+        Object.keys(runtime.selections).length > 0);
+    if (!applies) return {};
+    try {
+      return {
+        ...pluginRuntimeEnvironment(runtime),
+        ...(runtime.kind === "codex" && role === "agent"
+          ? { [PLUGIN_RUNTIME_READY_MARKER_ENVIRONMENT]: PLUGIN_RUNTIME_READY_MARKER }
+          : {}),
+      };
+    } catch (error) {
+      throw new ConfigurationFailure(
+        error instanceof Error
+          ? error.message
+          : "AgentRevision plugin runtime artifacts are invalid.",
+      );
+    }
   }
 
   private ownershipMetadata(ownership: Ownership): Record<string, string> {

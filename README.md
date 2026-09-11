@@ -74,6 +74,7 @@ Use `npm run docs:build` for the full static build. See the
 - [Feature reference](docs/reference/README.md): supported behavior and Driver contracts.
 - [Platform console](docs/reference/console.md): login, Namespace selection, Agent creation, revision inspection, and supported channel draft edits.
 - [Providers](docs/reference/providers.md): authenticated clients, related Drivers, and optional Agent association.
+- [Agent plugins](docs/reference/agent-plugins.md): Agent-owned curated plugin selections and native policy prepared during startup.
 - [Agent workspace files](docs/reference/agents.md#workspace-files): read and replace four native Agent workspace files through private Kubernetes routes managed by Compute, Envoy Gateway, and cert-manager.
 - [HTTP API](docs/reference/api.md): routes, request and response schemas, authentication, and permissions.
 - [Spec archive](specs/README.md): proposals and implementation history, with recorded statuses.

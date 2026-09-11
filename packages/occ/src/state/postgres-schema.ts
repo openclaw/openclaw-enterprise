@@ -1,5 +1,6 @@
 import type {
   HarnessExecutionMode,
+  PluginDesiredState,
   SecretBindings,
   ServiceAccountCredential,
 } from "@openclaw-enterprise/contracts";
@@ -224,6 +225,7 @@ export const agents = occSchema.table(
     configurationId: text("configuration_id").notNull(),
     providerId: text("provider_id"),
     executionMode: text("execution_mode").$type<HarnessExecutionMode>().notNull(),
+    plugins: jsonb("plugins").$type<PluginDesiredState>(),
     servicePrincipalId: text("service_principal_id").notNull(),
     serviceAccountId: text("service_account_id"),
     activeRevisionId: text("active_revision_id"),
@@ -243,6 +245,10 @@ export const agents = occSchema.table(
     check(
       "agents_provider_id_valid",
       sql`${table.providerId} IS NULL OR (char_length(${table.providerId}) BETWEEN 1 AND 200 AND ${table.providerId} = btrim(${table.providerId}) AND ${table.providerId} !~ '[[:cntrl:]]')`,
+    ),
+    check(
+      "agents_plugins_object",
+      sql`${table.plugins} IS NULL OR jsonb_typeof(${table.plugins}) = 'object'`,
     ),
     check(
       "agents_name_normalized",
@@ -377,7 +383,7 @@ export const agentRevisions = occSchema.table(
         AND (${table.admittedSpec}
           - 'configuration_id' - 'configuration_kind' - 'configuration_generation'
           - 'draft_spec' - 'harness' - 'compute' - 'sandbox_driver_id'
-          - 'secret_driver_id' - 'secret_bindings' - 'service_account') = '{}'::jsonb
+          - 'secret_driver_id' - 'secret_bindings' - 'service_account' - 'plugins') = '{}'::jsonb
         AND jsonb_typeof(${table.admittedSpec}->'configuration_id') = 'string'
         AND (${table.admittedSpec}->>'configuration_id') ~ ${identifierPatterns.configuration}
         AND jsonb_typeof(${table.admittedSpec}->'configuration_kind') = 'string'
@@ -446,6 +452,10 @@ export const agentRevisions = occSchema.table(
             AND (${table.admittedSpec} #>> '{service_account,credential,secretRef,key}') ~ '^[-._a-zA-Z0-9]+$'
             AND (${table.admittedSpec} #>> '{service_account,credential,secretRef,key}') NOT IN ('.', '..')
           )
+        )
+        AND (
+          NOT (${table.admittedSpec} ? 'plugins')
+          OR jsonb_typeof(${table.admittedSpec}->'plugins') = 'object'
         )`,
     ),
   ],

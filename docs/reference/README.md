@@ -31,6 +31,7 @@ runtime image for local deployment.
 | [Authorization](authorization.md)                | Principals, Groups, Roles, Bindings, Restrictions, and exact-resource decisions.     |
 | [Providers](providers.md)                        | Provider configuration, related Drivers, client ownership, and Agent references.     |
 | [Service accounts](service-accounts.md)          | Account associations, credential references, issuance, and revocation boundaries.    |
+| [Agent plugins](agent-plugins.md)                | Agent-owned curated selections, startup validation, and native runtime policy.       |
 | [Harness execution](harness-execution.md)        | Runtime selection, topology, and admitted execution constraints.                     |
 | [Controller reconciliation](controller.md)       | Durable lifecycle work, authorization refresh, claims, retries, and recovery.        |
 | [Security](security.md)                          | Kubernetes workload and credential boundaries and enforcement limitations.           |
@@ -52,7 +53,8 @@ must satisfy. It is part of the reference, not another document lifecycle.
 - [ComputeDriver](drivers/compute.md), [SandboxDriver](drivers/sandbox.md),
   [ConfigurationDriver](drivers/configuration.md), [IAMDriver](drivers/iam.md),
   [SecretDriver](drivers/kubernetes-secret.md), and
-  [ServiceAccountDriver](drivers/service-account.md): capability contracts.
+  [ServiceAccountDriver](drivers/service-account.md), and
+  [PluginDriver](drivers/plugin.md): capability contracts.
 - [Docker Compute](drivers/docker-compute.md),
   [Kubernetes Compute](drivers/kubernetes-compute.md),
   [SSH Compute](drivers/ssh-compute.md), and

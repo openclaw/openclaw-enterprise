@@ -61,6 +61,8 @@ runtime detail.
   explicitly scoped, topology-specific model-credential boundaries described in [Secret access](design/safeguards.md#secret-access).
 - Extend the platform through capability-specific contracts on one common
   Driver abstraction.
+- Allow an Agent to own optional desired plugin selections while preserving
+  immutable revision snapshots and selected Driver ownership.
 
 ## Non-Goals
 
@@ -99,7 +101,8 @@ runtime detail.
    through the selected `ComputeDriver` and enforce its exact `SandboxPolicy`
    through the selected `SandboxDriver`.
 7. Keep authorization, service accounts, model inference, compute,
-   sandboxing, secrets, and messaging behind bounded Driver contracts.
+   sandboxing, secrets, messaging, and plugin translation behind bounded Driver
+   contracts.
    Installing a Driver does not grant it resource ownership or permission to
    select itself; only server-owned selection gives an `IAMDriver` authority
    for its assigned resource kinds.
@@ -156,6 +159,7 @@ flowchart TB
         PROVIDER_CLIENT["Installation-scoped provider client"]
         INFERENCE_DRIVER["InferenceDriver"]
         SECRET_DRIVER["SecretDriver"]
+        PLUGIN_DRIVER["PluginDriver"]
         PROVIDER["External provider"]
         LOCAL_MODEL["Local model source"]
         SECRET_STORE["Secret backend"]
@@ -165,6 +169,7 @@ flowchart TB
         INFERENCE_DRIVER -->|"authorized provider model inference"| PROVIDER
         INFERENCE_DRIVER -->|"authorized local model inference"| LOCAL_MODEL
         SECRET_DRIVER -->|"stores Namespace-owned material"| SECRET_STORE
+        PLUGIN_DRIVER -->|"resolves curated plugin selections"| PROVIDER
     end
 
     GATEWAY <-->|"Agent-owned runtime traffic"| WORKLOAD
@@ -174,6 +179,7 @@ flowchart TB
     OCC -->|"dispatches authorized model inference"| INFERENCE_DRIVER
     BROKER -->|"dispatches exact namespace operation"| SECRET_DRIVER
     REVISION -->|"immutable deployment configuration"| COMPUTE
+    REVISION -->|"requested plugin policy"| PLUGIN_DRIVER
 ```
 
 The Ingress Gateway is the public control-plane boundary. An external identity
@@ -187,6 +193,8 @@ gateways and workloads in the same tenant boundary; the bundled
 namespace. OCC owns their lifecycle decisions.
 `SandboxDriver` enforces the admitted policy for the exact Agent workload.
 `InferenceDriver` invokes the selected external provider or local model source.
+`PluginDriver` translates Agent-owned desired plugin selections into native runtime
+policy during revision startup.
 OCC API and OCC Console are named surfaces, not implementation or deployment
 decisions.
 

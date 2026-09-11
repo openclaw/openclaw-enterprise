@@ -690,6 +690,16 @@ test("SSH revisions fail closed on unbound identities, unsupported topology, san
     f.driver.prepareRevision({ ...rev, sandboxDriverId: "sandbox" }),
     /SandboxDriver/,
   );
+  await assert.rejects(
+    f.driver.prepareRevision({
+      ...rev,
+      plugins: {
+        driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+        plugins: { "occ-plugin:diffs": { enabled: true, approvalMode: "always" } },
+      },
+    }),
+    /PluginDriver installation/,
+  );
   for (const change of [
     { servicePrincipalId: "foreign" },
     { namespaceId: "foreign" },

@@ -16,7 +16,7 @@ import {
   normalizeLoggingLevel,
 } from "../../packages/contracts/src/index.ts";
 
-test("the Driver contract exposes IAM, Compute, Configuration, ServiceAccount, Secret, and Sandbox capabilities", () => {
+test("the Driver contract exposes IAM, Compute, Configuration, ServiceAccount, Secret, Sandbox, and Plugin capabilities", () => {
   assert.deepEqual(DRIVER_CAPABILITIES, [
     "iam",
     "compute",
@@ -24,6 +24,7 @@ test("the Driver contract exposes IAM, Compute, Configuration, ServiceAccount, S
     "service_account",
     "secret",
     "sandbox",
+    "plugin",
   ]);
   assert.equal(Object.isFrozen(DRIVER_CAPABILITIES), true);
 
@@ -154,7 +155,7 @@ test("the singleton platform resource model keeps Namespace ownership explicit",
   assert.equal(Object.isFrozen(RESOURCE_KINDS), true);
 
   for (const kind of RESOURCE_KINDS) assert.equal(isResourceKind(kind), true);
-  for (const unsupported of ["provider", "driver", "gateway", "claw", "", undefined]) {
+  for (const unsupported of ["provider", "driver", "plugin", "gateway", "claw", "", undefined]) {
     assert.equal(isResourceKind(unsupported), false);
   }
 });

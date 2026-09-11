@@ -20,6 +20,10 @@ import {
   ErrorResponse,
   AgentRuntimeCredentialResponse,
   JsonValue,
+  PluginDesiredSelectionSchema,
+  PluginDesiredStateSchema,
+  PluginDriverIdentitySchema,
+  PluginToolPolicySchema,
   SecretResponse,
   occApiRoutes,
   type Agent,
@@ -53,6 +57,7 @@ import {
   DependencyUnavailableError,
   NamespaceNotEmptyError,
   NamespaceNotReadyError,
+  NotImplementedError,
   ResourceConflictError,
   ScopeViolationError,
   type HarnessResolver,
@@ -461,6 +466,7 @@ function clientAgent(agent: Readonly<Agent>): Record<string, unknown> {
     configurationId: agent.configurationId,
     providerId: agent.providerId,
     executionMode: agent.executionMode,
+    ...(agent.plugins === undefined ? {} : { plugins: agent.plugins }),
     ...(agent.serviceAccountId === undefined ? {} : { serviceAccountId: agent.serviceAccountId }),
     ...(agent.activeRevisionId === undefined ? {} : { activeRevisionId: agent.activeRevisionId }),
     createdAt: agent.createdAt,
@@ -491,6 +497,7 @@ function clientRevision(revision: Readonly<AgentRevision>): Record<string, unkno
     compute: revision.compute,
     ...(revision.secretDriverId === undefined ? {} : { secretDriverId: revision.secretDriverId }),
     ...(revision.secretBindings === undefined ? {} : { secretBindings: revision.secretBindings }),
+    ...(revision.plugins === undefined ? {} : { plugins: revision.plugins }),
     ...(revision.serviceAccount === undefined ? {} : { serviceAccount: revision.serviceAccount }),
     createdAt: revision.createdAt,
   };
@@ -563,6 +570,7 @@ function requestFailure(error: unknown): RequestFailure {
     );
   if (error instanceof NamespaceNotEmptyError)
     return failure(409, "NAMESPACE_NOT_EMPTY", "The requested Namespace is not empty.");
+  if (error instanceof NotImplementedError) return failure(501, "NOT_IMPLEMENTED", error.message);
   if (error instanceof DependencyUnavailableError)
     return failure(503, "DEPENDENCY_UNAVAILABLE", "A required platform dependency is unavailable.");
   if (error instanceof ResourceConflictError)
@@ -683,6 +691,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
   app.removeContentTypeParser("text/plain");
   app.addSchema(JsonValue);
+  app.addSchema(PluginDriverIdentitySchema);
+  app.addSchema(PluginToolPolicySchema);
+  app.addSchema(PluginDesiredSelectionSchema);
+  app.addSchema(PluginDesiredStateSchema);
   void app.register(swagger, {
     convertConstToEnum: false,
     openapi: {
@@ -1657,6 +1669,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           ...(body?.serviceAccountId === undefined
             ? {}
             : { serviceAccountId: body.serviceAccountId as string }),
+          ...(body?.plugins === undefined ? {} : { plugins: body.plugins as never }),
         });
         await unit.audit.append(
           event(
@@ -1705,6 +1718,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           ...(body?.serviceAccountId === undefined
             ? {}
             : { serviceAccountId: body.serviceAccountId as string | null }),
+          ...(body?.plugins === undefined ? {} : { plugins: body.plugins as never }),
         });
         await unit.audit.append(
           event(
@@ -1756,6 +1770,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         return provisioned;
       });
       reply.send({ data: status, meta: { requestId: request.id } });
+      return;
+    }
+
+    if (operation.operationId === "listAgentPlugins") {
+      const plugins = await controller.listAgentPlugins(
+        context.actorId,
+        namespaceId,
+        agentId,
+        options.resolveHarness,
+      );
+      reply.send({ data: plugins, meta: { requestId: request.id } });
       return;
     }
 

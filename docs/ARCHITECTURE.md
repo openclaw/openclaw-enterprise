@@ -41,6 +41,10 @@ References must stay within their admitted scope.
 identities from Kubernetes identities. [Feature reference](reference/README.md)
 owns their fields, permissions, and lifecycle rules.
 
+[Agent plugins](reference/agent-plugins.md) defines the optional Agent-owned
+plugin map. AgentRevision snapshots record the requested plugin IDs and policy;
+startup resolves them through the selected PluginDriver.
+
 ## Control plane
 
 The API authenticates callers, authorizes exact resource operations, and records
@@ -64,7 +68,8 @@ for initialization ordering and failure handling.
 ## Drivers
 
 Installation configuration selects infrastructure implementations for compute,
-configuration, identity, Secrets, and optional provider service accounts.
+configuration, identity, Secrets, optional provider service accounts, and optional
+Agent plugin translation.
 [Driver reference](reference/README.md#drivers) owns available implementations
 and contracts; [selection](reference/drivers/selection.md) explains trusted package loading.
 
@@ -72,6 +77,8 @@ Compute owns workload provisioning, readiness, activation, and retirement.
 Other Drivers may participate through bounded
 [Compute lifecycle hooks](flows/compute-driver-lifecycle-hooks.md).
 [Providers](reference/providers.md) supply authenticated clients to related Drivers.
+[PluginDriver](reference/drivers/plugin.md) resolves curated Agent plugin
+selections and renders native runtime policy during revision startup.
 
 ## Agent execution
 

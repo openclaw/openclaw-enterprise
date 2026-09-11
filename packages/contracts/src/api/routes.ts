@@ -25,6 +25,7 @@ import {
 } from "./common.ts";
 import {
   AgentListResponse,
+  AgentPluginListResponse,
   AgentRuntimeCredentialResponse,
   AgentResponse,
   AgentRevisionListResponse,
@@ -50,6 +51,11 @@ const readErrors = {
   404: ErrorResponseRef,
   500: ErrorResponseRef,
   503: ErrorResponseRef,
+} as const;
+
+const pluginReadErrors = {
+  ...readErrors,
+  501: ErrorResponseRef,
 } as const;
 
 const createErrors = {
@@ -561,6 +567,22 @@ export const occApiRoutes = [
       params: WorkspaceFileParams,
       body: UpdateWorkspaceFileBody,
       response: { 200: WorkspaceFileUpdateResponse, ...createErrors },
+    },
+  },
+  {
+    operationId: "listAgentPlugins",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/plugins",
+    action: "openclaw.agent_plugins.list",
+    iamAction: "read",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "List curated and desired plugins for an exact Agent",
+    tags: ["Agent plugins"],
+    schema: {
+      querystring: EmptyQuery,
+      params: AgentParams,
+      response: { 200: AgentPluginListResponse, ...pluginReadErrors },
     },
   },
   {

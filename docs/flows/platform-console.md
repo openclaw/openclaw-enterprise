@@ -133,14 +133,16 @@ The latter requires Namespace read and filters each account by exact read access
 Provider selection does not filter service accounts. A failed list read
 shows a field-level error and retains the unset association option.
 
-The form starts with editable native JSON for the selected execution mode.
-Submission parses an object and posts `{kind: "agent", values}` to
+The form starts with editable native JSON for the selected execution mode and
+optional Agent-owned plugin selections. Submission parses the JSON object and
+posts `{kind: "agent", values}` to
 `POST /namespaces/:namespaceId/configurations`. After that returns its ID,
-`POST /namespaces/:namespaceId/agents` creates the Agent draft and returns to the
-detail URL with `revision=draft`. If that second write fails, the browser retains
-the Configuration ID and locks its JSON and execution mode; an explicit Agent retry reuses the saved
-Configuration. No write retries automatically, and creation alone does not admit
-a revision or start runtime work.
+`POST /namespaces/:namespaceId/agents` creates the Agent draft with the selected
+plugin map and returns to the detail URL with `revision=draft`. If that second
+write fails, the browser retains the Configuration ID and locks its JSON and
+execution mode; an explicit Agent retry reuses the saved Configuration. No write
+retries automatically, and creation alone does not admit a revision, validate the
+plugin catalog, or start runtime work.
 
 ### 4–6. Edit the Agent and access runtime files
 

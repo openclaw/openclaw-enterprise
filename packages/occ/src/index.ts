@@ -22,6 +22,11 @@ import type {
   LoggingLevel,
   OpenClawConfigurationDocument,
   PermissionAction,
+  PluginCatalogEntry,
+  PluginDesiredSelection,
+  PluginDesiredState,
+  PluginDriver,
+  PluginRevisionState,
   ProviderDefinition,
   ProviderRef,
   ResourceKind,
@@ -42,6 +47,7 @@ import {
   SANDBOX_FACETS,
   admitLoggingConfiguration,
   normalizeLoggingLevel,
+  normalizePluginDesiredState,
   normalizeSecretBindings,
 } from "@openclaw-enterprise/contracts";
 import { asRecord, immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
@@ -51,6 +57,7 @@ import {
   DriverSelectionError,
   NamespaceNotEmptyError,
   NamespaceNotReadyError,
+  NotImplementedError,
   ResourceConflictError,
   ScopeViolationError,
 } from "./errors.ts";
@@ -76,6 +83,7 @@ export {
   DriverSelectionError,
   NamespaceNotEmptyError,
   NamespaceNotReadyError,
+  NotImplementedError,
   ResourceConflictError,
   ScopeViolationError,
 } from "./errors.ts";
@@ -159,6 +167,7 @@ export interface CreateAgentInput {
   readonly providerId?: string | null;
   readonly serviceAccountId?: string;
   readonly executionMode?: HarnessExecutionMode;
+  readonly plugins?: PluginDesiredState;
 }
 
 export interface UpdateAgentInput {
@@ -168,6 +177,7 @@ export interface UpdateAgentInput {
   readonly providerId?: string | null;
   readonly serviceAccountId?: string | null;
   readonly executionMode?: HarnessExecutionMode;
+  readonly plugins?: PluginDesiredState;
 }
 
 export interface CreateServiceAccountInput {
@@ -216,6 +226,15 @@ export interface ActiveAgentRevisionSelection {
   readonly revision: Readonly<AgentRevision>;
 }
 
+export interface AgentPluginListRow {
+  readonly id: string;
+  readonly name: string;
+  readonly available: boolean;
+  readonly desired: PluginDesiredSelection | null;
+  readonly installed: boolean;
+  readonly tools: PluginCatalogEntry["tools"];
+}
+
 export type ReconciliationOperation = PlatformOperation;
 
 interface RegisteredDriver {
@@ -232,6 +251,7 @@ type DriverByCapability = {
   secret: SecretDriver;
   sandbox: SandboxDriver;
   compute: ComputeDriver;
+  plugin: PluginDriver;
 };
 type DriverFor<Capability extends DriverCapability> = DriverByCapability[Capability];
 
@@ -278,6 +298,7 @@ function driverHasCapabilityContract(driver: Driver): boolean {
         typeof candidate.provisionHarness === "function") &&
       typeof candidate.cleanup === "function"
     );
+  if (driver.capability === "plugin") return typeof candidate.listCatalog === "function";
   return (
     typeof candidate.ensureNamespace === "function" &&
     typeof candidate.deleteNamespace === "function" &&
@@ -517,6 +538,16 @@ export function resolveConfiguredHarnessId(
 
 function validExecutionMode(value: unknown): value is HarnessExecutionMode {
   return value === "embedded" || value === "dedicated";
+}
+
+function invalidPluginRequest(message: string): never {
+  throw new ScopeViolationError(message);
+}
+
+function normalizeAgentPlugins(
+  plugins: PluginDesiredState | undefined,
+): PluginDesiredState | undefined {
+  return normalizePluginDesiredState(plugins, invalidPluginRequest);
 }
 
 export class OpenClawController {
@@ -1392,6 +1423,7 @@ export class OpenClawController {
     if (!validExecutionMode(executionMode))
       throw new ScopeViolationError("The Agent Harness execution mode is invalid.");
     const providerId = this.providerId(input.providerId);
+    const plugins = normalizeAgentPlugins(input.plugins);
     return this.mutate(async (state) => {
       const namespace = await this.lockNamespace(state, input.namespaceId);
       if (namespace.status !== "provisioning" && namespace.status !== "ready")
@@ -1441,6 +1473,7 @@ export class OpenClawController {
           ? {}
           : { serviceAccountId: input.serviceAccountId }),
         executionMode,
+        ...(plugins === undefined ? {} : { plugins }),
         servicePrincipalId: `service-agent-${agentId}`,
         createdAt: this.timestamp(),
       });
@@ -1461,6 +1494,7 @@ export class OpenClawController {
       throw new ScopeViolationError("The exact Agent ServiceAccount identity is missing.");
     if (input.executionMode !== undefined && !validExecutionMode(input.executionMode))
       throw new ScopeViolationError("The Agent Harness execution mode is invalid.");
+    const plugins = normalizeAgentPlugins(input.plugins);
     return this.mutate(async (state) => {
       const namespace = await this.lockNamespace(state, input.namespaceId);
       const agent = await state.agents.lockAgent(namespace.id, input.agentId);
@@ -1523,10 +1557,99 @@ export class OpenClawController {
         input.executionMode,
         input.serviceAccountId,
         input.providerId === undefined ? undefined : providerId,
+        plugins,
       );
       if (!updated)
         throw new ResourceConflictError("The Agent Configuration changed during its update.");
       return updated;
+    });
+  }
+
+  async listAgentPlugins(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    resolveHarness: HarnessResolver,
+  ): Promise<readonly AgentPluginListRow[]> {
+    const agent = await this.getAgent(principalId, namespaceId, agentId);
+    return this.read(async (state) => {
+      const namespace = await this.exactNamespace(state, namespaceId);
+      const desired = agent.plugins ?? {};
+      const installed = new Set<string>();
+      const activePlugins = new Map<string, PluginDesiredSelection>();
+      if (agent.activeRevisionId !== undefined) {
+        const active = await state.revisions.findRevision(
+          namespace.id,
+          agent.id,
+          agent.activeRevisionId,
+        );
+        const activeReconciliationSucceeded =
+          active === undefined
+            ? false
+            : await state.operations.agentRevisionReconciliationSucceeded(
+                namespace.id,
+                agent.id,
+                active.id,
+              );
+        for (const [pluginId, selection] of Object.entries(active?.plugins?.plugins ?? {})) {
+          if (activeReconciliationSucceeded) installed.add(pluginId);
+          activePlugins.set(pluginId, selection);
+        }
+      }
+
+      let catalog: readonly PluginCatalogEntry[] = [];
+      if (this.selections.has("plugin")) {
+        const configuration = await this.currentAgentConfiguration(state, namespace, agent);
+        const harness = this.currentHarness(configuration.values, agent, resolveHarness);
+        try {
+          catalog = await this.pluginOperation(() =>
+            this.pluginDriver().listCatalog({
+              namespace,
+              agent,
+              harness,
+              configuration: configuration.values,
+              signal: new AbortController().signal,
+            }),
+          );
+        } catch (error) {
+          if (!(error instanceof NotImplementedError)) throw error;
+        }
+      }
+
+      const rows = new Map<string, AgentPluginListRow>();
+      for (const entry of catalog) {
+        rows.set(entry.id, {
+          id: entry.id,
+          name: entry.name,
+          available: true,
+          desired: desired[entry.id] ?? null,
+          installed: installed.has(entry.id),
+          tools: entry.tools,
+        });
+      }
+      for (const [id, selection] of Object.entries(desired)) {
+        if (rows.has(id)) continue;
+        rows.set(id, {
+          id,
+          name: id,
+          available: false,
+          desired: selection,
+          installed: installed.has(id),
+          tools: null,
+        });
+      }
+      for (const [id, selection] of activePlugins) {
+        if (rows.has(id)) continue;
+        rows.set(id, {
+          id,
+          name: id,
+          available: false,
+          desired: null,
+          installed: installed.has(id),
+          tools: null,
+        });
+      }
+      return Object.freeze([...rows.values()].map((row) => immutableCopy(row)));
     });
   }
 
@@ -1691,6 +1814,16 @@ export class OpenClawController {
           "ServiceAccount access-token credentials require the dedicated Codex Harness.",
         );
       }
+      const pluginState =
+        lockedAgent.plugins === undefined || Object.keys(lockedAgent.plugins).length === 0
+          ? undefined
+          : (() => {
+              const driver = this.pluginDriver();
+              return immutableCopy({
+                driver: { id: driver.id, implementation: driver.implementation },
+                plugins: lockedAgent.plugins,
+              } satisfies PluginRevisionState);
+            })();
       const previous = await state.revisions.listRevisions(namespace.id, lockedAgent.id);
       const revision = await state.revisions.createRevision(
         frozenRevision({
@@ -1713,6 +1846,7 @@ export class OpenClawController {
           ...(secretDriver === undefined
             ? {}
             : { secretDriverId: secretDriver.id, secretBindings }),
+          ...(pluginState === undefined ? {} : { plugins: pluginState }),
           ...(serviceAccount === undefined ? {} : { serviceAccount }),
           servicePrincipalId: lockedAgent.servicePrincipalId,
           createdAt: this.timestamp(),
@@ -2282,6 +2416,55 @@ export class OpenClawController {
     }
   }
 
+  private pluginDriver(): PluginDriver {
+    try {
+      return this.selectedDriver("plugin");
+    } catch {
+      throw new NotImplementedError(
+        "agent_plugins.driver",
+        "No selected Plugin Driver can represent Agent plugin configuration.",
+      );
+    }
+  }
+
+  private currentHarness(
+    configuration: Readonly<OpenClawConfigurationDocument>,
+    agent: Readonly<Agent>,
+    resolveHarness: HarnessResolver,
+  ) {
+    const configuredHarnessId = resolveConfiguredHarnessId(configuration);
+    const harness = resolveHarness(configuredHarnessId, agent.executionMode);
+    if (
+      harness === undefined ||
+      !isNonEmptyString(harness.id) ||
+      !isNonEmptyString(harness.version)
+    )
+      throw new DependencyUnavailableError("The selected Harness runtime is not approved.");
+    if (harness.id !== configuredHarnessId)
+      throw new ScopeViolationError("The approved Harness does not match the native runtime.");
+    return Object.freeze({ id: harness.id, version: harness.version, mode: agent.executionMode });
+  }
+
+  private async currentAgentConfiguration(
+    state: PlatformReadView,
+    namespace: Readonly<Namespace>,
+    agent: Readonly<Agent>,
+  ): Promise<Readonly<Configuration>> {
+    const metadata = await state.configurations.findConfiguration(
+      namespace.id,
+      agent.configurationId,
+    );
+    if (!metadata || metadata.kind !== "agent")
+      throw new ScopeViolationError(
+        "The Agent Configuration must belong to the exact Namespace and configure an Agent.",
+      );
+    const driver = this.configurationDriver();
+    return this.exactConfiguration(
+      await this.driverOperation(() => driver.read({ id: metadata.id, namespaceId: namespace.id })),
+      metadata,
+    );
+  }
+
   private async driverOperation<T>(
     operation: () => Promise<T>,
     capability: "Configuration" | "ServiceAccount" = "Configuration",
@@ -2296,6 +2479,21 @@ export class OpenClawController {
       )
         throw error;
       throw new DependencyUnavailableError(`The selected ${capability} Driver is unavailable.`);
+    }
+  }
+
+  private async pluginOperation<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation();
+    } catch (error) {
+      if (
+        error instanceof NotImplementedError ||
+        error instanceof DependencyUnavailableError ||
+        error instanceof ScopeViolationError ||
+        error instanceof ResourceConflictError
+      )
+        throw error;
+      throw new DependencyUnavailableError("The selected Plugin Driver is unavailable.");
     }
   }
 

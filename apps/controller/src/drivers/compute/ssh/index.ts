@@ -127,6 +127,10 @@ function failure(error: unknown): "permanent" | "retryable" {
     : "retryable";
 }
 
+function hasPluginSelections(revision: AgentRevision): boolean {
+  return revision.plugins !== undefined && Object.keys(revision.plugins.plugins).length > 0;
+}
+
 export class SshComputeDriver implements ComputeDriver {
   static readonly configurationSchema = immutableCopy({
     type: "object",
@@ -360,6 +364,9 @@ export class SshComputeDriver implements ComputeDriver {
     }
     if (revision.sandboxDriverId !== undefined)
       throw new ConfigurationFailure("SSH Compute does not support SandboxDriver composition.");
+    if (hasPluginSelections(revision)) {
+      throw new ConfigurationFailure("SSH Compute does not support PluginDriver installation.");
+    }
     admittedLoggingLevel(revision.configuration);
     const result = await this.revisionOperation("prepare-revision", revision);
     return {
@@ -388,6 +395,9 @@ export class SshComputeDriver implements ComputeDriver {
     }
     if (revision.sandboxDriverId !== undefined)
       throw new ConfigurationFailure("SSH Compute does not support SandboxDriver composition.");
+    if (hasPluginSelections(revision)) {
+      throw new ConfigurationFailure("SSH Compute does not support PluginDriver installation.");
+    }
     admittedLoggingLevel(revision.configuration);
 
     let launch: Readonly<WorkloadLaunchContext> | undefined;
