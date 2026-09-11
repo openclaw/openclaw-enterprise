@@ -6,7 +6,10 @@ import {
   createKubernetesComputeDriver,
   kubernetesNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { PLUGIN_RUNTIME_HELPERS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import {
+  AGENT_RUNTIME_ENTRYPOINT,
+  PLUGIN_RUNTIME_HELPERS,
+} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
   PLUGIN_RUNTIME_CODEX_CONFIG,
   PLUGIN_RUNTIME_CODEX_CONFIG_ENVIRONMENT,
@@ -599,6 +602,31 @@ test("Codex runtime keeps disabled selected plugins default-denied while preserv
   }
 });
 
+test("Codex runtime helper keeps app-server plugin install errors generic", async () => {
+  const state = codexLinearPluginState({ approvalsReviewer: "auto_review" });
+  const runtime = {
+    manifest: pluginRuntimeSpecForRevision(revision({ plugins: state })),
+  };
+  await assert.rejects(
+    () =>
+      runCodexRuntimeHelper(runtime, (method) => {
+        if (method === "initialize") {
+          return { serverInfo: { name: "codex", version: "0.149.0" } };
+        }
+        if (method === "plugin/list") return codexListResponse();
+        if (method === "plugin/read") {
+          return codexReadResponse({ installed: false, enabled: false });
+        }
+        if (method === "config/batchWrite") {
+          return { status: "ok", version: "test-config-1" };
+        }
+        if (method === "plugin/install") return Promise.reject(new Error("unauthenticated"));
+        throw new Error(`unexpected request ${method}`);
+      }),
+    /Codex plugin installation did not reach readiness: Codex app-server plugin runtime request failed during plugin\/install: unauthenticated/,
+  );
+});
+
 test("Codex runtime helper fails before readiness when catalog identity is absent", async () => {
   const state = codexLinearPluginState();
   const runtime = {
@@ -948,6 +976,53 @@ test("embedded plugin preparation applies runtime egress before gateway readines
   assert.deepEqual(reconciled[runtimePolicyIndex].spec.egress[0].ports, [
     { protocol: "TCP", port: 443 },
   ]);
+});
+
+test("Codex runtime clears stale readiness marker before startup failure", () => {
+  const marker = "/tmp/openclaw-plugin-ready-test";
+  const removed = [];
+  const sandbox = {
+    console: { error() {} },
+    process: {
+      env: {
+        CODEX_HOME: "/home/node/.codex",
+        OPENCLAW_PLUGIN_READY_MARKER: marker,
+      },
+    },
+    require(specifier) {
+      if (specifier === "node:fs") {
+        return {
+          mkdirSync() {},
+          rmSync(path, options) {
+            removed.push({ path, options });
+          },
+          readFileSync() {
+            throw new Error("plugin runtime payload should not be read before login failure");
+          },
+          writeFileSync() {},
+        };
+      }
+      if (specifier === "node:child_process") {
+        return {
+          spawnSync() {
+            return { status: 1 };
+          },
+          spawn() {
+            assert.fail("app-server must not start after login failure");
+          },
+        };
+      }
+      return nodeRequire(specifier);
+    },
+  };
+
+  assert.throws(
+    () => vm.runInNewContext(AGENT_RUNTIME_ENTRYPOINT, sandbox),
+    /Codex model authentication initialization failed/,
+  );
+  assert.equal(removed.length, 1);
+  assert.equal(removed[0].path, marker);
+  assert.equal(removed[0].options.force, true);
 });
 
 test("Kubernetes dedicated Codex agent mounts plugin runtime and gates readiness on it", async () => {
