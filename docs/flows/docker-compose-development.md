@@ -15,9 +15,9 @@ waits for PostgreSQL migration, Installation bootstrap,
 API health, and worker readiness, then proves authenticated `/installation`
 access with a protected local copy of the bootstrap service key. That startup
 proof does not create an Agent, deploy an AgentRevision, or start a TUI. The
-verified Podman trace stops after control-plane startup, worker API preflight,
-and authenticated Installation access; the Agent runtime and TUI path remain
-Docker-verified.
+Podman real-runtime proof continues through isolated Namespace creation, one
+embedded OpenClaw Agent, and a provider-backed nonce response. Dedicated Codex
+and interactive TUI execution remain Docker-verified.
 
 After startup, the operator uses authenticated API calls to select a Namespace,
 create a Configuration and Agent, then deploy it. The worker then claims durable
@@ -36,8 +36,9 @@ the first authenticated development API checks.
 ## Entry Points
 
 - Trigger: `./scripts/dev-up [--key-output PATH] [-- COMPOSE_GLOBAL_OPTIONS...]`
-  from the repository root, followed by authenticated API calls and optional
-  Docker-only Agent provisioning and `docker exec -it` TUI attachment.
+  from the repository root, followed by authenticated API calls and Agent
+  provisioning. Interactive `docker exec -it` TUI attachment remains
+  Docker-only.
 - Source: `scripts/dev-up`, `compose.yaml`, `compose.podman.yaml`,
   `apps/controller/src/server.mjs:start`,
   `apps/controller/src/worker.ts:ControllerWorker`, and
@@ -86,7 +87,7 @@ graph TD
 
 ### 6–11. Deploy an Agent, run the TUI, and clean up
 
-[Docker Agent execution and cleanup](docker-compose-development/agent-execution.md) continues through authenticated deployment, network/container ownership, credential placement, TUI dispatch, and resource removal.
+[Docker-compatible Agent execution and cleanup](docker-compose-development/agent-execution.md) continues through authenticated deployment, network/container ownership, credential placement, TUI dispatch, and resource removal.
 
 ## Debugging and Verification
 
@@ -98,9 +99,9 @@ graph TD
 - Podman startup verification should show Podman as the selected engine, mount
   only its reported API socket into the worker, and complete the same
   authenticated Installation proof without a `docker` alias.
-- `docker network ls --filter label=org.openclaw.enterprise.compute-driver=docker`
+- `<engine> network ls --filter label=org.openclaw.enterprise.compute-driver=docker`
   should show one owned network for each ready development Namespace.
-- `docker ps --filter label=org.openclaw.enterprise.compute-driver=docker`
+- `<engine> ps --filter label=org.openclaw.enterprise.compute-driver=docker`
   should show one embedded gateway container or a dedicated gateway plus Codex
   container for deployed revisions.
 - The deployment guide owns authenticated API provisioning, gateway discovery,
@@ -114,6 +115,9 @@ graph TD
   a fresh nonce for both embedded and dedicated topologies. It may invoke the
   gateway through the Namespace network or through the Docker-published
   `127.0.0.1` gateway port.
+- With `OCC_TEST_PODMAN_COMPUTE_REAL=1`, that same test file runs the embedded
+  journey only and must receive a real nonce response before exact resource
+  teardown passes.
 - After Namespace deletion, the matching labeled containers and network should
   be absent while unrelated Namespaces remain.
 

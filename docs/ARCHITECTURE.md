@@ -169,8 +169,9 @@ and their enforcement limits.
 - **Local development:** Compose runs the API, worker, and PostgreSQL on Docker
   Engine or Podman; the API binds to loopback and Docker Compute provisions
   Agent containers through the selected engine's Docker-compatible API. Podman
-  verification currently covers control-plane startup, worker API access, and
-  authenticated Installation access; Agent runtime and TUI execution remain
+  verification covers control-plane startup, worker API access, authenticated
+  Installation access, Namespace isolation, and an embedded provider-backed
+  model turn. Dedicated Codex and interactive TUI execution remain
   Docker-verified.
 - **Production Kubernetes:** the API and worker run separately; Kubernetes Compute
   provisions tenant infrastructure and Agent workloads. The API remains internal.

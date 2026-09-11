@@ -370,8 +370,17 @@ if ! compose config --quiet >"$temporary_directory/compose-validated" 2>"$tempor
   fail "configuration" "$container_engine_label Compose config validation failed" "${compose_command[@]}" "${compose_args[@]}" config --quiet
 fi
 
-if ! compose up --build -d; then
-  fail "startup" "$container_engine_label Compose up failed" "${compose_command[@]}" "${compose_args[@]}" "${compose_ps_diagnostic_args[@]}"
+if [ "$container_engine" = "podman" ]; then
+  # podman-compose builds once per service even when multiple services select
+  # the same image, so build the shared application image once before startup.
+  if ! compose build migrate; then
+    fail "startup" "Podman Compose application image build failed" "${compose_command[@]}" "${compose_args[@]}" build migrate
+  fi
+  if ! compose up --no-build -d; then
+    fail "startup" "Podman Compose up failed" "${compose_command[@]}" "${compose_args[@]}" "${compose_ps_diagnostic_args[@]}"
+  fi
+elif ! compose up --build -d; then
+  fail "startup" "Docker Compose up failed" "${compose_command[@]}" "${compose_args[@]}" "${compose_ps_diagnostic_args[@]}"
 fi
 
 poll_services() {

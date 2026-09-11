@@ -28,9 +28,10 @@ continue to [development docs](docs/guides/deploy/local-operations.md#developmen
 A model credential is required to run Agent model turns, but not to start the
 stack.
 
-The verified Podman boundary is control-plane startup, worker access to the
-Podman API, and the authenticated Installation check. The Agent runtime and TUI
-procedure remains Docker-verified.
+The verified Podman boundary includes control-plane startup, authenticated API
+access, Namespace isolation, one embedded OpenClaw Agent deployment, a real
+provider-backed model turn, and exact test cleanup. Dedicated Codex, interactive
+TUI, and Fluentd/OTLP verification remain Docker-only.
 
 The local worker has access to the selected engine's Docker-compatible API
 socket. Use the
@@ -53,7 +54,7 @@ pnpm openapi:check
 pnpm test
 ```
 
-PostgreSQL, Docker, and Kubernetes integration suites require additional setup;
+PostgreSQL, Docker/Podman, and Kubernetes integration suites require additional setup;
 see [Testing](docs/testing/README.md) for suite coverage, credentials, setup, and commands.
 [GitHub Actions coverage](docs/testing/ci.md#github-actions) separates five PR-safe lanes from protected model and service integrations.
 

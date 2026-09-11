@@ -113,7 +113,7 @@ function exit(code, message = "") {
   process.exit(code);
 }
 function composeCommandIndex() {
-  return args.findIndex((arg, index) => index > 0 && ["config", "up", "ps", "cp", "exec"].includes(arg));
+  return args.findIndex((arg, index) => index > 0 && ["config", "build", "up", "ps", "cp", "exec"].includes(arg));
 }
 function delegateComposeConfig() {
   const command = process.env.DEV_UP_REAL_COMPOSE_COMMAND;
@@ -194,6 +194,7 @@ if (command === "config") {
   }
   delegateComposeConfig();
 }
+if (command === "build") exit(0);
 if (command === "up") exit(0);
 if (command === "ps") {
   const serviceNames = ["migrate", "bootstrap", "controller", "worker"];

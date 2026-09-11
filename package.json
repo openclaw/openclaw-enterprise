@@ -32,6 +32,7 @@
     "docker:up": "docker compose up --build",
     "docker:down": "docker compose down",
     "docker:test": "node --test tests/integration/docker-compute-real.test.mjs",
+    "podman:test": "OCC_TEST_PODMAN_COMPUTE_REAL=1 node --test tests/integration/docker-compute-real.test.mjs",
     "test": "node scripts/verify-workspace-boundary.mjs && node --test tests/conformance/*.test.mjs tests/integration/*.test.mjs",
     "test:conformance": "node scripts/verify-workspace-boundary.mjs && node --test tests/conformance/*.test.mjs",
     "test:integration": "node scripts/verify-workspace-boundary.mjs && node --test tests/integration/*.test.mjs",

@@ -1,4 +1,4 @@
-# Docker Agent execution and cleanup
+# Docker-compatible Agent execution and cleanup
 
 Continue from the initialized Compose stack through Agent provisioning, a native TUI turn, and cleanup. See the [parent flow](../docker-compose-development.md) for its context and overall sequence.
 
@@ -18,12 +18,12 @@ evidence, and durable work before the worker creates runtime infrastructure.
 The deployment guide owns the end-to-end command sequence. This trace follows
 the runtime path after those API calls have committed.
 
-### 7. Docker creates Namespace networks and Agent runtimes
+### 7. The selected engine creates Namespace networks and Agent runtimes
 
 `apps/controller/src/drivers/compute/docker/index.ts:DockerComputeDriver`
 
 For Namespace provisioning, the Docker driver creates or verifies one labeled
-Docker network for the exact Namespace. The network is not the Compose
+network through the selected Docker-compatible API. The network is not the Compose
 management network, and creating it does not start a gateway.
 
 For revision preparation, the driver validates the immutable Harness identity
@@ -31,6 +31,9 @@ and mode. Embedded OpenClaw starts one Agent-owned gateway container that also
 runs the Harness. Dedicated Codex starts one gateway container plus one
 exact-revision Codex container connected by authenticated `APP_SERVER_URL` and
 `APP_SERVER_TOKEN` transport.
+
+The Podman proof currently selects only the embedded topology. Docker verifies
+both topologies and the interactive TUI sequence below.
 
 Runtime images come from `OCC_DOCKER_GATEWAY_IMAGE` and
 `OCC_DOCKER_AGENT_IMAGE`, or from `OCC_DOCKER_RUNTIME_IMAGE` when one supplied

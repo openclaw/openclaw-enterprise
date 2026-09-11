@@ -3,8 +3,8 @@
 `DockerComputeDriver` is the default local development Compute Driver. Compose
 development runs PostgreSQL, migrations, and the shared initializer on Docker
 Engine or Podman before starting the OCC API and worker. The API uses filesystem
-Configuration. Docker remains the verified development path for this driver's
-Namespace networks and Agent runtime containers.
+Configuration. Docker verifies both runtime topologies; Podman verifies
+Namespace networks and the embedded OpenClaw runtime topology.
 
 This driver is a development runtime. Production can select bundled
 [Kubernetes](kubernetes-compute.md), [SSH](ssh-compute.md), or an installed
@@ -30,11 +30,12 @@ without a `docker` alias, pins the standalone `podman-compose` provider, mounts
 the reported API socket through `compose.podman.yaml`, and preserves the
 driver's existing `/var/run/docker.sock` contract inside the worker. The current
 baseline is Podman client 6.1.0, server 5.7.1, and podman-compose 1.6.0. Verified
-Podman coverage stops at control-plane startup, worker API preflight, and
-authenticated Installation access; Namespace and Agent runtime lifecycle and
-model/TUI execution remain unverified on Podman. `compose.logging.yaml` remains
-Docker-only because this Podman baseline does not provide the required Fluentd
-log driver.
+Podman coverage includes control-plane startup, worker API preflight,
+authenticated Installation access, isolated Namespace networks, one embedded
+gateway/Harness container, a provider-backed nonce response, and exact test
+cleanup. Dedicated Codex and interactive TUI execution remain unverified on
+Podman. `compose.logging.yaml` remains Docker-only because this Podman baseline
+does not provide the required Fluentd log driver.
 
 ## Development configuration and persistence
 
@@ -123,14 +124,23 @@ inside the container. The Docker driver does not mount host workspaces,
 personal OpenClaw/Codex homes, SSH-agent sockets, cloud credentials, or
 controller credentials into workload containers.
 
+The driver detects Podman's Docker-compatible API during preflight. Docker
+keeps UID/GID-owned `0700` tmpfs mount options. Podman receives the same bounded
+`1Gi` home and `64Mi` temporary filesystems using its supported mount options;
+the non-root runtime creates its `.openclaw` and workspace directories as
+`0700` before writing configuration or state.
+
 ## Inspect owned resources
 
-Docker-verified owned resources can be observed through Docker labels:
+Owned resources can be observed through the selected engine using the same
+driver labels:
 
 ```bash
 docker network ls --filter label=org.openclaw.enterprise.compute-driver=docker
 docker ps --filter label=org.openclaw.enterprise.compute-driver=docker
 ```
+
+Replace `docker` with `podman` for a Podman-backed development stack.
 
 After deleting a Namespace, the matching network and containers should be gone
 while other Namespaces remain.

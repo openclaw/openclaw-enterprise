@@ -1,5 +1,15 @@
 services:
+  migrate:
+    image: ${COMPOSE_PROJECT_NAME:-openclaw-enterprise-development}-application
+
+  controller:
+    image: ${COMPOSE_PROJECT_NAME:-openclaw-enterprise-development}-application
+
+  bootstrap:
+    image: ${COMPOSE_PROJECT_NAME:-openclaw-enterprise-development}-application
+
   worker:
+    image: ${COMPOSE_PROJECT_NAME:-openclaw-enterprise-development}-application
     security_opt:
       - label=disable
     volumes:

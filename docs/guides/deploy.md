@@ -14,9 +14,10 @@ internals.
 
 The current Podman verification baseline is Podman client 6.1.0, server 5.7.1,
 and podman-compose 1.6.0. The verified boundary is default control-plane startup,
-worker access to the Podman API, and authenticated Installation access. Agent
-runtime and TUI execution remain Docker-verified. The optional Fluentd logging
-override also requires Docker Engine.
+worker access to the Podman API, authenticated Installation access, Namespace
+isolation, and an embedded OpenClaw Agent with a provider-backed model turn.
+Dedicated Codex, interactive TUI, and the optional Fluentd logging override
+remain Docker-verified.
 
 ### Verify development
 

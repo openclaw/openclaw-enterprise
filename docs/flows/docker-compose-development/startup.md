@@ -23,7 +23,11 @@ which `dev-up` converts to JSON inside its private temporary directory before
 running the same effective port, image, and service checks. The helper appends
 `compose.podman.yaml` last so the worker receives Podman's reported API socket
 at `/var/run/docker.sock` and disables SELinux labeling only for that service.
-Expanded configuration and credentials are never printed.
+The override also gives migration, bootstrap, API, and worker one shared
+development image. Because podman-compose otherwise rebuilds that identical
+target once per service, `dev-up` builds it once through the migration service
+and starts the stack with `--no-build`. Docker keeps its native `up --build`
+path. Expanded configuration and credentials are never printed.
 
 If neither a shared runtime image nor separate gateway/Agent images are set,
 the helper selects `openclaw-enterprise-runtime:quickstart` for this invocation.

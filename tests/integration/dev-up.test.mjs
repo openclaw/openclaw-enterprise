@@ -280,9 +280,19 @@ test("dev-up selects Podman when no docker command exists and completes the supp
     invocations.some(
       (entry) =>
         entry.args.includes("up") &&
+        entry.args.includes("--no-build") &&
         entry.env.PODMAN_COMPOSE_PROVIDER.endsWith("/podman-compose") &&
         entry.env.OCC_CONTAINER_ENGINE_SOCKET === "/run/user/501/podman/podman.sock",
     ),
+  );
+  assert.ok(
+    invocations.some(
+      (entry) =>
+        entry.args.includes("build") &&
+        entry.args.at(-1) === "migrate" &&
+        entry.args.some((argument) => argument.endsWith("/compose.podman.yaml")),
+    ),
+    "Podman must build the shared application image once before starting services",
   );
   assert.ok(
     invocations.some(
