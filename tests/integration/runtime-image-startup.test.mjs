@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
+import { GATEWAY_RUNTIME_ENTRYPOINT as DOCKER_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/docker/index.ts";
 import { GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -42,16 +43,6 @@ function assertNoPackagingFailure(output) {
   assert.doesNotMatch(output, /ERR_MODULE_NOT_FOUND|Cannot find module|Cannot find package/);
   assert.doesNotMatch(output, /ENOENT: no such file or directory/);
   assert.doesNotMatch(output, /TypeScript .* is not supported in strip-only mode/);
-}
-
-async function dockerGatewayEntrypoint() {
-  const source = await readFile(
-    join("apps", "controller", "src", "drivers", "compute", "docker", "index.ts"),
-    "utf8",
-  );
-  const match = source.match(/const GATEWAY_RUNTIME_ENTRYPOINT = String\.raw`([\s\S]*?)`;/);
-  assert.ok(match, "Docker gateway runtime entrypoint must remain discoverable");
-  return match[1];
 }
 
 async function temporaryGatewayConfiguration(t, harnessId) {
@@ -322,7 +313,7 @@ async function runGatewaySmoke(t, harnessId, options = {}) {
       enableSlack: harnessId === "openclaw",
     }),
     configurationPath,
-    entrypoint = await dockerGatewayEntrypoint(),
+    entrypoint = DOCKER_GATEWAY_RUNTIME_ENTRYPOINT,
     extraEnvironment = [],
     tmpfs = ["/home/node:size=1024m,uid=1000,gid=1000,mode=700"],
     volumes = [],

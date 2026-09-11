@@ -154,12 +154,17 @@ Codex apps, applies the separate OpenClaw Codex bridge configuration with
 installation and readiness path; the PluginDriver only translates requested state
 after native discovery.
 
-Credentials use the existing Harness/ServiceAccount path. The required Codex
-live integration now uses Google Calendar and must prove a harmless
-model-chosen `list_calendars(max_results:1)` read in a normal Agent turn. The
-Linear reauthentication diagnostic is historical evidence for that connector,
-not the current acceptance target. A direct MCP call, package listing, or
-rendered bridge configuration cannot prove the Calendar outcome.
+Credentials use the existing Harness/ServiceAccount path at runtime. The
+Calendar proof fixture imports the designated existing account token into a
+test-only ServiceAccount record with a matching Provider binding, then runs the
+normal Agent create/deploy/API path. It does not prove native ChatGPT account
+creation, upstream credential issuance, workspace administrator credentials, or
+creating a new upstream account. The required Codex live integration now uses
+Google Calendar and must prove a harmless model-chosen
+`list_calendars(max_results:1)` read in a normal Agent turn. The Linear
+reauthentication diagnostic is historical evidence for that connector, not the
+current acceptance target. A direct MCP call, package listing, or rendered
+bridge configuration cannot prove the Calendar outcome.
 
 Agent plugin approval is separate from platform IAM and workload containment.
 This Driver adds no sandbox, egress grant, filesystem grant, approval service,

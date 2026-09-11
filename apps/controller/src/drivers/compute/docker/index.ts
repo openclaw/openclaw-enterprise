@@ -106,7 +106,7 @@ const AGENT_TRANSPORT_PORT = 18_790;
 const MODEL_API_KEY = "OPENAI_API_KEY";
 const CONFIGURATION_DOCUMENT = "/home/node/.openclaw/openclaw.json";
 
-const GATEWAY_RUNTIME_ENTRYPOINT = String.raw`
+export const GATEWAY_RUNTIME_ENTRYPOINT = String.raw`
 const { mkdirSync, writeFileSync } = require("node:fs");
 const { spawn } = require("node:child_process");
 

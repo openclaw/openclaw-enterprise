@@ -143,7 +143,7 @@ function installationAdministratorServicePrincipal(iamState) {
 }
 
 function createAgentPluginApi({ request, namespaceId }) {
-  async function createAgent({ harnessId, executionMode, name, serviceAccountId }) {
+  async function createAgent({ harnessId, executionMode, name, serviceAccountId, providerId }) {
     const configuration = await request("POST", `/namespaces/${namespaceId}/configurations`, {
       kind: "agent",
       values: nativeConfiguration(harnessId),
@@ -153,6 +153,7 @@ function createAgentPluginApi({ request, namespaceId }) {
       name,
       configurationId: configuration.data.id,
       executionMode,
+      ...(providerId === undefined ? {} : { providerId }),
       ...(serviceAccountId === undefined ? {} : { serviceAccountId }),
     });
     assert.equal(agent.status, 201, JSON.stringify(agent.error));
@@ -170,6 +171,7 @@ function createAgentPluginApi({ request, namespaceId }) {
     const response = await request("PATCH", `/namespaces/${namespaceId}/agents/${agentId}`, {
       configurationId: current.configurationId,
       executionMode: current.executionMode,
+      ...(current.providerId === undefined ? {} : { providerId: current.providerId }),
       ...(current.serviceAccountId === undefined
         ? {}
         : { serviceAccountId: current.serviceAccountId }),
@@ -231,6 +233,7 @@ function installationConfiguration({
   codexImage,
   pluginDriverId,
   pluginDriverConfiguration = {},
+  codexServiceAccountImport,
 }) {
   const configuration = createKubernetesInstallationConfiguration({
     authentication,
@@ -243,6 +246,24 @@ function installationConfiguration({
   configuration.drivers.configuration.id = "configuration-kubernetes-plugin-real";
   configuration.drivers.compute.id = "compute-kubernetes-plugin-real";
   configuration.drivers.plugin = { id: pluginDriverId, configuration: pluginDriverConfiguration };
+  if (codexServiceAccountImport !== undefined) {
+    configuration.provider = [
+      {
+        id: "openai",
+        type: "chatgpt",
+        configuration: {
+          workspaceId: codexServiceAccountImport.workspaceId,
+          apiKeyPath: codexServiceAccountImport.apiKeyPath,
+          credentialTtlSeconds: 3_600,
+        },
+        drivers: { service_account: "chatgpt-service-accounts" },
+      },
+    ];
+    configuration.drivers.service_account = {
+      id: "chatgpt-service-accounts",
+      configuration: {},
+    };
+  }
   configuration.drivers.compute.configuration.resources.namespace.quota = {
     pods: "8",
     "requests.cpu": "2",
@@ -268,6 +289,108 @@ function pluginDriverConfiguration(pluginDriverId) {
     ...(process.env.OCC_TEST_CODEX_PLUGIN_CATALOG_TIMEOUT_MS === undefined
       ? {}
       : { requestTimeoutMs: Number(process.env.OCC_TEST_CODEX_PLUGIN_CATALOG_TIMEOUT_MS) }),
+  };
+}
+
+async function codexServiceAccountImportConfiguration(directory, credential) {
+  const imported = credential ?? (await readCodexServiceAccountCredential());
+  const apiKeyPath = join(directory, "codex-service-account-import-provider-marker");
+  await writeFile(apiKeyPath, "test-only-existing-codex-service-account-import\n", {
+    mode: 0o600,
+  });
+  return { ...imported, apiKeyPath };
+}
+
+async function deriveCodexWorkspaceId(accessToken) {
+  const response = await fetch(
+    "https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami",
+    {
+      headers: { authorization: `Bearer ${accessToken}` },
+      signal: AbortSignal.timeout(30_000),
+    },
+  );
+  assert.equal(response.status, 200, "the Codex service-account token must authenticate.");
+  const body = await response.json();
+  const accountId = body?.chatgpt_account_id;
+  assert.equal(typeof accountId, "string", "whoami must return a ChatGPT account identity.");
+  assert.match(accountId, /^[0-9a-f-]{36}$/i, "the ChatGPT account identity must be a UUID.");
+  return accountId;
+}
+
+function createImportedCodexServiceAccountDriverFactory(imported, compute) {
+  const driverId = "chatgpt-service-accounts";
+  const providerId = "openai";
+  return (controller, state) => {
+    const driver = {
+      capability: "service_account",
+      implementation: "test-existing-codex-import",
+      id: driverId,
+      async create(account) {
+        await controller.transact((unit) =>
+          state.queryInTransaction(
+            unit,
+            `INSERT INTO occ.service_account_driver_bindings
+               (service_account_id, namespace_id, provider_id, driver_id, external_account_id, workspace_id)
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+            [
+              account.id,
+              account.namespaceId,
+              providerId,
+              driverId,
+              `imported-${account.id}`,
+              imported.workspaceId,
+            ],
+          ),
+        );
+      },
+      async createCredential(account) {
+        const secretRef = await compute.storeServiceAccountCredential({
+          namespaceId: account.namespaceId,
+          serviceAccountId: account.id,
+          accessToken: imported.accessToken,
+          workspaceId: imported.workspaceId,
+        });
+        controller.registerRollback(() =>
+          compute.deleteServiceAccountCredential({
+            namespaceId: account.namespaceId,
+            serviceAccountId: account.id,
+            secretRef,
+          }),
+        );
+        const result = await controller.transact((unit) =>
+          state.queryInTransaction(
+            unit,
+            `UPDATE occ.service_account_driver_bindings
+             SET external_credential_id = $4
+             WHERE service_account_id = $1 AND namespace_id = $2 AND driver_id = $3`,
+            [account.id, account.namespaceId, driverId, `imported-credential-${account.id}`],
+          ),
+        );
+        assert.equal(result.rowCount, 1, "imported ServiceAccount binding must be exact.");
+        return { kind: "access_token", secretRef };
+      },
+      async delete(account) {
+        if (account.credential?.kind === "access_token") {
+          await compute.deleteServiceAccountCredential({
+            namespaceId: account.namespaceId,
+            serviceAccountId: account.id,
+            secretRef: account.credential.secretRef,
+          });
+        }
+        await controller.transact((unit) =>
+          state.queryInTransaction(
+            unit,
+            `DELETE FROM occ.service_account_driver_bindings
+             WHERE service_account_id = $1 AND namespace_id = $2 AND driver_id = $3`,
+            [account.id, account.namespaceId, driverId],
+          ),
+        );
+      },
+    };
+    controller.registerDriver(driver);
+    if (controller.selectDriver("service_account", driver.id) !== driver) {
+      throw new Error("The configured ServiceAccount Driver was not selected correctly.");
+    }
   };
 }
 
@@ -301,22 +424,6 @@ async function createOperatorSecret(kubectlArguments, namespace, name, values) {
       }),
     );
   });
-}
-
-async function deriveCodexWorkspaceId(accessToken) {
-  const response = await fetch(
-    "https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami",
-    {
-      headers: { authorization: `Bearer ${accessToken}` },
-      signal: AbortSignal.timeout(30_000),
-    },
-  );
-  assert.equal(response.status, 200, "the Codex service-account token must authenticate.");
-  const body = await response.json();
-  const accountId = body?.chatgpt_account_id;
-  assert.equal(typeof accountId, "string", "whoami must return a ChatGPT account identity.");
-  assert.match(accountId, /^[0-9a-f-]{36}$/i, "the ChatGPT account identity must be a UUID.");
-  return accountId;
 }
 
 async function waitForPluginProofWorkerSuccess(waitFor, events, revisionId, options) {
@@ -803,7 +910,10 @@ function createNativePluginAssertions({ gatewayUrl, execGateway, proofMode = "op
   return { normalGatewayTurn, assertSessionToolCallEvidence, assertNoSessionToolCallEvidence };
 }
 
-export async function createPluginDriverRealFixture(context, { pluginDriverId, databaseUrl }) {
+export async function createPluginDriverRealFixture(
+  context,
+  { pluginDriverId, databaseUrl, codexCredential },
+) {
   const kubeconfigPath = requiredPluginProofEnv("OCC_TEST_KUBERNETES_KUBECONFIG");
   const kubernetesContext = requiredPluginProofEnv("OCC_TEST_KUBERNETES_CONTEXT");
   const gatewayImage = requiredPluginProofEnv("OCC_TEST_KUBERNETES_GATEWAY_IMAGE");
@@ -938,6 +1048,10 @@ export async function createPluginDriverRealFixture(context, { pluginDriverId, d
   const apiConfigurationPath = join(directory, "api-installation.yaml");
   const workerConfigurationPath = join(directory, "worker-installation.yaml");
   const selectedPluginDriverConfiguration = pluginDriverConfiguration(pluginDriverId);
+  const codexServiceAccountImport =
+    pluginDriverId === "codex-plugin"
+      ? await codexServiceAccountImportConfiguration(directory, codexCredential)
+      : undefined;
   await Promise.all([
     writeFile(
       apiConfigurationPath,
@@ -949,6 +1063,7 @@ export async function createPluginDriverRealFixture(context, { pluginDriverId, d
           codexImage,
           pluginDriverId,
           pluginDriverConfiguration: selectedPluginDriverConfiguration,
+          codexServiceAccountImport,
         }),
       ),
       { mode: 0o600 },
@@ -963,6 +1078,7 @@ export async function createPluginDriverRealFixture(context, { pluginDriverId, d
           codexImage,
           pluginDriverId,
           pluginDriverConfiguration: selectedPluginDriverConfiguration,
+          codexServiceAccountImport,
         }),
       ),
       { mode: 0o600 },
@@ -997,6 +1113,14 @@ export async function createPluginDriverRealFixture(context, { pluginDriverId, d
   ]);
   assert.equal(apiDrivers.pluginDriver?.id, pluginDriverId);
   assert.equal(workerDrivers.pluginDriver?.id, pluginDriverId);
+
+  const serviceAccountDriverFactory =
+    codexServiceAccountImport === undefined
+      ? undefined
+      : createImportedCodexServiceAccountDriverFactory(
+          codexServiceAccountImport,
+          apiDrivers.computeDriver,
+        );
 
   pool = new pg.Pool({ connectionString: selectedDatabaseUrl, max: 4 });
   const state = new PostgresPlatformState(pool);
@@ -1045,6 +1169,7 @@ export async function createPluginDriverRealFixture(context, { pluginDriverId, d
     authSecret,
     authBaseURL,
     drivers: apiDrivers,
+    ...(serviceAccountDriverFactory === undefined ? {} : { serviceAccountDriverFactory }),
   });
   const request = createServiceKeyControllerRequest(app, serviceKey);
   const events = [];
@@ -1096,39 +1221,45 @@ export async function createPluginDriverRealFixture(context, { pluginDriverId, d
   const agentApi = createAgentPluginApi({ request, namespaceId: createdNamespace.data.id });
 
   async function createCodexServiceAccountFromToken({ accessToken, name }) {
-    const workspaceId = await deriveCodexWorkspaceId(accessToken);
+    assert.ok(
+      serviceAccountDriverFactory,
+      "Codex ServiceAccounts require the configured test import ServiceAccount Driver.",
+    );
+    assert.ok(
+      accessToken === codexServiceAccountImport.accessToken,
+      "Codex ServiceAccount import must use the configured existing test credential.",
+    );
     const account = await request(
       "POST",
       `/namespaces/${createdNamespace.data.id}/service-accounts`,
       { name },
     );
     assert.equal(account.status, 201, JSON.stringify(account.error));
-    const secretRef = await apiDrivers.computeDriver.storeServiceAccountCredential({
-      namespaceId: createdNamespace.data.id,
-      serviceAccountId: account.data.id,
-      accessToken,
-      workspaceId,
-    });
-    await pool.query(
-      "UPDATE occ.service_accounts SET credential = $3::jsonb WHERE namespace_id = $1 AND id = $2",
-      [
-        createdNamespace.data.id,
-        account.data.id,
-        JSON.stringify({ kind: "access_token", secretRef }),
-      ],
+    const binding = await pool.query(
+      `SELECT external_account_id, workspace_id, provider_id, driver_id
+       FROM occ.service_account_driver_bindings
+       WHERE namespace_id = $1 AND service_account_id = $2`,
+      [createdNamespace.data.id, account.data.id],
     );
-    const stored = await request(
-      "GET",
-      `/namespaces/${createdNamespace.data.id}/service-accounts/${account.data.id}`,
+    assert.equal(binding.rowCount, 1, "ServiceAccount creation must persist provider binding.");
+    assert.equal(binding.rows[0].external_account_id, `imported-${account.data.id}`);
+    assert.equal(binding.rows[0].workspace_id, codexServiceAccountImport.workspaceId);
+    assert.equal(binding.rows[0].provider_id, "openai");
+    assert.equal(binding.rows[0].driver_id, "chatgpt-service-accounts");
+
+    const issued = await request(
+      "POST",
+      `/namespaces/${createdNamespace.data.id}/service-accounts/${account.data.id}/credentials`,
+      {},
     );
-    assert.equal(stored.status, 200, JSON.stringify(stored.error));
-    assert.deepEqual(stored.data.credential, { kind: "access_token", secretRef });
+    assert.equal(issued.status, 201, JSON.stringify(issued.error));
+    assert.equal(issued.data.credential.kind, "access_token");
     assertNoSecretMaterial(
-      stored,
-      [accessToken, workspaceId],
-      "service-account responses must not expose credential values.",
+      issued,
+      [accessToken, codexServiceAccountImport.workspaceId],
+      "service-account responses must not expose imported credential values.",
     );
-    return stored.data;
+    return issued.data;
   }
 
   async function deployAndWait(agent) {

@@ -259,20 +259,26 @@ desired state keeps apps/plugins disabled.
 ### Real-runtime test hooks
 
 Target-port implementation is complete on branch `dev/kevinlin/plugin-driver-port`
-from base `5c58b95c`, but live-runtime acceptance is not fully complete. Current
-target-port verification passed workspace, build, OpenAPI, format, docs, and
-flow validation; 495 baseline checks passed, then one real activation regression
-was fixed and the full Kubernetes suite passed with 89 tests. Focused coverage
+from base `5c58b95c` and source commit
+`185afba1608260adfa5b1fe9bda9ee700a4d9fee` in
+[PR #121](https://github.com/openclaw/openclaw-enterprise/pull/121), but Codex
+Calendar live-runtime acceptance is still incomplete. Current target-port
+verification passed workspace, build, OpenAPI, format, docs, and flow
+validation; 495 baseline checks passed, then one real activation regression was
+fixed and the full Kubernetes suite passed with 89 tests. Focused coverage
 passed API integration (17), contracts (7), plugin Compute plus SSH (34), Driver
 plus startup (14), and real PostgreSQL (5 tests, zero skips; evidence
 `/tmp/plugin-driver-postgres-platform-state-port.log`).
 
 The latest target-port native proof attempt used OpenClaw `2026.9.1` and Codex
-`0.152.1`. The Google Calendar scenario is currently blocked before the normal
-Agent turn because the designated service account returned `403` during the
-native service-account authentication `whoami` check. The fresh OpenClaw
-plugin proof is still in progress. Keep the historical Calendar and OpenClaw
-results historical until the remaining live proofs finish on this target port.
+`0.152.1`. The fresh OpenClaw Kubernetes plugin proof passed on source commit
+`185afba1608260adfa5b1fe9bda9ee700a4d9fee`: one test, zero failures/skips,
+187.3 seconds, native OpenClaw `2026.9.1`, Codex `0.152.1`, evidence
+`/tmp/plugin-driver-openclaw-k8s-port-live-v6.log`. The Google Calendar
+scenario is currently blocked before the normal Agent turn because the
+designated service account returned `403` during the native service-account
+authentication `whoami` check. Keep the historical Calendar result historical
+until that account/authentication issue is resolved and the proof is rerun.
 
 Historical source-implementation proof from PR #57 passed the real Google
 Calendar Kubernetes normal-Agent-turn test on 2026-09-09 with the designated
@@ -299,19 +305,27 @@ The Kubernetes backend requires `OCC_TEST_KUBERNETES_KUBECONFIG`,
 `OCC_TEST_KUBERNETES_CONTEXT`, `OCC_TEST_KUBERNETES_GATEWAY_IMAGE`, and a
 scenario-specific database such as
 `OCC_TEST_PLUGIN_DRIVER_OPENCLAW_DATABASE_URL` or
-`OCC_TEST_PLUGIN_DRIVER_CODEX_CALENDAR_DATABASE_URL`. Dedicated Codex Google Calendar also
-requires a Codex runtime image through `OCC_TEST_KUBERNETES_AGENT_IMAGE` or
-`OCC_TEST_KUBERNETES_CODEX_IMAGE`, an injected `CODEX_ACCESS_TOKEN` for the test
-service account, `OCC_TEST_CODEX_CALENDAR_TOOL_NAME`, and
-`OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT`. Set `OCC_TEST_OPENAI_MODEL` to a model supported by the service account’s Codex path (the acceptance fixture uses `gpt-5.6-sol`). Set
-`OCC_TEST_CODEX_PLUGIN_CATALOG_CODEX_EXECUTABLE` and
+`OCC_TEST_PLUGIN_DRIVER_CODEX_CALENDAR_DATABASE_URL`. Dedicated Codex Google
+Calendar also requires a Codex runtime image through
+`OCC_TEST_KUBERNETES_AGENT_IMAGE` or `OCC_TEST_KUBERNETES_CODEX_IMAGE`, an
+injected `CODEX_ACCESS_TOKEN` for the existing test account,
+`OCC_TEST_CODEX_CALENDAR_TOOL_NAME`, and
+`OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT`. Set `OCC_TEST_OPENAI_MODEL` to a model
+supported by the service account's Codex path (the acceptance fixture uses
+`gpt-5.6-sol`). Set `OCC_TEST_CODEX_PLUGIN_CATALOG_CODEX_EXECUTABLE` and
 `OCC_TEST_CODEX_PLUGIN_CATALOG_CODEX_HOME` to the executable and dedicated
 authenticated profile used by the controller's
 [native catalog reader](drivers/plugin.md#selection-and-catalogs). The Calendar
 proof checks this real reader before selecting the plugin. The proof prompt uses
-`list_calendars(max_results:1)`. The token must be loaded through the
-designated service-account credential path, `~/.secrets/.env.claw-kevinlin-svc-acct`,
-and must not be printed.
+`list_calendars(max_results:1)`.
+
+The Calendar fixture uses a narrow test-only ServiceAccount import that
+preserves the designated existing account token from
+`~/.secrets/.env.claw-kevinlin-svc-acct`, binds it to the matching Provider, and
+then runs the normal Agent create/deploy/API path. It does not prove native
+ChatGPT account creation, upstream credential issuance, workspace administrator
+credentials, or creating a new upstream account. Credential values must not be
+printed.
 
 This page documents the nested plugin wire contract. The
 [generated API reference](api.md) summarizes routes and top-level schemas;

@@ -124,17 +124,28 @@ The next revision contains exactly the requested plugin set; resolved package fi
 | Preparation boundary                          | Failed install/metadata or policy mismatch cannot complete readiness; pre-commit failure preserves the prior pointer, post-commit failure leaves the candidate incomplete/uninstalled. Retry preserves requested IDs/policy but may resolve a later curated release; records/logs omit credentials                                                                                 |
 | SSH Compute rejection                         | Nonempty requested plugin maps fail before SSH host effects; plugin-free SSH revisions continue to deploy through the existing SSH lifecycle                                                                                                                                                                                                                                       |
 
-Use real native runtimes and existing API/Compute integration infrastructure, not a direct MCP invocation as a substitute for Agent behavior. The local Codex test fixture uses the service-account credential in `~/.secrets/.env.claw-kevinlin-svc-acct`, loaded at test runtime through the existing service-account authentication path. The Google Calendar fixture must prove that account has connector access through `list_calendars(max_results:1)`; model API authentication alone is insufficient. Keep credential values and resolved account identifiers out of the spec, revisions, and logs.
+Use real native runtimes and existing API/Compute integration infrastructure,
+not a direct MCP invocation as a substitute for Agent behavior. The local Codex
+test fixture uses a narrow test-only ServiceAccount import to preserve the
+designated existing account token from `~/.secrets/.env.claw-kevinlin-svc-acct`,
+bind it to the matching Provider, and run the normal Agent create/deploy/API
+path. It does not prove native ChatGPT account creation, upstream credential
+issuance, workspace administrator credentials, or creating a new upstream
+account. The Google Calendar fixture must prove that account has connector
+access through `list_calendars(max_results:1)`; model API authentication alone
+is insufficient. Keep credential values and resolved account identifiers out of
+the spec, revisions, and logs.
 
 ## Implementation status
 
 - Target-port implementation is complete on branch
-  `dev/kevinlin/plugin-driver-port` from base `5c58b95c`; final commit is not
-  recorded yet. The port includes Agent-owned plugin maps, atomic
-  API/state/audit changes, immutable requested-state revision snapshots, dynamic
-  curated discovery, and Compute-owned startup resolution/installation/readiness.
-  Unsupported mappings fail startup after structurally valid Agent writes are
-  saved.
+  `dev/kevinlin/plugin-driver-port` from base `5c58b95c`; current source commit
+  is `185afba1608260adfa5b1fe9bda9ee700a4d9fee` in
+  [PR #121](https://github.com/openclaw/openclaw-enterprise/pull/121). The port
+  includes Agent-owned plugin maps, atomic API/state/audit changes, immutable
+  requested-state revision snapshots, dynamic curated discovery, and
+  Compute-owned startup resolution/installation/readiness. Unsupported mappings
+  fail startup after structurally valid Agent writes are saved.
 - Current target-port verification passed workspace, build, OpenAPI, format,
   docs, and flow validation. Baseline passed 495 checks; after one real
   activation regression was fixed, the full Kubernetes suite passed 89 tests.
@@ -142,12 +153,14 @@ Use real native runtimes and existing API/Compute integration infrastructure, no
   SSH (34), and Driver plus startup (14).
 - Real PostgreSQL target-port coverage passed 5 tests with zero skips; evidence:
   `/tmp/plugin-driver-postgres-platform-state-port.log`.
-- The latest target-port native proof attempt used OpenClaw `2026.9.1` and
-  Codex `0.152.1`. The Google Calendar scenario is blocked before the normal
-  Agent turn because the designated service account returned `403` during the
-  native service-account authentication `whoami` check; rerun before claiming
-  current target Calendar acceptance. Fresh OpenClaw plugin proof remains in
-  progress.
+- Fresh target-port OpenClaw Kubernetes plugin proof passed on commit
+  `185afba1608260adfa5b1fe9bda9ee700a4d9fee`: one test, zero failures/skips,
+  187.3 seconds, native OpenClaw `2026.9.1`, Codex `0.152.1`, evidence
+  `/tmp/plugin-driver-openclaw-k8s-port-live-v6.log`.
+- The latest target-port Codex Calendar proof attempt used Codex `0.152.1` and
+  is blocked before the normal Agent turn because the designated service account
+  returned `403` during the native service-account authentication `whoami`
+  check; rerun before claiming current target Calendar acceptance.
 - Historical source-implementation evidence from PR #57 remains useful but does
   not by itself prove this target port. The source implementation had
   PostgreSQL plugin-state coverage for atomic Agent-owned updates, immutable

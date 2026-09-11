@@ -198,6 +198,7 @@ test(
     const fixture = await createPluginDriverRealFixture(context, {
       pluginDriverId: "codex-plugin",
       databaseUrl: process.env.OCC_TEST_PLUGIN_DRIVER_CODEX_CALENDAR_DATABASE_URL,
+      codexCredential: credential,
     });
     const account = await fixture.createCodexServiceAccountFromToken({
       accessToken: credential.accessToken,
@@ -214,6 +215,7 @@ test(
       executionMode: "dedicated",
       name: `codex-calendar-plugin-${randomUUID()}`,
       serviceAccountId: account.id,
+      providerId: "openai",
     });
     const catalog = await fixture.listPlugins(agent.id);
     assert.ok(
