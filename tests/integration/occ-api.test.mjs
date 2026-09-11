@@ -685,55 +685,6 @@ test("Agent Provider API preserves nullable drafts and immutable revision associ
   assert.equal(replaced.data.providerId, "openai");
 });
 
-test("Agent plugin catalog API lists selected Driver catalog and rejects old mutation routes", async () => {
-  const controller = await configuredController();
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "plugin-catalog-api");
-  const configuration = await createConfiguration(controller, namespace.id);
-  const pluginDriver = new OCCPluginDriver();
-  controller.fixture.controller.registerDriver(pluginDriver);
-  controller.fixture.controller.selectDriver("plugin", pluginDriver.id);
-  const agent = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
-    body: { name: "plugin-catalog-agent", configurationId: configuration.id },
-  });
-  assert.equal(agent.status, 201);
-
-  const pluginPath = `/namespaces/${namespace.id}/agents/${agent.data.id}/plugins`;
-  const listed = await controller.request("GET", pluginPath);
-  assert.equal(listed.status, 200);
-  assert.deepEqual(listed.data, [
-    {
-      id: diffsPluginId,
-      name: "Diffs",
-      available: true,
-      desired: null,
-      installed: false,
-      tools: null,
-    },
-  ]);
-
-  const oldCollectionMutation = await controller.request("POST", pluginPath, {
-    body: { pluginId: diffsPluginId, approvalMode: "always" },
-  });
-  assert.equal(oldCollectionMutation.status, 405);
-  assert.equal(oldCollectionMutation.body.error.code, "METHOD_NOT_ALLOWED");
-  assert.match(oldCollectionMutation.headers.get("allow") ?? "", /GET/);
-
-  for (const [method, suffix, options] of [
-    ["PATCH", `/${encodeURIComponent(diffsPluginId)}`, { enabled: false }],
-    ["PATCH", `/${encodeURIComponent(diffsPluginId)}/tools/lookup`, { approvalMode: "always" }],
-    ["DELETE", `/${encodeURIComponent(diffsPluginId)}`, undefined],
-  ]) {
-    const result = await controller.request(
-      method,
-      `${pluginPath}${suffix}`,
-      options === undefined ? undefined : { body: options },
-    );
-    assert.equal(result.status, 404, `${method} ${suffix}`);
-    assert.equal(result.body.error.code, "NOT_FOUND");
-  }
-});
-
 test("Agent create and update replace policy-only plugin maps and revisions freeze the requested snapshot", async () => {
   const controller = await configuredController();
   await bootstrap(controller);
@@ -758,10 +709,12 @@ test("Agent create and update replace policy-only plugin maps and revisions free
   assert.deepEqual(created.data.plugins, initialPlugins);
   assertPolicyOnlyPlugin(created.data.plugins[diffsPluginId]);
 
-  const pluginPath = `/namespaces/${namespace.id}/agents/${created.data.id}/plugins`;
-  const listedDesired = await controller.request("GET", pluginPath);
-  assert.equal(listedDesired.status, 200);
-  assert.deepEqual(listedDesired.data[0].desired, initialPlugins[diffsPluginId]);
+  const saved = await controller.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${created.data.id}`,
+  );
+  assert.equal(saved.status, 200);
+  assert.deepEqual(saved.data.plugins, initialPlugins);
 
   await controller.fixture.controller.handleNamespaceLifecycle(
     controller.fixture.principal.id,
@@ -893,8 +846,7 @@ test("Agent plugin maps reject structural errors and preserve exact authorizatio
     await controller.fixture.createAuthPrincipal("plugin-no-grant");
   controller.fixture.state.identities.push(noGrantPrincipal);
   const noGrantApp = controller.fixture.createApp(noGrantPrincipal);
-  const pluginPath = `/namespaces/${namespace.id}/agents/${agent.data.id}/plugins`;
-  const noGrantRead = await injectedRequest(noGrantApp, "GET", pluginPath);
+  const noGrantRead = await injectedRequest(noGrantApp, "GET", agentPath);
   assert.equal(noGrantRead.status, 403);
   assert.equal(noGrantRead.body.error.code, "FORBIDDEN");
   const noGrantUpdate = await injectedRequest(noGrantApp, "PATCH", agentPath, {
@@ -938,10 +890,9 @@ test("Agent plugin maps reject structural errors and preserve exact authorizatio
     },
   );
   const exactAgentApp = controller.fixture.createApp(exactAgentPrincipal);
-  const exactRead = await injectedRequest(exactAgentApp, "GET", pluginPath);
+  const exactRead = await injectedRequest(exactAgentApp, "GET", agentPath);
   assert.equal(exactRead.status, 200);
-  const siblingPluginPath = `/namespaces/${namespace.id}/agents/${secondAgent.data.id}/plugins`;
-  const foreignRead = await injectedRequest(exactAgentApp, "GET", siblingPluginPath);
+  const foreignRead = await injectedRequest(exactAgentApp, "GET", siblingPath);
   assert.equal(foreignRead.status, 403);
   assert.equal(foreignRead.body.error.code, "FORBIDDEN");
   const foreignUpdate = await injectedRequest(exactAgentApp, "PATCH", siblingPath, {

@@ -30,7 +30,7 @@ before the bridge receives the request. `prompt`, category overrides, and tool
 overrides fail startup when the native runtime cannot represent them exactly.
 Linear and Google Calendar are test fixtures, not production allowlist entries.
 
-## Lifecycle and inventory
+## Lifecycle
 
 New Agents have no desired user plugins. Adding a plugin map entry records
 install intent; it does not install a package in the controller or running
@@ -50,22 +50,11 @@ Failed catalog resolution, installation, authentication, or policy translation
 cannot make the candidate a ready serving workload. Ordinary retirement removes
 old workload state, but does not delete the Agent-owned database.
 
-| Inventory field | Meaning                                                                                                               |
-| --------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `available`     | The currently selected, compatible Driver advertises this curated entry.                                              |
-| `desired`       | Saved selection and policy, or `null` when unselected.                                                                |
-| `installed`     | The active revision contains this plugin and its initial activation work succeeded, including disabled installations. |
-| `tools`         | Release-specific `{id,name,destructive,writes}` entries; `null` means reliable metadata is unavailable.               |
-
-`activeRevisionId` alone is insufficient installation evidence: OCC records the
-candidate pointer before runtime activation completes. During preparation or
-failed activation, `installed` stays false until the initial reconcile work
-succeeds.
-
-Saved selections remain listable when their catalog entry or Driver disappears.
-They cannot start successfully under an incompatible Driver. Presence does not
-imply that every tool is visible, enabled, authorized, or callable without
-review.
+Read `Agent.plugins` for saved selections and the active AgentRevision for its
+requested plugin snapshot. Check deployment status for startup outcomes;
+`activeRevisionId` alone is not installation evidence because the worker records
+the pointer before runtime activation completes. Saved configuration remains
+readable if the catalog entry or Driver disappears.
 
 SSH Compute currently supports plugin-free embedded OpenClaw only. A revision
 with any nonempty requested plugin map is rejected before SSH host effects,
@@ -77,22 +66,21 @@ Plugin selections are managed through the existing Agent create/update API.
 There is no separate plugin resource, install/delete endpoint, policy mutation
 endpoint, or plugin-tool invocation endpoint.
 
-| Method and path                                        | Body                                          | Successful response                            |
-| ------------------------------------------------------ | --------------------------------------------- | ---------------------------------------------- |
-| `POST /namespaces/:namespaceId/agents`                 | Agent create body with optional `plugins` map | `201`, Agent response containing the saved map |
-| `PATCH /namespaces/:namespaceId/agents/:agentId`       | Agent update body with optional `plugins` map | `200`, Agent response containing the saved map |
-| `GET /namespaces/:namespaceId/agents/:agentId/plugins` | none                                          | `200`, combined curated and saved inventory    |
+| Method and path                                  | Body                                          | Successful response                            |
+| ------------------------------------------------ | --------------------------------------------- | ---------------------------------------------- |
+| `POST /namespaces/:namespaceId/agents`           | Agent create body with optional `plugins` map | `201`, Agent response containing the saved map |
+| `PATCH /namespaces/:namespaceId/agents/:agentId` | Agent update body with optional `plugins` map | `200`, Agent response containing the saved map |
 
 Agent creation requires Agent `create` on the Namespace and the existing exact
 Configuration and ServiceAccount reads. Agent update requires exact-Agent
-`update` plus the existing exact Configuration and ServiceAccount reads. Plugin
-inventory GET requires exact-Agent `read`. Existing Namespace and resource
+`update` plus the existing exact Configuration and ServiceAccount reads.
+Agent GET requires exact-Agent `read`. Existing Namespace and resource
 checks apply.
 
 ### Request fields
 
-Use plugin IDs returned by inventory GET, or another Driver-qualified curated
-ID that matches the same identifier grammar. Plugin and tool IDs are 1-253
+Use a Driver-qualified curated plugin ID that matches the identifier grammar.
+Catalog membership is resolved at Agent startup. Plugin and tool IDs are 1-253
 characters matching `^[A-Za-z0-9._~:@-]+$`. Callers cannot submit a native
 identity, Driver identity, source, version, or arbitrary settings. Request
 objects reject unknown fields. `plugins:null` is invalid.
@@ -172,64 +160,10 @@ will fail the deployment/startup candidate with startup diagnostics:
 
 ### Response fields
 
-Agent create/update return the Agent resource with optional `plugins`. Inventory
-GET returns `{data: [...], meta: {requestId}}`. `meta.requestId` is the request
-correlation ID, a string with the `req_` prefix and a UUID v4. Optional fields
-are omitted when absent; the explicit nullable inventory fields below use
-`null`.
-
-| Inventory row field   | Type                        | Meaning                                                                                              |
-| --------------------- | --------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `id`                  | Nonempty string             | Opaque Enterprise plugin ID.                                                                         |
-| `name`                | Nonempty string             | Catalog or saved display name.                                                                       |
-| `available`           | Boolean                     | Current compatible Driver advertises the entry.                                                      |
-| `desired`             | Desired selection or `null` | Saved policy-only intent, with the complete shape below.                                             |
-| `installed`           | Boolean                     | Verified completed activation, as defined under [lifecycle and inventory](#lifecycle-and-inventory). |
-| `tools`               | Tool-entry array or `null`  | Authoritative release metadata, or unknown metadata.                                                 |
-| `tools[].id`          | Nonempty string             | Tool ID used in requests.                                                                            |
-| `tools[].name`        | Nonempty string             | Display name.                                                                                        |
-| `tools[].destructive` | Boolean                     | Native metadata classifies the tool as destructive.                                                  |
-| `tools[].writes`      | Boolean                     | Native metadata classifies the tool as writing.                                                      |
-
-Current Driver catalogs return `tools:null` when reliable tool metadata is
-unavailable. An empty array would mean
-an authoritative catalog with no tools, which differs from unknown metadata.
-
-| Desired selection field       | Type                             | Meaning                            |
-| ----------------------------- | -------------------------------- | ---------------------------------- |
-| `enabled`                     | Boolean                          | Saved plugin enablement intent.    |
-| `approvalMode`                | Mode                             | Saved plugin default.              |
-| `approvalsReviewer`           | Optional `user` or `auto_review` | Explicit reviewer override.        |
-| `destructiveActions`          | Optional mode                    | Destructive category override.     |
-| `writes`                      | Optional mode                    | Write category override.           |
-| `tools`                       | Optional object keyed by tool ID | Saved tool overrides.              |
-| `tools.<toolId>.enabled`      | Optional Boolean                 | Explicit tool enablement override. |
-| `tools.<toolId>.approvalMode` | Optional mode                    | Explicit tool approval override.   |
-
-For example, GET after selecting Diffs but before a successful deployment returns:
-
-```json
-{
-  "data": [
-    {
-      "id": "occ-plugin:diffs",
-      "name": "Diffs",
-      "available": true,
-      "desired": {
-        "enabled": true,
-        "approvalMode": "always"
-      },
-      "installed": false,
-      "tools": null
-    }
-  ],
-  "meta": { "requestId": "req_00000000-0000-4000-8000-000000000001" }
-}
-```
-
-Agent responses use the same policy-only object under `data.plugins`. Plugin
-inventory returns no credential values or raw runtime configuration. Successful
-Agent mutations and authorization denials retain attributable audit evidence.
+Agent GET, create, and update return saved selections under `data.plugins`.
+Existing revision and deployment-status reads describe the deployed request and
+startup outcome. Successful Agent mutations and authorization denials retain
+attributable audit evidence.
 
 ### Agent and revision plugin fields
 

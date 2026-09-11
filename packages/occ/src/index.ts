@@ -22,8 +22,6 @@ import type {
   LoggingLevel,
   OpenClawConfigurationDocument,
   PermissionAction,
-  PluginCatalogEntry,
-  PluginDesiredSelection,
   PluginDesiredState,
   PluginDriver,
   PluginRevisionState,
@@ -224,15 +222,6 @@ export interface DeployAgentInput {
 export interface ActiveAgentRevisionSelection {
   readonly agent: Readonly<Agent>;
   readonly revision: Readonly<AgentRevision>;
-}
-
-export interface AgentPluginListRow {
-  readonly id: string;
-  readonly name: string;
-  readonly available: boolean;
-  readonly desired: PluginDesiredSelection | null;
-  readonly installed: boolean;
-  readonly tools: PluginCatalogEntry["tools"];
 }
 
 export type ReconciliationOperation = PlatformOperation;
@@ -1565,94 +1554,6 @@ export class OpenClawController {
     });
   }
 
-  async listAgentPlugins(
-    principalId: string,
-    namespaceId: string,
-    agentId: string,
-    resolveHarness: HarnessResolver,
-  ): Promise<readonly AgentPluginListRow[]> {
-    const agent = await this.getAgent(principalId, namespaceId, agentId);
-    return this.read(async (state) => {
-      const namespace = await this.exactNamespace(state, namespaceId);
-      const desired = agent.plugins ?? {};
-      const installed = new Set<string>();
-      const activePlugins = new Map<string, PluginDesiredSelection>();
-      if (agent.activeRevisionId !== undefined) {
-        const active = await state.revisions.findRevision(
-          namespace.id,
-          agent.id,
-          agent.activeRevisionId,
-        );
-        const activeReconciliationSucceeded =
-          active === undefined
-            ? false
-            : await state.operations.agentRevisionReconciliationSucceeded(
-                namespace.id,
-                agent.id,
-                active.id,
-              );
-        for (const [pluginId, selection] of Object.entries(active?.plugins?.plugins ?? {})) {
-          if (activeReconciliationSucceeded) installed.add(pluginId);
-          activePlugins.set(pluginId, selection);
-        }
-      }
-
-      let catalog: readonly PluginCatalogEntry[] = [];
-      if (this.selections.has("plugin")) {
-        const configuration = await this.currentAgentConfiguration(state, namespace, agent);
-        const harness = this.currentHarness(configuration.values, agent, resolveHarness);
-        try {
-          catalog = await this.pluginOperation(() =>
-            this.pluginDriver().listCatalog({
-              namespace,
-              agent,
-              harness,
-              configuration: configuration.values,
-              signal: new AbortController().signal,
-            }),
-          );
-        } catch (error) {
-          if (!(error instanceof NotImplementedError)) throw error;
-        }
-      }
-
-      const rows = new Map<string, AgentPluginListRow>();
-      for (const entry of catalog) {
-        rows.set(entry.id, {
-          id: entry.id,
-          name: entry.name,
-          available: true,
-          desired: desired[entry.id] ?? null,
-          installed: installed.has(entry.id),
-          tools: entry.tools,
-        });
-      }
-      for (const [id, selection] of Object.entries(desired)) {
-        if (rows.has(id)) continue;
-        rows.set(id, {
-          id,
-          name: id,
-          available: false,
-          desired: selection,
-          installed: installed.has(id),
-          tools: null,
-        });
-      }
-      for (const [id, selection] of activePlugins) {
-        if (rows.has(id)) continue;
-        rows.set(id, {
-          id,
-          name: id,
-          available: false,
-          desired: null,
-          installed: installed.has(id),
-          tools: null,
-        });
-      }
-      return Object.freeze([...rows.values()].map((row) => immutableCopy(row)));
-    });
-  }
-
   async deployAgent(
     principalId: string,
     input: DeployAgentInput,
@@ -2479,21 +2380,6 @@ export class OpenClawController {
       )
         throw error;
       throw new DependencyUnavailableError(`The selected ${capability} Driver is unavailable.`);
-    }
-  }
-
-  private async pluginOperation<T>(operation: () => Promise<T>): Promise<T> {
-    try {
-      return await operation();
-    } catch (error) {
-      if (
-        error instanceof NotImplementedError ||
-        error instanceof DependencyUnavailableError ||
-        error instanceof ScopeViolationError ||
-        error instanceof ResourceConflictError
-      )
-        throw error;
-      throw new DependencyUnavailableError("The selected Plugin Driver is unavailable.");
     }
   }
 

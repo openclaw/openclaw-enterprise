@@ -23,7 +23,7 @@ export const realPluginProofSelected = process.env.OCC_TEST_PLUGIN_DRIVER_REAL =
 export function pluginProofSkipReason(scenario) {
   const key = `OCC_TEST_PLUGIN_DRIVER_${scenario.toUpperCase()}_REAL`;
   if (realPluginProofSelected || process.env[key] === "1") return false;
-  return `Set ${key}=1 or OCC_TEST_PLUGIN_DRIVER_REAL=1 with disposable k3d/PostgreSQL, immutable real runtime images, model credentials, injected CODEX_ACCESS_TOKEN for Codex proofs, explicit OCC_TEST_CODEX_PLUGIN_CATALOG_CODEX_EXECUTABLE/OCC_TEST_CODEX_PLUGIN_CATALOG_CODEX_HOME for Codex catalog proofs, and curated plugin proof prompts.`;
+  return `Set ${key}=1 or OCC_TEST_PLUGIN_DRIVER_REAL=1 with disposable k3d/PostgreSQL, immutable real runtime images, model credentials, injected CODEX_ACCESS_TOKEN for Codex proofs, curated plugin proof prompts.`;
 }
 
 function requiredPluginProofEnv(name, description = name) {
@@ -217,13 +217,7 @@ function createAgentPluginApi({ request, namespaceId }) {
     await replaceAgentPlugins(agentId, plugins);
   }
 
-  async function listPlugins(agentId) {
-    const response = await request("GET", `/namespaces/${namespaceId}/agents/${agentId}/plugins`);
-    assert.equal(response.status, 200, JSON.stringify(response.error));
-    return response.data;
-  }
-
-  return { createAgent, selectPlugin, updatePluginPolicy, removePluginSelection, listPlugins };
+  return { createAgent, getAgent, selectPlugin, updatePluginPolicy, removePluginSelection };
 }
 
 function installationConfiguration({
@@ -232,7 +226,6 @@ function installationConfiguration({
   gatewayImage,
   codexImage,
   pluginDriverId,
-  pluginDriverConfiguration = {},
   codexServiceAccountImport,
 }) {
   const configuration = createKubernetesInstallationConfiguration({
@@ -245,7 +238,7 @@ function installationConfiguration({
   configuration.drivers.secret.configuration.authentication = authentication;
   configuration.drivers.configuration.id = "configuration-kubernetes-plugin-real";
   configuration.drivers.compute.id = "compute-kubernetes-plugin-real";
-  configuration.drivers.plugin = { id: pluginDriverId, configuration: pluginDriverConfiguration };
+  configuration.drivers.plugin = { id: pluginDriverId, configuration: {} };
   if (codexServiceAccountImport !== undefined) {
     configuration.provider = [
       {
@@ -273,23 +266,6 @@ function installationConfiguration({
   };
   configuration.drivers.compute.configuration.servicePrincipalCredentials.expirationSeconds = 3_600;
   return configuration;
-}
-
-function pluginDriverConfiguration(pluginDriverId) {
-  if (pluginDriverId !== "codex-plugin") return {};
-  return {
-    codexExecutable: requiredPluginProofEnv(
-      "OCC_TEST_CODEX_PLUGIN_CATALOG_CODEX_EXECUTABLE",
-      "Codex plugin catalog reader executable",
-    ),
-    codexHome: requiredPluginProofEnv(
-      "OCC_TEST_CODEX_PLUGIN_CATALOG_CODEX_HOME",
-      "authenticated Codex plugin catalog reader home",
-    ),
-    ...(process.env.OCC_TEST_CODEX_PLUGIN_CATALOG_TIMEOUT_MS === undefined
-      ? {}
-      : { requestTimeoutMs: Number(process.env.OCC_TEST_CODEX_PLUGIN_CATALOG_TIMEOUT_MS) }),
-  };
 }
 
 async function codexServiceAccountImportConfiguration(directory, credential) {
@@ -1047,7 +1023,6 @@ export async function createPluginDriverRealFixture(
 
   const apiConfigurationPath = join(directory, "api-installation.yaml");
   const workerConfigurationPath = join(directory, "worker-installation.yaml");
-  const selectedPluginDriverConfiguration = pluginDriverConfiguration(pluginDriverId);
   const codexServiceAccountImport =
     pluginDriverId === "codex-plugin"
       ? await codexServiceAccountImportConfiguration(directory, codexCredential)
@@ -1062,7 +1037,6 @@ export async function createPluginDriverRealFixture(
           gatewayImage,
           codexImage,
           pluginDriverId,
-          pluginDriverConfiguration: selectedPluginDriverConfiguration,
           codexServiceAccountImport,
         }),
       ),
@@ -1077,7 +1051,6 @@ export async function createPluginDriverRealFixture(
           gatewayImage,
           codexImage,
           pluginDriverId,
-          pluginDriverConfiguration: selectedPluginDriverConfiguration,
           codexServiceAccountImport,
         }),
       ),
@@ -1347,7 +1320,7 @@ export async function createPluginDriverRealFixture(
     selectPlugin: agentApi.selectPlugin,
     updatePluginPolicy: agentApi.updatePluginPolicy,
     removePluginSelection: agentApi.removePluginSelection,
-    listPlugins: agentApi.listPlugins,
+    getAgent: agentApi.getAgent,
     deployAndWait,
     normalGatewayTurn: nativeAssertions.normalGatewayTurn,
     assertSessionToolCallEvidence: nativeAssertions.assertSessionToolCallEvidence,

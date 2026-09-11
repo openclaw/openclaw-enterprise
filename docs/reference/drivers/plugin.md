@@ -1,6 +1,6 @@
 # PluginDriver
 
-The optional PluginDriver supplies curated plugin inventory, validates one
+The optional PluginDriver supports native curated catalog discovery, validates one
 Agent's desired selections at startup, and renders native configuration. OCC
 owns Agent metadata, exact-resource authorization, transactions, and immutable
 revision admission. Compute owns installation, runtime connections, readiness,
@@ -20,8 +20,9 @@ drivers:
     configuration: {}
 ```
 
-For dedicated Codex Agents, configure the native catalog reader when the
-controller should advertise installable entries:
+Dedicated Codex Agents can use `configuration: {}`: startup resolves selections
+with the Agent's projected credentials. An optional catalog reader supports the
+Driver's internal `listCatalog` interface:
 
 ```yaml
 drivers:
@@ -41,8 +42,7 @@ startup may update that profile's own cache. Use a separate profile from the
 operator's ordinary Codex workspace.
 
 An empty Codex Driver configuration permits Agent writes and deployment without
-controller-side catalog discovery. The inventory read then returns saved and
-active selections without advertising installable entries. Agent startup uses
+controller-side catalog discovery. No HTTP plugin inventory endpoint is exposed. Agent startup uses
 its own projected credentials to resolve its selections independently of this
 reader. Unknown options, arbitrary package selectors, and external PluginDriver
 packages are rejected. Existing required Driver selections remain necessary.

@@ -54,9 +54,9 @@ test(
     const modelSecret = await fixture.materializeOpenAIModelSecret(primary.id);
     await fixture.materializeOpenAIModelSecret(sibling.id);
 
-    const siblingBefore = await fixture.listPlugins(sibling.id);
+    const siblingBefore = await fixture.getAgent(sibling.id);
     assert.ok(
-      siblingBefore.every((row) => row.desired === null),
+      Object.keys(siblingBefore.plugins ?? {}).length === 0,
       "a sibling Agent sharing the same runtime configuration starts with no desired plugins.",
     );
 
@@ -66,8 +66,8 @@ test(
       approvalMode: "always",
     });
     assert.equal(desired.approvalMode, "always");
-    const listed = await fixture.listPlugins(primary.id);
-    assert.ok(listed.some((row) => row.id === pluginId && row.desired?.enabled === true));
+    const selectedAgent = await fixture.getAgent(primary.id);
+    assert.equal(selectedAgent.plugins[pluginId].enabled, true);
 
     const deployedPrimary = await fixture.deployAndWait(primary);
     assert.equal(deployedPrimary.revision.plugins?.driver.id, "occ-plugin");
@@ -139,9 +139,9 @@ test(
       turnMarker: removedMarker,
       toolName,
     });
-    const siblingAfter = await fixture.listPlugins(sibling.id);
+    const siblingAfter = await fixture.getAgent(sibling.id);
     assert.ok(
-      siblingAfter.every((row) => row.desired === null),
+      Object.keys(siblingAfter.plugins ?? {}).length === 0,
       "disable/remove on one Agent must not mutate a sibling Agent.",
     );
     const siblingMarker = `OPENCLAW_PLUGIN_SIBLING_${randomUUID()}`;
@@ -217,11 +217,6 @@ test(
       serviceAccountId: account.id,
       providerId: "openai",
     });
-    const catalog = await fixture.listPlugins(agent.id);
-    assert.ok(
-      catalog.some((row) => row.id === pluginId && row.available === true),
-      "the configured native Codex catalog reader must expose the selected Google Calendar plugin.",
-    );
     const desired = await fixture.selectPlugin(agent.id, {
       pluginId,
       enabled: true,

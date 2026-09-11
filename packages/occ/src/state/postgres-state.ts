@@ -1754,23 +1754,6 @@ export class PostgresPlatformState implements PlatformStateStore {
             }),
           );
         },
-        agentRevisionReconciliationSucceeded: async (namespaceId, agentId, revisionId) => {
-          await this.requireInitialized(context);
-          const found = rows(
-            (
-              await client.query(
-                `SELECT state FROM occ.controller_work
-                 WHERE idempotency_key = $1
-                   AND namespace_id = $2
-                   AND agent_id = $3
-                   AND revision_id = $4`,
-                [`agent_revision:${revisionId}:reconcile`, namespaceId, agentId, revisionId],
-              )
-            ).rows,
-          );
-          const row = found[0];
-          return row !== undefined && found.length === 1 && text(row, "state") === "succeeded";
-        },
       },
     };
   }

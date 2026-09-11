@@ -111,33 +111,6 @@ export const PluginDesiredStateSchema = Type.Unsafe({
   },
 });
 
-export const PluginToolCatalogEntrySchema = Type.Object(
-  {
-    id: Type.String({ minLength: 1 }),
-    name: Type.String({ minLength: 1 }),
-    destructive: Type.Boolean(),
-    writes: Type.Boolean(),
-  },
-  { additionalProperties: false },
-);
-
-export const AgentPluginListRowSchema = Type.Object(
-  {
-    id: Type.String({ minLength: 1 }),
-    name: Type.String({ minLength: 1 }),
-    available: Type.Boolean(),
-    desired: Type.Union([Type.Ref("PluginDesiredSelection"), Type.Null()]),
-    installed: Type.Boolean(),
-    tools: Type.Union([Type.Array(PluginToolCatalogEntrySchema), Type.Null()]),
-  },
-  { additionalProperties: false },
-);
-
-export const AgentPluginListResponse = Type.Object(
-  { data: Type.Array(AgentPluginListRowSchema), meta: Meta },
-  { additionalProperties: false },
-);
-
 export const ConfigurationSchema = Type.Object(
   {
     id: ConfigurationId,
@@ -345,7 +318,6 @@ export type AgentWire = Type.Static<typeof AgentSchema>;
 export type AgentRuntimeCredentialStatusWire = Type.Static<
   typeof AgentRuntimeCredentialStatusSchema
 >;
-export type AgentPluginListResponse = Type.Static<typeof AgentPluginListResponse>;
 export type AgentRevisionWire = Type.Static<typeof AgentRevisionSchema>;
 export type InstallationResponse = Type.Static<typeof InstallationResponse>;
 export type NamespaceResponse = Type.Static<typeof NamespaceResponse>;

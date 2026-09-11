@@ -299,11 +299,6 @@ export type PlatformOperation =
 
 export interface PlatformOperationReadRepository {
   list(): Promise<readonly Readonly<PlatformOperation>[]>;
-  agentRevisionReconciliationSucceeded(
-    namespaceId: string,
-    agentId: string,
-    revisionId: string,
-  ): Promise<boolean>;
 }
 
 export interface PlatformOperationRepository extends PlatformOperationReadRepository {
@@ -1119,13 +1114,6 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
       },
       list: async () =>
         Object.freeze(snapshot.operations.map((operation) => immutableCopy(operation))),
-      agentRevisionReconciliationSucceeded: async (namespaceId, agentId, revisionId) => {
-        const revision = snapshot.revisions
-          .get(agentKey(namespaceId, agentId))
-          ?.find((candidate) => candidate.id === revisionId);
-        if (revision === undefined) return false;
-        return false;
-      },
     },
   };
 }

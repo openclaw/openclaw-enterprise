@@ -835,30 +835,6 @@ test(
       plugins: initialPlugins,
     });
     assert.equal(Object.hasOwn(revision.plugins, "artifacts"), false);
-    await state.transact((unit) =>
-      unit.agents.compareAndSetActiveRevision(namespace.id, agent.id, undefined, revision.id),
-    );
-    const pendingInstallList = await controller.listAgentPlugins(
-      principalId,
-      namespace.id,
-      agent.id,
-      resolveHarness,
-    );
-    assert.equal(pendingInstallList.find(({ id }) => id === "occ-plugin:diffs").installed, false);
-    await pool.query(
-      `UPDATE occ.controller_work
-       SET state = 'succeeded', completed_at = clock_timestamp(), updated_at = clock_timestamp()
-       WHERE idempotency_key = $1 AND namespace_id = $2 AND agent_id = $3 AND revision_id = $4`,
-      [`agent_revision:${revision.id}:reconcile`, namespace.id, agent.id, revision.id],
-    );
-    const completedInstallList = await controller.listAgentPlugins(
-      principalId,
-      namespace.id,
-      agent.id,
-      resolveHarness,
-    );
-    assert.equal(completedInstallList.find(({ id }) => id === "occ-plugin:diffs").installed, true);
-
     const omittedPlugins = await controller.updateAgent(principalId, {
       namespaceId: namespace.id,
       agentId: agent.id,

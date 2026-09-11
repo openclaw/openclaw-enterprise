@@ -44,9 +44,7 @@ injected `CODEX_ACCESS_TOKEN` for the existing designated test account,
 `OCC_TEST_CODEX_CALENDAR_TOOL_NAME`, and
 `OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT`. Set `OCC_TEST_OPENAI_MODEL` to a model
 supported by that Codex path; the existing acceptance fixture uses `gpt-5.6-sol`.
-Set `OCC_TEST_CODEX_PLUGIN_CATALOG_CODEX_EXECUTABLE` and
-`OCC_TEST_CODEX_PLUGIN_CATALOG_CODEX_HOME` to the executable and dedicated native
-Codex profile used by the controller catalog reader. The Calendar proof must show
+The Calendar proof must show
 a model-chosen `list_calendars(max_results:1)` read during a normal Agent turn.
 
 The Calendar fixture uses a narrow test-only ServiceAccount import that preserves

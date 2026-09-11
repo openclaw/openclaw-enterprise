@@ -60,7 +60,7 @@ graph TD
 
 HTTP route contracts validate input shape before
 [OpenClawController](../../packages/occ/src/index.ts) checks the exact Namespace
-and Agent. Plugin inventory reads use Agent `read`; Agent create/update stores
+and Agent. Agent reads use Agent `read`; Agent create/update stores
 the `plugins` map through the ordinary Agent mutation path. Shared contract
 validators check plugin selection shape at OCC boundaries. Catalog membership,
 native app mapping, release metadata, and policy representability are not
@@ -150,16 +150,14 @@ stored, but there is no pointer rollback or guarantee of availability during
 cutover. See the [controller worker flow](controller-worker.md).
 
 Successful worker completion reports `REVISION_ACTIVATED` or, on the idempotent
-already-active path, `REVISION_ALREADY_ACTIVE`. Inventory sets `installed` only
-when the active revision contains the plugin and its initial reconciliation work
-item has succeeded, including disabled installations. A candidate pointer alone
+already-active path, `REVISION_ALREADY_ACTIVE`. A candidate pointer alone
 is not installation/readiness evidence. Normal Agent turns use native policy;
 old workload state follows ordinary retirement. The persistent Agent workspace
 and Kubernetes gateway state database retain their Agent-owned lifecycle.
 
 ## Debugging and Verification
 
-- Compare plugin inventory `desired` and `installed` with the active revision.
+- Compare `Agent.plugins` with the active revision snapshot and deployment status.
   A successful Agent write alone is not runtime installation evidence.
 - Structurally invalid Agent writes leave desired state unchanged. Catalog
   membership, metadata, and unsupported policy are failed or unready candidate
@@ -204,3 +202,5 @@ and Kubernetes gateway state database retain their Agent-owned lifecycle.
 - 2026-09-09 13:39: Updated the flow for Agent-owned plugin maps, full-map replacement, startup catalog resolution, and revision snapshots that freeze requested state rather than native release artifacts (codex/01a08228-c3ec-7ab2-b0c0-74f49a8ec8a7 - 237dd0a).
 - 2026-09-09 14:50: Simplified bootstrap and catalog projection, kept native metadata/configuration readiness, and standardized both native plugin proofs on Kubernetes (codex/01a08228-c3ec-7ab2-b0c0-74f49a8ec8a7 - 44f80f2).
 - 2026-09-09 15:49: Aligned bootstrap/install ordering, replacement semantics, and pre-commit versus post-commit failure and worker completion with current implementation (codex/01a08228-c3ec-7ab2-b0c0-74f49a8ec8a7 - 08abf9c).
+
+- 2026-09-11: Removed the per-Agent plugin inventory GET and its inferred installation query. Read desired selections from Agent configuration and deployment outcomes from existing revision/status surfaces; native catalog discovery remains available to the PluginDriver. (NOT_IN_SPEC)

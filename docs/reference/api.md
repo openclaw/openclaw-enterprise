@@ -45,7 +45,6 @@ Each operation lists its supported status codes.
 | [Installation](#installation) | 2 operations |
 | [Namespaces](#namespaces) | 4 operations |
 | [Agents](#agents) | 9 operations |
-| [Agent plugins](#agent-plugins) | 1 operation |
 | [Agent revisions](#agent-revisions) | 2 operations |
 | [Configurations](#configurations) | 4 operations |
 | [Secrets](#secrets) | 4 operations |
@@ -1130,62 +1129,6 @@ Create or replace an allowed workspace file for one active Agent
 | `data` | `object` | Yes | — |
 | `data.name` | `"AGENTS.md" or "SOUL.md" or "IDENTITY.md" or "USER.md"` | Yes | — |
 | `data.size` | `integer` | No | minimum: 0; maximum: 16384 |
-| `meta` | `object` | Yes | — |
-| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-
-<span id="agent-plugins"></span>
-
-### Agent plugins
-
-| Operation | Summary |
-| --- | --- |
-| [`GET /namespaces/{namespaceId}/agents/{agentId}/plugins`](#get-namespacesnamespaceidagentsagentidplugins) | List curated and desired plugins for an exact Agent |
-
-#### `GET /namespaces/{namespaceId}/agents/{agentId}/plugins`
-
-<span id="get-namespacesnamespaceidagentsagentidplugins"></span>
-
-List curated and desired plugins for an exact Agent
-
-**Operation ID:** `listAgentPlugins`
-
-**Permissions:** Requires read permission on the requested Agent.
-
-| Action | Resource | Scope |
-| --- | --- | --- |
-| `read` | `agent` | `requested` |
-
-##### Parameters
-
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `501` | Not Implemented |
-| `503` | Service Unavailable |
-
-**`200` response body:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `data` | `array<object>` | Yes | — |
-| `data[].available` | `boolean` | Yes | — |
-| `data[].desired` | `PluginDesiredSelection or null` | Yes | — |
-| `data[].id` | `string` | Yes | min length: 1 |
-| `data[].installed` | `boolean` | Yes | — |
-| `data[].name` | `string` | Yes | min length: 1 |
-| `data[].tools` | `array<object> or null` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 

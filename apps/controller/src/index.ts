@@ -1773,17 +1773,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
-    if (operation.operationId === "listAgentPlugins") {
-      const plugins = await controller.listAgentPlugins(
-        context.actorId,
-        namespaceId,
-        agentId,
-        options.resolveHarness,
-      );
-      reply.send({ data: plugins, meta: { requestId: request.id } });
-      return;
-    }
-
     if (operation.operationId === "deployAgent") {
       try {
         const revision = await controller.transact(async (unit) => {
