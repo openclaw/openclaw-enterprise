@@ -149,7 +149,12 @@
             "groups": [
               {
                 "group": "Start testing",
-                "pages": ["testing/README", "testing/local", "testing/ci"]
+                "pages": [
+                  "testing/README",
+                  "testing/local",
+                  "testing/autoreview",
+                  "testing/ci"
+                ]
               },
               {
                 "group": "Infrastructure",

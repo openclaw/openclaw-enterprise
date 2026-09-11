@@ -72,6 +72,9 @@ defect, not merely restate mocks.
 
 ## Prepare a pull request
 
+For requested independent code reviews, use the vendored
+[autoreview workflow](docs/testing/autoreview.md).
+
 - Keep one coherent change per PR. Stack only when a dependency is real, and
   link the prerequisite PR and intended base.
 - Explain the problem, behavior change, evidence, and remaining risks. Link

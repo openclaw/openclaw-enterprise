@@ -21,6 +21,13 @@ The authoritative architecture is the repository's
 [platform design](docs/design.md).
 Do not create a competing architecture specification in this checkout.
 
+## Developer review
+
+When the user or owning workflow requests an independent code review, use
+[autoreview](.agents/skills/autoreview/SKILL.md). Follow the
+[Enterprise review guide](docs/testing/autoreview.md) for usage and upstream sync.
+Keep the vendored skill unchanged; shared fixes belong in `openclaw/agent-skills`.
+
 ## Product terminology
 
 - **OCE** means **OpenClaw Enterprise**, the product.
