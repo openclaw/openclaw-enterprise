@@ -42,7 +42,8 @@
     "docs:dev": "npm run docs:build && node scripts/docs-site/serve.mjs",
     "docs:check-length": "node scripts/docs-site/word-count.mjs",
     "docs:check": "node scripts/docs-site/word-count.mjs && node --test tests/docs/*.test.mjs",
-    "docs:install": "pnpm --dir scripts/docs-site --ignore-workspace install --frozen-lockfile --ignore-scripts"
+    "docs:install": "pnpm --dir scripts/docs-site --ignore-workspace install --frozen-lockfile --ignore-scripts",
+    "test:files": "node scripts/test-files.mjs"
   },
   "devDependencies": {
     "@types/node": "26.4.1",

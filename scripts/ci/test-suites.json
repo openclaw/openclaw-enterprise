@@ -55,6 +55,9 @@
           "path": "tests/conformance/service-account-driver.test.mjs"
         },
         {
+          "path": "tests/conformance/test-files.test.mjs"
+        },
+        {
           "path": "tests/conformance/utils.test.mjs"
         },
         {
