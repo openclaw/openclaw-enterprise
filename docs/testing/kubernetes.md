@@ -44,7 +44,7 @@ that changes cluster-wide storage configuration, use a disposable cluster.
 The disposable `tests/fixtures/kubernetes` image runs as nonroot and uses the
 Compute Driver's generated Namespace labels, ResourceQuota, LimitRange,
 NetworkPolicies, Pod and container security settings, and bounded resources.
-Its local mutable tag and unpinned `node:24-bookworm` base are limited to this
+Its local mutable tag and unpinned `docker.io/library/node:24-bookworm` base are limited to this
 disposable fixture; production images still require the documented pinning and
 review.
 

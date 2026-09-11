@@ -12,7 +12,7 @@ Provision Linux with systemd, util-linux `flock`, `getent`, the shadow account
 management tools (`useradd`, `userdel`, `groupadd`, `groupdel`), a root SSH
 account, Node.js 24, and a readable OpenClaw entrypoint. The controller processes
 need the system `ssh` executable and protected identity and known-hosts files;
-the controller image's `node:24-bookworm` base ships the OpenSSH client.
+the controller image's `docker.io/library/node:24-bookworm` base ships the OpenSSH client.
 The Driver never installs or upgrades host software and has no `sudo` fallback.
 API and worker production preflight both verify configured hosts, so both
 processes need these SSH inputs. Hosts receive no controller credentials,

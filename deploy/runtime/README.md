@@ -9,13 +9,13 @@ entrypoints:
 
 The Dockerfile installs only public npm packages:
 
-| Input                           | Default                                                                                    |
-| ------------------------------- | ------------------------------------------------------------------------------------------ |
-| `NODE_BASE_IMAGE`               | `node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584` |
-| `OPENCLAW_VERSION`              | `2026.9.1`                                                                                 |
-| `OPENCLAW_CODEX_PLUGIN_VERSION` | `2026.9.1`                                                                                 |
-| `OPENCLAW_SLACK_PLUGIN_VERSION` | `2026.9.1`                                                                                 |
-| `OPENAI_CODEX_VERSION`          | `0.152.1`                                                                                  |
+| Input                           | Default                                                                                                      |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `NODE_BASE_IMAGE`               | `docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584` |
+| `OPENCLAW_VERSION`              | `2026.9.1`                                                                                                   |
+| `OPENCLAW_CODEX_PLUGIN_VERSION` | `2026.9.1`                                                                                                   |
+| `OPENCLAW_SLACK_PLUGIN_VERSION` | `2026.9.1`                                                                                                   |
+| `OPENAI_CODEX_VERSION`          | `0.152.1`                                                                                                    |
 
 Build it from the repository root:
 

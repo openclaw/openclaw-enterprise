@@ -36,7 +36,7 @@ startup is not part of this deployment procedure.
 export OCC_IMAGE_REPOSITORY='registry.example.com/your-team/openclaw-enterprise'
 export OCC_IMAGE_TAG="$(git rev-parse HEAD)"
 export OCC_IMAGE_PLATFORM='linux/amd64'
-export NODE_BASE_IMAGE='node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584'
+export NODE_BASE_IMAGE='docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584'
 docker login registry.example.com
 
 docker buildx build --push --platform "$OCC_IMAGE_PLATFORM" --target runtime \

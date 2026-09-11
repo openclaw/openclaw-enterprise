@@ -583,7 +583,7 @@ test("prepareLane preserves an explicit logging Collector Node image over its de
   const statePath = join(root, "logging-state.json");
   const githubEnv = join(root, "github.env");
   const customNodeImage =
-    "node:24-bookworm@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    "docker.io/library/node:24-bookworm@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
   const result = runPrepare(
     ["--lane", "logging-collector", "--state", statePath, "--github-env", githubEnv],
@@ -603,7 +603,7 @@ test("prepareFile applies the images packaging Node base default without hiding 
   const statePath = join(root, "missing-state.json");
   const file = "tests/integration/runtime-image-startup.test.mjs";
   const customNodeBaseImage =
-    "node:24-bookworm@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+    "docker.io/library/node:24-bookworm@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 
   const defaulted = runPrepare(
     ["--lane", "images-packaging", "--file", file, "--state", statePath],
@@ -624,7 +624,7 @@ test("prepareFile applies the images packaging Node base default without hiding 
   assert.match(explicit.stderr, /requires a prior prepareLane/);
 
   const invalid = runPrepare(["--lane", "images-packaging", "--file", file, "--state", statePath], {
-    NODE_BASE_IMAGE: "node:24-bookworm",
+    NODE_BASE_IMAGE: "docker.io/library/node:24-bookworm",
   });
   assert.equal(invalid.status, 1);
   assert.match(invalid.stderr, /NODE_BASE_IMAGE must be an immutable/);

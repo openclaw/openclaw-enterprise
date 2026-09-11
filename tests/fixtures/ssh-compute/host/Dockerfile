@@ -2,7 +2,7 @@
 # Uses the runtime image's Node.js base so the host runs the same Node 24 on
 # amd64 and arm64, with systemd as PID 1, sshd, an unprivileged openclaw
 # account, and the pinned OpenClaw/Codex packages from deploy/runtime/Dockerfile.
-FROM node:24-bookworm
+FROM docker.io/library/node:24-bookworm
 
 ARG OPENCLAW_VERSION=2026.7.1
 ARG OPENCLAW_CODEX_PLUGIN_VERSION=2026.7.1-1

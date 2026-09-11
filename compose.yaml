@@ -4,7 +4,7 @@ x-development-build: &development-build
   context: .
   target: development
   args:
-    NODE_BASE_IMAGE: ${NODE_BASE_IMAGE:-node:24-bookworm}
+    NODE_BASE_IMAGE: ${NODE_BASE_IMAGE:-docker.io/library/node:24-bookworm}
 
 services:
   postgres:

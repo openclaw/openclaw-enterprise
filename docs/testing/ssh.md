@@ -37,7 +37,7 @@ model credential. The ordinary local test command reports an explicit skip:
 node --test tests/integration/ssh-compute-real.test.mjs
 ```
 
-The fixture image builds on the runtime image's `node:24-bookworm` base and
+The fixture image builds on the runtime image's `docker.io/library/node:24-bookworm` base and
 adds systemd as PID 1, sshd, an `openclaw` system user, and the pinned
 OpenClaw/Codex packages from
 [`deploy/runtime/Dockerfile`](../../deploy/runtime/Dockerfile); it builds on amd64

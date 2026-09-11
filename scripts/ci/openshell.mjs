@@ -9,7 +9,7 @@ const openShellVersion = "0.0.113";
 const agentSandboxVersion = "v0.5.2";
 const kubectlVersion = "v1.36.4";
 const k3sImage =
-  "rancher/k3s:v1.36.4-k3s1@sha256:edad48e12bf81c3a09ac1c05c0c0ffaaa22145980b989d6fae84543a76b83657";
+  "docker.io/rancher/k3s:v1.36.4-k3s1@sha256:edad48e12bf81c3a09ac1c05c0c0ffaaa22145980b989d6fae84543a76b83657";
 const openShellChartReference = "oci://ghcr.io/nvidia/openshell/helm-chart";
 const openShellChartArchive = `helm-chart-${openShellVersion}.tgz`;
 const openShellChartSha256 = "7bf2df0e490282ab4b7fd55217e5a79dfdd0b1b19ea87cb50a2cc229ccd0400e";
@@ -475,7 +475,7 @@ function violatingPodSecurityManifest(namespace, runtimeClass) {
     ...(runtimeClass ? [`  runtimeClassName: ${runtimeClass}`] : []),
     "  containers:",
     "    - name: probe",
-    "      image: busybox:1.36",
+    "      image: docker.io/library/busybox:1.36",
     "      command:",
     "        - sh",
     "        - -c",

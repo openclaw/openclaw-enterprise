@@ -131,7 +131,7 @@ test("prepared OCI metadata cannot cross source, image, attempt, CI or base-imag
     attempt: "2",
     ciRunId: "456",
     ciAttempt: "1",
-    nodeBaseImage: `node:24-bookworm@${digest}`,
+    nodeBaseImage: `docker.io/library/node:24-bookworm@${digest}`,
     image: "controller",
   };
   const metadata = { ...expected, platform: "linux/amd64", digest, archiveSha256: "c".repeat(64) };

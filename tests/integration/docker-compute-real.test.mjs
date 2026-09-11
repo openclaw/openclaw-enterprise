@@ -870,7 +870,7 @@ test(
     const env = {
       ...process.env,
       COMPOSE_PROJECT_NAME: project,
-      NODE_BASE_IMAGE: process.env.NODE_BASE_IMAGE ?? "node:24-bookworm",
+      NODE_BASE_IMAGE: process.env.NODE_BASE_IMAGE ?? "docker.io/library/node:24-bookworm",
       NODE_ENV: "development",
       OCC_HOST: "0.0.0.0",
       OCC_PORT: INTERNAL_API_PORT,
