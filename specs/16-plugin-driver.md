@@ -139,7 +139,7 @@ the spec, revisions, and logs.
 ## Implementation status
 
 - Target-port implementation is complete on branch
-  `dev/kevinlin/plugin-driver-port` from base `5c58b95c`; current source commit
+  `dev/kevinlin/plugin-driver-port` from base `5c58b95c`; the initial port commit
   is `185afba1608260adfa5b1fe9bda9ee700a4d9fee` in
   [PR #121](https://github.com/openclaw/openclaw-enterprise/pull/121). The port
   includes Agent-owned plugin maps, atomic API/state/audit changes, immutable
