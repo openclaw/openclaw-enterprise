@@ -579,7 +579,7 @@ test(
   "batch stale recovery reports each expired claim once and writes one audit event per item",
   requiresPostgres,
   async (context) => {
-    const { pool, queue } = await dependencies(context, { leaseDurationMs: 35 });
+    const { pool, queue, PostgresWorkQueue } = await dependencies(context, { leaseDurationMs: 35 });
     const { namespaceId, agents } = await createResources(pool, 2);
     const revisions = await Promise.all(
       agents.map((agentId) => createQueueRevision(pool, namespaceId, agentId)),
@@ -613,6 +613,7 @@ test(
     assert.equal(audits.rowCount, 2);
     assert.ok(audits.rows.every(({ events }) => events === 1));
 
-    for (const key of keys) await queue.complete(await claimExpected(queue, key));
+    const cleanupQueue = new PostgresWorkQueue(pool, { leaseDurationMs: 1_000, random: () => 0 });
+    for (const key of keys) await cleanupQueue.complete(await claimExpected(cleanupQueue, key));
   },
 );
