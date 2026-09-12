@@ -1,16 +1,17 @@
 # Authentication
 
-OpenClaw Control Center (OCC) authenticates human and programmatic controller
-API clients with Better Auth email/password sessions or service API keys. Better
-Auth owns password verification, revocable session cookies, and hashed API-key
-storage. The selected IAM Driver resolves the authenticated account or service
-identity to an explicitly provisioned Principal or ServicePrincipal and owns
+OpenClaw Control Plane (OCC) authenticates human controller API clients with
+user sessions established through email/password sign-in. Programmatic
+non-Agent automation authenticates with service API keys. Better Auth owns
+password verification, revocable session cookies, and hashed API-key storage.
+The selected IAM Driver resolves the authenticated account or service identity
+to an explicitly provisioned Principal or ServicePrincipal and owns
 [authorization](authorization.md).
 
 This page defines the currently supported authentication behavior. For a
 working sign-in procedure, see
-[human administrator sign-in](../guides/deploy.md#sign-in-as-a-human-administrator).
-For non-Agent automation, see the [service-key procedure](../guides/deploy.md#service-api-keys-for-automation).
+[human administrator sign-in](../guides/deploy/service-keys.md#sign-in-as-a-human-administrator).
+For non-Agent automation, see the [service-key procedure](../guides/deploy/service-keys.md#service-api-keys-for-automation).
 The [platform console](console.md) provides email/password login at `/console/`
 and uses these same session endpoints. Public signup, OIDC, and bearer
 credentials are not supported controller API authentication paths.
@@ -52,14 +53,14 @@ response. OCC creates no Kubernetes Secret or PVC for delivery.
 In Helm, `bootstrap.password.claimName` selects the existing protected PVC.
 Only the initialization Job mounts it; `bootstrap.password.fileName` and
 `bootstrap.serviceKey.fileName` are written under `bootstrap.password.mountPath`.
-See [initial-key retrieval](../guides/deploy.md#retrieve-the-bootstrap-service-key)
-and [bootstrap recovery](../guides/deploy.md#recover-an-incomplete-bootstrap).
+See [initial-key retrieval](../guides/deploy/service-keys.md#retrieve-the-bootstrap-service-key)
+and [bootstrap recovery](../guides/deploy/service-keys.md#recover-an-incomplete-bootstrap).
 
 The shared `scripts/bootstrap-installation.mjs` initializer runs after migration
 and before either API or worker startup in Compose and Helm. Development
 provisions the configured `OPENCLAW_DEV_EMAIL` and
 `OPENCLAW_DEV_PASSWORD` on a fresh database, using the defaults in
-[settings](settings.md#required-development-controller-environment), and
+[settings](settings/development.md#required-development-controller-environment), and
 bootstraps the Installation before serving requests. It does not generate a
 password output file or rotate an existing account's password. Compose stores
 the service-key JSON on the bootstrap-only `occ_bootstrap_data` volume. The API
@@ -81,7 +82,7 @@ The Helm initialization Job uses `backoffLimit: 0` and does not retry a failed
 attempt. Better Auth persistence and the Installation/IAM commit are separate;
 an error does not establish whether the transaction committed. Operators must
 resolve that outcome before manual repair, or explicitly reset an identified
-disposable Installation. See [incomplete bootstrap recovery](../guides/deploy.md#recover-an-incomplete-bootstrap).
+disposable Installation. See [incomplete bootstrap recovery](../guides/deploy/service-keys.md#recover-an-incomplete-bootstrap).
 File existence alone is not proof of successful initialization.
 
 ## Browser request origin
@@ -166,101 +167,9 @@ headers and bearer credentials are not authorization evidence.
 The optional session-inspection route is not a protected resource operation:
 anonymous inspection returns `200` with `data: null`.
 
-## Service API keys
+## Automation credentials
 
-Service keys authenticate non-Agent automation as an existing IAM
-`ServicePrincipal`, not as the administrator who issues the key. Issuance
-creates no account, session, identity, Role, or AccessBinding. The selected IAM
-Driver must support lookup by `servicePrincipalId` and load current policy for
-each identity lookup and authorization decision. Unknown identities are denied.
-
-The current API does not provision service principals or their grants. An
-operator uses the service administrator created by fresh bootstrap or provisions
-another identity and explicit bindings through the selected IAM authority.
-Native IAM supports these records internally; there is no public IAM-management
-API. Agent-owned principals cannot use service keys: Agent authentication requires the separate workload-bound
-credential flow. These controller keys are also distinct from upstream
-provider credentials managed by [Service accounts](service-accounts.md).
-
-The controller uses Better Auth's pinned
-[API-key plugin](https://better-auth.com/docs/plugins/api-key) through server-only
-calls. It does not expose the plugin's public create/update/list routes, enable
-sessions from keys, use plugin permissions as IAM grants, or add another
-credential store. Database-backed verification does not cache keys; the
-plugin's per-key rate limit is disabled. The same service-key contract applies
-to development and production; their existing listener and storage boundaries
-remain in force. Normal issuance and verification require no additional settings;
-initial bootstrap delivery uses the [bootstrap settings](settings.md#production-installation-bootstrap-environment).
-
-### Issuance
-
-`POST /api/auth/service-keys` accepts a human session or an Installation-scoped
-service API key. Either caller requires current IAM `administer` on the
-singleton Installation, including when issuing a Namespace key. The body
-names the existing `servicePrincipalId` and its exact `namespaceId`, or omits
-`namespaceId` for an Installation-scoped principal. `name` contains 1–32
-characters and cannot be blank. Optional `expiresIn` is an integer lifetime in
-seconds from 86,400 to 31,536,000 (1–365 days); omission gives 30 days.
-Unsupported fields are rejected. The [generated API reference](api.md) owns
-the complete wire schema.
-
-Success returns `201` with the plaintext key exactly once in `data.key`,
-alongside `id`, `servicePrincipalId`, optional `namespaceId`, `name`, and
-`expiresAt` as a date-time string. Store the credential privately; there is no
-plaintext retrieval endpoint. Multiple keys can reference the same principal
-for rotation.
-
-An Installation-scoped non-Agent ServicePrincipal with that authority can
-issue and revoke keys for itself or another eligible principal in the same
-Installation. Namespace-scoped keys cannot manage keys. Account creation and
-bootstrap still require human sessions; service keys cannot enter those paths.
-The controller provides no automatic rotation service, but authorized
-automation can use issuance and revocation to rotate credentials. Keys are
-independent credentials: revoking an issuer's key does not revoke other keys
-issued through it. Issuance never grants permissions to the target principal.
-
-### Request admission and scope
-
-Clients send the credential in `x-api-key`. An explicitly supplied key takes
-precedence over a session cookie. A blank, invalid, expired, or revoked key
-cannot fall back to the cookie. `Authorization: Bearer` remains unsupported,
-and a key cannot produce a human session through `GET /api/auth/session`.
-
-The key's Installation and optional Namespace are fixed at issuance. A
-Namespace key cannot access another Namespace or Installation-level endpoints.
-An Installation key still needs the exact IAM permission for each requested
-resource; it never inherits its issuer's permissions. Removal of an identity,
-binding, or Role, and matching Restrictions, affect subsequent requests
-immediately. If the principal's scope changes, the old key fails closed; a new
-key is required for that scope.
-
-### Revocation and audit
-
-`DELETE /api/auth/service-keys/:keyId` uses the non-secret ID returned at
-issuance and the same IAM Installation-administrator authority as issuance. Success
-returns `200` with `data: {"id":"<key-id>","revoked":true}`. Revocation deletes
-the Better Auth record so concurrent verification updates cannot re-enable it.
-Subsequent requests fail authentication across controller instances; a request
-already authorized may finish. An unknown or already removed key returns
-`404 NOT_FOUND`. Revocation does not delete the principal or its IAM bindings.
-
-HTTP issuance and revocation emit audit events containing the administrator and
-non-secret key/principal IDs, never plaintext credentials. If issuance audit
-persistence fails, the controller returns `503` without disclosing the key and
-attempts to remove it. This cleanup is best effort, not an atomic transaction
-with the audit sink. A failed revocation audit returns `503` but never restores
-a deleted key. See the [deployment guide](../guides/deploy.md#revoke-or-rotate-a-service-key)
-for rotation procedures using a human session or service key.
-
-### Service-key failures
-
-| Condition                                                                                                              | Result                                                                                      |
-| ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| Missing, invalid, expired, or revoked credential; key used for account creation or bootstrap                           | `401 UNAUTHENTICATED`.                                                                      |
-| Missing current identity or exact IAM grant, changed principal scope, cross-Namespace request, or matching Restriction | `403 FORBIDDEN`.                                                                            |
-| Unknown, Agent-owned, or incorrectly scoped principal at issuance; unsupported fields or invalid name/lifetime         | `400 INVALID_REQUEST`.                                                                      |
-| Unknown or already removed key at revocation                                                                           | `404 NOT_FOUND`.                                                                            |
-| Required authentication, IAM, or audit dependency unavailable                                                          | `503 DEPENDENCY_UNAVAILABLE`; do not retry with a different identity or broader credential. |
+Non-Agent automation uses `x-api-key` with an existing IAM ServicePrincipal. [Service API keys](authentication/service-api-keys.md) defines issuance, credential precedence, exact scope, revocation, audit behavior, and failures. Keys do not inherit their issuer’s permissions or create human sessions.
 
 ## Evidence and related references
 
@@ -268,24 +177,11 @@ The [authentication implementation](../../apps/controller/src/auth/index.ts)
 owns session verification and safe responses; the
 [HTTP routes](../../apps/controller/src/index.ts) own public endpoint exposure
 and account-provisioning authorization.
-[API integration tests](../../tests/integration/occ-api.test.mjs) cover safe
-session inspection and administrator-provisioned accounts with scoped IAM
-access. These tests are not proof of a production installation.
 
-[Service-key HTTP integration tests](../../tests/integration/service-api-keys.test.mjs)
-exercise real Fastify HTTP with Better Auth memory storage and native IAM,
-including valid, invalid, expired, revoked, unauthorized, and cross-Namespace
-requests, IAM-authorized service-key management, human session preservation,
-Agent exclusion, and audit attribution.
-[PostgreSQL service-key tests](../../tests/integration/postgres-service-api-keys.test.mjs)
-separately cover stored hashing, foreign-Installation rejection, cross-instance
-revocation, and deletion during concurrent verification. These focused tests
-do not prove a production installation; their commands and required
-[test environment](settings.md#postgresql-test-environment) are linked from the
-[service API key flow](../flows/service-api-keys.md#debugging-and-verification).
-
+- [Local authentication tests](../testing/local.md#authentication-and-authorization-coverage)
+- [Service-key persistence tests](../testing/postgresql.md#service-key-persistence)
 - [Service API key flow](../flows/service-api-keys.md)
-- [Deployment procedure](../guides/deploy.md#service-api-keys-for-automation)
+- [Deployment procedure](../guides/deploy/service-keys.md#service-api-keys-for-automation)
 - [Authorization](authorization.md)
 - [Generated API reference](api.md)
 - [Controller settings](settings.md)

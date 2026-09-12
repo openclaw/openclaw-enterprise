@@ -227,6 +227,88 @@ test(
 );
 
 test(
+  "development after-commit Drivers activate after CAS and retry before retiring the previous revision",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context);
+    const owner = await fixture.agent();
+    const first = await fixture.revision(owner, 1);
+    let second;
+    const effects = [];
+    let secondActivationAttempts = 0;
+    let retryStarted = false;
+    let releaseRetry;
+    const retryRelease = new Promise((resolve) => {
+      releaseRetry = resolve;
+    });
+
+    async function record(action, candidate) {
+      effects.push({
+        action,
+        revisionId: candidate.id,
+        activeRevisionId: await fixture.activeRevision(owner),
+      });
+    }
+
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async preflight() {},
+        async prepareRevision(candidate) {
+          await record("prepare", candidate);
+          return fixture.compute.prepareRevision(candidate);
+        },
+        async activateRevision(candidate) {
+          await record("activate", candidate);
+          if (candidate.id === second?.id) {
+            secondActivationAttempts += 1;
+            if (secondActivationAttempts === 1) {
+              throw new Error("development gateway did not start");
+            }
+            retryStarted = true;
+            await retryRelease;
+          }
+        },
+        async retireRevision(candidate) {
+          await record("retire", candidate);
+          return fixture.compute.retireRevision(candidate);
+        },
+      },
+      30_000,
+      900_000,
+      "development",
+    );
+    await fixture.work(first);
+
+    try {
+      second = await fixture.revision(owner, 2);
+      await waitFor("activation retry", async () => (retryStarted ? true : undefined));
+      assert.equal(await fixture.activeRevision(owner), second.id);
+      assert.deepEqual(
+        effects.filter(({ action }) => action === "retire"),
+        [],
+      );
+    } finally {
+      // Release paused activation before fixture cleanup waits for the worker to stop.
+      releaseRetry();
+    }
+
+    // Pending finalization restores the retry budget despite making two activation calls.
+    assert.equal((await fixture.work(second)).attempt_count, 1);
+    assert.equal(secondActivationAttempts, 2);
+    assert.equal(await fixture.activeRevision(owner), second.id);
+    assert.deepEqual(effects, [
+      { action: "prepare", revisionId: first.id, activeRevisionId: null },
+      { action: "activate", revisionId: first.id, activeRevisionId: first.id },
+      { action: "prepare", revisionId: second.id, activeRevisionId: first.id },
+      { action: "activate", revisionId: second.id, activeRevisionId: second.id },
+      { action: "activate", revisionId: second.id, activeRevisionId: second.id },
+      { action: "retire", revisionId: first.id, activeRevisionId: second.id },
+    ]);
+  },
+);
+
+test(
   "an opted-in active runtime continuously repairs under its original authorized actor",
   requiresPostgres,
   async (context) => {

@@ -440,7 +440,7 @@ test(
   tooling,
   async () => {
     for (const [description, override] of [
-      ["mutable controller", { "images.controller": "controller:latest" }],
+      ["mutable controller", { "images.controller": "registry.example/controller:latest" }],
       ["missing Better Auth secret", { "auth.secretName": "" }],
       ["missing bootstrap admin email", { "bootstrap.adminEmail": "" }],
       ["missing bootstrap password claim", { "bootstrap.password.claimName": "" }],

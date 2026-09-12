@@ -187,7 +187,7 @@ credential at its issuer.
 ## Related docs
 
 - [SecretDriver implementation specification](../../specs/.archive/14-secret-driver.md)
-- [Secret access architecture](../design.md#secret-access)
+- [Secret access architecture](../design/safeguards.md#secret-access)
 - [Kubernetes deployment](../guides/deploy.md)
 - [Configuration](../reference/configuration.md)
 - [Kubernetes Secret Driver](../reference/drivers/kubernetes-secret.md)

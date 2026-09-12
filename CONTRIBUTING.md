@@ -58,7 +58,7 @@ Use `pnpm format:fix` to format active workspace changes, then inspect the diff
 for unrelated formatting. `typecheck` and `build` currently invoke the same
 TypeScript build. Do not run `npm run precommit`.
 
-Choose focused tests and infrastructure setup from [Testing](docs/testing.md).
+Choose focused tests and infrastructure setup from [Testing](docs/testing/README.md).
 `pnpm test:console-browser` runs the separate browser suite with an explicitly
 prepared browser. PostgreSQL, Docker, Kubernetes, and model-backed suites need
 their documented disposable resources and, where applicable, authorized
@@ -71,6 +71,9 @@ Regression tests must exercise supported behavior and fail for the original
 defect, not merely restate mocks.
 
 ## Prepare a pull request
+
+Use the [developer skills](docs/testing/developer-skills.md) for test quality,
+proof selection, diff cleanup, and requested independent review.
 
 - Keep one coherent change per PR. Stack only when a dependency is real, and
   link the prerequisite PR and intended base.

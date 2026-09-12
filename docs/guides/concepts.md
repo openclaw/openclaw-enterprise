@@ -1,11 +1,23 @@
 # Concepts
 
-Use these concepts to understand what you configure and deploy in OpenClaw Enterprise.
+Use these concepts to understand what you configure and deploy in **OpenClaw Enterprise (OCE)**.
 
-## Control plane and tenancy
+## Control and data planes
 
-**OpenClaw Control Center (OCC)** manages platform resources. Its API accepts
-authorized changes; its worker provisions and updates workloads asynchronously.
+### Control plane
+
+**OpenClaw Control Plane (OCC)** configures and manages Agent deployments.
+Its API authorizes resource changes, and its worker uses Drivers to provision
+and update workloads asynchronously.
+
+### Data plane
+
+The **data plane** handles Agent conversations and execution. Agent
+[gateways and Harnesses](#gateways-and-harnesses) receive messages, call models,
+and run tools. Deploying an Agent is a control-plane operation; processing a
+message is data-plane work.
+
+## Tenancy
 
 An **Installation** is one deployment of the platform. A [Namespace](../reference/namespaces.md)
 groups and isolates its Agents, configuration, and credentials. Fresh bootstrap

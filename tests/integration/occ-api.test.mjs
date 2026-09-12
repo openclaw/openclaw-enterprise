@@ -6,8 +6,9 @@ import { createServer } from "node:net";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { AuthAccountRoleNotFoundError } from "../../apps/controller/src/auth/index.ts";
-import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
+import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { createControllerApp, createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
@@ -268,6 +269,23 @@ async function createAgent(controller, namespaceId, name, values = {}) {
   return result.data;
 }
 
+const diffsPluginId = "occ-plugin:diffs";
+const linearPluginId = "codex-plugin:linear@openai-curated-remote";
+
+function pluginPolicy(overrides = {}) {
+  return { enabled: true, approvalMode: "always", ...overrides };
+}
+
+function assertPolicyOnlyPlugin(selection) {
+  for (const key of ["id", "nativeId", "name", "driver", "release", "artifacts"]) {
+    assert.equal(
+      Object.hasOwn(selection, key),
+      false,
+      `Agent plugin policy must not expose ${key}`,
+    );
+  }
+}
+
 async function createInjectedFixture(options = {}) {
   const installationId = "ins_3033697e-6397-4cc6-9b04-8ec17af78cf1";
   const authFixture = await createTestAuthPrincipal({
@@ -331,6 +349,7 @@ async function createInjectedFixture(options = {}) {
   const configurationDriver = createTestConfigurationDriver({ id: "configuration-integration" });
   const sessionsByPrincipalId = new Map();
   let controller;
+  let platformState;
   let app;
 
   async function installAuthSeed(seed, { auditEvent } = {}) {
@@ -350,8 +369,9 @@ async function createInjectedFixture(options = {}) {
         ? { controller }
         : {
             createController(installation) {
+              platformState = new InMemoryPlatformState({ auditSink });
               controller = new OpenClawController(installation, {
-                state: new InMemoryPlatformState({ auditSink }),
+                state: platformState,
                 recordOperations: false,
                 ...(options.providers === undefined ? {} : { providers: options.providers }),
               });
@@ -432,9 +452,18 @@ async function createInjectedFixture(options = {}) {
     get iamDriver() {
       return iamDriver;
     },
+    get computeDriver() {
+      return computeDriver;
+    },
+    get configurationDriver() {
+      return configurationDriver;
+    },
     installationId,
     principal,
     state,
+    get platformState() {
+      return platformState;
+    },
     installAuthSeed,
     get controller() {
       return controller;
@@ -470,6 +499,7 @@ async function injectedRequest(app, method, pathname, options = {}) {
       ...(payload === undefined ? {} : { body: payload }),
     }),
   );
+  if (response.status === 204) return { status: response.status, headers: response.headers };
   const body = await response.json();
   assert.match(body.meta?.requestId ?? "", identifier("req"));
   return { status: response.status, headers: response.headers, body, data: body.data };
@@ -653,6 +683,249 @@ test("Agent Provider API preserves nullable drafts and immutable revision associ
   });
   assert.equal(replaced.status, 200);
   assert.equal(replaced.data.providerId, "openai");
+});
+
+test("Agent create and update replace policy-only plugin maps and revisions freeze the requested snapshot", async () => {
+  const controller = await configuredController();
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, "plugin-api");
+  const configuration = await createConfiguration(controller, namespace.id);
+  const replacementConfiguration = await createConfiguration(controller, namespace.id, {
+    runtime: { revision: "replacement" },
+  });
+  const pluginDriver = new OCCPluginDriver();
+  controller.fixture.controller.registerDriver(pluginDriver);
+  controller.fixture.controller.selectDriver("plugin", pluginDriver.id);
+  const initialPlugins = { [diffsPluginId]: pluginPolicy() };
+
+  const created = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      name: "plugin-agent",
+      configurationId: configuration.id,
+      plugins: initialPlugins,
+    },
+  });
+  assert.equal(created.status, 201);
+  assert.deepEqual(created.data.plugins, initialPlugins);
+  assertPolicyOnlyPlugin(created.data.plugins[diffsPluginId]);
+
+  const saved = await controller.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${created.data.id}`,
+  );
+  assert.equal(saved.status, 200);
+  assert.deepEqual(saved.data.plugins, initialPlugins);
+
+  await controller.fixture.controller.handleNamespaceLifecycle(
+    controller.fixture.principal.id,
+    namespace.id,
+    "ready",
+  );
+  const deployment = await controller.request(
+    "POST",
+    `/namespaces/${namespace.id}/agents/${created.data.id}/deploy`,
+  );
+  assert.equal(deployment.status, 202);
+  assert.deepEqual(deployment.data.plugins, {
+    driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+    plugins: initialPlugins,
+  });
+  assert.equal(Object.hasOwn(deployment.data.plugins, "artifacts"), false);
+
+  const omittedPlugins = await controller.request(
+    "PATCH",
+    `/namespaces/${namespace.id}/agents/${created.data.id}`,
+    { body: { configurationId: replacementConfiguration.id } },
+  );
+  assert.equal(omittedPlugins.status, 200);
+  assert.equal(omittedPlugins.data.configurationId, replacementConfiguration.id);
+  assert.deepEqual(omittedPlugins.data.plugins, initialPlugins);
+
+  const replacementPlugins = {
+    [linearPluginId]: pluginPolicy({ approvalMode: "auto", approvalsReviewer: "auto_review" }),
+  };
+  const replacedPlugins = await controller.request(
+    "PATCH",
+    `/namespaces/${namespace.id}/agents/${created.data.id}`,
+    { body: { configurationId: replacementConfiguration.id, plugins: replacementPlugins } },
+  );
+  assert.equal(replacedPlugins.status, 200);
+  assert.deepEqual(replacedPlugins.data.plugins, replacementPlugins);
+  assert.equal(Object.hasOwn(replacedPlugins.data.plugins, diffsPluginId), false);
+  assertPolicyOnlyPlugin(replacedPlugins.data.plugins[linearPluginId]);
+
+  const clearedPlugins = await controller.request(
+    "PATCH",
+    `/namespaces/${namespace.id}/agents/${created.data.id}`,
+    { body: { configurationId: replacementConfiguration.id, plugins: {} } },
+  );
+  assert.equal(clearedPlugins.status, 200);
+  assert.deepEqual(clearedPlugins.data.plugins, {});
+
+  const historical = await controller.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${created.data.id}/revisions/${deployment.data.id}`,
+  );
+  assert.equal(historical.status, 200);
+  assert.deepEqual(historical.data.plugins, deployment.data.plugins);
+
+  const pluginFreeRevision = await controller.request(
+    "POST",
+    `/namespaces/${namespace.id}/agents/${created.data.id}/deploy`,
+  );
+  assert.equal(pluginFreeRevision.status, 202);
+  assert.equal(Object.hasOwn(pluginFreeRevision.data, "plugins"), false);
+});
+
+test("Agent plugin maps reject structural errors and preserve exact authorization and audit boundaries", async () => {
+  const controller = await configuredController();
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, "plugin-api-auth");
+  const configuration = await createConfiguration(controller, namespace.id);
+  const pluginDriver = new OCCPluginDriver();
+  controller.fixture.controller.registerDriver(pluginDriver);
+  controller.fixture.controller.selectDriver("plugin", pluginDriver.id);
+  const auditCount = controller.fixture.auditSink.events.length;
+
+  const metadataInCreate = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      name: "metadata-plugin-agent",
+      configurationId: configuration.id,
+      plugins: { [diffsPluginId]: { ...pluginPolicy(), nativeId: "diffs" } },
+    },
+  });
+  assert.equal(metadataInCreate.status, 400);
+  assert.equal(metadataInCreate.body.error.code, "INVALID_REQUEST");
+  assert.equal(controller.fixture.auditSink.events.length, auditCount);
+
+  const agent = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: { name: "plugin-auth-agent", configurationId: configuration.id },
+  });
+  assert.equal(agent.status, 201);
+  const secondAgent = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: { name: "plugin-auth-sibling", configurationId: configuration.id },
+  });
+  assert.equal(secondAgent.status, 201);
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.data.id}`;
+  const siblingPath = `/namespaces/${namespace.id}/agents/${secondAgent.data.id}`;
+
+  const auditBeforeInvalidUpdate = controller.fixture.auditSink.events.length;
+  const snakeCaseReviewer = await controller.request("PATCH", agentPath, {
+    body: {
+      configurationId: configuration.id,
+      plugins: {
+        [linearPluginId]: {
+          enabled: true,
+          approvalMode: "auto",
+          approvals_reviewer: "auto_review",
+        },
+      },
+    },
+  });
+  assert.equal(snakeCaseReviewer.status, 400);
+  assert.equal(snakeCaseReviewer.body.error.code, "INVALID_REQUEST");
+  assert.equal(controller.fixture.auditSink.events.length, auditBeforeInvalidUpdate);
+
+  for (const plugins of [
+    { "codex-plugin:bad/plugin@openai-curated-remote": pluginPolicy({ approvalMode: "auto" }) },
+    { [linearPluginId]: pluginPolicy({ tools: { "bad/tool": { enabled: true } } }) },
+    { [linearPluginId]: pluginPolicy({ tools: { search: {} } }) },
+  ]) {
+    const invalid = await controller.request("PATCH", agentPath, {
+      body: { configurationId: configuration.id, plugins },
+    });
+    assert.equal(invalid.status, 400);
+    assert.equal(invalid.body.error.code, "INVALID_REQUEST");
+    assert.equal(controller.fixture.auditSink.events.length, auditBeforeInvalidUpdate);
+  }
+
+  const afterInvalidUpdate = await controller.request("GET", agentPath);
+  assert.equal(Object.hasOwn(afterInvalidUpdate.data, "plugins"), false);
+
+  const { principal: noGrantPrincipal } =
+    await controller.fixture.createAuthPrincipal("plugin-no-grant");
+  controller.fixture.state.identities.push(noGrantPrincipal);
+  const noGrantApp = controller.fixture.createApp(noGrantPrincipal);
+  const noGrantRead = await injectedRequest(noGrantApp, "GET", agentPath);
+  assert.equal(noGrantRead.status, 403);
+  assert.equal(noGrantRead.body.error.code, "FORBIDDEN");
+  const noGrantUpdate = await injectedRequest(noGrantApp, "PATCH", agentPath, {
+    body: { configurationId: configuration.id, plugins: { [diffsPluginId]: pluginPolicy() } },
+  });
+  assert.equal(noGrantUpdate.status, 403);
+  assert.equal(noGrantUpdate.body.error.code, "FORBIDDEN");
+  const afterNoGrant = await controller.request("GET", agentPath);
+  assert.equal(Object.hasOwn(afterNoGrant.data, "plugins"), false);
+
+  const { principal: exactAgentPrincipal } =
+    await controller.fixture.createAuthPrincipal("plugin-exact-agent");
+  controller.fixture.state.identities.push(exactAgentPrincipal);
+  controller.fixture.state.roles.push({
+    id: "role-plugin-exact-agent",
+    namespaceId: namespace.id,
+    permissions: [
+      { action: "read", resourceKind: "agent" },
+      { action: "update", resourceKind: "agent" },
+      { action: "read", resourceKind: "configuration" },
+    ],
+  });
+  controller.fixture.state.bindings.push(
+    {
+      id: "binding-plugin-exact-agent",
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: exactAgentPrincipal.id,
+      roleId: "role-plugin-exact-agent",
+      resourceKind: "agent",
+      resourceId: agent.data.id,
+    },
+    {
+      id: "binding-plugin-exact-configuration",
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: exactAgentPrincipal.id,
+      roleId: "role-plugin-exact-agent",
+      resourceKind: "configuration",
+      resourceId: configuration.id,
+    },
+  );
+  const exactAgentApp = controller.fixture.createApp(exactAgentPrincipal);
+  const exactRead = await injectedRequest(exactAgentApp, "GET", agentPath);
+  assert.equal(exactRead.status, 200);
+  const foreignRead = await injectedRequest(exactAgentApp, "GET", siblingPath);
+  assert.equal(foreignRead.status, 403);
+  assert.equal(foreignRead.body.error.code, "FORBIDDEN");
+  const foreignUpdate = await injectedRequest(exactAgentApp, "PATCH", siblingPath, {
+    body: { configurationId: configuration.id, plugins: { [diffsPluginId]: pluginPolicy() } },
+  });
+  assert.equal(foreignUpdate.status, 403);
+  assert.equal(foreignUpdate.body.error.code, "FORBIDDEN");
+
+  const updated = await injectedRequest(exactAgentApp, "PATCH", agentPath, {
+    body: { configurationId: configuration.id, plugins: { [diffsPluginId]: pluginPolicy() } },
+  });
+  assert.equal(updated.status, 200);
+  assert.deepEqual(updated.data.plugins, { [diffsPluginId]: pluginPolicy() });
+
+  const secondDetail = await controller.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${secondAgent.data.id}`,
+  );
+  assert.equal(Object.hasOwn(secondDetail.data, "plugins"), false);
+
+  const beforeAuditFailure = await controller.request("GET", agentPath);
+  const originalAppend = controller.fixture.auditSink.append;
+  controller.fixture.auditSink.append = async () => {
+    throw new Error("plugin audit sink unavailable");
+  };
+  const failedAudit = await controller.request("PATCH", agentPath, {
+    body: { configurationId: configuration.id, plugins: { [linearPluginId]: pluginPolicy() } },
+  });
+  controller.fixture.auditSink.append = originalAppend;
+  assert.equal(failedAudit.status, 503);
+  assert.equal(failedAudit.body.error.code, "DEPENDENCY_UNAVAILABLE");
+  const afterAuditFailure = await controller.request("GET", agentPath);
+  assert.deepEqual(afterAuditFailure.data, beforeAuditFailure.data);
 });
 
 test("native ServiceAccounts bind exact credential references and freeze Agent revision snapshots", async () => {

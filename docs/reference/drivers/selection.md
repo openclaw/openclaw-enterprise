@@ -1,16 +1,19 @@
 # Driver selection and package contracts
 
 Trusted Installation configuration selects one Driver for each required
-capability and can select optional Sandbox and ServiceAccount Drivers. Trusted
+capability and can select optional Sandbox, ServiceAccount, and Plugin Drivers. Trusted
 Kubernetes startup configuration must also select the bundled Secret Driver.
 Only the Installation operator can add dependencies, publish controller images,
-or select Drivers. Tenants cannot install or activate packages. Startup
+or select Drivers. Tenants cannot install or activate controller Driver packages. Startup
 procedures belong in the [deployment guide](../../guides/deploy.md).
 
 ## Supported selections
 
-Trusted Installation YAML uses the bundled Kubernetes Configuration, native IAM,
-and Kubernetes Compute implementations when their `package` fields are omitted.
+Trusted Installation YAML uses bundled Kubernetes Configuration and native IAM
+when their `package` fields are omitted. Packageless Compute selects
+[SSH Compute](ssh-compute.md) for the exact reserved id `compute-ssh`;
+`compute-kubernetes` is the default bundled Kubernetes id, and every other
+packageless Compute id continues to select Kubernetes.
 Default Compose development instead selects filesystem Configuration, native
 IAM, and Docker Compute without Installation YAML and does not select a
 SecretDriver. An operator can select installed IAM, Compute, Configuration, or
@@ -20,10 +23,11 @@ Sandbox packages in trusted YAML in either mode.
 | ----------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
 | `configuration`   | [ConfigurationDriver](configuration.md)    | Required in Installation YAML; bundled Kubernetes or installed package.                              |
 | `iam`             | [IAMDriver](iam.md)                        | Required in Installation YAML; bundled native IAM or installed package.                              |
-| `compute`         | [ComputeDriver](compute.md)                | Required in Installation YAML; bundled Kubernetes or installed package.                              |
-| `secret`          | [SecretDriver](kubernetes-secret.md)       | Required in trusted Kubernetes Installation YAML; bundled Kubernetes only.                           |
+| `compute`         | [ComputeDriver](compute.md)                | Required in Installation YAML; bundled Kubernetes, bundled SSH, or installed package.                |
+| `secret`          | [SecretDriver](kubernetes-secret.md)       | Required in trusted Installation YAML, including SSH; bundled Kubernetes only.                       |
 | `sandbox`         | [SandboxDriver](sandbox.md)                | Optional; bundled OpenShell or installed package, and currently requires bundled Kubernetes Compute. |
 | `service_account` | [ServiceAccountDriver](service-account.md) | Optional bundled ChatGPT Provider member; no installed-package selector.                             |
+| `plugin`          | [PluginDriver](plugin.md)                  | Optional bundled `occ-plugin` or `codex-plugin`; no installed-package selector.                      |
 
 Installed packages run unsandboxed with control-plane authority and
 access to controller credentials, database state, and Kubernetes identity.
@@ -31,6 +35,12 @@ OCC asks selected IAM to authorize operations, but malicious IAM can disregard
 persisted policy and malicious Compute can violate workload isolation. Operator
 review of installed code is the security boundary; lockfile integrity does not
 establish publisher trust.
+
+SSH supports embedded OpenClaw on preprovisioned Linux hosts. Kubernetes-only
+production image, Codex runtime, and projected-credential checks apply only to
+bundled Kubernetes Compute. `drivers.sandbox` with `compute-ssh` fails startup;
+OCC Secret delivery to SSH hosts is unsupported even though the Installation
+contract still requires the Secret selection.
 
 ## Provider membership
 
@@ -158,7 +168,7 @@ drivers:
 ```
 
 Include the existing required `occ` settings and use the
-[complete production Installation example](../../guides/deploy.md#configure-the-installation)
+[complete production Installation example](../../guides/deploy/production-installation.md#configure-the-installation)
 as the baseline for the selected Drivers. Each Driver owns its closed
 configuration schema; bundled Kubernetes settings apply only when that bundled
 Driver is selected. Startup YAML can select Secret storage but must not contain
@@ -199,21 +209,9 @@ exports or configuration, incorrect capability/identity, and missing production
 Compute methods. These checks do not prove that installed IAM honors policy or
 that installed Compute isolates workloads; operator review remains mandatory.
 
-## Verification evidence
+## Related
 
-[Packaged-driver integration](../../../tests/integration/driver-plugin-installation.test.mjs) installs scoped, precompiled IAM, Compute, and Configuration tarballs
-with real pnpm and lifecycle scripts disabled into an isolated dependency root.
-It selects all three through production startup and Better Auth session
-admission backed by in-memory OCC state. Checks include `401`/`403` responses,
-audited IAM identity and restriction evidence, Configuration CRUD, public signup
-remaining unavailable, and Namespace reconciliation writing its identity to
-`/tmp/local-test`. The test removes only its own file; it does not alter
-checkout dependencies.
-
-This test is not a PostgreSQL-backed production deployment and does not
-independently prove cross-process policy visibility. The suite does not prove
-private-registry authentication, a live Kubernetes cluster, a real OpenClaw
-gateway, or a Codex model turn.
+- [Packaged-driver testing](../../testing/local.md#packaged-driver-integration)
 
 The package resolver and startup checks live in
 [Installation composition](../../../apps/controller/src/composition/installation-config.ts).

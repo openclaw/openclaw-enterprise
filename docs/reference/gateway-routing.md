@@ -9,7 +9,7 @@ OCC API -- WSS + service key --> Envoy -- WebSocket --> Agent gateway Service
 ```
 
 This reference describes the current Kubernetes implementation. For installation
-commands, use [workspace-file setup](../guides/deploy.md#agent-workspace-files).
+commands, use [workspace-file setup](../guides/deploy/workspace-routing.md#agent-workspace-files).
 For caller permissions and file operations, use the
 [workspace-files API](agents.md#workspace-files).
 
@@ -67,7 +67,7 @@ The service key is **operator-created**, including when CA setup is automatic.
 Generate 32 random bytes encoded as hex without a trailing newline and store
 them in a dedicated Opaque Secret under the key `occ`. Set
 `gatewayRouting.apiKeySecretName` to its name. The Secret belongs in the Helm
-release namespace; the [setup procedure](../guides/deploy.md#agent-workspace-files)
+release namespace; the [setup procedure](../guides/deploy/workspace-routing.md#agent-workspace-files)
 provides the commands.
 
 Helm mounts that Secret only into the OCC API at
@@ -83,7 +83,7 @@ select trusted-proxy auth, trust the actual proxy source CIDRs, enable
 `allowRealIpFallback`, accept the fixed identity header and user, and grant
 that identity `operator.admin`. Compute validates those settings and omits
 gateway-token projection in this mode. See the complete
-[native configuration fragment](../guides/deploy.md#agent-workspace-files).
+[native configuration fragment](../guides/deploy/workspace-routing.md#agent-workspace-files).
 
 This key grants native administrative access across the Installation's routed
 gateways. OCC separately checks the caller's exact Agent permission. Keep the
@@ -178,10 +178,6 @@ enable workspace-file access through the standard OCC composition.
   [routing resources](../../deploy/helm/openclaw-enterprise/templates/gateway-routing.yaml),
   [naming and validation](../../deploy/helm/openclaw-enterprise/templates/_helpers.tpl),
   and [API mounts](../../deploy/helm/openclaw-enterprise/templates/deployments.yaml).
-- [Kubernetes route contract](drivers/kubernetes-compute.md#private-agent-gateway-routes)
+- [Kubernetes route contract](drivers/kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes)
   and [workspace-file execution flow](../flows/workspace-files.md).
-- [Real routing integration](../testing.md) runs in an explicitly configured k3d
-  cluster. The opt-in `OCC_TEST_GATEWAY_ROUTING_REAL=1` case exercises native
-  file operations, credential denial/rotation, listener renewal, and gateway
-  replacement. Test coverage is not evidence that a particular installation
-  has passed those checks.
+- [Private-routing testing](../testing/kubernetes.md#kubernetes-model-turns-and-secrets).

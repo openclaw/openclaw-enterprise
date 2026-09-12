@@ -68,7 +68,7 @@ Enterprise authorization or tenant-isolation defects.
 
 Use isolated resources and obtain authorization before testing a live
 installation. Never probe another tenant or production system merely because
-you can reach it. Follow [Testing](docs/testing.md) and distinguish local,
+you can reach it. Follow [Testing](docs/testing/README.md) and distinguish local,
 fixture, real-cluster, and model-backed evidence.
 
 Coordinate disclosure with the security team. This policy does not create a

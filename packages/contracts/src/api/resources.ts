@@ -21,6 +21,8 @@ import {
   ServiceAccountId,
   Timestamp,
   WorkspaceFileName,
+  PluginApprovalModeSchema,
+  PluginApprovalsReviewerSchema,
 } from "./common.ts";
 
 export const InstallationSchema = Type.Object(
@@ -53,11 +55,61 @@ export const AgentSchema = Type.Object(
     providerId: Type.Union([ProviderId, Type.Null()]),
     serviceAccountId: Type.Optional(ServiceAccountId),
     executionMode: HarnessExecutionModeSchema,
+    plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     activeRevisionId: Type.Optional(RevisionId),
     createdAt: Timestamp,
   },
   { additionalProperties: false },
 );
+
+export const PluginDriverIdentitySchema = Type.Object(
+  { id: Type.String({ minLength: 1 }), implementation: Type.String({ minLength: 1 }) },
+  { additionalProperties: false, $id: "PluginDriverIdentity" },
+);
+
+export const PluginToolPolicySchema = Type.Object(
+  {
+    enabled: Type.Optional(Type.Boolean()),
+    approvalMode: Type.Optional(PluginApprovalModeSchema),
+  },
+  { additionalProperties: false, minProperties: 1, $id: "PluginToolPolicy" },
+);
+
+const PluginIdPattern = "^[A-Za-z0-9._~:@-]{1,253}$";
+const PluginToolPolicyMapSchema = Type.Unsafe({
+  type: "object",
+  description:
+    "Plugin tool policy map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$.",
+  propertyNames: { pattern: PluginIdPattern },
+  additionalProperties: false,
+  patternProperties: {
+    [PluginIdPattern]: Type.Ref("PluginToolPolicy"),
+  },
+});
+
+export const PluginDesiredSelectionSchema = Type.Object(
+  {
+    enabled: Type.Boolean(),
+    approvalMode: PluginApprovalModeSchema,
+    approvalsReviewer: Type.Optional(PluginApprovalsReviewerSchema),
+    destructiveActions: Type.Optional(PluginApprovalModeSchema),
+    writes: Type.Optional(PluginApprovalModeSchema),
+    tools: Type.Optional(PluginToolPolicyMapSchema),
+  },
+  { additionalProperties: false, $id: "PluginDesiredSelection" },
+);
+
+export const PluginDesiredStateSchema = Type.Unsafe({
+  $id: "PluginDesiredState",
+  type: "object",
+  description:
+    "Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$.",
+  propertyNames: { pattern: PluginIdPattern },
+  additionalProperties: false,
+  patternProperties: {
+    [PluginIdPattern]: Type.Ref("PluginDesiredSelection"),
+  },
+});
 
 export const ConfigurationSchema = Type.Object(
   {
@@ -78,6 +130,15 @@ export const SecretSchema = Type.Object(
     namespaceId: NamespaceId,
     name: Name,
     ref: SecretReference,
+  },
+  { additionalProperties: false },
+);
+
+export const AgentRuntimeCredentialStatusSchema = Type.Object(
+  {
+    transportConfigured: Type.Boolean(),
+    modelConfigured: Type.Boolean(),
+    slackConfigured: Type.Boolean(),
   },
   { additionalProperties: false },
 );
@@ -140,6 +201,11 @@ export const AgentResponse = Type.Object(
   { additionalProperties: false },
 );
 
+export const AgentRuntimeCredentialResponse = Type.Object(
+  { data: AgentRuntimeCredentialStatusSchema, meta: Meta },
+  { $id: "AgentRuntimeCredentialResponse", additionalProperties: false },
+);
+
 export const AgentListResponse = Type.Object(
   { data: Type.Array(AgentSchema), meta: Meta },
   { additionalProperties: false },
@@ -175,6 +241,15 @@ export const AgentRevisionSchema = Type.Object(
     ),
     secretDriverId: Type.Optional(Type.String({ minLength: 1 })),
     secretBindings: Type.Optional(SecretBindings),
+    plugins: Type.Optional(
+      Type.Object(
+        {
+          driver: Type.Ref("PluginDriverIdentity"),
+          plugins: Type.Ref("PluginDesiredState"),
+        },
+        { additionalProperties: false },
+      ),
+    ),
     serviceAccount: Type.Optional(
       Type.Object(
         {
@@ -240,6 +315,9 @@ export type SecretWire = Type.Static<typeof SecretSchema>;
 export type ServiceAccountWire = Type.Static<typeof ServiceAccountSchema>;
 export type ProviderSummaryWire = Type.Static<typeof ProviderSummarySchema>;
 export type AgentWire = Type.Static<typeof AgentSchema>;
+export type AgentRuntimeCredentialStatusWire = Type.Static<
+  typeof AgentRuntimeCredentialStatusSchema
+>;
 export type AgentRevisionWire = Type.Static<typeof AgentRevisionSchema>;
 export type InstallationResponse = Type.Static<typeof InstallationResponse>;
 export type NamespaceResponse = Type.Static<typeof NamespaceResponse>;
@@ -249,6 +327,7 @@ export type SecretResponse = Type.Static<typeof SecretResponse>;
 export type ServiceAccountResponse = Type.Static<typeof ServiceAccountResponse>;
 export type ServiceAccountListResponse = Type.Static<typeof ServiceAccountListResponse>;
 export type AgentResponse = Type.Static<typeof AgentResponse>;
+export type AgentRuntimeCredentialResponse = Type.Static<typeof AgentRuntimeCredentialResponse>;
 export type AgentListResponse = Type.Static<typeof AgentListResponse>;
 export type ProviderListResponse = Type.Static<typeof ProviderListResponse>;
 export type AgentRevisionResponse = Type.Static<typeof AgentRevisionResponse>;

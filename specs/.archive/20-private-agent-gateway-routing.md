@@ -100,10 +100,10 @@ exact workload selectors; public exposure is not part of this integration.
 3. Add opt-in [Helm](../../deploy/helm/openclaw-enterprise) infrastructure, API-only
    credential/trust mounts, restricted route attachment, RBAC, and networking.
 4. Update [Agents](../../docs/reference/agents.md#workspace-files),
-   [deployment](../../docs/guides/deploy.md#agent-workspace-files),
+   [deployment](../../docs/guides/deploy/workspace-routing.md#agent-workspace-files),
    [settings](../../docs/reference/settings.md), [Compute](../../docs/reference/drivers/compute.md),
    [Kubernetes Compute](../../docs/reference/drivers/kubernetes-compute.md), and
-   [testing](../../docs/testing.md). Replace the hand-built proxy proof with the
+   [testing](../../docs/testing/README.md). Replace the hand-built proxy proof with the
    actual Envoy Gateway and cert-manager path.
 
 ## Verification

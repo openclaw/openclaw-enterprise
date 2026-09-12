@@ -155,22 +155,7 @@ admission, association, deletion, and revision snapshots. The
 owns private upstream bindings and compensation; the
 [worker](../../apps/controller/src/worker.ts) reauthorizes the deployment actor.
 
-[API integration tests](../../tests/integration/occ-api.test.mjs) cover native
-references, immutable revision snapshots, and Namespace-scoped access.
-[Driver conformance tests](../../tests/conformance/service-account-driver.test.mjs)
-cover authorized lifecycle, transaction-failure compensation, and execution-mode
-admission. These checks do not establish live provider or Kubernetes behavior.
-
-The [real provider integration](../../tests/integration/service-account-driver-real.test.mjs)
-creates a provider account, issues a credential, and runs dedicated Codex without
-`OPENAI_API_KEY`. It requires explicit opt-in, a protected admin-key file,
-authorized workspace, disposable Kubernetes context, digest-pinned images, and
-a migrated disposable PostgreSQL database; missing selected prerequisites fail.
-The [real harness integration](../../tests/integration/harness-topology-k3d-real.test.mjs)
-separately covers native API-key Codex and embedded OpenClaw execution. See the
-[integration instructions](../../AGENTS.md#running-integration-tests) for execution
-requirements.
-
+- [Service-account testing](../testing/service-accounts.md)
 - [ServiceAccountDriver contract](drivers/service-account.md)
 - [Kubernetes Compute reference](drivers/kubernetes-compute.md)
 - [Authorization](authorization.md)

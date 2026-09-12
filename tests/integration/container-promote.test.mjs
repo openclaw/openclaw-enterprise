@@ -14,7 +14,7 @@ const env = {
   SOURCE_SHA: sourceSha,
   PUBLICATION_RUN_ID: "123",
   PUBLICATION_ATTEMPT: "2",
-  NODE_BASE_IMAGE: `node:24-bookworm@${digest}`,
+  NODE_BASE_IMAGE: `docker.io/library/node:24-bookworm@${digest}`,
 };
 
 test("Docker Hub promotion rejects receipts from another source, CI run or publication attempt", () => {
@@ -38,7 +38,7 @@ test("Docker Hub promotion rejects receipts from another source, CI run or publi
     { sourceSha: "d".repeat(40) },
     { attempt: "3" },
     { ciRunId: "789" },
-    { nodeBaseImage: "node:24" },
+    { nodeBaseImage: "docker.io/library/node:24" },
     { tag: "latest" },
     { destination: receipt[0].destination },
   ]) {

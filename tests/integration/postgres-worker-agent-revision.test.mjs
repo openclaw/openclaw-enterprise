@@ -254,6 +254,63 @@ test(
 );
 
 test(
+  "development workers run supplied after-commit activation hooks and retry incomplete finalization",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context);
+    const owner = await fixture.agent("development-after-commit", "dedicated");
+    const candidate = await fixture.revision(owner, 1);
+    const activations = [];
+    let failed = false;
+
+    async function activeRevision() {
+      const current = await fixture.observerPool.query(
+        "SELECT active_revision_id FROM occ.agents WHERE namespace_id = $1 AND id = $2",
+        [fixture.namespace.id, owner.id],
+      );
+      assert.equal(current.rowCount, 1);
+      return current.rows[0].active_revision_id;
+    }
+
+    await fixture.start({
+      ...fixture.compute,
+      async activateRevision(revision, activationContext) {
+        activations.push({
+          revisionId: revision.id,
+          activeRevisionId: await activeRevision(),
+          secretEnvironment: activationContext?.secretEnvironment ?? null,
+        });
+        if (!failed) {
+          failed = true;
+          throw new Error("route publication failed");
+        }
+      },
+    });
+
+    const completed = await fixture.work(candidate, "succeeded");
+    // Incomplete finalization requeues the same claim without spending an
+    // attempt, but the second activation call proves the recovery pass ran.
+    assert.equal(completed.attempt_count, 1);
+    assert.equal(await activeRevision(), candidate.id);
+    assert.deepEqual(
+      activations.filter(({ revisionId }) => revisionId === candidate.id),
+      [
+        { revisionId: candidate.id, activeRevisionId: candidate.id, secretEnvironment: [] },
+        { revisionId: candidate.id, activeRevisionId: candidate.id, secretEnvironment: [] },
+      ],
+    );
+
+    const activation = await fixture.observerPool.query(
+      `SELECT resource_id
+       FROM occ.audit_events
+       WHERE namespace_id = $1 AND action = 'openclaw.agents.lifecycle.activate'`,
+      [fixture.namespace.id],
+    );
+    assert.deepEqual(activation.rows, [{ resource_id: candidate.id }]);
+  },
+);
+
+test(
   "the revision worker activates admitted candidates, retires predecessors, and rejects revoked, malformed, and wrong-owner effects",
   requiresPostgres,
   async (context) => {

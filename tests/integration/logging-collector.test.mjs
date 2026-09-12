@@ -14,7 +14,7 @@ const { loadYaml } = createRequire(new URL("../../apps/controller/package.json",
 
 const exec = promisify(execFile);
 const selected = process.env.OCC_TEST_LOGGING_COLLECTOR === "1";
-const nodeImage = process.env.OCC_TEST_LOGGING_NODE_IMAGE ?? "node:24-bookworm";
+const nodeImage = process.env.OCC_TEST_LOGGING_NODE_IMAGE ?? "docker.io/library/node:24-bookworm";
 const root = new URL("../../", import.meta.url).pathname;
 
 async function docker(args) {

@@ -1,4 +1,4 @@
-FROM node:24-bookworm
+FROM docker.io/library/node:24-bookworm
 
 COPY --chown=node:node server.mjs probe.mjs /fixture/
 

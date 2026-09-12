@@ -157,6 +157,12 @@ export async function composePostgresDevelopment(
         throw new Error("The selected Secret Driver was not selected correctly.");
       }
     }
+    if (drivers?.pluginDriver !== undefined) {
+      controller.registerDriver(drivers.pluginDriver);
+      if (controller.selectDriver("plugin", drivers.pluginDriver.id) !== drivers.pluginDriver) {
+        throw new Error("The configured Plugin Driver was not selected correctly.");
+      }
+    }
     serviceAccountDriverFactory?.(controller, state);
     await controller.validateProviderConfiguration();
 

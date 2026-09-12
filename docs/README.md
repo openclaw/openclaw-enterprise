@@ -1,68 +1,46 @@
 # OpenClaw Enterprise
 
-OpenClaw Enterprise is the open platform for managing agents.
+Deploy and manage Agents through OpenClaw Control Plane (OCC).
+Start locally, install a production control plane, or look up supported behavior.
 
 ## Start and deploy
 
-- [Concepts](guides/concepts.md): understand tenancy, Agents, execution, configuration, and access.
-- [Quickstart](guides/quickstart.md): start locally, sign in, and make an authenticated request.
-- [Deploy](guides/deploy.md): configure Docker Compose or Kubernetes, verify your deployment, run the development end-to-end TUI proof, and troubleshoot startup.
-- [Observability](guides/observability.md): configure operational log export, Collector metrics, and delivery checks.
-- [Testing](testing.md): choose test suites, prepare credentials and infrastructure, and interpret results.
-
-## Architecture
-
-- [Platform design](design.md): platform architecture and resource model.
-- [Current architecture](ARCHITECTURE.md): API, worker, storage, and Agent execution.
+- [Quickstart](guides/quickstart.md): start locally on Docker or Podman, sign in,
+  and verify API access.
+- [Deploy](guides/deploy.md): choose a deployment and follow its installation steps.
+- [Concepts](guides/concepts.md): understand Namespaces, Agents, revisions, and credentials.
+- [Observability](guides/observability.md): export logs and check Collector health.
 
 ## Reference
 
-- [Platform console](reference/console.md): sign in, select Namespaces, browse
-  accessible resources, create Agents with editable Configuration JSON, and edit
-  supported channel draft settings at `/console/`.
+Use the [feature and Driver index](reference/README.md) for supported behavior,
+configuration, and limits. The [HTTP API](reference/api.md) describes request and
+response schemas. The [console guide](reference/console.md) covers browser tasks.
+[Agent plugins](reference/agent-plugins.md) and
+[PluginDriver](reference/drivers/plugin.md) cover curated plugin selection, startup
+validation, and native runtime policy.
 
-- [Reference index](reference/README.md): browse all features and Drivers.
-- [Namespaces](reference/namespaces.md), [Agents](reference/agents.md), and
-  [Configuration](reference/configuration.md): create, organize, and configure Agents.
-- [Agent workspace files](reference/agents.md#workspace-files): read and replace four native Agent workspace files.
-- [Gateway routing with Envoy](reference/gateway-routing.md): private routes, service-key bootstrap, TLS, and network enforcement.
-- [Kubernetes Secret Driver](reference/drivers/kubernetes-secret.md): store Secrets
-  and bind them to selected Agent gateways.
-- [Authentication](reference/authentication.md),
-  [Authorization](reference/authorization.md), and
-  [Service accounts](reference/service-accounts.md): sign-in, permissions, and credentials.
-- [Providers](reference/providers.md): authenticated clients, related Drivers,
-  optional Agent association, and safe configuration changes.
-- [Harness execution](reference/harness-execution.md) and
-  [Controller reconciliation](reference/controller.md): runtime topology, deployment,
-  and revision activation.
-- [Security controls](reference/security.md), [settings](reference/settings.md),
-  and [HTTP API](reference/api.md): access controls, deployment configuration, operational logging, and request schemas.
-- [Drivers](reference/README.md#drivers): select and configure compute, configuration,
-  identity, and Secret implementations.
+## Architecture
+
+Read [current architecture](ARCHITECTURE.md) for implemented components and
+ownership. The [platform design](design.md) describes the authoritative target,
+including capabilities that have not shipped.
 
 ## Understand the code
 
-- [GitHub Actions test execution](flows/github-actions-testing.md): five PR-safe lanes, protected integrations, disposable resources, case accounting, and cleanup.
-- [Docker Compose development](flows/docker-compose-development.md),
-  [production startup](flows/production-startup.md),
-  [production TUI attachment](flows/production-tui.md), and
-  [shared platform startup](flows/platform-startup.md).
-- [Platform console requests](flows/platform-console.md).
-- [Controller worker](flows/controller-worker.md),
-  [Harness execution and shared storage](flows/harness-execution-topology.md), and
-  [common operational logging](flows/common-logging.md).
-- [Configuration and Agent revision](flows/configuration-driver.md),
-  [Secret storage and gateway delivery](flows/secret-storage-and-delivery.md),
-  [Driver loading](flows/driver-plugin-loading.md), and
-  [Compute lifecycle hooks](flows/compute-driver-lifecycle-hooks.md).
-- [Local password authentication](flows/local-password-authentication.md),
-  [service API keys](flows/service-api-keys.md),
-  [native credential delivery](flows/native-service-account-credential-delivery.md),
-  and [Driver-issued credentials](flows/service-account-driver-credential-delivery.md).
-- [Existing Kubernetes namespace placement](flows/kubernetes-existing-namespace-placement.md).
-- [Agent workspace files](flows/workspace-files.md).
+Start with [Docker or Podman Compose development](flows/docker-compose-development.md),
+[platform startup](flows/platform-startup.md), or the
+[controller worker](flows/controller-worker.md). The **Understand the code** tab
+lists runtime traces for authentication, configuration, Drivers, and Agent execution.
+The [Agent plugin flow](flows/agent-plugins.md) traces desired state through
+revision startup and runtime configuration.
+
+## Contribute
+
+- [Testing](testing/README.md): select a suite and prepare its environment.
+- [Local preview](local-preview.md): render and validate documentation.
 
 ## Implementation history
 
-[Spec archive](../specs/README.md): proposals, delivery records, and recorded statuses.
+The [spec archive](../specs/README.md) preserves proposals and delivery records.
+Recorded statuses do not replace current feature reference.

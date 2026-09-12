@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+: "${OCC_SSH_FIXTURE_STATE:?fixture state required}"
+name=${1:-}
+file="$OCC_SSH_FIXTURE_STATE/accounts/groups/$name"
+[ -f "$file" ] || exit 1
+if [ -f "$OCC_SSH_FIXTURE_STATE/groupdel.fail" ]; then
+  rm -f "$OCC_SSH_FIXTURE_STATE/groupdel.fail"
+  exit 1
+fi
+rm -f "$file"
+printf 'groupdel %s\n' "$name" >> "$OCC_SSH_FIXTURE_STATE/accounts.log"

@@ -297,7 +297,7 @@ test(
         "mutable Collector image",
         {
           ...loggingValues,
-          "logging.collector.image": "otel/opentelemetry-collector-contrib:0.159.0",
+          "logging.collector.image": "docker.io/otel/opentelemetry-collector-contrib:0.159.0",
         },
       ],
       [

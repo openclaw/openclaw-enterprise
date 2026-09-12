@@ -176,6 +176,30 @@ export const UpdateSecretBody = Type.Object(
   { additionalProperties: false },
 );
 
+export const RuntimeCredentialValue = Type.String({
+  minLength: 1,
+  maxLength: 65536,
+  pattern: "^[^\\u0000]*$",
+  description:
+    "Protected Agent runtime credential value. OCC accepts at most 65,536 UTF-8 bytes and never returns the value.",
+});
+
+export const AgentRuntimeCredentialsBody = Type.Object(
+  {
+    modelApiKey: Type.Optional(RuntimeCredentialValue),
+    slack: Type.Optional(
+      Type.Object(
+        {
+          appToken: RuntimeCredentialValue,
+          botToken: RuntimeCredentialValue,
+        },
+        { additionalProperties: false },
+      ),
+    ),
+  },
+  { additionalProperties: false },
+);
+
 export const CreateConfigurationBody = Type.Object(
   {
     kind: ConfigurationKindSchema,
@@ -233,6 +257,7 @@ export const CreateAgentBody = Type.Object(
     providerId: Type.Optional(Type.Union([ProviderId, Type.Null()])),
     serviceAccountId: Type.Optional(ServiceAccountId),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
+    plugins: Type.Optional(Type.Ref("PluginDesiredState")),
   },
   { additionalProperties: false },
 );
@@ -243,6 +268,7 @@ export const UpdateAgentBody = Type.Object(
     providerId: Type.Optional(Type.Union([ProviderId, Type.Null()])),
     serviceAccountId: Type.Optional(Type.Union([ServiceAccountId, Type.Null()])),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
+    plugins: Type.Optional(Type.Ref("PluginDesiredState")),
   },
   { additionalProperties: false },
 );
@@ -258,6 +284,18 @@ export const UpdateWorkspaceFileBody = Type.Object(
   },
   { additionalProperties: false },
 );
+
+export const PluginApprovalModeSchema = Type.Union([
+  Type.Literal("always"),
+  Type.Literal("never"),
+  Type.Literal("prompt"),
+  Type.Literal("auto"),
+]);
+
+export const PluginApprovalsReviewerSchema = Type.Union([
+  Type.Literal("user"),
+  Type.Literal("auto_review"),
+]);
 
 export const ERROR_DETAIL_CODES = Object.freeze([
   "REQUIRED",
@@ -282,6 +320,7 @@ export const ERROR_CODES = Object.freeze([
   "PAYLOAD_TOO_LARGE",
   "UNSUPPORTED_MEDIA_TYPE",
   "UNKNOWN_OUTCOME",
+  "NOT_IMPLEMENTED",
   "INTERNAL_ERROR",
   "DEPENDENCY_UNAVAILABLE",
 ] as const);
@@ -322,6 +361,7 @@ export const ErrorResponse = Type.Object(
           Type.Literal("PAYLOAD_TOO_LARGE"),
           Type.Literal("UNSUPPORTED_MEDIA_TYPE"),
           Type.Literal("UNKNOWN_OUTCOME"),
+          Type.Literal("NOT_IMPLEMENTED"),
           Type.Literal("INTERNAL_ERROR"),
           Type.Literal("DEPENDENCY_UNAVAILABLE"),
         ]),
@@ -358,6 +398,7 @@ export type SecretParams = Type.Static<typeof SecretParams>;
 export type AgentParams = Type.Static<typeof AgentParams>;
 export type RevisionParams = Type.Static<typeof RevisionParams>;
 export type WorkspaceFileName = Type.Static<typeof WorkspaceFileName>;
+export type AgentRuntimeCredentialsBody = Type.Static<typeof AgentRuntimeCredentialsBody>;
 export type WorkspaceFileParams = Type.Static<typeof WorkspaceFileParams>;
 export type ConfigurationValues = Type.Static<typeof ConfigurationValues>;
 export type CreateSecretBody = Type.Static<typeof CreateSecretBody>;

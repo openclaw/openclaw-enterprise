@@ -53,7 +53,7 @@ migrates it with its migrator credentials, starts the session-authenticated OCC
 API, and starts the worker after the controller is healthy. On a fresh database,
 the controller provisions the configured development administrator account,
 signs in using `OPENCLAW_DEV_EMAIL` and `OPENCLAW_DEV_PASSWORD`, sends its
-Better Auth session cookie to the existing `POST /installation/bootstrap`
+user session cookie to the existing `POST /installation/bootstrap`
 route, and creates the first Installation with
 `OPENCLAW_DEV_INSTALLATION_NAME`. Existing databases are not re-bootstrapped,
 and development does not generate, print, or write a password.
@@ -77,7 +77,7 @@ separation, and migration tooling rather than introducing a second database.
 The API listens on its container interface and publishes its port exclusively
 on host `127.0.0.1`. Compose explicitly configures its management bridge CIDR;
 development admission accepts only direct socket addresses in that CIDR or
-loopback while retaining loopback host/origin validation, Better Auth
+loopback while retaining loopback host/origin validation, user
 session authentication, exact-resource authorization, and rejection of
 forwarded headers. Runtime containers join only their Namespace network, not
 the control-plane management network. Only the worker receives Docker Engine

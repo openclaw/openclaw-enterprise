@@ -1,17 +1,20 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, relative } from "node:path";
+import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { format, resolveConfig } from "prettier";
 
 import { createFastifyApp } from "../apps/controller/src/index.ts";
-import { generateApiReference } from "./generate-occ-api-reference.mjs";
+import {
+  generateApiReferenceOutputs,
+  removeGeneratedApiReferenceDirectory,
+  unexpectedApiReferenceFiles,
+} from "./generate-occ-api-reference.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const outputPath = fileURLToPath(
   new URL("../packages/contracts/openapi/occ-api.openapi.json", import.meta.url),
 );
-const referencePath = fileURLToPath(new URL("../docs/reference/api.md", import.meta.url));
 const documentationInstallationId = "ins_6054d30d-0f89-4cd0-aa56-2b76e3c5fb52";
 
 function sortKeys(value) {
@@ -56,14 +59,19 @@ if (arguments_.length > 1 || (arguments_.length === 1 && arguments_[0] !== "--ch
 }
 
 const document = await generateDocument();
+const referenceOutputs = generateApiReferenceOutputs(JSON.parse(document));
 const outputs = [
   { label: "OpenAPI contract", path: outputPath, content: document },
-  {
-    label: "API reference",
-    path: referencePath,
-    content: generateApiReference(JSON.parse(document)),
-  },
+  ...referenceOutputs.map((output) => ({
+    label: output.label,
+    path: resolve(repositoryRoot, output.path),
+    content: output.content,
+  })),
 ];
+
+if (arguments_[0] !== "--check") {
+  await removeGeneratedApiReferenceDirectory();
+}
 
 for (const output of outputs) {
   const outputName = relative(repositoryRoot, output.path);
@@ -87,5 +95,14 @@ for (const output of outputs) {
     await mkdir(dirname(output.path), { recursive: true });
     await writeFile(output.path, output.content, "utf8");
     process.stdout.write(`Generated ${output.label}: ${outputName}\n`);
+  }
+}
+
+if (arguments_[0] === "--check") {
+  const unexpected = await unexpectedApiReferenceFiles(referenceOutputs);
+  if (unexpected.length) {
+    throw new Error(
+      `Unexpected generated API reference file: ${unexpected.join(", ")}; run pnpm openapi:generate.`,
+    );
   }
 }

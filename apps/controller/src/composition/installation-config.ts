@@ -11,6 +11,7 @@ import type {
   IAMDriver,
   ProviderDefinition,
   ProviderSummary,
+  PluginDriver,
   SandboxDriver,
   SecretDriver,
 } from "@openclaw-enterprise/contracts";
@@ -26,6 +27,7 @@ import {
   type KubernetesComputeDriverOptions,
 } from "../drivers/compute/kubernetes/index.ts";
 import { currentComputeAbortSignal } from "../drivers/compute/operation-context.ts";
+import { SshComputeDriver, type SshComputeDriverOptions } from "../drivers/compute/ssh/index.ts";
 import {
   KubernetesConfigurationDriver,
   type KubernetesConfigurationDriverOptions,
@@ -35,6 +37,7 @@ import {
   type KubernetesSecretDriverOptions,
 } from "../drivers/secret/kubernetes/index.ts";
 import { type LoggingConfiguration, operationalLoggingConfiguration } from "../logging.ts";
+import { OCCPluginDriver, CodexPluginDriver } from "../drivers/plugin/index.ts";
 
 type ConfigurationRecord = Readonly<Record<string, unknown>>;
 
@@ -60,6 +63,7 @@ export interface InstallationStartupConfiguration {
     readonly compute: SelectedDriverConfiguration;
     readonly secret: SelectedDriverConfiguration;
     readonly sandbox?: SelectedDriverConfiguration;
+    readonly plugin?: SelectedDriverConfiguration;
     readonly service_account?: { readonly id: string };
   };
 }
@@ -75,6 +79,7 @@ export interface InstallationRuntimeDrivers {
   readonly configurationDriver: ConfigurationDriver;
   readonly secretDriver: SecretDriver;
   readonly sandboxDriver?: SandboxDriver;
+  readonly pluginDriver?: PluginDriver;
   readonly createIAMDriver: (state: NativeIAMStateStore) => IAMDriver;
 }
 
@@ -376,7 +381,7 @@ async function loadDriverPackage(
 
 function selected(
   value: unknown,
-  capability: "configuration" | "iam" | "compute" | "secret" | "sandbox",
+  capability: "configuration" | "iam" | "compute" | "secret" | "sandbox" | "plugin",
   implementation: string,
   driver: DriverImplementation,
 ): SelectedDriverConfiguration {
@@ -448,7 +453,7 @@ export async function loadInstallationConfiguration(options: {
   const drivers = object(configuration.drivers, "drivers");
   closed(
     drivers,
-    ["configuration", "iam", "compute", "secret", "sandbox", "service_account"],
+    ["configuration", "iam", "compute", "secret", "sandbox", "plugin", "service_account"],
     "drivers",
   );
 
@@ -471,6 +476,32 @@ export async function loadInstallationConfiguration(options: {
   const secretSelection = object(drivers.secret, "drivers.secret");
   const sandboxSelection =
     drivers.sandbox === undefined ? undefined : object(drivers.sandbox, "drivers.sandbox");
+  const pluginSelection =
+    drivers.plugin === undefined ? undefined : object(drivers.plugin, "drivers.plugin");
+  if (pluginSelection !== undefined) {
+    closed(pluginSelection, ["id", "configuration"], "drivers.plugin");
+    if (pluginSelection.id !== "occ-plugin" && pluginSelection.id !== "codex-plugin") {
+      throw new Error("drivers.plugin.id must select occ-plugin or codex-plugin.");
+    }
+  }
+  const PluginImplementation =
+    pluginSelection?.id === "codex-plugin" ? CodexPluginDriver : OCCPluginDriver;
+  const plugin =
+    pluginSelection === undefined
+      ? undefined
+      : selected(
+          pluginSelection,
+          "plugin",
+          pluginSelection.id === "codex-plugin" ? "occ/codex-plugin" : "occ/openclaw-plugin",
+          PluginImplementation,
+        );
+  const pluginDriver =
+    plugin === undefined
+      ? undefined
+      : new PluginImplementation(plugin.configuration, {
+          id: plugin.id,
+          implementation: plugin.implementation,
+        });
   for (const [capability, selection] of [
     ["configuration", configurationSelection],
     ["iam", iamSelection],
@@ -506,6 +537,13 @@ export async function loadInstallationConfiguration(options: {
     packageRoot,
     options.packageRoot !== undefined,
   );
+  const sshCompute = computePackage === undefined && computeSelection.id === "compute-ssh";
+  const kubernetesCompute = computePackage === undefined && !sshCompute;
+  if (sshCompute && sandboxSelection !== undefined) {
+    throw new Error(
+      "drivers.sandbox is unsupported with compute-ssh; it requires the bundled Kubernetes Compute Driver.",
+    );
+  }
   const sandboxPackage =
     sandboxSelection === undefined
       ? undefined
@@ -535,8 +573,8 @@ export async function loadInstallationConfiguration(options: {
   const compute = selected(
     computeSelection,
     "compute",
-    computePackage?.implementation ?? "occ/kubernetes",
-    computePackage?.module ?? KubernetesComputeDriver,
+    computePackage?.implementation ?? (sshCompute ? "occ/ssh" : "occ/kubernetes"),
+    computePackage?.module ?? (sshCompute ? SshComputeDriver : KubernetesComputeDriver),
   );
   const secret = selected(
     secretSelection,
@@ -556,7 +594,7 @@ export async function loadInstallationConfiguration(options: {
   if (sandbox !== undefined && computePackage !== undefined) {
     throw new Error("drivers.sandbox requires the bundled Kubernetes Compute Driver.");
   }
-  if (options.mode === "production" && computePackage === undefined) {
+  if (options.mode === "production" && kubernetesCompute) {
     const kubernetes = compute.configuration as unknown as KubernetesComputeDriverOptions;
     if (kubernetes.images.requireImmutableDigest !== true) {
       throw new Error("Production Kubernetes workloads require immutable image digests.");
@@ -580,6 +618,7 @@ export async function loadInstallationConfiguration(options: {
       compute,
       secret,
       ...(sandbox === undefined ? {} : { sandbox }),
+      ...(plugin === undefined ? {} : { plugin }),
       ...(serviceAccount === undefined ? {} : { service_account: serviceAccount }),
     }),
   });
@@ -605,18 +644,33 @@ export async function loadInstallationConfiguration(options: {
               implementation: sandbox.implementation,
             })
           : (createExternalDriver(sandboxPackage.module, sandbox, "sandbox") as SandboxDriver);
-  const computeDriver =
-    computePackage === undefined
-      ? new KubernetesComputeDriver(
-          compute.configuration as unknown as KubernetesComputeDriverOptions,
-          {
-            id: compute.id,
-            implementation: compute.implementation,
-            lifecycleDrivers: [configurationDriver],
-            ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
-          },
-        )
-      : (createExternalDriver(computePackage.module, compute, "compute") as ComputeDriver);
+  let computeDriver: ComputeDriver;
+  if (computePackage !== undefined) {
+    computeDriver = createExternalDriver(
+      computePackage.module,
+      compute,
+      "compute",
+    ) as ComputeDriver;
+  } else if (sshCompute) {
+    computeDriver = new SshComputeDriver(
+      compute.configuration as unknown as SshComputeDriverOptions,
+      {
+        id: compute.id,
+        implementation: compute.implementation,
+        lifecycleDrivers: [configurationDriver],
+      },
+    );
+  } else {
+    computeDriver = new KubernetesComputeDriver(
+      compute.configuration as unknown as KubernetesComputeDriverOptions,
+      {
+        id: compute.id,
+        implementation: compute.implementation,
+        lifecycleDrivers: [configurationDriver],
+        ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
+      },
+    );
+  }
   const secretDriver = new KubernetesSecretDriver(
     secret.configuration as unknown as KubernetesSecretDriverOptions,
     { id: secret.id, implementation: secret.implementation },
@@ -642,6 +696,7 @@ export async function loadInstallationConfiguration(options: {
     secretDriver,
     ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
     createIAMDriver,
+    ...(pluginDriver === undefined ? {} : { pluginDriver }),
   });
 }
 

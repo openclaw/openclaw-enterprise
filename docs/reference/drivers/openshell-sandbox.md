@@ -111,9 +111,7 @@ drivers:
 ```
 
 The OpenShell gateway must be installed separately before this driver's
-`ensureNamespace` runs. The bundled driver does not install the gateway; the
-real integration test uses an operator-owned Helm wrapper to install it before
-delegating to the driver.
+`ensureNamespace` runs. The bundled driver does not install the gateway.
 
 `gateway.networkPolicyResources` accepts namespace-scoped Kubernetes resource
 objects for provider networking. They are applied into the OpenClaw Namespace
@@ -185,16 +183,16 @@ depends on upstream/provider behavior matching this contract:
 - OpenShell must preserve the Harness's exact audience-bound, short-lived
   projected ServiceAccount token and read-only mount. Its gateway bootstrap
   token is not a substitute. Stock OpenShell `v0.0.113` does not support
-  projected volumes in gateway driver configuration; the real k3d integration
-  uses a test-only, operator-owned Sandbox Pod-template patch until upstream
-  projected-volume support exists.
+  projected volumes in gateway driver configuration. Until upstream
+  projected-volume support exists, local verification may require an
+  operator-owned template bridge; that bridge is not production support.
 - OpenShell must preserve all approved Agent workspace PVC subpath mounts
   without falling back to its default workspace claim or mounting the PVC root.
 - OpenShell must support exact environment entries backed by Kubernetes
   `secretKeyRef`, including the startup app-server token Secret. Stock
   OpenShell `v0.0.113` cannot receive those entries through the current gateway
-  API; the real k3d integration uses a test-only credential bridge until
-  upstream secret support exists.
+  API. Until upstream secret support exists, local verification may require a
+  credential bridge; that bridge is not production support.
 - OpenShell gateway authentication must be bound to the trusted caller and the
   requested Sandbox or Pod identity.
 
@@ -202,24 +200,7 @@ If any of these conditions are unavailable, OpenShell-selected deployments must
 fail closed instead of launching an unsandboxed or incorrectly credentialed
 Harness.
 
-## Verification evidence
-
-[Sandbox startup integration](../../../tests/integration/sandbox-driver-startup.test.mjs),
-[controller lifecycle integration](../../../tests/integration/controller-lifecycle.test.mjs),
-and [PostgreSQL integration](../../../tests/integration/postgres-platform-state.test.mjs)
-cover selection, revision lifecycle, and persistence.
-
-[Real OpenShell integration](../../../tests/integration/sandbox-driver-openshell-k3d-real.test.mjs)
-is opt-in through `OCC_TEST_OPENSHELL_K3D_REAL=1` and is skipped without the
-explicit prerequisites.
-
-That test requires a disposable k3d setup, PostgreSQL, OpenShell CLI or Helm
-inputs, real OpenClaw and Codex images, an approved OpenShell RuntimeClass or
-equivalent admission setup, and a real provider credential. It verifies a real
-gateway model turn, provider-owned Harness creation, exact projected workload
-identity, approved mounts and privileges, denied secret exposure, allowed and
-denied tool egress, duplicate reconciliation convergence, cleanup, and
-embedded-mode fail-closed behavior.
+## Troubleshooting
 
 Common fail-closed errors include:
 
@@ -233,6 +214,7 @@ Common fail-closed errors include:
 
 - [Development and production deployment](../../guides/deploy.md)
 
+- [OpenShell testing](../../testing/openshell.md)
 - [SandboxDriver contract](sandbox.md)
 - [ComputeDriver contract](compute.md)
 - [Kubernetes ComputeDriver](kubernetes-compute.md)

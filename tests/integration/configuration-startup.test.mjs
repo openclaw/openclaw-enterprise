@@ -575,11 +575,13 @@ test("startup rejects plaintext secrets, caller-authored identities, and unsuppo
       /schema|integer|port/,
     ],
     [
-      (value) => (value.drivers.compute.configuration.images.gateway = "gateway:latest"),
+      (value) =>
+        (value.drivers.compute.configuration.images.gateway = "registry.example/gateway:latest"),
       /immutable SHA-256 digest/,
     ],
     [
-      (value) => (value.drivers.compute.configuration.images.agent = "agent:latest"),
+      (value) =>
+        (value.drivers.compute.configuration.images.agent = "registry.example/agent:latest"),
       /immutable SHA-256 digest/,
     ],
     [

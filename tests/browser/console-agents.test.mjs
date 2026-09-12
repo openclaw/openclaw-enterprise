@@ -21,7 +21,7 @@ async function artifactDirectory(t) {
   return directory;
 }
 
-async function launchBrowser(t) {
+async function launchBrowser() {
   const browserExecutable =
     process.env.OCC_TEST_BROWSER_EXECUTABLE === undefined ||
     process.env.OCC_TEST_BROWSER_EXECUTABLE.length === 0
@@ -31,15 +31,29 @@ async function launchBrowser(t) {
     ...(browserExecutable === undefined ? {} : { executablePath: browserExecutable }),
     headless: true,
   });
-  t.after(() => browser.close());
   return browser;
 }
 
-async function newPage(t) {
+async function newPage(t, fixture) {
   const artifacts = await artifactDirectory(t);
-  const browser = await launchBrowser(t);
-  const context = await browser.newContext();
-  t.after(() => context.close());
+  const browser = await launchBrowser();
+  let context;
+  fixture.registerCleanupBeforeAppClose(async () => {
+    let cleanupError;
+    try {
+      await context?.close();
+    } catch (error) {
+      cleanupError ??= error;
+    } finally {
+      try {
+        await browser.close();
+      } catch (error) {
+        cleanupError ??= error;
+      }
+    }
+    if (cleanupError) throw cleanupError;
+  });
+  context = await browser.newContext();
   return { page: await context.newPage(), artifacts };
 }
 
@@ -151,7 +165,7 @@ test("Agent creation saves native Configuration JSON and a draft Agent without a
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Agent authoring", { ready: true });
   const values = nativeValues("create", { harnessId: "codex", providerModel: "gpt-5.1" });
-  const { page } = await newPage(t);
+  const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
 
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
@@ -245,7 +259,7 @@ test("Agent creation rejects non-object native Configuration JSON before any wri
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Invalid JSON", { ready: true });
-  const { page } = await newPage(t);
+  const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
 
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
@@ -279,7 +293,7 @@ test("Agent creation renders provider and service account choices and saves sele
     "Console Secondary Account",
   );
   const values = nativeValues("dropdown", { harnessId: "codex", providerModel: "gpt-5.1" });
-  const { page } = await newPage(t);
+  const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
 
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
@@ -345,7 +359,7 @@ test("Agent creation leaves optional lists disabled when discovery is inaccessib
   const fixture = await createConsoleAppFixture(t, { providerSummaries: undefined });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Unavailable lists", { ready: true });
-  const { page } = await newPage(t);
+  const { page } = await newPage(t, fixture);
   const serviceAccounts = `**/namespaces/${namespace.id}/service-accounts`;
   await page.route(serviceAccounts, async (route) => {
     await route.abort("failed");
@@ -367,7 +381,7 @@ test("Agent creation reuses the saved Configuration after an Agent creation conf
   const namespace = await fixture.createNamespace("Partial save retry", { ready: true });
   await fixture.createAgent(namespace.id, "Retry Agent");
   const values = nativeValues("partial-save", { harnessId: "codex", providerModel: "gpt-5.1" });
-  const { page } = await newPage(t);
+  const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
 
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
@@ -421,7 +435,7 @@ test("Agent creation preserves edited JSON across mode changes and resets to the
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Template edits", { ready: true });
-  const { page } = await newPage(t);
+  const { page } = await newPage(t, fixture);
 
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
@@ -470,7 +484,7 @@ test("Agent detail preserves admitted revision history while draft edits change 
     nativeValues("draft-current"),
   );
   assert.equal(draft.generation, 3);
-  const { page } = await newPage(t);
+  const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
 
   await login(
@@ -555,7 +569,7 @@ test("Channel drawer saves channel edits without exposing Secret values or dropp
     }),
     { executionMode: "dedicated", secretBindings },
   );
-  const { page, artifacts } = await newPage(t);
+  const { page, artifacts } = await newPage(t, fixture);
 
   await login(
     page,

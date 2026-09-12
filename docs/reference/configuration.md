@@ -1,6 +1,6 @@
 # Configuration
 
-OpenClaw Control Center (OCC) stores reusable Agent configuration as
+OpenClaw Control Plane (OCC) stores reusable Agent configuration as
 Namespace-scoped Configuration resources. Each resource explicitly identifies
 its consumer with the required, immutable `kind: "agent"`. Its `values` is the
 actual nested OpenClaw configuration document, including native OpenClaw
@@ -19,7 +19,7 @@ startup YAML and never stores them in tenant ConfigMaps.
 Set `OCC_CONFIG_PATH` to the absolute path of a trusted YAML file. Production
 requires this setting; development can omit it to retain its existing local
 defaults. When provided, both API and worker processes must read the same file.
-The [production Kubernetes deployment guide](../guides/deploy.md#configure-the-installation)
+The [production Kubernetes deployment guide](../guides/deploy/production-installation.md#configure-the-installation)
 owns the complete bundled-Driver Installation example, including immutable
 images, workload isolation, and projected ServiceAccount credentials. The
 [Driver package installation guide](drivers/selection.md#select-the-installed-driver)
@@ -90,67 +90,9 @@ permission for the exact Configuration. Authentication failures return `401`,
 malformed inputs `400`, denied operations `403`, missing resources `404`,
 dependency conflicts `409`, and unavailable authorization or storage `503`.
 
-## Secret bindings
+## Credentials and channels
 
-Use `Configuration.secretBindings` only to map a Namespace-owned OCC Secret to a
-selected gateway environment variable. The referenced Secret must already belong
-to the same Namespace as the Configuration and deploying Agent. The native
-OpenClaw document in `values` then consumes that environment variable with its
-normal `env` SecretRef:
-
-```json
-{
-  "secretBindings": {
-    "OPENAI_API_KEY": {
-      "source": {
-        "kind": "secret",
-        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-        "id": "sec_123e4567-e89b-42d3-a456-426614174000"
-      }
-    }
-  },
-  "values": {
-    "secrets": {
-      "providers": {
-        "model": { "source": "env", "allowlist": ["OPENAI_API_KEY"] }
-      }
-    },
-    "models": {
-      "providers": {
-        "openai": {
-          "apiKey": {
-            "source": "env",
-            "provider": "model",
-            "id": "OPENAI_API_KEY"
-          }
-        }
-      }
-    }
-  }
-}
-```
-
-Each binding value contains `source.kind: "secret"`, the source
-`namespaceId`, the source Secret `id`, and optional `delivery.type: "env"`.
-Omitting `delivery` normalizes to `{ "type": "env" }`; no other delivery mode is
-implemented. Binding names must be valid environment variable names and cannot
-use reserved process-control prefixes such as `OPENCLAW_`, `CODEX_`, `OCC_`,
-`KUBERNETES_`, `PATH`, `HOME`, or proxy variables. `OPENAI_API_KEY` is the only
-allowed `OPENAI_*` destination.
-
-OCC rejects cross-Namespace references and missing or foreign backend objects
-even if IAM would otherwise allow the operation. Creating or updating a
-Configuration whose resulting document contains bindings requires the normal
-Configuration mutation permission and `operate` on every selected Secret,
-including retained bindings when PATCH omits `secretBindings`. Creating or
-updating an Agent assignment to a bound Configuration requires the normal Agent
-mutation permission and `operate` on each exact Secret. Namespace membership,
-Configuration access, Agent access, or possession of a ref does not grant
-consumption. Deployment stores normalized references and the selected
-SecretDriver identity in the immutable AgentRevision; it does not store backend
-locators or value bytes. Secret storage CRUD, update/restart semantics,
-Kubernetes Secret RBAC, no-leakage rules, and troubleshooting are owned by the
-[Kubernetes Secret Driver](drivers/kubernetes-secret.md).
+Never put plaintext credentials in Configuration values. Use unresolved native SecretRefs and authorized same-Namespace Secret bindings, or documented service-account credentials. See [Configuration secrets and channels](configuration/secrets.md) for binding permissions, complete examples, runtime delivery, and supported Slack/Teams settings.
 
 ## Agent references and immutable revisions
 
@@ -193,204 +135,12 @@ the native OpenClaw document.
 AgentRevisions retain their selected Compute Driver identity and immutable
 Configuration snapshot. Compute runtime settings are loaded from Installation
 startup YAML and are not copied into that snapshot. See the
-[Agent revision contract](agents.md#revisions-and-deployment) for the fields
+[Agent revision contract](agents/deployment.md#revisions-and-deployment) for the fields
 admission freezes; immutable Configuration does not freeze all Driver settings.
 
-## Kubernetes placement and RBAC
+## Kubernetes storage
 
-`KubernetesConfigurationDriver` creates exactly one ConfigMap per Configuration
-in the Kubernetes namespace selected for its exact tenant. Both bundled drivers
-discover the same driver-owned or operator-owned namespace from its tenant
-identity; the ConfigMap itself remains OCC-owned. An existing namespace is
-selected through `existingNamespace` when creating its platform Namespace;
-the worker binds its tenant identity before the platform Namespace becomes
-`ready`. Wait for readiness before creating the first Configuration; an
-external Namespace that is still provisioning rejects its creation with `409`.
-See
-[Kubernetes namespace requirements](drivers/kubernetes-compute.md#namespaces-and-isolation).
-Its data contains exactly one entry:
-
-```json
-{
-  "data": {
-    "openclaw.json": "<JSON-serialized values document>"
-  }
-}
-```
-
-The driver validates and parses that document when reading it; malformed JSON,
-extra data entries, excessive size, or incorrect ownership fail closed. It
-cannot select another tenant namespace, share tenant objects,
-read Kubernetes Secrets, create Pods, or store Installation settings. ConfigMap
-updates are not watched or automatically reloaded into admitted AgentRevisions.
-
-PostgreSQL stores only server-owned Configuration metadata: its identifier,
-owning Namespace, immutable kind, current generation, and creation time. The
-tenant-owned ConfigMap carries matching kind and generation annotations and
-stores only the live native configuration document in `openclaw.json`; values
-are not duplicated in Configuration metadata. Deployment separately persists
-its immutable revision snapshot.
-
-When Kubernetes Compute prepares an admitted AgentRevision, it creates a
-**separate, immutable, Agent-owned snapshot ConfigMap** containing exactly that
-revision's native `configuration` document. The Agent gateway mounts this
-snapshot read-only at `/etc/openclaw/openclaw.json`; its environment contains
-only the file path in `OPENCLAW_CONFIG_PATH`. It never mounts the mutable
-Configuration Driver ConfigMap or copies raw configuration into Pod
-environment. A new admitted generation receives a different immutable snapshot
-and rolls the same Agent gateway. Old snapshots remain until Namespace deletion;
-safe earlier garbage collection is not implemented.
-
-Startup validates the selected Configuration Driver's closed schema and
-authentication options but does not probe tenant ConfigMaps or their RBAC:
-such a preflight would require a known object or broader access. OCC validates
-native Configuration semantics before calling the Driver; Drivers enforce their
-backing-storage ownership and identity checks. Kubernetes namespace existence
-and exact ConfigMap authorization are checked lazily on the first requested CRUD
-operation. An authorized Configuration request can return `503` while a
-driver-managed provisioning Namespace's Kubernetes namespace or API RoleBinding
-does not yet exist; retry after provisioning and its exact grants are ready. An
-explicitly selected existing Namespace instead rejects creation with `409`
-until it is ready; after readiness, a missing API RoleBinding returns `503`.
-
-Use the existing cluster-scoped namespace-observer `get`/`list` grant to
-discover the exact tenant namespace. Provision tenant-data access through
-namespaced ConfigMap CRUD only. Kubernetes cannot restrict `create` by
-`resourceNames`; keep it in a separate namespaced rule. Scope the remaining
-verbs to exact object names when those names are known:
-
-```yaml
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: occ-configuration
-  namespace: tenant-support
-rules:
-  - apiGroups: [""]
-    resources: ["configmaps"]
-    verbs: ["create"]
-  - apiGroups: [""]
-    resources: ["configmaps"]
-    resourceNames: ["cfg-123e4567-e89b-42d3-a456-426614174000-0123456789ab"]
-    verbs: ["get", "update", "delete"]
-```
-
-The object name is illustrative; use the exact name generated by the selected
-implementation. Bind this Role only to its intended bootstrap identity in the
-same tenant namespace. OCC still verifies exact Namespace placement, object
-naming, and ownership before every mutation. Never add ConfigMap `list`/`watch`,
-cluster-wide tenant-resource access, Secret access, or Pod-creation privileges;
-the existing Namespace-only observer grant does not permit any of them.
-
-The separately selected Kubernetes Compute Driver also requires tenant-local
-ConfigMap `get`, `create`, and `patch` to prepare its immutable Agent-owned
-revision snapshots. Those Compute permissions and snapshots are independent of
-the Configuration Driver's `cfg-*` object allowlist and CRUD identity. Keep
-Compute `create` in its own namespaced rule because Kubernetes cannot scope
-creation by `resourceNames`; restrict `get` and `patch` to known exact
-Agent-owned snapshot names when practical. These Configuration and snapshot
-operations do not require Kubernetes Secret access. Secret CRUD and delivery
-validation use the separately selected SecretDriver and the API's tenant-local
-Secret RBAC. The separately authorized provider-managed service-account
-credential path uses exact account-owned Secrets through Compute; see
-[service accounts](service-accounts.md).
-
-## Secret boundaries
-
-ConfigMaps are not secret storage. Provide OpenClaw credentials as canonical
-inline SecretRefs plus `secretBindings`, or by using the documented
-service-account credential paths. Never place plaintext credential values in a
-Configuration `values` document:
-
-```json
-{
-  "models": {
-    "providers": {
-      "openai": {
-        "apiKey": {
-          "source": "env",
-          "name": "OPENAI_API_KEY"
-        }
-      }
-    }
-  }
-}
-```
-
-OpenClaw owns SecretRef syntax, provider configuration, and validation. OCC,
-ConfigurationDriver, and Kubernetes Compute preserve native `env`, `file`, and
-`exec` SecretRefs as unresolved JSON. The selected SecretDriver only stores OCC
-Secret values and resolves approved env delivery metadata for the owning
-gateway. A Namespace-scoped Secret Broker, CredentialGateway/OpenShell
-substitution, value history, and automatic rotation remain unimplemented.
-
-### Native channel configuration
-
-Configure channels directly in the Agent's complete native OpenClaw
-Configuration. The Kubernetes Compute Driver currently supports enabled
-`slack` and `msteams` providers; unknown enabled providers fail closed.
-`channels.defaults` and `channels.modelByChannel` are shared settings, not
-providers. Each supported channel declares the gateway-only credential values
-it needs:
-
-| Provider  | Gateway Secret keys                     |
-| --------- | --------------------------------------- |
-| `slack`   | `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN` |
-| `msteams` | `MSTEAMS_APP_PASSWORD`                  |
-
-Add a native default Slack account with environment SecretRefs:
-
-```json
-{
-  "channels": {
-    "slack": {
-      "enabled": true,
-      "mode": "socket",
-      "appToken": { "source": "env", "provider": "default", "id": "SLACK_APP_TOKEN" },
-      "botToken": { "source": "env", "provider": "default", "id": "SLACK_BOT_TOKEN" },
-      "dmPolicy": "allowlist",
-      "allowFrom": ["U0123456789"],
-      "channels": { "C0123456789": { "requireMention": true } }
-    }
-  }
-}
-```
-
-Microsoft Teams uses the native `msteams` provider identifier. Its application
-and tenant identifiers are ordinary nonsecret configuration strings; only the
-application password is an environment SecretRef:
-
-```json
-{
-  "channels": {
-    "msteams": {
-      "enabled": true,
-      "appId": "00000000-0000-0000-0000-000000000000",
-      "tenantId": "11111111-1111-1111-1111-111111111111",
-      "appPassword": {
-        "source": "env",
-        "provider": "default",
-        "id": "MSTEAMS_APP_PASSWORD"
-      }
-    }
-  }
-}
-```
-
-Set the Agent's `executionMode` to `dedicated`; embedded mode is rejected because
-its combined gateway/Agent cannot isolate channel credentials. Preserve existing
-Codex/model settings and enable each required native channel plugin. Explicitly
-redeploy the Agent to snapshot the updated document; its gateway receives the
-union of enabled providers' credentials from an Agent-specific Kubernetes
-Secret. See
-[Kubernetes runtime credentials](drivers/kubernetes-compute.md#configuration).
-
-Only Slack has live integration coverage. Its automated two-bot integration
-temporarily adds `allowBots: "mentions"`, `users: ["<sender-bot-user-id>"]`, and
-`replyToMode: "off"` only to the exact test channel; `requireMention` remains
-enabled. Never allow bots account-wide. Teams message ingress requires a
-separately deployed and reviewed public Bot Framework `/api/messages` webhook;
-that webhook and end-to-end Teams verification are outside this milestone.
+The Kubernetes Configuration Driver stores live native documents in tenant ConfigMaps. Compute creates separate immutable revision snapshots. See [Kubernetes Configuration storage](configuration/kubernetes.md) for placement, readiness, ownership, and exact RBAC requirements.
 
 ## Failure semantics and limitations
 
@@ -413,11 +163,6 @@ that webhook and end-to-end Teams verification are outside this milestone.
   tenant placement is ready, exact namespaced ConfigMap access exists, and the
   tenant-owned ConfigMap contains one valid `openclaw.json` document.
 
-Live Kubernetes ConfigMap CRUD and least-privilege RBAC proof requires an
-explicitly configured disposable cluster and tenant credentials. When those
-dependencies are unavailable, the live-cluster case is explicitly skipped;
-schema, controller, and SDK-fixture coverage is not live-cluster evidence.
-
 ## Related
 
 - [Quickstart](../guides/quickstart.md)
@@ -428,7 +173,8 @@ schema, controller, and SDK-fixture coverage is not live-cluster evidence.
 - [Kubernetes Compute Driver](drivers/kubernetes-compute.md)
 - [Identity and access management](authorization.md)
 - [Configuration lifecycle implementation](../../packages/occ/src/index.ts)
-- [Configuration integration coverage](../../tests/integration/configuration-controller.test.mjs)
+- [Local testing](../testing/local.md)
+- [Kubernetes testing](../testing/kubernetes.md)
 
 ## Manual Notes
 

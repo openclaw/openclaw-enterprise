@@ -15,7 +15,17 @@ test-results/
 output/playwright/
 
 # Agent-local progress is not product source.
-.agents/
+.agents/*
+!.agents/skills/
+.agents/skills/*
+!.agents/skills/autoreview/
+!.agents/skills/LICENSE.agent-skills
+!.agents/skills/test-audit/
+!.agents/skills/deslop/
+!.agents/skills/enterprise-testing/
+!.agents/skills/LICENSE.openclaw
+__pycache__/
+*.pyc
 .vscode/settings.json
 
 # Keep the testing guide visible when a global ignore matches its name.

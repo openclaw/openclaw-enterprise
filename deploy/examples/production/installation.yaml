@@ -2,30 +2,54 @@
 # occ-installation-startup Secret at key installation.yaml.
 # Replace example image digests, selectors, and StorageClass names before use.
 # Build deploy/runtime/Dockerfile once for both image slots. For local k3d,
-# docs/guides/deploy.md#build-images-for-local-kubernetes fills real digests.
+# use the [local image build](../../../docs/guides/deploy/local-operations.md#build-images-for-local-kubernetes)
+# to fill real digests. See [Installation setup](../../../docs/guides/deploy/production-installation.md#configure-the-installation).
 occ:
+  # Identify the Kubernetes cluster dedicated to this Installation.
+  # See [Installation setup](../../../docs/guides/deploy/production-installation.md#configure-the-installation).
   cluster: production-west
 
+# No Provider is configured; add one with its matching ServiceAccount Driver
+# only when using provider-managed accounts.
+# See [Provider configuration](../../../docs/reference/providers.md#installation-configuration).
 provider: []
 
+# Bundled Drivers omit `package`; selection IDs and options are trusted startup inputs.
+# See [Driver selections](../../../docs/reference/drivers/selection.md#supported-selections).
 drivers:
+  # Stores each Namespace's native Agent Configuration in its Kubernetes ConfigMaps.
+  # See [Kubernetes Configuration](../../../docs/reference/settings/programmatic.md#kubernetes-configuration-driver).
   configuration:
     id: config-kubernetes
     configuration:
       authentication:
+        # Use the controller Pod's ServiceAccount and cluster CA for Kubernetes access.
+        # See [Kubernetes Configuration](../../../docs/reference/settings/programmatic.md#kubernetes-configuration-driver).
         mode: inCluster
+  # Native IAM reads persisted policy; its startup configuration must be empty.
+  # See [Native IAM](../../../docs/reference/drivers/iam.md#native-iam-behavior).
   iam:
     id: native-iam
     configuration: {}
+  # Creates isolated tenant namespaces, gateways, and Agent workloads.
+  # See [Compute configuration](../../../docs/reference/drivers/kubernetes-compute.md#configuration).
   compute:
     id: compute-kubernetes
     configuration:
       authentication:
+        # Use the worker/API Pod's ServiceAccount; no ambient kubeconfig is selected.
+        # See [Kubernetes authentication](../../../docs/reference/drivers/kubernetes-compute.md#authentication).
         mode: inCluster
+      # Replace both placeholders with the verified runtime image digest.
+      # See [Image build](../../../docs/guides/deploy/production-installation.md#build-and-publish-production-images).
       images:
         gateway: registry.example.invalid/openclaw-enterprise/runtime@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
         agent: registry.example.invalid/openclaw-enterprise/runtime@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+        # Production rejects mutable image references.
+        # See [Images and resources](../../../docs/reference/drivers/kubernetes-compute.md#images-and-resources).
         requireImmutableDigest: true
+      # Requests reserve capacity; limits bound both workload roles.
+      # See [Images and resources](../../../docs/reference/drivers/kubernetes-compute.md#images-and-resources).
       resources:
         gateway:
           requests:
@@ -41,6 +65,8 @@ drivers:
           limits:
             cpu: 500m
             memory: 256Mi
+        # Each tenant namespace receives a Pod quota and default container bounds.
+        # See [Namespace isolation](../../../docs/reference/drivers/kubernetes-compute/networking-and-isolation.md#namespaces-and-isolation).
         namespace:
           quota:
             pods: "10"
@@ -52,26 +78,43 @@ drivers:
               cpu: 500m
               memory: 256Mi
       network:
+        # Select the cluster's actual DNS Pods so isolated tenants can resolve names.
+        # See [Networking](../../../docs/reference/drivers/kubernetes-compute/networking-and-isolation.md#networking).
         dns:
           namespace: kube-system
           podLabels:
             k8s-app: kube-dns
+        # Native gateway listener port; keep it aligned with the runtime.
+        # See [Networking](../../../docs/reference/drivers/kubernetes-compute/networking-and-isolation.md#networking).
         gatewayPort: 8080
+        # In direct-access mode, allow only the selected controller API Pods.
+        # Omit this field when enabling private Envoy gateway routing.
+        # See [Networking](../../../docs/reference/drivers/kubernetes-compute/networking-and-isolation.md#networking).
         gatewayClients:
           - namespace: openclaw-system
             podLabels:
               app.kubernetes.io/name: openclaw-enterprise
               app.kubernetes.io/component: api
+      # Project an Agent identity token with this audience and a 15-minute lifetime.
+      # See [Namespace isolation](../../../docs/reference/drivers/kubernetes-compute/networking-and-isolation.md#namespaces-and-isolation).
       servicePrincipalCredentials:
         mode: projectedServiceAccountToken
         audience: openclaw-enterprise
         expirationSeconds: 900
       runtime:
+        # Choose a private RWO block-backed filesystem with reliable SQLite locking.
+        # See [Gateway storage](../../../docs/reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage).
         gatewayStorageClassName: occ-gateway-rwo
+        # Keep each Agent's transport tokens separate from its model API key.
+        # See [Runtime credentials](../../../docs/reference/drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials).
         transportSecretPrefix: openclaw-agent-transport
         modelSecretPrefix: openclaw-agent-model
+  # Stores Namespace-owned Secret values and projects approved bindings to gateways.
+  # See [Secret Driver](../../../docs/reference/drivers/kubernetes-secret.md#configure-the-driver).
   secret:
     id: secret-kubernetes
     configuration:
       authentication:
+        # Use the controller Pod's ServiceAccount for tenant-local Secret access.
+        # See [Secret Driver](../../../docs/reference/drivers/kubernetes-secret.md#configure-the-driver).
         mode: inCluster

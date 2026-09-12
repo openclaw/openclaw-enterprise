@@ -21,6 +21,26 @@ The authoritative architecture is the repository's
 [platform design](docs/design.md).
 Do not create a competing architecture specification in this checkout.
 
+## Developer skills
+
+Use [test-audit](.agents/skills/test-audit/SKILL.md) when authoring or reviewing
+tests, and [enterprise-testing](.agents/skills/enterprise-testing/SKILL.md) to
+select proof or diagnose CI. For requested diff cleanup, use
+[deslop](.agents/skills/deslop/SKILL.md) before independent review.
+
+When the user or owning workflow requests an independent code review, use
+[autoreview](.agents/skills/autoreview/SKILL.md). Follow the
+[Enterprise review guide](docs/testing/autoreview.md) for usage and upstream sync.
+Keep the vendored skill unchanged; shared fixes belong in `openclaw/agent-skills`.
+The other skills are [Enterprise adaptations](docs/testing/developer-skills.md).
+
+## Product terminology
+
+- **OCE** means **OpenClaw Enterprise**, the product.
+- **OCC** means **OpenClaw Control Plane**, its control plane.
+
+Use these expansions consistently in documentation and interface labels.
+
 ## User-facing documentation
 
 Use the [documentation map](docs/README.md) and keep these ownership boundaries:
@@ -30,22 +50,65 @@ Use the [documentation map](docs/README.md) and keep these ownership boundaries:
 - `docs/reference/` owns living specifications for supported features and Driver
   contracts. State development, production, and verification-only limits explicitly;
   do not promote a proposed capability into current reference before implementation.
+- `docs/testing/` owns contributor test setup, test-only environment variables,
+  fixtures, real-runtime test hooks, and coverage or proof notes. Keep those details
+  out of `docs/reference/`; link to the relevant testing page instead. Supported
+  configuration and operator verification remain in the feature references and guides.
 - `docs/flows/` explains runtime execution through the current source. Link to
   reference for normative behavior and to guides for operator procedures.
-- Keep `docs/guides/` limited to `concepts.md`, `quickstart.md`, and `deploy.md`
-  for now. Concepts provides a short introduction to platform terms; the
-  deployment guide covers both development and production. Do not add detailed
-  per-feature or per-Driver user guides.
+- `docs/guides/` owns operator procedures. Keep overview pages concise and
+  split coherent tasks into named child pages linked from their overview.
 - Top-level `specs/` records implementation proposals, milestones, and delivery
   history. Completed specifications do not override current feature reference.
 
-When introducing a new component, add or update its user-facing documentation
-under `docs/` in the same change. Explain what the component does, how to run or
-configure it, its supported boundaries, and how to verify or troubleshoot it.
-Link the new guide from relevant existing documentation and update adjacent
-pages that would otherwise describe outdated behavior.
+Document new components under `docs/` in the same change: purpose, setup,
+boundaries, verification, and troubleshooting. Update navigation and affected
+adjacent pages.
 Do not add migration documentation, migration-specific rollout instructions,
 or per-migration database preparation guidance unless explicitly requested.
+
+## Documentation length budget
+
+Review pages above **1,500 visible words** for repetition and scope. Pages of
+1,500–2,500 words may stay together when they cover one complete workflow or
+coherent reference topic; record that rationale in the change review. **2,500
+words is the hard limit.** These are thresholds, not writing targets: overview
+pages often need only 150–300 words.
+
+Count headings, tables, lists, and examples; exclude Markdown syntax, link
+destinations, frontmatter, and comments. Run `pnpm docs:check-length` before
+publishing. It reports pages needing review and fails above the hard limit
+across repository Markdown, including instructions, specs, and generated pages.
+
+Remove repetition before splitting. Keep required inputs, commands, expected
+results, consequential limits, and recovery together. Split only independently
+useful topics; repair navigation and incoming links. Change generated references
+through their generator. Preserve historical decisions, statuses, and Manual Notes.
+
+Exceeding 2,500 words requires **no logical destination for the excess content**
+and **explicit human approval**. Record the approved scope and reason before
+adding a narrow checker allowance.
+
+Approved exception: `docs/reference/api.md` may exceed the length thresholds.
+The user approved keeping the complete generated HTTP API reference in one page
+for browsing and search. Keep it generated from the OpenAPI contract; the checker
+reports its word count without requiring a split. This exception covers no other
+page.
+
+## Documentation editing
+
+- Give each fact one owning page: concepts define terms, references define
+  behavior, guides give procedures, and flows explain implementation. Other pages
+  link to that owner and state only the consequence relevant to their reader.
+- Lead with the reader's task and first useful action. Prefer a command and its
+  expected result over narration of the helper's internal steps.
+- Remove repeated background, feature inventories, and implementation details
+  from overview and task pages. Link existing detail instead of creating more pages.
+- Keep permissions, credential handling, destructive effects, concurrency limits,
+  and recovery beside the affected action. Consolidate repeated caveats without
+  removing their scope or force.
+- Verify current behavior before tightening prose. Update stale current claims;
+  do not rewrite historical specifications to match later implementation.
 
 ## Deferred implementation
 
@@ -57,10 +120,8 @@ boundaries or intentional architecture as temporary.
 
 ## Implementation specifications
 
-Write OpenClaw Enterprise implementation and milestone specifications under the
-repository's top-level `specs/` directory (`openclaw-enterprise/specs/`). These
-implementation specs must follow the authoritative platform design; they do
-not replace it.
+Write implementation and milestone specifications under `specs/`, following the
+authoritative platform design.
 
 Implementation specifications are point-in-time records. When a later spec
 changes or supersedes an implementation described by an earlier spec, document
@@ -125,145 +186,47 @@ Run all integration tests with `pnpm test:integration`, or target one case with
 `node --test tests/integration/<name>.test.mjs`. Real-runtime coverage uses the
 Docker Compose or Kubernetes integrations with explicitly selected runtime
 images and existing authorized model credentials. Follow the
-[testing guide](docs/testing.md) and
-[test environment settings](docs/reference/settings.md#docker-compose-development-test-environment)
+[testing guide](docs/testing/README.md) and
+[test environment settings](docs/testing/docker.md#docker-compose-development-test-environment)
 for each selected suite. Never substitute a fake runtime or skip a requested
 runtime integration.
 
-For PostgreSQL integration, start the reviewed local database, migrate it with
-the migrator role, and run tests with the less-privileged application role.
-Before enabling production bootstrap coverage, separately prepare its empty
-disposable database using the
-[PostgreSQL test database instructions](docs/reference/settings.md#postgresql-test-environment):
+For PostgreSQL integration, follow the [database setup](docs/testing/postgresql.md).
+Migrate with the migrator role and run the application with its less-privileged
+role. Production bootstrap requires a separately migrated, disposable database
+without an Installation; omitting its URL skips only that proof.
 
-```sh
-pnpm db:up
-export OCC_MIGRATION_DATABASE_URL=postgresql://occ_migrator:occ-migrator-local@127.0.0.1:55432/openclaw_enterprise
-pnpm db:migrate
-unset OCC_MIGRATION_DATABASE_URL
-export OCC_TEST_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/openclaw_enterprise
-export OCC_PRODUCTION_WIREUP_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/openclaw_production_bootstrap
-pnpm test:postgres
-```
+For Kubernetes integration, follow the [cluster setup](docs/testing/kubernetes.md).
+Explicitly select a disposable loopback k3d cluster with enforcing
+NetworkPolicies. Preserve the default kubeconfig, active context, and unrelated
+clusters. API-and-worker tests require a dedicated `openclaw_k8s_*` database,
+created by the administrator, migrated by the migrator, and used by the limited
+application role. All three real-cluster fixture cases must pass without skips.
+Missing fixtures, permissions, networking enforcement, or an explicitly requested
+cluster must fail; never substitute a fake. Remove only the disposable cluster.
 
-The production-bootstrap database must be separately migrated, disposable, and
-free of an existing Installation. `OCC_TEST_DATABASE_URL` enables real
-PostgreSQL persistence and queue coverage; `OCC_PRODUCTION_WIREUP_DATABASE_URL`
-enables the production bootstrap case. Omitting the bootstrap URL skips only
-that associated proof.
-
-Run Kubernetes integration only against an explicitly selected, disposable k3d
-cluster with enforcing NetworkPolicies. Preserve the default kubeconfig, the
-active context, and every unrelated cluster:
-
-```sh
-mkdir -m 700 -p /tmp/oce-k3d
-k3d cluster create oce \
-  --api-port 127.0.0.1:6443 \
-  --kubeconfig-update-default=false \
-  --kubeconfig-switch-context=false
-k3d kubeconfig get oce > /tmp/oce-k3d/kubeconfig
-chmod 600 /tmp/oce-k3d/kubeconfig
-
-export OCC_TEST_KUBERNETES_KUBECONFIG=/tmp/oce-k3d/kubeconfig
-export OCC_TEST_KUBERNETES_CONTEXT=k3d-oce
-export OCC_TEST_KUBERNETES_IMAGE=oce-fixture:local
-docker build --pull=false -t "$OCC_TEST_KUBERNETES_IMAGE" tests/fixtures/kubernetes
-k3d image import "$OCC_TEST_KUBERNETES_IMAGE" -c oce
-node --test tests/integration/kubernetes-compute-real.test.mjs
-```
-
-The PostgreSQL-backed API-and-worker Kubernetes case additionally requires a
-dedicated `openclaw_k8s_*` database; it rejects the ordinary development
-database. Prepare the disposable database with the administrator, grant schema
-ownership only to the migration role, and run the controller with the limited
-application role:
-
-```sh
-pnpm db:up
-docker compose -f compose.postgres.yaml exec -T postgres \
-  psql -v ON_ERROR_STOP=1 -U postgres -d postgres \
-  -c 'CREATE DATABASE openclaw_k8s_local'
-docker compose -f compose.postgres.yaml exec -T postgres \
-  psql -v ON_ERROR_STOP=1 -U postgres -d openclaw_k8s_local \
-  -c 'GRANT CREATE ON DATABASE openclaw_k8s_local TO occ_migrator; CREATE SCHEMA occ AUTHORIZATION occ_migrator; CREATE SCHEMA drizzle AUTHORIZATION occ_migrator; REVOKE CREATE ON SCHEMA public FROM PUBLIC;'
-
-export OCC_MIGRATION_DATABASE_URL=postgresql://occ_migrator:occ-migrator-local@127.0.0.1:55432/openclaw_k8s_local
-pnpm db:migrate
-unset OCC_MIGRATION_DATABASE_URL
-export OCC_TEST_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/openclaw_k8s_local
-node --test tests/integration/kubernetes-compute-real.test.mjs
-```
-
-All three real-cluster fixture cases must pass without skips. Partial Kubernetes setup,
-unenforced NetworkPolicies, missing fixtures, insufficient permissions, or an
-unavailable explicitly requested cluster must fail rather than substituting a
-fake. The suite provisions its own scoped controller ServiceAccount and
-tenant-local RBAC; it does not install or verify shared-cluster admission
-guardrails. Remove only the disposable cluster after testing:
-`k3d cluster delete oce`.
-
-The Kubernetes fixture proves real API, RBAC, workload, reconciliation, and
-NetworkPolicy behavior, but it is only an HTTP fixture: it does not prove a
-real OpenClaw gateway, authenticated Codex WebSocket, or model turn. To verify
-genuine development Kubernetes execution, use the same dedicated cluster,
-import approved digest-pinned real gateway and Codex images, and provide an
-existing model credential without printing it:
-
-```sh
-export OCC_TEST_HARNESS_K3D_REAL=1
-k3d image import '<local-gateway-image-tag>' '<local-codex-agent-image-tag>' -c oce
-export OCC_TEST_KUBERNETES_GATEWAY_IMAGE='<gateway-image>@sha256:<digest>'
-export OCC_TEST_KUBERNETES_AGENT_IMAGE='<codex-agent-image>@sha256:<digest>'
-test -n "${OPENAI_API_KEY:-}"
-export OPENAI_API_KEY
-export OCC_TEST_OPENAI_MODEL=gpt-5.1
-export OCC_TEST_SLACK_LIVE=0
-node --test tests/integration/harness-topology-k3d-real.test.mjs
-```
-
-`OCC_TEST_KUBERNETES_KUBECONFIG` and `OCC_TEST_KUBERNETES_CONTEXT` must still
-explicitly select the disposable loopback `k3d` cluster. Set
-`OCC_TEST_OPENAI_MODEL` to an authorized custom-tool-capable model, such as
-`gpt-5.1`, when running dedicated Codex coverage; the source default is
-`gpt-4.1`. Import
-the local image tags, then configure their corresponding digest references; k3d
-does not import images by digest. Also register each immutable reference inside
-the k3s container with
-`docker exec k3d-oce-server-0 ctr -n k8s.io images tag <imported-image> <image@sha256:digest>`;
-otherwise Kubernetes attempts a remote pull and reports `ImagePullBackOff`.
-Optional
-`OCC_TEST_KUBERNETES_OPENCLAW_VERSION` and `OCC_TEST_KUBERNETES_CODEX_VERSION`
-assert the actual image versions; Codex defaults to `0.152.1`. The ordinary
-real-runtime file has three cases: `dedicated` Codex, `embedded` OpenClaw with
-a persisted provider credential, and `embedded` OpenClaw with the Secret API.
-Routing, Slack and OTLP coverage use separate prerequisite-specific files. Each
-case must produce real provider-backed model responses or real gateway command
-evidence. Embedded OpenClaw uses one combined gateway/Agent Pod; dedicated Codex
-uses separate gateway and authenticated app-server Pods. All cases require
-operator-owned Agent-specific transport/model Secrets, exact projected
-workload identity, bounded Pod-local writable runtime state, and enforced
-default-deny networking. The model key appears only in the combined embedded
-Pod or the dedicated Codex Pod, never in a separate gateway, controller,
-fixture, log, or shell history. Production supports both topologies through
-the same explicit `runtime` configuration; missing exact Agent-owned
-credentials fail closed.
+Fixture coverage proves API, RBAC, workload, reconciliation, and NetworkPolicy
+behavior, not genuine gateway, Codex WebSocket, or model execution. For those
+outcomes follow the [real-runtime procedures](docs/testing/kubernetes.md#kubernetes-model-turns-and-secrets):
+use approved digest-pinned gateway/Codex images, import local tags into k3d, and
+register their immutable references inside k3s. Select an authorized model and
+provide existing credentials without printing them. Preserve exact Agent-owned
+transport/model Secrets, projected workload identity, bounded Pod-local writable
+state, and default-deny networking. Model credentials belong only in the embedded
+OpenClaw Pod or dedicated Codex Pod, never a separate gateway, controller,
+fixture, log, or shell history. Missing Agent-owned credentials fail closed.
 Dedicated native configuration must register only its selected `codex/<model>`
 under `models.providers.codex`, with `api: "openai-responses"` and a fail-closed
 `baseUrl: "http://127.0.0.1:9"`; authenticated WebSocket execution remains in
 the Codex Agent, which alone receives the model credential.
 
-`OCC_TEST_SLACK_LIVE=1` enables the separate
-`tests/integration/harness-topology-k3d-slack-real.test.mjs` file. That case posts real Slack messages and waits
-for a gateway-authored reply; follow
-[the Slack testing guide](docs/testing.md#slack) before selecting it.
-
-A separate genuine production installation additionally requires the real
-Helm-installed controller and PostgreSQL, tenant-local RoleBindings, a model
-turn before and after immutable revision cutover, and verified allowed/denied
-NetworkPolicy connections. Configure Kubernetes API egress for its actual
-translated `/32` endpoint and port. Never claim that fixture-only coverage
-establishes real-runtime outcomes.
+Routing, Slack, and OTLP proofs have separate prerequisites. Follow the
+[Slack guide](docs/testing/slack.md#slack) before running a case that posts real
+messages. Genuine production proof additionally requires Helm-installed controller
+and PostgreSQL, tenant-local RoleBindings, model turns before and after revision
+cutover, and allowed/denied NetworkPolicy checks. Configure API egress for its
+actual translated `/32` endpoint and port. The fixture suite's scoped RBAC does
+not verify shared-cluster admission guardrails.
 
 ## TypeScript style and verification
 

@@ -1,0 +1,32 @@
+#!/usr/bin/env python3
+# Conformance fixture: macOS has no util-linux flock(1). This is a thin wrapper over
+# the same flock(2) syscall the helper relies on in production (verified against real
+# util-linux flock by the opt-in real-host integration). It supports the exact form
+# the helper uses: flock -w <seconds> <file> <command...>.
+import fcntl
+import os
+import subprocess
+import sys
+import time
+
+args = sys.argv[1:]
+timeout = None
+if len(args) >= 2 and args[0] == "-w":
+    timeout = float(args[1])
+    args = args[2:]
+if not args:
+    sys.exit(2)
+path, command = args[0], args[1:]
+fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+deadline = None if timeout is None else time.monotonic() + timeout
+while True:
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        break
+    except BlockingIOError:
+        if deadline is not None and time.monotonic() >= deadline:
+            sys.exit(1)
+        time.sleep(0.05)
+# The lock follows the open file description, which the command inherits and holds
+# until it exits.
+sys.exit(subprocess.run(command, pass_fds=(fd,)).returncode)

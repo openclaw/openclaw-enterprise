@@ -119,7 +119,7 @@ ownership and do not rewrite existing credentials.
 
 Unsupported pre-Provider state requires explicit cleanup and recreation of the
 selected disposable state, as recorded in the
-[implementation specification](../../specs/17-provider-driver-abstraction.md#migration-and-implementation-boundaries).
+[implementation specification](../../specs/17-provider-driver-abstraction/contract.md#migration-and-implementation-boundaries).
 Ownership is never inferred or backfilled. Draft edits and API shutdown do not
 stop workloads; exact upstream cleanup still needs the original configuration.
 
@@ -144,9 +144,9 @@ keep `occ-chatgpt-admin`, `admin-key`, and an empty CIDR. See the
 
 The [lifecycle flow](../flows/service-account-driver-credential-delivery.md) names code and proof
 boundaries. Local API, PostgreSQL, Driver, and packaging tests do not prove live
-provider calls or model execution. The
-[real provider suite](../../tests/integration/service-account-driver-real.test.mjs)
-requires authorized credentials and selected disposable Kubernetes runtimes.
+provider calls or model execution. See
+[service-account testing](../testing/service-accounts.md) for real provider
+verification requirements.
 
 ## Deferred behavior
 
@@ -160,4 +160,4 @@ remain out of scope.
 - [Agents](agents.md)
 - [Service accounts](service-accounts.md)
 - [Driver selection](drivers/selection.md)
-- [Platform design](../design.md#drivers-and-providers)
+- [Platform design](../design/drivers.md#drivers-and-providers)

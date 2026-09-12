@@ -1,4 +1,11 @@
-import { immutableCopy } from "@openclaw-enterprise/utils";
+import { asRecord, immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
+import {
+  PluginDesiredSelectionSchema,
+  PluginDesiredStateSchema,
+  PluginDriverIdentitySchema,
+  PluginToolPolicySchema,
+} from "./api/resources.ts";
+import { Check } from "typebox/value";
 
 export {
   LOGGING_LEVELS,
@@ -15,6 +22,7 @@ export const DRIVER_CAPABILITIES = Object.freeze([
   "service_account",
   "secret",
   "sandbox",
+  "plugin",
 ] as const);
 
 export type DriverCapability = (typeof DRIVER_CAPABILITIES)[number];
@@ -172,6 +180,97 @@ export interface ComputeRevisionContext {
   readonly secretEnvironment: readonly SecretEnvironmentProjection[];
 }
 
+export type PluginApprovalMode = "always" | "never" | "prompt" | "auto";
+
+export type PluginApprovalsReviewer = "user" | "auto_review";
+
+export interface PluginDriverIdentity {
+  readonly id: string;
+  readonly implementation: string;
+}
+
+export interface PluginToolPolicy {
+  readonly enabled?: boolean;
+  readonly approvalMode?: PluginApprovalMode;
+}
+
+export interface PluginDesiredSelection {
+  readonly enabled: boolean;
+  readonly approvalMode: PluginApprovalMode;
+  readonly approvalsReviewer?: PluginApprovalsReviewer;
+  readonly destructiveActions?: PluginApprovalMode;
+  readonly writes?: PluginApprovalMode;
+  readonly tools?: Readonly<Record<string, PluginToolPolicy>>;
+}
+
+export type PluginDesiredState = Readonly<Record<string, PluginDesiredSelection>>;
+
+export interface PluginToolCatalogEntry {
+  readonly id: string;
+  readonly name: string;
+  readonly destructive: boolean;
+  readonly writes: boolean;
+}
+
+export interface PluginCatalogEntry {
+  readonly id: string;
+  readonly name: string;
+  readonly tools: readonly PluginToolCatalogEntry[] | null;
+}
+
+export interface PluginRevisionState {
+  readonly driver: PluginDriverIdentity;
+  readonly plugins: PluginDesiredState;
+}
+
+export type PluginValidationFailure = (message: string) => never;
+
+const PLUGIN_SCHEMA_REFS = {
+  PluginDriverIdentity: PluginDriverIdentitySchema,
+  PluginToolPolicy: PluginToolPolicySchema,
+  PluginDesiredSelection: PluginDesiredSelectionSchema,
+  PluginDesiredState: PluginDesiredStateSchema,
+};
+
+function validPluginDriverIdentity(value: unknown): value is PluginDriverIdentity {
+  if (!Check(PLUGIN_SCHEMA_REFS, PluginDriverIdentitySchema, value)) return false;
+  const driver = value as PluginDriverIdentity;
+  return isNonEmptyString(driver.id) && isNonEmptyString(driver.implementation);
+}
+
+export function normalizePluginDesiredState(
+  plugins: unknown,
+  fail: PluginValidationFailure,
+): PluginDesiredState | undefined {
+  if (plugins === undefined) return undefined;
+  if (!Check(PLUGIN_SCHEMA_REFS, PluginDesiredStateSchema, plugins)) {
+    return fail("Agent plugin selections are invalid.");
+  }
+  return immutableCopy(plugins as PluginDesiredState);
+}
+
+export function validPluginRevisionState(value: unknown): value is PluginRevisionState | undefined {
+  if (value === undefined) return true;
+  const record = asRecord(value);
+  if (
+    record === undefined ||
+    Object.keys(record).some((key) => key !== "driver" && key !== "plugins")
+  ) {
+    return false;
+  }
+  if (!validPluginDriverIdentity(record.driver) || record.plugins === undefined) {
+    return false;
+  }
+  try {
+    normalizePluginDesiredState(record.plugins, (message) => {
+      throw new Error(message);
+    });
+  } catch {
+    return false;
+  }
+  return true;
+}
+
 export interface Configuration extends Scope {
   readonly id: string;
   readonly namespaceId: string;
@@ -215,6 +314,7 @@ export interface Agent extends Scope {
   readonly providerId: ProviderRef;
   readonly serviceAccountId?: string;
   readonly executionMode: HarnessExecutionMode;
+  readonly plugins?: PluginDesiredState;
   readonly servicePrincipalId: string;
   readonly activeRevisionId?: string;
   readonly createdAt: string;
@@ -247,6 +347,7 @@ export interface AgentRevision extends Scope {
   readonly sandboxDriverId?: string;
   readonly secretDriverId?: string;
   readonly secretBindings?: SecretBindings;
+  readonly plugins?: PluginRevisionState;
   readonly serviceAccount?: ServiceAccountRevision;
   readonly servicePrincipalId: string;
   readonly createdAt: string;
@@ -259,6 +360,7 @@ export function freezeAgentRevision(revision: AgentRevision): Readonly<AgentRevi
     ...(revision.secretBindings === undefined
       ? {}
       : { secretBindings: immutableCopy(revision.secretBindings) }),
+    ...(revision.plugins === undefined ? {} : { plugins: immutableCopy(revision.plugins) }),
     harness: Object.freeze({ ...revision.harness }),
     compute: Object.freeze({ ...revision.compute }),
     ...(revision.serviceAccount === undefined
@@ -512,6 +614,19 @@ export interface SandboxDriver extends Driver {
   ): Promise<void>;
 }
 
+export interface PluginDriverContext {
+  readonly namespace: Readonly<Namespace>;
+  readonly agent: Readonly<Agent>;
+  readonly harness: RevisionHarnessDescriptor;
+  readonly configuration: Readonly<OpenClawConfigurationDocument>;
+  readonly signal: AbortSignal;
+}
+
+export interface PluginDriver extends Driver {
+  readonly capability: "plugin";
+  listCatalog(context: PluginDriverContext): Promise<readonly PluginCatalogEntry[]>;
+}
+
 export type NamespaceLifecycleFailure = "retryable" | "permanent";
 
 export interface NamespaceEnsureResult extends Scope {
@@ -539,12 +654,33 @@ export interface ComputeAgentBinding {
   readonly agent: Readonly<Agent>;
 }
 
+export interface AgentRuntimeCredentialsInput {
+  readonly modelApiKey?: string;
+  readonly slack?: {
+    readonly appToken: string;
+    readonly botToken: string;
+  };
+}
+
+export interface AgentRuntimeCredentialStatus {
+  readonly transportConfigured: boolean;
+  readonly modelConfigured: boolean;
+  readonly slackConfigured: boolean;
+}
+
 export interface ComputeDriver extends Driver {
   readonly capability: "compute";
   readonly activationOrder?: "beforeCommit" | "afterCommit";
   readonly maintenanceIntervalMs?: number;
   setLifecycleDrivers?(drivers: readonly Driver[]): void;
   bindAgent?(binding: ComputeAgentBinding): void | Promise<void>;
+  getAgentRuntimeCredentialStatus?(
+    binding: ComputeAgentBinding,
+  ): Promise<AgentRuntimeCredentialStatus>;
+  provisionAgentRuntimeCredentials?(
+    binding: ComputeAgentBinding,
+    input: AgentRuntimeCredentialsInput,
+  ): Promise<AgentRuntimeCredentialStatus>;
   getGatewayEndpoint?(revision: AgentRevision): string | undefined;
   ensureNamespace(namespace: Namespace): Promise<NamespaceEnsureResult>;
   deleteNamespace(namespace: Namespace): Promise<NamespaceDeleteResult>;

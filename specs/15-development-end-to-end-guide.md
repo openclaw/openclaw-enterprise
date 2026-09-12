@@ -108,7 +108,7 @@ Revoke the OCC session and remove its private cookie after discovery, before TUI
 launch; the TUI has separate gateway authentication. Clean up temporary OCC/curl
 credentials on failures too. Explain that `docker compose down` leaves Driver-created
 workloads, and populated Namespaces cannot currently be deleted through the API; link
-[safe-stop guidance](../docs/guides/deploy.md#stop-development-safely). Do not add a
+[safe-stop guidance](../docs/guides/deploy/local-operations.md#stop-development-safely). Do not add a
 destructive reset. Optional curl diagnostics retain exact loopback-port discovery,
 private mode-0600 token configuration, and the existing chat-completions request.
 
@@ -144,8 +144,8 @@ or external network; the implementation proof below completes the model boundary
 ## Delivery evidence
 
 Implemented in `c208e48a46353050427ae80affc864a4895a6c8e`. Current procedures
-live in the [development TUI guide](../docs/guides/deploy.md#development-end-to-end-tui)
-and [Docker test settings](../docs/reference/settings.md#docker-compose-development-test-environment).
+live in the [development TUI guide](../docs/guides/deploy/local-operations.md#development-end-to-end-tui)
+and [Docker test settings](../docs/testing/docker.md#docker-compose-development-test-environment).
 The real Docker integration passed with `gpt-5.1` in 55.9 seconds, zero skips,
 including invalid-token rejection, two TUI replies, Ctrl+D, gateway readiness,
 and embedded/dedicated HTTP model turns. The exact guide also passed with a fresh

@@ -16,18 +16,20 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+    - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
       with:
         node-version: ${{ inputs.node-version }}
     - id: pnpm-store
-      uses: openclaw/openclaw/.github/actions/setup-pnpm-store-cache@97abb65691d97ee95c977a9a4ede2ef221d6929c
+      uses: openclaw/openclaw/.github/actions/setup-pnpm-store-cache@0f22cb304de7760de58ecc4d277de6a19d4c3fac
       with:
         node-version: ${{ inputs.node-version }}
         cache-mode: read-write
     - uses: ./.github/actions/setup-test-docker
       if: inputs.lane == 'docker-model' || inputs.lane == 'logging-collector'
-    - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
-      if: inputs.profile == 'full' || inputs.profile == 'images' || inputs.profile == 'k3d'
+    - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      if: >-
+        (inputs.profile == 'full' || inputs.profile == 'images' || inputs.profile == 'k3d') &&
+        inputs.lane != 'docker-model' && inputs.lane != 'logging-collector'
     - name: Set up CI tools
       shell: bash
       run: bash scripts/ci/setup-tools.sh "${{ inputs.profile }}"
@@ -55,6 +57,10 @@ runs:
       if: inputs.lane == 'checks-baseline'
       shell: bash
       run: pnpm openapi:check
+    - name: Run docs check
+      if: inputs.lane == 'checks-baseline'
+      shell: bash
+      run: pnpm docs:install && pnpm docs:check
     - name: Run typecheck
       if: inputs.lane == 'checks-baseline'
       shell: bash
@@ -64,12 +70,14 @@ runs:
       run: node scripts/ci/prepare.mjs --lane "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --github-env "$GITHUB_ENV"
     - name: Run lane
       shell: bash
+      env:
+        CI_RUNNER_TEST_TIMEOUT_MS: ${{ inputs.lane == 'checks-baseline' && '300000' || '' }}
       run: node scripts/ci/run-tests.mjs run "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --results "$RUNNER_TEMP/results/${{ inputs.lane }}.json"
     - name: Cleanup lane
       if: always()
       shell: bash
       run: node scripts/ci/cleanup.mjs --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json"
-    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       if: always()
       with:
         name: ${{ inputs.artifact-prefix }}-${{ inputs.lane }}

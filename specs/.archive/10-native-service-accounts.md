@@ -13,7 +13,7 @@ the association at deployment. An authorized external credential owner copies th
 credential into the existing Agent-specific Kubernetes Secret; `KubernetesComputeDriver` retains its
 existing Harness-specific `secretKeyRef` projection and never accesses Secrets.
 
-The authoritative [platform design](../../docs/design.md#platform-resources) currently excludes provider
+The authoritative [platform design](../../docs/design/resources.md#platform-resources) currently excludes provider
 accounts from platform resources. Amend it before implementation to admit native account representations
 while preserving external ownership of provider accounts, provider authorization, and credentials.
 
@@ -107,7 +107,7 @@ key: OPENAI_API_KEY
 This materialization is an explicit external prerequisite; OCC and Kubernetes Compute neither read nor write
 source or runtime Secrets and receive no Secret RBAC. The production materializer is an implementation gap.
 Missing source/destination materialization prevents workload readiness and revision activation; no alternate
-credential is selected. Preserve the [production Secret boundary](../../docs/design.md#secret-access).
+credential is selected. Preserve the [production Secret boundary](../../docs/design/safeguards.md#secret-access).
 
 Existing Harness selection and
 [Kubernetes topology](../../apps/controller/src/drivers/compute/kubernetes/index.ts)

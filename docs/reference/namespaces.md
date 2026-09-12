@@ -67,7 +67,7 @@ returned in the Namespace response. The worker verifies and binds that exact
 operator-prepared Kubernetes namespace without adopting another tenant's
 resources. Its external lifecycle, restricted Pod Security labels, and
 tenant-local RoleBindings must already be in place; see
-[Kubernetes namespace requirements](drivers/kubernetes-compute.md#namespaces-and-isolation).
+[Kubernetes namespace requirements](drivers/kubernetes-compute/networking-and-isolation.md#namespaces-and-isolation).
 Docker and external Compute Drivers reject this option with
 `409`; ordinary creation without the option remains supported. Creating a
 Configuration in an explicitly selected external Namespace returns
@@ -162,7 +162,7 @@ workload is ready.
 - [Controller configuration](settings.md)
 - [Implementation architecture](../ARCHITECTURE.md)
 - [Namespace lifecycle implementation](../../packages/occ/src/index.ts)
-- [API isolation coverage](../../tests/conformance/occ-api-security.test.mjs)
+- [Local testing](../testing/local.md)
 
 ## Manual Notes
 

@@ -45,7 +45,10 @@ export function validateReceipt(receipt, env) {
   );
   assert.match(receipt[0].ciRunId ?? "", /^[1-9][0-9]*$/);
   assert.match(receipt[0].ciAttempt ?? "", /^[1-9][0-9]*$/);
-  assert.match(env.NODE_BASE_IMAGE ?? "", /^node:24[.-][a-z0-9.-]+@sha256:[a-f0-9]{64}$/);
+  assert.match(
+    env.NODE_BASE_IMAGE ?? "",
+    /^docker\.io\/library\/node:24[.-][a-z0-9.-]+@sha256:[a-f0-9]{64}$/,
+  );
   for (const image of receipt) {
     validatePreparedImage(image, {
       sourceSha: env.SOURCE_SHA,

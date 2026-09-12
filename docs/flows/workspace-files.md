@@ -26,7 +26,7 @@ audit evidence. File contents remain in the native workspace.
 The Kubernetes worker must have provisioned the Agent's private HTTPRoute and
 native gateway. Installation operators enable the shared Envoy Gateway,
 native trust, and network restrictions described in
-[deployment](../guides/deploy.md#agent-workspace-files). The
+[deployment](../guides/deploy/workspace-routing.md#agent-workspace-files). The
 [routing reference](../reference/gateway-routing.md) owns the current transport
 and credential contract.
 By default, the chart requests a private CA and listener certificate from
@@ -76,7 +76,7 @@ without the optional endpoint capability cannot serve this file feature.
 
 ### 2. OCC admits one exact-Agent file operation
 
-`apps/controller/src/index.ts:createFastifyApp` requires a valid Better Auth
+`apps/controller/src/index.ts:createFastifyApp` requires a valid user
 session or scoped service API key. Native Agent credentials cannot invoke this
 administration surface. `GET` needs Agent `read`; `PUT` needs Agent `operate`
 and, for session callers, passes the browser CSRF boundary. OCC resolves the
@@ -154,7 +154,7 @@ replays it. The native client closes in the operation's cleanup path.
 - An authenticated native upgrade failure can indicate missing trusted-proxy
   configuration, a simultaneous token, a loopback real IP, or absent native
   identity scopes. Do not fix it by inventing a forwarded address.
-- [Testing](../testing.md) separates API conformance, Helm rendering, and the
+- [Testing](../testing/README.md) separates API conformance, Helm rendering, and the
   real Envoy/cert-manager/native-runtime proof. A calculated URL, ready proxy,
   or rendered chart does not establish file writes or model consumption.
 
@@ -162,8 +162,8 @@ replays it. The native client closes in the operation's cleanup path.
 
 - [Agents](../reference/agents.md#workspace-files)
 - [Kubernetes Compute Driver](../reference/drivers/kubernetes-compute.md)
-- [Settings reference](../reference/settings.md#required-production-controller-environment)
-- [Production deployment](../guides/deploy.md#agent-workspace-files)
+- [Settings reference](../reference/settings/production.md#required-production-controller-environment)
+- [Production deployment](../guides/deploy/workspace-routing.md#agent-workspace-files)
 - [HTTP API](../reference/api.md)
 
 ## Manual Notes

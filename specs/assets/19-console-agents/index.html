@@ -411,7 +411,7 @@
       if (editor.value === appliedTemplate) resetConfigurationTemplate();
     }
     function shell(body, title = "Agents") {
-      return `<div class="shell"><aside><strong>CONTROL CENTER</strong><p>◇　Agents</p><p>◈　Providers</p><p>▤　Namespaces</p><div style="margin-top:390px"><small>Namespace · Support</small><p class="account-toggle"><span class="account-label">OpenClaw Enterprise</span><span class="account-chevron" aria-hidden="true">▾</span></p></div></aside><main>${body}</main></div>`;
+      return `<div class="shell"><aside><strong>CONTROL PLANE</strong><p>◇　Agents</p><p>◈　Providers</p><p>▤　Namespaces</p><div style="margin-top:390px"><small>Namespace · Support</small><p class="account-toggle"><span class="account-label">OpenClaw Enterprise</span><span class="account-chevron" aria-hidden="true">▾</span></p></div></aside><main>${body}</main></div>`;
     }
     function heading(title, actions = "") {
       return `<div class="top"><div><h1>${title}</h1><p class="muted">Namespace · Support</p></div><div>${actions}</div></div>`;

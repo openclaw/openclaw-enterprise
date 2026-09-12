@@ -127,7 +127,7 @@ mounts after the gateway has prepared them. Private gateway state, claim roots,
 `CODEX_HOME`, tokens, and credentials remain outside the dedicated Harness.
 Predecessor retirement retains the current gateway and both owned claims; final
 gateway teardown deletes the exact-owned private and shared claims by UID before
-deleting the gateway. The [storage contract](../reference/drivers/kubernetes-compute.md#storage-and-credentials)
+deleting the gateway. The [storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
 owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 
 ## Debugging and Verification
@@ -144,7 +144,7 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
   embedded and dedicated model turns, or
   `node --test tests/integration/harness-topology-k3d-real.test.mjs` for real Kubernetes
   model turns. Select each suite's runtime images, infrastructure, and credentials through the
-  [test environment settings](../reference/settings.md#docker-compose-development-test-environment).
+  [test environment settings](../testing/docker.md#docker-compose-development-test-environment).
 - Verify provider-backed dedicated Codex separately with
   `node --test tests/integration/service-account-driver-real.test.mjs`,
   `OCC_TEST_CHATGPT_SERVICE_ACCOUNT_REAL=1`, and an authorized mounted
@@ -155,9 +155,9 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 ## Related docs
 
 - [Harness execution topology implementation specification](../../specs/.archive/07-harness-execution-topology.md)
-- [Platform design](../design.md#openclaw-gateways)
-- [Agent placement and deployment](../reference/agents.md#execution-mode)
-- [Controller worker](../reference/controller.md#agentrevision-lifecycle)
+- [Platform design](../design/workloads.md#openclaw-gateways)
+- [Agent placement and deployment](../reference/agents/deployment.md#execution-mode)
+- [Controller worker](../reference/controller/reconciliation.md#agentrevision-lifecycle)
 - [Docker Compute Driver](../reference/drivers/docker-compute.md)
 - [Kubernetes Compute Driver](../reference/drivers/kubernetes-compute.md)
 - [Compute Driver lifecycle hooks flow](compute-driver-lifecycle-hooks.md)

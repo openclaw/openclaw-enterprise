@@ -11,8 +11,8 @@
   "scripts": {
     "build": "tsc --build tsconfig.json --pretty false",
     "typecheck": "tsc --build tsconfig.json --pretty false",
-    "format:fix": "prettier --write \"{apps,packages,scripts,tests}/**/*.{ts,mjs,json,html,css}\" \"*.{json,yaml,yml,md}\" \"docs/**/*.md\" \"!docs/reference/api.md\" \".github/**/*.yml\"",
-    "format:check": "prettier --check \"{apps,packages,scripts,tests}/**/*.{ts,mjs,json,html,css}\" \"*.{json,yaml,yml,md}\" \"docs/**/*.md\" \"!docs/reference/api.md\" \".github/**/*.yml\"",
+    "format:fix": "prettier --write \"{apps,packages,scripts,tests}/**/*.{ts,mjs,cjs,json,html,css}\" \"*.{json,yaml,yml,md}\" \"docs/**/*.md\" \"!docs/reference/api.md\" \".github/**/*.yml\"",
+    "format:check": "prettier --check \"{apps,packages,scripts,tests}/**/*.{ts,mjs,cjs,json,html,css}\" \"*.{json,yaml,yml,md}\" \"docs/**/*.md\" \"!docs/reference/api.md\" \".github/**/*.yml\"",
     "hooks:install": "node scripts/install-git-hooks.mjs",
     "prepare": "node scripts/install-git-hooks.mjs --if-git-present",
     "check:workspace": "node scripts/verify-workspace-boundary.mjs",
@@ -32,19 +32,26 @@
     "docker:up": "docker compose up --build",
     "docker:down": "docker compose down",
     "docker:test": "node --test tests/integration/docker-compute-real.test.mjs",
+    "podman:test": "OCC_TEST_PODMAN_COMPUTE_REAL=1 node --test tests/integration/docker-compute-real.test.mjs",
     "test": "node scripts/verify-workspace-boundary.mjs && node --test tests/conformance/*.test.mjs tests/integration/*.test.mjs",
     "test:conformance": "node scripts/verify-workspace-boundary.mjs && node --test tests/conformance/*.test.mjs",
     "test:integration": "node scripts/verify-workspace-boundary.mjs && node --test tests/integration/*.test.mjs",
     "test:console-browser": "node --test tests/browser/*.test.mjs",
-    "test:postgres": "node scripts/verify-workspace-boundary.mjs && node --test --test-concurrency=1 tests/integration/postgres-*.test.mjs"
+    "test:postgres": "node scripts/verify-workspace-boundary.mjs && node --test --test-concurrency=1 tests/integration/postgres-*.test.mjs",
+    "docs:build": "node scripts/docs-site/build.mjs && scripts/docs-site/node_modules/.bin/pagefind --site dist/docs",
+    "docs:dev": "npm run docs:build && node scripts/docs-site/serve.mjs",
+    "docs:check-length": "node scripts/docs-site/word-count.mjs",
+    "docs:check": "node scripts/docs-site/word-count.mjs && node --test tests/docs/*.test.mjs",
+    "docs:install": "pnpm --dir scripts/docs-site --ignore-workspace install --frozen-lockfile --ignore-scripts",
+    "test:files": "node scripts/test-files.mjs"
   },
   "devDependencies": {
-    "@types/node": "24.13.3",
+    "@types/node": "26.4.1",
     "@types/pg": "8.21.0",
     "drizzle-kit": "0.31.10",
     "pg": "8.23.0",
     "playwright": "1.62.1",
     "prettier": "3.9.4",
-    "typescript": "6.0.3"
+    "typescript": "7.0.2"
   }
 }

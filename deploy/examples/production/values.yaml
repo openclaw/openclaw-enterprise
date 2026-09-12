@@ -1,7 +1,7 @@
 # Production Helm values for an OpenClaw Enterprise control plane.
 # Replace example domains, selectors, CIDRs, Secret names, and image digests
 # with reviewed site-specific values before installing.
-# docs/guides/deploy.md#build-images-for-local-kubernetes fills a real local digest.
+# The [local image build](../../../docs/guides/deploy/local-operations.md#build-images-for-local-kubernetes) fills a real local digest.
 images:
   controller: registry.example.invalid/openclaw-enterprise/controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 

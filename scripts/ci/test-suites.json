@@ -25,6 +25,9 @@
           "path": "tests/conformance/kubernetes-compute.test.mjs"
         },
         {
+          "path": "tests/conformance/kubernetes-runtime-credentials.test.mjs"
+        },
+        {
           "path": "tests/conformance/kubernetes-configuration.test.mjs"
         },
         {
@@ -50,6 +53,9 @@
         },
         {
           "path": "tests/conformance/service-account-driver.test.mjs"
+        },
+        {
+          "path": "tests/conformance/test-files.test.mjs"
         },
         {
           "path": "tests/conformance/utils.test.mjs"
@@ -100,6 +106,9 @@
           "path": "tests/integration/secret-api.test.mjs"
         },
         {
+          "path": "tests/integration/runtime-credentials-api.test.mjs"
+        },
+        {
           "path": "tests/integration/secret-driver-startup.test.mjs"
         },
         {
@@ -136,6 +145,9 @@
           "path": "tests/integration/ci-runner.test.mjs"
         },
         {
+          "path": "tests/integration/full-integration-preflight.test.mjs"
+        },
+        {
           "path": "tests/integration/ci-cleanup.test.mjs"
         },
         {
@@ -148,6 +160,9 @@
           "path": "tests/browser/console-agents.test.mjs"
         },
         {
+          "path": "tests/browser/console-runtime-credentials.test.mjs"
+        },
+        {
           "path": "tests/browser/console.test.mjs"
         },
         {
@@ -158,6 +173,21 @@
         },
         {
           "path": "tests/integration/container-promote.test.mjs"
+        },
+        {
+          "path": "tests/conformance/ssh-compute.test.mjs"
+        },
+        {
+          "path": "tests/integration/ssh-compute-startup.test.mjs"
+        },
+        {
+          "path": "tests/conformance/plugin-compute.test.mjs"
+        },
+        {
+          "path": "tests/conformance/plugin-driver.test.mjs"
+        },
+        {
+          "path": "tests/integration/plugin-driver-startup.test.mjs"
         }
       ]
     },
@@ -270,7 +300,7 @@
       "requiredEnv": ["OCC_TEST_RUNTIME_IMAGE", "OCC_TEST_PRODUCTION_IMAGE"],
       "prepare": {
         "defaultEnv": {
-          "NODE_BASE_IMAGE": "node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584"
+          "NODE_BASE_IMAGE": "docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584"
         },
         "requiresPreparedStateForFile": true,
         "requireEnv": ["NODE_BASE_IMAGE"],
@@ -562,11 +592,9 @@
         "requireEnv": [
           "OCC_TEST_OPENAI_MODEL",
           "OCC_TEST_CHATGPT_WORKSPACE_ID",
-          "OCC_TEST_CHATGPT_ADMIN_KEY_PATH",
-          "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
-          "OCC_TEST_KUBERNETES_AGENT_IMAGE"
+          "OCC_TEST_CHATGPT_ADMIN_KEY_PATH"
         ],
-        "immutableEnvImages": [
+        "immutableOptionalEnvImages": [
           "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
           "OCC_TEST_KUBERNETES_AGENT_IMAGE"
         ],
@@ -642,7 +670,7 @@
       "requiredEnv": ["OCC_TEST_LOGGING_NODE_IMAGE"],
       "prepare": {
         "defaultEnv": {
-          "OCC_TEST_LOGGING_NODE_IMAGE": "node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584"
+          "OCC_TEST_LOGGING_NODE_IMAGE": "docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584"
         }
       },
       "files": [
@@ -694,6 +722,45 @@
             "production embedded runtime emits actual OTLP logs during a real model turn",
             "production dedicated runtime emits actual OTLP logs during a real model turn"
           ]
+        }
+      ]
+    },
+    "ssh-host": {
+      "env": {
+        "OCC_TEST_SSH_REAL": "1"
+      },
+      "requiredEnv": [
+        "OCC_TEST_SSH_ADDRESS",
+        "OCC_TEST_SSH_PORT",
+        "OCC_TEST_SSH_USER",
+        "OCC_TEST_SSH_IDENTITY_FILE",
+        "OCC_TEST_SSH_KNOWN_HOSTS_FILE",
+        "OCC_TEST_SSH_NODE_PATH",
+        "OCC_TEST_SSH_OPENCLAW_PATH",
+        "OCC_TEST_SSH_RUNTIME_USER"
+      ],
+      "files": [
+        {
+          "path": "tests/integration/ssh-compute-real.test.mjs"
+        }
+      ]
+    },
+    "plugin-model": {
+      "env": {
+        "OCC_TEST_PLUGIN_DRIVER_REAL": "1"
+      },
+      "requiredEnv": [
+        "OCC_TEST_KUBERNETES_KUBECONFIG",
+        "OCC_TEST_KUBERNETES_CONTEXT",
+        "OCC_TEST_PLUGIN_DRIVER_OPENCLAW_DATABASE_URL",
+        "OCC_TEST_PLUGIN_DRIVER_CODEX_CALENDAR_DATABASE_URL",
+        "CODEX_ACCESS_TOKEN",
+        "OCC_TEST_CODEX_PLUGIN_CATALOG_CODEX_EXECUTABLE",
+        "OCC_TEST_CODEX_PLUGIN_CATALOG_CODEX_HOME"
+      ],
+      "files": [
+        {
+          "path": "tests/integration/plugin-driver-real.test.mjs"
         }
       ]
     }

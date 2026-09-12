@@ -1,152 +1,97 @@
 # OpenClaw Enterprise architecture
 
-OpenClaw Enterprise provides an OpenClaw Control Center (OCC) that manages
-Agents, tenant isolation, workload execution, authorization, and audit evidence.
-
-This document describes the current implementation. The
-[platform design](design.md) defines the authoritative target architecture;
-capabilities described there are not necessarily implemented. Current supported
-behavior is owned by the [feature reference](reference/README.md), procedures by
-the [guides](README.md#start-and-deploy), and source execution by
-[flow docs](README.md#understand-the-code).
+OpenClaw Control Plane (OCC) stores desired Agent state and runs a worker that
+turns it into workloads through selected Drivers. This page describes the current
+implementation; the [platform design](design.md) defines the authoritative target,
+including capabilities that have not shipped.
 
 ## System overview
 
-The control plane consists of an API, an independent controller worker,
-PostgreSQL-backed state, and Installation-selected Drivers. The API also serves
-the [read-only platform console](reference/console.md) at `/console/`. Its static
-browser module uses same-origin sessions and the existing authorized APIs; it
-adds no frontend service or resource persistence.
+The control plane contains an API, an independent worker, PostgreSQL, and
+Installation-selected Drivers. The API also serves the [platform console](reference/console.md)
+at `/console/`; browser actions use the same authorized APIs.
 
 ```mermaid
 flowchart LR
-    Client["Local or internal client"] --> API["OCC API"]
+    Client["Local or internal client"] --> API["OCC API and console"]
     API --> IAM["IAMDriver"]
     API --> Config["ConfigurationDriver"]
     API --> Secret["SecretDriver"]
     API --> DB["PostgreSQL"]
-
     Worker["Controller worker"] --> DB
     Worker --> IAM
     Worker --> Compute["ComputeDriver"]
-
     Config --> ConfigStore["Configuration storage"]
     Secret --> SecretStore["Secret storage"]
-    Compute --> Namespace["Tenant namespace"]
+    Compute --> Namespace["Tenant infrastructure"]
     Namespace --> Gateway["Agent-owned gateway"]
     Gateway --> Harness["Embedded or dedicated Harness"]
 ```
 
-OCC owns platform resources and desired state. The worker realizes that state
-through the selected Compute Driver; Drivers do not own platform resources or
-bypass OCC authorization.
+OCC owns platform resources and desired state. Drivers operate the backing
+infrastructure; they do not bypass OCC authorization or become resource owners.
 
 ## Platform resources
 
-```text
-Installation
-└── Namespace
-    ├── Configuration
-    ├── ServiceAccount
-    ├── Secret
-    └── Agent
-        └── AgentRevision
-```
+Each deployment has one Installation. Its Namespaces contain Configurations,
+ServiceAccounts, Secrets, and Agents. Each Agent owns immutable AgentRevisions.
+References must stay within their admitted scope.
 
-- **Installation:** The singleton platform boundary that configures Providers and selects its Drivers.
-- **Provider:** Installation-owned client and related Driver configuration; not an OCC resource.
-- **Namespace:** A tenant boundary that isolates its resources and workloads.
-- **Configuration:** A Namespace-owned native OpenClaw configuration document.
-- **ServiceAccount:** A Namespace-owned provider account with an opaque
-  credential reference; credential values are not returned through the API.
-- **Agent:** A Namespace-owned Agent referencing one Configuration and,
-  optionally, one ServiceAccount in the same Namespace and one configured Provider.
-- **Secret:** A Namespace-owned value stored by the selected SecretDriver and
-  returned through OCC as metadata only.
-- **AgentRevision:** An immutable snapshot of the Agent's Configuration,
-  Harness, Secret references, credentials, nullable Provider reference, and selected Compute implementation.
+[Concepts](guides/concepts.md) defines these resources and distinguishes platform
+identities from Kubernetes identities. [Feature reference](reference/README.md)
+owns their fields, permissions, and lifecycle rules.
 
-Creating an Agent does not start a workload. Deployment creates an immutable
-revision, which the controller worker provisions asynchronously.
+[Agent plugins](reference/agent-plugins.md) defines the optional Agent-owned
+plugin map. AgentRevision snapshots record the requested plugin IDs and policy;
+startup resolves them through the selected PluginDriver.
 
 ## Control plane
 
-The API authenticates requests, resolves caller identity, authorizes access to
-exact resources, and records resource changes. PostgreSQL stores platform
-state, IAM policy, controller work, and attributable audit evidence.
+The API authenticates callers, authorizes exact resource operations, and records
+changes. PostgreSQL stores platform state, IAM policy, controller work, and audit
+evidence. Resource mutations, queued work, and audit records commit together.
 
-Compose and Helm run one shared initializer after database migration and before
-API/worker startup. Both processes load initialized state; only the initializer
-mounts credential output. Fresh native-IAM bootstrap creates human and non-Agent service administrators
-with separate bindings to the same Role. Better Auth owns their credentials;
-bootstrap delivers the initial service key through protected storage. Auth
-persistence and the Installation/IAM commit are separate. Any bootstrap failure
-preserves created artifacts and requires operator verification and manual repair. Existing Installations receive no backfill. See
-[authentication](reference/authentication.md#installation-and-account-ownership)
-and the [bootstrap flow](flows/local-password-authentication.md).
+Compose and Helm initialize the Installation after database migration and before
+starting the API and worker. Only the initializer mounts bootstrap credential
+output. See [startup](flows/platform-startup.md) and
+[bootstrap recovery](guides/deploy/service-keys.md#recover-an-incomplete-bootstrap)
+for initialization ordering and failure handling.
 
-The controller worker claims pending Namespace and AgentRevision work,
-reauthorizes the original operation, and invokes the selected Compute Driver.
-Resource changes, queued work, and audit evidence are committed together.
-
-The main implementation boundaries are:
-
-| Component            | Responsibility                                              |
-| -------------------- | ----------------------------------------------------------- |
-| `apps/controller`    | HTTP API, admission, composition, and controller worker.    |
-| `packages/contracts` | Platform resources, Driver contracts, and API schemas.      |
-| `packages/occ`       | Platform ownership, lifecycle, persistence, and work queue. |
-| `packages/iam`       | Identity lookup and exact-resource authorization.           |
-| `packages/audit`     | Attributable audit events and sensitive-value sanitization. |
-
-See the [controller worker](reference/controller.md), [authentication](reference/authentication.md),
-and [API reference](reference/api.md) for operational details.
+| Component            | Responsibility                                                |
+| -------------------- | ------------------------------------------------------------- |
+| `apps/controller`    | API, console, admission, composition, and worker entrypoints. |
+| `packages/contracts` | Resource models, Driver interfaces, and API schemas.          |
+| `packages/occ`       | Resource ownership, lifecycle, persistence, and work queue.   |
+| `packages/iam`       | Identity lookup and authorization.                            |
+| `packages/audit`     | Audit events and sensitive-value sanitization.                |
 
 ## Drivers
 
-OCC selects the Drivers used by its Installation:
-
-| Driver                 | Responsibility                                                  | Available implementations                        |
-| ---------------------- | --------------------------------------------------------------- | ------------------------------------------------ |
-| `IAMDriver`            | Resolve identities and authorize exact-resource access.         | Bundled native IAM or an installed Driver.       |
-| `ComputeDriver`        | Provision tenant infrastructure and Agent workloads.            | Bundled Docker, Kubernetes, or installed Driver. |
-| `ConfigurationDriver`  | Store Namespace-owned OpenClaw configuration documents.         | Filesystem, Kubernetes ConfigMaps, or installed. |
-| `SecretDriver`         | Store Namespace-owned Secret values and validate delivery refs. | Bundled Kubernetes Secrets.                      |
-| `ServiceAccountDriver` | Provision upstream provider accounts and their credentials.     | Optional ChatGPT Provider member.                |
-
-A configured [Provider](reference/providers.md) owns a client and its related
-Driver membership. Only the API constructs the ChatGPT client and injects its
-Provider into the bundled ServiceAccount Driver; the worker validates nonsecret
-metadata. Agent and revision `providerId` references are nullable. Managed
-access tokens require exact Provider, Driver, workspace, and account binding.
+Installation configuration selects infrastructure implementations for compute,
+configuration, identity, Secrets, optional provider service accounts, and optional
+Agent plugin translation.
+[Driver reference](reference/README.md#drivers) owns available implementations
+and contracts; [selection](reference/drivers/selection.md) explains trusted package loading.
 
 Compute owns workload provisioning, readiness, activation, and retirement.
-Other selected Drivers can participate through bounded lifecycle hooks without
-assuming workload ownership.
-
-See the [ComputeDriver contract](reference/drivers/compute.md),
-[Driver installation guide](reference/drivers/selection.md), and
-[Kubernetes Secret Driver](reference/drivers/kubernetes-secret.md).
+Other Drivers may participate through bounded
+[Compute lifecycle hooks](flows/compute-driver-lifecycle-hooks.md).
+[Providers](reference/providers.md) supply authenticated clients to related Drivers.
+[PluginDriver](reference/drivers/plugin.md) resolves curated Agent plugin
+selections and renders native runtime policy during revision startup.
 
 ## Agent execution
 
-Every deployed Agent has its own OpenClaw gateway. The selected Harness
-determines its execution topology:
-
-- **Embedded OpenClaw:** The gateway and Harness run in one workload.
-- **Dedicated Codex:** The gateway and Harness run in separate workloads with
-  separate identities, authenticated transport, and an Agent-owned shared
-  workspace.
-
-Only an active AgentRevision receives traffic. Updating an Agent or its
-Configuration does not change an existing workload until a new revision is
-deployed and activated.
+An Agent's gateway serves client connections. Embedded OpenClaw runs the gateway
+and Harness together; dedicated Codex uses separate workloads with separate
+identities and an Agent-owned shared workspace. See
+[Harness execution](reference/harness-execution.md) for topology and credential boundaries.
 
 ### Agent provisioning sequence
 
-Agent runtime provisioning is asynchronous. Agent creation records resource
-state only; `deploy` admits an immutable `AgentRevision`, and the worker later
-invokes the selected Compute Driver for runtime effects.
+Agent creation records a definition; deployment admits an immutable
+AgentRevision for the worker to provision asynchronously. The sequence below
+shows successful provisioning and activation.
 
 ```mermaid
 sequenceDiagram
@@ -160,109 +105,91 @@ sequenceDiagram
     participant Runtime
 
     Client->>API: Create Namespace
-    API->>API: Check direct transport and Better Auth session
-    API->>IAM: Lookup Principal and authorize Namespace create
+    API->>API: Authenticate caller
+    API->>IAM: Authorize Namespace creation
     IAM-->>API: Allowed with evidence
     API->>OCC: Create Namespace in provisioning
-    OCC->>DB: Persist Namespace, audit, and work
+    OCC->>DB: Commit Namespace, audit, and work
     API-->>Client: 201 Namespace
     Worker->>DB: Claim Namespace work
     Worker->>IAM: Reauthorize original actor
     Worker->>Compute: ensureNamespace(namespace)
-    Compute->>Runtime: Create backing network or namespace
-    Worker->>DB: Persist Namespace readiness and audit
+    Compute->>Runtime: Prepare backing network or namespace
+    Worker->>DB: Commit Namespace readiness, audit, and completion
 
-    Client->>API: Create Configuration, create Agent, deploy Agent
-    API->>API: Check direct transport and Better Auth session
-    API->>IAM: Authorize exact Agent and referenced resources
+    Client->>API: Create Configuration and Agent
+    API->>IAM: Authorize exact resources
+    API->>OCC: Record resource definitions
+    OCC->>DB: Commit resource state and audit
+    API-->>Client: Created resources, no Agent runtime yet
+
+    Client->>API: Deploy Agent
+    API->>IAM: Authorize deployment and referenced resources
     API->>OCC: Admit immutable AgentRevision
-    OCC->>DB: Persist revision, audit, and work
+    OCC->>DB: Commit revision, audit, and work
     API-->>Client: 202 AgentRevision
     Worker->>DB: Claim revision work
-    Worker->>IAM: Reauthorize deploy and references
+    Worker->>IAM: Reauthorize deployment and references
     Worker->>Compute: prepareRevision(revision)
-    Compute->>Runtime: Create or reuse one gateway for the Agent
     alt dedicated Codex
-        Compute->>Runtime: Start revision Codex harness and route gateway
+        Compute->>Runtime: Prepare Agent gateway and separate Codex Harness
     else embedded OpenClaw
-        Compute->>Runtime: Start combined gateway and harness
+        Compute->>Runtime: Prepare combined gateway and Harness
     end
-    Worker->>DB: Persist active revision
+    Compute-->>Worker: Revision ready for activation
+    opt Driver activates before commit
+        Worker->>Compute: Activate prepared revision
+    end
+    Worker->>DB: Commit active revision under the live claim
+    opt Driver activates after commit
+        Worker->>Compute: Activate committed revision
+    end
     Worker->>Compute: Retire prior revision when present
-    Worker->>DB: Persist completion and audit
+    Worker->>DB: Commit activation audit and work completion
 ```
 
-See [Agent management](reference/agents.md) and the
-[Harness execution topology](flows/harness-execution-topology.md).
+Editing a draft does not change the running revision. Admission alone does not
+prove runtime readiness. The [controller reference](reference/controller.md)
+defines lifecycle and retry behavior; the [worker flow](flows/controller-worker.md)
+traces persistence and Driver calls.
 
 ## Security boundaries
 
-- Controller API access uses authenticated sessions; IAM authorizes each
-  operation against its exact Installation, Namespace, Agent, or revision.
-- Namespace isolation prevents access to another tenant's resources or
-  workloads.
-- Agent revisions, workload identity, configuration, and credentials remain
-  scoped to their owning Agent.
-- Namespace-owned Secret values are stored by the selected SecretDriver; OCC
-  responses, audit records, ConfigMaps, and consumers without an admitted binding
-  for that Secret carry only metadata or references.
-- Production Kubernetes workloads use restricted Pod security, NetworkPolicies,
-  least-privilege ServiceAccounts, and projected workload identity.
-- Dedicated gateway and Harness workloads receive only the credentials required
-  for their respective responsibilities.
-- Mutations and authorization denials produce attributable audit evidence;
-  missing authorization or audit dependencies fail closed.
+IAM authorizes each operation against its exact resource. Namespace isolation,
+Agent-scoped identities, and explicit Secret bindings constrain access. OCC
+responses and audit records contain Secret metadata or references, not values.
+Missing authorization or audit dependencies fail closed.
 
-See [identity and access management](reference/authorization.md), [security](reference/security.md), and
-[Secret storage and delivery](flows/secret-storage-and-delivery.md).
+Production Kubernetes uses restricted Pod security, scoped ServiceAccounts, and
+NetworkPolicies. [Security reference](reference/security.md) owns these controls
+and their enforcement limits.
 
 ## Deployment modes
 
-**Local development** runs the API, controller worker, and PostgreSQL through
-Docker Compose. The default Compute Driver provisions Agent workloads as Docker
-containers; the API is available only through loopback.
+- **Local development:** Compose runs the API, worker, and PostgreSQL on Docker
+  Engine or Podman; the API binds to loopback and Docker Compute provisions
+  Agent containers through the selected engine's Docker-compatible API. Podman
+  verification covers control-plane startup, worker API access, authenticated
+  Installation access, Namespace isolation, and an embedded provider-backed
+  model turn. Dedicated Codex and interactive TUI execution remain
+  Docker-verified.
+- **Production Kubernetes:** the API and worker run separately; Kubernetes Compute
+  provisions tenant infrastructure and Agent workloads. The API remains internal.
+- **SSH execution:** SSH Compute runs embedded OpenClaw on preprovisioned Linux
+  hosts. Host networking remains the operator's responsibility; consult the
+  [SSH reference](reference/drivers/ssh-compute.md) for supported composition.
 
-**Production Kubernetes** runs the API and worker as separate Pods backed by
-PostgreSQL. The selected Kubernetes Compute Driver creates isolated tenant
-namespaces, Agent-owned gateways, and embedded or dedicated Agent workloads.
-The production API is internal-only.
-
-Reviewed installed Drivers can be selected in both development and production.
-See [Docker development](reference/drivers/docker-compute.md),
-[Kubernetes deployment](guides/deploy.md), and the
-[Kubernetes Compute Driver](reference/drivers/kubernetes-compute.md).
+Follow [Deploy](guides/deploy.md) for operator procedures.
 
 ## Current limitations
 
-The current implementation does not provide:
-
-- Public ingress, external identity federation, or console resource management.
-  The console currently lists Agents, Providers, and Namespaces; creation,
-  editing, deployment, and resource details remain outside its scope.
-- A general, verified pre-execution sandbox policy barrier for every runtime.
-  Optional SandboxDriver facets and delegated OpenShell Harness provisioning
-  exist, but upstream compatibility and enforcement limitations remain; see
-  the [SandboxDriver reference](reference/drivers/sandbox.md).
-- SecretBroker substitution, brokered model credentials, or an approved
-  restricted model-egress proxy.
-- Service-principal API authentication, token exchange, or production workload
-  token verification.
-- Secret value history, automatic Secret rotation, automatic workload restart
-  after Secret update, or automatic provider credential refresh.
-- Shared Kubernetes clusters or multi-replica Agent gateways.
-
-The [platform design](design.md) describes target capabilities beyond the
-current implementation.
+Supported capabilities and limits live with their owning features:
+[authentication](reference/authentication.md), [console](reference/console.md),
+[security](reference/security.md), and [sandbox execution](reference/drivers/sandbox.md).
+The target design does not establish that a capability is implemented.
 
 ## Related documentation
 
+- [Documentation map](README.md)
 - [Platform design](design.md)
-- [Documentation index](README.md)
-- [Configuration reference](reference/settings.md)
-- [Controller worker](reference/controller.md)
-- [Identity and access management](reference/authorization.md)
-- [Security model](reference/security.md)
-- [ComputeDriver contract](reference/drivers/compute.md)
-- [Docker Compute Driver](reference/drivers/docker-compute.md)
-- [Kubernetes Compute Driver](reference/drivers/kubernetes-compute.md)
-- [Production Kubernetes deployment](guides/deploy.md)
+- [Testing](testing/README.md)

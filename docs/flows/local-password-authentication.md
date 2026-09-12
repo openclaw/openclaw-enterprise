@@ -110,7 +110,7 @@ attempt IDs before manual repair; file existence or another Installation is
 insufficient. An uncertain commit can already have persisted the seed, so an
 error never authorizes an automatic wipe. A deliberate reset must identify the
 disposable Installation and its dedicated storage. The
-[recovery procedure](../guides/deploy.md#recover-an-incomplete-bootstrap) owns
+[recovery procedure](../guides/deploy/service-keys.md#recover-an-incomplete-bootstrap) owns
 those operator actions.
 
 After confirmed success, the operator retrieves/imports the existing file and
@@ -155,18 +155,18 @@ implicit permissions.
   protected output, and key access; it skips when an Installation already exists.
 - `node --test tests/integration/bootstrap-output.test.mjs` covers exclusive
   output and rejected unsafe paths. Failed writes retain any created file.
-  Database cases require the [disposable PostgreSQL setup](../reference/settings.md#postgresql-test-environment);
+  Database cases require the [disposable PostgreSQL setup](../testing/postgresql.md#postgresql-test-environment);
   an unconfigured/skipped suite is not runtime proof.
 - `node --test tests/integration/postgres-bootstrap-failures.test.mjs` with
   `OCC_BOOTSTRAP_FAILURE_DATABASE_URL` exercises concurrent production attempts
   and preserves both environment modes' credentials when a test fault discards the
   acknowledgement after a real COMMIT. The suite resets a dedicated loopback
-  database; see [its settings](../reference/settings.md#postgresql-test-environment).
+  database; see [its settings](../testing/postgresql.md#postgresql-test-environment).
 - Verify copied output is `0600` without printing it; use a key-authenticated
   `GET /installation` and Namespace create/read to check current authority.
   A `401` indicates credential rejection; `403` indicates identity/scope/policy
   denial. Preserve failed bootstrap artifacts and compare safe IDs through
-  [operator recovery](../guides/deploy.md#recover-an-incomplete-bootstrap).
+  [operator recovery](../guides/deploy/service-keys.md#recover-an-incomplete-bootstrap).
 - `pnpm typecheck`, `pnpm format:check`, and `pnpm check:workspace` validate source
   and workspace structure. Compose/PVC permission checks require real runtime
   execution; chart rendering alone does not prove storage access.

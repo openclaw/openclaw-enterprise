@@ -1,10 +1,33 @@
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { STATUS_CODES } from "node:http";
-import { readFile, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const documentPath = new URL("../packages/contracts/openapi/occ-api.openapi.json", import.meta.url);
-const referencePath = new URL("../docs/reference/api.md", import.meta.url);
+const referenceDirectoryPath = new URL("../docs/reference/api/", import.meta.url);
+
+function slugifySegment(value) {
+  return (
+    String(value)
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "operation"
+  );
+}
+
+function tagAnchor(tag) {
+  return slugifySegment(tag);
+}
+
+function operationAnchor(path, method) {
+  const pathId = path
+    .toLowerCase()
+    .replace(/[{}]/g, "")
+    .replace(/[^a-z0-9]+/g, "");
+  return `${method.toLowerCase()}-${pathId}`;
+}
 
 function schemaType(schema, document) {
   if (schema.$ref) {
@@ -98,9 +121,11 @@ function schemaTable(schema, document) {
   );
 }
 
-function operationReference(path, method, operation, document) {
+function operationReference(path, method, operation, document, { headingLevel = 2 } = {}) {
+  const childHeading = "#".repeat(Math.min(headingLevel + 1, 6));
   const sections = [
-    `### \`${method.toUpperCase()} ${path}\``,
+    `${"#".repeat(headingLevel)} \`${method.toUpperCase()} ${path}\``,
+    `<span id="${operationAnchor(path, method)}"></span>`,
     operation.summary ?? "No summary.",
     `**Operation ID:** \`${operation.operationId ?? `${method}_${path}`}\``,
     `**Permissions:** ${operation.description ?? "No IAM permission required."}`,
@@ -128,7 +153,7 @@ function operationReference(path, method, operation, document) {
 
   if (operation.parameters?.length) {
     sections.push(
-      "#### Parameters",
+      `${childHeading} Parameters`,
       [
         "| Name | In | Type | Required | Constraints |",
         "| --- | --- | --- | --- | --- |",
@@ -148,7 +173,7 @@ function operationReference(path, method, operation, document) {
 
   if (operation.requestBody) {
     sections.push(
-      "#### Request body",
+      `${childHeading} Request body`,
       `**Required:** ${operation.requestBody.required ? "Yes" : "No"}`,
     );
 
@@ -158,7 +183,7 @@ function operationReference(path, method, operation, document) {
   }
 
   sections.push(
-    "#### Responses",
+    `${childHeading} Responses`,
     [
       "| Status | Meaning |",
       "| --- | --- |",
@@ -183,31 +208,18 @@ function operationReference(path, method, operation, document) {
   return sections.join("\n\n");
 }
 
-export function generateApiReference(document) {
-  const operationsByTag = new Map();
+function operationRows(operations) {
+  return [
+    "| Operation | Summary |",
+    "| --- | --- |",
+    ...operations.map(({ anchor, method, operation, path }) => {
+      return `| [\`${method.toUpperCase()} ${path}\`](#${anchor}) | ${operation.summary ?? "No summary."} |`;
+    }),
+  ].join("\n");
+}
 
-  for (const [path, operations] of Object.entries(document.paths)) {
-    for (const [method, operation] of Object.entries(operations)) {
-      const tag = operation.tags?.[0] ?? "Other operations";
-      if (!operationsByTag.has(tag)) operationsByTag.set(tag, []);
-      operationsByTag.get(tag).push(operationReference(path, method, operation, document));
-    }
-  }
-
-  const sections = [
-    `# ${document.info.title} reference`,
-    "<!-- Generated from packages/contracts/openapi/occ-api.openapi.json. Do not edit directly. -->",
-    `Version \`${document.info.version}\`; OpenAPI \`${document.openapi}\`.`,
-    [
-      "This reference is generated from the",
-      "[checked-in OpenAPI contract](../../packages/contracts/openapi/occ-api.openapi.json).",
-      "Run `pnpm openapi:generate` after changing an API route or schema;",
-      "`pnpm openapi:check` verifies both generated artifacts.",
-    ].join("\n"),
-    "See [authentication](authentication.md) for supported credentials and their scope.",
-  ];
-
-  const errorSchema =
+function errorSchema(document) {
+  return (
     Object.values(document.paths)
       .flatMap((operations) => Object.values(operations))
       .flatMap((operation) => Object.entries(operation.responses))
@@ -222,35 +234,180 @@ export function generateApiReference(document) {
       .find(([status, response]) => {
         return !status.startsWith("2") && response.content?.["application/json"]?.schema;
       })
-      ?.at(1).content["application/json"].schema;
+      ?.at(1).content["application/json"].schema
+  );
+}
 
-  if (errorSchema) {
+function generatedComment() {
+  return "<!-- Generated from packages/contracts/openapi/occ-api.openapi.json. Do not edit directly. -->";
+}
+
+function introduction(document) {
+  return [
+    `Version \`${document.info.version}\`; OpenAPI \`${document.openapi}\`.`,
+    [
+      "This reference is generated from the",
+      "[checked-in OpenAPI contract](../../packages/contracts/openapi/occ-api.openapi.json).",
+      "Run `pnpm openapi:generate` after changing an API route or schema;",
+      "`pnpm openapi:check` verifies the generated contract and API reference.",
+    ].join("\n"),
+    [
+      "The exported contract comes from the development-enabled OCC app, which is",
+      "why the generated title is `Development OCC API`. Use",
+      "`POST /installation/bootstrap` only for development or bootstrap flows",
+      "that create the first Installation; production bootstraps through the",
+      "[Helm initialization Job](../guides/deploy/production-installation.md#provision-system-secrets-and-install)",
+      "before serving requests.",
+      "After bootstrap, production uses the same authenticated controller resource",
+      "operations through the selected Drivers and settings described in",
+      "[settings](settings.md).",
+    ].join("\n"),
+    "See [authentication](authentication.md) for supported credentials and their scope.",
+  ];
+}
+
+function operationEntries(document) {
+  return Object.entries(document.paths).flatMap(([path, operations]) =>
+    Object.entries(operations).map(([method, operation]) => ({
+      anchor: operationAnchor(path, method),
+      method,
+      operation,
+      operationId: operation.operationId,
+      path,
+      tag: operation.tags?.[0] ?? "Untagged",
+    })),
+  );
+}
+
+function referenceGroups(document) {
+  const groups = [];
+  const byTag = new Map();
+  for (const entry of operationEntries(document)) {
+    let group = byTag.get(entry.tag);
+    if (!group) {
+      group = {
+        title: entry.tag,
+        anchor: tagAnchor(entry.tag),
+        operations: [],
+      };
+      byTag.set(entry.tag, group);
+      groups.push(group);
+    }
+    group.operations.push(entry);
+  }
+  return groups;
+}
+
+function referencePage(document, groups) {
+  const sections = [
+    `# ${document.info.title} reference`,
+    generatedComment(),
+    ...introduction(document),
+  ];
+  const schema = errorSchema(document);
+
+  if (schema) {
     sections.push(
       "## Error responses",
       [
         "Non-success JSON responses use the following envelope.",
         "Each operation lists its supported status codes.",
       ].join("\n"),
-      schemaTable(errorSchema, document),
+      schemaTable(schema, document),
     );
   }
 
-  for (const [tag, operations] of operationsByTag) {
-    sections.push(`## ${tag}`, ...operations);
+  sections.push(
+    "## Resources",
+    [
+      "| Resource | Operations |",
+      "| --- | --- |",
+      ...groups.map((group) => {
+        const operations =
+          group.operations.length === 1 ? "1 operation" : `${group.operations.length} operations`;
+        return `| [${group.title}](#${group.anchor}) | ${operations} |`;
+      }),
+    ].join("\n"),
+  );
+
+  sections.push("## Operations");
+  for (const group of groups) {
+    sections.push(
+      `<span id="${group.anchor}"></span>`,
+      `### ${group.title}`,
+      operationRows(group.operations),
+      ...group.operations.map((entry) =>
+        operationReference(entry.path, entry.method, entry.operation, document, {
+          headingLevel: 4,
+        }),
+      ),
+    );
   }
 
-  if (Object.keys(document.components?.schemas ?? {}).length) {
-    sections.push("## Shared schemas");
-
-    for (const [name, schema] of Object.entries(document.components.schemas)) {
-      sections.push(
-        `### \`${schema.title ?? name}\``,
-        `Type: \`${schemaType(schema, document)}\`.`,
-      );
-    }
+  const schemas = Object.entries(document.components?.schemas ?? {});
+  if (schemas.length) {
+    sections.push(
+      "## Shared schemas",
+      "Reusable schema names are referenced by operation request and response tables.",
+      [
+        "| Schema | Type |",
+        "| --- | --- |",
+        ...schemas.map(
+          ([name, schema]) =>
+            `| \`${schema.title ?? name}\` | \`${schemaType(schema, document)}\` |`,
+        ),
+      ].join("\n"),
+    );
   }
 
   return `${sections.join("\n\n")}\n`;
+}
+
+export function generateApiReferenceOutputs(document) {
+  const groups = referenceGroups(document);
+  const outputs = [
+    {
+      label: "API reference",
+      path: "docs/reference/api.md",
+      content: referencePage(document, groups),
+    },
+  ];
+  return outputs;
+}
+
+export function generateApiReference(document) {
+  return generateApiReferenceOutputs(document).find(
+    (output) => output.path === "docs/reference/api.md",
+  ).content;
+}
+
+async function walkMarkdown(directoryUrl) {
+  let entries;
+  try {
+    entries = await readdir(directoryUrl, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  }
+
+  const files = [];
+  for (const entry of entries) {
+    const url = new URL(`${entry.name}${entry.isDirectory() ? "/" : ""}`, directoryUrl);
+    if (entry.isDirectory()) files.push(...(await walkMarkdown(url)));
+    else if (entry.isFile() && entry.name.endsWith(".md")) {
+      files.push(relative(repositoryRoot, fileURLToPath(url)).split("\\").join("/"));
+    }
+  }
+  return files;
+}
+
+export async function unexpectedApiReferenceFiles(outputs) {
+  const expectedPaths = new Set(outputs.map((output) => output.path));
+  return (await walkMarkdown(referenceDirectoryPath)).filter((path) => !expectedPaths.has(path));
+}
+
+export async function removeGeneratedApiReferenceDirectory() {
+  await rm(referenceDirectoryPath, { recursive: true, force: true });
 }
 
 async function run() {
@@ -260,26 +417,42 @@ async function run() {
   }
 
   const document = JSON.parse(await readFile(documentPath, "utf8"));
-  const reference = generateApiReference(document);
+  const outputs = generateApiReferenceOutputs(document);
 
   if (arguments_[0] === "--check") {
-    let existing;
-    try {
-      existing = await readFile(referencePath, "utf8");
-    } catch (error) {
-      if (error?.code === "ENOENT") {
-        throw new Error("Missing docs/reference/api.md; run pnpm openapi:generate.");
+    for (const output of outputs) {
+      const path = resolve(repositoryRoot, output.path);
+      let existing;
+      try {
+        existing = await readFile(path, "utf8");
+      } catch (error) {
+        if (error?.code === "ENOENT") {
+          throw new Error(`Missing ${output.path}; run pnpm openapi:generate.`);
+        }
+        throw error;
       }
-      throw error;
+
+      if (existing !== output.content) {
+        throw new Error(`${output.path} is out of date; run pnpm openapi:generate.`);
+      }
     }
 
-    if (existing !== reference) {
-      throw new Error("docs/reference/api.md is out of date; run pnpm openapi:generate.");
+    const unexpected = await unexpectedApiReferenceFiles(outputs);
+    if (unexpected.length) {
+      throw new Error(
+        `Unexpected generated API reference file: ${unexpected.join(", ")}; run pnpm openapi:generate.`,
+      );
     }
-    process.stdout.write("API reference is current: docs/reference/api.md\n");
+
+    process.stdout.write(`API reference is current: ${outputs.length} generated pages\n`);
   } else {
-    await writeFile(referencePath, reference, "utf8");
-    process.stdout.write("Generated API reference: docs/reference/api.md\n");
+    await removeGeneratedApiReferenceDirectory();
+    for (const output of outputs) {
+      const path = resolve(repositoryRoot, output.path);
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(path, output.content, "utf8");
+      process.stdout.write(`Generated ${output.label}: ${output.path}\n`);
+    }
   }
 }
 

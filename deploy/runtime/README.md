@@ -9,13 +9,13 @@ entrypoints:
 
 The Dockerfile installs only public npm packages:
 
-| Input                           | Default                                                                                    |
-| ------------------------------- | ------------------------------------------------------------------------------------------ |
-| `NODE_BASE_IMAGE`               | `node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584` |
-| `OPENCLAW_VERSION`              | `2026.9.1`                                                                                 |
-| `OPENCLAW_CODEX_PLUGIN_VERSION` | `2026.9.1`                                                                                 |
-| `OPENCLAW_SLACK_PLUGIN_VERSION` | `2026.9.1`                                                                                 |
-| `OPENAI_CODEX_VERSION`          | `0.152.1`                                                                                  |
+| Input                           | Default                                                                                                      |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `NODE_BASE_IMAGE`               | `docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584` |
+| `OPENCLAW_VERSION`              | `2026.9.1`                                                                                                   |
+| `OPENCLAW_CODEX_PLUGIN_VERSION` | `2026.9.1`                                                                                                   |
+| `OPENCLAW_SLACK_PLUGIN_VERSION` | `2026.9.1`                                                                                                   |
+| `OPENAI_CODEX_VERSION`          | `0.152.1`                                                                                                    |
 
 Build it from the repository root:
 
@@ -49,7 +49,7 @@ requirement. Run the compatibility check below against the resulting image.
 Production Kubernetes installations can use this recipe as a starting point,
 but must push the resulting image to an operator-controlled registry and
 configure the Kubernetes Compute Driver with immutable `@sha256:` image
-references. Follow [Build and publish production images](../../docs/guides/deploy.md#build-and-publish-production-images)
+references. Follow [Build and publish production images](../../docs/guides/deploy/production-installation.md#build-and-publish-production-images)
 for the controller and runtime build commands, registry publishing, and digest
 configuration.
 
@@ -64,7 +64,7 @@ custom `OCC_DOCKER_RUNTIME_IMAGE`, build or pull that selected tag yourself.
 For Kubernetes, publish the rebuilt image and update both Installation image
 references to its verified immutable digest. Separate gateway and Codex images
 require verification of that exact pair through the
-[Kubernetes runtime tests](../../docs/testing.md#kubernetes-model-turns-and-secrets).
+[Kubernetes runtime tests](../../docs/testing/kubernetes.md#kubernetes-model-turns-and-secrets).
 
 ## Verify the local image
 
@@ -96,6 +96,6 @@ run without external network access or provider credentials. They do not make a
 model call or establish a Slack connection.
 
 Before enabling Slack in an Installation, run the
-[live Slack test](../../docs/testing.md#slack) with the verified image, projected
+[live Slack test](../../docs/testing/slack.md#slack) with the verified image, projected
 credentials, and the required proxy configuration. It must prove a real mention,
 Codex turn, and gateway-authored reply; gateway readiness alone is insufficient.

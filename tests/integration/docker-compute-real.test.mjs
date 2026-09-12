@@ -20,7 +20,12 @@ const executeFile = promisify(execFile);
 const tuiPty = fileURLToPath(new URL("../helpers/tui-pty.py", import.meta.url));
 const python = process.env.PYTHON ?? "python3";
 
+const podmanSelected = process.env.OCC_TEST_PODMAN_COMPUTE_REAL === "1";
+const engineBinary = podmanSelected ? "podman" : "docker";
+const engineName = podmanSelected ? "Podman" : "Docker";
+const executionModes = podmanSelected ? ["embedded"] : ["embedded", "dedicated"];
 const selected =
+  podmanSelected ||
   process.env.OCC_TEST_DOCKER_COMPUTE_REAL === "1" ||
   process.env.OCC_TEST_OTEL_LOGS === "1" ||
   [
@@ -31,17 +36,22 @@ const selected =
 const requiresDockerCompute = {
   skip: selected
     ? false
-    : "Set OCC_TEST_DOCKER_COMPUTE_REAL=1 plus Docker Compose runtime image variables and OPENAI_API_KEY to run the real Docker Compute proof.",
+    : "Set OCC_TEST_DOCKER_COMPUTE_REAL=1 or OCC_TEST_PODMAN_COMPUTE_REAL=1 plus Compose runtime image variables and OPENAI_API_KEY to run the real Docker Compute proof.",
 };
 
 const DEFAULT_RUNTIME_IMAGE = "oce-harness-real:pr26-compatible-runtime";
 const COMPOSE_FILE = "compose.yaml";
 const LOGGING_COMPOSE_FILE = "compose.logging.yaml";
+const PODMAN_COMPOSE_FILE = "compose.podman.yaml";
 const INTERNAL_API_PORT = "3000";
 const BOOTSTRAP_SERVICE_KEY_PATH = "/var/lib/openclaw/bootstrap/initial-admin-service-key.json";
 const OCC_API_SCRIPT = "scripts/occ-api";
-const LABEL_COMPOSE_PROJECT = "com.docker.compose.project";
-const LABEL_COMPOSE_SERVICE = "com.docker.compose.service";
+const LABEL_COMPOSE_PROJECT = podmanSelected
+  ? "io.podman.compose.project"
+  : "com.docker.compose.project";
+const LABEL_COMPOSE_SERVICE = podmanSelected
+  ? "io.podman.compose.service"
+  : "com.docker.compose.service";
 const LABEL_MANAGED = "org.openclaw.enterprise.managed";
 const LABEL_DRIVER = "org.openclaw.enterprise.compute-driver";
 const LABEL_NAMESPACE = "org.openclaw.enterprise.namespace-id";
@@ -98,7 +108,7 @@ async function command(file, args, { env, timeoutMs = 120_000, secrets = [] } = 
 }
 
 async function docker(args, options) {
-  return command("docker", args, options);
+  return command(engineBinary, args, options);
 }
 
 async function dockerJson(args, options) {
@@ -149,7 +159,11 @@ async function waitFor(description, operation, timeoutMs = 180_000) {
 }
 
 function composeArguments(project, commandName, args = [], { withLogging = false } = {}) {
-  const files = [COMPOSE_FILE, ...(withLogging ? [LOGGING_COMPOSE_FILE] : [])];
+  const files = [
+    COMPOSE_FILE,
+    ...(withLogging ? [LOGGING_COMPOSE_FILE] : []),
+    ...(podmanSelected ? [PODMAN_COMPOSE_FILE] : []),
+  ];
   return [
     "compose",
     "--project-name",
@@ -242,16 +256,49 @@ async function cleanupProject(project, env, namespaceIds = [], options = {}) {
     ...labelFilters([[LABEL_COMPOSE_PROJECT, project]]),
   ]).catch(() => []);
   if (volumes.length > 0) await docker(["volume", "rm", ...volumes]).catch(() => {});
+
+  const applicationImage = `${project}-application`;
+  if (options.removeApplicationImage === true) {
+    await docker(["image", "rm", applicationImage]).catch(() => {});
+  }
+
+  if (options.verify === true) {
+    const [
+      runtimeContainers,
+      namespaceNetworks,
+      projectContainers,
+      projectNetworks,
+      projectVolumes,
+      projectImages,
+    ] = await Promise.all([
+      idsByNamespace(namespaceIds, ["ps", "-aq"], { ignoreErrors: false }),
+      idsByNamespace(namespaceIds, ["network", "ls", "-q"], { ignoreErrors: false }),
+      dockerLines(["ps", "-aq", ...labelFilters([[LABEL_COMPOSE_PROJECT, project]])]),
+      dockerLines(["network", "ls", "-q", ...labelFilters([[LABEL_COMPOSE_PROJECT, project]])]),
+      dockerLines(["volume", "ls", "-q", ...labelFilters([[LABEL_COMPOSE_PROJECT, project]])]),
+      options.removeApplicationImage === true
+        ? dockerLines(["image", "ls", "-q", "--filter", `reference=${applicationImage}`])
+        : Promise.resolve([]),
+    ]);
+    assert.deepEqual(runtimeContainers, [], "test teardown must remove owned runtime containers");
+    assert.deepEqual(namespaceNetworks, [], "test teardown must remove owned Namespace networks");
+    assert.deepEqual(projectContainers, [], "test teardown must remove Compose project containers");
+    assert.deepEqual(projectNetworks, [], "test teardown must remove Compose project networks");
+    assert.deepEqual(projectVolumes, [], "test teardown must remove Compose project volumes");
+    assert.deepEqual(projectImages, [], "test teardown must remove the Podman application image");
+  }
 }
 
-async function idsByNamespace(namespaceIds, baseArgs) {
+async function idsByNamespace(namespaceIds, baseArgs, { ignoreErrors = true } = {}) {
   return (
     await Promise.all(
-      namespaceIds.map((namespaceId) =>
-        dockerLines([...baseArgs, ...labelFilters(managedNamespaceLabels(namespaceId))]).catch(
-          () => [],
-        ),
-      ),
+      namespaceIds.map((namespaceId) => {
+        const listed = dockerLines([
+          ...baseArgs,
+          ...labelFilters(managedNamespaceLabels(namespaceId)),
+        ]);
+        return ignoreErrors ? listed.catch(() => []) : listed;
+      }),
     )
   ).flat();
 }
@@ -496,6 +543,10 @@ async function inspectNetworks(namespaceId) {
   return dockerJson(["network", "inspect", ...ids]);
 }
 
+function inspectedNetworkName(network) {
+  return nonempty(network.Name ?? network.name, "inspected container network name");
+}
+
 function containerEnv(container, name) {
   const entry = (container.Config?.Env ?? []).find((value) => value.startsWith(`${name}=`));
   return entry === undefined ? undefined : entry.slice(name.length + 1);
@@ -561,7 +612,7 @@ function assertNamespaceOnlyAttachment(container, networkName) {
 }
 
 async function waitForNamespaceNetwork(namespaceId) {
-  const networks = await waitFor(`Docker network for Namespace ${namespaceId}`, async () => {
+  const networks = await waitFor(`${engineName} network for Namespace ${namespaceId}`, async () => {
     const current = await inspectNetworks(namespaceId);
     return current.length === 1 ? current : undefined;
   });
@@ -664,7 +715,7 @@ async function runTuiPty(args, { secrets, timeoutMs = 540_000, onFailure } = {})
 function tuiDockerCommand(gateway, stateDir, args, environment = []) {
   return [
     "--",
-    "docker",
+    engineBinary,
     "exec",
     "--interactive",
     "--tty",
@@ -776,12 +827,10 @@ async function assertCollectorOutageDoesNotBlockDockerOperations({
   try {
     const installation = await request("GET", "/installation", undefined, { timeoutMs: 5_000 });
     assert.equal(installation.status, 200, JSON.stringify(installation.error));
-    const deleted = await request("DELETE", `/namespaces/${cleanupNamespace.id}`, undefined, {
-      timeoutMs: 10_000,
-    });
-    assert.equal(deleted.status, 202, JSON.stringify(deleted.error));
-    await waitFor(`cleanup Namespace ${cleanupNamespace.id} network removal`, async () => {
-      return (await inspectNetworks(cleanupNamespace.id)).length === 0 ? true : undefined;
+    await deleteEmptyNamespace({
+      request,
+      cleanupNamespace,
+      requestOptions: { timeoutMs: 10_000 },
     });
   } finally {
     await docker(
@@ -796,6 +845,19 @@ async function assertCollectorOutageDoesNotBlockDockerOperations({
     });
   }
   if (restartError !== undefined) throw restartError;
+}
+
+async function deleteEmptyNamespace({ request, cleanupNamespace, requestOptions }) {
+  const deleted = await request(
+    "DELETE",
+    `/namespaces/${cleanupNamespace.id}`,
+    undefined,
+    requestOptions,
+  );
+  assert.equal(deleted.status, 202, JSON.stringify(deleted.error));
+  await waitFor(`cleanup Namespace ${cleanupNamespace.id} network removal`, async () => {
+    return (await inspectNetworks(cleanupNamespace.id)).length === 0 ? true : undefined;
+  });
 }
 
 async function createAgentJourney({ request, namespaceId, mode, label }) {
@@ -835,18 +897,41 @@ async function createAgentJourney({ request, namespaceId, mode, label }) {
 }
 
 test(
-  "Docker Compose development drives Docker Compute networks, containers, auth, cleanup, and real model turns",
+  `${engineName} Compose development drives Docker Compute networks, containers, auth, cleanup, and real model turns`,
   { ...requiresDockerCompute, timeout: 1_200_000 },
   async (context) => {
+    assert.equal(
+      podmanSelected &&
+        (process.env.OCC_TEST_OTEL_LOGS === "1" ||
+          Boolean(process.env.OCC_TEST_OTEL_LOGS_JSONL) ||
+          Boolean(process.env.OCC_TEST_OTEL_LOGS_URL)),
+      false,
+      "the first Podman increment does not include Docker Fluentd/OTLP logging proof",
+    );
     const providerKey = nonempty(
       process.env.OPENAI_API_KEY,
-      "OPENAI_API_KEY for real Docker Compute model turns",
+      `OPENAI_API_KEY for real ${engineName} Compute model turns`,
     );
     const runtimeImage = process.env.OCC_DOCKER_RUNTIME_IMAGE ?? DEFAULT_RUNTIME_IMAGE;
     const gatewayImage = process.env.OCC_DOCKER_GATEWAY_IMAGE ?? runtimeImage;
     const agentImage = process.env.OCC_DOCKER_AGENT_IMAGE ?? runtimeImage;
+    const podmanComposeProvider = "podman-compose";
+    let podmanSocket;
+    if (podmanSelected) {
+      await command(podmanComposeProvider, ["--version"], { timeoutMs: 30_000 });
+      const { stdout } = await docker(["info", "--format", "{{.Host.RemoteSocket.Path}}"], {
+        timeoutMs: 30_000,
+      });
+      podmanSocket = nonempty(stdout.trim().replace(/^unix:\/\//, ""), "Podman API socket path");
+      assert.equal(podmanSocket.startsWith("/"), true, "Podman API socket path must be absolute");
+    }
     await docker(["version"], { timeoutMs: 30_000 });
-    await docker(["compose", "version"], { timeoutMs: 30_000 });
+    await docker(["compose", "version"], {
+      env: podmanSelected
+        ? { ...process.env, PODMAN_COMPOSE_PROVIDER: podmanComposeProvider }
+        : process.env,
+      timeoutMs: 30_000,
+    });
     await Promise.all(
       [gatewayImage, agentImage].map((image) =>
         docker(["image", "inspect", image], { timeoutMs: 30_000 }),
@@ -855,22 +940,26 @@ test(
 
     const apiPort = await reserveLoopbackPort();
     const postgresPort = await reserveLoopbackPort();
-    const project = `oce-docker-${randomUUID().replaceAll("-", "").slice(0, 18)}`;
+    const project = `oce-${engineBinary}-${randomUUID().replaceAll("-", "").slice(0, 18)}`;
     const namespaceIds = [];
+    let cleanupServiceKey;
     const adminEmail = `admin-${project}@example.test`;
-    const adminPassword = `docker-admin-${randomUUID()}`;
+    const adminPassword = `${engineBinary}-admin-${randomUUID()}`;
     const baseUrl = `http://127.0.0.1:${apiPort}`;
     const composeSubnet = randomComposeSubnet();
     const otelLogs = createOtelLogObservation(context, {
-      description: "Docker Compose real-runtime OTel logs",
+      description: `${engineName} Compose real-runtime OTel logs`,
     });
     const loggingPort = otelLogs.enabled ? await reserveLoopbackPort() : undefined;
     const loggingMetricsPort = otelLogs.enabled ? await reserveLoopbackPort() : undefined;
-    const composeOptions = { withLogging: otelLogs.enabled };
+    const composeOptions = {
+      withLogging: otelLogs.enabled,
+      removeApplicationImage: podmanSelected,
+    };
     const env = {
       ...process.env,
       COMPOSE_PROJECT_NAME: project,
-      NODE_BASE_IMAGE: process.env.NODE_BASE_IMAGE ?? "node:24-bookworm",
+      NODE_BASE_IMAGE: process.env.NODE_BASE_IMAGE ?? "docker.io/library/node:24-bookworm",
       NODE_ENV: "development",
       OCC_HOST: "0.0.0.0",
       OCC_PORT: INTERNAL_API_PORT,
@@ -882,11 +971,17 @@ test(
       OCC_AUTH_BASE_URL: baseUrl,
       OPENCLAW_DEV_EMAIL: adminEmail,
       OPENCLAW_DEV_PASSWORD: adminPassword,
-      OPENCLAW_DEV_INSTALLATION_NAME: `OpenClaw Docker Compute ${project}`,
+      OPENCLAW_DEV_INSTALLATION_NAME: `OpenClaw ${engineName} Compute ${project}`,
       OCC_DOCKER_RUNTIME_IMAGE: runtimeImage,
       OCC_DOCKER_GATEWAY_IMAGE: gatewayImage,
       OCC_DOCKER_AGENT_IMAGE: agentImage,
       OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR: composeSubnet,
+      ...(podmanSelected
+        ? {
+            PODMAN_COMPOSE_PROVIDER: podmanComposeProvider,
+            OCC_CONTAINER_ENGINE_SOCKET: podmanSocket,
+          }
+        : {}),
       ...(loggingPort === undefined
         ? {}
         : {
@@ -898,17 +993,47 @@ test(
     };
 
     context.after(async () => {
-      await cleanupProject(project, env, namespaceIds, composeOptions);
+      const cleanupNamespaceIds = new Set(namespaceIds);
+      let namespaceDiscoveryError;
+      if (cleanupServiceKey !== undefined) {
+        try {
+          const listed = await apiClient(baseUrl, cleanupServiceKey)("GET", "/namespaces");
+          assert.equal(listed.status, 200, JSON.stringify(listed.error));
+          assert.ok(Array.isArray(listed.data), "Namespace cleanup discovery must return a list");
+          for (const namespace of listed.data) cleanupNamespaceIds.add(namespace.id);
+        } catch (error) {
+          namespaceDiscoveryError = error;
+        }
+      }
+      await cleanupProject(project, env, [...cleanupNamespaceIds], {
+        ...composeOptions,
+        verify: podmanSelected,
+      });
+      if (namespaceDiscoveryError !== undefined) throw namespaceDiscoveryError;
     });
-    const bootstrapDirectory = await mkdtemp(join(tmpdir(), "openclaw-docker-bootstrap-key-"));
+    const bootstrapDirectory = await mkdtemp(
+      join(tmpdir(), `openclaw-${engineBinary}-bootstrap-key-`),
+    );
     context.after(async () => {
       await rm(bootstrapDirectory, { recursive: true, force: true });
     });
     await cleanupProject(project, env, [], composeOptions);
     const composeSecrets = [providerKey, adminPassword];
     try {
+      if (podmanSelected) {
+        await docker(composeArguments(project, "build", ["migrate"], composeOptions), {
+          env,
+          timeoutMs: 600_000,
+          secrets: composeSecrets,
+        });
+      }
       await docker(
-        composeArguments(project, "up", ["--build", "--detach", "--wait"], composeOptions),
+        composeArguments(
+          project,
+          "up",
+          podmanSelected ? ["--no-build", "--detach"] : ["--build", "--detach", "--wait"],
+          composeOptions,
+        ),
         {
           env,
           timeoutMs: 300_000,
@@ -918,7 +1043,7 @@ test(
     } catch (error) {
       const logs = await composeFailureLogs(project, env, composeSecrets, composeOptions);
       throw new Error(
-        `${error instanceof Error ? error.message : String(error)}\n\nDocker Compose failure logs for ${project}:\n${logs}`,
+        `${error instanceof Error ? error.message : String(error)}\n\n${engineName} Compose failure logs for ${project}:\n${logs}`,
       );
     }
 
@@ -944,6 +1069,7 @@ test(
       secrets: composeSecrets,
     });
     const serviceKey = serviceKeyOutput.data.key;
+    cleanupServiceKey = serviceKey;
     assert.equal(serviceKeyOutput.meta.installationId.startsWith("ins_"), true);
     const helperInstallation = await occApi({
       baseUrl,
@@ -1005,7 +1131,7 @@ test(
     assert.equal(forwarded.status, 403, JSON.stringify(forwarded));
 
     const namespaces = [];
-    for (const label of ["embedded", "dedicated"]) {
+    for (const label of executionModes) {
       const created = await request("POST", "/namespaces", {
         name: `${label}-${project}`,
       });
@@ -1027,16 +1153,30 @@ test(
         }),
       ),
     );
-    const [embeddedNamespace, dedicatedNamespace, cleanupNamespace] = namespaces;
+    const embeddedNamespace = namespaces.find((namespace) =>
+      namespace.name.startsWith("embedded-"),
+    );
+    const dedicatedNamespace = namespaces.find((namespace) =>
+      namespace.name.startsWith("dedicated-"),
+    );
+    const cleanupNamespace = helperNamespace.data;
+    assert.ok(embeddedNamespace, "embedded Namespace must be provisioned");
     const embeddedNetwork = await waitForNamespaceNetwork(embeddedNamespace.id);
-    const dedicatedNetwork = await waitForNamespaceNetwork(dedicatedNamespace.id);
+    const dedicatedNetwork =
+      dedicatedNamespace === undefined
+        ? undefined
+        : await waitForNamespaceNetwork(dedicatedNamespace.id);
     const cleanupNetwork = await waitForNamespaceNetwork(cleanupNamespace.id);
     assert.equal(
-      new Set([embeddedNetwork.Name, dedicatedNetwork.Name, cleanupNetwork.Name]).size,
-      3,
+      new Set(
+        [embeddedNetwork, dedicatedNetwork, cleanupNetwork]
+          .filter((network) => network !== undefined)
+          .map(inspectedNetworkName),
+      ).size,
+      namespaces.length,
       "each Namespace must receive a dedicated Docker network",
     );
-    for (const namespace of [embeddedNamespace, dedicatedNamespace, cleanupNamespace]) {
+    for (const namespace of namespaces) {
       assert.equal(
         await containerCount([[LABEL_NAMESPACE, namespace.id]]),
         0,
@@ -1050,12 +1190,15 @@ test(
       mode: "embedded",
       label: "embedded",
     });
-    const dedicated = await createAgentJourney({
-      request,
-      namespaceId: dedicatedNamespace.id,
-      mode: "dedicated",
-      label: "dedicated",
-    });
+    const dedicated =
+      dedicatedNamespace === undefined
+        ? undefined
+        : await createAgentJourney({
+            request,
+            namespaceId: dedicatedNamespace.id,
+            mode: "dedicated",
+            label: "dedicated",
+          });
 
     await assertRuntimeDatabaseEvidence({
       project,
@@ -1063,7 +1206,10 @@ test(
       serviceKeyOutput,
       serviceKey,
       namespaceIds,
-      revisionIds: [embedded.revision.id, dedicated.revision.id],
+      revisionIds: [
+        embedded.revision.id,
+        ...(dedicated === undefined ? [] : [dedicated.revision.id]),
+      ],
     });
 
     const [embeddedGateway] = await waitForContainers(
@@ -1089,6 +1235,32 @@ test(
       0,
       "embedded execution must not start a separate Codex container",
     );
+
+    const embeddedToken = nonempty(
+      containerEnv(embeddedGateway, "OPENCLAW_GATEWAY_TOKEN"),
+      "embedded gateway token",
+    );
+    if (podmanSelected) {
+      await invokeGateway({
+        networkName: inspectedNetworkName(embeddedNetwork),
+        gateway: embeddedGateway,
+        gatewayToken: embeddedToken,
+        mode: "embedded",
+        onFailure: () => containerLogs([embeddedGateway], [embeddedToken]),
+      });
+      // Exercise the supported controller cleanup path without inventing Agent deletion semantics.
+      await deleteEmptyNamespace({ request, cleanupNamespace });
+      assert.equal((await inspectNetworks(embeddedNamespace.id)).length, 1);
+      assert.equal(
+        await containerCount([
+          [LABEL_NAMESPACE, embeddedNamespace.id],
+          [LABEL_ROLE, "gateway"],
+        ]),
+        1,
+      );
+      await assertComposeLogsDoNotLeakBootstrapServiceKey({ project, env, serviceKey });
+      return;
+    }
 
     const dedicatedGateway = (
       await waitForContainers(
@@ -1131,17 +1303,13 @@ test(
       hasContainerEnv(dedicatedAgent, "APP_SERVER_TOKEN"),
       "dedicated Codex app-server must receive the matching app-server token",
     );
-    assertNamespaceOnlyAttachment(dedicatedAgent, dedicatedNetwork.Name);
+    assertNamespaceOnlyAttachment(dedicatedAgent, inspectedNetworkName(dedicatedNetwork));
     assertDockerRuntimeOtelSettings(otelLogs, [embeddedGateway, dedicatedGateway, dedicatedAgent]);
-
-    const embeddedToken = nonempty(
-      containerEnv(embeddedGateway, "OPENCLAW_GATEWAY_TOKEN"),
-      "embedded gateway token",
-    );
     const dedicatedToken = nonempty(
       containerEnv(dedicatedGateway, "OPENCLAW_GATEWAY_TOKEN"),
       "dedicated gateway token",
     );
+
     await assertInvalidTokenTuiDenied({
       context,
       gateway: embeddedGateway,
@@ -1165,14 +1333,14 @@ test(
       onFailure: () => containerLogs([tuiGateway], [embeddedToken]),
     });
     await invokeGateway({
-      networkName: embeddedNetwork.Name,
+      networkName: inspectedNetworkName(embeddedNetwork),
       gateway: embeddedGateway,
       gatewayToken: embeddedToken,
       mode: "embedded",
       onFailure: () => containerLogs([embeddedGateway], [embeddedToken]),
     });
     await invokeGateway({
-      networkName: dedicatedNetwork.Name,
+      networkName: inspectedNetworkName(dedicatedNetwork),
       gateway: dedicatedGateway,
       gatewayToken: dedicatedToken,
       mode: "dedicated",
@@ -1279,14 +1447,9 @@ test(
         secrets: [providerKey, adminPassword, serviceKey],
       });
     } else {
-      const deleted = await request("DELETE", `/namespaces/${cleanupNamespace.id}`);
-      assert.equal(deleted.status, 202, JSON.stringify(deleted.error));
-      await waitFor(`cleanup Namespace ${cleanupNamespace.id} network removal`, async () => {
-        return (await inspectNetworks(cleanupNamespace.id)).length === 0 ? true : undefined;
-      });
+      await deleteEmptyNamespace({ request, cleanupNamespace });
     }
     assert.equal((await inspectNetworks(embeddedNamespace.id)).length, 1);
-    assert.equal((await inspectNetworks(dedicatedNamespace.id)).length, 1);
     assert.equal(
       await containerCount([
         [LABEL_NAMESPACE, embeddedNamespace.id],
@@ -1294,6 +1457,7 @@ test(
       ]),
       1,
     );
+    assert.equal((await inspectNetworks(dedicatedNamespace.id)).length, 1);
     assert.equal(
       await containerCount([
         [LABEL_NAMESPACE, dedicatedNamespace.id],

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-20
-updated: 2026-09-01
-last_updated_session: codex/01a05f95-dd80-7011-990f-d1c46b5bb3cc
+updated: 2026-09-08
+last_updated_session: codex/01a07d92-d866-7731-afe5-abab67d8966c
 ---
 
 # Compute Driver Lifecycle Hooks Flow
@@ -93,6 +93,12 @@ without starting the replacement gateway. After the worker commits the new activ
 `KubernetesComputeDriver.activateRevision` invokes `beforeWorkloadStart`, updates the `Recreate`
 gateway Deployment and Service, then checks gateway readiness.
 
+SSH stages embedded snapshots without starting the candidate gateway. After the
+worker commits the active revision, `SshComputeDriver.activateRevision` invokes
+`beforeWorkloadStart`, then projects accepted launch placeholders into the
+Agent's systemd unit before restart. Failed activation compensates prepared
+bindings through `beforeWorkloadStop`.
+
 The dispatcher rejects reserved environment keys and values outside the explicit `opaque-`
 placeholder format, then freezes a detached launch snapshot using the shared
 [immutability helpers](../../packages/utils/src/index.ts). Kubernetes and Docker Compute project
@@ -137,6 +143,8 @@ bounded cleanup signal so cancellation cannot suppress compensation.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-08 07:49: Document SSH activation-time workload hooks and compensation. (01a07d92-d866-7731-afe5-abab67d8966c - 4d83087229961f3665b923d2581c0b71b988cc9c)
 
 - 2026-09-01 19:09: Corrected Kubernetes embedded replacement hook ordering so `prepareRevision` stages readiness and `activateRevision` starts the replacement gateway. (01a05f95-dd80-7011-990f-d1c46b5bb3cc - aa366c49c44834d59f74994c5fd37fb8096f169f)
 - 2026-08-28 21:20: Updated the lifecycle trace and verification for Docker and Kubernetes. (01a036f4-cf1d-7cc1-bbc1-000879038ac8 - 3ec166eb5fae39ed0f51ffb5ebd93338c4a2db94)

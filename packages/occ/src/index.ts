@@ -2,6 +2,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type {
   Agent,
   AgentRevision,
+  AgentRuntimeCredentialsInput,
+  AgentRuntimeCredentialStatus,
   AuthorizationDecision,
   AuthorizationRequest,
   ComputeDriver,
@@ -20,6 +22,9 @@ import type {
   LoggingLevel,
   OpenClawConfigurationDocument,
   PermissionAction,
+  PluginDesiredState,
+  PluginDriver,
+  PluginRevisionState,
   ProviderDefinition,
   ProviderRef,
   ResourceKind,
@@ -40,6 +45,7 @@ import {
   SANDBOX_FACETS,
   admitLoggingConfiguration,
   normalizeLoggingLevel,
+  normalizePluginDesiredState,
   normalizeSecretBindings,
 } from "@openclaw-enterprise/contracts";
 import { asRecord, immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
@@ -49,6 +55,7 @@ import {
   DriverSelectionError,
   NamespaceNotEmptyError,
   NamespaceNotReadyError,
+  NotImplementedError,
   ResourceConflictError,
   ScopeViolationError,
 } from "./errors.ts";
@@ -74,6 +81,7 @@ export {
   DriverSelectionError,
   NamespaceNotEmptyError,
   NamespaceNotReadyError,
+  NotImplementedError,
   ResourceConflictError,
   ScopeViolationError,
 } from "./errors.ts";
@@ -157,6 +165,7 @@ export interface CreateAgentInput {
   readonly providerId?: string | null;
   readonly serviceAccountId?: string;
   readonly executionMode?: HarnessExecutionMode;
+  readonly plugins?: PluginDesiredState;
 }
 
 export interface UpdateAgentInput {
@@ -166,6 +175,7 @@ export interface UpdateAgentInput {
   readonly providerId?: string | null;
   readonly serviceAccountId?: string | null;
   readonly executionMode?: HarnessExecutionMode;
+  readonly plugins?: PluginDesiredState;
 }
 
 export interface CreateServiceAccountInput {
@@ -230,6 +240,7 @@ type DriverByCapability = {
   secret: SecretDriver;
   sandbox: SandboxDriver;
   compute: ComputeDriver;
+  plugin: PluginDriver;
 };
 type DriverFor<Capability extends DriverCapability> = DriverByCapability[Capability];
 
@@ -276,11 +287,16 @@ function driverHasCapabilityContract(driver: Driver): boolean {
         typeof candidate.provisionHarness === "function") &&
       typeof candidate.cleanup === "function"
     );
+  if (driver.capability === "plugin") return typeof candidate.listCatalog === "function";
   return (
     typeof candidate.ensureNamespace === "function" &&
     typeof candidate.deleteNamespace === "function" &&
     typeof candidate.prepareRevision === "function" &&
-    typeof candidate.retireRevision === "function"
+    typeof candidate.retireRevision === "function" &&
+    (candidate.getAgentRuntimeCredentialStatus === undefined ||
+      typeof candidate.getAgentRuntimeCredentialStatus === "function") &&
+    (candidate.provisionAgentRuntimeCredentials === undefined ||
+      typeof candidate.provisionAgentRuntimeCredentials === "function")
   );
 }
 
@@ -513,6 +529,16 @@ function validExecutionMode(value: unknown): value is HarnessExecutionMode {
   return value === "embedded" || value === "dedicated";
 }
 
+function invalidPluginRequest(message: string): never {
+  throw new ScopeViolationError(message);
+}
+
+function normalizeAgentPlugins(
+  plugins: PluginDesiredState | undefined,
+): PluginDesiredState | undefined {
+  return normalizePluginDesiredState(plugins, invalidPluginRequest);
+}
+
 export class OpenClawController {
   readonly installation: Readonly<Installation>;
 
@@ -689,6 +715,95 @@ export class OpenClawController {
           "The Agent does not belong to the exact Installation and Namespace.",
         );
       return agent;
+    });
+  }
+
+  async getAgentRuntimeCredentialStatus(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+  ): Promise<Readonly<AgentRuntimeCredentialStatus>> {
+    if (!isNonEmptyString(namespaceId))
+      throw new ScopeViolationError("The exact Namespace identity is missing.");
+    if (!isNonEmptyString(agentId))
+      throw new ScopeViolationError("The exact Agent identity is missing.");
+    await this.authorize(principalId, "read", {
+      kind: "agent",
+      id: agentId,
+      namespaceId,
+    });
+    return this.read(async (state) => {
+      const namespace = await this.exactNamespace(state, namespaceId);
+      const agent = await state.agents.findAgent(namespace.id, agentId);
+      if (!agent)
+        throw new ScopeViolationError(
+          "The Agent does not belong to the exact Installation and Namespace.",
+        );
+      const driver = this.runtimeCredentialComputeDriver("status");
+      return this.runtimeCredentialStatus(
+        await this.runtimeCredentialOperation(() =>
+          driver.getAgentRuntimeCredentialStatus!({ namespace, agent }),
+        ),
+      );
+    });
+  }
+
+  async provisionAgentRuntimeCredentials(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    input: AgentRuntimeCredentialsInput,
+  ): Promise<Readonly<AgentRuntimeCredentialStatus>> {
+    const credentials = this.runtimeCredentialsInput(input);
+    if (!isNonEmptyString(namespaceId))
+      throw new ScopeViolationError("The exact Namespace identity is missing.");
+    if (!isNonEmptyString(agentId))
+      throw new ScopeViolationError("The exact Agent identity is missing.");
+    return this.mutate(async (state) => {
+      const namespace = await this.lockNamespace(state, namespaceId);
+      const agent = await state.agents.lockAgent(namespace.id, agentId);
+      if (!agent)
+        throw new ScopeViolationError(
+          "The Agent does not belong to the exact Installation and Namespace.",
+        );
+      await this.authorize(principalId, "read", {
+        kind: "agent",
+        id: agent.id,
+        namespaceId: namespace.id,
+      });
+      await this.authorize(principalId, "operate", {
+        kind: "agent",
+        id: agent.id,
+        namespaceId: namespace.id,
+      });
+      if (namespace.status !== "ready") throw new NamespaceNotReadyError();
+      const configuration = await state.configurations.lockConfiguration(
+        namespace.id,
+        agent.configurationId,
+      );
+      if (!configuration || configuration.kind !== "agent")
+        throw new ScopeViolationError(
+          "The Agent Configuration must belong to the exact Namespace and configure an Agent.",
+        );
+      if (agent.serviceAccountId !== undefined)
+        throw new ResourceConflictError(
+          "Legacy per-Agent runtime credential provisioning requires an Agent without a ServiceAccount.",
+        );
+      const secretBindings = this.bindings(configuration.secretBindings);
+      if (secretBindings.OPENAI_API_KEY !== undefined)
+        throw new ResourceConflictError(
+          "Legacy per-Agent runtime credential provisioning requires an Agent without a model Secret binding.",
+        );
+      if ((await state.revisions.listRevisions(namespace.id, agent.id)).length > 0)
+        throw new ResourceConflictError(
+          "Runtime credentials can be provisioned only before the Agent has historical revisions.",
+        );
+      const driver = this.runtimeCredentialComputeDriver("provision");
+      return this.runtimeCredentialStatus(
+        await this.runtimeCredentialOperation(() =>
+          driver.provisionAgentRuntimeCredentials!({ namespace, agent }, credentials),
+        ),
+      );
     });
   }
 
@@ -1297,6 +1412,7 @@ export class OpenClawController {
     if (!validExecutionMode(executionMode))
       throw new ScopeViolationError("The Agent Harness execution mode is invalid.");
     const providerId = this.providerId(input.providerId);
+    const plugins = normalizeAgentPlugins(input.plugins);
     return this.mutate(async (state) => {
       const namespace = await this.lockNamespace(state, input.namespaceId);
       if (namespace.status !== "provisioning" && namespace.status !== "ready")
@@ -1346,6 +1462,7 @@ export class OpenClawController {
           ? {}
           : { serviceAccountId: input.serviceAccountId }),
         executionMode,
+        ...(plugins === undefined ? {} : { plugins }),
         servicePrincipalId: `service-agent-${agentId}`,
         createdAt: this.timestamp(),
       });
@@ -1366,6 +1483,7 @@ export class OpenClawController {
       throw new ScopeViolationError("The exact Agent ServiceAccount identity is missing.");
     if (input.executionMode !== undefined && !validExecutionMode(input.executionMode))
       throw new ScopeViolationError("The Agent Harness execution mode is invalid.");
+    const plugins = normalizeAgentPlugins(input.plugins);
     return this.mutate(async (state) => {
       const namespace = await this.lockNamespace(state, input.namespaceId);
       const agent = await state.agents.lockAgent(namespace.id, input.agentId);
@@ -1428,6 +1546,7 @@ export class OpenClawController {
         input.executionMode,
         input.serviceAccountId,
         input.providerId === undefined ? undefined : providerId,
+        plugins,
       );
       if (!updated)
         throw new ResourceConflictError("The Agent Configuration changed during its update.");
@@ -1596,6 +1715,16 @@ export class OpenClawController {
           "ServiceAccount access-token credentials require the dedicated Codex Harness.",
         );
       }
+      const pluginState =
+        lockedAgent.plugins === undefined || Object.keys(lockedAgent.plugins).length === 0
+          ? undefined
+          : (() => {
+              const driver = this.pluginDriver();
+              return immutableCopy({
+                driver: { id: driver.id, implementation: driver.implementation },
+                plugins: lockedAgent.plugins,
+              } satisfies PluginRevisionState);
+            })();
       const previous = await state.revisions.listRevisions(namespace.id, lockedAgent.id);
       const revision = await state.revisions.createRevision(
         frozenRevision({
@@ -1618,6 +1747,7 @@ export class OpenClawController {
           ...(secretDriver === undefined
             ? {}
             : { secretDriverId: secretDriver.id, secretBindings }),
+          ...(pluginState === undefined ? {} : { plugins: pluginState }),
           ...(serviceAccount === undefined ? {} : { serviceAccount }),
           servicePrincipalId: lockedAgent.servicePrincipalId,
           createdAt: this.timestamp(),
@@ -2003,6 +2133,71 @@ export class OpenClawController {
       );
   }
 
+  private validateRuntimeCredentialValue(value: unknown): asserts value is string {
+    if (
+      typeof value !== "string" ||
+      value.length === 0 ||
+      value.includes("\u0000") ||
+      /[\uD800-\uDFFF]/u.test(value) ||
+      Buffer.byteLength(value, "utf8") > 65_536
+    )
+      throw new ScopeViolationError(
+        "Agent runtime credential values must be nonempty UTF-8, without NUL, and at most 65536 bytes.",
+      );
+  }
+
+  private runtimeCredentialsInput(
+    input: AgentRuntimeCredentialsInput,
+  ): AgentRuntimeCredentialsInput {
+    const candidate = asRecord(input);
+    if (candidate === undefined)
+      throw new ScopeViolationError("Agent runtime credentials must be a JSON object.");
+    const keys = Object.keys(candidate);
+    if (!keys.every((key) => key === "modelApiKey" || key === "slack"))
+      throw new ScopeViolationError("Agent runtime credentials contain unsupported fields.");
+    if (candidate.modelApiKey !== undefined)
+      this.validateRuntimeCredentialValue(candidate.modelApiKey);
+    let slack: AgentRuntimeCredentialsInput["slack"];
+    if (candidate.slack !== undefined) {
+      const slackCandidate = asRecord(candidate.slack);
+      if (
+        slackCandidate === undefined ||
+        !["appToken", "botToken"].every((key) => Object.hasOwn(slackCandidate, key)) ||
+        !Object.keys(slackCandidate).every((key) => key === "appToken" || key === "botToken")
+      )
+        throw new ScopeViolationError("Agent Slack runtime credentials are invalid.");
+      this.validateRuntimeCredentialValue(slackCandidate.appToken);
+      this.validateRuntimeCredentialValue(slackCandidate.botToken);
+      slack = {
+        appToken: slackCandidate.appToken,
+        botToken: slackCandidate.botToken,
+      };
+    }
+    return Object.freeze({
+      ...(candidate.modelApiKey === undefined ? {} : { modelApiKey: candidate.modelApiKey }),
+      ...(slack === undefined ? {} : { slack: Object.freeze(slack) }),
+    });
+  }
+
+  private runtimeCredentialStatus(
+    status: AgentRuntimeCredentialStatus,
+  ): Readonly<AgentRuntimeCredentialStatus> {
+    if (
+      status === undefined ||
+      typeof status.transportConfigured !== "boolean" ||
+      typeof status.modelConfigured !== "boolean" ||
+      typeof status.slackConfigured !== "boolean"
+    )
+      throw new DependencyUnavailableError(
+        "The selected compute Driver returned invalid runtime credential metadata.",
+      );
+    return Object.freeze({
+      transportConfigured: status.transportConfigured,
+      modelConfigured: status.modelConfigured,
+      slackConfigured: status.slackConfigured,
+    });
+  }
+
   private secretMetadata(secret: Secret): Readonly<SecretMetadata> {
     return immutableCopy({
       id: secret.id,
@@ -2021,6 +2216,35 @@ export class OpenClawController {
     } catch {
       throw new DependencyUnavailableError(
         "The selected Secret Driver is unavailable or does not own this Secret.",
+      );
+    }
+  }
+
+  private runtimeCredentialComputeDriver(operation: "status" | "provision"): ComputeDriver {
+    let driver: ComputeDriver;
+    try {
+      driver = this.selectedDriver("compute");
+    } catch {
+      throw new DependencyUnavailableError("The selected compute Driver is unavailable.");
+    }
+    const method =
+      operation === "status"
+        ? driver.getAgentRuntimeCredentialStatus
+        : driver.provisionAgentRuntimeCredentials;
+    if (typeof method !== "function")
+      throw new DependencyUnavailableError(
+        "The selected compute Driver does not support Agent runtime credentials.",
+      );
+    return driver;
+  }
+
+  /** Runtime credential driver errors can contain secret bytes; never propagate them. */
+  private async runtimeCredentialOperation<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation();
+    } catch {
+      throw new DependencyUnavailableError(
+        "The Agent runtime credential operation failed or its outcome is unknown.",
       );
     }
   }
@@ -2091,6 +2315,55 @@ export class OpenClawController {
     } catch {
       throw new DependencyUnavailableError("The selected Sandbox Driver is unavailable.");
     }
+  }
+
+  private pluginDriver(): PluginDriver {
+    try {
+      return this.selectedDriver("plugin");
+    } catch {
+      throw new NotImplementedError(
+        "agent_plugins.driver",
+        "No selected Plugin Driver can represent Agent plugin configuration.",
+      );
+    }
+  }
+
+  private currentHarness(
+    configuration: Readonly<OpenClawConfigurationDocument>,
+    agent: Readonly<Agent>,
+    resolveHarness: HarnessResolver,
+  ) {
+    const configuredHarnessId = resolveConfiguredHarnessId(configuration);
+    const harness = resolveHarness(configuredHarnessId, agent.executionMode);
+    if (
+      harness === undefined ||
+      !isNonEmptyString(harness.id) ||
+      !isNonEmptyString(harness.version)
+    )
+      throw new DependencyUnavailableError("The selected Harness runtime is not approved.");
+    if (harness.id !== configuredHarnessId)
+      throw new ScopeViolationError("The approved Harness does not match the native runtime.");
+    return Object.freeze({ id: harness.id, version: harness.version, mode: agent.executionMode });
+  }
+
+  private async currentAgentConfiguration(
+    state: PlatformReadView,
+    namespace: Readonly<Namespace>,
+    agent: Readonly<Agent>,
+  ): Promise<Readonly<Configuration>> {
+    const metadata = await state.configurations.findConfiguration(
+      namespace.id,
+      agent.configurationId,
+    );
+    if (!metadata || metadata.kind !== "agent")
+      throw new ScopeViolationError(
+        "The Agent Configuration must belong to the exact Namespace and configure an Agent.",
+      );
+    const driver = this.configurationDriver();
+    return this.exactConfiguration(
+      await this.driverOperation(() => driver.read({ id: metadata.id, namespaceId: namespace.id })),
+      metadata,
+    );
   }
 
   private async driverOperation<T>(

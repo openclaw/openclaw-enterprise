@@ -96,7 +96,7 @@ Later edits never mutate existing revisions.
 Each admitted AgentRevision snapshots flat Configuration values and records the
 selected Compute Driver identity. Runtime Compute settings remain startup-owned;
 stability across changes to those settings is tracked separately in
-[TODO.md](../../TODO.md).
+[TODO.md](https://github.com/openclaw/openclaw-enterprise/blob/a57c3c69c35865443e4cbfca3ccf54a2e24c6d8f/TODO.md).
 
 The Namespace-owned API uses existing OCC authorization/error conventions:
 

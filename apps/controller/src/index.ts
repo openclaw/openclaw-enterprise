@@ -18,11 +18,17 @@ import { AuditEventFactory, type AuditSink } from "@openclaw-enterprise/audit";
 import { AuthAccountRoleNotFoundError, type AuthPrincipalSeed } from "@openclaw-enterprise/iam";
 import {
   ErrorResponse,
+  AgentRuntimeCredentialResponse,
   JsonValue,
+  PluginDesiredSelectionSchema,
+  PluginDesiredStateSchema,
+  PluginDriverIdentitySchema,
+  PluginToolPolicySchema,
   SecretResponse,
   occApiRoutes,
   type Agent,
   type AgentRevision,
+  type AgentRuntimeCredentialsBody,
   type AuditEvent,
   type AuthorizationEvidence,
   type ConfigurationDriver,
@@ -51,6 +57,7 @@ import {
   DependencyUnavailableError,
   NamespaceNotEmptyError,
   NamespaceNotReadyError,
+  NotImplementedError,
   ResourceConflictError,
   ScopeViolationError,
   type HarnessResolver,
@@ -363,6 +370,13 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     ];
   }
 
+  if (operation.operationId === "provisionAgentRuntimeCredentials") {
+    return [
+      { ...permission, scope: "requested" },
+      { action: "read", resourceKind: "agent", scope: "requested" },
+    ];
+  }
+
   switch (operation.authorizationTarget) {
     case "namespace_collection":
       return [{ ...permission, scope: "namespace" }];
@@ -452,6 +466,7 @@ function clientAgent(agent: Readonly<Agent>): Record<string, unknown> {
     configurationId: agent.configurationId,
     providerId: agent.providerId,
     executionMode: agent.executionMode,
+    ...(agent.plugins === undefined ? {} : { plugins: agent.plugins }),
     ...(agent.serviceAccountId === undefined ? {} : { serviceAccountId: agent.serviceAccountId }),
     ...(agent.activeRevisionId === undefined ? {} : { activeRevisionId: agent.activeRevisionId }),
     createdAt: agent.createdAt,
@@ -482,6 +497,7 @@ function clientRevision(revision: Readonly<AgentRevision>): Record<string, unkno
     compute: revision.compute,
     ...(revision.secretDriverId === undefined ? {} : { secretDriverId: revision.secretDriverId }),
     ...(revision.secretBindings === undefined ? {} : { secretBindings: revision.secretBindings }),
+    ...(revision.plugins === undefined ? {} : { plugins: revision.plugins }),
     ...(revision.serviceAccount === undefined ? {} : { serviceAccount: revision.serviceAccount }),
     createdAt: revision.createdAt,
   };
@@ -554,6 +570,7 @@ function requestFailure(error: unknown): RequestFailure {
     );
   if (error instanceof NamespaceNotEmptyError)
     return failure(409, "NAMESPACE_NOT_EMPTY", "The requested Namespace is not empty.");
+  if (error instanceof NotImplementedError) return failure(501, "NOT_IMPLEMENTED", error.message);
   if (error instanceof DependencyUnavailableError)
     return failure(503, "DEPENDENCY_UNAVAILABLE", "A required platform dependency is unavailable.");
   if (error instanceof ResourceConflictError)
@@ -674,6 +691,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
   app.removeContentTypeParser("text/plain");
   app.addSchema(JsonValue);
+  app.addSchema(PluginDriverIdentitySchema);
+  app.addSchema(PluginToolPolicySchema);
+  app.addSchema(PluginDesiredSelectionSchema);
+  app.addSchema(PluginDesiredStateSchema);
   void app.register(swagger, {
     convertConstToEnum: false,
     openapi: {
@@ -1648,6 +1669,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           ...(body?.serviceAccountId === undefined
             ? {}
             : { serviceAccountId: body.serviceAccountId as string }),
+          ...(body?.plugins === undefined ? {} : { plugins: body.plugins as never }),
         });
         await unit.audit.append(
           event(
@@ -1696,6 +1718,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           ...(body?.serviceAccountId === undefined
             ? {}
             : { serviceAccountId: body.serviceAccountId as string | null }),
+          ...(body?.plugins === undefined ? {} : { plugins: body.plugins as never }),
         });
         await unit.audit.append(
           event(
@@ -1709,6 +1732,44 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         return clientAgent(updated);
       });
       reply.send({ data: agent, meta: { requestId: request.id } });
+      return;
+    }
+
+    if (operation.operationId === "getAgentRuntimeCredentials") {
+      const status = await controller.getAgentRuntimeCredentialStatus(
+        context.actorId,
+        namespaceId,
+        agentId,
+      );
+      reply.send({ data: status, meta: { requestId: request.id } });
+      return;
+    }
+
+    if (operation.operationId === "provisionAgentRuntimeCredentials") {
+      requireWorkspaceFileCsrf(request, true);
+      const status = await controller.transact(async (unit) => {
+        const provisioned = await controller!.provisionAgentRuntimeCredentials(
+          context.actorId,
+          namespaceId,
+          agentId,
+          body as unknown as AgentRuntimeCredentialsBody,
+        );
+        try {
+          await unit.audit.append(
+            event(
+              operation,
+              request,
+              { kind: "agent", id: agentId, namespaceId },
+              "mutation",
+              context,
+            ),
+          );
+        } catch {
+          throw dependencyUnavailable();
+        }
+        return provisioned;
+      });
+      reply.send({ data: status, meta: { requestId: request.id } });
       return;
     }
 
@@ -2170,7 +2231,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         schema: {
           operationId: "signInEmail",
           summary: "Sign in with email and password",
-          description: "Authenticates a local account and issues a Better Auth session cookie.",
+          description: "Authenticates a local account and issues a user session cookie.",
           tags: ["Authentication"],
           security: [],
           body: {
@@ -2198,7 +2259,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         schema: {
           operationId: "signOut",
           summary: "Sign out of the current session",
-          description: "Revokes the current Better Auth session cookie.",
+          description: "Revokes the current user session cookie.",
           tags: ["Authentication"],
           security: [{ sessionCookie: [] }],
           response: responses({ type: "object", additionalProperties: true }),
@@ -2360,6 +2421,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
   void app.register(async (routes) => {
     routes.addSchema(ErrorResponse);
+    routes.addSchema(AgentRuntimeCredentialResponse);
     routes.addSchema(SecretResponse);
     for (const operation of occApiRoutes) {
       const permissions = requiredPermissions(operation);
