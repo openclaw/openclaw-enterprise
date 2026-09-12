@@ -613,13 +613,16 @@ child.on("exit", (code, signal) => process.exit(code ?? (signal === "SIGTERM" ? 
 
 export const AGENT_RUNTIME_ENTRYPOINT = String.raw`
 const { createHash } = require("node:crypto");
-const { mkdirSync } = require("node:fs");
+const { mkdirSync, rmSync } = require("node:fs");
 const { spawn, spawnSync } = require("node:child_process");
 
 ${PLUGIN_RUNTIME_HELPERS}
 
 mkdirSync(process.env.CODEX_HOME, { recursive: true });
 mkdirSync("/home/node/workspace", { recursive: true });
+if (process.env.OPENCLAW_PLUGIN_READY_MARKER !== undefined) {
+  rmSync(process.env.OPENCLAW_PLUGIN_READY_MARKER, { force: true });
+}
 const pluginRuntime = readPluginRuntime("codex");
 if (pluginRuntime !== undefined) {
   assertCodexPluginRuntime(pluginRuntime);

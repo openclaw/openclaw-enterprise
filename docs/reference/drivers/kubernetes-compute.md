@@ -181,7 +181,12 @@ for additional execution details.
   ownership, exclusive tenant use, and no foreign NetworkPolicies.
 - **Gateway or Harness remains pending:** Check image digests, image pull
   permissions, CPU and memory limits, namespace quotas, required Secrets, and
-  workload readiness.
+  workload readiness. Dedicated Codex Harness containers clear the plugin
+  readiness marker at process start so a marker left in the Pod's temporary
+  volume by a previous container attempt cannot make a restarted runtime ready.
+  Native plugin startup, authentication, transport, and installation failures
+  remain generic workload startup failures unless the native runtime provides a
+  trusted typed failure source.
 - **Gateway storage is pending or rejected:** Check the configured
   `runtime.gatewayStorageClassName`, available `10Gi` capacity, filesystem
   support, worker PVC permissions, and the PVC's exact ownership. Preserve

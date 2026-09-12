@@ -1,12 +1,18 @@
 import assert from "node:assert/strict";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import vm from "node:vm";
 import {
   createKubernetesComputeDriver,
   kubernetesNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { PLUGIN_RUNTIME_HELPERS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import {
+  AGENT_RUNTIME_ENTRYPOINT,
+  PLUGIN_RUNTIME_HELPERS,
+} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
   PLUGIN_RUNTIME_CODEX_CONFIG,
   PLUGIN_RUNTIME_CODEX_CONFIG_ENVIRONMENT,
@@ -948,6 +954,55 @@ test("embedded plugin preparation applies runtime egress before gateway readines
   assert.deepEqual(reconciled[runtimePolicyIndex].spec.egress[0].ports, [
     { protocol: "TCP", port: 443 },
   ]);
+});
+
+test("Codex runtime clears stale readiness marker before startup failure", () => {
+  const directory = mkdtempSync(join(tmpdir(), "openclaw-plugin-ready-"));
+  const marker = join(directory, "ready");
+  writeFileSync(marker, "ready\n", { mode: 0o600 });
+  assert.equal(existsSync(marker), true);
+  try {
+    const sandbox = {
+      console: { error() {} },
+      process: {
+        env: {
+          CODEX_HOME: "/home/node/.codex",
+          OPENCLAW_PLUGIN_READY_MARKER: marker,
+        },
+      },
+      require(specifier) {
+        if (specifier === "node:fs") {
+          return {
+            mkdirSync() {},
+            rmSync,
+            readFileSync() {
+              throw new Error("plugin runtime payload should not be read before login failure");
+            },
+            writeFileSync() {},
+          };
+        }
+        if (specifier === "node:child_process") {
+          return {
+            spawnSync() {
+              return { status: 1 };
+            },
+            spawn() {
+              assert.fail("app-server must not start after login failure");
+            },
+          };
+        }
+        return nodeRequire(specifier);
+      },
+    };
+
+    assert.throws(
+      () => vm.runInNewContext(AGENT_RUNTIME_ENTRYPOINT, sandbox),
+      /Codex model authentication initialization failed/,
+    );
+    assert.equal(existsSync(marker), false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("Kubernetes dedicated Codex agent mounts plugin runtime and gates readiness on it", async () => {
