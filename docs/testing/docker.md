@@ -1,8 +1,9 @@
-# Docker Compose tests
+# Docker or Podman Compose tests
 
 Verify the development Compose stack with embedded OpenClaw and dedicated
-Codex model turns. Prepare [credentials](README.md#requirements-and-credentials)
-and the [runtime image](images.md) before selecting this suite.
+Codex model turns on Docker, or the embedded OpenClaw model turn on Podman.
+Prepare [credentials](README.md#requirements-and-credentials) and the
+[runtime image](images.md) before selecting this suite.
 
 ## Docker Compose model turns
 
@@ -37,19 +38,43 @@ and container provisioning, both Harness topologies, cleanup, and a fresh nonce
 in the provider response. Requests may reach the gateway through its Namespace
 network address or the driver-published loopback host port.
 
+## Podman embedded model turn
+
+The same integration file and journey helpers run the Podman proof; there is no
+duplicated Podman test implementation. The test requires `podman-compose`, a
+running Podman machine or service, the runtime image in Podman's image store,
+and an exported `OPENAI_API_KEY`. The `dev-up` helper additionally requires
+`yq` v4 to inspect the resolved Compose configuration.
+The test pins the installed provider and reads the API socket from `podman info`;
+no `docker` alias or manual socket variable is required.
+
+```sh
+OCC_DOCKER_RUNTIME_IMAGE=openclaw-enterprise-runtime:test \
+OCC_TEST_OPENAI_MODEL=gpt-5.6-sol \
+  pnpm podman:test
+```
+
+This first increment provisions isolated Namespaces, deploys one embedded
+OpenClaw Agent, verifies the model credential reaches only its gateway/Harness
+container, rejects a missing gateway token, requires a real provider response
+containing a fresh nonce, and asserts exact test teardown. It does not select
+the dedicated Codex, interactive TUI, or Fluentd/OTLP cases; those remain
+Docker-only.
+
 ## Docker Compose development test environment
 
-The Docker Compose development integration exercises the supported local stack.
-It requires Docker Engine, a locally available runtime image, PostgreSQL, the
-OCC API, the worker, host Python 3 with PTY support for the TUI helper, and a
-real provider response. Set `OCC_TEST_DOCKER_COMPUTE_REAL=1` or any
+The Compose development integration exercises the supported local stack. It
+requires the selected engine, a locally available runtime image, PostgreSQL,
+the OCC API, the worker, and a real provider response. Set
+`OCC_TEST_DOCKER_COMPUTE_REAL=1`, `OCC_TEST_PODMAN_COMPUTE_REAL=1`, or any
 `OCC_DOCKER_*_IMAGE` variable to select the suite; once selected, missing
-Docker, image, bootstrap, worker, Python, or model prerequisites fail instead
-of skipping.
+engine, image, bootstrap, worker, or model prerequisites fail instead of
+skipping. Python and PTY support are required only by Docker's TUI case.
 
 | Variable                       | Requirement or default                                                                  |
 | ------------------------------ | --------------------------------------------------------------------------------------- |
 | `OCC_TEST_DOCKER_COMPUTE_REAL` | Set to `1` to explicitly opt into the real Docker Compute proof.                        |
+| `OCC_TEST_PODMAN_COMPUTE_REAL` | Set to `1` to select Podman and its embedded-only real-runtime proof.                   |
 | `OCC_DOCKER_GATEWAY_IMAGE`     | Existing production-equivalent OpenClaw gateway image; defaults to the runtime image.   |
 | `OCC_DOCKER_AGENT_IMAGE`       | Existing production-equivalent Codex Agent image; defaults to the runtime image.        |
 | `OCC_DOCKER_RUNTIME_IMAGE`     | Optional shared image fallback for both gateway and Agent.                              |
@@ -67,11 +92,11 @@ gateway token is rejected, then uses one valid TUI process for two same-session
 model-backed replies and exits that client with Ctrl+D while the gateway remains
 ready.
 
-Missing Docker Engine access, runtime images, bootstrap, worker startup, or
+Missing selected-engine access, runtime images, bootstrap, worker startup, or
 model credentials fails the Compose integration. Missing host Python or PTY
-support fails the TUI helper before that embedded proof can pass. Do not replace
-this path with controller-only shortcuts, a mocked Docker API, or readiness-only
-checks.
+support fails Docker's TUI helper before that proof can pass. Do not replace
+this path with controller-only shortcuts, a mocked Docker-compatible API, or
+readiness-only checks.
 
 ## Related
 

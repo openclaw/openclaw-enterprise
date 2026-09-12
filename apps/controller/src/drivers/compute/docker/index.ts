@@ -51,6 +51,11 @@ interface DockerNetworkInspect {
   readonly Labels?: Readonly<Record<string, string>>;
 }
 
+interface DockerVersion {
+  readonly Platform?: { readonly Name?: string };
+  readonly Components?: readonly { readonly Name?: string }[];
+}
+
 interface Ownership {
   readonly namespaceId: string;
   readonly agentId?: string;
@@ -107,7 +112,7 @@ const MODEL_API_KEY = "OPENAI_API_KEY";
 const CONFIGURATION_DOCUMENT = "/home/node/.openclaw/openclaw.json";
 
 export const GATEWAY_RUNTIME_ENTRYPOINT = String.raw`
-const { mkdirSync, writeFileSync } = require("node:fs");
+const { chmodSync, mkdirSync, writeFileSync } = require("node:fs");
 const { spawn } = require("node:child_process");
 
 ${PLUGIN_RUNTIME_HELPERS}
@@ -124,8 +129,10 @@ function forwardTermination(child) {
   process.on("SIGINT", () => forward("SIGINT"));
 }
 
-mkdirSync("/home/node/.openclaw", { recursive: true });
-mkdirSync("/home/node/workspace", { recursive: true });
+mkdirSync("/home/node/.openclaw", { recursive: true, mode: 0o700 });
+mkdirSync("/home/node/workspace", { recursive: true, mode: 0o700 });
+chmodSync("/home/node/.openclaw", 0o700);
+chmodSync("/home/node/workspace", 0o700);
 writeFileSync(process.env.OPENCLAW_CONFIG_PATH, process.env.OPENCLAW_CONFIG_JSON, { mode: 0o600 });
 delete process.env.OPENCLAW_CONFIG_JSON;
 delete process.env.OPENCLAW_LOG_LEVEL;
@@ -185,6 +192,11 @@ function optionalEnvironment(value: string | undefined): string | undefined {
   return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
 }
 
+function healthcheckCommand(script: string): string {
+  const encoded = Buffer.from(script).toString("base64");
+  return `eval(Buffer.from("${encoded}","base64").toString())`;
+}
+
 function loopbackHost(host: string): boolean {
   if (host === "localhost" || host === "::1") return true;
   const parts = host.split(".");
@@ -223,6 +235,7 @@ export class DockerComputeDriver implements ComputeDriver {
   private readonly options: DockerComputeDriverOptions;
   private lifecycle = new ComputeLifecycleDispatcher([]);
   private lifecycleStarted = false;
+  private podmanApi = false;
 
   constructor(options: DockerComputeDriverOptions) {
     required(options.images.gateway, "Docker gateway image");
@@ -246,6 +259,10 @@ export class DockerComputeDriver implements ComputeDriver {
     if (String(ping ?? "").trim() !== "OK") {
       throw new Error("Docker Engine ping returned an invalid response.");
     }
+    const version = (await this.request("GET", "/version", undefined, [200])) as DockerVersion;
+    this.podmanApi =
+      version.Components?.some((component) => component.Name === "Podman Engine") === true ||
+      /podman/i.test(version.Platform?.Name ?? "");
     await this.image(this.options.images.gateway);
     await this.image(this.options.images.agent);
   }
@@ -576,7 +593,9 @@ export class DockerComputeDriver implements ComputeDriver {
         Labels: labels,
         ExposedPorts: { [`${input.exposedPort}/tcp`]: {} },
         Healthcheck: {
-          Test: ["CMD", "node", "-e", input.healthcheckScript],
+          // Podman's Docker-compatible API splits CMD healthcheck arguments on
+          // whitespace, so keep the script argument opaque and whitespace-free.
+          Test: ["CMD", "node", "-e", healthcheckCommand(input.healthcheckScript)],
           Interval: 2_000_000_000,
           Timeout: 2_000_000_000,
           Retries: 15,
@@ -586,10 +605,15 @@ export class DockerComputeDriver implements ComputeDriver {
           ReadonlyRootfs: true,
           CapDrop: ["ALL"],
           SecurityOpt: ["no-new-privileges"],
-          Tmpfs: {
-            "/home/node": "size=1024m,uid=1000,gid=1000,mode=700",
-            "/tmp": "size=64m,uid=1000,gid=1000,mode=1777",
-          },
+          Tmpfs: this.podmanApi
+            ? {
+                "/home/node": "size=1024m,mode=1777",
+                "/tmp": "size=64m,mode=1777",
+              }
+            : {
+                "/home/node": "size=1024m,uid=1000,gid=1000,mode=700",
+                "/tmp": "size=64m,uid=1000,gid=1000,mode=1777",
+              },
           ...(input.portBindings === undefined ? {} : { PortBindings: input.portBindings }),
           ...(this.options.loggingAddress === undefined
             ? {}

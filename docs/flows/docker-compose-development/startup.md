@@ -1,4 +1,4 @@
-# Docker Compose startup
+# Docker or Podman Compose startup
 
 Trace host preflight, database initialization, and API/worker startup. See the [parent flow](../docker-compose-development.md) for its context and overall sequence.
 
@@ -9,11 +9,25 @@ Trace host preflight, database initialization, and API/worker startup. See the [
 `scripts/dev-up:50`, `deploy/runtime`
 
 The helper runs from the checkout root. It accepts an optional `--key-output`
-destination and forwards arguments after `--` to Docker Compose, so native
-Compose project names, profiles, and override files keep their normal
-precedence. It requires Docker Engine, Docker Compose, `curl`, and Python 3,
-then validates the effective Compose configuration without printing expanded
-credentials.
+destination and forwards arguments after `--` to the selected Compose
+implementation, so native project names, profiles, and override files keep
+their normal precedence. It first probes a running Docker Engine and the JSON
+configuration capability required from Docker Compose. If that probe fails, it
+selects `podman` directly; a `docker` compatibility alias is neither required
+nor treated as Docker merely because of its name. Podman requires the standalone
+`podman-compose` provider and `yq` v4; the helper pins that provider so status
+and stopped one-shot container behavior stay consistent.
+
+Docker Compose supplies resolved JSON directly. Podman Compose supplies YAML,
+which `dev-up` converts to JSON inside its private temporary directory before
+running the same effective port, image, and service checks. The helper appends
+`compose.podman.yaml` last so the worker receives Podman's reported API socket
+at `/var/run/docker.sock` and disables SELinux labeling only for that service.
+The override also gives migration, bootstrap, API, and worker one shared
+development image. Because podman-compose otherwise rebuilds that identical
+target once per service, `dev-up` builds it once through the migration service
+and starts the stack with `--no-build`. Docker keeps its native `up --build`
+path. Expanded configuration and credentials are never printed.
 
 If neither a shared runtime image nor separate gateway/Agent images are set,
 the helper selects `openclaw-enterprise-runtime:quickstart` for this invocation.
@@ -76,14 +90,17 @@ Development accepts the explicitly configured Compose bridge CIDR as local
 control-plane traffic, while non-loopback clients, forwarded headers,
 caller-supplied identity headers, bearer credentials, and trusted-proxy claims
 remain rejected. The API uses the application-role PostgreSQL URL and never
-receives the Docker socket.
+receives the container-engine socket.
 
 After the controller health check passes, `dev-up` waits for the worker
 readiness probe before copying the initializer-owned service-key JSON from the
-stopped bootstrap container. `--key-output` must name an absent destination in a
-private operator-owned directory; otherwise the helper creates a private
-temporary directory. The helper never overwrites an existing local file, never
-prints `data.key`, and never reruns bootstrap to replace a missing key.
+stopped bootstrap container. Docker Compose performs the Docker copy. Because
+`podman-compose` has no `cp` command, the helper identifies exactly one scoped
+bootstrap container from Compose status labels and invokes `podman cp` by ID.
+`--key-output` must name an absent destination in a private operator-owned
+directory; otherwise the helper creates a private temporary directory. The
+helper never overwrites an existing local file, never prints `data.key`, and
+never reruns bootstrap to replace a missing key.
 
 `dev-up` then reads `/installation` with `scripts/occ-api` and the copied
 service-key response. `apps/controller/src/auth/index.ts:ControllerAdmissionVerifier.verify`
@@ -115,8 +132,8 @@ The worker loads the singleton Installation, validates persisted IAM policy,
 and polls the PostgreSQL work queue. Startup readiness means the worker can
 claim durable work; it does not mean an Agent, AgentRevision, or TUI exists.
 Every claimed operation reauthorizes the original actor before calling Compute.
-The worker is the only Compose service with Docker Engine access. It does not
-mount the configuration volume.
+The worker is the only Compose service with Docker-compatible engine access. It
+does not mount the configuration volume.
 
 ## Related
 

@@ -25,20 +25,21 @@ worker require initialized state and do not read those credentials or output.
 | `OCC_DOCKER_RUNTIME_IMAGE`            | Image reference.                                                             | Optional shared image used for both gateway and Agent runtimes when it contains both entrypoints; `scripts/dev-up` selects `openclaw-enterprise-runtime:quickstart` for its default invocation.                   |
 | `OPENCLAW_DEV_PORT`                   | TCP port; defaults to `3000`.                                                | Publishes the controller on host `127.0.0.1:<port>`.                                                                                                                                                              |
 | `OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR` | CIDR block.                                                                  | Explicit Compose bridge range admitted as local development traffic while keeping forwarded headers rejected.                                                                                                     |
+| `OCC_CONTAINER_ENGINE_SOCKET`         | Absolute socket path; Podman only.                                           | `scripts/dev-up` reads Podman's reported API socket and supplies it to `compose.podman.yaml`; operators do not need to set it for the supported helper path.                                                      |
 | `OCC_DEVELOPMENT_CONFIGURATION_ROOT`  | Absolute path.                                                               | Development filesystem Configuration Driver root. Compose sets `/app/.development/configurations` from the controller-only `occ_configuration_data` volume.                                                       |
 | `OCC_BOOTSTRAP_SERVICE_KEY_FILE`      | Required private absolute output path; written only on fresh initialization. | Compose supplies `/var/lib/openclaw/bootstrap/initial-admin-service-key.json` on its bootstrap-only volume. Existing Installations do not issue or replace output.                                                |
 | `OPENAI_API_KEY`                      | Existing authorized provider credential.                                     | Used only by the Agent-owned combined embedded container or dedicated Codex container for real model turns; never print or commit it.                                                                             |
 
 Generate `OCC_AUTH_SECRET` with `openssl rand -hex 32`; do not commit it, log
 it, or reuse another installation's secret. Local `.env` files are ignored by
-Git. Docker Compose reads them through native Compose precedence; do not source
-`.env` as shell.
+Git. Compose reads them through native precedence; do not source `.env` as
+shell.
 
 Caller-supplied identity headers, forwarded requests, trusted proxies, bearer
 credentials, and non-loopback clients are rejected. The Compose bridge CIDR is
 trusted only for the development stack's internal controller and worker path;
-workload containers do not receive the Docker socket, controller credentials,
-the configuration volume, or sibling Namespace network access.
+workload containers do not receive the container-engine socket, controller
+credentials, the configuration volume, or sibling Namespace network access.
 
 ## Optional controller environment
 

@@ -6,10 +6,18 @@ Run commands from the repository root. Startup needs no model credential.
 
 ## Development
 
-Use the [quickstart](quickstart.md) for Docker Compose startup, console sign-in,
-service-key handling, and the first authenticated `/installation` check. The
-[Docker development flow](../flows/docker-compose-development.md) owns startup
+Use the [quickstart](quickstart.md) for Docker or Podman Compose startup,
+console sign-in, service-key handling, and the first authenticated
+`/installation` check. The
+[Compose development flow](../flows/docker-compose-development.md) owns startup
 internals.
+
+The current Podman verification baseline is Podman client 6.1.0, server 5.7.1,
+and podman-compose 1.6.0. The verified boundary is default control-plane startup,
+worker access to the Podman API, authenticated Installation access, Namespace
+isolation, and an embedded OpenClaw Agent with a provider-backed model turn.
+Dedicated Codex, interactive TUI, and the optional Fluentd logging override
+remain Docker-verified.
 
 ### Verify development
 

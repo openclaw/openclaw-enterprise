@@ -72,6 +72,9 @@ defect, not merely restate mocks.
 
 ## Prepare a pull request
 
+Use the [developer skills](docs/testing/developer-skills.md) for test quality,
+proof selection, diff cleanup, and requested independent review.
+
 - Keep one coherent change per PR. Stack only when a dependency is real, and
   link the prerequisite PR and intended base.
 - Explain the problem, behavior change, evidence, and remaining risks. Link

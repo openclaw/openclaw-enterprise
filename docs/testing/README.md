@@ -12,6 +12,7 @@ the [deployment guide](../guides/deploy.md) and [settings reference](../referenc
 | `pnpm test`             | All conformance and integration tests.                                    |
 | `pnpm test:conformance` | Conformance tests only.                                                   |
 | `pnpm test:integration` | Integration tests only, including infrastructure and real-runtime suites. |
+| `pnpm podman:test`      | Podman Compose with one real embedded OpenClaw model turn.                |
 
 `pnpm test` can finish green with skipped infrastructure cases; inspect skips
 before claiming coverage. Run prepared infrastructure suites by exact filename,
@@ -19,6 +20,30 @@ one suite at a time. Keep suite variables scoped to one shell or process so
 database, Kubernetes, image, or provider selectors do not accidentally select
 another suite. The test scripts above run `scripts/verify-workspace-boundary.mjs`
 before the Node.js test runner.
+
+For test audits, proof selection, diff cleanup, and independent review, see
+[Developer skills](developer-skills.md).
+
+### Run an explicit file selection
+
+Use `test:files` to validate every selected path and option before starting tests:
+
+```sh
+pnpm test:files --test-reporter=spec -- tests/conformance/contracts.test.mjs
+```
+
+The runner accepts literal, existing `.test.js`, `.test.cjs`, `.test.mjs`,
+`.test.ts`, `.test.cts`, or `.test.mts` files inside this repository. Missing
+files, duplicates, paths outside the repository, and unsupported options fail
+before any selected file executes. Quote paths containing spaces or glob
+characters so the shell passes the literal filename. Run
+`node scripts/test-files.mjs --help` for concurrency, filter, and reporter options.
+
+Prepare dependencies and infrastructure first. This command does not run the
+workspace check or prepare fixtures. It preserves Node's failure, skip, todo,
+process isolation, and cancellation behavior. A valid file selection or a green
+filtered run does not prove that the intended cases ran; inspect the reported
+case and skip counts. Existing suite discovery and CI selection remain available.
 
 ## Integration tests
 

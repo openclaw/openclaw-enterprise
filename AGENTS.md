@@ -21,6 +21,19 @@ The authoritative architecture is the repository's
 [platform design](docs/design.md).
 Do not create a competing architecture specification in this checkout.
 
+## Developer skills
+
+Use [test-audit](.agents/skills/test-audit/SKILL.md) when authoring or reviewing
+tests, and [enterprise-testing](.agents/skills/enterprise-testing/SKILL.md) to
+select proof or diagnose CI. For requested diff cleanup, use
+[deslop](.agents/skills/deslop/SKILL.md) before independent review.
+
+When the user or owning workflow requests an independent code review, use
+[autoreview](.agents/skills/autoreview/SKILL.md). Follow the
+[Enterprise review guide](docs/testing/autoreview.md) for usage and upstream sync.
+Keep the vendored skill unchanged; shared fixes belong in `openclaw/agent-skills`.
+The other skills are [Enterprise adaptations](docs/testing/developer-skills.md).
+
 ## Product terminology
 
 - **OCE** means **OpenClaw Enterprise**, the product.

@@ -1,10 +1,10 @@
 # Docker Compute Driver
 
-`DockerComputeDriver` is the default local development Compute Driver. The
-Docker Compose development stack runs PostgreSQL, migrations, and the shared
-initializer before starting the OCC API and worker. The API uses filesystem
-Configuration; the worker uses this driver to create real
-Docker networks and runtime containers for Namespaces and AgentRevisions.
+`DockerComputeDriver` is the default local development Compute Driver. Compose
+development runs PostgreSQL, migrations, and the shared initializer on Docker
+Engine or Podman before starting the OCC API and worker. The API uses filesystem
+Configuration. Docker verifies both runtime topologies; Podman verifies
+Namespace networks and the embedded OpenClaw runtime topology.
 
 This driver is a development runtime. Production can select bundled
 [Kubernetes](kubernetes-compute.md), [SSH](ssh-compute.md), or an installed
@@ -12,7 +12,7 @@ Compute Driver through trusted Installation configuration.
 
 ## Requirements
 
-- Docker Engine and `docker compose`.
+- Docker Engine with Docker Compose, or Podman with `podman-compose` and `yq` v4.
 - The full Compose development stack, not a process-local controller.
 - Existing production-equivalent runtime images:
   `OCC_DOCKER_GATEWAY_IMAGE` and `OCC_DOCKER_AGENT_IMAGE`, or one shared
@@ -24,6 +24,18 @@ Compute Driver through trusted Installation configuration.
 - The controller-only `OCC_DEVELOPMENT_CONFIGURATION_ROOT`, which Compose sets
   to `/app/.development/configurations` from the `occ_configuration_data` named
   volume.
+
+`scripts/dev-up` is the supported Podman entry point. It auto-detects Podman
+without a `docker` alias, pins the standalone `podman-compose` provider, mounts
+the reported API socket through `compose.podman.yaml`, and preserves the
+driver's existing `/var/run/docker.sock` contract inside the worker. The current
+baseline is Podman client 6.1.0, server 5.7.1, and podman-compose 1.6.0. Verified
+Podman coverage includes control-plane startup, worker API preflight,
+authenticated Installation access, isolated Namespace networks, one embedded
+gateway/Harness container, a provider-backed nonce response, and exact test
+cleanup. Dedicated Codex and interactive TUI execution remain unverified on
+Podman. `compose.logging.yaml` remains Docker-only because this Podman baseline
+does not provide the required Fluentd log driver.
 
 ## Development configuration and persistence
 
@@ -44,11 +56,11 @@ administrator, and singleton Installation; existing state is retained. Only
 the initializer mounts the protected initial-key output volume. The
 [authentication reference](../authentication.md#installation-and-account-ownership)
 owns credential creation and recovery; the
-[Docker development flow](../../flows/docker-compose-development.md) traces ordering.
+[Compose development flow](../../flows/docker-compose-development.md) traces ordering.
 
-`docker compose down` keeps `occ_postgres_data`, `occ_configuration_data`, and
-the bootstrap-only `occ_bootstrap_data` volume. `docker compose down --volumes`
-deletes all three, including the initial service-key JSON.
+The cleanup command printed by `dev-up` keeps `occ_postgres_data`,
+`occ_configuration_data`, and the bootstrap-only `occ_bootstrap_data` volume.
+Adding `--volumes` deletes all three, including the initial service-key JSON.
 
 ## Namespace lifecycle
 
@@ -81,20 +93,21 @@ starts containers.
 
 The driver uses the same runtime entrypoint contract as production. It does
 not build, download, or publish runtime images. Missing image references,
-unsupported Harness combinations, unavailable Docker Engine access, failed
+unsupported Harness combinations, unavailable container-engine access, failed
 transport authentication, or unready containers fail closed.
 
-Docker image references must already resolve in the selected Engine. The
+Container image references must already resolve in the selected engine. The
 development Driver accepts tags as well as digests; production Kubernetes
-digest requirements do not imply that Docker enforces immutable images.
+digest requirements do not imply that the local engine enforces immutable
+images.
 
 `retireRevision(revision)` removes only the exact revision's owned runtime. It
 preserves another Agent's containers and preserves a gateway still required by
 a replacement revision for the same Agent.
 
-## Credential and Docker Engine boundaries
+## Credential and container-engine boundaries
 
-Only the worker container receives Docker Engine access. The OCC API,
+Only the worker container receives Docker-compatible engine access. The OCC API,
 PostgreSQL, the migration job, gateway containers, and Codex containers do
 not receive the Docker socket. Only the controller receives the
 `occ_configuration_data` volume at `/app/.development/configurations`; the
@@ -111,15 +124,23 @@ inside the container. The Docker driver does not mount host workspaces,
 personal OpenClaw/Codex homes, SSH-agent sockets, cloud credentials, or
 controller credentials into workload containers.
 
+The driver detects Podman's Docker-compatible API during preflight. Docker
+keeps UID/GID-owned `0700` tmpfs mount options. Podman receives the same bounded
+`1Gi` home and `64Mi` temporary filesystems using its supported mount options;
+the non-root runtime creates its `.openclaw` and workspace directories as
+`0700` before writing configuration or state.
+
 ## Inspect owned resources
 
-Inspect the driver's resources through Docker labels:
+Owned resources can be observed through the selected engine using the same
+driver labels:
 
 ```bash
-docker compose ps
 docker network ls --filter label=org.openclaw.enterprise.compute-driver=docker
 docker ps --filter label=org.openclaw.enterprise.compute-driver=docker
 ```
+
+Replace `docker` with `podman` for a Podman-backed development stack.
 
 After deleting a Namespace, the matching network and containers should be gone
 while other Namespaces remain.
@@ -129,8 +150,10 @@ while other Namespaces remain.
 - **Worker starts with the wrong Compute Driver:** unset `OCC_CONFIG_PATH` for
   default Compose development, or inspect the trusted startup YAML if selecting
   another Driver intentionally.
-- **Docker access denied:** verify the worker service has Docker Engine access.
-  Do not mount the Docker socket into the API or workload services.
+- **Container-engine access denied:** verify the worker service has access to
+  the selected Docker-compatible API socket. With Podman, use `dev-up` so it
+  supplies the reported socket and the narrow SELinux override. Do not mount
+  the socket into the API or workload services.
 - **Image not found:** provide locally available images through
   `OCC_DOCKER_GATEWAY_IMAGE` and `OCC_DOCKER_AGENT_IMAGE`, or
   `OCC_DOCKER_RUNTIME_IMAGE` when one image contains both entrypoints.
@@ -146,7 +169,7 @@ while other Namespaces remain.
 
 - [Development and production deployment](../../guides/deploy.md)
 
-- [Docker Compose development flow](../../flows/docker-compose-development.md)
+- [Docker or Podman Compose development flow](../../flows/docker-compose-development.md)
 - [Controller worker](../controller.md)
 - [Configuration reference](../settings.md)
 - [ComputeDriver contract](compute.md)
