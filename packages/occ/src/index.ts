@@ -113,6 +113,7 @@ export {
   type ServiceAccountRepository,
   type TransactionalAuditWriter,
 } from "./state/platform-state.ts";
+export { createPostgresPool } from "./state/postgres-pool.ts";
 export {
   PostgresPlatformState,
   PostgresPlatformStateStore,

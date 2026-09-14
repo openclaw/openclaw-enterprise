@@ -16,9 +16,11 @@
     "typecheck": "tsc --build tsconfig.json --pretty false"
   },
   "dependencies": {
+    "@azure/identity": "4.13.1",
     "@openclaw-enterprise/contracts": "workspace:*",
     "@openclaw-enterprise/utils": "workspace:*",
     "drizzle-orm": "0.45.2",
-    "pg": "8.23.0"
+    "pg": "8.23.0",
+    "pg-connection-string": "2.12.0"
   }
 }

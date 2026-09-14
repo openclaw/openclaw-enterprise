@@ -1,5 +1,5 @@
 import { unlink, writeFile } from "node:fs/promises";
-import pg from "pg";
+import { createPostgresPool } from "@openclaw-enterprise/occ";
 import {
   loadInstallationConfiguration,
   loadOperationalLoggingConfiguration,
@@ -80,7 +80,7 @@ try {
     computeDriver = createDevelopmentDockerComputeDriver();
     if (typeof computeDriver.preflight === "function") await computeDriver.preflight();
   }
-  pool = new pg.Pool({ connectionString: databaseUrl });
+  pool = await createPostgresPool(databaseUrl);
   worker = createControllerWorker({
     pool,
     mode,
