@@ -765,11 +765,38 @@ test(
     assert.equal(primaryIdentity.namespace_id, namespaceA);
     assert.equal(primaryIdentity.id, persistedRevisions.rows[0].service_principal_id);
 
-    const work = await pool.query(
-      `SELECT namespace_id, agent_id, revision_id, idempotency_key, state
-       FROM occ.controller_work WHERE agent_id = ANY($1::text[])
-       ORDER BY agent_id, idempotency_key`,
-      [[primary.id, sibling.id, foreign.id]],
+    // Activation becomes visible before post-commit effects finish and the worker
+    // completes its claim, so wait for the durable work state asserted below.
+    const expectedRevisionIds = [
+      firstRevision.id,
+      secondRevision.id,
+      siblingDeployment.data.id,
+      foreignDeployment.data.id,
+    ].sort();
+    const work = await pollUntil(
+      "the four admitted revision work items to succeed",
+      async () => {
+        const current = await pool.query(
+          `SELECT namespace_id, agent_id, revision_id, idempotency_key, state
+           FROM occ.controller_work WHERE agent_id = ANY($1::text[])
+           ORDER BY agent_id, idempotency_key`,
+          [[primary.id, sibling.id, foreign.id]],
+        );
+        assert.equal(current.rowCount, 4);
+        assert.deepEqual(
+          current.rows.map(({ revision_id }) => revision_id).sort(),
+          expectedRevisionIds,
+        );
+        for (const item of current.rows) {
+          assert.notEqual(
+            item.state,
+            "failed_permanent",
+            `Revision ${item.revision_id} work failed permanently`,
+          );
+        }
+        return current.rows.every(({ state }) => state === "succeeded") ? current : undefined;
+      },
+      { worker, timeoutMs: 60_000 },
     );
     assert.equal(work.rowCount, 4);
     for (const item of work.rows) {
