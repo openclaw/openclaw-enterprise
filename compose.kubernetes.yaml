@@ -1,0 +1,32 @@
+services:
+  controller:
+    environment:
+      OCC_CONFIG_PATH: /run/openclaw-development/installation.yaml
+    volumes:
+      - ${OCC_DEVELOPMENT_INSTALLATION_CONFIG:?Installation configuration path is required}:/run/openclaw-development/installation.yaml:ro,z
+      - ${OCC_DEVELOPMENT_KUBECONFIG:?Kubeconfig path is required}:/run/openclaw-development/kubeconfig:ro,z
+
+  worker-kubernetes:
+    build:
+      context: .
+      target: development
+      args:
+        NODE_BASE_IMAGE: ${NODE_BASE_IMAGE:-docker.io/library/node:24-bookworm}
+    environment:
+      NODE_ENV: development
+      OCC_DATABASE_URL: postgresql://occ_app:occ-app-local@postgres:5432/openclaw_enterprise
+      OCC_CONFIG_PATH: /run/openclaw-development/installation.yaml
+      OCC_WORKER_READINESS_PATH: /tmp/openclaw-worker-ready
+    command: ["apps/controller/src/worker.mjs"]
+    volumes:
+      - ${OCC_DEVELOPMENT_INSTALLATION_CONFIG:?Installation configuration path is required}:/run/openclaw-development/installation.yaml:ro,z
+      - ${OCC_DEVELOPMENT_KUBECONFIG:?Kubeconfig path is required}:/run/openclaw-development/kubeconfig:ro,z
+    depends_on:
+      controller:
+        condition: service_healthy
+    networks:
+      development:
+
+networks:
+  development:
+    name: ${OCC_DEVELOPMENT_NETWORK_NAME:?Development network name is required}

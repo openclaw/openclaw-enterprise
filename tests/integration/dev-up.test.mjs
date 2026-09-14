@@ -269,7 +269,7 @@ test("dev-up selects Podman when no docker command exists and completes the supp
   assert.match(result.stdout, /Container engine: Podman/);
   assert.match(
     result.stdout,
-    /Cleanup:\n  env PODMAN_COMPOSE_PROVIDER=.*\/podman-compose OCC_CONTAINER_ENGINE_SOCKET=\/run\/user\/501\/podman\/podman\.sock podman compose /,
+    /Cleanup:\n  env OCC_DEVELOPMENT_CONTAINER_ENGINE=podman scripts\/dev-down -- /,
   );
   assert.doesNotMatch(result.stdout + result.stderr, new RegExp(serviceKey));
   assert.match(await readFile(keyOutput, "utf8"), new RegExp(serviceKey));
@@ -435,4 +435,45 @@ test("dev-up rejects a public controller port rendered by Podman Compose", async
     invocations.some((entry) => entry.args.includes("up")),
     false,
   );
+});
+
+test("dev-up honors an explicitly selected Docker Engine", async (t) => {
+  const fixture = await createFixture(t);
+  const keyOutput = join(fixture.directory, "selected-docker-service-key.json");
+
+  const result = runDevUp(["--key-output", keyOutput], {
+    ...fixture.env,
+    OCC_DEVELOPMENT_CONTAINER_ENGINE: "docker",
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Container engine: Docker/);
+});
+
+test("dev-up rejects an unsupported development selector before startup", async (t) => {
+  const fixture = await createFixture(t);
+  const keyOutput = join(fixture.directory, "invalid-selector-service-key.json");
+
+  const result = runDevUp(["--key-output", keyOutput], {
+    ...fixture.env,
+    OCC_DEVELOPMENT_CONTAINER_ENGINE: "containerd",
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /OCC_DEVELOPMENT_CONTAINER_ENGINE must be auto, docker, or podman/);
+  const invocations = await readJsonLines(fixture.dockerLog);
+  assert.equal(
+    invocations.some((entry) => entry.args.includes("up")),
+    false,
+  );
+});
+
+test("dev-up routes Kubernetes Compute through the unified entry point", () => {
+  const result = runDevUp(["--help"], {
+    ...process.env,
+    OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /usage: scripts\/dev-up/);
 });

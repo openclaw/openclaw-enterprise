@@ -11,6 +11,19 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 cd "$repo_root"
 
+development_compute_driver="${OCC_DEVELOPMENT_COMPUTE_DRIVER:-docker}"
+case "$development_compute_driver" in
+  docker) ;;
+  kubernetes)
+    export OCC_DEVELOPMENT_INTERNAL_DISPATCH=1
+    exec "$script_dir/internal/development-kubernetes-up" "$@"
+    ;;
+  *)
+    echo "dev-up: configuration failed: OCC_DEVELOPMENT_COMPUTE_DRIVER must be docker or kubernetes" >&2
+    exit 2
+    ;;
+esac
+
 usage() {
   echo "usage: scripts/dev-up [--key-output PATH] [-- COMPOSE_GLOBAL_OPTIONS...]" >&2
 }
@@ -133,25 +146,35 @@ compose_command=()
 compose_capability_probe="$temporary_directory/compose-capability.yaml"
 printf 'services:\n  probe:\n    image: scratch\n' >"$compose_capability_probe"
 
-if command -v docker >/dev/null 2>&1; then
-  docker_server_platform="$(docker version --format '{{.Server.Platform.Name}}' 2>/dev/null || true)"
-  case "$docker_server_platform" in
-    *[Dd][Oo][Cc][Kk][Ee][Rr]*)
-      if docker_root_directory="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null)" &&
-        [ -n "$docker_root_directory" ] &&
-        docker compose version >/dev/null 2>&1 &&
-        docker compose -f "$compose_capability_probe" config --format json \
-          >"$temporary_directory/docker-compose-capability.json" 2>/dev/null; then
-        container_engine="docker"
-        container_engine_label="Docker"
-        engine_command=(docker)
-        compose_command=(docker compose)
-      fi
-      ;;
-  esac
+requested_container_engine="${OCC_DEVELOPMENT_CONTAINER_ENGINE:-auto}"
+case "$requested_container_engine" in auto | docker | podman) ;; *) fail "configuration" "OCC_DEVELOPMENT_CONTAINER_ENGINE must be auto, docker, or podman" ;; esac
+
+if [ "$requested_container_engine" != podman ] && command -v docker >/dev/null 2>&1; then
+  docker_server="$(docker version --format '{{json .Server}}' 2>/dev/null || true)"
+  if python3 - "$docker_server" <<'PY' >/dev/null 2>&1
+import json
+import sys
+server = json.loads(sys.argv[1])
+platform = str(server.get("Platform", {}).get("Name", "")).lower()
+components = {str(item.get("Name", "")) for item in server.get("Components", []) if isinstance(item, dict)}
+if "docker" not in platform and "Engine" not in components:
+    raise SystemExit(1)
+PY
+  then
+    if docker_root_directory="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null)" &&
+      [ -n "$docker_root_directory" ] &&
+      docker compose version >/dev/null 2>&1 &&
+      docker compose -f "$compose_capability_probe" config --format json \
+        >"$temporary_directory/docker-compose-capability.json" 2>/dev/null; then
+      container_engine="docker"
+      container_engine_label="Docker"
+      engine_command=(docker)
+      compose_command=(docker compose)
+    fi
+  fi
 fi
 
-if [ -z "$container_engine" ] && command -v podman >/dev/null 2>&1; then
+if [ -z "$container_engine" ] && [ "$requested_container_engine" != docker ] && command -v podman >/dev/null 2>&1; then
   if podman compose version >/dev/null 2>&1; then
     require_command podman-compose
     podman_compose_provider="$(command -v podman-compose)"
@@ -656,11 +679,7 @@ PY
   fail "authorization" "${match_error:-Installation ID mismatch}" scripts/occ-api GET /installation
 fi
 
-if [ "$container_engine" = "podman" ]; then
-  cleanup_command="$(quote_command env "PODMAN_COMPOSE_PROVIDER=$PODMAN_COMPOSE_PROVIDER" "OCC_CONTAINER_ENGINE_SOCKET=$OCC_CONTAINER_ENGINE_SOCKET" "${compose_command[@]}" "${compose_args[@]}" down)"
-else
-  cleanup_command="$(quote_command "${compose_command[@]}" "${compose_args[@]}" down)"
-fi
+cleanup_command="$(quote_command env "OCC_DEVELOPMENT_CONTAINER_ENGINE=$container_engine" scripts/dev-down -- "${compose_args[@]}")"
 next_check_command="$(quote_command "OCC_URL=$api_url" "OCC_SERVICE_KEY_FILE=$key_output" scripts/occ-api GET /installation)"
 
 cat <<EOF

@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+STATE_DIRECTORY="${OCC_DEVELOPMENT_STATE_DIRECTORY:-${TMPDIR:-/tmp}/openclaw-development}"
+
+script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$script_directory/.." && pwd)"
+cd "$repo_root"
+
+usage() { echo "usage: scripts/dev-down [-- COMPOSE_GLOBAL_OPTIONS...]" >&2; }
+fail() { echo "dev-down: $*" >&2; exit 1; }
+
+compose_args=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --)
+      shift
+      compose_args=("$@")
+      break
+      ;;
+    -h | --help) usage; exit 0 ;;
+    *) usage; exit 2 ;;
+  esac
+done
+
+if [ -d "$STATE_DIRECTORY" ]; then
+  command -v realpath >/dev/null 2>&1 || fail "realpath is required"
+  command -v python3 >/dev/null 2>&1 || fail "python3 is required"
+  resolved_state_directory="$(realpath -e -- "$STATE_DIRECTORY")" || fail "state directory not found"
+  [ "$resolved_state_directory" = "${STATE_DIRECTORY%/}" ] || fail "state directory must be canonical and must not be a symlink"
+  STATE_DIRECTORY="$resolved_state_directory"
+  case "$STATE_DIRECTORY" in / | /tmp | "$repo_root" | "${HOME:-/nonexistent}") fail "refusing unsafe state directory: $STATE_DIRECTORY" ;; esac
+  [ -d "$STATE_DIRECTORY" ] && [ ! -L "$STATE_DIRECTORY" ] && [ -O "$STATE_DIRECTORY" ] || fail "state directory must be owned by the current user"
+  marker="$STATE_DIRECTORY/.openclaw-development"
+  [ -f "$marker" ] && [ ! -L "$marker" ] && [ "$(cat "$marker")" = openclaw-enterprise-development-v1 ] || fail "state directory has no valid development marker"
+  state_file="$STATE_DIRECTORY/state.json"
+  mapfile -d '' -t state_values < <(python3 - "$state_file" <<'PY'
+import json
+import os
+import pathlib
+import re
+import stat
+import sys
+
+path = pathlib.Path(sys.argv[1])
+metadata = path.lstat()
+if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid() or stat.S_IMODE(metadata.st_mode) & 0o077:
+    raise SystemExit("state file must be a private regular file owned by the current user")
+directory = path.parent.stat()
+if directory.st_uid != os.geteuid() or stat.S_IMODE(directory.st_mode) & 0o077:
+    raise SystemExit("state directory must be private and owned by the current user")
+state = json.loads(path.read_text(encoding="utf-8"))
+expected = {"version", "computeDriver", "containerEngine", "composeProject", "composeArgs", "cluster", "dockerHost", "keyPath", "keyOwned"}
+if set(state) != expected or state["version"] != 1 or state["computeDriver"] != "kubernetes":
+    raise SystemExit("unsupported development state")
+if state["containerEngine"] not in {"docker", "podman"}:
+    raise SystemExit("invalid container engine")
+if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", state["composeProject"]):
+    raise SystemExit("invalid Compose project")
+if not re.fullmatch(r"occ-dev-[a-z0-9-]+", state["cluster"]):
+    raise SystemExit("invalid Kubernetes cluster")
+if not isinstance(state["composeArgs"], list) or not all(isinstance(value, str) and "\0" not in value for value in state["composeArgs"]):
+    raise SystemExit("invalid Compose arguments")
+for field in ("dockerHost", "keyPath"):
+    if not isinstance(state[field], str) or "\0" in state[field]:
+        raise SystemExit(f"invalid {field}")
+if not isinstance(state["keyOwned"], bool):
+    raise SystemExit("invalid key ownership")
+values = [state["containerEngine"], state["composeProject"], state["cluster"], state["dockerHost"], state["keyPath"], "true" if state["keyOwned"] else "false", *state["composeArgs"]]
+for value in values:
+    sys.stdout.buffer.write(value.encode() + b"\0")
+PY
+  )
+  [ "${#state_values[@]}" -ge 6 ] || fail "could not read development state"
+  container_engine="${state_values[0]}"
+  compose_project="${state_values[1]}"
+  cluster="${state_values[2]}"
+  docker_host="${state_values[3]}"
+  key_path="${state_values[4]}"
+  key_owned="${state_values[5]}"
+  stored_compose_args=("${state_values[@]:6}")
+  [ "${#compose_args[@]}" -eq 0 ] || fail "Compose options come from recorded Kubernetes development state"
+
+  if [ "$container_engine" = docker ]; then
+    command -v docker >/dev/null 2>&1 || fail "docker is required"
+    compose_command=(docker compose)
+  else
+    command -v podman >/dev/null 2>&1 || fail "podman is required"
+    command -v podman-compose >/dev/null 2>&1 || fail "podman-compose is required"
+    export PODMAN_COMPOSE_PROVIDER="$(command -v podman-compose)"
+    [ -z "$docker_host" ] || export DOCKER_HOST="$docker_host"
+    compose_command=(podman compose)
+  fi
+  command -v k3d >/dev/null 2>&1 || fail "k3d is required"
+  export OCC_DEVELOPMENT_INSTALLATION_CONFIG="$STATE_DIRECTORY/installation.yaml"
+  export OCC_DEVELOPMENT_KUBECONFIG="$STATE_DIRECTORY/container-kubeconfig"
+  export OCC_DEVELOPMENT_NETWORK_NAME="${compose_project}_development"
+  compose=("${compose_command[@]}" "${stored_compose_args[@]}" --project-name "$compose_project" -f compose.yaml -f compose.kubernetes.yaml)
+
+  if [ "$key_owned" = true ] && [ "$key_path" != "$STATE_DIRECTORY/initial-admin-service-key.json" ]; then
+    fail "recorded helper-owned key is outside the state directory"
+  fi
+
+  cluster_inventory="$(k3d cluster list -o json)" || fail "could not list k3d clusters"
+  cluster_exists="$(python3 - "$cluster" "$cluster_inventory" <<'PY'
+import json
+import sys
+
+clusters = json.loads(sys.argv[2])
+print("true" if any(item.get("name") == sys.argv[1] for item in clusters) else "false")
+PY
+  )" || fail "could not inspect k3d clusters"
+
+  cleanup_status=0
+  "${compose[@]}" stop controller worker-kubernetes >/dev/null 2>&1 || cleanup_status=1
+  [ "$cluster_exists" = false ] || k3d cluster delete "$cluster" >/dev/null || cleanup_status=1
+  "${compose[@]}" down --volumes >/dev/null || cleanup_status=1
+  [ "$cleanup_status" -eq 0 ] || fail "cleanup was incomplete; preserving $STATE_DIRECTORY for recovery"
+  rm -rf -- "$STATE_DIRECTORY"
+  echo "Stopped Kubernetes development stack $cluster."
+  exit 0
+fi
+
+container_engine="${OCC_DEVELOPMENT_CONTAINER_ENGINE:-auto}"
+case "$container_engine" in
+  auto)
+    if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then container_engine=docker
+    elif command -v podman >/dev/null 2>&1 && command -v podman-compose >/dev/null 2>&1 && podman info >/dev/null 2>&1; then container_engine=podman
+    else fail "a running Docker Engine or Podman service is required"
+    fi
+    ;;
+  docker | podman) ;;
+  *) fail "OCC_DEVELOPMENT_CONTAINER_ENGINE must be auto, docker, or podman" ;;
+esac
+if [ "$container_engine" = docker ]; then
+  docker compose "${compose_args[@]}" down
+else
+  export PODMAN_COMPOSE_PROVIDER="$(command -v podman-compose)"
+  podman_socket="$(podman info --format '{{.Host.RemoteSocket.Path}}' 2>/dev/null || true)"
+  podman_socket="${podman_socket#unix://}"
+  [ -n "$podman_socket" ] || fail "Podman did not report its API socket"
+  OCC_CONTAINER_ENGINE_SOCKET="$podman_socket" podman compose "${compose_args[@]}" -f compose.yaml -f compose.podman.yaml down
+fi
+echo "Stopped Docker-compatible development stack."

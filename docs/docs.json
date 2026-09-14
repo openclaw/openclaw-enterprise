@@ -24,6 +24,7 @@
                   "guides/concepts",
                   "guides/quickstart",
                   "guides/deploy",
+                  "guides/deploy/local-kubernetes-development",
                   "guides/deploy/production-installation",
                   "guides/deploy/production-agents",
                   "guides/deploy/workspace-routing",

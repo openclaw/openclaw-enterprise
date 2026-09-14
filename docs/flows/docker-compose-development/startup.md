@@ -11,7 +11,12 @@ Trace host preflight, database initialization, and API/worker startup. See the [
 The helper runs from the checkout root. It accepts an optional `--key-output`
 destination and forwards arguments after `--` to the selected Compose
 implementation, so native project names, profiles, and override files keep
-their normal precedence. It first probes a running Docker Engine and the JSON
+their normal precedence. This trace covers the default
+`OCC_DEVELOPMENT_COMPUTE_DRIVER=docker` path. Selecting `kubernetes` dispatches
+to the [local Kubernetes development profile](../../guides/deploy/local-kubernetes-development.md),
+which keeps OCC in Compose and uses k3d for Compute.
+
+The Docker Compute path first probes a running Docker Engine and the JSON
 configuration capability required from Docker Compose. If that probe fails, it
 selects `podman` directly; a `docker` compatibility alias is neither required
 nor treated as Docker merely because of its name. Podman requires the standalone
@@ -22,7 +27,9 @@ Docker Compose supplies resolved JSON directly. Podman Compose supplies YAML,
 which `dev-up` converts to JSON inside its private temporary directory before
 running the same effective port, image, and service checks. The helper appends
 `compose.podman.yaml` last so the worker receives Podman's reported API socket
-at `/var/run/docker.sock` and disables SELinux labeling only for that service.
+at `/var/run/docker.sock`. The base Docker Compute worker disables SELinux
+process labeling because relabeling a host engine socket is unsafe; other
+services retain SELinux confinement.
 The override also gives migration, bootstrap, API, and worker one shared
 development image. Because podman-compose otherwise rebuilds that identical
 target once per service, `dev-up` builds it once through the migration service

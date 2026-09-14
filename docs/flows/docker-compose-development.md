@@ -9,9 +9,12 @@ last_updated_session: codex/01a08890-87c8-7293-bd75-d7fc58e52cf2
 ## Overview
 
 `scripts/dev-up` is the supported local OpenClaw Enterprise development entry
-point. The helper performs host preflight, selects Docker Engine or Podman,
-selects or verifies runtime images, wraps the selected Compose implementation,
-waits for PostgreSQL migration, Installation bootstrap,
+point. This flow traces its default Docker Compute profile. Setting
+`OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes` keeps OCC in Compose but dispatches
+Compute to the [local k3d profile](../guides/deploy/local-kubernetes-development.md).
+For Docker Compute, the helper performs host preflight, selects Docker Engine
+or Podman, selects or verifies runtime images, wraps the selected Compose
+implementation, waits for PostgreSQL migration, Installation bootstrap,
 API health, and worker readiness, then proves authenticated `/installation`
 access with a protected local copy of the bootstrap service key. That startup
 proof does not create an Agent, deploy an AgentRevision, or start a TUI. The
@@ -53,6 +56,11 @@ the first authenticated development API checks.
   Compose-starting environment or protected `.env` before the worker starts;
   the API is published only on host loopback; the TUI runs from an interactive
   terminal attached with `docker exec -it`.
+
+The Kubernetes profile additionally uses `compose.kubernetes.yaml`, the
+internal Kubernetes startup implementation, `scripts/dev-down`, k3d, and
+kubectl. Its operator procedure and destructive cleanup boundary are owned by
+the local Kubernetes development guide.
 
 ## Flow
 
@@ -96,6 +104,9 @@ graph TD
   fresh-database initialization, `worker.started` with `computeDriverId` set to
   `compute-docker-development`, a private copied service-key path, and a
   successful authenticated `/installation` proof.
+- With `OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes`, startup should instead
+  report Kubernetes Compute, a private kubeconfig, and the disposable k3d
+  context; it does not mount the engine socket into the Kubernetes worker.
 - Podman startup verification should show Podman as the selected engine, mount
   only its reported API socket into the worker, and complete the same
   authenticated Installation proof without a `docker` alias.

@@ -1,0 +1,388 @@
+#!/usr/bin/env bash
+# Internal implementation dispatched exclusively by scripts/dev-up.
+set -euo pipefail
+umask 077
+
+STARTUP_TIMEOUT_SECONDS="${OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS:-300}"
+STATE_DIRECTORY="${OCC_DEVELOPMENT_STATE_DIRECTORY:-${TMPDIR:-/tmp}/openclaw-development}"
+CLUSTER="${OCC_DEVELOPMENT_KUBERNETES_CLUSTER:-occ-dev-$(date +%s)}"
+CONTAINER_ENGINE="${OCC_DEVELOPMENT_CONTAINER_ENGINE:-auto}"
+KUBERNETES_API_PORT="${OCC_DEVELOPMENT_KUBERNETES_API_PORT:-6443}"
+KUBERNETES_DISK_THRESHOLD_PERCENT="${OCC_DEVELOPMENT_KUBERNETES_DISK_THRESHOLD_PERCENT:-5}"
+COMPOSE_PROJECT="${OCC_DEVELOPMENT_COMPOSE_PROJECT:-openclaw-enterprise-development-kubernetes}"
+DEFAULT_RUNTIME_IMAGE="openclaw-enterprise-runtime:kubernetes-quickstart"
+
+script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$script_directory/../.." && pwd)"
+cd "$repo_root"
+
+[ "${OCC_DEVELOPMENT_INTERNAL_DISPATCH:-}" = 1 ] || {
+  echo "dev-up: invoke Kubernetes development through OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes scripts/dev-up" >&2
+  exit 2
+}
+
+usage() { echo "usage: scripts/dev-up [--key-output PATH] [-- COMPOSE_GLOBAL_OPTIONS...]" >&2; }
+fail() { echo "dev-up: $1 failed: $2" >&2; exit 1; }
+require_command() { command -v "$1" >/dev/null 2>&1 || fail prerequisite "$1 is required on PATH"; }
+
+key_output=""
+compose_args=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --key-output)
+      [ "$#" -ge 2 ] && [ -n "$2" ] || { usage; exit 2; }
+      key_output="$2"
+      shift 2
+      ;;
+    --)
+      shift
+      compose_args=("$@")
+      break
+      ;;
+    -h | --help) usage; exit 0 ;;
+    *) usage; exit 2 ;;
+  esac
+done
+
+for command in curl k3d kubectl python3 realpath; do require_command "$command"; done
+
+docker_available() {
+  command -v docker >/dev/null 2>&1 || return 1
+  local server
+  server="$(docker version --format '{{json .Server}}' 2>/dev/null)" || return 1
+  python3 - "$server" <<'PY' >/dev/null 2>&1
+import json
+import sys
+server = json.loads(sys.argv[1])
+platform = str(server.get("Platform", {}).get("Name", "")).lower()
+components = {str(item.get("Name", "")) for item in server.get("Components", []) if isinstance(item, dict)}
+if "docker" not in platform and "Engine" not in components:
+    raise SystemExit(1)
+PY
+  docker compose version >/dev/null 2>&1
+}
+
+podman_available() {
+  command -v podman >/dev/null 2>&1 && command -v podman-compose >/dev/null 2>&1 &&
+    podman info >/dev/null 2>&1 && podman compose version >/dev/null 2>&1
+}
+
+case "$CONTAINER_ENGINE" in
+  auto)
+    if docker_available; then CONTAINER_ENGINE=docker
+    elif podman_available; then CONTAINER_ENGINE=podman
+    else fail prerequisite "a running Docker Engine with Docker Compose or Podman with podman-compose is required"
+    fi
+    ;;
+  docker) docker_available || fail prerequisite "the selected Docker Engine or Docker Compose is unavailable" ;;
+  podman) podman_available || fail prerequisite "the selected Podman service or podman-compose is unavailable" ;;
+  *) fail configuration "OCC_DEVELOPMENT_CONTAINER_ENGINE must be auto, docker, or podman" ;;
+esac
+
+if [ "$CONTAINER_ENGINE" = docker ]; then
+  engine_command=(docker)
+  compose_command=(docker compose)
+  container_engine_label="Docker"
+else
+  engine_command=(podman)
+  compose_command=(podman compose)
+  container_engine_label="Podman"
+  export PODMAN_COMPOSE_PROVIDER="$(command -v podman-compose)"
+  if [ -z "${DOCKER_HOST:-}" ]; then
+    podman_socket="$(podman info --format '{{.Host.RemoteSocket.Path}}' 2>/dev/null || true)"
+    podman_socket="${podman_socket#unix://}"
+    [ -S "$podman_socket" ] || fail prerequisite "Podman's Docker-compatible API socket is unavailable"
+    export DOCKER_HOST="unix://$podman_socket"
+  fi
+fi
+
+case "$STATE_DIRECTORY" in /*) ;; *) fail configuration "OCC_DEVELOPMENT_STATE_DIRECTORY must be absolute" ;; esac
+STATE_DIRECTORY="$(realpath -m -- "$STATE_DIRECTORY")"
+case "$STATE_DIRECTORY" in
+  / | /tmp | "$repo_root" | "${HOME:-/nonexistent}") fail configuration "refusing unsafe state directory: $STATE_DIRECTORY" ;;
+esac
+case "$CLUSTER" in occ-dev-*) ;; *) fail configuration "Kubernetes development cluster must start with occ-dev-" ;; esac
+case "${CLUSTER#occ-dev-}" in '' | *[!a-z0-9-]*) fail configuration "Kubernetes development cluster contains unsupported characters" ;; esac
+case "$COMPOSE_PROJECT" in '' | *[!a-z0-9_-]* | [!a-z0-9]*) fail configuration "invalid Compose project name" ;; esac
+case "$KUBERNETES_API_PORT" in '' | *[!0-9]*) fail configuration "Kubernetes API port must be numeric" ;; esac
+[ "$KUBERNETES_API_PORT" -ge 1 ] && [ "$KUBERNETES_API_PORT" -le 65535 ] || fail configuration "Kubernetes API port is outside 1-65535"
+case "$KUBERNETES_DISK_THRESHOLD_PERCENT" in '' | *[!0-9]*) fail configuration "disk threshold must be numeric" ;; esac
+[ "$KUBERNETES_DISK_THRESHOLD_PERCENT" -ge 1 ] && [ "$KUBERNETES_DISK_THRESHOLD_PERCENT" -le 20 ] || fail configuration "disk threshold must be between 1 and 20"
+[ ! -e "$STATE_DIRECTORY" ] || fail configuration "state directory already exists: $STATE_DIRECTORY; run scripts/dev-down first"
+
+cluster_inventory="$(k3d cluster list -o json)" || fail prerequisite "could not list k3d clusters"
+cluster_exists="$(python3 - "$CLUSTER" "$cluster_inventory" <<'PY'
+import json
+import sys
+
+clusters = json.loads(sys.argv[2])
+print("true" if any(cluster.get("name") == sys.argv[1] for cluster in clusters) else "false")
+PY
+)" || fail prerequisite "could not inspect k3d clusters"
+[ "$cluster_exists" = false ] || fail configuration "k3d cluster already exists: $CLUSTER"
+
+project_resources=()
+for label_prefix in com.docker.compose io.podman.compose; do
+  containers="$("${engine_command[@]}" ps --all --quiet --filter "label=${label_prefix}.project=${COMPOSE_PROJECT}")" || fail prerequisite "could not inspect existing containers"
+  while IFS= read -r resource; do
+    [ -z "$resource" ] || project_resources+=("container:$resource")
+  done <<<"$containers"
+  volumes="$("${engine_command[@]}" volume ls --quiet --filter "label=${label_prefix}.project=${COMPOSE_PROJECT}")" || fail prerequisite "could not inspect existing volumes"
+  while IFS= read -r resource; do
+    [ -z "$resource" ] || project_resources+=("volume:$resource")
+  done <<<"$volumes"
+  networks="$("${engine_command[@]}" network ls --quiet --filter "label=${label_prefix}.project=${COMPOSE_PROJECT}")" || fail prerequisite "could not inspect existing networks"
+  while IFS= read -r resource; do
+    [ -z "$resource" ] || project_resources+=("network:$resource")
+  done <<<"$networks"
+done
+for resource in \
+  "${COMPOSE_PROJECT}_occ_postgres_data" \
+  "${COMPOSE_PROJECT}_occ_bootstrap_data" \
+  "${COMPOSE_PROJECT}_occ_configuration_data"; do
+  if "${engine_command[@]}" volume inspect "$resource" >/dev/null 2>&1; then
+    project_resources+=("volume:$resource")
+  fi
+done
+if "${engine_command[@]}" network inspect "${COMPOSE_PROJECT}_development" >/dev/null 2>&1; then
+  project_resources+=("network:${COMPOSE_PROJECT}_development")
+fi
+[ "${#project_resources[@]}" -eq 0 ] || fail configuration "Compose project already has resources: $COMPOSE_PROJECT"
+
+mkdir -p "$STATE_DIRECTORY"
+chmod 700 "$STATE_DIRECTORY"
+state_marker="$STATE_DIRECTORY/.openclaw-development"
+printf '%s\n' openclaw-enterprise-development-v1 >"$state_marker"
+chmod 600 "$state_marker"
+
+host_kubeconfig="$STATE_DIRECTORY/kubeconfig"
+container_kubeconfig="$STATE_DIRECTORY/container-kubeconfig"
+installation_config="$STATE_DIRECTORY/installation.yaml"
+state_file="$STATE_DIRECTORY/state.json"
+service_key_copy="$STATE_DIRECTORY/initial-admin-service-key.json"
+api_url="http://127.0.0.1:${OPENCLAW_DEV_PORT:-3000}"
+development_network="${COMPOSE_PROJECT}_development"
+
+if [ -z "$key_output" ]; then
+  key_output="$service_key_copy"
+  key_owned=true
+else
+  python3 - "$key_output" <<'PY'
+import os
+import pathlib
+import stat
+import sys
+path = pathlib.Path(sys.argv[1])
+if not path.is_absolute() or path.exists() or path.is_symlink():
+    raise SystemExit("key output must be an absent absolute path")
+metadata = path.parent.stat()
+if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid() or stat.S_IMODE(metadata.st_mode) & 0o077:
+    raise SystemExit("key output parent must be a private directory owned by the current user")
+PY
+  key_owned=false
+fi
+
+export OCC_DEVELOPMENT_INSTALLATION_CONFIG="$installation_config"
+export OCC_DEVELOPMENT_KUBECONFIG="$container_kubeconfig"
+export OCC_DEVELOPMENT_NETWORK_NAME="$development_network"
+compose_files=(-f compose.yaml -f compose.kubernetes.yaml)
+compose=("${compose_command[@]}" "${compose_args[@]}" --project-name "$COMPOSE_PROJECT" "${compose_files[@]}")
+
+compose_started=0
+cluster_created=0
+cluster_creation_attempted=0
+startup_ready=0
+cleanup_failure() {
+  local status=$?
+  local cleanup_status=0
+  trap - EXIT INT TERM
+  if [ "$startup_ready" -eq 0 ]; then
+    [ "$cluster_created" -eq 0 ] || k3d cluster delete "$CLUSTER" >/dev/null 2>&1 || cleanup_status=1
+    if [ "$cluster_creation_attempted" -eq 1 ] && [ "$cluster_created" -eq 0 ]; then cleanup_status=1; fi
+    [ "$compose_started" -eq 0 ] || "${compose[@]}" down --volumes >/dev/null 2>&1 || cleanup_status=1
+    if [ "$cleanup_status" -eq 0 ]; then
+      if [ -f "$state_marker" ] && [ "$(cat "$state_marker")" = openclaw-enterprise-development-v1 ]; then rm -rf -- "$STATE_DIRECTORY"; fi
+    else
+      echo "dev-up: rollback was incomplete; preserving $STATE_DIRECTORY for scripts/dev-down" >&2
+    fi
+  fi
+  exit "$status"
+}
+trap cleanup_failure EXIT INT TERM
+
+python3 - "$state_file" "$CLUSTER" "$CONTAINER_ENGINE" "$COMPOSE_PROJECT" "${DOCKER_HOST:-}" "$key_output" "$key_owned" "${compose_args[@]}" <<'PY'
+import json
+import os
+import sys
+path, cluster, engine, project, docker_host, key_path, key_owned, *compose_args = sys.argv[1:]
+payload = {"version": 1, "computeDriver": "kubernetes", "containerEngine": engine,
+           "composeProject": project, "composeArgs": compose_args, "cluster": cluster,
+           "dockerHost": docker_host, "keyPath": key_path, "keyOwned": key_owned == "true"}
+descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+    json.dump(payload, output, indent=2)
+    output.write("\n")
+PY
+
+echo "Starting the Compose database, migration, and bootstrap services..."
+compose_started=1
+"${compose[@]}" up --build -d postgres migrate bootstrap
+
+wait_for_completed_service() {
+  local service="$1"
+  local deadline=$((SECONDS + STARTUP_TIMEOUT_SECONDS))
+  while [ "$SECONDS" -le "$deadline" ]; do
+    local identifier status exit_code
+    identifier="$("${compose[@]}" ps --all -q "$service" | head -n 1)"
+    if [ -n "$identifier" ]; then
+      status="$("${engine_command[@]}" inspect --format '{{.State.Status}}' "$identifier")"
+      exit_code="$("${engine_command[@]}" inspect --format '{{.State.ExitCode}}' "$identifier")"
+      if [ "$status" = exited ] && [ "$exit_code" = 0 ]; then return 0; fi
+      if [ "$status" = exited ] || [ "$status" = dead ]; then
+        "${compose[@]}" logs "$service" >&2 || true
+        fail startup "$service exited with $exit_code"
+      fi
+    fi
+    sleep 1
+  done
+  fail startup "$service did not complete within ${STARTUP_TIMEOUT_SECONDS}s"
+}
+wait_for_completed_service migrate
+wait_for_completed_service bootstrap
+
+echo "Creating k3d cluster $CLUSTER..."
+cluster_creation_attempted=1
+k3d cluster create "$CLUSTER" --servers 1 --agents 0 --network "$development_network" \
+  --api-port "127.0.0.1:$KUBERNETES_API_PORT" \
+  --k3s-arg "--tls-san=k3d-${CLUSTER}-serverlb@server:*" \
+  --k3s-arg "--kubelet-arg=eviction-hard=memory.available<100Mi,nodefs.available<${KUBERNETES_DISK_THRESHOLD_PERCENT}%,nodefs.inodesFree<5%,imagefs.available<${KUBERNETES_DISK_THRESHOLD_PERCENT}%,imagefs.inodesFree<5%@server:*" \
+  --kubeconfig-update-default=false --kubeconfig-switch-context=false
+cluster_created=1
+k3d kubeconfig get "$CLUSTER" >"$host_kubeconfig"
+chmod 600 "$host_kubeconfig"
+kubernetes_context="k3d-$CLUSTER"
+kubectl --kubeconfig "$host_kubeconfig" --context "$kubernetes_context" get --raw=/version >/dev/null
+
+kubectl --kubeconfig "$host_kubeconfig" config view --raw -o json | python3 -c '
+import json, os, sys
+destination, context_name, server = sys.argv[1:]
+config = json.load(sys.stdin)
+context = next(item["context"] for item in config["contexts"] if item["name"] == context_name)
+cluster = next(item["cluster"] for item in config["clusters"] if item["name"] == context["cluster"])
+cluster["server"] = server
+cluster["tls-server-name"] = server.removeprefix("https://").split(":", 1)[0]
+descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+    json.dump(config, output)
+    output.write("\n")
+' "$container_kubeconfig" "$kubernetes_context" "https://k3d-${CLUSTER}-serverlb:6443"
+chmod 644 "$container_kubeconfig"
+
+runtime_image="${OCC_KUBERNETES_RUNTIME_IMAGE:-$DEFAULT_RUNTIME_IMAGE}"
+if ! "${engine_command[@]}" image inspect "$runtime_image" >/dev/null 2>&1; then
+  echo "Building $runtime_image..."
+  "${engine_command[@]}" build -f deploy/runtime/Dockerfile --tag "$runtime_image" deploy/runtime
+fi
+k3d image import "$runtime_image" -c "$CLUSTER"
+runtime_record="$("${engine_command[@]}" exec "k3d-${CLUSTER}-server-0" ctr -n k8s.io images list | awk -v image="$runtime_image" '
+  $1 == image { print $1 "\t" $3; exit }
+  length($1) > length(image) && substr($1, length($1) - length(image) + 1) == image && value == "" {
+    value = $1 "\t" $3
+  }
+  END { if (value != "") print value }
+')"
+IFS=$'\t' read -r imported_runtime_image runtime_digest <<<"$runtime_record"
+echo "$runtime_digest" | grep -Eq '^sha256:[a-f0-9]{64}$' || fail runtime-image "could not resolve the imported image digest"
+runtime_image_name="${runtime_image##*/}"
+case "$runtime_image_name" in
+  *:*) runtime_repository="${runtime_image%:*}" ;;
+  *) runtime_repository="$runtime_image" ;;
+esac
+runtime_reference="$runtime_repository@$runtime_digest"
+"${engine_command[@]}" exec "k3d-${CLUSTER}-server-0" ctr -n k8s.io images tag "$imported_runtime_image" "$runtime_reference" >/dev/null
+
+cat >"$installation_config" <<EOF
+occ:
+  cluster: $CLUSTER
+provider: []
+drivers:
+  configuration:
+    id: config-kubernetes
+    configuration:
+      authentication: { mode: kubeconfig, kubeconfigPath: /run/openclaw-development/kubeconfig, context: $kubernetes_context }
+  iam:
+    id: native-iam
+    configuration: {}
+  compute:
+    id: compute-kubernetes
+    configuration:
+      authentication: { mode: kubeconfig, kubeconfigPath: /run/openclaw-development/kubeconfig, context: $kubernetes_context }
+      images: { gateway: $runtime_reference, agent: $runtime_reference, requireImmutableDigest: true }
+      resources:
+        gateway: { requests: { cpu: 100m, memory: 256Mi }, limits: { cpu: "2", memory: 1Gi } }
+        agent: { requests: { cpu: 100m, memory: 256Mi }, limits: { cpu: "2", memory: 1Gi } }
+        namespace:
+          quota: { pods: "10" }
+          containerDefaults: { requests: { cpu: 100m, memory: 256Mi }, limits: { cpu: "2", memory: 1Gi } }
+      network:
+        dns: { namespace: kube-system, podLabels: { k8s-app: kube-dns } }
+        gatewayPort: 8080
+        gatewayClients:
+          - namespace: default
+            podLabels: { app.kubernetes.io/name: occ-kubernetes-dev-client }
+      servicePrincipalCredentials: { mode: projectedServiceAccountToken, audience: openclaw-enterprise, expirationSeconds: 900 }
+      runtime:
+        gatewayStorageClassName: local-path
+        transportSecretPrefix: openclaw-agent-transport
+        modelSecretPrefix: openclaw-agent-model
+  secret:
+    id: secret-kubernetes
+    configuration:
+      authentication: { mode: kubeconfig, kubeconfigPath: /run/openclaw-development/kubeconfig, context: $kubernetes_context }
+EOF
+chmod 644 "$installation_config"
+
+echo "Starting the Compose controller and Kubernetes worker..."
+"${compose[@]}" up --build -d controller worker-kubernetes
+deadline=$((SECONDS + STARTUP_TIMEOUT_SECONDS))
+services_ready=0
+while [ "$SECONDS" -le "$deadline" ]; do
+  if curl --silent --fail "$api_url/api/auth/session" >/dev/null 2>&1 &&
+    "${compose[@]}" exec -T worker-kubernetes node scripts/production-healthcheck.mjs worker ready >/dev/null 2>&1; then
+    services_ready=1
+    break
+  fi
+  sleep 2
+done
+[ "$services_ready" -eq 1 ] || { "${compose[@]}" logs controller worker-kubernetes >&2 || true; fail readiness "controller or worker did not become ready"; }
+
+bootstrap_container="$("${compose[@]}" ps --all -q bootstrap | head -n 1)"
+[ -n "$bootstrap_container" ] || fail key-copy "could not identify the bootstrap container"
+"${engine_command[@]}" cp "$bootstrap_container:/var/lib/openclaw/bootstrap/initial-admin-service-key.json" "$key_output"
+chmod 600 "$key_output"
+installation_response="$STATE_DIRECTORY/installation-response.json"
+OCC_URL="$api_url" OCC_SERVICE_KEY_FILE="$key_output" scripts/occ-api GET /installation >"$installation_response"
+installation_id="$(python3 - "$installation_response" <<'PY'
+import json
+import pathlib
+import sys
+print(json.loads(pathlib.Path(sys.argv[1]).read_text())["data"]["id"])
+PY
+)"
+rm -f -- "$installation_response"
+
+startup_ready=1
+trap - EXIT INT TERM
+cat <<EOF
+OpenClaw Enterprise development stack is ready.
+Container engine: $container_engine_label
+Compute Driver: Kubernetes
+API URL: $api_url
+Installation ID: $installation_id
+Service key file: $key_output
+Kubeconfig: $host_kubeconfig
+Kubernetes context: $kubernetes_context
+
+Cleanup:
+  scripts/dev-down
+EOF
