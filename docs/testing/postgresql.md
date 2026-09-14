@@ -146,3 +146,24 @@ neither suite verifies a deployed installation.
 
 - [Choose another test suite](README.md).
 - [Results, cleanup, and troubleshooting](README.md#results-cleanup-and-troubleshooting).
+
+## Transaction outcome protocol
+
+The PostgreSQL owner retains client transport errors through release and discards
+failed connections. Lost COMMIT acknowledgments report
+`PostgresCommitOutcomeUnknownError`; callers must inspect retained state before
+retrying an effect. A socket failure does not prove rollback.
+
+`tests/conformance/postgres-transaction-commit.test.mjs` exercises the actual outer
+transaction owner with a transport protocol fixture. It covers definite server
+rejection, ambiguous SQLSTATEs, exact COMMIT/ROLLBACK command acknowledgment,
+and cleanup errors. The fixture supplies no database or persistence proof.
+Unknown acknowledgment always remains possibly committed, even when a later
+ROLLBACK responds. An independent exact readback is required before reconciliation.
+
+The COMMIT fault fixture follows the installed PostgreSQL driver's effective
+host and port, including URL query overrides, and routes the test connection
+through its loopback proxy. It rejects nonloopback targets and TLS connections
+before mutation: inspecting encrypted protocol completion is unsupported, and
+TLS intent is never silently downgraded. Use the ordinary disposable non-TLS
+loopback setup above for this test.
