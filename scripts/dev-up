@@ -134,21 +134,16 @@ compose_capability_probe="$temporary_directory/compose-capability.yaml"
 printf 'services:\n  probe:\n    image: scratch\n' >"$compose_capability_probe"
 
 if command -v docker >/dev/null 2>&1; then
-  docker_server_platform="$(docker version --format '{{.Server.Platform.Name}}' 2>/dev/null || true)"
-  case "$docker_server_platform" in
-    *[Dd][Oo][Cc][Kk][Ee][Rr]*)
-      if docker_root_directory="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null)" &&
-        [ -n "$docker_root_directory" ] &&
-        docker compose version >/dev/null 2>&1 &&
-        docker compose -f "$compose_capability_probe" config --format json \
-          >"$temporary_directory/docker-compose-capability.json" 2>/dev/null; then
-        container_engine="docker"
-        container_engine_label="Docker"
-        engine_command=(docker)
-        compose_command=(docker compose)
-      fi
-      ;;
-  esac
+  if docker_root_directory="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null)" &&
+    [ -n "$docker_root_directory" ] &&
+    docker compose version >/dev/null 2>&1 &&
+    docker compose -f "$compose_capability_probe" config --format json \
+      >"$temporary_directory/docker-compose-capability.json" 2>/dev/null; then
+    container_engine="docker"
+    container_engine_label="Docker"
+    engine_command=(docker)
+    compose_command=(docker compose)
+  fi
 fi
 
 if [ -z "$container_engine" ] && command -v podman >/dev/null 2>&1; then
