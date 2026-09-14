@@ -58,6 +58,11 @@ graph TD
 
 ## Execution Trace
 
+The migration, shared bootstrap, API, and worker entrypoints use
+[`createPostgresPool`](../../packages/occ/src/state/postgres-pool.ts).
+See [connection authentication settings](../reference/settings/operations.md#postgresql-connection-authentication)
+for password and Azure workload-identity configuration.
+
 ### 1. Prepare native production inputs
 
 `deploy/helm/openclaw-enterprise/values.yaml:1`

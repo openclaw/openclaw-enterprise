@@ -1,3 +1,6 @@
+import { RepositoryTransactionLifetime } from "../ports/transaction.ts";
+import { bindPlatformUnitOfWork } from "../ports/platform-unit-of-work.ts";
+import { createPlatformReadView } from "../ports/platform-read-view.ts";
 import type {
   Agent,
   AgentRevision,
@@ -1144,7 +1147,14 @@ export class InMemoryPlatformState implements PlatformStateStore {
 
   async read<T>(work: (state: PlatformReadView) => Promise<T>): Promise<T> {
     await this.pending;
-    return work(repositories(cloneSnapshot(this.snapshot)));
+    const lifetime = new RepositoryTransactionLifetime();
+    try {
+      return await work(
+        createPlatformReadView(repositories(cloneSnapshot(this.snapshot)), lifetime),
+      );
+    } finally {
+      await lifetime.finish();
+    }
   }
 
   async transact<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
@@ -1153,15 +1163,18 @@ export class InMemoryPlatformState implements PlatformStateStore {
     this.pending = new Promise<void>((resolve) => {
       release = resolve;
     });
+    const lifetime = new RepositoryTransactionLifetime();
     try {
       await previous;
       const working = cloneSnapshot(this.snapshot);
       const committedAuditCount = working.audit.length;
-      const result = await work(repositories(working));
+      const result = await work(bindPlatformUnitOfWork(repositories(working), lifetime));
+      await lifetime.finish();
       await this.publishAudit(working.audit.slice(committedAuditCount));
       this.snapshot = working;
       return result;
     } finally {
+      await lifetime.finish();
       release?.();
     }
   }

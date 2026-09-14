@@ -1,0 +1,30 @@
+import { bindRepository } from "./repository-factory.ts";
+import type { RepositoryTransactionLifetime } from "./transaction.ts";
+import type { PlatformReadView } from "../state/platform-state.ts";
+
+/** The explicit outward projection shares one transaction lifetime. */
+export function createPlatformReadView(
+  repositories: PlatformReadView,
+  lifetime: RepositoryTransactionLifetime,
+): PlatformReadView {
+  return Object.freeze({
+    operations: bindRepository(repositories.operations, lifetime, ["list"]),
+    installations: bindRepository(repositories.installations, lifetime, [
+      "findInstallation",
+      "getInstallation",
+    ]),
+    namespaces: bindRepository(repositories.namespaces, lifetime, [
+      "findNamespace",
+      "listNamespaces",
+    ]),
+    configurations: bindRepository(repositories.configurations, lifetime, ["findConfiguration"]),
+    secrets: bindRepository(repositories.secrets, lifetime, ["findSecret"]),
+    serviceAccounts: bindRepository(repositories.serviceAccounts, lifetime, [
+      "findServiceAccount",
+      "listServiceAccounts",
+      "findServiceAccountProviderBinding",
+    ]),
+    agents: bindRepository(repositories.agents, lifetime, ["findAgent", "listAgents"]),
+    revisions: bindRepository(repositories.revisions, lifetime, ["findRevision", "listRevisions"]),
+  });
+}

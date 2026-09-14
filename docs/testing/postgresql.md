@@ -87,6 +87,53 @@ OCC_BOOTSTRAP_FAILURE_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:
   node --test tests/integration/postgres-bootstrap-failures.test.mjs
 ```
 
+## Azure workload-identity connections
+
+Select the `postgres-azure-workload-identity` lane to run
+[postgres-azure-workload-identity.test.mjs](../../tests/integration/postgres-azure-workload-identity.test.mjs)
+against an existing authorized Azure PostgreSQL database. This lane has no
+GitHub workflow entrypoint and provisions no database or identity resources.
+The ordinary constructor, security-rejection, and real password-authentication
+cases remain in
+[postgres-connection-auth.test.mjs](../../tests/integration/postgres-connection-auth.test.mjs),
+owned by the mandatory `postgres` lane.
+
+Prepare a private environment file outside the repository with all four inputs:
+
+| Variable                      | Required value                                                                                                                  |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `OCC_TEST_AZURE_DATABASE_URL` | Password-free application-role URL using verified TLS, such as `postgresql://occ_app@database.example/occ?sslmode=verify-full`. |
+| `AZURE_TENANT_ID`             | Tenant for the selected workload identity.                                                                                      |
+| `AZURE_CLIENT_ID`             | Client ID for the selected workload identity with database access.                                                              |
+| `AZURE_FEDERATED_TOKEN_FILE`  | Readable projected federation-token file for that identity.                                                                     |
+
+Follow the [connection authentication contract](../reference/settings/operations.md#postgresql-connection-authentication)
+for TLS and identity requirements. Keep these inputs scoped to the selected
+test process; the test selects Azure authentication explicitly. Then run:
+
+```sh
+umask 077
+TEST_ENV_FILE=/absolute/path/to/private/postgres-azure-test.env
+chmod 600 "$TEST_ENV_FILE"
+POSTGRES_AZURE_RESULTS_DIRECTORY="$(mktemp -d "${TMPDIR:-/tmp}/oce-postgres-azure.XXXXXX")"
+node --env-file="$TEST_ENV_FILE" scripts/ci/run-tests.mjs run postgres-azure-workload-identity \
+  --state "$POSTGRES_AZURE_RESULTS_DIRECTORY/state.json" \
+  --results "$POSTGRES_AZURE_RESULTS_DIRECTORY/results.json"
+```
+
+The fresh state path needs no preparation command for this lane. Missing
+required inputs fail the selected lane, as do failed, skipped, or missing test
+results. Broad direct test runs skip the Azure case when its URL is absent.
+Retain the result JSON for the connection evidence, then remove only this run's
+temporary result directory when it is no longer needed.
+
+The read-only test opens two fresh, immediate connections through the shared
+pool and checks that each returns an authenticated username and reports TLS in
+`pg_stat_ssl`. It does not wait for token expiry or prove token rotation,
+outage recovery, or an Azure deployment. For connection failures, check the
+projected token file, federation configuration, database grants, and verified
+TLS endpoint without printing credentials or tokens.
+
 ## Service-key persistence
 
 `tests/integration/postgres-service-api-keys.test.mjs` covers stored hashing,
@@ -99,3 +146,24 @@ neither suite verifies a deployed installation.
 
 - [Choose another test suite](README.md).
 - [Results, cleanup, and troubleshooting](README.md#results-cleanup-and-troubleshooting).
+
+## Transaction outcome protocol
+
+The PostgreSQL owner retains client transport errors through release and discards
+failed connections. Lost COMMIT acknowledgments report
+`PostgresCommitOutcomeUnknownError`; callers must inspect retained state before
+retrying an effect. A socket failure does not prove rollback.
+
+`tests/conformance/postgres-transaction-commit.test.mjs` exercises the actual outer
+transaction owner with a transport protocol fixture. It covers definite server
+rejection, ambiguous SQLSTATEs, exact COMMIT/ROLLBACK command acknowledgment,
+and cleanup errors. The fixture supplies no database or persistence proof.
+Unknown acknowledgment always remains possibly committed, even when a later
+ROLLBACK responds. An independent exact readback is required before reconciliation.
+
+The COMMIT fault fixture follows the installed PostgreSQL driver's effective
+host and port, including URL query overrides, and routes the test connection
+through its loopback proxy. It rejects nonloopback targets and TLS connections
+before mutation: inspecting encrypted protocol completion is unsupported, and
+TLS intent is never silently downgraded. Use the ordinary disposable non-TLS
+loopback setup above for this test.
