@@ -198,6 +198,15 @@
       },
       "files": [
         {
+          "path": "tests/integration/postgres-connection-auth.test.mjs",
+          "expectedTests": [
+            "password authentication preserves the existing pg connection configuration",
+            "the password pool authenticates to the selected real PostgreSQL database",
+            "the real pg client retains the Azure token callback and verified TLS after URL parsing",
+            "workload authentication rejects password fallback and unverified TLS"
+          ]
+        },
+        {
           "path": "tests/integration/postgres-auth-accounts.test.mjs",
           "expectedTests": [
             "fresh PostgreSQL development bootstrap writes a usable administrator service key",
@@ -299,6 +308,23 @@
             "production Drivers without an activation preference retain after-commit Kubernetes ordering",
             "an opted-in active runtime continuously repairs under its original authorized actor",
             "active maintenance recovers after its convergence deadline and stops when its actor is denied"
+          ]
+        }
+      ]
+    },
+    "postgres-azure-workload-identity": {
+      "requiredEnv": [
+        "OCC_TEST_AZURE_DATABASE_URL",
+        "AZURE_TENANT_ID",
+        "AZURE_CLIENT_ID",
+        "AZURE_FEDERATED_TOKEN_FILE"
+      ],
+      "prepare": {},
+      "files": [
+        {
+          "path": "tests/integration/postgres-azure-workload-identity.test.mjs",
+          "expectedTests": [
+            "Azure workload identity opens successive real PostgreSQL TLS connections"
           ]
         }
       ]

@@ -1,6 +1,5 @@
 import { dirname } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
-import { createRequire } from "node:module";
 import { createPostgresControllerAuth } from "../apps/controller/src/auth/index.ts";
 import {
   bootstrapOutputPath,
@@ -10,16 +9,12 @@ import {
 import { createBootstrapAdministratorSeed, NativeIAMDriver } from "../packages/iam/src/index.ts";
 import {
   BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
+  createPostgresPool,
   OpenClawController,
   PostgresPlatformState,
 } from "../packages/occ/src/index.ts";
 import { createOccLogger, emitOccLogEvent } from "../apps/controller/src/logging.ts";
 import { loadOperationalLoggingConfiguration } from "../apps/controller/src/composition/installation-config.ts";
-
-const requireControllerDependency = createRequire(
-  new URL("../apps/controller/package.json", import.meta.url),
-);
-const pg = requireControllerDependency("pg");
 
 const DEFAULT_BETTER_AUTH_BASE_URL = "http://127.0.0.1:3000";
 const DEFAULT_DEV_ADMIN_EMAIL = "admin@openclaw.local";
@@ -277,7 +272,7 @@ try {
     destination: "stderr",
   });
   const config = modeConfig(mode);
-  pool = new pg.Pool({ connectionString: config.databaseUrl });
+  pool = await createPostgresPool(config.databaseUrl);
   const state = new PostgresPlatformState(pool);
   const existing = await state.loadInstallation();
   if (existing !== undefined) {

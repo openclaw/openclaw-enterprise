@@ -1,11 +1,14 @@
-import pg from "pg";
 import type { AuditEvent, ComputeDriver } from "@openclaw-enterprise/contracts";
 import {
   validateAuthAccountPrincipalSeed,
   validatePersistedNativeIAMState,
   type AuthPrincipalSeed,
 } from "@openclaw-enterprise/iam";
-import { OpenClawController, PostgresPlatformState } from "@openclaw-enterprise/occ";
+import {
+  createPostgresPool,
+  OpenClawController,
+  PostgresPlatformState,
+} from "@openclaw-enterprise/occ";
 import { createPostgresControllerAuth } from "../auth/index.ts";
 import { createFastifyApp } from "../index.ts";
 import type {
@@ -54,8 +57,7 @@ export async function composeProduction(config: ProductionConfig) {
   }
 
   const driverId = installation.drivers.iam.id;
-  const pool = new pg.Pool({
-    connectionString: config.databaseUrl,
+  const pool = await createPostgresPool(config.databaseUrl, {
     ...(config.poolMax === undefined ? {} : { max: config.poolMax }),
   });
 

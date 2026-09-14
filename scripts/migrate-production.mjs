@@ -1,5 +1,6 @@
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { createPostgresPool } from "../packages/occ/src/state/postgres-pool.ts";
 import { createOccLogger, emitOccLogEvent } from "../apps/controller/src/logging.ts";
 import { loadOperationalLoggingConfiguration } from "../apps/controller/src/composition/installation-config.ts";
 
@@ -23,10 +24,9 @@ try {
   }
 
   const dependency = createRequire(new URL("../packages/occ/package.json", import.meta.url));
-  const { Pool } = dependency("pg");
   const { drizzle } = dependency("drizzle-orm/node-postgres");
   const { migrate } = dependency("drizzle-orm/node-postgres/migrator");
-  pool = new Pool({ connectionString: databaseUrl, max: 1 });
+  pool = await createPostgresPool(databaseUrl, { max: 1 });
   await migrate(drizzle(pool), {
     migrationsFolder: fileURLToPath(new URL("../migrations", import.meta.url)),
   });
