@@ -23,6 +23,7 @@ output/playwright/
 !.agents/skills/test-audit/
 !.agents/skills/deslop/
 !.agents/skills/enterprise-testing/
+!.agents/skills/mermaid-diagrams/
 !.agents/skills/LICENSE.openclaw
 __pycache__/
 *.pyc

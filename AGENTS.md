@@ -93,11 +93,15 @@ tests, and [enterprise-testing](.agents/skills/enterprise-testing/SKILL.md) to
 select proof or diagnose CI. For requested diff cleanup, use
 [deslop](.agents/skills/deslop/SKILL.md) before independent review.
 
+Use [mermaid-diagrams](.agents/skills/mermaid-diagrams/SKILL.md) when a diagram
+clarifies a change, architecture, lifecycle, or dependency in documentation or a
+PR. It provides a shared template and distinguishes implemented from pending paths.
+
 When the user or owning workflow requests an independent code review, use
 [autoreview](.agents/skills/autoreview/SKILL.md). Follow the
 [Enterprise review guide](docs/testing/autoreview.md) for usage and upstream sync.
 Keep the vendored skill unchanged; shared fixes belong in `openclaw/agent-skills`.
-The other skills are [Enterprise adaptations](docs/testing/developer-skills.md).
+See [Developer skills](docs/testing/developer-skills.md) for provenance and updates.
 
 ## Product terminology
 

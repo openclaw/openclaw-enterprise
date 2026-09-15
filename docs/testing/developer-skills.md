@@ -2,18 +2,23 @@
 
 Use the repository-local skills for the relevant development task:
 
-| Task                             | Skill                                                                                                                                             |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Write or audit tests             | [test-audit](../../.agents/skills/test-audit/SKILL.md) checks observable behavior, credible regressions, distinct coverage, and production seams. |
-| Choose validation or diagnose CI | [enterprise-testing](../../.agents/skills/enterprise-testing/SKILL.md) routes to the existing testing procedures and exact run/job evidence.      |
-| Clean the current diff           | [deslop](../../.agents/skills/deslop/SKILL.md) permits only behavior-neutral cleanup before independent review.                                   |
-| Run requested independent review | [autoreview](autoreview.md) owns the reviewer CLI, isolation, and result interpretation.                                                          |
+| Task                             | Skill                                                                                                                                                          |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Write or audit tests             | [test-audit](../../.agents/skills/test-audit/SKILL.md) checks observable behavior, credible regressions, distinct coverage, and production seams.              |
+| Choose validation or diagnose CI | [enterprise-testing](../../.agents/skills/enterprise-testing/SKILL.md) routes to the existing testing procedures and exact run/job evidence.                   |
+| Explain a change with a diagram  | [mermaid-diagrams](../../.agents/skills/mermaid-diagrams/SKILL.md) provides a compact Mermaid template, semantic colors, and honest implementation boundaries. |
+| Clean the current diff           | [deslop](../../.agents/skills/deslop/SKILL.md) permits only behavior-neutral cleanup before independent review.                                                |
+| Run requested independent review | [autoreview](autoreview.md) owns the reviewer CLI, isolation, and result interpretation.                                                                       |
 
 These skills are checked into `.agents/skills`; no global installation is needed.
 Testing setup and real-runtime requirements remain owned by the
 [testing guides](README.md). Each skill describes its scope and prerequisites.
 
 ## Provenance and updates
+
+`mermaid-diagrams` is maintained in this repository. Update its instructions and
+template together; check source accuracy and inspect a rendered example when
+possible. Report syntax checks and visual inspection separately.
 
 The three adapted skills originate from `openclaw/openclaw` at commit
 `4490500902033a1673aed8f42299c232d4b5696f`. Their source `SKILL.md` files are
