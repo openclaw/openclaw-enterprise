@@ -71,12 +71,18 @@ boundaries.
    workload and returns its stable Sandbox identity. Otherwise, Compute creates
    the ordinary Harness workload.
 6. Compute waits for normal exact-revision readiness before activating routing.
-7. `cleanup` removes the provider-owned Sandbox during revision retirement and
-   provider bootstrap resources during Namespace deletion.
+7. Revision retirement in the owned Namespace always invokes `cleanup` for the
+   selected provider. If Compute owns the ordinary Harness workload, it stops
+   that workload first; an already-absent workload does not skip provider
+   cleanup. If the provider owns the Harness, `cleanup` removes that Sandbox.
+   Namespace deletion invokes `cleanup` without a revision to remove provider
+   bootstrap resources.
 
 Namespace setup, provisioning, and cleanup must be idempotent. Unsupported
 topologies, missing prerequisites, ambiguous resources, failed identity checks,
-and unavailable containment fail closed.
+and unavailable containment fail closed. A revision cleanup failure blocks the
+remaining retirement steps and is retried; it cannot be treated as completed
+merely because the Compute-owned workload is already absent.
 
 ## Provisioning inputs
 

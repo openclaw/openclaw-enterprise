@@ -765,12 +765,26 @@ test(
     ]);
     assert.equal(malformedCreateRow.rowCount, 0);
 
-    const agent = await controller.createAgent(principalId, {
-      namespaceId: namespace.id,
-      name: `postgres-plugin-agent-${randomUUID()}`,
-      configurationId: configuration.id,
-      plugins: initialPlugins,
+    let escapedUnit;
+    const agent = await controller.transact(async (unit) => {
+      escapedUnit = unit;
+      return controller.createAgent(principalId, {
+        namespaceId: namespace.id,
+        name: `postgres-plugin-agent-${randomUUID()}`,
+        configurationId: configuration.id,
+        plugins: initialPlugins,
+      });
     });
+    // An Agent mutation may share its caller's transaction, but the borrowed
+    // handle cannot change that Agent after the controller publishes the result.
+    await assert.rejects(
+      escapedUnit.agents.updateConfiguration(namespace.id, agent.id, replacementConfiguration.id),
+      { name: "ScopeViolationError" },
+    );
+    const persistedAgent = await state.read((view) =>
+      view.agents.findAgent(namespace.id, agent.id),
+    );
+    assert.equal(persistedAgent.configurationId, configuration.id);
 
     const storedSelection = await pool.query("SELECT plugins FROM occ.agents WHERE id = $1", [
       agent.id,

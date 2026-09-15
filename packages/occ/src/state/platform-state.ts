@@ -1,3 +1,6 @@
+import { RepositoryTransactionLifetime } from "../ports/transaction.ts";
+import { bindPlatformUnitOfWork } from "../ports/platform-unit-of-work.ts";
+import { createPlatformReadView } from "../ports/platform-read-view.ts";
 import type {
   Agent,
   AgentRevision,
@@ -177,6 +180,7 @@ export interface ServiceAccountRepository extends ServiceAccountReadRepository {
     credential: ServiceAccountCredential,
   ): Promise<Readonly<ServiceAccount> | undefined>;
   deleteServiceAccount(namespaceId: string, serviceAccountId: string): Promise<boolean>;
+  hasReferences(namespaceId: string, serviceAccountId: string): Promise<boolean>;
 }
 
 const serviceAccountIdentifier =
@@ -862,16 +866,39 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
       snapshot.serviceAccounts.set(agentKey(namespaceId, serviceAccountId), updated);
       return immutableCopy(updated);
     },
+    hasReferences: async (namespaceId, serviceAccountId) => {
+      if ((await serviceAccounts.findServiceAccount(namespaceId, serviceAccountId)) === undefined)
+        return false;
+      return (
+        Array.from(snapshot.agents.values()).some((agent) => {
+          if (agent.namespaceId !== namespaceId) return false;
+          const activeRevision = (
+            snapshot.revisions.get(agentKey(namespaceId, agent.id)) ?? []
+          ).find((revision) => revision.id === agent.activeRevisionId);
+          return (
+            agent.serviceAccountId === serviceAccountId ||
+            activeRevision?.serviceAccount?.id === serviceAccountId
+          );
+        }) ||
+        snapshot.operations.some((operation) => {
+          if (operation.kind !== "agent_revision" || operation.namespaceId !== namespaceId)
+            return false;
+          return Array.from(snapshot.revisions.values()).some((revisions) =>
+            revisions.some(
+              (revision) =>
+                revision.namespaceId === namespaceId &&
+                revision.id === operation.resourceId &&
+                revision.serviceAccount?.id === serviceAccountId,
+            ),
+          );
+        })
+      );
+    },
     deleteServiceAccount: async (namespaceId, serviceAccountId) => {
       if ((await serviceAccounts.findServiceAccount(namespaceId, serviceAccountId)) === undefined)
         return false;
-      if (
-        Array.from(snapshot.agents.values()).some(
-          (agent) =>
-            agent.namespaceId === namespaceId && agent.serviceAccountId === serviceAccountId,
-        )
-      )
-        throw new ScopeViolationError("The ServiceAccount is referenced by an Agent.");
+      if (await serviceAccounts.hasReferences(namespaceId, serviceAccountId))
+        throw new ScopeViolationError("The ServiceAccount is referenced by active platform state.");
       snapshot.serviceAccounts.delete(agentKey(namespaceId, serviceAccountId));
       return true;
     },
@@ -1144,7 +1171,14 @@ export class InMemoryPlatformState implements PlatformStateStore {
 
   async read<T>(work: (state: PlatformReadView) => Promise<T>): Promise<T> {
     await this.pending;
-    return work(repositories(cloneSnapshot(this.snapshot)));
+    const lifetime = new RepositoryTransactionLifetime();
+    try {
+      return await work(
+        createPlatformReadView(repositories(cloneSnapshot(this.snapshot)), lifetime),
+      );
+    } finally {
+      await lifetime.finish();
+    }
   }
 
   async transact<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
@@ -1153,15 +1187,18 @@ export class InMemoryPlatformState implements PlatformStateStore {
     this.pending = new Promise<void>((resolve) => {
       release = resolve;
     });
+    const lifetime = new RepositoryTransactionLifetime();
     try {
       await previous;
       const working = cloneSnapshot(this.snapshot);
       const committedAuditCount = working.audit.length;
-      const result = await work(repositories(working));
+      const result = await work(bindPlatformUnitOfWork(repositories(working), lifetime));
+      await lifetime.finish();
       await this.publishAudit(working.audit.slice(committedAuditCount));
       this.snapshot = working;
       return result;
     } finally {
+      await lifetime.finish();
       release?.();
     }
   }

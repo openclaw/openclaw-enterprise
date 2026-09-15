@@ -47,9 +47,13 @@ also used directly by the optional `SandboxDriver.ensureNamespace` hook to
 apply approved namespace-scoped OpenShell NetworkPolicy resources
 and check gateway readiness. The selected driver's optional `provisionHarness`
 hook creates the provider-owned Harness Sandbox; without that hook, Compute
-creates the ordinary Harness Deployment. Revision cleanup is delegated to the
-provider, so Compute does not need Sandbox custom-resource permissions. No
-separate SandboxDriver Kubernetes access adapter is introduced. The privileged
+creates the ordinary Harness Deployment. Retirement deletes that ordinary
+Deployment when present and then always invokes the selected provider's required
+revision cleanup. An absent Deployment does not skip cleanup, and cleanup failure
+blocks gateway teardown so the worker can retry it. Provider-owned Harness
+retirement remains delegated to the provider, so Compute does not need Sandbox
+custom-resource permissions. No separate SandboxDriver Kubernetes access adapter
+is introduced. The privileged
 OpenShell init or sidecar containers must be allowed only through an
 operator-approved RuntimeClass or equivalent admission exemption with a
 matching fail-closed policy; the Harness container itself remains unprivileged.

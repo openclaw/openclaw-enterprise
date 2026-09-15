@@ -76,6 +76,14 @@ snapshots, and Namespace-scoped access.
 transaction-failure compensation, and execution-mode admission. These checks
 do not exercise a live provider or Kubernetes cluster.
 
+`tests/integration/postgres-service-account-deletion.test.mjs` uses the
+[PostgreSQL test setup](postgresql.md) to verify deletion rejection before Driver
+effects for queued, claimed, and active revisions after draft detachment. It
+also checks that completed cutover and permanently failed work release account
+references. The shared storage contract covers active and historical revisions
+in both storage adapters. These are persistence and controller checks, not live
+credential-revocation or model-turn proof.
+
 The real account suite above creates a provider account and runs dedicated Codex
 with its issued credential. The ordinary
 [Kubernetes runtime suite](kubernetes.md#kubernetes-model-turns-and-secrets)

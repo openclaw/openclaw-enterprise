@@ -1,3 +1,7 @@
+import { RepositoryTransactionLifetime } from "../ports/transaction.ts";
+import { bindRepository } from "../ports/repository-factory.ts";
+import { bindPlatformUnitOfWork } from "../ports/platform-unit-of-work.ts";
+import { createPlatformReadView } from "../ports/platform-read-view.ts";
 import type {
   AccessBinding,
   Agent,
@@ -55,7 +59,9 @@ import {
 type PostgresRow = Record<string, unknown>;
 
 export interface PostgresClient extends PostgresQueryClient {
-  release(): void;
+  release(discard?: boolean): void;
+  on?(event: "error", listener: (error: Error) => void): unknown;
+  removeListener?(event: "error", listener: (error: Error) => void): unknown;
 }
 
 export interface PostgresPool {
@@ -90,6 +96,7 @@ export class PostgresCommitOutcomeUnknownError extends DependencyUnavailableErro
 }
 
 interface TransactionContext {
+  readonly lifetime: RepositoryTransactionLifetime;
   readonly client: PostgresClient;
   installation: Readonly<Installation> | undefined;
   installationLoaded: boolean;
@@ -403,11 +410,11 @@ function commitOutcomeUnknown(error: unknown): boolean {
     error instanceof Error && "code" in error && typeof error.code === "string"
       ? error.code
       : undefined;
-  return (
-    code === undefined ||
-    !/^[0-9A-Z]{5}$/.test(code) ||
-    code.startsWith("08") ||
-    code.startsWith("57")
+  // Only server responses that establish transaction rejection prove no commit.
+  // 40003 and arbitrary SQLSTATEs retain the possibly committed outcome.
+  return !(
+    code !== undefined &&
+    (/^23[0-9A-Z]{3}$/.test(code) || code === "40001" || code === "40P01" || code === "25P02")
   );
 }
 
@@ -759,7 +766,9 @@ export class PostgresPlatformState implements PlatformStateStore {
   }
 
   async read<T>(work: (state: PlatformReadView) => Promise<T>): Promise<T> {
-    return this.execute(true, async (state) => work(state));
+    return this.execute(true, async (state, context) =>
+      work(createPlatformReadView(state, context.lifetime)),
+    );
   }
 
   async transact<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
@@ -774,15 +783,31 @@ export class PostgresPlatformState implements PlatformStateStore {
     const context = this.contexts.get(unit);
     if (context === undefined)
       throw new DependencyUnavailableError("The platform transaction is unavailable.");
-    return context.client.query(statement, parameters);
+    return context.lifetime.run(() => context.client.query(statement, parameters));
   }
 
   async transactWithQueue<T>(
-    work: (state: PlatformUnitOfWork, queue: PostgresWorkQueue) => Promise<T>,
+    work: (
+      state: PlatformUnitOfWork,
+      queue: Pick<PostgresWorkQueue, keyof PostgresWorkQueue>,
+    ) => Promise<T>,
     options: PostgresWorkQueueOptions = {},
   ): Promise<T> {
     return this.execute(false, async (state, context) =>
-      work(state, new PostgresWorkQueue(context.client, options)),
+      work(
+        state,
+        bindRepository(new PostgresWorkQueue(context.client, options), context.lifetime, [
+          "enqueue",
+          "claim",
+          "heartbeat",
+          "pending",
+          "complete",
+          "defer",
+          "retry",
+          "fail",
+          "recoverStale",
+        ]),
+      ),
     );
   }
 
@@ -797,39 +822,96 @@ export class PostgresPlatformState implements PlatformStateStore {
       throw databaseError(error);
     }
 
+    // Checked-out pg clients emit transport errors independently of query rejection.
+    // The transaction owner retains the event through release; repository callers
+    // still receive the original query failure or the exact unknown-COMMIT outcome.
+    let transportError: Error | undefined;
+    const onTransportError = (error: Error) => {
+      transportError = error;
+    };
+    client.on?.("error", onTransportError);
+    const lifetime = new RepositoryTransactionLifetime();
     let started = false;
     let committing = false;
+    let acknowledged = false;
+    let failed = false;
+    let discard = false;
     let unit: PlatformUnitOfWork | undefined;
     try {
       await client.query(readOnly ? "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY" : "BEGIN");
       started = true;
       const context: TransactionContext = {
-        client,
+        lifetime,
+        client: {
+          query: async (statement, parameters) => {
+            lifetime.assertActive();
+            const result = await client.query(statement, parameters);
+            lifetime.assertActive();
+            return result;
+          },
+          release: () => {
+            throw new ScopeViolationError("Only the transaction owner releases the client.");
+          },
+        },
         installation: undefined,
         installationLoaded: false,
       };
-      unit = this.repositories(context);
+      unit = bindPlatformUnitOfWork(this.repositories(context), lifetime);
       this.contexts.set(unit, context);
       const result = await work(unit, context);
+      await lifetime.finish();
+      if (transportError) throw transportError;
       committing = true;
-      await client.query("COMMIT");
+      let completion: unknown;
+      try {
+        completion = await client.query("COMMIT");
+      } catch (error) {
+        if (commitOutcomeUnknown(error)) throw new PostgresCommitOutcomeUnknownError();
+        committing = false;
+        throw error;
+      }
+      // Inspect acknowledgment separately: a throwing projection is not a server
+      // rejection, even if its exception happens to contain a SQLSTATE.
+      const command = (completion as { command?: unknown } | null)?.command;
+      if (command === "ROLLBACK") {
+        committing = false;
+        started = false;
+        throw new DependencyUnavailableError("The platform transaction was rolled back.");
+      }
+      if (command !== "COMMIT") throw new PostgresCommitOutcomeUnknownError();
+      acknowledged = true;
       committing = false;
       started = false;
       return result;
     } catch (error) {
+      failed = true;
+      discard = committing || transportError !== undefined;
+      await lifetime.finish();
       if (started) {
         try {
           await client.query("ROLLBACK");
         } catch {
-          // The failed client is still returned to the pool below.
+          discard = true;
         }
       }
-      throw committing && commitOutcomeUnknown(error)
-        ? new PostgresCommitOutcomeUnknownError()
-        : databaseError(error);
+      throw committing ? new PostgresCommitOutcomeUnknownError() : databaseError(error);
     } finally {
+      lifetime.close();
       if (unit !== undefined) this.contexts.delete(unit);
-      client.release();
+      let cleanupFailed = false;
+      try {
+        client.release(discard || transportError !== undefined);
+      } catch {
+        cleanupFailed = true;
+      }
+      try {
+        client.removeListener?.("error", onTransportError);
+      } catch {
+        cleanupFailed = true;
+      }
+      // Preserve the original failure. A failure after acknowledged COMMIT can
+      // never be reported as definite rollback or authorize an automatic replay.
+      if (!failed && cleanupFailed && acknowledged) throw new PostgresCommitOutcomeUnknownError();
     }
   }
 
@@ -1372,7 +1454,44 @@ export class PostgresPlatformState implements PlatformStateStore {
         )[0];
         return updated === undefined ? undefined : serviceAccountFromRow(updated);
       },
+      hasReferences: async (namespaceId, serviceAccountId) => {
+        if ((await findServiceAccount(namespaceId, serviceAccountId)) === undefined) return false;
+        // One statement observes both sides of the worker's pending-to-active handoff.
+        const found = rows(
+          (
+            await client.query(
+              `SELECT EXISTS (
+                 SELECT 1 FROM occ.agents
+                 WHERE namespace_id = $1 AND service_account_id = $2
+               ) OR EXISTS (
+                 SELECT 1 FROM occ.agents AS a
+                 JOIN occ.agent_revisions AS r
+                   ON r.namespace_id = a.namespace_id
+                  AND r.agent_id = a.id
+                  AND r.id = a.active_revision_id
+                 WHERE a.namespace_id = $1
+                   AND r.admitted_spec #>> '{service_account,id}' = $2
+               ) OR EXISTS (
+                 SELECT 1 FROM occ.controller_work AS w
+                 JOIN occ.agent_revisions AS r
+                   ON r.namespace_id = w.namespace_id
+                  AND r.agent_id = w.agent_id
+                  AND r.id = w.revision_id
+                 WHERE w.namespace_id = $1
+                   AND w.state IN ('queued', 'claimed')
+                   AND r.admitted_spec #>> '{service_account,id}' = $2
+               ) AS present`,
+              [namespaceId, serviceAccountId],
+            )
+          ).rows,
+        )[0];
+        return found?.present === true;
+      },
       deleteServiceAccount: async (namespaceId, serviceAccountId) => {
+        if (await serviceAccounts.hasReferences(namespaceId, serviceAccountId))
+          throw new ScopeViolationError(
+            "The ServiceAccount is referenced by active platform state.",
+          );
         const deleted = await client.query(
           `DELETE FROM occ.service_accounts AS s USING occ.namespaces AS n
            WHERE s.namespace_id = $1 AND s.id = $2

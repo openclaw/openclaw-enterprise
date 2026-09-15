@@ -1790,8 +1790,31 @@ export class KubernetesComputeDriver implements ComputeDriver {
       return;
     }
     const sandboxDriver = this.sandboxDriverForRevision(revision);
-    if (sandboxDriver?.provisionHarness !== undefined) {
-      await this.lifecycle.beforeWorkloadStop(revision);
+    const name = `agent-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`;
+    const deployment =
+      sandboxDriver?.provisionHarness === undefined
+        ? await this.getOwned("Deployment", name, namespace, {
+            namespaceId: revision.namespaceId,
+            agentId: revision.agentId,
+            servicePrincipalId: revision.servicePrincipalId,
+            revisionId: revision.id,
+          })
+        : undefined;
+    await this.lifecycle.beforeWorkloadStop(revision);
+    if (deployment !== undefined) {
+      await this.request(
+        () =>
+          clients.apps.deleteNamespacedDeployment({
+            name,
+            namespace,
+            ...(deployment.metadata.uid === undefined
+              ? {}
+              : { body: { preconditions: { uid: deployment.metadata.uid } } }),
+          }),
+        { mutating: true },
+      );
+    }
+    if (sandboxDriver !== undefined) {
       await sandboxDriver.cleanup({
         ...(await this.sandboxNamespaceContext(
           this.sandboxNamespaceForRevision(revision, namespace),
@@ -1799,33 +1822,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         )),
         revision,
       });
-      await this.removeRetiredGateway(revision, namespace);
-      return;
     }
-    const name = `agent-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`;
-    const deployment = await this.getOwned("Deployment", name, namespace, {
-      namespaceId: revision.namespaceId,
-      agentId: revision.agentId,
-      servicePrincipalId: revision.servicePrincipalId,
-      revisionId: revision.id,
-    });
-    if (deployment === undefined) {
-      await this.lifecycle.beforeWorkloadStop(revision);
-      await this.removeRetiredGateway(revision, namespace);
-      return;
-    }
-    await this.lifecycle.beforeWorkloadStop(revision);
-    await this.request(
-      () =>
-        clients.apps.deleteNamespacedDeployment({
-          name,
-          namespace,
-          ...(deployment.metadata.uid === undefined
-            ? {}
-            : { body: { preconditions: { uid: deployment.metadata.uid } } }),
-        }),
-      { mutating: true },
-    );
     await this.removeRetiredGateway(revision, namespace);
   }
 

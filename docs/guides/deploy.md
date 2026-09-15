@@ -63,6 +63,9 @@ Follow these pages in order in the same operator shell:
    Confirm the active revision, gateway access, and TUI model-turn proof for
    token-authenticated gateways.
 
+For ongoing business operation, use [production handoff](deploy/production-handoff.md)
+to record owners, credential renewal, alert response, and recovery decisions.
+
 For private workspace-file administration, configure
 [Agent workspace routing](deploy/workspace-routing.md). For operational logs,
 use [platform observability](observability.md).
@@ -109,5 +112,6 @@ so use Kubernetes Compute for plugin-enabled runtime proof. See
 ## Related
 
 - [Service API keys, rotation, and bootstrap recovery](deploy/service-keys.md)
+- [Credential renewal and revocation](deploy/credential-lifecycle.md)
 - [Local Kubernetes, development TUI, and cleanup](deploy/local-operations.md)
 - [Configuration and settings](../reference/settings.md)

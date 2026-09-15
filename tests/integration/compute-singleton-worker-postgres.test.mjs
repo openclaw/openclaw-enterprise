@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { requiresPostgres, setup, waitFor } from "../helpers/compute-singleton-worker.mjs";
 
@@ -80,7 +79,41 @@ test(
         },
         async activateRevision(candidate) {
           await record("activate", candidate);
-          if (candidate.id === first.id) await delay(650);
+          if (candidate.id === first.id) {
+            const original = await fixture.observerPool.query(
+              `SELECT claim_token, lease_expires_at::text AS expires_at
+               FROM occ.controller_work WHERE idempotency_key = $1`,
+              [first.idempotencyKey],
+            );
+            assert.equal(original.rowCount, 1);
+            const claim = original.rows[0];
+            assert.ok(claim.claim_token);
+            assert.ok(claim.expires_at);
+
+            // Keep activation open beyond its initial lease: the same claim must
+            // remain live because the real worker renewed it before publication.
+            await waitFor("the original activation claim to outlive its lease", async () => {
+              const current = await fixture.observerPool.query(
+                `SELECT state, claim_token, attempt_count,
+                        lease_expires_at > clock_timestamp() AS live,
+                        clock_timestamp() > $2::timestamptz AS original_expired,
+                        lease_expires_at > $2::timestamptz AS renewed
+                 FROM occ.controller_work WHERE idempotency_key = $1`,
+                [first.idempotencyKey, claim.expires_at],
+              );
+              assert.equal(current.rowCount, 1);
+              const work = current.rows[0];
+              assert.equal(work.state, "claimed");
+              assert.equal(work.claim_token, claim.claim_token);
+              assert.equal(work.attempt_count, 1);
+              assert.equal(
+                work.live,
+                true,
+                "the original claim must remain live during activation",
+              );
+              return work.original_expired && work.renewed ? work : undefined;
+            });
+          }
         },
         async deactivateRevision(candidate) {
           await record("deactivate", candidate);
@@ -90,7 +123,7 @@ test(
           return fixture.compute.retireRevision(candidate);
         },
       },
-      450,
+      5_000,
     );
     assert.equal((await fixture.work(first)).attempt_count, 1);
     assert.equal(await fixture.activeRevision(owner), first.id);

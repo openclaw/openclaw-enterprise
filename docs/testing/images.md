@@ -42,7 +42,27 @@ This renders the chart and verifies private Services, dedicated workload
 identities, tenant-scoped RoleBindings, mounted Secrets, restrictive networking,
 bootstrap ordering, and rejection of unsafe image or policy inputs. It does not
 install the chart or exercise live admission and NetworkPolicy enforcement.
-Missing Helm or `yq` skips this suite; unset image selectors skip the image smokes.
+Missing Helm or `yq` skips the Helm cases; unset image selectors skip the image smokes.
+
+## Development Compose packaging
+
+Run the development credential-isolation and logging packaging checks with a
+real Compose provider available on `PATH`:
+
+```sh
+node --test tests/integration/development-packaging.test.mjs tests/integration/logging-packaging.test.mjs
+```
+
+These tests resolve the checked-in Compose files using Docker Compose's JSON
+output, or `podman-compose` YAML converted by `yq`. They verify bootstrap key
+volume isolation, startup dependencies, and the logging override's private
+Collector bindings. No containers are started or model credentials used; this
+is configuration proof, not proof of live logging delivery. The logging file
+also contains Helm checks requiring Helm and `yq`.
+
+If a provider or YAML converter is missing, the Compose cases fail rather than
+skip. A `docker` command pointing to Podman is supported: provider detection
+selects `podman-compose` when Docker's JSON config capability is unavailable.
 
 ## Production image startup test environment
 

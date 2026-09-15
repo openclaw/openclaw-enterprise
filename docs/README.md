@@ -8,6 +8,8 @@ Start locally, install a production control plane, or look up supported behavior
 - [Quickstart](guides/quickstart.md): start locally on Docker or Podman, sign in,
   and verify API access.
 - [Deploy](guides/deploy.md): choose a deployment and follow its installation steps.
+- [Production handoff](guides/deploy/production-handoff.md): assign owners and verify a business workflow, alert response, and recovery readiness.
+- [Credential lifecycle](guides/deploy/credential-lifecycle.md): select the supported renewal or revocation path and verify its consumers.
 - [Concepts](guides/concepts.md): understand Namespaces, Agents, revisions, and credentials.
 - [Observability](guides/observability.md): export logs and check Collector health.
 

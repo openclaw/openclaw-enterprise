@@ -65,6 +65,9 @@ For this native flow, missing or OAuth credentials fail before admission.
 no Provider is inferred from model configuration or the account.
 An API-key deployment freezes exact account identity, kind, and source reference;
 later account mutations cannot change the admitted immutable revision.
+The [account deletion guard](../reference/service-accounts.md#account-and-credential-lifecycle)
+keeps the referenced account available while the revision is active or pending,
+even if its Agent draft detaches the account.
 
 ### 3. Materialize the exact source through its independent owner
 
