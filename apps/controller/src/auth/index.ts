@@ -444,11 +444,14 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
       });
     }
     const hash = await context.password.hash(password);
-    const created = await context.internalAdapter.createUser({
-      email,
-      name: accountName({ ...input, email }),
-      emailVerified: true,
-    });
+    const created = await context.internalAdapter.createUser(
+      {
+        email,
+        name: accountName({ ...input, email }),
+        emailVerified: true,
+      },
+      { method: "admin" },
+    );
     try {
       await context.internalAdapter.linkAccount({
         userId: created.id,

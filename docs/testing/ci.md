@@ -40,7 +40,7 @@ configured admin credential cannot authenticate from the hosted runner.
 
 ### Integration tests outside automatic CI
 
-The ten integration files below have no automatic workflow entrypoint.
+The following integration files have no automatic workflow entrypoint.
 A green `CI Required` check does not establish their coverage. This inventory describes workflow selection, not
 whether a test has ever passed in a local or hosted run.
 
@@ -68,6 +68,15 @@ testing the real helper deadline.
 | `k3d-otel`         | [harness-topology-k3d-otel-real.test.mjs](../../tests/integration/harness-topology-k3d-otel-real.test.mjs)       | Actual OTLP logs emitted during embedded and dedicated runtime model turns.                                              |
 
 #### No GitHub workflow entrypoint
+
+[postgres-azure-workload-identity.test.mjs](../../tests/integration/postgres-azure-workload-identity.test.mjs)
+belongs to the `postgres-azure-workload-identity` lane, excluded from both the
+`ci` and `full` groups and from Full Integration dispatch options. Follow the
+[Azure PostgreSQL test procedure](postgresql.md#azure-workload-identity-connections)
+for private input setup and result handling. The ordinary constructor,
+security-rejection, and password cases in
+[postgres-connection-auth.test.mjs](../../tests/integration/postgres-connection-auth.test.mjs)
+run in the mandatory `postgres` lane.
 
 [ssh-compute-real.test.mjs](../../tests/integration/ssh-compute-real.test.mjs) belongs
 to the `ssh-host` lane, which is excluded from both the `ci` and `full` groups

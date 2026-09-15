@@ -372,7 +372,7 @@ async function createInjectedFixture(options = {}) {
               platformState = new InMemoryPlatformState({ auditSink });
               controller = new OpenClawController(installation, {
                 state: platformState,
-                recordOperations: false,
+                recordOperations: options.recordOperations ?? false,
                 ...(options.providers === undefined ? {} : { providers: options.providers }),
               });
               if (options.providers?.length) {
@@ -471,8 +471,8 @@ async function createInjectedFixture(options = {}) {
   };
 }
 
-async function configuredController() {
-  const fixture = await createInjectedFixture();
+async function configuredController(options = {}) {
+  const fixture = await createInjectedFixture(options);
   return {
     fixture,
     request: (method, pathname, options) => injectedRequest(fixture.app, method, pathname, options),
@@ -929,7 +929,7 @@ test("Agent plugin maps reject structural errors and preserve exact authorizatio
 });
 
 test("native ServiceAccounts bind exact credential references and freeze Agent revision snapshots", async () => {
-  const controller = await configuredController();
+  const controller = await configuredController({ recordOperations: true });
   await bootstrap(controller);
   const namespace = await createNamespace(controller, "service-account-lifecycle");
   const account = await createServiceAccount(controller, namespace.id, "model-provider");
@@ -1024,15 +1024,23 @@ test("native ServiceAccounts bind exact credential references and freeze Agent r
   assert.equal(detached.status, 200);
   assert.equal(Object.hasOwn(detached.data, "serviceAccountId"), false);
 
+  // Detaching the draft leaves admitted deployments using their frozen account reference.
+  const pendingDeletion = await controller.request("DELETE", accountPath);
+  assert.equal(pendingDeletion.status, 409);
+  assert.equal(pendingDeletion.body.error.code, "RESOURCE_CONFLICT");
+  assert.equal((await controller.request("GET", accountPath)).data.id, account.id);
+
+  const unusedAccount = await createServiceAccount(controller, namespace.id, "unused-provider");
+  const unusedAccountPath = `/namespaces/${namespace.id}/service-accounts/${unusedAccount.id}`;
   // Successful DELETE is intentionally bodyless, unlike canonical JSON resource responses.
   const deleted = await controller.fixture.app.fetch(
-    new Request(`http://127.0.0.1${accountPath}`, {
+    new Request(`http://127.0.0.1${unusedAccountPath}`, {
       method: "DELETE",
       headers: authenticatedHeaders(controller.fixture.session),
     }),
   );
   assert.equal(deleted.status, 204);
-  const missingAccount = await controller.request("GET", accountPath);
+  const missingAccount = await controller.request("GET", unusedAccountPath);
   assert.equal(missingAccount.status, 404);
 
   const accountEvents = controller.fixture.auditSink.events.filter(
@@ -1053,7 +1061,7 @@ test("native ServiceAccounts bind exact credential references and freeze Agent r
   });
   assert.deepEqual(accountEvents.at(-1).authorization.resource, {
     kind: "service_account",
-    id: account.id,
+    id: unusedAccount.id,
     namespaceId: namespace.id,
   });
 });

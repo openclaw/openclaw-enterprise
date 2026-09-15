@@ -208,6 +208,22 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system 
 These commands provision operator-owned inputs; they are not a recurring Secret
 synchronizer.
 
+### Azure PostgreSQL workload identity
+
+For [Azure workload-identity database authentication](../../reference/settings/operations.md#postgresql-connection-authentication),
+use password-free URLs with verified TLS in the database URL files above.
+Prepare the identity environment variables and a renewed federation-token
+projection for each connecting process: migration, bootstrap, API, and worker.
+Provision federation and database grants for separate application and migrator
+identities; keep the migrator privileges confined to migration. Use
+`node scripts/migrate-production.mjs` for this authentication mode.
+
+These are deployment-owned inputs. The supplied chart does not configure Azure
+identities, federation, grants, identity environment variables, or token
+projection for OCC. Its migration and bootstrap containers share an
+initialization Pod and service account; changing database URL Secrets alone
+does not configure their distinct identity inputs or enable Azure mode.
+
 ### Optional operational log export
 
 Before installing the chart, configure the Collector Secrets and Helm values

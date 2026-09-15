@@ -81,21 +81,6 @@ async function resources(manifests) {
   return parsed.trim().split("\n").map(JSON.parse);
 }
 
-async function composeConfiguration() {
-  const { stdout } = await execute(
-    "docker",
-    ["compose", "--file", "compose.yaml", "--env-file", "/dev/null", "config", "--format", "json"],
-    {
-      cwd: repository,
-      env: {
-        PATH: process.env.PATH,
-      },
-      maxBuffer: 2_000_000,
-    },
-  );
-  return JSON.parse(stdout);
-}
-
 function routeNamespaceLabel(namespace, gatewayName) {
   return createHash("sha256").update(`${namespace}/${gatewayName}`).digest("hex").slice(0, 12);
 }
@@ -566,72 +551,6 @@ test(
     }
   },
 );
-
-test("development packaging isolates bootstrap service key output to the bootstrap service", async () => {
-  const configuration = await composeConfiguration();
-  const { bootstrap, controller, migrate, worker } = configuration.services;
-  assert.ok(bootstrap);
-  assert.ok(controller);
-  assert.ok(migrate);
-  assert.ok(worker);
-
-  assert.deepEqual(bootstrap.command, ["scripts/bootstrap-installation.mjs"]);
-  assert.equal(bootstrap.environment.NODE_ENV, "development");
-  assert.equal(
-    bootstrap.environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE,
-    "/var/lib/openclaw/bootstrap/initial-admin-service-key.json",
-  );
-  assert.equal(bootstrap.environment.OPENCLAW_DEV_EMAIL, "admin@openclaw.local");
-  assert.equal(bootstrap.environment.OPENCLAW_DEV_PASSWORD, "openclaw-development-password");
-  assert.equal(bootstrap.environment.OPENCLAW_DEV_INSTALLATION_NAME, "OpenClaw Local Development");
-  assert.equal(controller.environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE, undefined);
-  assert.equal(controller.environment.OPENCLAW_DEV_EMAIL, undefined);
-  assert.equal(controller.environment.OPENCLAW_DEV_PASSWORD, undefined);
-  assert.equal(controller.environment.OPENCLAW_DEV_INSTALLATION_NAME, undefined);
-  assert.equal(migrate.environment?.OCC_BOOTSTRAP_SERVICE_KEY_FILE, undefined);
-  assert.equal(worker.environment?.OCC_BOOTSTRAP_SERVICE_KEY_FILE, undefined);
-
-  assert.deepEqual(controller.depends_on.bootstrap, {
-    condition: "service_completed_successfully",
-    required: true,
-  });
-  assert.equal(controller.depends_on.migrate, undefined);
-  assert.deepEqual(bootstrap.depends_on.migrate, {
-    condition: "service_completed_successfully",
-    required: true,
-  });
-
-  assert.ok(configuration.volumes.occ_bootstrap_data);
-  assert.deepEqual(
-    bootstrap.volumes.filter(({ target }) => target === "/var/lib/openclaw/bootstrap"),
-    [
-      {
-        type: "volume",
-        source: "occ_bootstrap_data",
-        target: "/var/lib/openclaw/bootstrap",
-        volume: {},
-      },
-    ],
-  );
-  assert.ok(
-    controller.volumes === undefined ||
-      controller.volumes.every(({ source, target }) => {
-        return source !== "occ_bootstrap_data" && target !== "/var/lib/openclaw/bootstrap";
-      }),
-  );
-  assert.ok(
-    migrate.volumes === undefined ||
-      migrate.volumes.every(({ source, target }) => {
-        return source !== "occ_bootstrap_data" && target !== "/var/lib/openclaw/bootstrap";
-      }),
-  );
-  assert.ok(
-    worker.volumes === undefined ||
-      worker.volumes.every(({ source, target }) => {
-        return source !== "occ_bootstrap_data" && target !== "/var/lib/openclaw/bootstrap";
-      }),
-  );
-});
 
 test(
   "private Envoy Gateway routing renders automatic CA and deterministic default hostnames",

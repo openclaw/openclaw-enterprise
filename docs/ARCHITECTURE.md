@@ -51,6 +51,9 @@ The API authenticates callers, authorizes exact resource operations, and records
 changes. PostgreSQL stores platform state, IAM policy, controller work, and audit
 evidence. Resource mutations, queued work, and audit records commit together.
 
+[Platform repositories](reference/platform-repositories.md) defines callback transaction
+ownership, accepted-operation draining, and read-only views for both stores.
+
 Compose and Helm initialize the Installation after database migration and before
 starting the API and worker. Only the initializer mounts bootstrap credential
 output. See [startup](flows/platform-startup.md) and

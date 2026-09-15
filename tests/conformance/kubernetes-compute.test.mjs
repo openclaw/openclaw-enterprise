@@ -1778,6 +1778,110 @@ test("Kubernetes lifecycle hooks never run before cluster ownership and workload
   assert.deepEqual(calls, []);
 });
 
+test("containment-only Sandbox cleanup retries after its Compute-owned workload is absent", async () => {
+  const cleanupCalls = [];
+  const deletionCalls = [];
+  let deploymentPresent = true;
+  const sandboxDriver = {
+    id: "sandbox-containment-only",
+    implementation: "test/containment-only",
+    capability: "sandbox",
+    facets: ["networking"],
+    async cleanup(context) {
+      assert.equal(deploymentPresent, false);
+      cleanupCalls.push(context);
+      if (cleanupCalls.length === 1) throw new Error("sandbox cleanup failed");
+    },
+  };
+  const driver = new KubernetesComputeDriver(options(), { sandboxDriver });
+  const revision = routedRevision(driver, {
+    id: "revision-containment-retirement",
+    sandboxDriverId: sandboxDriver.id,
+  });
+  const namespace = kubernetesNamespaceName(revision.namespaceId);
+  const namespaceResource = {
+    apiVersion: "v1",
+    kind: "Namespace",
+    metadata: {
+      name: namespace,
+      labels: {
+        "app.kubernetes.io/managed-by": "openclaw-enterprise",
+        "openclaw.dev/namespace": revision.namespaceId,
+      },
+      annotations: { "openclaw.dev/namespace-id": revision.namespaceId },
+    },
+  };
+  const deploymentName = `agent-${digest(revision.agentId)}-rev-${digest(revision.id)}`;
+  const deployment = driver.deployment(
+    deploymentName,
+    {
+      namespaceId: revision.namespaceId,
+      agentId: revision.agentId,
+      servicePrincipalId: revision.servicePrincipalId,
+      revisionId: revision.id,
+    },
+    namespace,
+    "agent:local",
+    `agent-${digest(revision.agentId)}`,
+    "agent",
+    {},
+    "info",
+  );
+  deployment.metadata.uid = "containment-workload-uid";
+  const gatewayName = `gateway-${digest(revision.agentId)}`;
+  let gatewayReads = 0;
+  const notFound = () => Object.assign(new Error("Not found"), { code: 404 });
+
+  // Only Kubernetes transport observations are substituted; retirement and Sandbox dispatch
+  // execute through the production driver against a supported containment-only extension.
+  driver.apiClients = Promise.resolve({
+    core: {
+      async listNamespace() {
+        return { apiVersion: "v1", kind: "NamespaceList", items: [namespaceResource] };
+      },
+      async readNamespace() {
+        return structuredClone(namespaceResource);
+      },
+    },
+    apps: {
+      async readNamespacedDeployment({ name }) {
+        if (name === deploymentName && deploymentPresent) return structuredClone(deployment);
+        if (name === gatewayName) gatewayReads += 1;
+        throw notFound();
+      },
+      async deleteNamespacedDeployment(request) {
+        deletionCalls.push(request);
+        deploymentPresent = false;
+      },
+    },
+    objects: {},
+  });
+
+  // The first cleanup failure occurs after workload removal and must keep retirement retryable.
+  await assert.rejects(driver.retireRevision(revision), /sandbox cleanup failed/);
+  assert.equal(deploymentPresent, false);
+  assert.deepEqual(deletionCalls, [
+    {
+      name: deploymentName,
+      namespace,
+      body: { preconditions: { uid: deployment.metadata.uid } },
+    },
+  ]);
+  assert.equal(cleanupCalls.length, 1);
+  assert.equal(gatewayReads, 0);
+
+  // The absent-workload retry must run the required cleanup again instead of completing early.
+  await driver.retireRevision(revision);
+  assert.equal(deletionCalls.length, 1);
+  assert.equal(cleanupCalls.length, 2);
+  assert.equal(gatewayReads, 1);
+  for (const context of cleanupCalls) {
+    assert.equal(context.namespace.id, revision.namespaceId);
+    assert.equal(context.namespace.name, namespace);
+    assert.deepEqual(context.revision, revision);
+  }
+});
+
 test("the official Kubernetes client rejects ambiguous identity and insecure API servers", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "openclaw-kubernetes-auth-conformance-"));
   t.after(() => rm(directory, { recursive: true, force: true }));

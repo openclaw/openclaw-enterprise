@@ -76,8 +76,12 @@ detaching an associated account requires current-account `read`; replacement
 requires `read` on both accounts. An Agent can reference an account before it
 has a credential, but deployment rejects that state.
 
-Deletion requires `delete` on the exact account and is rejected while an Agent's
-current `serviceAccountId` still references it. Provider-managed deletion removes
+Deletion requires `delete` on the exact account and is rejected while an Agent
+draft, active revision, or queued or claimed deployment references it. Detaching
+the draft alone does not release an active or pending deployment's account.
+Inactive historical revisions and permanently failed deployments do not block
+deletion unless the account is still referenced by other live state.
+Provider-managed deletion removes
 the exact upstream credential, the account-owned Secret, and the upstream
 account before deleting OCC account state. Native deletion removes OCC account
 state; the operator owns the referenced source Secret.

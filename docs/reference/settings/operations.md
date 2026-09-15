@@ -3,6 +3,42 @@
 This reference owns worker, compose, and postgresql settings. Start with the
 [settings reference](../settings.md) for startup configuration and precedence.
 
+## PostgreSQL connection authentication
+
+Both PostgreSQL API modes, the worker, shared Installation bootstrap, and
+`node scripts/migrate-production.mjs` use the same connection pool factory.
+`OCC_DATABASE_AUTH` defaults to `password`, which preserves PostgreSQL URL
+credentials. The other supported mode is `azure-workload-identity`; unknown
+modes fail before opening a pool.
+
+| Variable                     | Requirement in Azure workload-identity mode                          |
+| ---------------------------- | -------------------------------------------------------------------- |
+| `OCC_DATABASE_AUTH`          | Set to `azure-workload-identity` in each connecting process.         |
+| `AZURE_TENANT_ID`            | Tenant for the process's workload identity.                          |
+| `AZURE_CLIENT_ID`            | Client ID for the process's workload identity.                       |
+| `AZURE_FEDERATED_TOKEN_FILE` | Readable projected federation-token file, renewed by the deployment. |
+
+This mode requires a password-free database URL with certificate and hostname
+verification, such as
+`postgresql://occ_app@database.example/occ?sslmode=verify-full`.
+The factory rejects nested connection strings, URL passwords, missing TLS, and
+parsed TLS options that disable certificate or hostname checks. Keep the
+application and migrator database roles separate: API, worker, and bootstrap
+use `OCC_DATABASE_URL`; migrations use `OCC_MIGRATION_DATABASE_URL` with the
+migrator identity.
+
+Each new pool connection requests an access token through the Azure SDK's
+`WorkloadIdentityCredential` for
+`https://ossrdbms-aad.database.windows.net/.default`. The SDK owns token caching
+and renewal; OCC does not persist tokens or fall back to a developer login.
+Use `node scripts/migrate-production.mjs` for migrations in this mode. The
+development Drizzle CLI migration command does not use the shared factory.
+
+See [operator setup](../../guides/deploy/production-installation.md#azure-postgresql-workload-identity)
+for deployment-owned identity inputs and chart limits, and
+[PostgreSQL testing](../../testing/postgresql.md#azure-workload-identity-connections)
+for the available connection proof and its limits.
+
 ## Controller worker environment
 
 The [controller worker](../controller.md) runs separately from the HTTP API. It

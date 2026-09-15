@@ -125,6 +125,11 @@ skills into the shared runtime-assets tree before spawning OpenClaw, so Codex
 sees the directional shared workspace, session, skill, and generated-image
 mounts after the gateway has prepared them. Private gateway state, claim roots,
 `CODEX_HOME`, tokens, and credentials remain outside the dedicated Harness.
+For a selected Sandbox Driver, revision retirement always runs its required
+cleanup after stopping a Compute-owned ordinary Harness, or delegates the
+provider-owned Harness removal to that cleanup. A cleanup failure stops before
+gateway teardown and remains retryable even when the ordinary Deployment is
+already absent.
 Predecessor retirement retains the current gateway and both owned claims; final
 gateway teardown deletes the exact-owned private and shared claims by UID before
 deleting the gateway. The [storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)

@@ -1,4 +1,3 @@
-import pg from "pg";
 import type { AuditEventFactory } from "@openclaw-enterprise/audit";
 import type {
   AuditEvent,
@@ -11,7 +10,11 @@ import {
   validatePersistedNativeIAMState,
   type AuthPrincipalSeed,
 } from "@openclaw-enterprise/iam";
-import { OpenClawController, PostgresPlatformState } from "@openclaw-enterprise/occ";
+import {
+  createPostgresPool,
+  OpenClawController,
+  PostgresPlatformState,
+} from "@openclaw-enterprise/occ";
 import { createPostgresControllerAuth } from "../auth/index.ts";
 import { createDockerDevelopmentComputeDriverFromEnv } from "../drivers/compute/docker/index.ts";
 import { createFilesystemDevelopmentConfigurationDriverFromEnv } from "../drivers/configuration/filesystem/index.ts";
@@ -69,8 +72,7 @@ export async function composePostgresDevelopment(
     );
   }
 
-  const pool = new pg.Pool({
-    connectionString: config.databaseUrl,
+  const pool = await createPostgresPool(config.databaseUrl, {
     ...(config.poolMax === undefined ? {} : { max: config.poolMax }),
   });
   let poolClosed = false;

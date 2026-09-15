@@ -210,6 +210,9 @@ for your scraper.
 
 ## Production readiness
 
+Use [production handoff](deploy/production-handoff.md#connect-alerts-to-a-response)
+to assign alert recipients and response procedures alongside these collection checks.
+
 - Keep runtime native OTLP export disabled and preserve Collector filtering.
   Local container logs and remotely exported records have different privacy
   boundaries; restrict access to both.

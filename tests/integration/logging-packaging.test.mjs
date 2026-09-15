@@ -5,6 +5,8 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import { composeConfiguration } from "../helpers/compose.mjs";
+
 const execute = promisify(execFile);
 const repository = fileURLToPath(new URL("../../", import.meta.url));
 const helm = process.env.OCC_HELM_BIN ?? "helm";
@@ -70,30 +72,29 @@ async function objects(manifests) {
 }
 
 function composeLoggingConfiguration(environment = {}) {
-  return execute(
-    "docker",
-    [
-      "compose",
-      "--file",
-      "compose.yaml",
-      "--file",
-      "compose.logging.yaml",
-      "--env-file",
-      "/dev/null",
-      "config",
-      "--format",
-      "json",
-    ],
-    {
-      cwd: repository,
-      env: {
-        PATH: process.env.PATH,
-        OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: "http://127.0.0.1:4318/v1/logs",
-        ...environment,
-      },
-      maxBuffer: 2_000_000,
-    },
-  );
+  return composeConfiguration(["compose.yaml", "compose.logging.yaml"], {
+    OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: "http://127.0.0.1:4318/v1/logs",
+    ...environment,
+  });
+}
+
+function hasLoopbackPort(service, target, published) {
+  // Compare the same TCP binding in either provider's resolved representation.
+  return service.ports.some((port) => {
+    if (typeof port === "string") {
+      return (
+        port === `127.0.0.1:${published}:${target}` ||
+        port === `127.0.0.1:${published}:${target}/tcp`
+      );
+    }
+    return (
+      (port.mode ?? "ingress") === "ingress" &&
+      (port.protocol ?? "tcp") === "tcp" &&
+      port.target === target &&
+      String(port.published) === String(published) &&
+      port.host_ip === "127.0.0.1"
+    );
+  });
 }
 
 function globExpression(pattern) {
@@ -109,35 +110,22 @@ test("development logging override routes only OCC-owned services through the pr
     "logging:\n  level: info\n",
   );
 
-  const { stdout } = await composeLoggingConfiguration();
-  const configuration = JSON.parse(stdout);
+  const configuration = composeLoggingConfiguration();
   const { bootstrap, collector, controller, migrate, postgres, worker } = configuration.services;
 
   assert.equal(
     collector.image,
     "docker.io/otel/opentelemetry-collector-contrib:0.159.0@sha256:1f2c54a30e713fac6b3ae77a1ec84010c2007e29ced8ec666214fc2f6739c1cc",
   );
-  assert.ok(
-    collector.ports.some(({ mode, target, published, host_ip }) => {
-      return (
-        mode === "ingress" && target === 24224 && published === "24224" && host_ip === "127.0.0.1"
-      );
-    }),
-  );
-  assert.ok(
-    collector.ports.some(({ mode, target, published, host_ip }) => {
-      return (
-        mode === "ingress" && target === 8888 && published === "8888" && host_ip === "127.0.0.1"
-      );
-    }),
-  );
+  assert.ok(hasLoopbackPort(collector, 24224, 24224));
+  assert.ok(hasLoopbackPort(collector, 8888, 8888));
   assert.equal(collector.logging.driver, "local");
-  assert.equal(collector.mem_limit, "402653184");
+  assert.ok(["402653184", "384m"].includes(String(collector.mem_limit)));
   assert.equal(collector.user, "0:0");
   assert.equal(collector.read_only, true);
   assert.deepEqual(collector.cap_drop, ["ALL"]);
   assert.deepEqual(collector.security_opt, ["no-new-privileges:true"]);
-  assert.ok(configuration.volumes.occ_otelcol_data);
+  assert.ok(Object.hasOwn(configuration.volumes, "occ_otelcol_data"));
 
   for (const service of [bootstrap, controller, migrate, worker]) {
     assert.equal(service.logging.driver, "fluentd");
@@ -158,25 +146,13 @@ test("development logging override routes only OCC-owned services through the pr
   assert.equal(worker.environment.OCC_DOCKER_LOGGING_ADDRESS, "127.0.0.1:24224");
   assert.equal(postgres.logging, undefined);
 
-  const overridden = JSON.parse(
-    (
-      await composeLoggingConfiguration({
-        OCC_DOCKER_LOGGING_ADDRESS: "127.0.0.1:25224",
-        OTEL_COLLECTOR_PORT: "25224",
-        OTEL_COLLECTOR_METRICS_PORT: "18888",
-      })
-    ).stdout,
-  );
-  assert.ok(
-    overridden.services.collector.ports.some(({ target, published, host_ip }) => {
-      return target === 24224 && published === "25224" && host_ip === "127.0.0.1";
-    }),
-  );
-  assert.ok(
-    overridden.services.collector.ports.some(({ target, published, host_ip }) => {
-      return target === 8888 && published === "18888" && host_ip === "127.0.0.1";
-    }),
-  );
+  const overridden = composeLoggingConfiguration({
+    OCC_DOCKER_LOGGING_ADDRESS: "127.0.0.1:25224",
+    OTEL_COLLECTOR_PORT: "25224",
+    OTEL_COLLECTOR_METRICS_PORT: "18888",
+  });
+  assert.ok(hasLoopbackPort(overridden.services.collector, 24224, 25224));
+  assert.ok(hasLoopbackPort(overridden.services.collector, 8888, 18888));
   assert.equal(overridden.services.worker.logging.options["fluentd-address"], "127.0.0.1:25224");
 });
 

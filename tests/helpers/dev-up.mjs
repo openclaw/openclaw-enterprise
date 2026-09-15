@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { composeConfigurationProvider } from "./compose.mjs";
+
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const serviceKey = "sk-test-secret-value";
 const matchingInstallationId = "ins_3033697e-6397-4cc6-9b04-8ec17af78cf1";
@@ -23,30 +25,6 @@ function commandPath(name) {
     encoding: "utf8",
     env: process.env,
   }).stdout.trim();
-}
-
-function composeConfigurationProvider() {
-  const cleanEnvironment = {
-    ...process.env,
-    OPENAI_API_KEY: "",
-    OCC_DOCKER_RUNTIME_IMAGE: "",
-    OCC_DOCKER_GATEWAY_IMAGE: "",
-    OCC_DOCKER_AGENT_IMAGE: "",
-  };
-  const docker = commandPath("docker");
-  if (docker) {
-    const result = spawnSync(docker, ["compose", "config", "--format", "json"], {
-      cwd: repository,
-      env: cleanEnvironment,
-      encoding: "utf8",
-    });
-    if (result.status === 0) return { command: docker, prefix: ["compose"], format: "json" };
-  }
-  const podmanCompose = commandPath("podman-compose");
-  const yq = commandPath("yq");
-  assert.ok(podmanCompose, "Docker Compose or podman-compose is required for dev-up tests");
-  assert.ok(yq, "yq is required when dev-up tests use podman-compose");
-  return { command: podmanCompose, prefix: [], format: "yaml", yq };
 }
 
 async function createFixture(t, options = {}) {

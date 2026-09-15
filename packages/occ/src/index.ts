@@ -113,6 +113,7 @@ export {
   type ServiceAccountRepository,
   type TransactionalAuditWriter,
 } from "./state/platform-state.ts";
+export { createPostgresPool } from "./state/postgres-pool.ts";
 export {
   PostgresPlatformState,
   PostgresPlatformStateStore,
@@ -1256,7 +1257,7 @@ export class OpenClawController {
   ): Promise<void> {
     this.serviceAccountIdentity(namespaceId, serviceAccountId);
     return this.mutate(async (state) => {
-      const namespace = await this.exactNamespace(state, namespaceId);
+      const namespace = await this.lockNamespace(state, namespaceId);
       await this.authorize(principalId, "delete", {
         kind: "service_account",
         id: serviceAccountId,
@@ -1268,9 +1269,10 @@ export class OpenClawController {
       );
       if (account === undefined)
         throw new ScopeViolationError("The ServiceAccount does not belong to the exact Namespace.");
-      const agents = await state.agents.listAgents(namespace.id);
-      if (agents.some((agent) => agent.serviceAccountId === account.id))
-        throw new ResourceConflictError("An Agent still references the exact ServiceAccount.");
+      if (await state.serviceAccounts.hasReferences(namespace.id, account.id))
+        throw new ResourceConflictError(
+          "An Agent draft, active revision, or pending deployment still references the exact ServiceAccount.",
+        );
       const driver = this.serviceAccountDriver();
       if (account.credential?.kind === "access_token" && driver === undefined)
         throw new DependencyUnavailableError("The selected ServiceAccount Driver is unavailable.");
