@@ -62,7 +62,7 @@ graph TD
   B --> C["Select quickstart runtime image or validate custom images"]
   C --> D["Selected Compose starts PostgreSQL, migrate, bootstrap, API, and worker"]
   D --> E["Copy bootstrap service-key response to private local file"]
-  E --> F["scripts/occ-api GET /installation proves authenticated access"]
+  E --> F["occ installation get proves authenticated access"]
   F --> G["Operator sends authenticated API provisioning and deploy calls"]
   G --> H["Worker claims durable Namespace and AgentRevision work"]
   H --> I["Docker driver ensures one network per Namespace"]

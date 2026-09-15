@@ -63,7 +63,8 @@ audit attribution, and failures without orphaned state.
 `tests/integration/service-api-keys.test.mjs` exercises Fastify HTTP with Better
 Auth memory storage and native IAM. It covers valid, invalid, expired, revoked,
 unauthorized, and cross-Namespace requests, authorized key management, human
-session preservation, Agent exclusion, and audit attribution. See
+session preservation, Agent exclusion, audit attribution, and JSON-body and
+bodyless operations through the compiled OCC CLI. See
 [PostgreSQL tests](postgresql.md#service-key-persistence) for database-backed
 verification.
 

@@ -40,7 +40,7 @@ human administrator session path, not service keys. The
 ### Production prerequisites
 
 - Explicit Kubernetes context, enforcing NetworkPolicies, Helm, `kubectl`,
-  Python 3, and `yq` v4.
+  Python 3, `yq` v4, and the installed [OCC CLI](cli.md).
 - Controller and runtime image digests (build them in the first step).
 - External PostgreSQL with separate migrator and application roles.
 - Operator-managed HTTPS access for approved clients; the chart does not create

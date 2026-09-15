@@ -2,7 +2,7 @@
 
 Use service keys for operator automation after startup has succeeded. Set
 `OCC_URL` to the loopback development URL or approved production HTTPS endpoint.
-Run commands from the repository root. Keep shell tracing and curl verbose output disabled.
+Run commands from the repository root. Keep shell tracing disabled.
 
 ## Retrieve the bootstrap service key
 
@@ -23,10 +23,10 @@ through approved storage access and store it in `$OCC_SERVICE_KEY_FILE`.
 Validate it immediately:
 
 ```bash
-scripts/occ-api GET /installation
+occ installation get
 ```
 
-Expect HTTP `200` with response `data.id` matching `meta.installationId`. The
+Expect the displayed `ID` to match `meta.installationId`. The
 initial service key expires after 30 days.
 
 ## Recover an incomplete bootstrap
@@ -95,8 +95,8 @@ Expect HTTP `201`. The response contains the one-time `data.key` and non-secret
 ## Use a service key
 
 ```bash
-export OCC_NAMESPACE_ID='<namespace-id>'
-scripts/occ-api GET "/namespaces/$OCC_NAMESPACE_ID"
+export OCC_NAMESPACE='<namespace-id>'
+occ namespace get "$OCC_NAMESPACE"
 ```
 
 Expect HTTP `200` for an authorized Namespace, `401` for invalid/expired keys,

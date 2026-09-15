@@ -11,6 +11,9 @@
   "scripts": {
     "build": "tsc --build tsconfig.json --pretty false",
     "typecheck": "tsc --build tsconfig.json --pretty false",
+    "cli:build": "go build -trimpath -o bin/occ ./cmd/occ",
+    "cli:check": "test -z \"$(gofmt -l cmd internal)\" && go vet ./...",
+    "cli:test": "go test ./...",
     "format:fix": "prettier --write \"{apps,packages,scripts,tests}/**/*.{ts,mjs,cjs,json,html,css}\" \"*.{json,yaml,yml,md}\" \"docs/**/*.md\" \"!docs/reference/api.md\" \".github/**/*.yml\"",
     "format:check": "prettier --check \"{apps,packages,scripts,tests}/**/*.{ts,mjs,cjs,json,html,css}\" \"*.{json,yaml,yml,md}\" \"docs/**/*.md\" \"!docs/reference/api.md\" \".github/**/*.yml\"",
     "hooks:install": "node scripts/install-git-hooks.mjs",

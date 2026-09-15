@@ -19,9 +19,9 @@ production database, cluster, or credential for tests without explicit approval.
 
 ## Set up a development checkout
 
-Use Node.js 24 or newer and the exact pnpm version in
-[`package.json`](package.json). In a trusted checkout, explicitly prepare
-dependencies with:
+Use Node.js 24 or newer, the exact pnpm version in [`package.json`](package.json),
+and the Go version selected by [`go.mod`](go.mod). In a trusted checkout,
+explicitly prepare dependencies with:
 
 ```sh
 pnpm install --frozen-lockfile
@@ -58,6 +58,8 @@ With matching dependencies installed and infrastructure selectors unset:
 pnpm check:workspace
 pnpm format:check
 pnpm typecheck
+pnpm cli:check
+pnpm cli:test
 pnpm openapi:check
 pnpm test:conformance
 pnpm test:integration

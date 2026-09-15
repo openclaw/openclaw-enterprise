@@ -81,10 +81,11 @@ test("dev-up builds the default runtime only when real Compose leaves runtime im
     assert.deepEqual(invocation.args.slice(1, 1 + options.length), options);
   }
 
-  const curlLogs = await readJsonLines(fixture.curlLog);
-  assert.equal(curlLogs.length, 1);
-  assert.ok(curlLogs[0].args.includes("http://127.0.0.1:3000/installation"));
-  assert.doesNotMatch(JSON.stringify(curlLogs), new RegExp(serviceKey));
+  // The CLI's client behavior is covered against the real Fastify API in
+  // service-api-keys.test.mjs; this fixture isolates dev-up's CLI invocation.
+  const occLogs = await readJsonLines(fixture.occLog);
+  assert.deepEqual(occLogs, [{ args: ["installation", "get", "--output", "json"] }]);
+  assert.doesNotMatch(JSON.stringify(occLogs), new RegExp(serviceKey));
 });
 
 test("dev-up preserves a selected custom runtime image and skips the quickstart build", async (t) => {
@@ -198,7 +199,7 @@ test("dev-up fails closed when bootstrap exits unsuccessfully", async (t) => {
     dockerLogs.some((entry) => entry.args[0] === "compose" && entry.args.includes("cp")),
     false,
   );
-  assert.equal((await readJsonLines(fixture.curlLog)).length, 0);
+  assert.equal((await readJsonLines(fixture.occLog)).length, 0);
 });
 
 test("dev-up fails closed when the worker exits before readiness", async (t) => {
@@ -231,10 +232,7 @@ test("dev-up preserves a copied key when the authenticated installation check is
   );
 
   assert.notEqual(result.status, 0);
-  assert.match(
-    result.stderr,
-    /authorization failed: scripts\/occ-api could not read \/installation/,
-  );
+  assert.match(result.stderr, /authorization failed: occ could not read the Installation/);
   assert.doesNotMatch(result.stdout + result.stderr, new RegExp(serviceKey));
   assert.match(await readFile(keyOutput, "utf8"), new RegExp(serviceKey));
 });

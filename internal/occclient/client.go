@@ -1,0 +1,332 @@
+package occclient
+
+import (
+	"bytes"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"strings"
+	"time"
+)
+
+// Config contains connection, authentication, and TLS settings for an OCC client.
+type Config struct {
+	URL            string
+	ServiceKeyFile string
+	CABundle       string
+	Timeout        time.Duration
+}
+
+// Client exposes supported OpenClaw Control Plane resource operations.
+type Client struct {
+	baseURL    *url.URL
+	serviceKey string
+	http       *http.Client
+}
+
+type serviceKeyEnvelope struct {
+	Data struct {
+		Key string `json:"key"`
+	} `json:"data"`
+}
+
+type responseEnvelope struct {
+	Data jsontext.Value `json:"data"`
+	Meta jsontext.Value `json:"meta"`
+}
+
+type errorEnvelope struct {
+	Error struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// New validates the client configuration and prepares authenticated transport.
+func New(config Config) (*Client, error) {
+	baseURL, err := parseOrigin(config.URL)
+	if err != nil {
+		return nil, err
+	}
+	if config.Timeout <= 0 {
+		return nil, fmt.Errorf("OCC timeout must be positive")
+	}
+
+	serviceKey, err := readServiceKey(config.ServiceKeyFile)
+	if err != nil {
+		return nil, err
+	}
+	transport, err := httpTransport(config.CABundle)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Client{
+		baseURL:    baseURL,
+		serviceKey: serviceKey,
+		http: &http.Client{
+			Transport: transport,
+			Timeout:   config.Timeout,
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
+	}, nil
+}
+
+// GetInstallation fetches the singleton Installation.
+func (client *Client) GetInstallation() (any, error) {
+	return client.get("installation")
+}
+
+// CreateNamespace creates a Namespace.
+func (client *Client) CreateNamespace(name, existingNamespace string) (any, error) {
+	body := map[string]any{"name": name}
+	if existingNamespace != "" {
+		body["existingNamespace"] = existingNamespace
+	}
+	return client.send(http.MethodPost, []string{"namespaces"}, body)
+}
+
+// ListNamespaces lists Namespaces visible to the caller.
+func (client *Client) ListNamespaces() (any, error) {
+	return client.get("namespaces")
+}
+
+// GetNamespace fetches a Namespace.
+func (client *Client) GetNamespace(namespaceID string) (any, error) {
+	return client.get("namespaces", namespaceID)
+}
+
+// DeleteNamespace begins deletion of an empty Namespace.
+func (client *Client) DeleteNamespace(namespaceID string) (any, error) {
+	return client.send(http.MethodDelete, []string{"namespaces", namespaceID}, nil)
+}
+
+// CreateConfiguration creates a Configuration in a Namespace.
+func (client *Client) CreateConfiguration(namespaceID string, body jsontext.Value) (any, error) {
+	return client.send(
+		http.MethodPost,
+		[]string{"namespaces", namespaceID, "configurations"},
+		body,
+	)
+}
+
+// GetConfiguration fetches a Configuration.
+func (client *Client) GetConfiguration(namespaceID, configurationID string) (any, error) {
+	return client.get("namespaces", namespaceID, "configurations", configurationID)
+}
+
+// UpdateConfiguration updates a Configuration from a JSON document.
+func (client *Client) UpdateConfiguration(
+	namespaceID string,
+	configurationID string,
+	body jsontext.Value,
+) (any, error) {
+	return client.send(
+		http.MethodPatch,
+		[]string{"namespaces", namespaceID, "configurations", configurationID},
+		body,
+	)
+}
+
+// DeleteConfiguration deletes an unreferenced Configuration.
+func (client *Client) DeleteConfiguration(namespaceID, configurationID string) error {
+	return client.sendEmpty(
+		http.MethodDelete,
+		[]string{"namespaces", namespaceID, "configurations", configurationID},
+	)
+}
+
+// CreateAgent creates an Agent in a Namespace.
+func (client *Client) CreateAgent(namespaceID string, body jsontext.Value) (any, error) {
+	return client.send(http.MethodPost, []string{"namespaces", namespaceID, "agents"}, body)
+}
+
+// ListAgents lists Agents in a Namespace.
+func (client *Client) ListAgents(namespaceID string) (any, error) {
+	return client.get("namespaces", namespaceID, "agents")
+}
+
+// GetAgent fetches an Agent.
+func (client *Client) GetAgent(namespaceID, agentID string) (any, error) {
+	return client.get("namespaces", namespaceID, "agents", agentID)
+}
+
+// UpdateAgent updates an Agent from a JSON document.
+func (client *Client) UpdateAgent(namespaceID, agentID string, body jsontext.Value) (any, error) {
+	return client.send(http.MethodPatch, []string{"namespaces", namespaceID, "agents", agentID}, body)
+}
+
+// DeployAgent deploys an Agent and creates an immutable revision.
+func (client *Client) DeployAgent(namespaceID, agentID string) (any, error) {
+	return client.send(
+		http.MethodPost,
+		[]string{"namespaces", namespaceID, "agents", agentID, "deploy"},
+		nil,
+	)
+}
+
+func (client *Client) get(segments ...string) (any, error) {
+	return client.send(http.MethodGet, segments, nil)
+}
+
+func (client *Client) send(method string, segments []string, body any) (any, error) {
+	status, responseBody, err := client.execute(method, segments, body)
+	if err != nil {
+		return nil, err
+	}
+	if status < http.StatusOK || status >= http.StatusMultipleChoices {
+		return nil, apiError(status, responseBody)
+	}
+
+	var envelope responseEnvelope
+	if err := json.Unmarshal(responseBody, &envelope); err != nil || len(envelope.Data) == 0 || len(envelope.Meta) == 0 {
+		return nil, fmt.Errorf("OCC returned an invalid response (HTTP %d)", status)
+	}
+	var data any
+	if err := json.Unmarshal(envelope.Data, &data); err != nil {
+		return nil, fmt.Errorf("OCC returned an invalid response (HTTP %d)", status)
+	}
+	return data, nil
+}
+
+func (client *Client) sendEmpty(method string, segments []string) error {
+	status, responseBody, err := client.execute(method, segments, nil)
+	if err != nil {
+		return err
+	}
+	if status < http.StatusOK || status >= http.StatusMultipleChoices {
+		return apiError(status, responseBody)
+	}
+	if status != http.StatusNoContent || len(responseBody) != 0 {
+		return fmt.Errorf("OCC returned an invalid empty response (HTTP %d)", status)
+	}
+	return nil
+}
+
+func (client *Client) execute(method string, segments []string, body any) (int, []byte, error) {
+	resourceURL, err := resourceURL(client.baseURL, segments)
+	if err != nil {
+		return 0, nil, err
+	}
+
+	var requestBody io.Reader
+	if body != nil {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			return 0, nil, fmt.Errorf("failed to encode OCC request: %w", err)
+		}
+		requestBody = bytes.NewReader(encoded)
+	}
+
+	request, err := http.NewRequest(method, resourceURL.String(), requestBody)
+	if err != nil {
+		return 0, nil, fmt.Errorf("failed to create OCC request: %w", err)
+	}
+	request.Header.Set("x-api-key", client.serviceKey)
+	if body != nil {
+		request.Header.Set("content-type", "application/json")
+	}
+
+	response, err := client.http.Do(request)
+	if err != nil {
+		return 0, nil, fmt.Errorf("OCC operation failed: %w", err)
+	}
+	defer response.Body.Close()
+	responseBody, err := io.ReadAll(response.Body)
+	if err != nil {
+		return 0, nil, fmt.Errorf("failed to read the OCC response: %w", err)
+	}
+	return response.StatusCode, responseBody, nil
+}
+
+func parseOrigin(value string) (*url.URL, error) {
+	parsed, err := url.Parse(value)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return nil, fmt.Errorf("OCC URL must use http or https")
+	}
+	if parsed.Opaque != "" || parsed.User != nil || parsed.Hostname() == "" || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return nil, fmt.Errorf("OCC URL must be an origin without credentials, a path, a query, or a fragment")
+	}
+	parsed.Path = ""
+	parsed.RawPath = ""
+	return parsed, nil
+}
+
+func resourceURL(baseURL *url.URL, segments []string) (*url.URL, error) {
+	path := make([]string, len(segments))
+	escapedPath := make([]string, len(segments))
+	for index, segment := range segments {
+		if segment == "" {
+			return nil, fmt.Errorf("OCC resource identifier cannot be empty")
+		}
+		path[index] = segment
+		escapedPath[index] = url.PathEscape(segment)
+	}
+	resource := baseURL.Clone()
+	resource.Path = "/" + strings.Join(path, "/")
+	resource.RawPath = "/" + strings.Join(escapedPath, "/")
+	return resource, nil
+}
+
+func apiError(status int, body []byte) error {
+	var envelope errorEnvelope
+	if err := json.Unmarshal(body, &envelope); err == nil && envelope.Error.Code != "" {
+		return fmt.Errorf(
+			"OCC operation failed (HTTP %d): %s: %s",
+			status,
+			envelope.Error.Code,
+			envelope.Error.Message,
+		)
+	}
+	return fmt.Errorf("OCC operation failed (HTTP %d)", status)
+}
+
+func readServiceKey(path string) (string, error) {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to read service-key file %s: %w", path, err)
+	}
+	var envelope serviceKeyEnvelope
+	if err := json.Unmarshal(contents, &envelope); err != nil {
+		return "", fmt.Errorf("invalid service-key file %s: %w", path, err)
+	}
+	key := envelope.Data.Key
+	if strings.TrimSpace(key) == "" || strings.ContainsAny(key, "\r\n") {
+		return "", fmt.Errorf("invalid service-key file %s", path)
+	}
+	return key, nil
+}
+
+func httpTransport(caBundle string) (*http.Transport, error) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if caBundle == "" {
+		return transport, nil
+	}
+
+	pem, err := os.ReadFile(caBundle)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read CA bundle %s: %w", caBundle, err)
+	}
+	roots, err := x509.SystemCertPool()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load system CA certificates: %w", err)
+	}
+	if !roots.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("CA bundle %s contains no certificates", caBundle)
+	}
+	tlsConfig := &tls.Config{RootCAs: roots}
+	if transport.TLSClientConfig != nil {
+		tlsConfig = transport.TLSClientConfig.Clone()
+		tlsConfig.RootCAs = roots
+	}
+	transport.TLSClientConfig = tlsConfig
+	return transport, nil
+}

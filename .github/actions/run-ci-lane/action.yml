@@ -45,6 +45,12 @@ runs:
       if: inputs.lane == 'checks-baseline'
       shell: bash
       run: bash scripts/ci/setup-tools.sh browser
+    - name: Set up Go toolchain
+      if: inputs.lane == 'checks-baseline' || inputs.lane == 'docker-model' || inputs.lane == 'production-tui'
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: go.mod
+        cache: true
     - name: Run workspace boundary check
       if: inputs.lane == 'checks-baseline'
       shell: bash
@@ -65,6 +71,10 @@ runs:
       if: inputs.lane == 'checks-baseline'
       shell: bash
       run: pnpm typecheck
+    - name: Check Go CLI
+      if: inputs.lane == 'checks-baseline'
+      shell: bash
+      run: pnpm cli:check && pnpm cli:test
     - name: Prepare lane
       shell: bash
       run: node scripts/ci/prepare.mjs --lane "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --github-env "$GITHUB_ENV"

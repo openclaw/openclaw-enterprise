@@ -1,0 +1,74 @@
+# OCC CLI
+
+Install `occ` from a trusted OpenClaw Enterprise checkout, select the OCC
+endpoint and protected service-key response file, then work with platform
+resources through domain commands:
+
+```bash
+go install ./cmd/occ
+export OCC_URL='http://127.0.0.1:3000'
+export OCC_SERVICE_KEY_FILE='/private/path/initial-admin-service-key.json'
+occ installation get
+occ namespace list
+```
+
+The command groups are `installation`, `namespace`, `configuration`, and
+`agent`. Walk their built-in help when discovering an operation:
+
+```bash
+occ --help
+occ namespace --help
+occ agent deploy --help
+```
+
+Configuration and Agent operations use the Namespace selected by
+`OCC_NAMESPACE` or `--namespace`. Create and update commands accept a product
+JSON document rather than an HTTP body or path:
+
+```bash
+export OCC_NAMESPACE='<namespace-id>'
+occ configuration create --file configuration.json
+occ agent create --file agent.json
+occ agent deploy '<agent-id>'
+```
+
+Human-readable tables are the default. Use `--output json` or `--output yaml`
+for automation. Structured output contains the resource or resource collection
+directly; HTTP response envelopes are an internal client detail.
+
+## Connection and credential boundaries
+
+Use `--url` and `--service-key-file` instead of the environment variables when
+needed. The URL must be an HTTP or HTTPS origin without embedded credentials or
+a base path. The CLI constructs resource operations internally, never accepts
+an HTTP method or request path, and disables redirects so it cannot send a
+service key to a different origin. Requests time out after 30 seconds. Set
+`OCC_TIMEOUT_SECONDS` or `--timeout-seconds` to a positive integer to change the
+timeout.
+
+For an HTTPS endpoint signed by a private CA, pass its PEM bundle without
+disabling verification:
+
+```bash
+export OCC_CA_BUNDLE=/private/path/occ-ca.pem
+occ installation get
+```
+
+The service-key file is the complete JSON response created by bootstrap or key
+issuance, not a file containing only the raw key. Keep it owner-readable and
+never place the key in command arguments, logs, workloads, or source control.
+
+## Troubleshoot
+
+- `invalid service-key file` means the JSON does not contain a nonempty
+  `data.key`, or the key contains a line break.
+- `HTTP 401` means OCC rejected the credential. Retrieve or issue the intended
+  key; do not weaken authentication.
+- `HTTP 403` means the authenticated service principal lacks the exact IAM
+  permission or Namespace scope for the operation.
+- Certificate errors require the correct `OCC_CA_BUNDLE`; the CLI provides no
+  insecure TLS mode.
+
+See the [HTTP API reference](../reference/api.md) for the underlying platform
+contracts and permissions. Operators normally do not need its paths or methods
+to use `occ`.

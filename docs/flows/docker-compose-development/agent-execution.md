@@ -6,13 +6,14 @@ Continue from the initialized Compose stack through Agent provisioning, a native
 
 ### 6. Authenticated API calls enqueue deployment work
 
-`scripts/occ-api`, `packages/occ/src/index.ts:OpenClawController`
+`cmd/occ/main.go`, `internal/occcli/cli.go`, `internal/occclient/client.go`,
+`packages/occ/src/index.ts:OpenClawController`
 
 After `dev-up` prints the loopback API URL, Installation ID, copied key path,
-and example `scripts/occ-api` command, the operator performs later development
+and example `occ installation get` command, the operator performs later development
 work with `OCC_URL` and `OCC_SERVICE_KEY_FILE` set in the shell. Selecting the
 bootstrapped Namespace, creating a Configuration and Agent, and deploying the
-Agent are ordinary authenticated OCC API calls that commit state, audit
+Agent are authenticated domain operations whose internal OCC calls commit state, audit
 evidence, and durable work before the worker creates runtime infrastructure.
 
 The deployment guide owns the end-to-end command sequence. This trace follows

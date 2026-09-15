@@ -103,28 +103,28 @@ docker compose exec -T worker \
 Select the initial `default` Namespace and save its server-generated ID:
 
 ```bash
-NAMESPACE_ID="$(scripts/occ-api GET /namespaces | python3 -c 'import json,sys; matches=[n for n in json.load(sys.stdin)["data"] if n["name"] == "default"]; assert len(matches) == 1, "Expected one bootstrap-created default Namespace"; print(matches[0]["id"])')"
-export NAMESPACE_ID
+NAMESPACE_ID="$(occ namespace list --output json | python3 -c 'import json,sys; matches=[n for n in json.load(sys.stdin) if n["name"] == "default"]; assert len(matches) == 1, "Expected one bootstrap-created default Namespace"; print(matches[0]["id"])')"
+export NAMESPACE_ID OCC_NAMESPACE="$NAMESPACE_ID"
 ```
 
-Poll `scripts/occ-api GET "/namespaces/$NAMESPACE_ID"` until `data.status` is
+Poll `occ namespace get "$NAMESPACE_ID"` until `STATUS` is
 `ready`. Create `configuration.json` from the embedded OpenClaw example in
 [Configure the Agent runtime](production-agents.md#configure-the-agent-runtime), then create and
 deploy the Agent:
 
 ```bash
-CONFIGURATION_RESPONSE="$(scripts/occ-api POST "/namespaces/$NAMESPACE_ID/configurations" configuration.json)"
-CONFIGURATION_ID="$(printf '%s' "$CONFIGURATION_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["id"])')"
+CONFIGURATION_RESPONSE="$(occ configuration create --file configuration.json --output json)"
+CONFIGURATION_ID="$(printf '%s' "$CONFIGURATION_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
 printf '{"name":"tui-agent","configurationId":"%s","executionMode":"embedded"}\n' "$CONFIGURATION_ID" > agent.json
-AGENT_RESPONSE="$(scripts/occ-api POST "/namespaces/$NAMESPACE_ID/agents" agent.json)"
-AGENT_ID="$(printf '%s' "$AGENT_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["id"])')"
-REVISION_RESPONSE="$(scripts/occ-api POST "/namespaces/$NAMESPACE_ID/agents/$AGENT_ID/deploy")"
-REVISION_ID="$(printf '%s' "$REVISION_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["id"])')"
+AGENT_RESPONSE="$(occ agent create --file agent.json --output json)"
+AGENT_ID="$(printf '%s' "$AGENT_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+REVISION_RESPONSE="$(occ agent deploy "$AGENT_ID" --output json)"
+REVISION_ID="$(printf '%s' "$REVISION_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
 export AGENT_ID REVISION_ID
 ```
 
-After `GET /namespaces/$NAMESPACE_ID` reports `ready` and
-`GET /namespaces/$NAMESPACE_ID/agents/$AGENT_ID` reports the deployed
+After `occ namespace get "$NAMESPACE_ID"` reports `ready` and
+`occ agent get "$AGENT_ID"` reports the deployed
 `activeRevisionId`, discover the single owned Docker gateway container:
 
 ```bash

@@ -23,6 +23,7 @@
                   "README",
                   "guides/concepts",
                   "guides/quickstart",
+                  "guides/cli",
                   "guides/deploy",
                   "guides/deploy/production-installation",
                   "guides/deploy/production-agents",

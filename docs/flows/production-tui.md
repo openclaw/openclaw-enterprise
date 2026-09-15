@@ -62,9 +62,8 @@ graph TD
 
 After the initialization Job completes successfully, the operator retrieves
 `initial-admin-service-key.json` from its protected output PVC. Neither the API
-nor worker mounts that PVC. The checked-in
-[`scripts/occ-api` helper](../../scripts/occ-api) reads
-`data.key` into a private temporary header file, sends `x-api-key`, and first
+nor worker mounts that PVC. The [OCC CLI](../guides/cli.md) reads `data.key` from
+the protected response file, sends `x-api-key`, and first
 verifies `GET /installation`. The API validates the key, resolves the
 Installation-scoped service principal, and applies its current IAM grants; an
 invalid, expired, or revoked key returns `401` without cookie fallback.
@@ -161,11 +160,11 @@ ConfigMap-mounted gateway is Running and Ready.
 - Confirm OCC activation before selecting a Pod:
 
   ```bash
-  scripts/occ-api GET "/namespaces/$NAMESPACE_ID/agents/$AGENT_ID"
+  OCC_NAMESPACE="$NAMESPACE_ID" occ agent get "$AGENT_ID"
   ```
 
   Run from the repository root with `OCC_URL` and `OCC_SERVICE_KEY_FILE` set in
-  the operator shell. Expect `data.activeRevisionId` to equal the intended revision ID.
+  the operator shell. Expect `ACTIVE REVISION` to equal the intended revision ID.
 
 - Confirm the selected gateway mounts the active immutable ConfigMap:
 

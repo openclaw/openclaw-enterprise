@@ -9,8 +9,8 @@ retaining its credentials and Kubernetes context.
 
 ### Use a driver-managed Kubernetes namespace
 
-Fresh bootstrap creates a platform Namespace named `default`. Read
-`scripts/occ-api GET /namespaces` and select its server-assigned ID as
+Fresh bootstrap creates a platform Namespace named `default`. Run
+`occ namespace list` and select its server-assigned ID as
 `NAMESPACE_ID`. The worker creates
 the backing Kubernetes namespace and labels it with
 `openclaw.dev/namespace=$NAMESPACE_ID`. This is separate from Kubernetes'
@@ -51,7 +51,7 @@ bound Secrets.
 ## Prepare each Agent
 
 Prepare Agent deployment after the Namespace is ready. The operator shell must
-have `OCC_URL`, `OCC_SERVICE_KEY_FILE`, `NAMESPACE_ID`,
+have `OCC_URL`, `OCC_SERVICE_KEY_FILE`, `OCC_NAMESPACE`, `NAMESPACE_ID`,
 `TENANT_NAMESPACE`, `KUBECONFIG_FILE`, and `CONTEXT` set. `TENANT_NAMESPACE`
 is the Kubernetes namespace created by the driver during
 [Namespace preparation](#prepare-each-namespace).
@@ -98,8 +98,9 @@ and preserves its fallback order; mixed Harnesses are rejected. See
 Post the Configuration and capture the server-generated ID:
 
 ```bash
-CONFIGURATION_RESPONSE="$(scripts/occ-api POST "/namespaces/$NAMESPACE_ID/configurations" configuration.json)"
-CONFIGURATION_ID="$(printf '%s' "$CONFIGURATION_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["id"])')"
+export OCC_NAMESPACE="$NAMESPACE_ID"
+CONFIGURATION_RESPONSE="$(occ configuration create --file configuration.json --output json)"
+CONFIGURATION_ID="$(printf '%s' "$CONFIGURATION_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
 export CONFIGURATION_ID
 ```
 
@@ -112,8 +113,8 @@ read.
 : "${AGENT_EXECUTION_MODE:?choose embedded or dedicated above}"
 printf '{"name":"production-agent","configurationId":"%s","executionMode":"%s"}\n' \
   "$CONFIGURATION_ID" "$AGENT_EXECUTION_MODE" > agent.json
-AGENT_RESPONSE="$(scripts/occ-api POST "/namespaces/$NAMESPACE_ID/agents" agent.json)"
-AGENT_ID="$(printf '%s' "$AGENT_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["id"])')"
+AGENT_RESPONSE="$(occ agent create --file agent.json --output json)"
+AGENT_ID="$(printf '%s' "$AGENT_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
 export AGENT_ID
 ```
 
@@ -167,14 +168,14 @@ Configurations, shell history, or this repository.
 Deploy the Agent and capture the immutable revision ID:
 
 ```bash
-REVISION_RESPONSE="$(scripts/occ-api POST "/namespaces/$NAMESPACE_ID/agents/$AGENT_ID/deploy")"
-REVISION_ID="$(printf '%s' "$REVISION_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["id"])')"
+REVISION_RESPONSE="$(occ agent deploy "$AGENT_ID" --output json)"
+REVISION_ID="$(printf '%s' "$REVISION_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
 export REVISION_ID
-printf '%s' "$REVISION_RESPONSE" | python3 -c 'import json,os,sys; data=json.load(sys.stdin)["data"]; assert data["id"] == os.environ["REVISION_ID"] and data["agentId"] == os.environ["AGENT_ID"] and data["configurationId"] == os.environ["CONFIGURATION_ID"]'
+printf '%s' "$REVISION_RESPONSE" | python3 -c 'import json,os,sys; data=json.load(sys.stdin); assert data["id"] == os.environ["REVISION_ID"] and data["agentId"] == os.environ["AGENT_ID"] and data["configurationId"] == os.environ["CONFIGURATION_ID"]'
 ```
 
-`scripts/occ-api` exits on non-2xx responses; deploy returns HTTP `202` with
-the AgentRevision as `data`. If `configuration.json` includes OCC
+`occ` exits unsuccessfully when deployment is rejected and returns the created
+AgentRevision for structured output. If `configuration.json` includes OCC
 `secretBindings`, the caller and Agent service principal must have `operate` on
 every selected Secret before deploy. Binding changes are authorized by OCC IAM;
 Kubernetes RoleBindings only allow the API to materialize backing tenant

@@ -80,7 +80,7 @@ require_command() {
   fi
 }
 
-require_command curl
+require_command occ
 require_command python3
 
 temporary_directory="$(mktemp -d "${TMPDIR:-/tmp}/openclaw-dev-up.XXXXXXXXXX")"
@@ -633,8 +633,8 @@ PY
 fi
 
 installation_response="$temporary_directory/installation-response.json"
-if ! OCC_URL="$api_url" OCC_SERVICE_KEY_FILE="$key_output" scripts/occ-api GET /installation >"$installation_response"; then
-  fail "authorization" "scripts/occ-api could not read /installation" scripts/occ-api GET /installation
+if ! OCC_URL="$api_url" OCC_SERVICE_KEY_FILE="$key_output" occ installation get --output json >"$installation_response"; then
+  fail "authorization" "occ could not read the Installation" occ installation get --output json
 fi
 
 if ! installation_id="$(
@@ -645,14 +645,14 @@ import sys
 
 payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 expected = sys.argv[2]
-observed = payload.get("data", {}).get("id")
+observed = payload.get("id")
 if observed != expected:
     raise SystemExit(f"Installation ID mismatch: key belongs to {expected}, API returned {observed}")
 print(observed)
 PY
 )"; then
   match_error="$(cat "$temporary_directory/installation-match.err" 2>/dev/null || true)"
-  fail "authorization" "${match_error:-Installation ID mismatch}" scripts/occ-api GET /installation
+  fail "authorization" "${match_error:-Installation ID mismatch}" occ installation get --output json
 fi
 
 if [ "$container_engine" = "podman" ]; then
@@ -660,7 +660,7 @@ if [ "$container_engine" = "podman" ]; then
 else
   cleanup_command="$(quote_command "${compose_command[@]}" "${compose_args[@]}" down)"
 fi
-next_check_command="$(quote_command "OCC_URL=$api_url" "OCC_SERVICE_KEY_FILE=$key_output" scripts/occ-api GET /installation)"
+next_check_command="$(quote_command "OCC_URL=$api_url" "OCC_SERVICE_KEY_FILE=$key_output" occ installation get)"
 
 cat <<EOF
 OpenClaw Enterprise development stack is ready.

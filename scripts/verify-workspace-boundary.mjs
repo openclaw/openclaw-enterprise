@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const activeApplications = ["controller"];
 const activePackages = ["utils", "contracts", "occ", "iam", "audit"];
+const activeGoPackages = ["cmd/occ", "internal/occcli", "internal/occclient"];
 const activeSourceRoots = [
   ...activeApplications.map((name) => `apps/${name}/src`),
   ...activePackages.map((name) => `packages/${name}/src`),
@@ -33,6 +34,20 @@ async function sourceFiles(directory) {
 const workspace = await readFile(join(repositoryRoot, "pnpm-workspace.yaml"), "utf8");
 assert.match(workspace, /^packages:/m, "The root pnpm workspace must declare its packages.");
 assert.match(workspace, /["']?!legacy(?:\/\*\*)?["']?/, "legacy/ must be explicitly excluded.");
+
+const goModule = await readFile(join(repositoryRoot, "go.mod"), "utf8");
+assert.match(
+  goModule,
+  /^module github\.com\/openclaw\/openclaw-enterprise$/m,
+  "The Go module must use the OpenClaw Enterprise module path.",
+);
+for (const packagePath of activeGoPackages) {
+  const entries = await readdir(join(repositoryRoot, packagePath), { withFileTypes: true });
+  assert.ok(
+    entries.some((entry) => entry.isFile() && entry.name.endsWith(".go")),
+    `The active Go package ${packagePath} must contain Go source.`,
+  );
+}
 
 for (const name of activePackages) {
   assert.match(
@@ -113,5 +128,5 @@ for (const source of sources) {
 process.stdout.write(
   "Workspace boundary verified: " +
     `${activeApplications.length} application, ${activePackages.length} packages, ` +
-    `${sources.length} sources, legacy excluded.\n`,
+    `${activeGoPackages.length} Go packages, ${sources.length} sources, legacy excluded.\n`,
 );

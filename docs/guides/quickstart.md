@@ -6,8 +6,13 @@ authenticated API request. This proves controller access; it does not deploy an
 [Agent](concepts.md#agents-and-revisions) or make a model call.
 
 You need either Docker Engine with Docker Compose, or Podman with
-`podman-compose` and `yq` v4. Bash, `curl`, and Python 3 are also required.
-Podman needs no `docker` alias. Run commands from the repository root.
+`podman-compose` and `yq` v4. Bash, Python 3, and the Go version selected by the
+repository's `go.mod` are also required. Podman needs no `docker` alias. Run
+commands from the repository root and install the [OCC CLI](cli.md) first:
+
+```bash
+go install ./cmd/occ
+```
 
 ## Start the local stack
 
@@ -57,12 +62,12 @@ commands, export the URL and service-key path printed by the helper:
 ```bash
 export OCC_URL='http://127.0.0.1:3000'
 export OCC_SERVICE_KEY_FILE='/private/path/initial-admin-service-key.json'
-scripts/occ-api GET /installation
+occ installation get
 ```
 
-Expect HTTP `200` and JSON containing the Installation `id` and name. The
-Installation ID must match `meta.installationId` in the service-key response.
-The helper sends the [service key](concepts.md#identity-and-access) as
+Expect an Installation row containing its ID and name. The Installation ID must
+match `meta.installationId` in the service-key response. The client sends the
+[service key](concepts.md#identity-and-access) as
 `x-api-key` without exposing it in process arguments or terminal output.
 
 Keep these variables for the
@@ -74,11 +79,11 @@ must never enter a workload or TUI.
 ## Find the initial Namespace
 
 ```bash
-scripts/occ-api GET /namespaces
+occ namespace list
 ```
 
-On a fresh Installation, expect one Namespace named `default` with a server-assigned `id`. Use that ID
-for Namespace-scoped API paths and wait for `status: "ready"` before deploying
+On a fresh Installation, expect one Namespace named `default` with a server-assigned ID. Export it as
+`OCC_NAMESPACE` and wait for `STATUS` to become `ready` before deploying
 an Agent.
 
 ## Clean up and stop

@@ -102,12 +102,12 @@ directory; otherwise the helper creates a private temporary directory. The
 helper never overwrites an existing local file, never prints `data.key`, and
 never reruns bootstrap to replace a missing key.
 
-`dev-up` then reads `/installation` with `scripts/occ-api` and the copied
+`dev-up` then reads the Installation with `occ installation get` and the copied
 service-key response. `apps/controller/src/auth/index.ts:ControllerAdmissionVerifier.verify`
 validates the `x-api-key` and maps it to the Installation-scoped service
 administrator; current IAM policy still authorizes each resource operation. The
-startup proof succeeds only when the response returns HTTP `200` and `data.id`
-matches the copied key response's `meta.installationId`. An invalid, expired,
+startup proof succeeds only when the returned resource ID matches the copied
+key response's `meta.installationId`. An invalid, expired,
 or revoked key fails with `401` without cookie fallback. The
 [service-key flow](../service-api-keys.md) owns admission details.
 

@@ -272,10 +272,10 @@ through approved storage access, then set:
 ```bash
 export OCC_URL='https://<internal-occ-host>'
 export OCC_SERVICE_KEY_FILE='/secure/occ/initial-admin-service-key.json'
-scripts/occ-api GET /installation
+occ installation get
 ```
 
-Expect HTTP `200` with `data.id` matching the key file's
+Expect the displayed `ID` to match the key file's
 `meta.installationId`. A completed initialization Job is not an exec endpoint,
 and neither the API nor worker mounts the bootstrap PVC.
 

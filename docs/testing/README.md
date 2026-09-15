@@ -59,15 +59,17 @@ and coverage limits. See [GitHub Actions](ci.md) for CI coverage.
 
 ## Requirements and credentials
 
-Use Node.js 24 or newer and the pnpm version pinned in
-[`package.json`](../../package.json), with dependencies installed from the lockfile:
+Use Node.js 24 or newer, the pnpm version pinned in
+[`package.json`](../../package.json), and the Go version selected by
+[`go.mod`](../../go.mod), with dependencies installed from the lockfiles:
 
 ```sh
 pnpm install --frozen-lockfile
 ```
 
-The tests import TypeScript source directly; a separate build is not required.
-Some local integrations also execute Git, `tar`, and pnpm.
+The tests import TypeScript source directly. OCC CLI integrations build the real
+Go binary before invoking it; other local integrations also execute Git, `tar`,
+and pnpm.
 
 Supply real keys through your authorized credential manager or an existing
 private environment file. Test entrypoints do not automatically load `.env`.

@@ -45,7 +45,7 @@ const LOGGING_COMPOSE_FILE = "compose.logging.yaml";
 const PODMAN_COMPOSE_FILE = "compose.podman.yaml";
 const INTERNAL_API_PORT = "3000";
 const BOOTSTRAP_SERVICE_KEY_PATH = "/var/lib/openclaw/bootstrap/initial-admin-service-key.json";
-const OCC_API_SCRIPT = "scripts/occ-api";
+const OCC_CLI = join(process.cwd(), "bin", "occ");
 const LABEL_COMPOSE_PROJECT = podmanSelected
   ? "io.podman.compose.project"
   : "com.docker.compose.project";
@@ -385,25 +385,16 @@ async function copyBootstrapServiceKey({ project, env, outputDirectory, secrets 
   return { localFile, output };
 }
 
-async function occApi({ baseUrl, serviceKeyFile, method, path, body, outputDirectory, secrets }) {
-  let bodyFile;
-  if (body !== undefined) {
-    bodyFile = join(outputDirectory, `${method.toLowerCase()}-${randomUUID()}.json`);
-    await writeFile(bodyFile, `${JSON.stringify(body)}\n`, { mode: 0o600 });
-  }
-  const { stdout } = await command(
-    OCC_API_SCRIPT,
-    [method, path, ...(bodyFile === undefined ? [] : [bodyFile])],
-    {
-      env: {
-        ...process.env,
-        OCC_URL: baseUrl,
-        OCC_SERVICE_KEY_FILE: serviceKeyFile,
-      },
-      timeoutMs: 60_000,
-      secrets,
+async function runOcc({ baseUrl, serviceKeyFile, args, secrets }) {
+  const { stdout } = await command(OCC_CLI, [...args, "--output", "json"], {
+    env: {
+      ...process.env,
+      OCC_URL: baseUrl,
+      OCC_SERVICE_KEY_FILE: serviceKeyFile,
     },
-  );
+    timeoutMs: 60_000,
+    secrets,
+  });
   return JSON.parse(stdout.trim());
 }
 
@@ -900,6 +891,10 @@ test(
   `${engineName} Compose development drives Docker Compute networks, containers, auth, cleanup, and real model turns`,
   { ...requiresDockerCompute, timeout: 1_200_000 },
   async (context) => {
+    // This credentialed proof uses the same compiled CLI operators invoke.
+    await command("go", ["build", "-trimpath", "-o", OCC_CLI, "./cmd/occ"], {
+      timeoutMs: 120_000,
+    });
     assert.equal(
       podmanSelected &&
         (process.env.OCC_TEST_OTEL_LOGS === "1" ||
@@ -1071,26 +1066,21 @@ test(
     const serviceKey = serviceKeyOutput.data.key;
     cleanupServiceKey = serviceKey;
     assert.equal(serviceKeyOutput.meta.installationId.startsWith("ins_"), true);
-    const helperInstallation = await occApi({
+    const helperInstallation = await runOcc({
       baseUrl,
       serviceKeyFile,
-      method: "GET",
-      path: "/installation",
-      outputDirectory: bootstrapDirectory,
+      args: ["installation", "get"],
       secrets: [...composeSecrets, serviceKey],
     });
-    assert.equal(helperInstallation.data.id, serviceKeyOutput.meta.installationId);
-    const helperNamespace = await occApi({
+    assert.equal(helperInstallation.id, serviceKeyOutput.meta.installationId);
+    const helperNamespace = await runOcc({
       baseUrl,
       serviceKeyFile,
-      method: "POST",
-      path: "/namespaces",
-      body: { name: `cleanup-${project}` },
-      outputDirectory: bootstrapDirectory,
+      args: ["namespace", "create", `cleanup-${project}`],
       secrets: [...composeSecrets, serviceKey],
     });
-    assert.equal(helperNamespace.data.status, "provisioning");
-    namespaceIds.push(helperNamespace.data.id);
+    assert.equal(helperNamespace.status, "provisioning");
+    namespaceIds.push(helperNamespace.id);
     await rm(serviceKeyFile);
     await assert.rejects(
       stat(serviceKeyFile),

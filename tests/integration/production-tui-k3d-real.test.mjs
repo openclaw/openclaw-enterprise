@@ -121,6 +121,9 @@ test(
         child.stdin.on("error", () => {});
         child.stdin.end(input);
       });
+    // Build the operator CLI before using it against the real Helm installation.
+    const occCli = join(process.cwd(), "bin", "occ");
+    await run("go", ["build", "-trimpath", "-o", occCli, "./cmd/occ"]);
     const kubectl = (...args) => run("kubectl", buildKubectlArguments(selection, args));
     const kubernetes = createKubernetesClient({
       selection,
@@ -565,22 +568,15 @@ test(
       assert.deepEqual(afterRetrievalStats, beforeRetrievalStats);
       assertProtectedBootstrapFileModes(afterRetrievalStats, "after retrieval");
 
-      const runGuideOccApi = async (method, path, body) => {
-        const bodyFile =
-          body === undefined ? undefined : join(directory, `guide-body-${method}.json`);
-        if (bodyFile) await writeFile(bodyFile, JSON.stringify(body), { mode: 0o600 });
-        const output = await run(
-          "scripts/occ-api",
-          [method, path, ...(bodyFile ? [bodyFile] : [])],
-          {
-            env: {
-              OCC_URL: baseURL,
-              OCC_SERVICE_KEY_FILE: localServiceKeyFile,
-              CURL_CA_BUNDLE: join(directory, "tls.crt"),
-              OPENAI_API_KEY: undefined,
-            },
+      const runGuideOcc = async (args) => {
+        const output = await run(occCli, [...args, "--output", "json"], {
+          env: {
+            OCC_URL: baseURL,
+            OCC_SERVICE_KEY_FILE: localServiceKeyFile,
+            OCC_CA_BUNDLE: join(directory, "tls.crt"),
+            OPENAI_API_KEY: undefined,
           },
-        );
+        });
         for (const value of secrets)
           assert.ok(!output.includes(value), "Guide output leaked a credential");
         return JSON.parse(output);
@@ -599,8 +595,8 @@ test(
       };
       const installation = await request("GET", "/installation");
       assert.equal(stagedServiceKey.installationId, installation.data.id);
-      const guideInstallation = await runGuideOccApi("GET", "/installation");
-      assert.equal(guideInstallation.data.id, installation.data.id);
+      const guideInstallation = await runGuideOcc(["installation", "get"]);
+      assert.equal(guideInstallation.id, installation.data.id);
       const externalUnauthenticatedInstallation = await externalRequest(
         "GET",
         "/installation",
@@ -619,19 +615,16 @@ test(
         const result = await request(method, path, body, expected);
         return result.data;
       };
-      return { api, externalRequest, runGuideOccApi };
+      return { api, externalRequest, runGuideOcc };
     }
 
-    async function provisionNamespaceAndAgent({ api, externalRequest, runGuideOccApi }) {
+    async function provisionNamespaceAndAgent({ api, externalRequest, runGuideOcc }) {
       assert.equal(
         (await externalRequest("GET", "/installation", undefined, { authenticated: false })).status,
         401,
       );
-      const namespaceResult = await runGuideOccApi("POST", "/namespaces", {
-        name: `production-tui-${suffix}`,
-      });
-      const namespace = namespaceResult.data;
-      await record("Guide occ_api created OCC Namespace through production HTTPS", {
+      const namespace = await runGuideOcc(["namespace", "create", `production-tui-${suffix}`]);
+      await record("Guide occ CLI created OCC Namespace through production HTTPS", {
         namespaceId: namespace.id,
       });
       const tenant = await waitFor("backing tenant namespace", async () => {
@@ -1166,11 +1159,11 @@ test(
       });
     }
 
-    const { api, externalRequest, runGuideOccApi } = await installProductionControlPlane();
+    const { api, externalRequest, runGuideOcc } = await installProductionControlPlane();
     const { agent, agentHash, namespace, tenant } = await provisionNamespaceAndAgent({
       api,
       externalRequest,
-      runGuideOccApi,
+      runGuideOcc,
     });
     const { foreignIP, probe } = await proveProductionApiNetworkPolicy();
     const finalGateway = await exerciseRevisionCutover();

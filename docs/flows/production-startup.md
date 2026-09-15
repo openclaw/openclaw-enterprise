@@ -52,7 +52,7 @@ graph TD
     subgraph Proof["Operator-owned authenticated proof"]
         H --> J["Retrieve service-key response from protected storage"]
         I --> J
-        J --> K["scripts/occ-api GET /installation from approved client"]
+        J --> K["occ installation get from approved client"]
     end
 ```
 
@@ -139,7 +139,7 @@ Neither process mounts the bootstrap PVC.
 
 ### 5. Retrieve the key and prove authenticated access
 
-`scripts/occ-api:34`
+`internal/occclient/client.go:Client.GetInstallation`
 
 After Helm readiness, the operator retrieves
 `initial-admin-service-key.json` from protected bootstrap storage through an
@@ -147,10 +147,10 @@ approved reader path and stores it in an owner-readable file. A completed Job is
 not an exec endpoint, and the API and worker cannot retrieve this file for the
 operator.
 
-From an approved client environment, `scripts/occ-api GET /installation` reads
-the key file, sends `data.key` as `x-api-key`, and validates the response. The
-production startup proof succeeds only when HTTP `200` returns an Installation
-whose `data.id` matches the key response's `meta.installationId`. Agent runtime,
+From an approved client environment, `occ installation get` uses the protected
+key file through the OCC client and displays the Installation. The production
+startup proof succeeds only when its `ID` matches the key response's
+`meta.installationId`. Agent runtime,
 gateway WebSocket authentication, and model calls remain unproven until the
 tenant deployment and TUI procedures run.
 
@@ -165,8 +165,8 @@ tenant deployment and TUI procedures run.
 - `kubectl -n openclaw-system logs job/oce-initialization -c bootstrap` is the
   first check for unsafe output storage, existing output files, database-role
   failures, auth origin errors, and administrator/IAM mismatch.
-- `scripts/occ-api GET /installation` must return HTTP `200` with
-  `data.id == meta.installationId` from the retrieved key file.
+- `occ installation get` must display an `ID` equal to `meta.installationId`
+  from the retrieved key file.
 - Changing an external startup Secret alone does not restart the API or worker;
   run an explicit rollout and repeat readiness plus authenticated proof.
 - Packaging checks such as
