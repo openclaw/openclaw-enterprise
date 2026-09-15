@@ -356,6 +356,22 @@ test("dev-up preserves Compose files selected through COMPOSE_FILE for Podman", 
   );
 });
 
+test("dev-up accepts Docker when its server omits the platform name", async (t) => {
+  // Docker-compatible server metadata may omit Platform.Name while the required
+  // engine and Compose capabilities remain available.
+  const fixture = await createFixture(t, { dockerPlatformName: "" });
+  const keyOutput = join(fixture.directory, "docker-no-platform-service-key.json");
+
+  const result = runDevUp(
+    ["--key-output", keyOutput, "--", ...composeOptions(fixture)],
+    fixture.env,
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Container engine: Docker/);
+  assert.doesNotMatch(result.stdout + result.stderr, new RegExp(serviceKey));
+});
+
 test("dev-up recognizes a docker command backed by Podman and uses the Podman path", async (t) => {
   // Podman can install a docker compatibility symlink whose version text does not identify
   // Podman. Selection must follow supported Compose behavior instead of the executable name.

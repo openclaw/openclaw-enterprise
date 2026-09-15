@@ -132,7 +132,7 @@ function delegateComposeConfig() {
 }
 if (args[0] === "--version") exit(0, engine === "podman" ? "podman version 6.1.0" : "Docker version 29.4.0");
 if (args[0] === "version") {
-  if (engine === "docker") process.stdout.write("Docker Engine - Community\\n");
+  if (engine === "docker") process.stdout.write(${JSON.stringify((options.dockerPlatformName ?? "Docker Engine - Community") + "\n")});
   else if (podmanDockerApi) process.stdout.write("Podman Engine\\n");
   else exit(1);
   exit(0);

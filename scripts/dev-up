@@ -134,7 +134,11 @@ compose_capability_probe="$temporary_directory/compose-capability.yaml"
 printf 'services:\n  probe:\n    image: scratch\n' >"$compose_capability_probe"
 
 if command -v docker >/dev/null 2>&1; then
-  if docker_root_directory="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null)" &&
+  # Some Docker servers omit the platform name. Only a positive Podman identity
+  # selects its separate socket, Compose and logging configuration.
+  docker_platform="$(docker version --format '{{.Server.Platform.Name}}' 2>/dev/null || true)"
+  if [ "$docker_platform" != "Podman Engine" ] &&
+    docker_root_directory="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null)" &&
     [ -n "$docker_root_directory" ] &&
     docker compose version >/dev/null 2>&1 &&
     docker compose -f "$compose_capability_probe" config --format json \
