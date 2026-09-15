@@ -7,16 +7,28 @@ arrows show implemented connections; the dashed arrow marks pending integration.
 ```mermaid
 ---
 config:
+  theme: base
   htmlLabels: true
+  themeVariables:
+    fontSize: 14px
+    primaryTextColor: "#344054"
+    lineColor: "#8B949E"
+    edgeLabelBackground: "#FFFFFF"
+    clusterBkg: "#FAFBFC"
+    clusterBorder: "#D8DEE6"
   flowchart:
     curve: linear
-    nodeSpacing: 24
-    rankSpacing: 40
-    padding: 16
+    nodeSpacing: 28
+    rankSpacing: 32
+    padding: 14
+    diagramPadding: 12
+    subGraphTitleMargin:
+      top: 10
+      bottom: 14
 ---
 flowchart TB
   subgraph Configuration["Configuration"]
-    API["<b>Configuration API</b><br/>Save a draft"] -->|persist| State[("<b>Stored state</b><br/>PostgreSQL")]
+    API["<b>Configuration API</b><br/>Save a draft"] --->|persist| State[("<b>Stored state</b><br/>PostgreSQL")]
     State -->|not ready| Gate["<b>Deployment blocked</b><br/>Before side effects"]
   end
 
@@ -28,19 +40,24 @@ flowchart TB
   Prepare -->|check identity| State
   Ready -.->|not connected| Future["<b>Pending integration</b><br/>Production execution"]
 
-  classDef draft fill:#DBEAFE,stroke:#2563EB,color:#172554,stroke-width:2px
-  classDef input fill:#EDE9FE,stroke:#7C3AED,color:#2E1065,stroke-width:2px
-  classDef operation fill:#CCFBF1,stroke:#0F766E,color:#134E4A,stroke-width:2px
-  classDef blocked fill:#FEF3C7,stroke:#B45309,color:#78350F,stroke-width:2px
-  classDef pending fill:#F1F5F9,stroke:#64748B,color:#334155,stroke-width:2px,stroke-dasharray:5 5
-
+  classDef draft fill:#EDF2F7,stroke:#879AB0,color:#25364A,stroke-width:1px
+  classDef input fill:#F1EEF5,stroke:#A091AD,color:#3A3243,stroke-width:1px
+  classDef operation fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
+  classDef blocked fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
+  classDef pending fill:#F3F4F6,stroke:#98A2AE,color:#44505F,stroke-width:1px,stroke-dasharray:4 4
   class API,State draft
   class Input input
   class Prepare,Ready operation
   class Gate blocked
   class Future pending
 
-  style Configuration fill:transparent,stroke:#60A5FA,stroke-width:1px
-  style Preparation fill:transparent,stroke:#2DD4BF,stroke-width:1px
-  linkStyle default stroke:#64748B,stroke-width:2px
+  style Configuration fill:#FAFBFC,stroke:#D8DEE6,stroke-width:1px
+  style Preparation fill:#FAFBFC,stroke:#D8DEE6,stroke-width:1px
+  linkStyle default stroke:#8B949E,stroke-width:1px
 ```
+
+Treat these values as a starting point. The longer `persist` arrow aligns the
+phase starts; it remains one implemented connection. Keep the phase-title margin
+separate from node padding, and inspect the result at its intended display width.
+See Mermaid's [flowchart configuration](https://mermaid.js.org/config/schema-docs/config-defs-flowchart-diagram-config.html)
+for spacing options.
