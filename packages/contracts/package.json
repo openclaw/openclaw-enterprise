@@ -13,7 +13,7 @@
   ],
   "dependencies": {
     "@openclaw-enterprise/utils": "workspace:*",
-    "typebox": "1.3.30"
+    "typebox": "1.3.29"
   },
   "scripts": {
     "build": "tsc --build tsconfig.json --pretty false",
