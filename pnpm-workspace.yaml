@@ -7,6 +7,11 @@ packages:
   - packages/audit
   - "!legacy/**"
 
+# Wait seven days before accepting registry releases, including locked versions.
+minimumReleaseAge: 10080
+minimumReleaseAgeStrict: true
+minimumReleaseAgeIgnoreMissingTime: false
+
 allowBuilds:
   esbuild: true
   protobufjs: true

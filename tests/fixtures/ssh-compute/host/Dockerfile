@@ -17,7 +17,8 @@ RUN apt-get update \
 
 WORKDIR /opt/openclaw
 RUN npm init -y >/dev/null \
-  && npm install --omit=dev --no-audit --no-fund \
+  && release_age_cutoff="$(node -e 'process.stdout.write(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())')" \
+  && npm install --omit=dev --no-audit --no-fund --before="$release_age_cutoff" \
     "openclaw@${OPENCLAW_VERSION}" \
     "@openclaw/codex@${OPENCLAW_CODEX_PLUGIN_VERSION}" \
     "@openclaw/slack@${OPENCLAW_SLACK_PLUGIN_VERSION}" \
