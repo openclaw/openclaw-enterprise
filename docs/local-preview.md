@@ -85,6 +85,25 @@ provide portable interaction. The matrix uses generated markup and an external
 same-origin script instead of an iframe. The current local preview sets no CSP;
 any future hosting policy must allow its own required assets and scripts.
 
+## Publish privately with GitHub Pages
+
+In repository **Settings → Pages**, select **GitHub Actions** as the source and
+confirm visibility is **Private** before publishing. A private repository alone
+does not make a Pages site private. GitHub restricts the private site to readers
+of this repository and enforces HTTPS on its assigned domain.
+
+The [publishing workflow](../.github/workflows/docs-pages.yml) builds the docs and
+Pagefind index with the frozen docs lockfile, then publishes only `dist/docs/`.
+It runs on pushes to `main` or a manual dispatch from `main`. The `github-pages`
+environment also restricts deployments to `main`; pull requests must pass normal
+review and merge requirements before their content is published.
+
+After a successful **Publish private documentation** run, open the deployment URL
+in the Actions summary or **Settings → Pages**. Verify a deep page, search, and
+the interactive matrix while signed in with repository access. For a failed
+publication, inspect the failed Actions step, fix the source, and rerun from
+`main`. No controller services, model credentials, or custom domain are needed.
+
 ## Troubleshoot
 
 - A missing page or anchor fails the build with its source location. Correct the
@@ -92,5 +111,4 @@ any future hosting policy must allow its own required assets and scripts.
 - If the port is occupied, stop the prior docs preview before starting another.
 - If dependencies are missing, run the frozen docs install above in this worktree.
 
-Publishing and hosting are outside this local setup. The site has no assistant
-backend or community integrations.
+The site has no assistant backend or community integrations.
