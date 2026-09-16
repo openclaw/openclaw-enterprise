@@ -149,19 +149,39 @@ if "${engine_command[@]}" network inspect "${COMPOSE_PROJECT}_development" >/dev
 fi
 [ "${#project_resources[@]}" -eq 0 ] || fail configuration "Compose project already has resources: $COMPOSE_PROJECT"
 
-mkdir -p "$STATE_DIRECTORY"
-chmod 700 "$STATE_DIRECTORY"
-state_marker="$STATE_DIRECTORY/.openclaw-development"
-printf '%s\n' openclaw-enterprise-development-v1 >"$state_marker"
-chmod 600 "$state_marker"
-
 host_kubeconfig="$STATE_DIRECTORY/kubeconfig"
 container_kubeconfig="$STATE_DIRECTORY/container-kubeconfig"
 installation_config="$STATE_DIRECTORY/installation.yaml"
 state_file="$STATE_DIRECTORY/state.json"
 service_key_copy="$STATE_DIRECTORY/initial-admin-service-key.json"
-api_url="http://127.0.0.1:${OPENCLAW_DEV_PORT:-3000}"
 development_network="${COMPOSE_PROJECT}_development"
+
+export OCC_DEVELOPMENT_INSTALLATION_CONFIG="$installation_config"
+export OCC_DEVELOPMENT_KUBECONFIG="$container_kubeconfig"
+export OCC_DEVELOPMENT_NETWORK_NAME="$development_network"
+compose_files=(-f compose.yaml -f compose.kubernetes.yaml)
+compose=("${compose_command[@]}" "${compose_args[@]}" --project-name "$COMPOSE_PROJECT" "${compose_files[@]}")
+
+# Inspect the effective publications before creating state or starting services.
+if [ "$CONTAINER_ENGINE" = docker ]; then
+  compose_config="$("${compose[@]}" config --format json)" || fail configuration "Docker Compose config failed"
+else
+  require_command yq
+  case "$(yq --version 2>/dev/null)" in
+    *"version v4."*) ;;
+    *) fail prerequisite "Podman development requires yq v4" ;;
+  esac
+  compose_config="$("${compose[@]}" config | yq -o=json '.')" || fail configuration "Podman Compose config failed"
+fi
+if ! api_url="$(printf '%s' "$compose_config" | python3 "$script_directory/development-compose-analysis.py" kubernetes 2>&1)"; then
+  fail configuration "$api_url"
+fi
+
+mkdir -p "$STATE_DIRECTORY"
+chmod 700 "$STATE_DIRECTORY"
+state_marker="$STATE_DIRECTORY/.openclaw-development"
+printf '%s\n' openclaw-enterprise-development-v1 >"$state_marker"
+chmod 600 "$state_marker"
 
 if [ -z "$key_output" ]; then
   key_output="$service_key_copy"
@@ -181,12 +201,6 @@ if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid() or stat
 PY
   key_owned=false
 fi
-
-export OCC_DEVELOPMENT_INSTALLATION_CONFIG="$installation_config"
-export OCC_DEVELOPMENT_KUBECONFIG="$container_kubeconfig"
-export OCC_DEVELOPMENT_NETWORK_NAME="$development_network"
-compose_files=(-f compose.yaml -f compose.kubernetes.yaml)
-compose=("${compose_command[@]}" "${compose_args[@]}" --project-name "$COMPOSE_PROJECT" "${compose_files[@]}")
 
 compose_started=0
 cluster_created=0
@@ -384,5 +398,5 @@ Kubeconfig: $host_kubeconfig
 Kubernetes context: $kubernetes_context
 
 Cleanup:
-  scripts/dev-down
+  $(printf '%q ' env OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes "OCC_DEVELOPMENT_STATE_DIRECTORY=$STATE_DIRECTORY" scripts/dev-down)
 EOF

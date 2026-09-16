@@ -24,7 +24,14 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-if [ -d "$STATE_DIRECTORY" ]; then
+development_compute_driver="${OCC_DEVELOPMENT_COMPUTE_DRIVER:-docker}"
+case "$development_compute_driver" in
+  docker | kubernetes) ;;
+  *) fail "OCC_DEVELOPMENT_COMPUTE_DRIVER must be docker or kubernetes" ;;
+esac
+
+if [ "$development_compute_driver" = kubernetes ]; then
+  [ -d "$STATE_DIRECTORY" ] || fail "state directory not found: $STATE_DIRECTORY"
   command -v realpath >/dev/null 2>&1 || fail "realpath is required"
   command -v python3 >/dev/null 2>&1 || fail "python3 is required"
   resolved_state_directory="$(realpath -e -- "$STATE_DIRECTORY")" || fail "state directory not found"

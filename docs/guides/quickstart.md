@@ -85,7 +85,7 @@ an Agent.
 
 If you are stopping after this API check, remove only the temporary local key
 copy printed by `dev-up`, then run the exact command under `Cleanup` in its
-output. The command records the selected container engine; `dev-down` resolves
+output. The command records the selected Compute Driver and container engine; `dev-down` resolves
 the corresponding Compose cleanup details:
 
 ```bash

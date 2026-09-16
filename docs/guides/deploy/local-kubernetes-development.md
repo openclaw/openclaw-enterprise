@@ -77,13 +77,15 @@ development Driver.
 
 ## Stop and clean up
 
-Run the same cleanup entry point used by Docker Compute:
+Run the exact `Cleanup` command printed by startup. It selects Kubernetes Compute
+and the recorded state directory explicitly. For the default state directory:
 
 ```bash
-./scripts/dev-down
+OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes ./scripts/dev-down
 ```
 
-For Kubernetes mode, `dev-down` reads the private recorded state, removes only
+`dev-down` defaults to Docker Compute even when Kubernetes state exists.
+For explicitly selected Kubernetes mode, `dev-down` reads the private recorded state, removes only
 the named `occ-dev-*` cluster and its Compose project, deletes profile volumes,
 then removes the state directory. This permanently deletes the development
 Installation, service keys, Namespaces, Agents, audit history, and queued work

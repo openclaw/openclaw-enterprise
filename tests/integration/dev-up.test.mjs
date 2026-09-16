@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import test from "node:test";
 import {
@@ -28,6 +29,10 @@ test("dev-up builds the default runtime only when real Compose leaves runtime im
 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /OpenClaw Enterprise development stack is ready/);
+  assert.match(
+    result.stdout,
+    /OCC_DEVELOPMENT_COMPUTE_DRIVER=docker OCC_DEVELOPMENT_CONTAINER_ENGINE=docker scripts\/dev-down/,
+  );
   assert.ok(result.stdout.includes("API URL: http://127.0.0.1:3000"));
   assert.ok(result.stdout.includes(`Installation ID: ${matchingInstallationId}`));
   assert.ok(result.stdout.includes(`Service key file: ${keyOutput}`));
@@ -269,7 +274,7 @@ test("dev-up selects Podman when no docker command exists and completes the supp
   assert.match(result.stdout, /Container engine: Podman/);
   assert.match(
     result.stdout,
-    /Cleanup:\n  env OCC_DEVELOPMENT_CONTAINER_ENGINE=podman scripts\/dev-down -- /,
+    /Cleanup:\n  env OCC_DEVELOPMENT_COMPUTE_DRIVER=docker OCC_DEVELOPMENT_CONTAINER_ENGINE=podman scripts\/dev-down -- /,
   );
   assert.doesNotMatch(result.stdout + result.stderr, new RegExp(serviceKey));
   assert.match(await readFile(keyOutput, "utf8"), new RegExp(serviceKey));
@@ -476,4 +481,149 @@ test("dev-up routes Kubernetes Compute through the unified entry point", () => {
 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stderr, /usage: scripts\/dev-up/);
+});
+
+// Engine commands are inert here; config delegates to the real Compose renderer.
+async function prepareSafetyCommands(fixture) {
+  const bin = join(fixture.directory, "bin");
+  await rename(join(bin, "docker"), join(bin, "docker-config"));
+  for (const command of ["docker", "k3d", "kubectl"]) {
+    await writeFile(
+      join(bin, command),
+      `#!${process.execPath}
+const fs = require("node:fs");
+const { spawnSync } = require("node:child_process");
+const args = process.argv.slice(2);
+const command = ${JSON.stringify(command)};
+fs.appendFileSync(process.env.SAFETY_LOG, JSON.stringify({ command, args }) + "\\n");
+if (command === "docker" && (args[0] === "version" || (args[0] === "compose" && (args.includes("config") || args[1] === "version")))) {
+  const result = spawnSync(${JSON.stringify(join(bin, "docker-config"))}, args, { env: process.env, stdio: "inherit" });
+  process.exit(result.status ?? 1);
+}
+if (command === "k3d" && args[0] === "cluster" && args[1] === "list") {
+  process.stdout.write(JSON.stringify([{ name: "occ-dev-owned" }, { name: "occ-dev-unrelated" }]));
+}
+if (command === "docker" && args.includes("inspect")) process.exit(1);
+if (command === "docker" && args.includes("up")) process.exit(77);
+`,
+      { mode: 0o755 },
+    );
+  }
+  fixture.env.SAFETY_LOG = join(fixture.directory, "safety.log");
+  fixture.env.OCC_DEVELOPMENT_CONTAINER_ENGINE = "docker";
+}
+
+async function writeKubernetesState(fixture) {
+  const directory = join(fixture.directory, "kubernetes state");
+  await mkdir(directory, { mode: 0o700 });
+  await writeFile(join(directory, ".openclaw-development"), "openclaw-enterprise-development-v1\n");
+  await writeFile(
+    join(directory, "state.json"),
+    JSON.stringify({
+      version: 1,
+      computeDriver: "kubernetes",
+      containerEngine: "docker",
+      composeProject: "owned-kubernetes",
+      composeArgs: ["--env-file", fixture.emptyEnv],
+      cluster: "occ-dev-owned",
+      dockerHost: "",
+      keyPath: join(directory, "initial-admin-service-key.json"),
+      keyOwned: true,
+    }),
+    { mode: 0o600 },
+  );
+  return directory;
+}
+
+test("dev-down selects Docker explicitly and by default without deleting Kubernetes state", async (t) => {
+  for (const driver of ["docker", ""]) {
+    const fixture = await createFixture(t);
+    await prepareSafetyCommands(fixture);
+    const stateDirectory = await writeKubernetesState(fixture);
+    const result = spawnSync("/bin/bash", ["scripts/dev-down"], {
+      encoding: "utf8",
+      env: {
+        ...fixture.env,
+        OCC_DEVELOPMENT_COMPUTE_DRIVER: driver,
+        OCC_DEVELOPMENT_STATE_DIRECTORY: stateDirectory,
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok((await stat(stateDirectory)).isDirectory());
+    const commands = await readJsonLines(fixture.env.SAFETY_LOG);
+    assert.deepEqual(commands, [{ command: "docker", args: ["compose", "down"] }]);
+  }
+});
+
+test("dev-down requires Kubernetes state and cleans only its recorded resources", async (t) => {
+  const fixture = await createFixture(t);
+  await prepareSafetyCommands(fixture);
+  const stateDirectory = await writeKubernetesState(fixture);
+  const env = {
+    ...fixture.env,
+    OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
+    OCC_DEVELOPMENT_STATE_DIRECTORY: stateDirectory,
+  };
+  const result = spawnSync("/bin/bash", ["scripts/dev-down"], { encoding: "utf8", env });
+  assert.equal(result.status, 0, result.stderr);
+  await assert.rejects(stat(stateDirectory), { code: "ENOENT" });
+  const commands = await readJsonLines(fixture.env.SAFETY_LOG);
+  assert.deepEqual(
+    commands.filter((entry) => entry.command === "k3d"),
+    [
+      { command: "k3d", args: ["cluster", "list", "-o", "json"] },
+      { command: "k3d", args: ["cluster", "delete", "occ-dev-owned"] },
+    ],
+  );
+  for (const entry of commands.filter((entry) => entry.command === "docker")) {
+    assert.ok(entry.args.includes("owned-kubernetes"));
+    assert.ok(entry.args.includes(fixture.emptyEnv));
+  }
+  // A repeated cleanup must not fall back to another profile's Compose project.
+  const repeated = spawnSync("/bin/bash", ["scripts/dev-down"], { encoding: "utf8", env });
+  assert.notEqual(repeated.status, 0);
+  assert.match(repeated.stderr, /state directory not found/);
+  assert.deepEqual(await readJsonLines(fixture.env.SAFETY_LOG), commands);
+});
+
+test("Kubernetes dev-up rejects public controller and database ports before startup using real Compose", async (t) => {
+  for (const [service, port, label] of [
+    ["controller", 3000, "controller"],
+    ["postgres", 5432, "PostgreSQL"],
+  ]) {
+    const fixture = await createFixture(t);
+    await prepareSafetyCommands(fixture);
+    const stateDirectory = join(fixture.directory, "new-state");
+    const override = join(fixture.directory, "public.yaml");
+    await writeFile(
+      override,
+      `services:\n  ${service}:\n    ports:\n      - "0.0.0.0:39000:${port}"\n`,
+    );
+    const result = runDevUp(["--", ...composeOptions(fixture, override)], {
+      ...fixture.env,
+      OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
+      OCC_DEVELOPMENT_STATE_DIRECTORY: stateDirectory,
+      OCC_DEVELOPMENT_KUBERNETES_CLUSTER: "occ-dev-new",
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(
+      result.stderr,
+      new RegExp(`configuration failed: Compose ${label} port must publish only on loopback`),
+    );
+    await assert.rejects(stat(stateDirectory), { code: "ENOENT" });
+    const commands = await readJsonLines(fixture.env.SAFETY_LOG);
+    assert.equal(
+      commands.some(
+        (entry) =>
+          entry.args.includes("up") ||
+          entry.args.includes("down") ||
+          entry.args.includes("create") ||
+          entry.args.includes("delete"),
+      ),
+      false,
+    );
+    assert.ok(
+      commands.some((entry) => entry.command === "docker" && entry.args.includes("config")),
+    );
+  }
 });
