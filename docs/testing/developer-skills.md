@@ -4,6 +4,7 @@ Use the repository-local skills for the relevant development task:
 
 | Task                             | Skill                                                                                                                                                          |
 | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Develop a repository change      | [local-dev](../../.agents/skills/local-dev/SKILL.md) requires proportional verification and flow docs for non-trivial runtime changes.                         |
 | Write or audit tests             | [test-audit](../../.agents/skills/test-audit/SKILL.md) checks observable behavior, credible regressions, distinct coverage, and production seams.              |
 | Choose validation or diagnose CI | [enterprise-testing](../../.agents/skills/enterprise-testing/SKILL.md) routes to the existing testing procedures and exact run/job evidence.                   |
 | Explain a change with a diagram  | [mermaid-diagrams](../../.agents/skills/mermaid-diagrams/SKILL.md) provides a compact Mermaid template, semantic colors, and honest implementation boundaries. |
@@ -15,6 +16,16 @@ Testing setup and real-runtime requirements remain owned by the
 [testing guides](README.md). Each skill describes its scope and prerequisites.
 
 ## Provenance and updates
+
+`local-dev` is maintained here. Its flow workflow, template, and standalone
+Python validator adapt Specy 2.0.0 (`SKILL.md`, `references/flow-doc/workflow.md`,
+`references/flow-doc/template.md`, and `scripts/validate_flow_doc.py`), inspected
+on 2026-09-16. The adaptation replaces personal memory/session/diagram tooling
+with repository paths, host-provided provenance, local diagram guidance, and a
+bundled standard-library validator. No global Specy installation is required.
+Update those resources together; exercise the validator against a completed
+flow and malformed input, and verify links and the trivial-change exemption.
+The validator checks structure, not source accuracy or Mermaid syntax.
 
 `mermaid-diagrams` is maintained in this repository. Update its instructions and
 template together; check source accuracy and inspect a rendered example when
