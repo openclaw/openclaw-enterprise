@@ -58,6 +58,33 @@ Assets under `docs/assets/` are served at `/assets/`.
 For the generated [HTTP API reference](reference/api.md), edit the owning routes,
 schemas, or generator and run `pnpm openapi:generate`; never edit its output by hand.
 
+## Interactive ComputeDriver matrix
+
+The [ComputeDriver feature matrix](reference/drivers/compute-matrix.md) renders
+inside the existing docs page, with search, category filters, and expandable
+source/test evidence. A generated Markdown table keeps the same support statuses
+readable on GitHub. Both views use `docs/assets/compute-driver-matrix.json`.
+
+After updating reviewed data and its baseline commit, regenerate the fallback:
+
+```sh
+node scripts/generate-compute-matrix.mjs
+node scripts/generate-compute-matrix.mjs --check
+npm run docs:build
+```
+
+The build rejects stale table content. Check the refreshed page at
+`/reference/drivers/compute-matrix/`; open a cell to inspect pinned source and
+unrun test evidence. A successful docs build proves presentation and links,
+not Driver behavior or live deployment.
+
+The custom renderer accepts raw HTML, but GitHub
+[sanitizes rendered Markdown](https://github.com/github/markup#github-markup),
+including scripts. Copying standalone HTML into Markdown therefore does not
+provide portable interaction. The matrix uses generated markup and an external
+same-origin script instead of an iframe. The current local preview sets no CSP;
+any future hosting policy must allow its own required assets and scripts.
+
 ## Troubleshoot
 
 - A missing page or anchor fails the build with its source location. Correct the

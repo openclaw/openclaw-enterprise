@@ -166,6 +166,9 @@
           "path": "tests/browser/console.test.mjs"
         },
         {
+          "path": "tests/browser/docs-compute-matrix.test.mjs"
+        },
+        {
           "path": "tests/integration/ci-logging.test.mjs"
         },
         {

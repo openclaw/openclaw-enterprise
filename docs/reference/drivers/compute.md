@@ -5,7 +5,8 @@ orchestration, and the AgentRevision lifecycle. OCC selects one ComputeDriver
 for the Installation. A selected
 [SandboxDriver](sandbox.md) can own a dedicated Harness workload while
 Compute retains Namespace, gateway, identity, routing, and activation ownership.
-IAM owns authorization.
+IAM owns authorization. Compare the bundled implementations in the
+[ComputeDriver feature matrix](compute-matrix.md).
 
 The exported interface is in
 [shared contracts](../../../packages/contracts/src/index.ts). See

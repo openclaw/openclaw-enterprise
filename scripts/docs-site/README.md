@@ -52,8 +52,14 @@ counts or bypass the limit.
 built-in Node argument handling because each has one option and no subcommands.
 
 `site.mjs` owns mobile navigation, local Pagefind search, theme switching, code
-copying, heading links, and Mermaid rendering. No assistant, community widget,
-translation pipeline, deployment command, or hosted API is included.
+copying, heading links, Mermaid rendering, and ComputeDriver matrix filtering.
+The ComputeDriver matrix is the only custom replacement block: authored
+Markdown uses `<!-- compute-matrix:start -->` and `<!-- compute-matrix:end -->`
+around the generated GitHub fallback table, and `build.mjs` replaces that block
+from `docs/assets/compute-driver-matrix.json`. Keep the fallback generated from
+the same JSON so GitHub Markdown remains useful without becoming a second fact
+owner. No assistant, community widget, translation pipeline, deployment command,
+or hosted API is included.
 
 Run `npm run docs:check` for word-count enforcement, the real build plus
 page/navigation checks, and negative link, anchor, and static-server cases. Run

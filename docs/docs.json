@@ -93,6 +93,7 @@
                 "group": "Drivers",
                 "pages": [
                   "reference/drivers/compute",
+                  "reference/drivers/compute-matrix",
                   "reference/drivers/configuration",
                   "reference/drivers/docker-compute",
                   "reference/drivers/iam",

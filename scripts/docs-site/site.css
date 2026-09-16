@@ -140,6 +140,13 @@ kbd {
   margin: auto;
   padding: 36px 32px;
 }
+.layout:has(.compute-matrix) {
+  grid-template-columns: 240px minmax(0, 1fr);
+  max-width: 1480px;
+}
+.layout:has(.compute-matrix) .toc {
+  display: none;
+}
 #sidebar {
   position: sticky;
   top: 155px;
@@ -343,6 +350,144 @@ kbd {
 .doc tr:last-child td {
   border-bottom: 0;
 }
+.compute-matrix {
+  margin: 28px 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 68%, transparent);
+  overflow: hidden;
+}
+.compute-matrix-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 280px);
+  gap: 20px;
+  padding: 18px;
+  border-bottom: 1px solid var(--line);
+}
+.compute-matrix-eyebrow {
+  margin: 0 0 6px;
+  color: var(--ink);
+  font:
+    600 12px "JetBrains Mono",
+    monospace;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+.compute-matrix-meta,
+.compute-matrix-notice,
+.compute-matrix-count {
+  margin: 6px 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.compute-matrix-controls {
+  display: grid;
+  gap: 10px;
+}
+.compute-matrix-controls label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.compute-matrix-controls input,
+.compute-matrix-controls select {
+  width: 100%;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 8px 10px;
+}
+.compute-matrix-count {
+  padding: 0 18px;
+}
+.compute-matrix-table {
+  overflow: auto;
+}
+.compute-matrix .compute-matrix-table table {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  min-width: 900px;
+  table-layout: fixed;
+}
+.compute-matrix th:first-child {
+  width: 20%;
+}
+.compute-matrix th:nth-child(2) {
+  width: 25%;
+}
+.compute-matrix-category {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--muted);
+  font:
+    11px "JetBrains Mono",
+    monospace;
+}
+.compute-matrix-requirement {
+  color: var(--text);
+}
+.compute-matrix-cell summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.compute-matrix-mark {
+  display: inline-grid;
+  width: 26px;
+  min-height: 24px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--surface);
+  font:
+    600 11px "JetBrains Mono",
+    monospace;
+}
+.compute-matrix-status-supported .compute-matrix-mark {
+  font-size: 14px;
+}
+.compute-matrix-status-partial .compute-matrix-mark {
+  color: var(--muted);
+}
+.compute-matrix-status-unsupported .compute-matrix-mark,
+.compute-matrix-status-unknown .compute-matrix-mark {
+  color: var(--muted);
+}
+.compute-matrix-status-label {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.compute-matrix-cell p {
+  margin: 10px 0 0;
+  font-size: 13px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.compute-matrix-requirement-detail {
+  margin: 8px 0 0;
+  color: var(--muted);
+}
+.compute-matrix-evidence summary {
+  margin-top: 10px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+.compute-matrix-evidence p,
+.compute-matrix-live-proof {
+  margin-top: 6px;
+}
+.compute-matrix-live-proof span {
+  color: var(--muted);
+}
 .toc {
   position: sticky;
   top: 155px;
@@ -544,6 +689,12 @@ dialog::backdrop {
   }
   .oc-mermaid {
     padding: 10px;
+  }
+  .compute-matrix-head {
+    display: block;
+  }
+  .compute-matrix-controls {
+    margin-top: 14px;
   }
   .oc-mermaid svg {
     min-width: 500px;

@@ -49,6 +49,8 @@ effects. Contributors updating routes or schemas should follow the
 The term **contract** names obligations that callers and Driver implementations
 must satisfy. It is part of the reference, not another document lifecycle.
 
+- [ComputeDriver feature matrix](drivers/compute-matrix.md): compare bundled
+  implementations with pinned source evidence.
 - [Driver selection](drivers/selection.md): trusted configuration, package loading,
   capability selection, and compatibility boundaries.
 - [ComputeDriver](drivers/compute.md), [SandboxDriver](drivers/sandbox.md),

@@ -1,0 +1,2562 @@
+{
+  "baseline": "23d490b93d59dc810f28430f31576209200ba9ba",
+  "repository": "https://github.com/openclaw/openclaw-enterprise",
+  "scope": "Bundled selectable runtime ComputeDriver implementations at baseline; installed third-party implementations are not enumerated.",
+  "excluded": [
+    {
+      "name": "LocalTest",
+      "reason": "No LocalTestComputeDriver implementation found in current apps/controller/src. Earlier matrix was a historical test-only column, excluded from current selectable runtime inventory."
+    },
+    {
+      "name": "test-compute-driver",
+      "reason": "Package fixture for driver loading tests, not a shipped bundled runtime.",
+      "evidence": [
+        {
+          "path": "tests/fixtures/driver-packages/test-compute-driver/compiled/index.js",
+          "start": 1,
+          "end": 16
+        }
+      ]
+    }
+  ],
+  "proof": {
+    "source": "inspected at exact baseline",
+    "tests": "existing test evidence only; no tests executed by this audit",
+    "live": "no live deployment, model, network or host proof executed"
+  },
+  "rows": [
+    {
+      "id": "production",
+      "category": "Selection",
+      "name": "Production startup selection",
+      "requirement": "implementation boundary",
+      "requirementEvidence": [
+        {
+          "path": "apps/controller/src/composition/installation-config.ts",
+          "start": 647,
+          "end": 690
+        }
+      ],
+      "cells": {
+        "docker": {
+          "status": "unsupported",
+          "detail": "Development-only Docker implementation; lacks production activation stages.",
+          "evidence": [
+            {
+              "path": "docs/reference/drivers/docker-compute.md",
+              "start": 9,
+              "end": 12
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 418,
+              "end": 424
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "kubernetes": {
+          "status": "supported",
+          "detail": "Bundled production Kubernetes selection; requires explicit cluster configuration.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/composition/installation-config.ts",
+              "start": 663,
+              "end": 690
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/integration/ssh-compute-startup.test.mjs",
+              "start": 84,
+              "end": 95
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "ssh": {
+          "status": "supported",
+          "detail": "Bundled compute-ssh selects occ/ssh in production; SSH is now on main.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/composition/installation-config.ts",
+              "start": 654,
+              "end": 662
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/integration/ssh-compute-startup.test.mjs",
+              "start": 43,
+              "end": 59
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        }
+      }
+    },
+    {
+      "id": "namespace",
+      "category": "Lifecycle",
+      "name": "Prepare Namespace infrastructure",
+      "requirement": "required contract",
+      "requirementEvidence": [
+        {
+          "path": "packages/contracts/src/index.ts",
+          "start": 688,
+          "end": 689
+        }
+      ],
+      "cells": {
+        "docker": {
+          "status": "supported",
+          "detail": "Creates or verifies one owned bridge network per Namespace.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 270,
+              "end": 302
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "kubernetes": {
+          "status": "supported",
+          "detail": "Creates or verifies tenant namespace, quotas, defaults and baseline network policy.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 1035,
+              "end": 1125
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "ssh": {
+          "status": "supported",
+          "detail": "Creates or verifies marker on host selected by exact Namespace name.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/index.ts",
+              "start": 316,
+              "end": 327
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/remote-helper.cjs",
+              "start": 713,
+              "end": 733
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        }
+      }
+    },
+    {
+      "id": "deletion",
+      "category": "Lifecycle",
+      "name": "Delete owned Namespace resources",
+      "requirement": "required contract",
+      "requirementEvidence": [
+        {
+          "path": "packages/contracts/src/index.ts",
+          "start": 688,
+          "end": 689
+        }
+      ],
+      "cells": {
+        "docker": {
+          "status": "supported",
+          "detail": "Verifies network ownership, removes owned containers and exact network.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 305,
+              "end": 321
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "kubernetes": {
+          "status": "supported",
+          "detail": "Verifies ownership; retains externally managed namespace while removing owned infrastructure.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 1128,
+              "end": 1181
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "ssh": {
+          "status": "supported",
+          "detail": "Stops owned units, removes owned Namespace tree and runtime identities.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/index.ts",
+              "start": 329,
+              "end": 342
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/remote-helper.cjs",
+              "start": 668,
+              "end": 710
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/conformance/ssh-compute.test.mjs",
+              "start": 758,
+              "end": 830
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        }
+      }
+    },
+    {
+      "id": "prepare",
+      "category": "Lifecycle",
+      "name": "Prepare immutable AgentRevision",
+      "requirement": "required contract",
+      "requirementEvidence": [
+        {
+          "path": "packages/contracts/src/index.ts",
+          "start": 690,
+          "end": 693
+        }
+      ],
+      "cells": {
+        "docker": {
+          "status": "supported",
+          "detail": "Checks pinned driver, topology and configuration ownership before container preparation.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 324,
+              "end": 376
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "kubernetes": {
+          "status": "supported",
+          "detail": "Prepares exact topology and owned resources with immutable configuration snapshots.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 1184,
+              "end": 1245
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 1383,
+              "end": 1408
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "ssh": {
+          "status": "supported",
+          "detail": "Writes immutable snapshot without changing current serving revision.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/index.ts",
+              "start": 345,
+              "end": 377
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/remote-helper.cjs",
+              "start": 562,
+              "end": 625
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/conformance/ssh-compute.test.mjs",
+              "start": 758,
+              "end": 830
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        }
+      }
+    },
+    {
+      "id": "activation",
+      "category": "Lifecycle",
+      "name": "Explicit activation and deactivation stages",
+      "requirement": "required in production",
+      "requirementEvidence": [
+        {
+          "path": "packages/contracts/src/index.ts",
+          "start": 694,
+          "end": 695
+        },
+        {
+          "path": "apps/controller/src/composition/installation-config.ts",
+          "start": 683,
+          "end": 690
+        }
+      ],
+      "cells": {
+        "docker": {
+          "status": "unsupported",
+          "detail": "No activation or deactivation methods; development prepare directly replaces gateway.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 369,
+              "end": 393
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 483,
+              "end": 494
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "kubernetes": {
+          "status": "supported",
+          "detail": "Production stages verify exact workload readiness and update revision-aware Service routing.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 1540,
+              "end": 1558
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 1630,
+              "end": 1661
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 1723,
+              "end": 1759
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "ssh": {
+          "status": "partial",
+          "detail": "Activation switches snapshot and restarts gateway; deactivation only verifies revision because dedicated topology is unsupported.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/index.ts",
+              "start": 380,
+              "end": 406
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/index.ts",
+              "start": 421,
+              "end": 424
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/remote-helper.cjs",
+              "start": 626,
+              "end": 665
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/conformance/ssh-compute.test.mjs",
+              "start": 847,
+              "end": 868
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        }
+      },
+      "requirementDetail": "Optional methods in the shared interface; production startup rejects a selected ComputeDriver without both activation stages."
+    },
+    {
+      "id": "stop",
+      "category": "Lifecycle",
+      "name": "Stop exact revision without retiring it",
+      "requirement": "required contract",
+      "requirementEvidence": [
+        {
+          "path": "packages/contracts/src/index.ts",
+          "start": 694,
+          "end": 697
+        }
+      ],
+      "cells": {
+        "docker": {
+          "status": "supported",
+          "detail": "Removes exact revision containers; leaves persisted revision outside Driver untouched; runtime tmpfs is lost.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 418,
+              "end": 455
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/conformance/docker-compute.test.mjs",
+              "start": 39,
+              "end": 111
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "kubernetes": {
+          "status": "supported",
+          "detail": "Stops routing and execution while retaining persistent claims.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 1763,
+              "end": 1796
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 1831,
+              "end": 1891
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/conformance/kubernetes-compute.test.mjs",
+              "start": 3030,
+              "end": 3156
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "ssh": {
+          "status": "supported",
+          "detail": "Stops unit and removes current/served pointers while retaining snapshots and Agent state.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/index.ts",
+              "start": 426,
+              "end": 430
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/remote-helper.cjs",
+              "start": 759,
+              "end": 771
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/conformance/ssh-compute.test.mjs",
+              "start": 486,
+              "end": 575
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        }
+      }
+    },
+    {
+      "id": "retire",
+      "category": "Lifecycle",
+      "name": "Retire predecessor without removing replacement",
+      "requirement": "required contract",
+      "requirementEvidence": [
+        {
+          "path": "packages/contracts/src/index.ts",
+          "start": 696,
+          "end": 697
+        }
+      ],
+      "cells": {
+        "docker": {
+          "status": "supported",
+          "detail": "Removes exact revision Agent container; removes gateway only if its revision ID still matches.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 422,
+              "end": 455
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "kubernetes": {
+          "status": "supported",
+          "detail": "Retires owned workload and preserves replacement gateway and claims.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 1798,
+              "end": 1829
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 1959,
+              "end": 1987
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/conformance/kubernetes-compute.test.mjs",
+              "start": 3370,
+              "end": 3389
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "ssh": {
+          "status": "supported",
+          "detail": "Retires only exact snapshot; stops unit only when retired revision is current.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/index.ts",
+              "start": 433,
+              "end": 437
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/remote-helper.cjs",
+              "start": 759,
+              "end": 773
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/conformance/ssh-compute.test.mjs",
+              "start": 758,
+              "end": 830
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        }
+      }
+    },
+    {
+      "id": "embedded",
+      "category": "Topology",
+      "name": "Embedded OpenClaw Harness",
+      "requirement": "implementation boundary",
+      "requirementEvidence": [
+        {
+          "path": "docs/reference/drivers/compute.md",
+          "start": 18,
+          "end": 24
+        }
+      ],
+      "cells": {
+        "docker": {
+          "status": "supported",
+          "detail": "One combined gateway/Harness container.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 369,
+              "end": 376
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "kubernetes": {
+          "status": "supported",
+          "detail": "Combined gateway/Harness Deployment, with Agent service identity.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 1389,
+              "end": 1405
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "ssh": {
+          "status": "supported",
+          "detail": "Supported topology: systemd-managed OpenClaw gateway.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/index.ts",
+              "start": 351,
+              "end": 355
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/remote-helper.cjs",
+              "start": 503,
+              "end": 532
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        }
+      }
+    },
+    {
+      "id": "dedicated",
+      "category": "Topology",
+      "name": "Dedicated Codex Harness",
+      "requirement": "implementation boundary",
+      "requirementEvidence": [
+        {
+          "path": "docs/reference/drivers/compute.md",
+          "start": 18,
+          "end": 24
+        }
+      ],
+      "cells": {
+        "docker": {
+          "status": "partial",
+          "detail": "Separate gateway and exact-revision Codex container; transport retry limitation is listed separately.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 379,
+              "end": 393
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "kubernetes": {
+          "status": "supported",
+          "detail": "Separate exact-revision Codex Deployment or selected Sandbox workload.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 1477,
+              "end": 1512
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "ssh": {
+          "status": "unsupported",
+          "detail": "Explicitly rejects non-embedded OpenClaw; dedicated Codex deferred.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/index.ts",
+              "start": 351,
+              "end": 355
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/conformance/ssh-compute.test.mjs",
+              "start": 670,
+              "end": 719
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        }
+      }
+    },
+    {
+      "id": "rollout",
+      "category": "Lifecycle",
+      "name": "Preserve serving runtime until activation",
+      "requirement": "implementation boundary",
+      "requirementEvidence": [
+        {
+          "path": "docs/reference/drivers/compute.md",
+          "start": 65,
+          "end": 83
+        }
+      ],
+      "cells": {
+        "docker": {
+          "status": "unsupported",
+          "detail": "Prepare removes prior gateway before creating replacement; no separate activation.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 480,
+              "end": 494
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "kubernetes": {
+          "status": "supported",
+          "detail": "Preparation preserves predecessor; activation performs gateway replacement and routing cutover.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 1383,
+              "end": 1408
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 1540,
+              "end": 1605
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/conformance/kubernetes-compute.test.mjs",
+              "start": 1321,
+              "end": 1354
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "ssh": {
+          "status": "supported",
+          "detail": "Prepare leaves current pointer and gateway untouched; activation switches and restarts.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/remote-helper.cjs",
+              "start": 562,
+              "end": 665
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/conformance/ssh-compute.test.mjs",
+              "start": 758,
+              "end": 830
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        }
+      }
+    },
+    {
+      "id": "zero-downtime",
+      "category": "Lifecycle",
+      "name": "Zero-downtime gateway replacement",
+      "requirement": "implementation boundary",
+      "requirementEvidence": [
+        {
+          "path": "docs/reference/drivers/kubernetes-compute.md",
+          "start": 154,
+          "end": 161
+        },
+        {
+          "path": "docs/reference/drivers/ssh-compute.md",
+          "start": 162,
+          "end": 169
+        }
+      ],
+      "cells": {
+        "docker": {
+          "status": "unsupported",
+          "detail": "Replacement removes previous gateway first.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 492,
+              "end": 497
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "kubernetes": {
+          "status": "unsupported",
+          "detail": "Gateway uses one replica and Recreate; transient downtime and node-fencing limits remain.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 4184,
+              "end": 4185
+            },
+            {
+              "path": "docs/reference/drivers/kubernetes-compute.md",
+              "start": 156,
+              "end": 161
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "ssh": {
+          "status": "unsupported",
+          "detail": "Activation restarts existing systemd unit, interrupting service.",
+          "evidence": [
+            {
+              "path": "docs/reference/drivers/ssh-compute.md",
+              "start": 162,
+              "end": 169
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/remote-helper.cjs",
+              "start": 626,
+              "end": 665
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        }
+      }
+    },
+    {
+      "id": "adoption",
+      "category": "Placement",
+      "name": "Adopt an existing tenant namespace",
+      "requirement": "optional capability",
+      "requirementEvidence": [
+        {
+          "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+          "start": 1041,
+          "end": 1088
+        }
+      ],
+      "cells": {
+        "docker": {
+          "status": "unsupported",
+          "detail": "No Kubernetes existingNamespace adoption; own Docker network only.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 270,
+              "end": 298
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "kubernetes": {
+          "status": "supported",
+          "detail": "Explicit adoption verifies active namespace, ownership uniqueness and existing network policy before claiming.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 1041,
+              "end": 1088
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/conformance/kubernetes-compute.test.mjs",
+              "start": 204,
+              "end": 227
+            },
+            {
+              "path": "tests/integration/kubernetes-compute-real.test.mjs",
+              "start": 1110,
+              "end": 1123
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "ssh": {
+          "status": "unsupported",
+          "detail": "Rejects existingNamespace input.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/index.ts",
+              "start": 440,
+              "end": 443
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/conformance/ssh-compute.test.mjs",
+              "start": 670,
+              "end": 719
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        }
+      }
+    },
+    {
+      "id": "sandbox",
+      "category": "Composition",
+      "name": "Delegate dedicated Harness to SandboxDriver",
+      "requirement": "optional capability",
+      "requirementEvidence": [
+        {
+          "path": "docs/reference/drivers/compute.md",
+          "start": 46,
+          "end": 63
+        }
+      ],
+      "cells": {
+        "docker": {
+          "status": "unsupported",
+          "detail": "No Sandbox composition in Docker development implementation.",
+          "evidence": [
+            {
+              "path": "docs/reference/drivers/compute.md",
+              "start": 46,
+              "end": 49
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 379,
+              "end": 391
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "kubernetes": {
+          "status": "supported",
+          "detail": "Delegates provisioning to selected SandboxDriver with exact identity and workload requirements; waits for exact ready Pod.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 1496,
+              "end": 1510
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/conformance/kubernetes-compute.test.mjs",
+              "start": 2005,
+              "end": 2047
+            },
+            {
+              "path": "tests/conformance/kubernetes-compute.test.mjs",
+              "start": 2211,
+              "end": 2235
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "ssh": {
+          "status": "unsupported",
+          "detail": "Explicitly rejects SandboxDriver selection.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/index.ts",
+              "start": 365,
+              "end": 366
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/conformance/ssh-compute.test.mjs",
+              "start": 670,
+              "end": 719
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        }
+      }
+    },
+    {
+      "id": "hooks",
+      "category": "Composition",
+      "name": "Selected-driver lifecycle hooks",
+      "requirement": "optional capability",
+      "requirementEvidence": [
+        {
+          "path": "docs/reference/drivers/compute.md",
+          "start": 114,
+          "end": 131
+        }
+      ],
+      "cells": {
+        "docker": {
+          "status": "supported",
+          "detail": "Dispatches Namespace, start, stop and delete hooks; compensates failed preparation.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 250,
+              "end": 255
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 297,
+              "end": 297
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 313,
+              "end": 313
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 366,
+              "end": 414
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 434,
+              "end": 434
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "kubernetes": {
+          "status": "supported",
+          "detail": "Dispatches hooks around owned Namespace/workload lifecycle.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 1117,
+              "end": 1120
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 1477,
+              "end": 1478
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 1831,
+              "end": 1865
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/conformance/kubernetes-compute.test.mjs",
+              "start": 1694,
+              "end": 1722
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "ssh": {
+          "status": "supported",
+          "detail": "Dispatches hooks around Namespace operations, activation and stop with failure compensation.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/index.ts",
+              "start": 316,
+              "end": 335
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/index.ts",
+              "start": 403,
+              "end": 417
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/index.ts",
+              "start": 426,
+              "end": 437
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/conformance/ssh-compute.test.mjs",
+              "start": 627,
+              "end": 668
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        }
+      }
+    },
+    {
+      "id": "plugins",
+      "category": "Composition",
+      "name": "Install admitted native plugins",
+      "requirement": "optional capability",
+      "requirementEvidence": [
+        {
+          "path": "docs/reference/agent-plugins.md",
+          "start": 1,
+          "end": 20
+        }
+      ],
+      "cells": {
+        "docker": {
+          "status": "supported",
+          "detail": "Passes admitted plugin runtime to owning gateway or dedicated Agent.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 359,
+              "end": 390
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 688,
+              "end": 727
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/conformance/plugin-compute.test.mjs",
+              "start": 431,
+              "end": 447
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "kubernetes": {
+          "status": "supported",
+          "detail": "Projects plugin runtime and gates native readiness; configures required egress.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 1479,
+              "end": 1494
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 3950,
+              "end": 3985
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/conformance/plugin-compute.test.mjs",
+              "start": 1008,
+              "end": 1051
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "ssh": {
+          "status": "unsupported",
+          "detail": "Rejects revisions whose admitted plugin map is nonempty; an empty map does not trigger this check.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/index.ts",
+              "start": 130,
+              "end": 132
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/index.ts",
+              "start": 367,
+              "end": 369
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        }
+      }
+    },
+    {
+      "id": "network",
+      "category": "Isolation",
+      "name": "Tenant network isolation",
+      "requirement": "implementation boundary",
+      "requirementEvidence": [
+        {
+          "path": "docs/reference/drivers/docker-compute.md",
+          "start": 77,
+          "end": 79
+        },
+        {
+          "path": "docs/reference/drivers/kubernetes-compute.md",
+          "start": 18,
+          "end": 25
+        },
+        {
+          "path": "docs/reference/drivers/ssh-compute.md",
+          "start": 209,
+          "end": 213
+        }
+      ],
+      "cells": {
+        "docker": {
+          "status": "partial",
+          "detail": "Separate Namespace bridges; no per-workload default-deny ingress/egress policy.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 270,
+              "end": 298
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 611,
+              "end": 634
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "kubernetes": {
+          "status": "supported",
+          "detail": "Default-deny ingress/egress plus explicit DNS and approved gateway ingress rules; requires enforcing cluster.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 3154,
+              "end": 3178
+            },
+            {
+              "path": "docs/reference/drivers/kubernetes-compute.md",
+              "start": 18,
+              "end": 20
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "ssh": {
+          "status": "unsupported",
+          "detail": "Separate Unix accounts, but shared host networking; operator owns network isolation.",
+          "evidence": [
+            {
+              "path": "docs/reference/drivers/ssh-compute.md",
+              "start": 209,
+              "end": 213
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        }
+      }
+    },
+    {
+      "id": "resources",
+      "category": "Isolation",
+      "name": "Explicit CPU/memory limits and tenant quotas",
+      "requirement": "implementation boundary",
+      "requirementEvidence": [
+        {
+          "path": "docs/reference/drivers/kubernetes-compute.md",
+          "start": 23,
+          "end": 25
+        }
+      ],
+      "cells": {
+        "docker": {
+          "status": "unsupported",
+          "detail": "Container create sets bounded tmpfs, but no CPU/memory resource limits or tenant quota.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 611,
+              "end": 634
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "kubernetes": {
+          "status": "supported",
+          "detail": "Namespace ResourceQuota and LimitRange; explicit role-specific Pod resources.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 1090,
+              "end": 1113
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 4235,
+              "end": 4238
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/conformance/kubernetes-compute.test.mjs",
+              "start": 1610,
+              "end": 1641
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "ssh": {
+          "status": "unsupported",
+          "detail": "systemd unit has no CPU/memory quota directives.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/remote-helper.cjs",
+              "start": 503,
+              "end": 532
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        }
+      }
+    },
+    {
+      "id": "nonroot",
+      "category": "Isolation",
+      "name": "Non-root workload execution",
+      "requirement": "implementation boundary",
+      "requirementEvidence": [
+        {
+          "path": "docs/reference/drivers/kubernetes-compute.md",
+          "start": 18,
+          "end": 20
+        },
+        {
+          "path": "docs/reference/drivers/ssh-compute.md",
+          "start": 113,
+          "end": 119
+        }
+      ],
+      "cells": {
+        "docker": {
+          "status": "supported",
+          "detail": "Containers run as UID/GID 1000.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 595,
+              "end": 598
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "kubernetes": {
+          "status": "supported",
+          "detail": "Pod security context requires non-root UID/GID 1000.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 4199,
+              "end": 4208
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "ssh": {
+          "status": "supported",
+          "detail": "Per-Agent non-login Unix account; SSH control connection itself requires root.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/remote-helper.cjs",
+              "start": 313,
+              "end": 366
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/remote-helper.cjs",
+              "start": 503,
+              "end": 516
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/index.ts",
+              "start": 237,
+              "end": 240
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/conformance/ssh-compute.test.mjs",
+              "start": 758,
+              "end": 830
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        }
+      }
+    },
+    {
+      "id": "hardening",
+      "category": "Isolation",
+      "name": "Workload filesystem and privilege restrictions",
+      "requirement": "implementation boundary",
+      "requirementEvidence": [
+        {
+          "path": "docs/reference/drivers/kubernetes-compute.md",
+          "start": 18,
+          "end": 20
+        }
+      ],
+      "cells": {
+        "docker": {
+          "status": "supported",
+          "detail": "Read-only rootfs, dropped capabilities, no-new-privileges and bounded writable tmpfs.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 611,
+              "end": 624
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "kubernetes": {
+          "status": "supported",
+          "detail": "Restricted Pod context, read-only rootfs, no escalation and dropped capabilities; bounded emptyDir.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 4031,
+              "end": 4038
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 4239,
+              "end": 4243
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "ssh": {
+          "status": "partial",
+          "detail": "Private Unix account, NoNewPrivileges and PrivateTmp; no container-equivalent read-only rootfs.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/remote-helper.cjs",
+              "start": 503,
+              "end": 532
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        }
+      }
+    },
+    {
+      "id": "workload-identity",
+      "category": "Identity",
+      "name": "Project service-principal workload token",
+      "requirement": "implementation boundary",
+      "requirementEvidence": [
+        {
+          "path": "docs/reference/drivers/compute.md",
+          "start": 60,
+          "end": 63
+        }
+      ],
+      "cells": {
+        "docker": {
+          "status": "unsupported",
+          "detail": "Service-principal labels, but no projected workload token.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 595,
+              "end": 634
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "kubernetes": {
+          "status": "supported",
+          "detail": "Projects bounded audience-scoped ServiceAccount token read-only; disables ambient automount.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 3988,
+              "end": 4007
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 4199,
+              "end": 4200
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/conformance/kubernetes-compute.test.mjs",
+              "start": 1980,
+              "end": 2003
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "ssh": {
+          "status": "unsupported",
+          "detail": "Binds ServicePrincipal in ownership markers; no workload token projection.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/index.ts",
+              "start": 297,
+              "end": 313
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/remote-helper.cjs",
+              "start": 167,
+              "end": 173
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        }
+      }
+    },
+    {
+      "id": "gateway-endpoint",
+      "category": "Connectivity",
+      "name": "Resolve private WSS gateway endpoint",
+      "requirement": "optional capability",
+      "requirementEvidence": [
+        {
+          "path": "packages/contracts/src/index.ts",
+          "start": 687,
+          "end": 687
+        }
+      ],
+      "cells": {
+        "docker": {
+          "status": "unsupported",
+          "detail": "Optional resolver absent.",
+          "evidence": [
+            {
+              "path": "docs/reference/drivers/compute.md",
+              "start": 94,
+              "end": 97
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "kubernetes": {
+          "status": "supported",
+          "detail": "Returns deterministic WSS address only when gateway routing is configured.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 861,
+              "end": 865
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 3224,
+              "end": 3236
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/conformance/kubernetes-compute.test.mjs",
+              "start": 411,
+              "end": 436
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "ssh": {
+          "status": "unsupported",
+          "detail": "Optional resolver absent; workspace-file API endpoint resolution unsupported.",
+          "evidence": [
+            {
+              "path": "docs/reference/drivers/compute.md",
+              "start": 94,
+              "end": 97
+            },
+            {
+              "path": "docs/reference/drivers/ssh-compute.md",
+              "start": 215,
+              "end": 218
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        }
+      }
+    },
+    {
+      "id": "persistent-state",
+      "category": "Storage",
+      "name": "Persist Agent state across runtime replacement",
+      "requirement": "implementation boundary",
+      "requirementEvidence": [
+        {
+          "path": "docs/reference/drivers/kubernetes-compute/storage-and-credentials.md",
+          "start": 6,
+          "end": 18
+        },
+        {
+          "path": "docs/reference/drivers/ssh-compute.md",
+          "start": 177,
+          "end": 186
+        }
+      ],
+      "cells": {
+        "docker": {
+          "status": "unsupported",
+          "detail": "Writable state is ephemeral tmpfs; no persistent workspace contract.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 616,
+              "end": 624
+            },
+            {
+              "path": "docs/reference/drivers/docker-compute.md",
+              "start": 112,
+              "end": 116
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "kubernetes": {
+          "status": "supported",
+          "detail": "Private gateway RWO disk; embedded default workspace persists; dedicated RWX workspace is separate.",
+          "evidence": [
+            {
+              "path": "docs/reference/drivers/kubernetes-compute/storage-and-credentials.md",
+              "start": 33,
+              "end": 60
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 4041,
+              "end": 4062
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/conformance/kubernetes-compute.test.mjs",
+              "start": 2791,
+              "end": 2818
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "ssh": {
+          "status": "supported",
+          "detail": "Private home/state directories persist across stop and revision retirement.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/remote-helper.cjs",
+              "start": 562,
+              "end": 625
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/remote-helper.cjs",
+              "start": 759,
+              "end": 771
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/conformance/ssh-compute.test.mjs",
+              "start": 486,
+              "end": 575
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        }
+      }
+    },
+    {
+      "id": "dedicated-workspace",
+      "category": "Storage",
+      "name": "Share dedicated gateway/Harness workspace",
+      "requirement": "implementation boundary",
+      "requirementEvidence": [
+        {
+          "path": "docs/reference/drivers/kubernetes-compute/storage-and-credentials.md",
+          "start": 56,
+          "end": 60
+        }
+      ],
+      "cells": {
+        "docker": {
+          "status": "unsupported",
+          "detail": "Separate ephemeral runtime homes; no shared volume mounts.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 611,
+              "end": 634
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "kubernetes": {
+          "status": "supported",
+          "detail": "Shared Agent-owned 40Gi RWX claim with directional mount permissions.",
+          "evidence": [
+            {
+              "path": "docs/reference/drivers/kubernetes-compute/storage-and-credentials.md",
+              "start": 56,
+              "end": 60
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 4041,
+              "end": 4047
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "ssh": {
+          "status": "unsupported",
+          "detail": "Dedicated topology unsupported.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/index.ts",
+              "start": 351,
+              "end": 355
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        }
+      }
+    },
+    {
+      "id": "initial-credentials",
+      "category": "Credentials",
+      "name": "Provision initial Agent runtime credentials",
+      "requirement": "optional capability",
+      "requirementEvidence": [
+        {
+          "path": "packages/contracts/src/index.ts",
+          "start": 680,
+          "end": 686
+        }
+      ],
+      "cells": {
+        "docker": {
+          "status": "unsupported",
+          "detail": "No provisioning API; model credential supplied to development worker environment.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 368,
+              "end": 384
+            },
+            {
+              "path": "docs/reference/drivers/compute.md",
+              "start": 151,
+              "end": 160
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "kubernetes": {
+          "status": "supported",
+          "detail": "Creates missing owned Secret groups; rejects conflicts and preserves matching existing values.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 867,
+              "end": 953
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/conformance/kubernetes-runtime-credentials.test.mjs",
+              "start": 171,
+              "end": 240
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "ssh": {
+          "status": "unsupported",
+          "detail": "Operator-owned Agent env file is the credential path; no runtime-credential API.",
+          "evidence": [
+            {
+              "path": "docs/reference/drivers/ssh-compute.md",
+              "start": 195,
+              "end": 207
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        }
+      }
+    },
+    {
+      "id": "model-credential",
+      "category": "Credentials",
+      "name": "Deliver model credential only to executing Harness",
+      "requirement": "implementation boundary",
+      "requirementEvidence": [
+        {
+          "path": "docs/reference/drivers/kubernetes-compute/storage-and-credentials.md",
+          "start": 95,
+          "end": 105
+        },
+        {
+          "path": "docs/reference/drivers/docker-compute.md",
+          "start": 125,
+          "end": 130
+        }
+      ],
+      "cells": {
+        "docker": {
+          "status": "supported",
+          "detail": "Provider key reaches embedded gateway or dedicated Agent; dedicated gateway gets only transport.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 368,
+              "end": 390
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "kubernetes": {
+          "status": "supported",
+          "detail": "Embedded gateway gets model key; dedicated Agent gets model Secret or account-owned access token.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 4076,
+              "end": 4091
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 4121,
+              "end": 4138
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/conformance/kubernetes-compute.test.mjs",
+              "start": 782,
+              "end": 837
+            },
+            {
+              "path": "tests/conformance/kubernetes-compute.test.mjs",
+              "start": 948,
+              "end": 977
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "ssh": {
+          "status": "partial",
+          "detail": "Operator env supplies embedded workload credentials; no Driver-managed model credential path.",
+          "evidence": [
+            {
+              "path": "docs/reference/drivers/ssh-compute.md",
+              "start": 203,
+              "end": 207
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/remote-helper.cjs",
+              "start": 521,
+              "end": 521
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        }
+      }
+    },
+    {
+      "id": "custom-secrets",
+      "category": "Credentials",
+      "name": "Project OCC Secret bindings",
+      "requirement": "optional capability",
+      "requirementEvidence": [
+        {
+          "path": "packages/contracts/src/index.ts",
+          "start": 690,
+          "end": 693
+        },
+        {
+          "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+          "start": 3814,
+          "end": 3839
+        }
+      ],
+      "cells": {
+        "docker": {
+          "status": "unsupported",
+          "detail": "prepareRevision does not consume ComputeRevisionContext or project OCC Secret bindings.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 324,
+              "end": 324
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 368,
+              "end": 390
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "kubernetes": {
+          "status": "partial",
+          "detail": "Custom bindings are projected into gateway only; dedicated Codex receives an empty projection list. Built-in model/transport credentials use separate supported paths.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 1389,
+              "end": 1405
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 1479,
+              "end": 1494
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 4018,
+              "end": 4027
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "ssh": {
+          "status": "unsupported",
+          "detail": "Explicitly rejects OCC Secret bindings; operator env file is separate.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/index.ts",
+              "start": 357,
+              "end": 363
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/conformance/ssh-compute.test.mjs",
+              "start": 670,
+              "end": 719
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        }
+      }
+    },
+    {
+      "id": "account-credential",
+      "category": "Credentials",
+      "name": "Provider-issued dedicated Codex access token",
+      "requirement": "optional capability",
+      "requirementEvidence": [
+        {
+          "path": "docs/reference/drivers/kubernetes-compute/storage-and-credentials.md",
+          "start": 95,
+          "end": 100
+        }
+      ],
+      "cells": {
+        "docker": {
+          "status": "unsupported",
+          "detail": "Only provider API-key environment supported in this implementation.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 368,
+              "end": 390
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 677,
+              "end": 686
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "kubernetes": {
+          "status": "supported",
+          "detail": "Account-owned access-token Secret and workspace ID project only to dedicated Codex.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 4121,
+              "end": 4138
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/conformance/kubernetes-compute.test.mjs",
+              "start": 948,
+              "end": 1032
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "ssh": {
+          "status": "unsupported",
+          "detail": "Dedicated Codex unsupported.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/index.ts",
+              "start": 351,
+              "end": 355
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        }
+      }
+    },
+    {
+      "id": "transport-retry",
+      "category": "Credentials",
+      "name": "Persist dedicated transport authentication across retries",
+      "requirement": "implementation boundary",
+      "requirementEvidence": [
+        {
+          "path": "docs/reference/drivers/compute.md",
+          "start": 81,
+          "end": 83
+        }
+      ],
+      "cells": {
+        "docker": {
+          "status": "partial",
+          "detail": "Source-inferred retry gap, unreproduced: a fresh token is generated each prepare, while a healthy existing Agent is reused; rebuilding only gateway can supply a different token.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 379,
+              "end": 390
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 483,
+              "end": 494
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 549,
+              "end": 564
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "kubernetes": {
+          "status": "supported",
+          "detail": "Both roles reference the same persisted Agent-owned transport Secret; initial provisioning generates transport bytes only if that group is absent. This source evidence does not prove every runtime retry or external rotation scenario.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 4064,
+              "end": 4074
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 909,
+              "end": 923
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/conformance/kubernetes-compute.test.mjs",
+              "start": 782,
+              "end": 837
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "ssh": {
+          "status": "unsupported",
+          "detail": "Dedicated transport unsupported.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/index.ts",
+              "start": 351,
+              "end": 355
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        }
+      }
+    },
+    {
+      "id": "trusted-proxy",
+      "category": "Connectivity",
+      "name": "Honor native trusted-proxy gateway authentication",
+      "requirement": "optional capability",
+      "requirementEvidence": [
+        {
+          "path": "docs/reference/drivers/kubernetes-compute/storage-and-credentials.md",
+          "start": 82,
+          "end": 93
+        }
+      ],
+      "cells": {
+        "docker": {
+          "status": "supported",
+          "detail": "Omits shared gateway token when native trusted-proxy is selected.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 508,
+              "end": 511
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/conformance/docker-compute.test.mjs",
+              "start": 113,
+              "end": 132
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "kubernetes": {
+          "status": "supported",
+          "detail": "Omits token; private routing additionally verifies trusted-proxy settings.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 3240,
+              "end": 3255
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 4093,
+              "end": 4102
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/conformance/kubernetes-runtime-credentials.test.mjs",
+              "start": 318,
+              "end": 344
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "ssh": {
+          "status": "supported",
+          "detail": "Trusted-proxy unit omits gateway.env token file.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/remote-helper.cjs",
+              "start": 503,
+              "end": 521
+            },
+            {
+              "path": "docs/reference/drivers/ssh-compute.md",
+              "start": 197,
+              "end": 201
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/conformance/ssh-compute.test.mjs",
+              "start": 576,
+              "end": 625
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        }
+      }
+    },
+    {
+      "id": "maintenance",
+      "category": "Operations",
+      "name": "Schedule periodic active-runtime maintenance",
+      "requirement": "optional capability",
+      "requirementEvidence": [
+        {
+          "path": "packages/contracts/src/index.ts",
+          "start": 676,
+          "end": 677
+        }
+      ],
+      "cells": {
+        "docker": {
+          "status": "unsupported",
+          "detail": "No maintenanceIntervalMs declaration; event-driven lifecycle.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 231,
+              "end": 238
+            },
+            {
+              "path": "docs/reference/drivers/compute.md",
+              "start": 99,
+              "end": 112
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "kubernetes": {
+          "status": "unsupported",
+          "detail": "No maintenanceIntervalMs declaration; Kubernetes controller handles workload reconciliation separately.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 629,
+              "end": 638
+            },
+            {
+              "path": "docs/reference/drivers/compute.md",
+              "start": 99,
+              "end": 112
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "ssh": {
+          "status": "unsupported",
+          "detail": "No maintenanceIntervalMs declaration; systemd restart policy is distinct.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/index.ts",
+              "start": 253,
+              "end": 261
+            },
+            {
+              "path": "docs/reference/drivers/ssh-compute.md",
+              "start": 215,
+              "end": 219
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        }
+      }
+    },
+    {
+      "id": "logging",
+      "category": "Operations",
+      "name": "Runtime log collection path",
+      "requirement": "implementation boundary",
+      "requirementEvidence": [
+        {
+          "path": "docs/reference/drivers/docker-compute.md",
+          "start": 37,
+          "end": 39
+        },
+        {
+          "path": "docs/reference/drivers/ssh-compute.md",
+          "start": 171,
+          "end": 175
+        }
+      ],
+      "cells": {
+        "docker": {
+          "status": "partial",
+          "detail": "Optional Docker Fluentd forwarding; Podman logging overlay remains unverified/unsupported on documented baseline.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 626,
+              "end": 628
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 652,
+              "end": 665
+            },
+            {
+              "path": "docs/reference/drivers/docker-compute.md",
+              "start": 37,
+              "end": 39
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "kubernetes": {
+          "status": "supported",
+          "detail": "Labels workloads and supplies native admitted logging levels for collection.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 4012,
+              "end": 4016
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
+              "start": 4184,
+              "end": 4198
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "ssh": {
+          "status": "supported",
+          "detail": "Native systemd stdout/stderr collected by journald.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/remote-helper.cjs",
+              "start": 503,
+              "end": 532
+            },
+            {
+              "path": "docs/reference/drivers/ssh-compute.md",
+              "start": 171,
+              "end": 175
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        }
+      }
+    },
+    {
+      "id": "image-pins",
+      "category": "Operations",
+      "name": "Enforce immutable runtime image digests",
+      "requirement": "implementation boundary",
+      "requirementEvidence": [
+        {
+          "path": "docs/reference/drivers/kubernetes-compute.md",
+          "start": 145,
+          "end": 149
+        }
+      ],
+      "cells": {
+        "docker": {
+          "status": "unsupported",
+          "detail": "Accepts engine-resolved tags as well as digests for development.",
+          "evidence": [
+            {
+              "path": "docs/reference/drivers/docker-compute.md",
+              "start": 101,
+              "end": 105
+            },
+            {
+              "path": "apps/controller/src/drivers/compute/docker/index.ts",
+              "start": 240,
+              "end": 247
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "kubernetes": {
+          "status": "supported",
+          "detail": "Production requires immutable SHA-256 image references.",
+          "evidence": [
+            {
+              "path": "docs/reference/drivers/kubernetes-compute.md",
+              "start": 145,
+              "end": 149
+            }
+          ],
+          "tests": [
+            {
+              "path": "tests/conformance/kubernetes-compute.test.mjs",
+              "start": 1952,
+              "end": 1978
+            }
+          ],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        },
+        "ssh": {
+          "status": "unsupported",
+          "detail": "Host binary paths are operator-managed; no container image pinning.",
+          "evidence": [
+            {
+              "path": "apps/controller/src/drivers/compute/ssh/index.ts",
+              "start": 42,
+              "end": 47
+            },
+            {
+              "path": "docs/reference/drivers/ssh-compute.md",
+              "start": 218,
+              "end": 219
+            }
+          ],
+          "tests": [],
+          "testExecution": "not run in this audit",
+          "liveProof": "not run in this audit"
+        }
+      }
+    }
+  ],
+  "existingIntegrationSuites": [
+    {
+      "driver": "docker",
+      "path": "tests/integration/docker-compute-real.test.mjs",
+      "start": 890,
+      "end": 908,
+      "description": "Credentialed Compose runtime and model-turn test, gated by engine/settings; not run by this audit."
+    },
+    {
+      "driver": "kubernetes",
+      "path": "tests/integration/kubernetes-compute-real.test.mjs",
+      "start": 516,
+      "end": 520,
+      "description": "Disposable real-cluster fixture lifecycle/isolation suite; fixture proof is distinct from real model execution; not run by this audit."
+    },
+    {
+      "driver": "kubernetes",
+      "path": "tests/integration/kubernetes-compute-real.test.mjs",
+      "start": 1469,
+      "end": 1482,
+      "description": "PostgreSQL API/worker with real cluster fixtures; not run by this audit."
+    },
+    {
+      "driver": "ssh",
+      "path": "tests/integration/ssh-compute-real.test.mjs",
+      "start": 92,
+      "end": 113,
+      "description": "Explicit host/systemd/runtime prerequisites; tests real SSH lifecycle; not run by this audit."
+    }
+  ],
+  "reviewedAt": "2026-09-16",
+  "drivers": [
+    {
+      "id": "docker",
+      "name": "Docker / Podman",
+      "scope": "Bundled development containers",
+      "implementation": "docker-local",
+      "evidence": [
+        {
+          "path": "apps/controller/src/drivers/compute/docker/index.ts",
+          "start": 94,
+          "end": 95
+        },
+        {
+          "path": "apps/controller/src/composition/development-postgres.ts",
+          "start": 54,
+          "end": 58
+        }
+      ]
+    },
+    {
+      "id": "kubernetes",
+      "name": "Kubernetes",
+      "scope": "Bundled Kubernetes workloads; development and production via trusted Installation YAML",
+      "implementation": "occ/kubernetes",
+      "evidence": [
+        {
+          "path": "apps/controller/src/composition/installation-config.ts",
+          "start": 573,
+          "end": 578
+        },
+        {
+          "path": "apps/controller/src/composition/installation-config.ts",
+          "start": 663,
+          "end": 672
+        },
+        {
+          "path": "apps/controller/src/composition/installation-config.ts",
+          "start": 416,
+          "end": 441
+        },
+        {
+          "path": "apps/controller/src/composition/installation-config.ts",
+          "start": 573,
+          "end": 578
+        }
+      ]
+    },
+    {
+      "id": "ssh",
+      "name": "SSH",
+      "scope": "Bundled Linux/systemd hosts; development and production via trusted Installation YAML",
+      "implementation": "occ/ssh",
+      "evidence": [
+        {
+          "path": "apps/controller/src/composition/installation-config.ts",
+          "start": 654,
+          "end": 662
+        },
+        {
+          "path": "apps/controller/src/drivers/compute/ssh/index.ts",
+          "start": 263,
+          "end": 270
+        },
+        {
+          "path": "apps/controller/src/composition/installation-config.ts",
+          "start": 416,
+          "end": 441
+        },
+        {
+          "path": "apps/controller/src/composition/installation-config.ts",
+          "start": 573,
+          "end": 578
+        }
+      ]
+    }
+  ]
+}

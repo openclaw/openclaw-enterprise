@@ -3,6 +3,7 @@ import GithubSlugger from "github-slugger";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createMarkdownRenderer, renderMdxish } from "./vendor/mdx-ish.mjs";
+import { renderComputeMatrixBlocks } from "./compute-matrix.mjs";
 import {
   parseDocsDocument,
   parseFrontmatter,
@@ -161,7 +162,8 @@ for (const page of pages.values()) {
     resolveLink(page, href);
     linkCount++;
   }
-  page.html = renderMdxish(page.text, md, { sourceFile: page.file, root: docs }).replace(
+  const text = renderComputeMatrixBlocks(page.text, { sourceFile: page.file, root: docs });
+  page.html = renderMdxish(text, md, { sourceFile: page.file, root: docs }).replace(
     /<(?:a|img|source|span)\b[^>]*>/g,
     (tag) =>
       tag.replace(
@@ -220,6 +222,10 @@ fs.writeFileSync(
   carapaceCss + "\n" + fs.readFileSync(path.join(assets, "site.css"), "utf8"),
 );
 fs.copyFileSync(path.join(assets, "site.mjs"), path.join(output, "assets/site.mjs"));
+fs.copyFileSync(
+  path.join(assets, "compute-matrix-browser.mjs"),
+  path.join(output, "assets/compute-matrix-browser.mjs"),
+);
 const mermaid = path.dirname(fileURLToPath(import.meta.resolve("mermaid")));
 fs.cpSync(mermaid, path.join(output, "assets/mermaid"), {
   recursive: true,

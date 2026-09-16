@@ -1,3 +1,5 @@
+import "./compute-matrix-browser.mjs";
+
 const menu = document.querySelector("#menu");
 menu.addEventListener("click", () => {
   const open = document.querySelector("#sidebar").classList.toggle("open");

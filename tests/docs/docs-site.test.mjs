@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { renderMatrixMarkdown } from "../../scripts/generate-compute-matrix.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 
@@ -170,4 +171,125 @@ test("docs validation checks Markdown links in deploy example YAML comments", as
   assert.notEqual(result.status, 0, "Build accepted a missing YAML-comment link heading");
   assert.match(result.stderr + result.stdout, /deploy\/examples\/production\/installation\.yaml/);
   assert.match(result.stderr + result.stdout, /missing heading/);
+});
+
+function matrixFixtureData() {
+  return {
+    baseline: "23d490b93d59dc810f28430f31576209200ba9ba",
+    reviewedAt: "2026-09-16",
+    drivers: [
+      { id: "docker", name: "Docker", scope: "development" },
+      { id: "kubernetes", name: "Kubernetes", scope: "production" },
+    ],
+    rows: [
+      {
+        id: "namespace-lifecycle",
+        category: "Lifecycle",
+        name: "Namespace lifecycle",
+        requirement: "Create and remove driver-owned workload namespaces.",
+        requirementEvidence: [{ path: "docs/reference/drivers/compute.md", start: 10, end: 12 }],
+        cells: {
+          docker: {
+            status: "supported",
+            detail: "Creates one Docker network per Namespace.",
+            evidence: [{ path: "docs/reference/drivers/docker-compute.md", start: 20, end: 22 }],
+            tests: [{ path: "tests/integration/docker-compute-real.test.mjs", start: 30, end: 32 }],
+          },
+          kubernetes: {
+            status: "partial",
+            detail: "Covers Namespace setup, with live proof tracked separately.",
+            evidence: [
+              { path: "docs/reference/drivers/kubernetes-compute.md", start: 40, end: 42 },
+            ],
+            tests: [],
+          },
+        },
+      },
+      {
+        id: "branch-ssh",
+        category: "Ingress",
+        name: "Branch SSH",
+        requirement: "Expose branch-scoped SSH only when a driver supports it.",
+        requirementDetail: "Branch-only SSH is distinct from general agent ingress.",
+        cells: {
+          docker: {
+            status: "unsupported",
+            detail: "No Docker branch SSH path is documented.",
+            evidence: [],
+            tests: [],
+          },
+          kubernetes: {
+            status: "unknown",
+            detail: "No source or test evidence was found.",
+            evidence: [],
+            tests: [],
+          },
+        },
+      },
+    ],
+  };
+}
+
+test("docs build renders a ComputeDriver matrix block and rejects stale fallback", async (t) => {
+  const fixture = await mkdtemp(join(tmpdir(), "enterprise-docs-compute-matrix-"));
+  t.after(() => rm(fixture, { recursive: true, force: true }));
+  await mkdir(join(fixture, "docs/assets"), { recursive: true });
+  await copyFile(
+    join(root, "docs/assets/lobster-mech-transparent.png"),
+    join(fixture, "docs/assets/lobster-mech-transparent.png"),
+  );
+  await writeFile(
+    join(fixture, "docs/docs.json"),
+    JSON.stringify({
+      name: "OpenClaw Enterprise",
+      navigation: {
+        languages: [
+          {
+            language: "en",
+            tabs: [{ tab: "Documentation", groups: [{ group: "Start", pages: ["README"] }] }],
+          },
+        ],
+      },
+    }),
+  );
+  const matrix = matrixFixtureData();
+  await writeFile(join(fixture, "docs/assets/compute-driver-matrix.json"), JSON.stringify(matrix));
+  await writeFile(
+    join(fixture, "docs/README.md"),
+    ["# Matrix", "", renderMatrixMarkdown(matrix), ""].join("\n"),
+  );
+
+  const build = spawnSync(process.execPath, [join(root, "scripts/docs-site/build.mjs")], {
+    cwd: fixture,
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+  assert.equal(build.status, 0, build.stderr || build.stdout);
+  const html = await readFile(join(fixture, "dist/docs/index.html"), "utf8");
+  assert.match(html, /data-compute-matrix/);
+  assert.match(html, /Requirement source/);
+  assert.match(html, /Tests \(not run\)/);
+  assert.match(html, /Live proof:<\/span> unknown\/not run/);
+  assert.doesNotMatch(html, /Generated from docs\/assets\/compute-driver-matrix\.json/);
+
+  await writeFile(
+    join(fixture, "docs/README.md"),
+    [
+      "# Matrix",
+      "",
+      renderMatrixMarkdown(matrix).replace("Namespace lifecycle", "Stale row"),
+      "",
+    ].join("\n"),
+  );
+  const stale = spawnSync(
+    process.execPath,
+    [join(root, "scripts/docs-site/build.mjs"), "--check"],
+    {
+      cwd: fixture,
+      encoding: "utf8",
+      timeout: 30_000,
+    },
+  );
+  assert.notEqual(stale.status, 0, "Build accepted a stale ComputeDriver matrix fallback");
+  assert.match(stale.stderr + stale.stdout, /compute-matrix fallback is stale/);
 });
