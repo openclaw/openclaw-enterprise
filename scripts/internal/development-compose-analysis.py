@@ -55,10 +55,10 @@ def controller_url(controller):
     controller_publications = []
     for port in controller.get("ports", []):
         host, published, target, protocol = publication(port)
-        if not published:
-            continue
         if host not in ("127.0.0.1", "::1"):
             raise SystemExit("Compose controller port must publish only on loopback.")
+        if not published or published == "0":
+            raise SystemExit("Compose controller port must select an explicit host port.")
         if target == "3000" and protocol == "tcp":
             controller_publications.append((host, published))
     if not controller_publications:
@@ -72,10 +72,10 @@ def controller_url(controller):
 def reject_public_database_ports(postgres):
     for port in postgres.get("ports", []):
         host, published, _target, _protocol = publication(port)
-        if not published:
-            continue
         if host not in ("127.0.0.1", "::1"):
             raise SystemExit("Compose PostgreSQL port must publish only on loopback.")
+        if not published or published == "0":
+            raise SystemExit("Compose PostgreSQL port must select an explicit host port.")
 
 
 reject_public_database_ports(service("postgres"))

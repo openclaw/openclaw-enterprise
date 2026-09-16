@@ -503,6 +503,7 @@ if (command === "docker" && (args[0] === "version" || (args[0] === "compose" && 
 if (command === "k3d" && args[0] === "cluster" && args[1] === "list") {
   process.stdout.write(JSON.stringify([{ name: "occ-dev-owned" }, { name: "occ-dev-unrelated" }]));
 }
+if (command === "docker" && args[0] === "info") process.stdout.write("/var/lib/docker\\n");
 if (command === "docker" && args.includes("inspect")) process.exit(1);
 if (command === "docker" && args.includes("up")) process.exit(77);
 `,
@@ -586,44 +587,57 @@ test("dev-down requires Kubernetes state and cleans only its recorded resources"
   assert.deepEqual(await readJsonLines(fixture.env.SAFETY_LOG), commands);
 });
 
-test("Kubernetes dev-up rejects public controller and database ports before startup using real Compose", async (t) => {
+for (const driver of ["docker", "kubernetes"]) {
   for (const [service, port, label] of [
     ["controller", 3000, "controller"],
     ["postgres", 5432, "PostgreSQL"],
   ]) {
-    const fixture = await createFixture(t);
-    await prepareSafetyCommands(fixture);
-    const stateDirectory = join(fixture.directory, "new-state");
-    const override = join(fixture.directory, "public.yaml");
-    await writeFile(
-      override,
-      `services:\n  ${service}:\n    ports:\n      - "0.0.0.0:39000:${port}"\n`,
-    );
-    const result = runDevUp(["--", ...composeOptions(fixture, override)], {
-      ...fixture.env,
-      OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
-      OCC_DEVELOPMENT_STATE_DIRECTORY: stateDirectory,
-      OCC_DEVELOPMENT_KUBERNETES_CLUSTER: "occ-dev-new",
-    });
-    assert.notEqual(result.status, 0);
-    assert.match(
-      result.stderr,
-      new RegExp(`configuration failed: Compose ${label} port must publish only on loopback`),
-    );
-    await assert.rejects(stat(stateDirectory), { code: "ENOENT" });
-    const commands = await readJsonLines(fixture.env.SAFETY_LOG);
-    assert.equal(
-      commands.some(
-        (entry) =>
-          entry.args.includes("up") ||
-          entry.args.includes("down") ||
-          entry.args.includes("create") ||
-          entry.args.includes("delete"),
-      ),
-      false,
-    );
-    assert.ok(
-      commands.some((entry) => entry.command === "docker" && entry.args.includes("config")),
-    );
+    for (const [mapping, publication, error] of [
+      ["public", `"0.0.0.0:39000:${port}"`, "must publish only on loopback"],
+      ["target-only", `"${port}"`, "must publish only on loopback"],
+      [
+        "loopback-dynamic",
+        `{target: ${port}, host_ip: "127.0.0.1"}`,
+        "must select an explicit host port",
+      ],
+    ]) {
+      test(`${driver} dev-up rejects ${mapping} ${service} ports rendered by real Compose before startup`, async (t) => {
+        const fixture = await createFixture(t);
+        await prepareSafetyCommands(fixture);
+        const stateDirectory = join(fixture.directory, "new-state");
+        const override = join(fixture.directory, "unsafe-port.yaml");
+        await writeFile(override, `services:\n  ${service}:\n    ports:\n      - ${publication}\n`);
+        const result = runDevUp(
+          [
+            "--key-output",
+            join(fixture.directory, "key.json"),
+            "--",
+            ...composeOptions(fixture, override),
+          ],
+          {
+            ...fixture.env,
+            OCC_DEVELOPMENT_COMPUTE_DRIVER: driver,
+            OCC_DEVELOPMENT_STATE_DIRECTORY: stateDirectory,
+            OCC_DEVELOPMENT_KUBERNETES_CLUSTER: "occ-dev-new",
+          },
+        );
+        assert.notEqual(result.status, 0);
+        assert.match(
+          result.stderr,
+          new RegExp(`configuration failed: Compose ${label} port ${error}`),
+        );
+        await assert.rejects(stat(stateDirectory), { code: "ENOENT" });
+        const commands = await readJsonLines(fixture.env.SAFETY_LOG);
+        assert.equal(
+          commands.some((entry) =>
+            entry.args.some((arg) => ["up", "down", "create", "delete"].includes(arg)),
+          ),
+          false,
+        );
+        assert.ok(
+          commands.some((entry) => entry.command === "docker" && entry.args.includes("config")),
+        );
+      });
+    }
   }
-});
+}

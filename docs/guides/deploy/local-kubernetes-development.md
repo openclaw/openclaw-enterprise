@@ -7,7 +7,7 @@ Docker and Kubernetes development profiles.
 
 ## Start the profile
 
-You need Docker Engine with Docker Compose, or Podman with `podman-compose`,
+You need Docker Engine with Docker Compose, or Podman with `podman-compose` and yq v4,
 plus k3d, kubectl, Bash, `curl`, Python 3, and `realpath`. No Node.js process
 runs on the host: Compose runs PostgreSQL, migration, bootstrap, controller,
 and worker processes.
