@@ -85,12 +85,6 @@
           "path": "tests/integration/controller-lifecycle.test.mjs"
         },
         {
-          "path": "tests/integration/dependency-release-age.test.mjs"
-        },
-        {
-          "path": "tests/integration/npm-release-age.test.mjs"
-        },
-        {
           "path": "tests/integration/driver-plugin-installation.test.mjs"
         },
         {

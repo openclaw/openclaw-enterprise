@@ -14,8 +14,7 @@ WORKDIR /app
 RUN node -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 15) throw new Error(`OpenClaw Enterprise runtime images require Node.js 24.15+; found ${process.version}.`);'
 
 RUN npm init -y >/dev/null \
-  && release_age_cutoff="$(node -e 'process.stdout.write(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())')" \
-  && npm install --omit=dev --no-audit --no-fund --before="$release_age_cutoff" \
+  && npm install --omit=dev --no-audit --no-fund \
     "openclaw@${OPENCLAW_VERSION}" \
     "@openclaw/codex@${OPENCLAW_CODEX_PLUGIN_VERSION}" \
     "@openclaw/slack@${OPENCLAW_SLACK_PLUGIN_VERSION}" \

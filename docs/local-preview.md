@@ -23,8 +23,6 @@ The preview serves the latest build; it does not watch source files.
 
 The `npm run` commands dispatch scripts without installing the controller
 workspace. `docs:install` uses the pinned pnpm version and frozen docs lockfile.
-The independent docs package enforces the repository's
-[seven-day dependency waiting period](../CONTRIBUTING.md#dependency-release-waiting-period).
 
 ## Build and check
 

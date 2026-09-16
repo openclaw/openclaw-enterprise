@@ -43,33 +43,12 @@ It uses Docker Compose and has different prerequisites from source-only checks.
 
 ### Dependency release waiting period
 
-Registry package versions must be at least seven days old. The root and
-independent docs package each configure pnpm's
-[`minimumReleaseAge: 10080`](https://pnpm.io/settings/dependency-resolution#minimumreleaseage)
-(minutes), strict rejection, and rejection when publication dates are missing.
-Use the pinned pnpm version: it checks direct and transitive dependencies during
-resolution and verifies registry entries in frozen lockfiles. Root CI installs
-and controller image builds read the root policy; `docs:install` selects the docs
-package's independent workspace configuration.
-
-The runtime and SSH test-host image builds use npm's
-[`--before`](https://docs.npmjs.com/cli/v11/using-npm/config#before) with a cutoff
-computed as seven days before the install starts. This filters registry releases
-for their direct and transitive dependencies without changing image package pins.
-Unlike pnpm's policy, npm's native cutoff accepts versions with missing publication
-dates. These image builds therefore require a registry that supplies complete
-publication metadata; they do not provide pnpm's fail-closed metadata check.
-
-An install can therefore reject a newly committed lockfile. Wait until the
-reported publication date plus seven days, or select a compatible mature version
-through the normal dependency review. If metadata is missing, restore complete
-registry metadata before retrying. Do not disable the policy or add broad
-exclusions to get an install through. There are no configured exceptions.
-
-The waiting period applies to registry publication dates, not local workspace
-packages or Git sources such as the docs renderer's pinned Carapace dependency.
-It does not replace dependency review or govern packages installed dynamically
-inside user-managed agents.
+The root and independent docs package require registry releases to be at least
+seven days old (`minimumReleaseAge: 10080` minutes). The pinned pnpm checks direct,
+transitive, and frozen-lockfile dependencies and rejects missing publication dates.
+If installation rejects a release, wait until it matures or select a compatible
+older version. This policy applies to pnpm registry installs; Git/local dependencies
+and separate npm-based image builds are outside its scope.
 
 ## Validate the change
 
