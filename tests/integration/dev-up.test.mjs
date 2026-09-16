@@ -607,13 +607,13 @@ for (const driver of ["docker", "kubernetes"]) {
         const stateDirectory = join(fixture.directory, "new-state");
         const override = join(fixture.directory, "unsafe-port.yaml");
         await writeFile(override, `services:\n  ${service}:\n    ports:\n      - ${publication}\n`);
+        // Kubernetes supplies its own base files and project; do not load the base twice.
+        const options =
+          driver === "kubernetes"
+            ? ["--env-file", fixture.emptyEnv, "--project-directory", ".", "-f", override]
+            : composeOptions(fixture, override);
         const result = runDevUp(
-          [
-            "--key-output",
-            join(fixture.directory, "key.json"),
-            "--",
-            ...composeOptions(fixture, override),
-          ],
+          ["--key-output", join(fixture.directory, "key.json"), "--", ...options],
           {
             ...fixture.env,
             OCC_DEVELOPMENT_COMPUTE_DRIVER: driver,
