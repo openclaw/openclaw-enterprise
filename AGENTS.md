@@ -130,6 +130,13 @@ Use the [documentation map](docs/README.md) and keep these ownership boundaries:
 - Top-level `specs/` records implementation proposals, milestones, and delivery
   history. Completed specifications do not override current feature reference.
 
+Keep `docs/design.md` and `docs/ARCHITECTURE.md` focused on system-level
+structure, ownership, trust boundaries, and major interactions. Update them only
+when a change alters that architectural understanding. Put feature details,
+configuration, edge cases, and delivery history in their owning reference, guide,
+flow, or specification. Add a concise link when needed; do not append an entry
+for every feature or PR.
+
 Document new components under `docs/` in the same change: purpose, setup,
 boundaries, verification, and troubleshooting. Update navigation and affected
 adjacent pages.
