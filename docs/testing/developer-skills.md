@@ -2,20 +2,31 @@
 
 Use the repository-local skills for the relevant development task:
 
-| Task                             | Skill                                                                                                                                                          |
-| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Develop a repository change      | [local-dev](../../.agents/skills/local-dev/SKILL.md) requires proportional verification and flow docs for non-trivial runtime changes.                         |
-| Write or audit tests             | [test-audit](../../.agents/skills/test-audit/SKILL.md) checks observable behavior, credible regressions, distinct coverage, and production seams.              |
-| Choose validation or diagnose CI | [enterprise-testing](../../.agents/skills/enterprise-testing/SKILL.md) routes to the existing testing procedures and exact run/job evidence.                   |
-| Explain a change with a diagram  | [mermaid-diagrams](../../.agents/skills/mermaid-diagrams/SKILL.md) provides a compact Mermaid template, semantic colors, and honest implementation boundaries. |
-| Clean the current diff           | [deslop](../../.agents/skills/deslop/SKILL.md) permits only behavior-neutral cleanup before independent review.                                                |
-| Run requested independent review | [autoreview](autoreview.md) owns the reviewer CLI, isolation, and result interpretation.                                                                       |
+| Task                             | Skill                                                                                                                                                              |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Develop a repository change      | [local-dev](../../.agents/skills/local-dev/SKILL.md) requires proportional verification and flow docs for non-trivial runtime changes.                             |
+| Write or review technical docs   | [technical-writing](../../.agents/skills/technical-writing/SKILL.md) covers source-backed prose, runnable instructions, page selection, and specification clarity. |
+| Write or audit tests             | [test-audit](../../.agents/skills/test-audit/SKILL.md) checks observable behavior, credible regressions, distinct coverage, and production seams.                  |
+| Choose validation or diagnose CI | [enterprise-testing](../../.agents/skills/enterprise-testing/SKILL.md) routes to the existing testing procedures and exact run/job evidence.                       |
+| Explain a change with a diagram  | [mermaid-diagrams](../../.agents/skills/mermaid-diagrams/SKILL.md) provides a compact Mermaid template, semantic colors, and honest implementation boundaries.     |
+| Clean the current diff           | [deslop](../../.agents/skills/deslop/SKILL.md) permits only behavior-neutral cleanup before independent review.                                                    |
+| Run requested independent review | [autoreview](autoreview.md) owns the reviewer CLI, isolation, and result interpretation.                                                                           |
 
 These skills are checked into `.agents/skills`; no global installation is needed.
 Testing setup and real-runtime requirements remain owned by the
 [testing guides](README.md). Each skill describes its scope and prerequisites.
 
 ## Provenance and updates
+
+`technical-writing` adapts Docy's `references/core/main.md` (document lifecycle
+and universal technical writing), `references/ref/developer-docs.md`,
+`references/ref/concise-instructions.md`, and `references/ref/spec.md`, inspected
+on 2026-09-16. It retains writing, source-evidence, example, review, and design
+clarity rules while leaving repository policy in `AGENTS.md`. It omits the Docy
+CLI, personal paths, unrelated coding rules, and framework-specific material.
+Update its skill and specification reference together; verify local links,
+frontmatter, documentation checks, and alignment with repository instructions.
+No global Docy installation is required.
 
 `local-dev` is maintained here. Its flow workflow, template, and standalone
 Python validator adapt Specy 2.0.0 (`SKILL.md`, `references/flow-doc/workflow.md`,

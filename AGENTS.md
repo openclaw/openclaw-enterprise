@@ -171,6 +171,10 @@ page.
 
 ## Documentation editing
 
+Use [technical-writing](.agents/skills/technical-writing/SKILL.md) when creating,
+editing, or reviewing documentation and specifications. It bundles the relevant
+writing guidance locally; no personal skill installation is required.
+
 - Give each fact one owning page: concepts define terms, references define
   behavior, guides give procedures, and flows explain implementation. Other pages
   link to that owner and state only the consequence relevant to their reader.

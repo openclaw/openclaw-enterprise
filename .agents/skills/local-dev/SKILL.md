@@ -1,7 +1,7 @@
 ---
 name: local-dev
 description: Develop OpenClaw Enterprise changes with proportional verification and source-backed flow documentation for non-trivial behavior.
-dependencies: [enterprise-testing, mermaid-diagrams]
+dependencies: [enterprise-testing, mermaid-diagrams, technical-writing]
 ---
 
 # Local development
@@ -25,7 +25,8 @@ this skill directory. No global skill installation is required.
    diagram semantics. For these flow docs, override its notation defaults: start
    the Mermaid block with `graph TD`, omit Mermaid YAML frontmatter, and retain
    this workflow's required sections so the bundled validator accepts it.
-4. Update affected current references, guides, and navigation. Preserve historical
+4. Use $technical-writing when creating, editing, or reviewing documentation.
+   Update affected current references, guides, and navigation. Preserve historical
    specs and user-owned Manual Notes. Do not create a second source of truth.
 5. Use $enterprise-testing to select proportional checks and satisfy repository
    integration requirements for new functionality. For instruction-only changes,
