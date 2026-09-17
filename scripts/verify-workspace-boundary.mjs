@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const activeApplications = ["controller"];
 const activePackages = ["utils", "contracts", "occ", "iam", "audit"];
-const activeGoPackages = ["cmd/occ", "internal/occcli", "internal/occclient"];
+const activeGoPackages = ["cmd/occ", "internal/occcli", "internal/occclient", "internal/occdev"];
 const activeSourceRoots = [
   ...activeApplications.map((name) => `apps/${name}/src`),
   ...activePackages.map((name) => `packages/${name}/src`),
