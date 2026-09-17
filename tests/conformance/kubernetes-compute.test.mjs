@@ -3767,6 +3767,7 @@ test("retiring a predecessor preserves both claims and final retirement deletes 
     gatewayService,
   );
   route.metadata.uid = "route-uid";
+  route.metadata.resourceVersion = "route-version-2";
   let observedRoute = route;
   const claims = [
     driver.gatewayPrivateStateClaim(agentId, ownership, namespace),
@@ -3887,7 +3888,7 @@ test("retiring a predecessor preserves both claims and final retirement deletes 
           kind: "HTTPRoute",
           metadata: { name: gatewayName, namespace },
         },
-        body: { preconditions: { uid: "route-uid" } },
+        body: { preconditions: { uid: "route-uid", resourceVersion: "route-version-2" } },
       },
     ],
     [
@@ -3926,7 +3927,7 @@ test("retiring a predecessor preserves both claims and final retirement deletes 
           kind: "HTTPRoute",
           metadata: { name: gatewayName, namespace },
         },
-        body: { preconditions: { uid: "route-uid" } },
+        body: { preconditions: { uid: "route-uid", resourceVersion: "route-version-2" } },
       },
     ],
     [

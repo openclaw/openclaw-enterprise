@@ -65,6 +65,6 @@ export function bindPlatformUnitOfWork(
       "createRevision",
     ]),
     audit: bindRepository(repositories.audit, lifetime, ["append", "list"]),
-    operations: bindRepository(repositories.operations, lifetime, ["append", "list"]),
+    operations: bindRepository(repositories.operations, lifetime, ["append", "list", "findWork"]),
   });
 }

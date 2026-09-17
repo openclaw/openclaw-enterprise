@@ -369,11 +369,14 @@ test(
     assert.equal((await fixture.work(second)).attempt_count, 1);
     assert.equal(secondActivationAttempts, 2);
     assert.equal(await fixture.activeRevision(owner), second.id);
+    // Recovery reobserves the published candidate before retrying activation so
+    // a plugin-install receipt cannot be skipped after the active pointer moves.
     assert.deepEqual(effects, [
       { action: "prepare", revisionId: first.id, activeRevisionId: null },
       { action: "activate", revisionId: first.id, activeRevisionId: first.id },
       { action: "prepare", revisionId: second.id, activeRevisionId: first.id },
       { action: "activate", revisionId: second.id, activeRevisionId: second.id },
+      { action: "prepare", revisionId: second.id, activeRevisionId: second.id },
       { action: "activate", revisionId: second.id, activeRevisionId: second.id },
       { action: "retire", revisionId: first.id, activeRevisionId: second.id },
     ]);
@@ -444,7 +447,10 @@ test(
 
     await fixture.observerPool.query(
       `UPDATE occ.controller_work
-       SET state = 'succeeded', completed_at = clock_timestamp(), updated_at = clock_timestamp()
+       SET state = 'succeeded',
+           completed_at = clock_timestamp(),
+           reason_code = 'REVISION_MAINTENANCE_SUPERSEDED',
+           updated_at = clock_timestamp()
        WHERE namespace_id = $1 AND state = 'queued'
          AND idempotency_key LIKE $2`,
       [fixture.namespace.id, `agent_revision:${candidate.id}:maintenance:%`],

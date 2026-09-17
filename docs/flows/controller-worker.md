@@ -160,6 +160,13 @@ immutable snapshot. The worker validates the returned observation's owner and
 shape before treating it as ready. A pending observation defers convergence;
 an invalid observation fails permanently.
 
+For Kubernetes plugin startup, Compute may also return a bounded receipt ID and
+an attributed plugin failure. The worker accepts only the failure code and the
+admitted plugin ID that Compute validated against the immutable revision and
+exact workload. A plugin install failure or native authentication requirement
+becomes a permanent revision result; transport uncertainty, malformed evidence,
+or unrelated startup failure remains unattributed.
+
 Agent-stop dispatch captures the Agent's revisions owned by the current Compute
 and validates their exact owner. It calls `stopRevision` for the active revision
 first, then the remaining captured revisions, including terminal candidates and
@@ -219,7 +226,9 @@ the predecessor. `completeActivatedRevision()` then rechecks the exact active
 revision and claim, appends activation evidence, and completes work in a second
 transaction. This deliberately does not claim that infrastructure effects and
 database state are one atomic transaction. Interrupted finalization is retried;
-the already-active branch finishes activation and retirement safely.
+the already-active branch re-observes the candidate before finishing activation
+and retirement safely. That re-observation prevents a plugin failure retained by
+Compute from being mistaken for success after a claim loss.
 
 Stop finalization rechecks the live claim, Agent owner, and stopped desired state.
 After all captured cleanup succeeds, it clears `activeRevisionId` only when
@@ -241,6 +250,14 @@ the convergence deadline produce terminal failure instead. See the
 [controller reference](../reference/controller.md) for the supported outcomes
 and the [settings reference](../reference/settings/operations.md#controller-worker-environment)
 for their timing controls.
+
+Terminal work rows store one fixed reason code, optional allowlisted metadata,
+and any Compute receipt ID under the live claim. Plugin failure metadata is
+bounded to `{pluginId}` and is persisted before receipt acknowledgment. Stale
+claims cannot write or acknowledge terminal evidence. After a terminal row
+commits, the worker's recovery loop asks Compute to acknowledge the exact
+receipt identity and then marks the row acknowledged; failed cleanup leaves the
+same terminal row pending for the next worker loop.
 
 If Compute declares a maintenance interval, successful activation schedules
 another exact-revision observation. An incomplete active-runtime observation or

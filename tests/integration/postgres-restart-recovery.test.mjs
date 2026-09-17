@@ -238,6 +238,122 @@ test(
 );
 
 test(
+  "terminal revision work stores safe outcome data and acknowledges exact original receipts",
+  requiresPostgres,
+  async (context) => {
+    const { pool, queue } = await dependencies(context);
+    const { namespaceId, agents } = await createResources(pool);
+    const revisionId = await createQueueRevision(pool, namespaceId, agents[0]);
+    const idempotencyKey = `agent_revision:${revisionId}:reconcile`;
+    await queue.enqueue(revisionWork(namespaceId, idempotencyKey, agents[0], revisionId));
+
+    const claim = await claimExpected(queue, idempotencyKey);
+    await queue.fail(claim, {
+      code: "PLUGIN_INSTALL_FAILED",
+      data: { pluginId: "codex-plugin:calendar@openai-curated-remote" },
+      receiptId: "pod/uid/container/receipt",
+    });
+
+    const terminal = await queue.findWork(idempotencyKey);
+    assert.equal(terminal.state, "failed_permanent");
+    assert.equal(terminal.reasonCode, "PLUGIN_INSTALL_FAILED");
+    assert.deepEqual(terminal.errorData, {
+      pluginId: "codex-plugin:calendar@openai-curated-remote",
+    });
+    await assert.rejects(
+      pool.query(
+        `UPDATE occ.controller_work
+         SET error_data = '{}'::jsonb
+         WHERE idempotency_key = $1`,
+        [idempotencyKey],
+      ),
+      { code: "23514" },
+    );
+    assert.equal(terminal.receiptId, "pod/uid/container/receipt");
+    assert.equal(terminal.receiptAcknowledgedAt, undefined);
+
+    const pending = await queue.pendingReceiptAcknowledgements();
+    assert.deepEqual(
+      pending.map(({ idempotencyKey: key, reasonCode, receiptId }) => ({
+        key,
+        reasonCode,
+        receiptId,
+      })),
+      [
+        {
+          key: idempotencyKey,
+          reasonCode: "PLUGIN_INSTALL_FAILED",
+          receiptId: "pod/uid/container/receipt",
+        },
+      ],
+    );
+
+    const acknowledged = await queue.acknowledgeReceipt({
+      idempotencyKey,
+      state: "failed_permanent",
+      reasonCode: "PLUGIN_INSTALL_FAILED",
+      receiptId: "pod/uid/container/receipt",
+    });
+    assert.ok(acknowledged.receiptAcknowledgedAt instanceof Date);
+    const acknowledgedAgain = await queue.acknowledgeReceipt({
+      idempotencyKey,
+      state: "failed_permanent",
+      reasonCode: "PLUGIN_INSTALL_FAILED",
+      receiptId: "pod/uid/container/receipt",
+    });
+    assert.deepEqual(acknowledgedAgain.receiptAcknowledgedAt, acknowledged.receiptAcknowledgedAt);
+    assert.deepEqual(await queue.pendingReceiptAcknowledgements(), []);
+  },
+);
+
+test(
+  "terminal metadata is allowlisted and retry exhaustion preserves a safe reason",
+  requiresPostgres,
+  async (context) => {
+    const { pool, queue } = await dependencies(context, { maxAttempts: 1 });
+    const { namespaceId, agents } = await createResources(pool, 2);
+    const invalidRevisionId = await createQueueRevision(pool, namespaceId, agents[0]);
+    const exhaustedRevisionId = await createQueueRevision(pool, namespaceId, agents[1]);
+    const invalidKey = `agent_revision:${invalidRevisionId}:reconcile`;
+    const exhaustedKey = `agent_revision:${exhaustedRevisionId}:reconcile`;
+    await queue.enqueue(revisionWork(namespaceId, invalidKey, agents[0], invalidRevisionId));
+    await queue.enqueue(revisionWork(namespaceId, exhaustedKey, agents[1], exhaustedRevisionId));
+
+    const invalidClaim = await claimExpected(queue, invalidKey);
+    await assert.rejects(
+      queue.fail(invalidClaim, { code: "DEPENDENCY_UNAVAILABLE", data: { raw: "unsafe" } }),
+      { name: "ScopeViolationError" },
+    );
+    await assert.rejects(
+      queue.fail(invalidClaim, {
+        code: "PLUGIN_INSTALL_FAILED",
+        data: { pluginId: "codex-plugin:calendar@openai-curated-remote", raw: "unsafe" },
+      }),
+      { name: "ScopeViolationError" },
+    );
+    const stillClaimed = await queue.findWork(invalidKey);
+    assert.equal(stillClaimed.state, "claimed");
+    await queue.fail(invalidClaim, {
+      code: "CONVERGENCE_DEADLINE_EXCEEDED",
+      data: { timeoutMs: 900_000 },
+    });
+    const deadline = await queue.findWork(invalidKey);
+    assert.equal(deadline.state, "failed_permanent");
+    assert.deepEqual(deadline.errorData, { timeoutMs: 900_000 });
+
+    const exhaustedClaim = await claimExpected(queue, exhaustedKey);
+    await queue.retry(exhaustedClaim, {
+      code: "DEPENDENCY_UNAVAILABLE",
+      receiptId: "retry-exhausted-receipt",
+    });
+    const exhausted = await queue.findWork(exhaustedKey);
+    assert.equal(exhausted.state, "failed_permanent");
+    assert.equal(exhausted.reasonCode, "DEPENDENCY_UNAVAILABLE");
+    assert.equal(exhausted.receiptId, "retry-exhausted-receipt");
+  },
+);
+
+test(
   "Namespace convergence and admitted revision work share one durable queue with exact resource ownership",
   requiresPostgres,
   async (context) => {

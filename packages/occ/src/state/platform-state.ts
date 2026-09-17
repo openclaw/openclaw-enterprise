@@ -31,6 +31,7 @@ import {
   ResourceConflictError,
   ScopeViolationError,
 } from "../errors.ts";
+import type { ControllerWork } from "./controller-work.ts";
 
 export interface InstallationReadRepository {
   findInstallation(installationId: string): Promise<Readonly<Installation> | undefined>;
@@ -436,6 +437,7 @@ export type PlatformOperation =
 
 export interface PlatformOperationReadRepository {
   list(): Promise<readonly Readonly<PlatformOperation>[]>;
+  findWork(idempotencyKey: string): Promise<Readonly<ControllerWork> | undefined>;
 }
 
 export interface PlatformOperationRepository extends PlatformOperationReadRepository {
@@ -501,6 +503,14 @@ interface PlatformSnapshot {
 
 function agentKey(namespaceId: string, agentId: string): string {
   return `${namespaceId}\u0000${agentId}`;
+}
+
+function operationIdempotencyKey(operation: Readonly<PlatformOperation>): string {
+  if (operation.kind === "agent")
+    return `agent:${operation.resourceId}:${operation.action}:${operation.target}:${operation.operationId}`;
+  return `${operation.kind}:${operation.resourceId}:${operation.action}${
+    operation.kind === "namespace" ? `:${operation.target}` : ""
+  }`;
 }
 
 function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
@@ -1411,6 +1421,42 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
       },
       list: async () =>
         Object.freeze(snapshot.operations.map((operation) => immutableCopy(operation))),
+      findWork: async (idempotencyKey) => {
+        const operation = snapshot.operations.find(
+          (candidate) => operationIdempotencyKey(candidate) === idempotencyKey,
+        );
+        if (operation === undefined) return undefined;
+        const now = new Date(0);
+        const revisionOwner =
+          operation.kind === "agent_revision"
+            ? Array.from(snapshot.revisions.values())
+                .flat()
+                .find(
+                  (revision) =>
+                    revision.namespaceId === operation.namespaceId &&
+                    revision.id === operation.resourceId,
+                )?.agentId
+            : undefined;
+        return immutableCopy({
+          idempotencyKey,
+          namespaceId: operation.namespaceId,
+          ...(operation.kind === "agent" ? { agentId: operation.resourceId } : {}),
+          ...(operation.kind === "agent_revision"
+            ? {
+                ...(revisionOwner === undefined ? {} : { agentId: revisionOwner }),
+                revisionId: operation.resourceId,
+              }
+            : {}),
+          actorId: operation.actorId,
+          ...(operation.kind === "namespace" ? { namespaceTarget: operation.target } : {}),
+          ...(operation.kind === "agent" ? { agentTarget: operation.target } : {}),
+          state: "queued",
+          availableAt: now,
+          attemptCount: 0,
+          createdAt: now,
+          updatedAt: now,
+        });
+      },
     },
   };
 }

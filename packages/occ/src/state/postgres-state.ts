@@ -878,6 +878,9 @@ export class PostgresPlatformState implements PlatformStateStore {
           "retry",
           "fail",
           "recoverStale",
+          "findWork",
+          "pendingReceiptAcknowledgements",
+          "acknowledgeReceipt",
         ]),
       ),
     );
@@ -2107,6 +2110,10 @@ export class PostgresPlatformState implements PlatformStateStore {
               return immutableCopy({ ...base, kind: "agent_revision" });
             }),
           );
+        },
+        findWork: async (idempotencyKey) => {
+          await this.requireInitialized(context);
+          return queue.findWork(idempotencyKey);
         },
       },
     };

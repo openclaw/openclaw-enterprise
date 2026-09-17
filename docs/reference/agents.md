@@ -47,6 +47,33 @@ exact Configuration. A selected harness credential source requires its own exact
 [harness authentication](#harness-authentication). [Authentication](authentication.md) establishes the
 caller; [authorization](authorization.md) defines its grants.
 
+## Deployment status
+
+The `deploymentId` for status polling is the admitted AgentRevision ID returned
+by `POST /namespaces/:namespaceId/agents/:agentId/deploy`. The deploy response
+being `202` means OCC admitted immutable revision state and queued work; it does
+not mean the workload is ready.
+
+Poll the original deployment work with:
+
+```text
+GET /namespaces/:namespaceId/agents/:agentId/deployments/:deploymentId
+```
+
+The caller needs read access to that exact AgentRevision. Responses include the
+original `deploymentId`, `namespaceId`, `agentId`, a `status`, and nullable
+`error`. `queued` means no live worker claim currently owns the original work,
+including after a claim lease expires. `running` means a worker claim is still
+live. `succeeded` means the original deployment work completed activation or
+was already active; it is historical completion evidence, not a live health
+probe. `failed` means the original work reached a terminal failed outcome or
+completed without activating the requested revision.
+
+Errors use fixed platform codes, messages, and allowlisted `error.data`. Plugin
+failures add only the admitted plugin ID; see [Agent plugins](agent-plugins.md#response-fields).
+A later deployment admits a new revision with its own deployment status and does
+not rewrite the original result.
+
 ## Provider association
 
 An Agent can reference one Installation-configured [Provider](providers.md)

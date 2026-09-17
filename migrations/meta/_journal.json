@@ -134,6 +134,13 @@
       "when": 1787000000018,
       "tag": "0018_runtime_harness_auth",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1787000000019,
+      "tag": "0019_controller_work_terminal_outcome",
+      "breakpoints": true
     }
   ]
 }

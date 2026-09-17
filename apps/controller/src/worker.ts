@@ -9,6 +9,7 @@ import type {
   AuthorizationDecision,
   AuthorizationRequest,
   ComputeDriver,
+  ComputeReadiness,
   ComputeRevisionContext,
   ConfigurationDriver,
   Driver,
@@ -75,6 +76,8 @@ interface DispatchResult {
 }
 
 interface RevisionDispatchResult extends DispatchResult {
+  readonly receiptId?: string;
+  readonly data?: Readonly<Record<string, unknown>>;
   readonly revision?: Readonly<AgentRevision>;
   readonly previous?: Readonly<AgentRevision>;
   readonly supersededBy?: Readonly<AgentRevision>;
@@ -213,12 +216,48 @@ function validRevisionObservation(value: unknown, revision: Readonly<AgentRevisi
     return false;
   }
   const observation = value as Record<string, unknown>;
+  if (
+    observation.receiptId !== undefined &&
+    (typeof observation.receiptId !== "string" ||
+      observation.receiptId.trim().length === 0 ||
+      observation.receiptId.length > 512)
+  )
+    return false;
+  if (observation.failure !== undefined) {
+    const failure = observation.failure;
+    if (typeof failure !== "object" || failure === null || Array.isArray(failure)) return false;
+    const diagnostic = failure as Record<string, unknown>;
+    if (
+      Object.keys(diagnostic).length !== 2 ||
+      (diagnostic.code !== "PLUGIN_INSTALL_FAILED" && diagnostic.code !== "PLUGIN_AUTH_REQUIRED") ||
+      typeof diagnostic.pluginId !== "string" ||
+      revision.plugins === undefined ||
+      !Object.hasOwn(revision.plugins.plugins, diagnostic.pluginId) ||
+      observation.receiptId === undefined ||
+      observation.ready !== false
+    )
+      return false;
+  }
   return (
     observation.namespaceId === revision.namespaceId &&
     observation.agentId === revision.agentId &&
     observation.revisionId === revision.id &&
     typeof observation.ready === "boolean"
   );
+}
+
+function pluginFailure(
+  observation: ComputeReadiness,
+  revision: Readonly<AgentRevision>,
+): RevisionDispatchResult | undefined {
+  if (observation.failure === undefined) return undefined;
+  return {
+    outcome: "permanent",
+    code: observation.failure.code,
+    data: { pluginId: observation.failure.pluginId },
+    receiptId: observation.receiptId!,
+    revision,
+  };
 }
 
 function revisionSecretBindings(
@@ -408,6 +447,7 @@ export class ControllerWorker {
     while (!this.stopping) {
       try {
         await this.queue.recoverStale();
+        await this.acknowledgeCommittedReceipts();
         const claim = await this.queue.claim();
         if (claim !== undefined) {
           await this.process(claim);
@@ -427,6 +467,46 @@ export class ControllerWorker {
         if (!this.stopping) {
           throw error;
         }
+      }
+    }
+  }
+
+  private async acknowledgeCommittedReceipts(): Promise<void> {
+    const acknowledge = this.compute.acknowledgeRevisionReceipt;
+    if (acknowledge === undefined) return;
+    for (const work of await this.queue.pendingReceiptAcknowledgements({ limit: 20 })) {
+      try {
+        // A terminal row is immutable. Its exact receipt identity authorizes cleanup
+        // after the committing worker has cleared its claim, including crash recovery.
+        const revision = await this.state.read((view) =>
+          view.revisions.findRevision(work.namespaceId, work.agentId!, work.revisionId!),
+        );
+        if (
+          revision === undefined ||
+          revision.compute.id !== this.compute.id ||
+          revision.compute.implementation !== this.compute.implementation
+        )
+          continue;
+        await withComputeAbortSignal(this.abort.signal, () =>
+          acknowledge.call(this.compute, revision, {
+            receiptId: work.receiptId,
+            outcome:
+              work.state === "succeeded" &&
+              ["REVISION_ACTIVATED", "REVISION_ALREADY_ACTIVE"].includes(work.reasonCode)
+                ? "succeeded"
+                : "failed",
+          }),
+        );
+        await this.queue.acknowledgeReceipt({
+          idempotencyKey: work.idempotencyKey,
+          state: work.state,
+          reasonCode: work.reasonCode,
+          receiptId: work.receiptId,
+        });
+      } catch {
+        // Keep the pending receipt for the existing recovery loop; do not turn
+        // cleanup uncertainty into another deployment outcome or leak native text.
+        this.emit({ event: "worker.receipt_cleanup_pending", code: "DEPENDENCY_UNAVAILABLE" });
       }
     }
   }
@@ -980,6 +1060,21 @@ export class ControllerWorker {
         });
         return;
       }
+      if (claim.idempotencyKey.startsWith(`agent_revision:${revision.id}:maintenance:`)) {
+        const original = await this.queue.findWork(`agent_revision:${revision.id}:reconcile`);
+        if (original === undefined) {
+          await this.finalizeRevision(claim, { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" });
+          return;
+        }
+        if (
+          original.state === "failed_permanent" ||
+          original.reasonCode === "REVISION_SUPERSEDED"
+        ) {
+          // Maintenance must never prepare or reactivate a terminally failed deployment.
+          await this.finalizeRevision(claim, { outcome: "permanent", code: "REVISION_SUPERSEDED" });
+          return;
+        }
+      }
       if (agent.activeRevisionId !== undefined && previous === undefined) {
         await this.finalizeRevision(claim, {
           outcome: "permanent",
@@ -1045,23 +1140,30 @@ export class ControllerWorker {
         }
       }
       if (agent.activeRevisionId === revision.id) {
+        let receiptId: string | undefined;
         try {
           const compute = this.compute;
-          if (this.maintenanceIntervalMs !== undefined) {
-            const observation = await this.withClaimHeartbeat(claim, () =>
-              compute.prepareRevision(revision, secretContext.context),
-            );
-            if (!validRevisionObservation(observation, revision)) {
-              await this.finalizeRevision(claim, {
-                outcome: "permanent",
-                code: "INVALID_DRIVER_OBSERVATION",
-              });
-              return;
-            }
-            if (!observation.ready) {
-              await this.finalizeActiveRevision(claim, revision, "REVISION_INCOMPLETE");
-              return;
-            }
+          // Publishing the active pointer precedes activation. Reobserve even when
+          // periodic maintenance is disabled so recovery cannot skip a failed install.
+          const observation = await this.withClaimHeartbeat(claim, () =>
+            compute.prepareRevision(revision, secretContext.context),
+          );
+          if (!validRevisionObservation(observation, revision)) {
+            await this.finalizeRevision(claim, {
+              outcome: "permanent",
+              code: "INVALID_DRIVER_OBSERVATION",
+            });
+            return;
+          }
+          receiptId = observation.receiptId;
+          const failure = pluginFailure(observation, revision);
+          if (failure !== undefined) {
+            await this.finalizeRevision(claim, failure);
+            return;
+          }
+          if (!observation.ready) {
+            await this.finalizeActiveRevision(claim, revision, "REVISION_INCOMPLETE", receiptId);
+            return;
           }
           if (this.shouldActivatePublishedRevision(compute)) {
             await this.withClaimHeartbeat(claim, () =>
@@ -1080,13 +1182,19 @@ export class ControllerWorker {
           if (error instanceof WorkClaimLostError) {
             throw error;
           }
-          await this.finalizeActiveRevision(claim, revision, "REVISION_FINALIZATION_INCOMPLETE");
+          await this.finalizeActiveRevision(
+            claim,
+            revision,
+            "REVISION_FINALIZATION_INCOMPLETE",
+            receiptId,
+          );
           return;
         }
         await this.completeActivatedRevision(claim, {
           outcome: "success",
           code: "REVISION_ALREADY_ACTIVE",
           revision,
+          ...(receiptId === undefined ? {} : { receiptId }),
         });
         return;
       }
@@ -1299,8 +1407,16 @@ export class ControllerWorker {
       if (!validRevisionObservation(observation, revision)) {
         return { outcome: "permanent", code: "INVALID_DRIVER_OBSERVATION" };
       }
+      const failure = pluginFailure(observation, revision);
+      if (failure !== undefined) {
+        return failure;
+      }
       if (!observation.ready) {
-        return { outcome: "pending", code: "REVISION_INCOMPLETE" };
+        return {
+          outcome: "pending",
+          code: "REVISION_INCOMPLETE",
+          ...(observation.receiptId === undefined ? {} : { receiptId: observation.receiptId }),
+        };
       }
       const agent = await this.state.read((view) =>
         view.agents.findAgent(revision.namespaceId, revision.agentId),
@@ -1322,6 +1438,7 @@ export class ControllerWorker {
         outcome: "success",
         code: "REVISION_ACTIVATED",
         revision,
+        ...(observation.receiptId === undefined ? {} : { receiptId: observation.receiptId }),
         context,
         ...(previous === undefined ? {} : { previous }),
         ...(expectedActiveRevisionId === undefined ? {} : { expectedActiveRevisionId }),
@@ -1492,7 +1609,12 @@ export class ControllerWorker {
       result.outcome === "pending" &&
       Date.now() - claim.createdAt.getTime() >= this.convergenceTimeoutMs;
     const resolved: RevisionDispatchResult = expired
-      ? { ...result, outcome: "permanent", code: "CONVERGENCE_DEADLINE_EXCEEDED" }
+      ? {
+          ...result,
+          outcome: "permanent",
+          code: "CONVERGENCE_DEADLINE_EXCEEDED",
+          data: { timeoutMs: this.convergenceTimeoutMs },
+        }
       : result;
     let activated: Readonly<AgentRevision> | undefined;
     let stoppedCandidate: Readonly<AgentRevision> | undefined;
@@ -1533,13 +1655,23 @@ export class ControllerWorker {
       }
 
       if (resolved.outcome === "success") {
-        await queue.complete(claim);
+        await queue.complete(claim, {
+          code: resolved.code,
+          ...(resolved.receiptId === undefined ? {} : { receiptId: resolved.receiptId }),
+        });
       } else if (resolved.outcome === "pending") {
         await queue.defer(claim, { code: resolved.code });
       } else if (resolved.outcome === "permanent" || claim.attemptCount >= this.maxAttempts) {
-        await queue.fail(claim, { code: resolved.code });
+        await queue.fail(claim, {
+          code: resolved.code,
+          ...(resolved.data === undefined ? {} : { data: resolved.data }),
+          ...(resolved.receiptId === undefined ? {} : { receiptId: resolved.receiptId }),
+        });
       } else {
-        await queue.retry(claim, { code: resolved.code });
+        await queue.retry(claim, {
+          code: resolved.code,
+          ...(resolved.receiptId === undefined ? {} : { receiptId: resolved.receiptId }),
+        });
       }
     }, this.queueOptions);
     if (stoppedCandidate !== undefined) {
@@ -1572,6 +1704,7 @@ export class ControllerWorker {
         await this.finalizeRevision(claim, {
           outcome: "pending",
           code: "REVISION_FINALIZATION_INCOMPLETE",
+          ...(resolved.receiptId === undefined ? {} : { receiptId: resolved.receiptId }),
         });
         return;
       }
@@ -1599,7 +1732,7 @@ export class ControllerWorker {
       if ((await queue.heartbeat(claim)) === undefined) {
         throw new WorkClaimLostError();
       }
-      await queue.complete(claim);
+      await queue.complete(claim, { code });
     }, this.queueOptions);
     this.emit({
       event: "worker.completed",
@@ -1651,7 +1784,10 @@ export class ControllerWorker {
         return;
       }
       await this.appendRevisionObservation(unit, claim, result);
-      await queue.complete(claim);
+      await queue.complete(claim, {
+        code: result.code,
+        ...(result.receiptId === undefined ? {} : { receiptId: result.receiptId }),
+      });
       if (this.maintenanceIntervalMs !== undefined) {
         await this.enqueueMaintenance(queue, claim, revision);
       }
@@ -1676,12 +1812,17 @@ export class ControllerWorker {
     claim: ClaimedWork,
     revision: Readonly<AgentRevision>,
     code: string,
+    receiptId?: string,
   ): Promise<void> {
     if (
       this.maintenanceIntervalMs === undefined ||
       !claim.idempotencyKey.startsWith(`agent_revision:${revision.id}:maintenance:`)
     ) {
-      await this.finalizeRevision(claim, { outcome: "pending", code });
+      await this.finalizeRevision(claim, {
+        outcome: "pending",
+        code,
+        ...(receiptId === undefined ? {} : { receiptId }),
+      });
       return;
     }
     await this.state.transactWithQueue(async (unit, queue) => {

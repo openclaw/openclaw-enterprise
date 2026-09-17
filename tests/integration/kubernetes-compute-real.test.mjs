@@ -503,7 +503,7 @@ async function createScopedController(context, installationId, platformNamespace
         value: {
           apiGroups: [""],
           resources: ["pods"],
-          verbs: ["get", "list", "watch"],
+          verbs: ["get", "list", "watch", "patch"],
         },
       },
       {
@@ -938,11 +938,30 @@ test(
     assert.ok(firstPod && siblingPod && foreignPod && gatewayPod);
 
     const gatewayUrl = `http://${gatewayName(primaryAgent)}.${owned[0]}.svc.cluster.local:8080/readyz`;
-    assert.equal(
-      JSON.parse(await probe(platformNamespace, "platform-probe", "http", gatewayUrl)).status,
-      200,
-      "an explicitly approved platform client must reach the exact Agent's owned gateway",
-    );
+    let lastApprovedGatewayError;
+    try {
+      await waitFor(
+        "the approved platform client to reach the exact Agent's owned gateway through Service DNS",
+        async () => {
+          try {
+            // Pod and EndpointSlice readiness can precede cross-Pod Service DNS reachability.
+            assert.equal(
+              JSON.parse(await probe(platformNamespace, "platform-probe", "http", gatewayUrl))
+                .status,
+              200,
+              "an explicitly approved platform client must reach the exact Agent's owned gateway",
+            );
+            return true;
+          } catch (error) {
+            lastApprovedGatewayError = error;
+            return false;
+          }
+        },
+        60_000,
+      );
+    } catch (error) {
+      throw lastApprovedGatewayError ?? error;
+    }
     assert.ok(
       JSON.parse(
         await probe(

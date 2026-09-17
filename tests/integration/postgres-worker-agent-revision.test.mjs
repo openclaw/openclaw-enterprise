@@ -145,7 +145,7 @@ async function setup(context, { leaseDurationMs = 30_000, onHealthy } = {}) {
     return owner;
   }
 
-  async function revision(owner, number, harness) {
+  async function revision(owner, number, harness, plugins) {
     let harnessAuth;
     if (owner.harnessAuth.method === "runtime") {
       harnessAuth = owner.harnessAuth;
@@ -177,6 +177,7 @@ async function setup(context, { leaseDurationMs = 30_000, onHealthy } = {}) {
       configurationGeneration: 1,
       harness: approvedHarness,
       compute: { id: compute.id, implementation: compute.implementation },
+      ...(plugins === undefined ? {} : { plugins }),
       harnessAuth,
       servicePrincipalId: owner.servicePrincipalId,
       createdAt: new Date().toISOString(),
@@ -271,6 +272,18 @@ async function setup(context, { leaseDurationMs = 30_000, onHealthy } = {}) {
     stop,
     createWorkerPool,
     workerPool,
+  };
+}
+
+function codexPluginRevisionState(pluginId) {
+  return {
+    driver: { id: "codex-plugin", implementation: "occ/codex-plugin" },
+    plugins: {
+      [pluginId]: {
+        enabled: true,
+        approvalMode: "auto",
+      },
+    },
   };
 }
 
@@ -1692,6 +1705,295 @@ test(
 );
 
 test(
+  "plugin installation failure commits one terminal deployment outcome and retries receipt cleanup",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context);
+    const pluginId = "codex-plugin:linear@openai-curated-remote";
+    const owner = await fixture.agent("plugin-terminal-failure", "dedicated");
+    const failed = await fixture.revision(owner, 1, undefined, codexPluginRevisionState(pluginId));
+    const receiptId = `receipt-${randomUUID()}`;
+    const prepared = [];
+    const acknowledgements = [];
+    let failAcknowledgement = true;
+
+    await fixture.start({
+      ...fixture.compute,
+      async prepareRevision(revision) {
+        prepared.push(revision.id);
+        if (revision.id !== failed.id) return fixture.compute.prepareRevision(revision);
+        return {
+          namespaceId: revision.namespaceId,
+          agentId: revision.agentId,
+          revisionId: revision.id,
+          ready: false,
+          receiptId,
+          failure: { code: "PLUGIN_INSTALL_FAILED", pluginId },
+        };
+      },
+      async acknowledgeRevisionReceipt(revision, receipt) {
+        const terminal = await fixture.observerPool.query(
+          `SELECT state, reason_code, error_data, receipt_id,
+                  receipt_acknowledged_at IS NOT NULL AS acknowledged
+           FROM occ.controller_work
+           WHERE idempotency_key = $1`,
+          [`agent_revision:${revision.id}:reconcile`],
+        );
+        acknowledgements.push({ revisionId: revision.id, receipt, row: terminal.rows[0] });
+        if (failAcknowledgement) {
+          failAcknowledgement = false;
+          throw new Error("receipt cleanup dependency is temporarily unavailable");
+        }
+      },
+    });
+
+    await fixture.work(failed, "failed_permanent");
+    const acknowledged = await waitFor(
+      "receipt cleanup retry to acknowledge terminal work",
+      async () => {
+        const result = await fixture.observerPool.query(
+          `SELECT state, reason_code, error_data, receipt_id,
+                receipt_acknowledged_at IS NOT NULL AS acknowledged
+         FROM occ.controller_work WHERE idempotency_key = $1`,
+          [failed.idempotencyKey],
+        );
+        return result.rows[0]?.acknowledged ? result.rows[0] : undefined;
+      },
+    );
+    assert.deepEqual(acknowledged, {
+      state: "failed_permanent",
+      reason_code: "PLUGIN_INSTALL_FAILED",
+      error_data: { pluginId },
+      receipt_id: receiptId,
+      acknowledged: true,
+    });
+    assert.deepEqual(
+      acknowledgements.map(({ revisionId, receipt, row }) => ({
+        revisionId,
+        receipt,
+        row,
+      })),
+      [
+        {
+          revisionId: failed.id,
+          receipt: { receiptId, outcome: "failed" },
+          row: {
+            state: "failed_permanent",
+            reason_code: "PLUGIN_INSTALL_FAILED",
+            error_data: { pluginId },
+            receipt_id: receiptId,
+            acknowledged: false,
+          },
+        },
+        {
+          revisionId: failed.id,
+          receipt: { receiptId, outcome: "failed" },
+          row: {
+            state: "failed_permanent",
+            reason_code: "PLUGIN_INSTALL_FAILED",
+            error_data: { pluginId },
+            receipt_id: receiptId,
+            acknowledged: false,
+          },
+        },
+      ],
+      "receipt cleanup is authorized only by the immutable terminal row and retried from it",
+    );
+    const failedAgent = await fixture.state.read((view) =>
+      view.agents.findAgent(fixture.namespace.id, owner.id),
+    );
+    assert.equal(failedAgent.activeRevisionId, undefined);
+
+    const maintenance = {
+      id: failed.id,
+      idempotencyKey: `agent_revision:${failed.id}:maintenance:${randomUUID()}`,
+    };
+    await fixture.state.transactWithQueue((_unit, queue) =>
+      queue.enqueue({
+        idempotencyKey: maintenance.idempotencyKey,
+        namespaceId: fixture.namespace.id,
+        agentId: owner.id,
+        revisionId: failed.id,
+        actorId: fixture.actor.id,
+        availableAt: new Date(0),
+      }),
+    );
+    await fixture.work(maintenance, "failed_permanent");
+    assert.deepEqual(prepared, [failed.id], "maintenance must not prepare a failed deployment");
+    const immutableOriginal = await fixture.observerPool.query(
+      `SELECT state, reason_code, error_data, receipt_id
+       FROM occ.controller_work WHERE idempotency_key = $1`,
+      [failed.idempotencyKey],
+    );
+    assert.deepEqual(immutableOriginal.rows, [
+      {
+        state: "failed_permanent",
+        reason_code: "PLUGIN_INSTALL_FAILED",
+        error_data: { pluginId },
+        receipt_id: receiptId,
+      },
+    ]);
+
+    const retry = await fixture.revision(owner, 2, undefined, codexPluginRevisionState(pluginId));
+    await fixture.work(retry, "succeeded");
+    const retriedAgent = await fixture.state.read((view) =>
+      view.agents.findAgent(fixture.namespace.id, owner.id),
+    );
+    assert.equal(retriedAgent.activeRevisionId, retry.id);
+    assert.deepEqual(prepared, [failed.id, retry.id]);
+  },
+);
+
+test(
+  "plugin failure after active-pointer publication is terminal and maintenance cannot revive it",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context);
+    const pluginId = "codex-plugin:github@openai-curated-remote";
+    const owner = await fixture.agent("plugin-post-pointer", "dedicated");
+    const candidate = await fixture.revision(
+      owner,
+      1,
+      undefined,
+      codexPluginRevisionState(pluginId),
+    );
+    const published = await fixture.state.transact((unit) =>
+      unit.agents.compareAndSetActiveRevision(
+        fixture.namespace.id,
+        owner.id,
+        undefined,
+        candidate.id,
+      ),
+    );
+    assert.equal(published.activeRevisionId, candidate.id);
+
+    let prepareCount = 0;
+    const activations = [];
+    await fixture.start({
+      ...fixture.compute,
+      async prepareRevision(revision) {
+        prepareCount += 1;
+        return {
+          namespaceId: revision.namespaceId,
+          agentId: revision.agentId,
+          revisionId: revision.id,
+          ready: false,
+          receiptId: `receipt-${revision.id}`,
+          failure: { code: "PLUGIN_AUTH_REQUIRED", pluginId },
+        };
+      },
+      async activateRevision(revision) {
+        activations.push(revision.id);
+      },
+      async acknowledgeRevisionReceipt() {},
+    });
+
+    await fixture.work(candidate, "failed_permanent");
+    assert.equal(prepareCount, 1);
+    assert.deepEqual(activations, []);
+    const terminal = await fixture.observerPool.query(
+      `SELECT state, reason_code, error_data, receipt_id
+       FROM occ.controller_work WHERE idempotency_key = $1`,
+      [candidate.idempotencyKey],
+    );
+    assert.deepEqual(terminal.rows, [
+      {
+        state: "failed_permanent",
+        reason_code: "PLUGIN_AUTH_REQUIRED",
+        error_data: { pluginId },
+        receipt_id: `receipt-${candidate.id}`,
+      },
+    ]);
+    const activationAudit = await fixture.observerPool.query(
+      `SELECT id FROM occ.audit_events
+       WHERE namespace_id = $1 AND action = 'openclaw.agents.lifecycle.activate'
+         AND resource_id = $2`,
+      [fixture.namespace.id, candidate.id],
+    );
+    assert.equal(activationAudit.rowCount, 0);
+
+    const maintenance = {
+      id: candidate.id,
+      idempotencyKey: `agent_revision:${candidate.id}:maintenance:${randomUUID()}`,
+    };
+    await fixture.state.transactWithQueue((_unit, queue) =>
+      queue.enqueue({
+        idempotencyKey: maintenance.idempotencyKey,
+        namespaceId: fixture.namespace.id,
+        agentId: owner.id,
+        revisionId: candidate.id,
+        actorId: fixture.actor.id,
+        availableAt: new Date(0),
+      }),
+    );
+    await fixture.work(maintenance, "failed_permanent");
+    assert.equal(prepareCount, 1, "failed published revisions must not be re-prepared");
+    const stillPublished = await fixture.state.read((view) =>
+      view.agents.findAgent(fixture.namespace.id, owner.id),
+    );
+    assert.equal(stillPublished.activeRevisionId, candidate.id);
+  },
+);
+
+test(
+  "foreign plugin diagnostics remain generic invalid Compute observations",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context);
+    const pluginId = "codex-plugin:slack@openai-curated-remote";
+    const owner = await fixture.agent("foreign-plugin-diagnostic", "dedicated");
+    const candidate = await fixture.revision(
+      owner,
+      1,
+      undefined,
+      codexPluginRevisionState(pluginId),
+    );
+    const acknowledgements = [];
+
+    await fixture.start({
+      ...fixture.compute,
+      async prepareRevision(revision) {
+        return {
+          namespaceId: revision.namespaceId,
+          agentId: revision.agentId,
+          revisionId: revision.id,
+          ready: false,
+          receiptId: `receipt-${revision.id}`,
+          failure: {
+            code: "PLUGIN_INSTALL_FAILED",
+            pluginId: "codex-plugin:foreign@openai-curated-remote",
+          },
+        };
+      },
+      async acknowledgeRevisionReceipt(revision, receipt) {
+        acknowledgements.push({ revisionId: revision.id, receipt });
+      },
+    });
+
+    await fixture.work(candidate, "failed_permanent");
+    const generic = await fixture.observerPool.query(
+      `SELECT state, reason_code, error_data, receipt_id, receipt_acknowledged_at
+       FROM occ.controller_work WHERE idempotency_key = $1`,
+      [candidate.idempotencyKey],
+    );
+    assert.deepEqual(generic.rows, [
+      {
+        state: "failed_permanent",
+        reason_code: "INVALID_DRIVER_OBSERVATION",
+        error_data: null,
+        receipt_id: null,
+        receipt_acknowledged_at: null,
+      },
+    ]);
+    assert.deepEqual(acknowledgements, []);
+    const inactive = await fixture.state.read((view) =>
+      view.agents.findAgent(fixture.namespace.id, owner.id),
+    );
+    assert.equal(inactive.activeRevisionId, undefined);
+  },
+);
+
+test(
   "one worker reconciles embedded OpenClaw and dedicated Codex but rejects unapproved pinned Harnesses",
   requiresPostgres,
   async (context) => {
@@ -1850,7 +2152,7 @@ test(
     assert.equal(
       effects.filter(({ action, revisionId }) => action === "prepare" && revisionId === second.id)
         .length,
-      1,
+      2,
     );
     const activation = await fixture.observerPool.query(
       `SELECT action FROM occ.audit_events

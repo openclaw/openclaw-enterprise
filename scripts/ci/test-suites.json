@@ -462,6 +462,14 @@
             "independent PostgreSQL API and worker provision isolated Namespaces, activate admitted revisions, and tombstone deletion",
             "PostgreSQL API and worker preserve immutable deployments, stable identities, and tenant isolation"
           ]
+        },
+        {
+          "path": "tests/integration/kubernetes-plugin-receipt-real.test.mjs",
+          "expectedTests": [
+            "real Kubernetes Compute Driver retains controlled plugin receipt failure over later readiness",
+            "successful controlled plugin receipt acknowledgement releases the Pod finalizer",
+            "PostgreSQL queue rejects stale controlled receipt commits before a fresh claim rereads it"
+          ]
         }
       ]
     },
@@ -837,6 +845,7 @@
         "OCC_TEST_KUBERNETES_CONTEXT",
         "OCC_TEST_PLUGIN_DRIVER_OPENCLAW_DATABASE_URL",
         "OCC_TEST_PLUGIN_DRIVER_CODEX_CALENDAR_DATABASE_URL",
+        "OCC_TEST_PLUGIN_DRIVER_CODEX_FAILURE_DATABASE_URL",
         "CODEX_ACCESS_TOKEN",
         "OCC_TEST_CODEX_PLUGIN_CATALOG_CODEX_EXECUTABLE",
         "OCC_TEST_CODEX_PLUGIN_CATALOG_CODEX_HOME"

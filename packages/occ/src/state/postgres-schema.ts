@@ -673,6 +673,10 @@ export const controllerWork = occSchema.table(
     claimToken: uuid("claim_token"),
     leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
+    reasonCode: text("reason_code"),
+    errorData: jsonb("error_data").$type<Record<string, unknown>>(),
+    receiptId: text("receipt_id"),
+    receiptAcknowledgedAt: timestamp("receipt_acknowledged_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
   },
@@ -732,10 +736,52 @@ export const controllerWork = occSchema.table(
       "controller_work_completion_state",
       sql`(
         (${table.state} IN ('succeeded', 'failed_permanent')
-          AND ${table.completedAt} IS NOT NULL)
+          AND ${table.completedAt} IS NOT NULL
+          AND ${table.reasonCode} IS NOT NULL)
         OR (${table.state} NOT IN ('succeeded', 'failed_permanent')
-          AND ${table.completedAt} IS NULL)
+          AND ${table.completedAt} IS NULL
+          AND ${table.reasonCode} IS NULL
+          AND ${table.errorData} IS NULL
+          AND ${table.receiptId} IS NULL
+          AND ${table.receiptAcknowledgedAt} IS NULL)
       )`,
+    ),
+    check(
+      "controller_work_reason_code_length",
+      sql`${table.reasonCode} IS NULL OR char_length(${table.reasonCode}) BETWEEN 1 AND 64`,
+    ),
+    check(
+      "controller_work_error_data_state",
+      sql`${table.errorData} IS NULL OR (
+        ${table.state} = 'failed_permanent'
+        AND jsonb_typeof(${table.errorData}) = 'object'
+        AND octet_length(${table.errorData}::text) <= 4096
+        AND (
+          (
+            ${table.reasonCode} IN ('PLUGIN_INSTALL_FAILED', 'PLUGIN_AUTH_REQUIRED')
+            AND ${table.errorData} ? 'pluginId'
+            AND (${table.errorData} - 'pluginId') = '{}'::jsonb
+            AND jsonb_typeof(${table.errorData}->'pluginId') = 'string'
+            AND char_length(${table.errorData}->>'pluginId') BETWEEN 1 AND 253
+          )
+          OR (
+            ${table.reasonCode} = 'CONVERGENCE_DEADLINE_EXCEEDED'
+            AND ${table.errorData} ? 'timeoutMs'
+            AND (${table.errorData} - 'timeoutMs') = '{}'::jsonb
+            AND jsonb_typeof(${table.errorData}->'timeoutMs') = 'number'
+            AND (${table.errorData}->>'timeoutMs') ~ '^[1-9][0-9]{0,15}$'
+            AND (${table.errorData}->>'timeoutMs')::numeric <= 9007199254740991
+          )
+        )
+      )`,
+    ),
+    check(
+      "controller_work_receipt_id_length",
+      sql`${table.receiptId} IS NULL OR char_length(${table.receiptId}) BETWEEN 1 AND 512`,
+    ),
+    check(
+      "controller_work_receipt_ack_state",
+      sql`${table.receiptAcknowledgedAt} IS NULL OR (${table.state} IN ('succeeded', 'failed_permanent') AND ${table.receiptId} IS NOT NULL)`,
     ),
     index("controller_work_ready")
       .on(table.availableAt, table.createdAt, table.idempotencyKey)

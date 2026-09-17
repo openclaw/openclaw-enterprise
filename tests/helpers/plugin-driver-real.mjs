@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pg from "pg";
+import { PLUGIN_RUNTIME_HELPERS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { ensureDevelopmentBootstrap } from "./bootstrap-installation.mjs";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import { grantAgentSecretOperate } from "./postgres-harness-auth.mjs";
@@ -590,6 +591,87 @@ const gatewayHttpConfigScript = String.raw`
   process.stdout.write(JSON.stringify({ exists: false }));
 `;
 
+// Query the already authenticated Agent app-server through the same protocol client
+// used by startup; a separate gateway never receives the model credential.
+const codexNativeCatalogScript = String.raw`
+${PLUGIN_RUNTIME_HELPERS}
+(async () => {
+  const listed = await codexAppServerRequest("plugin/list", {});
+  const entries = [];
+  for (const entry of pluginRuntimeTranslator.codexCatalogEntries(listed)) {
+    const [params] = pluginRuntimeTranslator.codexReadParamsForSelections({
+      [entry.id]: { enabled: true, approvalMode: "auto", approvalsReviewer: "auto_review" },
+    }, listed);
+    try {
+      const detail = await codexAppServerRequest("plugin/read", params);
+      if (!isPlainObject(detail?.plugin) || !Array.isArray(detail.plugin.apps)) {
+        throw new Error("Native plugin detail is incomplete.");
+      }
+      entries.push({ ...entry, remotePluginId: params.pluginName,
+        detailAvailable: true, appCount: detail.plugin.apps.length });
+    } catch {
+      entries.push({ ...entry, remotePluginId: params.pluginName, detailAvailable: false });
+    }
+  }
+  process.stdout.write(JSON.stringify({ entries }));
+})().catch(() => {
+  process.stderr.write("Native Codex catalog query failed.");
+  process.exitCode = 1;
+});
+`;
+
+const codexNativePluginReadScript = String.raw`
+${PLUGIN_RUNTIME_HELPERS}
+(async () => {
+  const detail = await codexAppServerRequest("plugin/read", {
+    remoteMarketplaceName: "openai-curated-remote",
+    pluginName: process.argv[1],
+  });
+  const plugin = detail?.plugin;
+  const summary = plugin?.summary;
+  if (!isPlainObject(summary) || !Array.isArray(plugin.apps)) {
+    throw new Error("Native plugin detail is incomplete.");
+  }
+  process.stdout.write(JSON.stringify({
+    summaryId: summary.id,
+    remotePluginId: summary.remotePluginId,
+    installed: summary.installed === true,
+    enabled: summary.enabled === true,
+    marketplaceName: plugin.marketplaceName,
+    appCount: plugin.apps.length,
+  }));
+})().catch(() => {
+  process.stderr.write("Native Codex installed-plugin query failed.");
+  process.exitCode = 1;
+});
+`;
+
+const workspaceSentinelScript = String.raw`
+  const { createHash } = require("node:crypto");
+  const { mkdirSync, readFileSync, writeFileSync } = require("node:fs");
+  const { join } = require("node:path");
+  const operation = process.argv[1];
+  const name = process.argv[2];
+  const content = process.argv[3] ?? "";
+  if (typeof name !== "string" || !/^[A-Za-z0-9._-]{1,80}$/.test(name)) {
+    throw new Error("workspace sentinel name is invalid.");
+  }
+  const path = join("/home/node/workspace", name);
+  mkdirSync("/home/node/workspace", { recursive: true });
+  if (operation === "write") {
+    writeFileSync(path, content, "utf8");
+  } else if (operation !== "read") {
+    throw new Error("workspace sentinel operation is invalid.");
+  }
+  const value = readFileSync(path, "utf8");
+  process.stdout.write(JSON.stringify({
+    path,
+    sha256: createHash("sha256").update(value).digest("hex"),
+    length: value.length,
+    content: value,
+  }));
+`;
+
 function httpErrorSummary(status, body, secrets) {
   const summary = { status };
   try {
@@ -619,7 +701,12 @@ function assertDiagnosticText(value, secrets) {
   return text;
 }
 
-function createNativePluginAssertions({ gatewayUrl, execGateway, proofMode = "openclaw" }) {
+function createNativePluginAssertions({
+  gatewayUrl,
+  execGateway,
+  execCodex,
+  proofMode = "openclaw",
+}) {
   assert.ok(
     proofMode === "openclaw" || proofMode === "codex",
     "native plugin proof mode must be openclaw or codex.",
@@ -846,7 +933,63 @@ function createNativePluginAssertions({ gatewayUrl, execGateway, proofMode = "op
     );
   }
 
-  return { normalGatewayTurn, assertSessionToolCallEvidence, assertNoSessionToolCallEvidence };
+  async function listCodexNativeCatalog(agent) {
+    assert.equal(proofMode, "codex", "native Codex catalog discovery requires Codex proof mode.");
+    const execution = await execCodex(agent, ["node", "-e", codexNativeCatalogScript]);
+    const parsed = JSON.parse(execution.stdout);
+    assert.ok(Array.isArray(parsed.entries), "native Codex catalog discovery must return entries.");
+    return parsed.entries.map((entry) => ({
+      id: String(entry.id),
+      name: String(entry.name),
+      remotePluginId: String(entry.remotePluginId),
+      detailAvailable: entry.detailAvailable === true,
+      appCount: Number.isSafeInteger(entry.appCount) ? entry.appCount : undefined,
+    }));
+  }
+
+  async function codexNativePluginDetail(agent, entry) {
+    assert.equal(proofMode, "codex", "native Codex plugin detail requires Codex proof mode.");
+    const execution = await execCodex(agent, [
+      "node",
+      "-e",
+      codexNativePluginReadScript,
+      entry.remotePluginId,
+    ]);
+    return { runtime: execution.label, ...JSON.parse(execution.stdout) };
+  }
+
+  async function writeWorkspaceSentinel(agent, { name, content }) {
+    const execution = await execGateway(agent, [
+      "node",
+      "-e",
+      workspaceSentinelScript,
+      "write",
+      name,
+      content,
+    ]);
+    return { runtime: execution.label, ...JSON.parse(execution.stdout) };
+  }
+
+  async function readWorkspaceSentinel(agent, { name }) {
+    const execution = await execGateway(agent, [
+      "node",
+      "-e",
+      workspaceSentinelScript,
+      "read",
+      name,
+    ]);
+    return { runtime: execution.label, ...JSON.parse(execution.stdout) };
+  }
+
+  return {
+    normalGatewayTurn,
+    assertSessionToolCallEvidence,
+    assertNoSessionToolCallEvidence,
+    listCodexNativeCatalog,
+    codexNativePluginDetail,
+    writeWorkspaceSentinel,
+    readWorkspaceSentinel,
+  };
 }
 
 export async function createPluginDriverRealFixture(
@@ -940,6 +1083,7 @@ export async function createPluginDriverRealFixture(
         "clusterrole",
         `${proofPrefix}-namespaces-${suffix}`,
         `${proofPrefix}-tenant-${suffix}`,
+        `${proofPrefix}-tenant-pods-${suffix}`,
         `${proofPrefix}-secrets-${suffix}`,
         "--ignore-not-found=true",
       ),
@@ -967,6 +1111,13 @@ export async function createPluginDriverRealFixture(
     `${proofPrefix}-tenant-${suffix}`,
     "--verb=create,get,list,patch,update,delete",
     "--resource=deployments.apps,services,serviceaccounts,configmaps,endpointslices.discovery.k8s.io,networkpolicies.networking.k8s.io,resourcequotas,limitranges,persistentvolumeclaims",
+  );
+  await kubectl(
+    "create",
+    "clusterrole",
+    `${proofPrefix}-tenant-pods-${suffix}`,
+    "--verb=get,list,watch,patch",
+    "--resource=pods",
   );
   await kubectl(
     "create",
@@ -1090,7 +1241,7 @@ export async function createPluginDriverRealFixture(
     serviceKey = (
       await auth.createServiceKey({
         principal: servicePrincipal,
-        name: `plugin-driver-real-proof-${suffix}`,
+        name: `pdr-${suffix}`,
       })
     ).key;
   } else {
@@ -1155,6 +1306,15 @@ export async function createPluginDriverRealFixture(
       `--serviceaccount=${platformNamespace}:${identity.account}`,
     );
   }
+  await kubectl(
+    "create",
+    "rolebinding",
+    `${proofPrefix}-worker-pods`,
+    "--namespace",
+    tenantNamespace,
+    `--clusterrole=${proofPrefix}-tenant-pods-${suffix}`,
+    `--serviceaccount=${platformNamespace}:${workerIdentity.account}`,
+  );
   await kubectl(
     "create",
     "rolebinding",
@@ -1226,6 +1386,8 @@ export async function createPluginDriverRealFixture(
         `/namespaces/${createdNamespace.data.id}/agents/${agent.id}`,
       );
       assert.equal(observed.status, 200, JSON.stringify(observed.error));
+      const deployment = await getDeploymentStatus(agent.id, deployed.data.id);
+      assert.notEqual(deployment.status, "failed", JSON.stringify(deployment.error));
       return observed.data.activeRevisionId === deployed.data.id ? observed.data : undefined;
     });
     await waitForPluginProofWorkerSuccess(waitFor, events, deployed.data.id, {
@@ -1233,6 +1395,47 @@ export async function createPluginDriverRealFixture(
       diagnostics: () => sanitizedPluginProofWorkerEvents(events, deployed.data.id),
     });
     return { revision: deployed.data, gatewayToken };
+  }
+
+  async function getDeploymentStatus(agentId, deploymentId) {
+    const status = await request(
+      "GET",
+      `/namespaces/${createdNamespace.data.id}/agents/${agentId}/deployments/${deploymentId}`,
+    );
+    assert.equal(status.status, 200, JSON.stringify(status.error));
+    return status.data;
+  }
+
+  async function deployAndWaitForFailure(agent, { pluginId, expectedCodes }) {
+    let gatewayToken = gatewayTokens.get(agent.id);
+    if (gatewayToken === undefined) {
+      gatewayToken = await provisionAgentTransportSecret(directory, tenantNamespace, agent.id);
+      gatewayTokens.set(agent.id, gatewayToken);
+    }
+    const deployed = await request(
+      "POST",
+      `/namespaces/${createdNamespace.data.id}/agents/${agent.id}/deploy`,
+    );
+    assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
+    const status = await waitFor(`deployment ${deployed.data.id} terminal failure`, async () => {
+      const observed = await getDeploymentStatus(agent.id, deployed.data.id);
+      return observed.status === "failed" ? observed : undefined;
+    });
+    assert.ok(
+      expectedCodes.includes(status.error?.code),
+      `deployment ${deployed.data.id} failed with unexpected code: ${JSON.stringify(status)}`,
+    );
+    assert.deepEqual(status.error?.data, { pluginId });
+    await waitFor(`worker terminal failure of ${deployed.data.id}`, () =>
+      events.find(
+        (event) =>
+          event.event === "worker.completed" &&
+          event.revisionId === deployed.data.id &&
+          event.outcome === "permanent" &&
+          event.code === status.error.code,
+      ),
+    );
+    return { revision: deployed.data, gatewayToken, status };
   }
 
   async function gatewayPod(agent) {
@@ -1246,8 +1449,42 @@ export async function createPluginDriverRealFixture(
     return pod;
   }
 
+  async function gatewayPodIdentity(agent) {
+    const pod = await gatewayPod(agent);
+    return {
+      name: pod.metadata.name,
+      uid: pod.metadata.uid,
+      revisionId: pod.metadata.labels?.["openclaw.dev/revision"],
+    };
+  }
+
   const nativeAssertions = createNativePluginAssertions({
     proofMode: pluginDriverId === "codex-plugin" ? "codex" : "openclaw",
+    execCodex: async (agent, argv) => {
+      const current = await agentApi.getAgent(agent.id);
+      const pods = (await resources("pods", tenantNamespace)).filter(
+        (pod) =>
+          pod.metadata.labels?.["openclaw.dev/agent"] === agent.id &&
+          pod.metadata.labels?.["openclaw.dev/revision"] === current.activeRevisionId &&
+          pod.metadata.labels?.["openclaw.dev/workload-role"] === "agent" &&
+          pod.metadata.deletionTimestamp === undefined &&
+          pod.status.conditions?.some(({ type, status }) => type === "Ready" && status === "True"),
+      );
+      assert.equal(pods.length, 1, "native inspection requires the exact active Ready Codex Pod.");
+      return {
+        label: pods[0].metadata.name,
+        stdout: await kubectl(
+          "exec",
+          pods[0].metadata.name,
+          "--namespace",
+          tenantNamespace,
+          "--container",
+          "agent",
+          "--",
+          ...argv,
+        ),
+      };
+    },
     gatewayUrl: async (agent) => {
       const forwarding = await startPortForward(tenantNamespace, `gateway-${hash(agent.id)}`);
       forwarders.push(forwarding);
@@ -1311,9 +1548,16 @@ export async function createPluginDriverRealFixture(
     removePluginSelection: agentApi.removePluginSelection,
     getAgent: agentApi.getAgent,
     deployAndWait,
+    deployAndWaitForFailure,
+    getDeploymentStatus,
+    gatewayPodIdentity,
     normalGatewayTurn: nativeAssertions.normalGatewayTurn,
     assertSessionToolCallEvidence: nativeAssertions.assertSessionToolCallEvidence,
     assertNoSessionToolCallEvidence: nativeAssertions.assertNoSessionToolCallEvidence,
+    listCodexNativeCatalog: nativeAssertions.listCodexNativeCatalog,
+    codexNativePluginDetail: nativeAssertions.codexNativePluginDetail,
+    writeWorkspaceSentinel: nativeAssertions.writeWorkspaceSentinel,
+    readWorkspaceSentinel: nativeAssertions.readWorkspaceSentinel,
     bindOpenAIModelSecret,
   };
 }

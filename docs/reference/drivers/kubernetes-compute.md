@@ -188,6 +188,32 @@ PersistentVolumeClaims and runtime credential Secrets. Retirement remains the
 destructive revision cleanup operation. Repeated stop observes exact ownership
 and converges when the runtime objects are already absent.
 
+### Plugin installation receipts
+
+For Compute-owned plugin startup in embedded OpenClaw and dedicated Codex,
+Kubernetes Compute creates an Agent-revision-owned receipt ConfigMap and mounts
+its `state.json` into the runtime alongside a writable emptyDir latch. The
+runtime receives `OCC_PLUGIN_RECEIPT_GATE`, `OCC_PLUGIN_RECEIPT_DIRECTORY`, and
+`OCC_PLUGIN_RECEIPT_POD_UID`. It writes only `diagnosis.json` and the bounded
+Kubernetes termination message `{pluginId, code}` when a selected native install
+operation fails with `PLUGIN_INSTALL_FAILED` or `PLUGIN_AUTH_REQUIRED`.
+
+Compute binds the receipt to one live Pod UID and the expected runtime
+container. It adds its receipt finalizer to that exact Pod before publishing the
+Pod UID in the ConfigMap, then validates the ConfigMap identity, Pod UID,
+container name, admitted plugin ID, and closed diagnostic code before returning
+an attributed failure to OCC. A replacement Pod with the same labels but a
+different UID cannot satisfy the receipt. Malformed, truncated, foreign, or lost
+evidence is treated as an unattributed startup failure and keeps the candidate
+from serving.
+
+After OCC commits the original terminal deployment row, the worker asks Compute
+to acknowledge the exact receipt. A successful activation acknowledgment releases
+the receipt gate and finalizer; a terminal failure records a tombstone until
+revision retirement or namespace cleanup removes owned receipt resources. The
+receipt mechanism does not roll back `activeRevisionId`, uninstall remote native
+state, or guarantee predecessor availability after replacement has begun.
+
 See the [Harness execution topology flow](../../flows/harness-execution-topology.md)
 for additional execution details.
 
@@ -203,8 +229,8 @@ for additional execution details.
   readiness marker at process start so a marker left in the Pod's temporary
   volume by a previous container attempt cannot make a restarted runtime ready.
   Native plugin startup, authentication, transport, and installation failures
-  remain generic workload startup failures unless the native runtime provides a
-  trusted typed failure source.
+  remain generic workload startup failures unless the Compute-owned runtime
+  records a trusted typed receipt for an admitted selected plugin.
 - **Gateway storage is pending or rejected:** Check the configured
   `runtime.gatewayStorageClassName`, available `10Gi` capacity, filesystem
   support, worker PVC permissions, and the PVC's exact ownership. Preserve

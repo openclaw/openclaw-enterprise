@@ -762,6 +762,76 @@ test("Agent Provider API preserves nullable drafts and immutable revision associ
   assert.equal(replaced.data.providerId, "openai");
 });
 
+test("Agent deployment status polls the admitted revision work with exact read authorization", async () => {
+  const fixture = await createInjectedFixture({ recordOperations: true });
+  const controller = {
+    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
+  };
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, "deployment-status");
+  const agent = await createAgent(controller, namespace.id, "status-agent");
+  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  await bindHarnessKey(fixture, namespace.id, agent);
+
+  const admitted = await controller.request(
+    "POST",
+    `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
+  );
+  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${admitted.data.id}`;
+
+  const status = await controller.request("GET", path);
+  assert.equal(status.status, 200, JSON.stringify(status.body));
+  assert.deepEqual(status.data, {
+    deploymentId: admitted.data.id,
+    namespaceId: namespace.id,
+    agentId: agent.id,
+    status: "queued",
+    error: null,
+  });
+
+  const missing = await controller.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${missingRevisionId}`,
+  );
+  assert.equal(missing.status, 404);
+  assert.equal(missing.body.error.code, "NOT_FOUND");
+
+  const { principal: revisionReader } = await fixture.createAuthPrincipal(
+    "deployment-status-reader",
+  );
+  fixture.state.identities.push(revisionReader);
+  fixture.state.roles.push({
+    id: "role-deployment-status-reader",
+    namespaceId: namespace.id,
+    permissions: [{ action: "read", resourceKind: "agent_revision" }],
+  });
+  fixture.state.bindings.push({
+    id: "binding-deployment-status-reader",
+    namespaceId: namespace.id,
+    subjectKind: "identity",
+    subjectId: revisionReader.id,
+    roleId: "role-deployment-status-reader",
+  });
+  const readerApp = fixture.createApp(revisionReader);
+  const parentDenied = await injectedRequest(
+    readerApp,
+    "GET",
+    `/namespaces/${namespace.id}/agents/${agent.id}`,
+  );
+  assert.equal(parentDenied.status, 403);
+  const readableDeployment = await injectedRequest(readerApp, "GET", path);
+  assert.equal(readableDeployment.status, 200, JSON.stringify(readableDeployment.body));
+  assert.equal(readableDeployment.data.status, "queued");
+
+  fixture.state.roles.find(
+    (role) => role.id === "role-deployment-status-reader",
+  ).permissions.length = 0;
+  const deniedApp = fixture.createApp(revisionReader);
+  const denied = await injectedRequest(deniedApp, "GET", path);
+  assert.equal(denied.status, 403);
+});
+
 test("Agent create and update replace policy-only plugin maps and revisions freeze the requested snapshot", async () => {
   const controller = await configuredController();
   await bootstrap(controller);

@@ -131,6 +131,7 @@ export async function cleanupNamespaces(pool, namespaceIds) {
       `UPDATE occ.controller_work
        SET state = 'failed_permanent',
            completed_at = clock_timestamp(),
+           reason_code = 'TEST_FIXTURE_CLEANUP',
            claim_token = NULL,
            lease_expires_at = NULL,
            updated_at = clock_timestamp()
@@ -166,6 +167,7 @@ export async function cleanupProviderFixtures(pool, namespaceId, cleanup) {
            claim_token = NULL,
            lease_expires_at = NULL,
            completed_at = clock_timestamp(),
+           reason_code = 'TEST_FIXTURE_CLEANUP',
            updated_at = clock_timestamp()
        WHERE namespace_id = $1
          AND revision_id = ANY($2::text[])

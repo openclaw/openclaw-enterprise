@@ -56,7 +56,8 @@ rules:
     verbs: [get, list, create, patch, delete]
   - apiGroups: [""]
     resources: [pods]
-    verbs: [get, list, watch]
+    # Compute retains exact startup evidence until the deployment result commits.
+    verbs: [get, list, watch, patch]
   - apiGroups: [""]
     resources: [persistentvolumeclaims]
     verbs: [get, create, patch, delete]

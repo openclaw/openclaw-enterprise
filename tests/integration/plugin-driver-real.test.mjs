@@ -257,3 +257,175 @@ test(
     });
   },
 );
+
+test(
+  "curated Codex plugin failure leaves the candidate unready and preserves a sibling Agent",
+  {
+    skip: pluginProofSkipReason("codex_failure"),
+    timeout: 900_000,
+  },
+  async (context) => {
+    const requestedSuccessPluginId = process.env.OCC_TEST_CODEX_SUCCESS_PLUGIN_ID;
+    const failureCandidates = (
+      process.env.OCC_TEST_CODEX_FAILURE_PLUGIN_IDS ??
+      [
+        "codex-plugin:github@openai-curated-remote",
+        "codex-plugin:linear@openai-curated-remote",
+        "codex-plugin:slack@openai-curated-remote",
+      ].join("\n")
+    )
+      .split("\n")
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0 && entry !== requestedSuccessPluginId);
+
+    const credential = await readCodexServiceAccountCredential();
+    const fixture = await createPluginDriverRealFixture(context, {
+      pluginDriverId: "codex-plugin",
+      databaseUrl: process.env.OCC_TEST_PLUGIN_DRIVER_CODEX_FAILURE_DATABASE_URL,
+      codexCredential: credential,
+    });
+    const account = await fixture.createCodexServiceAccountFromToken({
+      accessToken: credential.accessToken,
+      name: `cpf-${randomUUID().slice(0, 8)}`,
+    });
+    assertNoSecretMaterial(
+      account,
+      [credential.accessToken, credential.workspaceId],
+      "ServiceAccount metadata must not expose Codex credential material.",
+    );
+
+    const primary = await fixture.createAgent({
+      harnessId: "codex",
+      executionMode: "dedicated",
+      name: `cpf-primary-${randomUUID().slice(0, 8)}`,
+      harnessAuth: { method: "chatgpt_service_account", serviceAccountId: account.id },
+      providerId: "openai",
+    });
+    const sibling = await fixture.createAgent({
+      harnessId: "codex",
+      executionMode: "dedicated",
+      name: `cpf-sibling-${randomUUID().slice(0, 8)}`,
+      harnessAuth: { method: "chatgpt_service_account", serviceAccountId: account.id },
+      providerId: "openai",
+    });
+
+    const baselinePrimary = await fixture.deployAndWait(primary);
+    const catalog = await fixture.listCodexNativeCatalog(primary);
+    const catalogById = new Map(catalog.map((entry) => [entry.id, entry]));
+    const successEntry =
+      requestedSuccessPluginId === undefined
+        ? catalog
+            .filter(
+              (entry) =>
+                entry.detailAvailable === true &&
+                entry.appCount === 0 &&
+                !failureCandidates.includes(entry.id),
+            )
+            .sort(
+              (left, right) => left.id.length - right.id.length || left.id.localeCompare(right.id),
+            )[0]
+        : catalogById.get(requestedSuccessPluginId);
+    assert.ok(
+      successEntry,
+      requestedSuccessPluginId === undefined
+        ? "native Codex catalog did not expose a no-app plugin candidate for the successful install."
+        : `native Codex catalog did not contain configured success plugin ${requestedSuccessPluginId}`,
+    );
+    const successPluginId = successEntry.id;
+    const failureEntry =
+      failureCandidates
+        .map((pluginId) => catalogById.get(pluginId))
+        .find((entry) => entry?.appCount > 0) ??
+      failureCandidates
+        .map((pluginId) => catalogById.get(pluginId))
+        .find((entry) => entry !== undefined);
+    assert.ok(
+      failureEntry,
+      `native Codex catalog did not contain any configured failure candidate: ${failureCandidates.join(
+        ", ",
+      )}`,
+    );
+    const failurePluginId = failureEntry.id;
+    context.diagnostic(
+      `native Codex catalog selected success=${successPluginId} apps=${successEntry.appCount ?? "unknown"} failure=${failurePluginId} apps=${failureEntry.appCount ?? "unknown"}`,
+    );
+
+    const selectedSuccess = await fixture.selectPlugin(primary.id, {
+      pluginId: successPluginId,
+      enabled: true,
+      approvalMode: "auto",
+      approvalsReviewer: "auto_review",
+    });
+    assert.equal(selectedSuccess.enabled, true);
+
+    const deployedPrimary = await fixture.deployAndWait(primary);
+    assert.ok(
+      Object.hasOwn(deployedPrimary.revision.plugins?.plugins ?? {}, successPluginId),
+      "the second candidate must admit the successful native plugin selection.",
+    );
+    assert.equal(Object.keys(baselinePrimary.revision.plugins?.plugins ?? {}).length, 0);
+    const installedSuccess = await fixture.codexNativePluginDetail(primary, successEntry);
+    assert.equal(installedSuccess.installed, true);
+    assert.equal(installedSuccess.enabled, true);
+    assert.equal(installedSuccess.remotePluginId, successEntry.remotePluginId);
+    const deployedSibling = await fixture.deployAndWait(sibling);
+    assert.equal(
+      Object.keys(deployedSibling.revision.plugins?.plugins ?? {}).length,
+      0,
+      "the sibling Agent starts without desired plugins.",
+    );
+    const siblingPodBefore = await fixture.gatewayPodIdentity(sibling);
+    const sentinel = {
+      name: `codex-failure-${randomUUID().slice(0, 8)}.txt`,
+      content: `sibling workspace sentinel ${randomUUID()}`,
+    };
+    const siblingWorkspaceBefore = await fixture.writeWorkspaceSentinel(sibling, sentinel);
+    assert.equal(siblingWorkspaceBefore.content, sentinel.content);
+
+    const selectedFailure = await fixture.selectPlugin(primary.id, {
+      pluginId: failurePluginId,
+      enabled: true,
+      approvalMode: "auto",
+      approvalsReviewer: "auto_review",
+    });
+    assert.equal(selectedFailure.enabled, true);
+    const failed = await fixture.deployAndWaitForFailure(primary, {
+      pluginId: failurePluginId,
+      expectedCodes: ["PLUGIN_AUTH_REQUIRED", "PLUGIN_INSTALL_FAILED"],
+    });
+    assert.equal(failed.status.status, "failed");
+    assert.deepEqual(Object.keys(failed.revision.plugins?.plugins ?? {}), [
+      successPluginId,
+      failurePluginId,
+    ]);
+    assert.deepEqual(await fixture.getDeploymentStatus(primary.id, failed.revision.id), {
+      deploymentId: failed.revision.id,
+      namespaceId: fixture.namespaceId,
+      agentId: primary.id,
+      status: "failed",
+      error: failed.status.error,
+    });
+
+    const primaryAfterFailure = await fixture.getAgent(primary.id);
+    assert.equal(primaryAfterFailure.plugins[successPluginId].enabled, true);
+    assert.equal(primaryAfterFailure.plugins[failurePluginId].enabled, true);
+    const siblingAfterFailure = await fixture.getAgent(sibling.id);
+    assert.equal(
+      Object.keys(siblingAfterFailure.plugins ?? {}).length,
+      0,
+      "the failed primary deployment must not mutate sibling desired plugins.",
+    );
+    assert.deepEqual(
+      await fixture.gatewayPodIdentity(sibling),
+      siblingPodBefore,
+      "the failed primary candidate must not replace the sibling Agent workload.",
+    );
+    assert.deepEqual(await fixture.readWorkspaceSentinel(sibling, { name: sentinel.name }), {
+      runtime: siblingWorkspaceBefore.runtime,
+      path: siblingWorkspaceBefore.path,
+      sha256: siblingWorkspaceBefore.sha256,
+      length: siblingWorkspaceBefore.length,
+      content: sentinel.content,
+    });
+  },
+);

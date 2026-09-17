@@ -56,6 +56,18 @@ requested plugin snapshot. Check deployment status for startup outcomes;
 the pointer before runtime activation completes. Saved configuration remains
 readable if the catalog entry or Driver disappears.
 
+For Compute-owned Kubernetes embedded OpenClaw and dedicated Codex workloads,
+a selected native install operation that fails with an exact admitted plugin ID
+becomes deployment status `failed` with `PLUGIN_INSTALL_FAILED` and
+`data.pluginId`. When native Codex reports a successful install response with
+apps that still need authentication, deployment status becomes `failed` with
+`PLUGIN_AUTH_REQUIRED` and the admitted `data.pluginId`. Both cases stop the
+candidate instead of skipping the plugin. Transport loss, timeouts, malformed
+native responses, signals, lost workload evidence, and startup failures outside
+the selected install operation remain ordinary unattributed failures. Provider-owned
+Harnesses and non-Kubernetes Compute paths retain their generic startup-failure
+behavior.
+
 SSH Compute currently supports plugin-free embedded OpenClaw only. A revision
 with any nonempty requested plugin map is rejected before SSH host effects,
 including when a PluginDriver is selected.
@@ -164,6 +176,11 @@ Agent GET, create, and update return saved selections under `data.plugins`.
 Existing revision and deployment-status reads describe the deployed request and
 startup outcome. Successful Agent mutations and authorization denials retain
 attributable audit evidence.
+
+The [Agent reference](agents.md#deployment-status) owns generic deployment
+polling. Plugin failure responses use fixed platform messages and include only
+the admitted plugin ID in `error.data`. Native text, command output,
+credentials, claim tokens, and workload paths are never returned.
 
 ### Agent and revision plugin fields
 

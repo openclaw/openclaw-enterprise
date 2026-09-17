@@ -84,6 +84,11 @@ export const RevisionParams = Type.Object(
   { additionalProperties: false },
 );
 
+export const DeploymentParams = Type.Object(
+  { namespaceId: NamespaceId, agentId: AgentId, deploymentId: RevisionId },
+  { additionalProperties: false },
+);
+
 export const WORKSPACE_FILE_NAMES = Object.freeze([
   "AGENTS.md",
   "SOUL.md",
@@ -408,6 +413,7 @@ export type ServiceAccountParams = Type.Static<typeof ServiceAccountParams>;
 export type SecretParams = Type.Static<typeof SecretParams>;
 export type AgentParams = Type.Static<typeof AgentParams>;
 export type RevisionParams = Type.Static<typeof RevisionParams>;
+export type DeploymentParams = Type.Static<typeof DeploymentParams>;
 export type WorkspaceFileName = Type.Static<typeof WorkspaceFileName>;
 export type AgentRuntimeCredentialsBody = Type.Static<typeof AgentRuntimeCredentialsBody>;
 export type WorkspaceFileParams = Type.Static<typeof WorkspaceFileParams>;

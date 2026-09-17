@@ -8,6 +8,7 @@ const {
 } = require("node:path");
 const {
   mkdirSync: pluginMkdirSync,
+  existsSync: pluginExistsSync,
   readFileSync: pluginReadFileSync,
   writeFileSync: pluginWriteFileSync,
 } = require("node:fs");
@@ -15,6 +16,27 @@ const { spawnSync: pluginSpawnSync } = require("node:child_process");
 
 const CODEX_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS = Number(process.env.OPENCLAW_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS ?? "10000");
 const CODEX_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS = Number(process.env.OPENCLAW_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS ?? "60000");
+const PLUGIN_RECEIPT_DIRECTORY_ENV = "OCC_PLUGIN_RECEIPT_DIRECTORY";
+const PLUGIN_RECEIPT_GATE_ENV = "OCC_PLUGIN_RECEIPT_GATE";
+const PLUGIN_RECEIPT_POD_UID_ENV = "OCC_PLUGIN_RECEIPT_POD_UID";
+const PLUGIN_RECEIPT_FILE = "diagnosis.json";
+const PLUGIN_TERMINATION_LOG = "/dev/termination-log";
+const PLUGIN_RECEIPT_BIND_DEADLINE_MS = Number(process.env.OCC_PLUGIN_RECEIPT_BIND_DEADLINE_MS ?? "180000");
+const PLUGIN_DIAGNOSTIC_CODES = new Set(["PLUGIN_INSTALL_FAILED", "PLUGIN_AUTH_REQUIRED"]);
+
+class PluginTerminalDiagnosticError extends Error {
+  constructor(diagnostic, message) {
+    super(message);
+    this.diagnostic = diagnostic;
+  }
+}
+
+class CodexAppServerRequestError extends Error {
+  constructor(method, message) {
+    super(message);
+    this.method = method;
+  }
+}
 
 function readRuntimePayload() {
   const encoded = process.env.OPENCLAW_PLUGIN_RUNTIME_JSON;
@@ -77,12 +99,129 @@ function pluginRuntimeReady() {
   if (marker !== undefined) pluginWriteFileSync(marker, "ready\n", { mode: 0o600 });
 }
 
+function pluginDiagnostic(pluginId, code) {
+  requireNonEmptyString(pluginId, "Plugin diagnostic plugin ID");
+  if (!PLUGIN_DIAGNOSTIC_CODES.has(code)) {
+    throw new Error("Plugin diagnostic code is invalid.");
+  }
+  return { pluginId, code };
+}
+
+function isPluginDiagnostic(value) {
+  return (
+    isPlainObject(value) &&
+    typeof value.pluginId === "string" &&
+    value.pluginId.length > 0 &&
+    PLUGIN_DIAGNOSTIC_CODES.has(value.code)
+  );
+}
+
+function isPluginTerminalDiagnosticError(error) {
+  return error instanceof PluginTerminalDiagnosticError && isPluginDiagnostic(error.diagnostic);
+}
+
+function pluginReceiptContext(container) {
+  const directory = process.env[PLUGIN_RECEIPT_DIRECTORY_ENV];
+  const gate = process.env[PLUGIN_RECEIPT_GATE_ENV];
+  const podUid = process.env[PLUGIN_RECEIPT_POD_UID_ENV];
+  if (directory === undefined && gate === undefined && podUid === undefined) return undefined;
+  requireNonEmptyString(directory, "Plugin receipt directory");
+  requireNonEmptyString(gate, "Plugin receipt gate");
+  requireNonEmptyString(podUid, "Plugin receipt Pod UID");
+  requireNonEmptyString(container, "Plugin receipt container");
+  return {
+    container,
+    podUid,
+    latch: safeRuntimePath(directory, PLUGIN_RECEIPT_FILE),
+    gate,
+  };
+}
+
+function readJsonFile(path, description) {
+  try {
+    return JSON.parse(pluginReadFileSync(path, "utf8"));
+  } catch {
+    throw new Error(description + " is unavailable.");
+  }
+}
+
+function pluginRuntimeSyncDelay(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function writePluginTerminationDiagnostic(diagnostic) {
+  const encoded = JSON.stringify(diagnostic);
+  if (Buffer.byteLength(encoded, "utf8") >= 4096) {
+    throw new Error("Plugin diagnostic exceeds the termination-message limit.");
+  }
+  pluginWriteFileSync(PLUGIN_TERMINATION_LOG, encoded, { mode: 0o600 });
+}
+
+function persistPluginDiagnostic(receipt, diagnostic) {
+  if (receipt === undefined) return;
+  const valid = pluginDiagnostic(diagnostic.pluginId, diagnostic.code);
+  pluginMkdirSync(pluginDirname(receipt.latch), { recursive: true });
+  pluginWriteFileSync(receipt.latch, JSON.stringify(valid), { mode: 0o600 });
+  writePluginTerminationDiagnostic(valid);
+}
+
+function failWithPluginDiagnostic(receipt, diagnostic, message) {
+  persistPluginDiagnostic(receipt, diagnostic);
+  throw new PluginTerminalDiagnosticError(pluginDiagnostic(diagnostic.pluginId, diagnostic.code), message);
+}
+
+function checkPluginReceiptBeforeInstall(container) {
+  const receipt = pluginReceiptContext(container);
+  if (receipt === undefined) return undefined;
+  const deadline = Date.now() + PLUGIN_RECEIPT_BIND_DEADLINE_MS;
+  for (;;) {
+    if (pluginExistsSync(receipt.latch)) {
+      const diagnostic = readJsonFile(receipt.latch, "Plugin receipt latch");
+      if (!isPluginDiagnostic(diagnostic)) {
+        throw new Error("Plugin receipt latch is invalid.");
+      }
+      persistPluginDiagnostic(receipt, diagnostic);
+      throw new PluginTerminalDiagnosticError(diagnostic, "Plugin installation already failed.");
+    }
+    const gate = readJsonFile(receipt.gate, "Plugin receipt gate");
+    if (!isPlainObject(gate) || typeof gate.container !== "string" || gate.container !== container) {
+      throw new Error("Plugin receipt gate does not match the runtime container.");
+    }
+    if (gate.phase === "pending") {
+      if (gate.podUid === receipt.podUid) return receipt;
+      if (typeof gate.podUid === "string" && gate.podUid.length > 0) {
+        throw new Error("Plugin receipt gate does not match the runtime Pod.");
+      }
+      if (Date.now() >= deadline) {
+        throw new Error("Plugin receipt gate was not bound to the runtime Pod.");
+      }
+      pluginRuntimeSyncDelay(250);
+      continue;
+    }
+    if (gate.phase === "failed") {
+      if (isPluginDiagnostic(gate.diagnostic)) {
+        failWithPluginDiagnostic(receipt, gate.diagnostic, "Plugin installation already failed.");
+      }
+      throw new Error("Plugin receipt gate is failed.");
+    }
+    if (gate.phase === "succeeded") return undefined;
+    throw new Error("Plugin receipt gate phase is invalid.");
+  }
+}
+
 function readOpenClawConfig() {
   return JSON.parse(pluginReadFileSync(process.env.OPENCLAW_CONFIG_PATH, "utf8"));
 }
 
+function writableOpenClawConfigPath() {
+  if (typeof process.env.OPENCLAW_STATE_DIR === "string" && process.env.OPENCLAW_STATE_DIR.length > 0) {
+    return safeRuntimePath(process.env.OPENCLAW_STATE_DIR, "openclaw.json");
+  }
+  return safeRuntimePath(requireNonEmptyString(process.env.HOME, "OpenClaw runtime home"), ".openclaw/openclaw.json");
+}
+
 function writeOpenClawConfig(config) {
-  const target = safeRuntimePath(process.env.HOME, ".openclaw/openclaw.json");
+  const target = writableOpenClawConfigPath();
   pluginMkdirSync(pluginDirname(target), { recursive: true });
   pluginWriteFileSync(target, JSON.stringify(config), { mode: 0o600 });
   process.env.OPENCLAW_CONFIG_PATH = target;
@@ -90,6 +229,10 @@ function writeOpenClawConfig(config) {
 
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasOwn(value, key) {
+  return Object.prototype.hasOwnProperty.call(value, key);
 }
 
 function cloneJson(value) {
@@ -214,11 +357,17 @@ function openClawPluginPackageSpec(plugin) {
   return packageName + "@" + version;
 }
 
-function runOpenClaw(args, description) {
+function runOpenClaw(args, description, diagnostic) {
   const result = pluginSpawnSync("node", ["/app/openclaw.mjs", ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
+  if (result.error !== undefined || typeof result.status !== "number") {
+    throw new Error(description + " failed.");
+  }
+  if (result.status !== 0 && diagnostic !== undefined) {
+    throw new PluginTerminalDiagnosticError(diagnostic, description + " failed.");
+  }
   if (result.status !== 0) {
     throw new Error(description + " failed.");
   }
@@ -278,7 +427,7 @@ function verifyOpenClawPluginInstall(plugin) {
   }
 }
 
-function installOpenClawPlugins(runtime) {
+function installOpenClawPlugins(runtime, receipt) {
   const artifact =
     runtime.manifest?.kind === "openclaw"
       ? pluginRuntimeTranslator.openClawRuntimeArtifact(runtime.manifest.selections ?? {})
@@ -287,7 +436,18 @@ function installOpenClawPlugins(runtime) {
   applyOpenClawPluginConfiguration(runtime);
   for (const plugin of installs) {
     const spec = openClawPluginPackageSpec(plugin);
-    runOpenClaw(["plugins", "install", spec, "--pin", "--force"], "OpenClaw plugin install");
+    try {
+      runOpenClaw(
+        ["plugins", "install", spec, "--pin", "--force"],
+        "OpenClaw plugin install",
+        pluginDiagnostic(plugin.pluginId, "PLUGIN_INSTALL_FAILED"),
+      );
+    } catch (error) {
+      if (isPluginTerminalDiagnosticError(error)) {
+        persistPluginDiagnostic(receipt, error.diagnostic);
+      }
+      throw error;
+    }
   }
   if (installs.length > 0) {
     runOpenClawJson(["plugins", "registry", "--refresh", "--json"], "OpenClaw plugin registry refresh");
@@ -325,6 +485,31 @@ function createPluginWebSocket(url, options) {
   } catch {
     throw new Error("Codex app-server plugin runtime WebSocket client is unavailable.");
   }
+}
+
+function isJsonRpcError(value) {
+  return (
+    isPlainObject(value) &&
+    Number.isInteger(value.code) &&
+    typeof value.message === "string"
+  );
+}
+
+function isAppSummary(value) {
+  return (
+    isPlainObject(value) &&
+    typeof value.id === "string" &&
+    value.id.length > 0 &&
+    typeof value.name === "string" &&
+    (value.needsAuth === undefined || typeof value.needsAuth === "boolean") &&
+    (value.category === undefined || value.category === null || typeof value.category === "string") &&
+    (value.description === undefined ||
+      value.description === null ||
+      typeof value.description === "string") &&
+    (value.installUrl === undefined ||
+      value.installUrl === null ||
+      typeof value.installUrl === "string")
+  );
 }
 
 function codexAppServerRequestSequence(requests, timeoutMs) {
@@ -367,10 +552,26 @@ function codexAppServerRequestSequence(requests, timeoutMs) {
         finish(new Error("Codex app-server plugin runtime response was invalid JSON."));
         return;
       }
+      if (!isPlainObject(message)) {
+        finish(new Error("Codex app-server plugin runtime response was malformed."));
+        return;
+      }
       if (message.id !== requestIndex + 1) return;
-      if (message.error !== undefined) {
+      // Codex 0.152.1's app-server protocol uses id plus exactly one of
+      // result or error; its pinned schema omits a jsonrpc response field.
+      const hasResult = hasOwn(message, "result");
+      const hasError = hasOwn(message, "error");
+      if (hasResult === hasError) {
+        finish(new Error("Codex app-server plugin runtime response was malformed."));
+        return;
+      }
+      if (hasError) {
         const method = requests[requestIndex]?.method ?? "unknown";
-        finish(new Error("Codex app-server plugin runtime request failed during " + method + ": " + (message.error.message ?? "unknown error")));
+        if (!isJsonRpcError(message.error)) {
+          finish(new Error("Codex app-server plugin runtime response was malformed."));
+          return;
+        }
+        finish(new CodexAppServerRequestError(method, "Codex app-server plugin runtime request failed during " + method + ": " + (message.error.message ?? "unknown error")));
         return;
       }
       results.push(message.result);
@@ -483,6 +684,7 @@ function verifyCodexPluginDetail(plugin, readParams, detail) {
 }
 
 async function installCodexSelectionSet(selections) {
+  if (Object.keys(selections).length === 0) return;
   const listed = await codexAppServerRequest("plugin/list", {});
   const readParamsList = pluginRuntimeTranslator.codexReadParamsForSelections(selections, listed);
   if (readParamsList.length === 0) return;
@@ -493,8 +695,45 @@ async function installCodexSelectionSet(selections) {
   const resolvedArtifact = pluginRuntimeTranslator.codexRuntimeArtifact(selections, resolvedDetails);
   await writeCodexAppConfiguration(resolvedArtifact.configuration);
   for (const readParams of readParamsList) {
-    const install = await codexAppServerRequest("plugin/install", readParams);
-    if ((install?.appsNeedingAuth ?? []).length > 0) {
+    const selectedPlugin = resolvedArtifact.installs.find(
+      (candidate) => candidate.remotePluginId === readParams.pluginName,
+    );
+    let install;
+    try {
+      install = await codexAppServerRequest("plugin/install", readParams);
+    } catch (error) {
+      if (
+        error instanceof CodexAppServerRequestError &&
+        error.method === "plugin/install" &&
+        selectedPlugin !== undefined
+      ) {
+        throw new PluginTerminalDiagnosticError(
+          pluginDiagnostic(selectedPlugin.pluginId, "PLUGIN_INSTALL_FAILED"),
+          "Codex plugin installation failed.",
+        );
+      }
+      throw error;
+    }
+    if (!isPlainObject(install)) {
+      throw new Error("Codex plugin installation returned invalid data.");
+    }
+    if (install.authPolicy !== "ON_INSTALL" && install.authPolicy !== "ON_USE") {
+      throw new Error("Codex plugin installation returned invalid authentication data.");
+    }
+    const appsNeedingAuth = install.appsNeedingAuth;
+    if (appsNeedingAuth !== undefined && !Array.isArray(appsNeedingAuth)) {
+      throw new Error("Codex plugin installation returned invalid authentication data.");
+    }
+    if ((appsNeedingAuth ?? []).some((app) => !isAppSummary(app))) {
+      throw new Error("Codex plugin installation returned invalid authentication data.");
+    }
+    if ((appsNeedingAuth ?? []).length > 0) {
+      if (selectedPlugin !== undefined) {
+        throw new PluginTerminalDiagnosticError(
+          pluginDiagnostic(selectedPlugin.pluginId, "PLUGIN_AUTH_REQUIRED"),
+          "Codex plugin installation requires connector authentication.",
+        );
+      }
       throw new Error("Codex plugin installation requires connector authentication.");
     }
   }
@@ -520,7 +759,7 @@ async function installCodexSelectionSet(selections) {
   assertConfigContainsOverlay(await readCodexAppConfiguration(), resolvedArtifact.configuration);
 }
 
-async function installCodexPlugins(runtime) {
+async function installCodexPlugins(runtime, receipt) {
   assertCodexPluginRuntime(runtime);
   const selections = runtime.manifest.selections ?? {};
   const deadline = Date.now() + CODEX_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS;
@@ -532,6 +771,10 @@ async function installCodexPlugins(runtime) {
       break;
     } catch (error) {
       lastError = error;
+      if (isPluginTerminalDiagnosticError(error)) {
+        persistPluginDiagnostic(receipt, error.diagnostic);
+        throw error;
+      }
       await pluginRuntimeDelay(250);
     }
   }
@@ -603,6 +846,7 @@ const { spawn } = require("node:child_process");
 ${PLUGIN_RUNTIME_HELPERS}
 ${OPENCLAW_AUTH_PROBE_HELPERS}
 
+const gatewayPluginReceipt = checkPluginReceiptBeforeInstall("gateway");
 const runtimeAssetsDirectory = "/home/node/openclaw-runtime-assets";
 
 function clearDirectoryContents(directory) {
@@ -659,7 +903,9 @@ if (process.env.OPENCLAW_WORKSPACE_DIR !== undefined) {
 }
 delete process.env.OPENCLAW_LOG_LEVEL;
 const pluginRuntime = readGatewayPluginRuntime();
-if (pluginRuntime !== undefined) installOpenClawPlugins(pluginRuntime);
+if (pluginRuntime !== undefined) {
+  installOpenClawPlugins(pluginRuntime, gatewayPluginReceipt);
+}
 const child = spawn(
   "node",
   ["/app/openclaw.mjs", "gateway", "--port", process.env.OPENCLAW_GATEWAY_PORT],
@@ -678,6 +924,7 @@ const { spawn, spawnSync } = require("node:child_process");
 ${PLUGIN_RUNTIME_HELPERS}
 ${AUTH_PROBE_FAILURE_HELPER}
 
+const agentPluginReceipt = checkPluginReceiptBeforeInstall("agent");
 const loginMode = process.env.CODEX_LOGIN_MODE;
 const apiKey = process.env.OPENAI_API_KEY;
 const accessToken = process.env.CODEX_ACCESS_TOKEN;
@@ -821,7 +1068,9 @@ forwardTermination(child);
 child.on("exit", (code, signal) => process.exit(code ?? (signal === "SIGTERM" ? 0 : 1)));
 (async () => {
   try {
-    if (pluginRuntime !== undefined) await installCodexPlugins(pluginRuntime);
+    if (pluginRuntime !== undefined) {
+      await installCodexPlugins(pluginRuntime, agentPluginReceipt);
+    }
     pluginRuntimeReady();
   } catch (error) {
     console.error("Codex plugin runtime initialization failed: " + pluginRuntimeErrorMessage(error));

@@ -391,7 +391,6 @@ export function createPluginRuntimeTranslator() {
       assertCodexDetailRepresentable(selection, detail);
       const pluginVersion = detailVersion(detail);
       const remotePluginId = detailRemotePluginId(detail);
-      const enterprisePluginId = codexPluginId(nativeId);
       if (enabledByPolicy(selection)) {
         const reviewerValue = reviewer(selection);
         const defaultApprovalMode = pluginApprovalMode(selection) === "always" ? "approve" : "auto";
@@ -414,7 +413,7 @@ export function createPluginRuntimeTranslator() {
         }
       }
       installs.push({
-        pluginId: enterprisePluginId,
+        pluginId,
         nativeId,
         remotePluginId,
         version: pluginVersion,
@@ -460,7 +459,7 @@ export function createPluginRuntimeTranslator() {
       }
       entries[nativeId] = { enabled: enabledByPolicy(selection) };
       installs.push({
-        pluginId: OCC_DRIVER_ID + ":" + nativeId,
+        pluginId,
         nativeId,
         packageName: "@openclaw/diffs",
         version: OCC_DIFFS_VERSION,

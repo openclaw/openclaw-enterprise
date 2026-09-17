@@ -76,6 +76,11 @@ import {
   type PlatformStateStore,
   type PlatformUnitOfWork,
 } from "./state/platform-state.ts";
+import {
+  controllerWorkDeploymentStatus,
+  deploymentErrorForWork,
+  type DeploymentStatusResult,
+} from "./state/controller-work.ts";
 import { PostgresCommitOutcomeUnknownError } from "./state/postgres-state.ts";
 
 export {
@@ -142,6 +147,13 @@ export {
   type WorkClaim,
   type WorkResult,
 } from "./state/postgres-work-queue.ts";
+export {
+  type DeploymentStatus,
+  type DeploymentStatusError,
+  type DeploymentStatusResult,
+  type ReceiptAcknowledgementIdentity,
+  type ReceiptAcknowledgementWork,
+} from "./state/controller-work.ts";
 
 export const BOOTSTRAP_DEFAULT_NAMESPACE_NAME = "default";
 
@@ -942,6 +954,36 @@ export class OpenClawController {
         );
       }
       return revision;
+    });
+  }
+
+  async getDeploymentStatus(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    deploymentId: string,
+  ): Promise<DeploymentStatusResult> {
+    const revision = await this.getRevision(principalId, namespaceId, agentId, deploymentId);
+    return this.read(async (state) => {
+      const idempotencyKey = `agent_revision:${revision.id}:reconcile`;
+      const work = await state.operations.findWork(idempotencyKey);
+      if (
+        work === undefined ||
+        work.namespaceId !== revision.namespaceId ||
+        work.agentId !== revision.agentId ||
+        work.revisionId !== revision.id
+      ) {
+        throw new DependencyUnavailableError(
+          "The deployment reconciliation record is unavailable.",
+        );
+      }
+      return Object.freeze({
+        deploymentId: revision.id,
+        namespaceId: revision.namespaceId,
+        agentId: revision.agentId,
+        status: controllerWorkDeploymentStatus(work, this.clock()),
+        error: deploymentErrorForWork(work),
+      });
     });
   }
 

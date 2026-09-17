@@ -504,6 +504,7 @@ test(
       `UPDATE occ.controller_work AS work
        SET state = 'succeeded',
            completed_at = clock_timestamp(),
+           reason_code = 'REVISION_ACTIVATED',
            updated_at = clock_timestamp()
        FROM occ.agent_revisions AS revision,
             jsonb_each(COALESCE(revision.admitted_spec->'secret_bindings', '{}'::jsonb))

@@ -682,6 +682,12 @@ export interface ComputeReadiness extends Scope {
   readonly agentId: string;
   readonly revisionId: string;
   readonly ready: boolean;
+  /** Opaque durable evidence identity. Failure requires this and ready:false. */
+  readonly receiptId?: string;
+  readonly failure?: {
+    readonly code: "PLUGIN_INSTALL_FAILED" | "PLUGIN_AUTH_REQUIRED";
+    readonly pluginId: string;
+  };
 }
 
 /** Authorized, server-admitted resource identities for an Agent-owned runtime. */
@@ -741,6 +747,11 @@ export interface ComputeDriver extends Driver {
   ): Promise<ComputeReadiness>;
   activateRevision?(revision: AgentRevision, context?: ComputeRevisionContext): Promise<void>;
   deactivateRevision?(revision: AgentRevision): Promise<void>;
+  /** Only the immutable original deployment result authorizes post-commit cleanup. */
+  acknowledgeRevisionReceipt?(
+    revision: AgentRevision,
+    receipt: { readonly receiptId: string; readonly outcome: "succeeded" | "failed" },
+  ): Promise<void>;
   stopRevision(revision: AgentRevision): Promise<void>;
   retireRevision(revision: AgentRevision): Promise<void>;
 }

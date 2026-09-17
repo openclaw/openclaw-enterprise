@@ -62,6 +62,7 @@ import {
   NotImplementedError,
   ResourceConflictError,
   ScopeViolationError,
+  type DeploymentStatusResult,
   type HarnessResolver,
   type OpenClawController,
 } from "@openclaw-enterprise/occ";
@@ -548,6 +549,16 @@ function clientRevision(revision: Readonly<AgentRevision>): Record<string, unkno
     ...(revision.plugins === undefined ? {} : { plugins: revision.plugins }),
     harnessAuth: harnessAuthBindingFromSnapshot(revision.harnessAuth),
     createdAt: revision.createdAt,
+  };
+}
+
+function clientDeploymentStatus(status: Readonly<DeploymentStatusResult>): Record<string, unknown> {
+  return {
+    deploymentId: status.deploymentId,
+    namespaceId: status.namespaceId,
+    agentId: status.agentId,
+    status: status.status,
+    error: status.error,
   };
 }
 
@@ -2145,6 +2156,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         params.revisionId as string,
       );
       reply.send({ data: clientRevision(revision), meta: { requestId: request.id } });
+      return;
+    }
+
+    if (operation.operationId === "getAgentDeployment") {
+      const status = await controller.getDeploymentStatus(
+        context.actorId,
+        namespaceId,
+        agentId,
+        params.deploymentId as string,
+      );
+      reply.send({ data: clientDeploymentStatus(status), meta: { requestId: request.id } });
       return;
     }
 

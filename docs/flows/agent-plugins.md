@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-09-09
-last_updated_session: codex/01a08228-c3ec-7ab2-b0c0-74f49a8ec8a7
+updated: 2026-09-17
+last_updated_session: codex/01a0b0fc-4a24-76c0-8fb7-f3a3a434d464
 ---
 
 # Agent Plugin Deployment Flow
@@ -43,12 +43,17 @@ graph TD
     D -->|existing embedded gateway| R["Stage replacement; commit candidate pointer"]
     R --> S["Stop old gateway; install and ready replacement"]
     D -->|no embedded gateway to replace| F["Resolve catalog; install and ready runtime"]
+    F -->|typed install failure| X["Record receipt and report plugin failure"]
     F -->|ready| G["Commit candidate pointer; finish activation"]
     F -->|failure| H["Preparation failed; prior pointer unchanged"]
     S -->|ready| I["Complete reconciliation"]
+    S -->|typed install failure| X
     G -->|success| I
     S -->|failure| J["Incomplete revision; candidate pointer retained"]
     G -->|failure| J
+  end
+  subgraph OCCOutcome["Original deployment outcome"]
+    X --> Y["Commit failed deployment status before receipt acknowledgment"]
   end
 ```
 
@@ -137,6 +142,27 @@ Codex owns its private cache layout and integrity; Enterprise does not inspect
 private cache files. The Driver does not install packages in OCC. The normal
 Codex readiness path remains responsible for runtime health.
 
+For Kubernetes workloads that Compute owns, the native install helper checks the
+receipt gate before the first install attempt. A selected OpenClaw install
+command that exits normally with a nonzero status, a selected Codex
+`plugin/install` error response, or a successful Codex install response with
+apps that still need authentication writes a bounded `{pluginId, code}`
+diagnostic to the runtime latch and termination message. Transport loss,
+timeouts, signals, malformed responses, discovery failures, policy translation
+failures, and unrelated startup errors do not receive plugin attribution.
+Provider-owned Harnesses remain outside this receipt path.
+
+Kubernetes Compute creates an owned receipt ConfigMap for nonempty selections
+and mounts its `state.json` plus an emptyDir latch into the expected runtime
+container. The runtime waits up to three minutes for Kubernetes to project the
+receipt gate and for Compute to bind the gate to its Pod UID before native
+installation starts. Compute binds the receipt to one live Pod UID only after
+adding the receipt finalizer to that exact Pod. Observation accepts a diagnostic
+only when the receipt ConfigMap identity, Pod UID, container name, closed
+diagnostic code, and admitted plugin ID all match the immutable revision. A
+replacement Pod, foreign ConfigMap, malformed termination message, or lost Pod
+evidence leaves the candidate in the ordinary unattributed failure path.
+
 ### 5. Complete revision reconciliation
 
 `apps/controller/src/worker.ts:finalizeRevision`
@@ -155,6 +181,15 @@ is not installation/readiness evidence. Normal Agent turns use native policy;
 old workload state follows ordinary retirement. The persistent Agent workspace
 and Kubernetes gateway state database retain their Agent-owned lifecycle.
 
+An attributed plugin receipt changes the original deployment work to a terminal
+failure before any receipt acknowledgment. The worker persists the fixed reason
+code and `{pluginId}` metadata under its live claim, then its recovery loop asks
+Compute to acknowledge the exact receipt identity. A lost claim cannot commit or
+acknowledge the receipt; a later worker re-observes before treating an
+already-active candidate as successful. Successful activation releases the
+receipt gate, while terminal failure leaves a tombstone until revision
+retirement or namespace cleanup.
+
 ## Debugging and Verification
 
 - Compare `Agent.plugins` with the active revision snapshot and deployment status.
@@ -168,6 +203,10 @@ and Kubernetes gateway state database retain their Agent-owned lifecycle.
 - With SSH Compute, any nonempty requested plugin map should fail before host
   effects. Clear the Agent's plugin map or deploy through a compatible
   Kubernetes runtime.
+- For attributed plugin failures, check deployment status for
+  `PLUGIN_INSTALL_FAILED` or `PLUGIN_AUTH_REQUIRED` and `error.data.pluginId`.
+  Absence of that code means the failure stayed generic; do not infer a plugin
+  identity from native logs.
 - Prove behavior with a model-chosen plugin call during a normal Agent turn,
   then disable/remove on a later deployment and verify another Agent is unchanged.
   Source or fixture tests alone do not establish native runtime compatibility.
@@ -189,6 +228,8 @@ and Kubernetes gateway state database retain their Agent-owned lifecycle.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-17 15:02: Added the Kubernetes receipt and terminal plugin-failure path for Compute-owned plugin startup without claiming native proof completion. (codex/01a0b0fc-4a24-76c0-8fb7-f3a3a434d464 - 58ead994)
 
 - 2026-09-08 16:05: Corrected Codex Linear support to the existing bridge path and kept live local-Kubernetes proof pending (codex/01a08228-c3ec-7ab2-b0c0-74f49a8ec8a7 - 79021fa)
 - 2026-09-08 17:02: Recorded current Codex Linear proof boundary: native install/readiness passed, bridge app batch request passed, force-refresh app state showed Linear enabled/callable, and a normal turn invoked Linear `list_teams` before timing out in native `waitingOnApproval` without a result (codex/01a08228-c3ec-7ab2-b0c0-74f49a8ec8a7 - 79021fa)

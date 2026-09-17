@@ -1,6 +1,35 @@
-import { isNonEmptyString, isPositiveSafeInteger } from "@openclaw-enterprise/utils";
+import { isPositiveSafeInteger } from "@openclaw-enterprise/utils";
 import { randomUUID } from "node:crypto";
 import { ResourceConflictError, ScopeViolationError } from "../errors.ts";
+import {
+  nonempty,
+  safeFailureCode,
+  safeReceiptId,
+  validateFailureData,
+  type ClaimedWork,
+  type ControllerWork,
+  type ControllerWorkState,
+  type EnqueueWork,
+  type PermanentFailure,
+  type ReceiptAcknowledgementIdentity,
+  type ReceiptAcknowledgementWork,
+  type RetryableFailure,
+  type WorkClaim,
+  type WorkResult,
+} from "./controller-work.ts";
+
+export type {
+  ClaimedWork,
+  ControllerWork,
+  ControllerWorkState,
+  EnqueueWork,
+  PermanentFailure,
+  ReceiptAcknowledgementIdentity,
+  ReceiptAcknowledgementWork,
+  RetryableFailure,
+  WorkClaim,
+  WorkResult,
+} from "./controller-work.ts";
 
 export interface PostgresQueryClient {
   query(
@@ -9,64 +38,8 @@ export interface PostgresQueryClient {
   ): Promise<{ rows: unknown[]; rowCount: number | null }>;
 }
 
-export type ControllerWorkState = "queued" | "claimed" | "succeeded" | "failed_permanent";
-
-export interface ControllerWork {
-  readonly idempotencyKey: string;
-  readonly namespaceId: string;
-  readonly agentId?: string;
-  readonly revisionId?: string;
-  readonly actorId: string;
-  readonly namespaceTarget?: "ready" | "deleted";
-  readonly agentTarget?: "stopped";
-  readonly state: ControllerWorkState;
-  readonly availableAt: Date;
-  readonly attemptCount: number;
-  readonly claimToken?: string;
-  readonly leaseExpiresAt?: Date;
-  readonly completedAt?: Date;
-  readonly createdAt: Date;
-  readonly updatedAt: Date;
-}
-
-export interface ClaimedWork extends ControllerWork {
-  readonly state: "claimed";
-  readonly claimToken: string;
-  readonly leaseExpiresAt: Date;
-}
-
-export interface EnqueueWork {
-  readonly idempotencyKey: string;
-  readonly namespaceId: string;
-  readonly agentId?: string;
-  readonly revisionId?: string;
-  readonly actorId: string;
-  readonly namespaceTarget?: "ready" | "deleted";
-  readonly agentTarget?: "stopped";
-  readonly availableAt?: Date | string;
-}
-
-export interface WorkClaim {
-  readonly idempotencyKey: string;
-  readonly claimToken: string;
-}
-
 export interface ClaimRequest {
   readonly claimToken?: string;
-}
-
-export interface WorkResult {
-  readonly details?: Readonly<Record<string, unknown>>;
-}
-
-export interface RetryableFailure {
-  readonly code: string;
-  readonly summary?: string;
-}
-
-export interface PermanentFailure {
-  readonly code: string;
-  readonly summary?: string;
 }
 
 export interface RecoveryRequest {
@@ -102,6 +75,10 @@ interface WorkRow {
   readonly claim_token: string | null;
   readonly lease_expires_at: Date | string | null;
   readonly completed_at: Date | string | null;
+  readonly reason_code: string | null;
+  readonly error_data: Record<string, unknown> | null;
+  readonly receipt_id: string | null;
+  readonly receipt_acknowledged_at: Date | string | null;
   readonly created_at: Date | string;
   readonly updated_at: Date | string;
 }
@@ -125,13 +102,6 @@ export class WorkClaimLostError extends Error {
 function positiveInteger(value: number, name: string): number {
   if (!isPositiveSafeInteger(value)) {
     throw new ScopeViolationError(`${name} must be a positive safe integer.`);
-  }
-  return value;
-}
-
-function nonempty(value: string, name: string): string {
-  if (!isNonEmptyString(value)) {
-    throw new ScopeViolationError(`${name} must be a nonempty string.`);
   }
   return value;
 }
@@ -169,6 +139,12 @@ function asWork(value: unknown): ControllerWork {
     ...(row.claim_token === null ? {} : { claimToken: row.claim_token }),
     ...(row.lease_expires_at === null ? {} : { leaseExpiresAt: asDate(row.lease_expires_at) }),
     ...(row.completed_at === null ? {} : { completedAt: asDate(row.completed_at) }),
+    ...(row.reason_code === null ? {} : { reasonCode: row.reason_code }),
+    ...(row.error_data === null ? {} : { errorData: Object.freeze({ ...row.error_data }) }),
+    ...(row.receipt_id === null ? {} : { receiptId: row.receipt_id }),
+    ...(row.receipt_acknowledged_at === null
+      ? {}
+      : { receiptAcknowledgedAt: asDate(row.receipt_acknowledged_at) }),
     createdAt: asDate(row.created_at),
     updatedAt: asDate(row.updated_at),
   });
@@ -196,14 +172,6 @@ function validateClaim(claim: WorkClaim): void {
   if (!UUID_V4.test(claim.claimToken)) {
     throw new ScopeViolationError("The controller work claim token must be a version 4 UUID.");
   }
-}
-
-function safeFailureCode(value: string): string {
-  const normalized = nonempty(value, "Controller work failure code")
-    .toUpperCase()
-    .replace(/[^A-Z0-9_]/g, "_")
-    .slice(0, 64);
-  return normalized.length === 0 ? "UNKNOWN_FAILURE" : normalized;
 }
 
 function sqlState(error: unknown): string | undefined {
@@ -447,8 +415,18 @@ export class PostgresWorkQueue {
     return count;
   }
 
-  async complete(claim: WorkClaim, _result: WorkResult = {}): Promise<void> {
+  async findWork(idempotencyKey: string): Promise<ControllerWork | undefined> {
+    const found = await this.client.query(
+      `SELECT * FROM occ.controller_work WHERE idempotency_key = $1`,
+      [nonempty(idempotencyKey, "Controller work idempotency key")],
+    );
+    return found.rows[0] === undefined ? undefined : asWork(found.rows[0]);
+  }
+
+  async complete(claim: WorkClaim, result: WorkResult = {}): Promise<void> {
     validateClaim(claim);
+    const reasonCode = safeFailureCode(result.code ?? "RECONCILE_SUCCEEDED");
+    const receiptId = safeReceiptId(result.receiptId) ?? null;
     const completed = await this.client.query(
       `WITH transitioned AS (
          UPDATE occ.controller_work
@@ -456,6 +434,10 @@ export class PostgresWorkQueue {
              claim_token = NULL,
              lease_expires_at = NULL,
              completed_at = clock_timestamp(),
+             reason_code = $5::text,
+             error_data = NULL,
+             receipt_id = $6::text,
+             receipt_acknowledged_at = NULL,
              updated_at = clock_timestamp()
          WHERE idempotency_key = $1
            AND state = 'claimed'
@@ -463,7 +445,7 @@ export class PostgresWorkQueue {
            AND lease_expires_at > clock_timestamp()
          RETURNING *
        ), ${INSERT_EVIDENCE_SQL}`,
-      [claim.idempotencyKey, claim.claimToken, "success", "RECONCILE_SUCCEEDED"],
+      [claim.idempotencyKey, claim.claimToken, "success", reasonCode, reasonCode, receiptId],
     );
     if (completed.rows.length === 0) {
       throw new WorkClaimLostError();
@@ -531,6 +513,16 @@ export class PostgresWorkQueue {
                WHEN attempt_count >= $5::integer THEN clock_timestamp()
                ELSE NULL
              END,
+             reason_code = CASE
+               WHEN attempt_count >= $5::integer THEN $4::text
+               ELSE NULL
+             END,
+             error_data = NULL,
+             receipt_id = CASE
+               WHEN attempt_count >= $5::integer THEN $9::text
+               ELSE NULL
+             END,
+             receipt_acknowledged_at = NULL,
              updated_at = clock_timestamp()
          WHERE idempotency_key = $1
            AND state = 'claimed'
@@ -547,6 +539,7 @@ export class PostgresWorkQueue {
         MAX_BACKOFF_MS,
         INITIAL_BACKOFF_MS,
         jitter,
+        safeReceiptId(failure.receiptId) ?? null,
       ],
     );
     if (retried.rows.length === 0) {
@@ -556,6 +549,9 @@ export class PostgresWorkQueue {
 
   async fail(claim: WorkClaim, failure: PermanentFailure): Promise<void> {
     validateClaim(claim);
+    const failureCode = safeFailureCode(failure.code);
+    const data = validateFailureData(failureCode, failure.data);
+    const receiptId = safeReceiptId(failure.receiptId) ?? null;
     const failed = await this.client.query(
       `WITH transitioned AS (
          UPDATE occ.controller_work
@@ -563,6 +559,10 @@ export class PostgresWorkQueue {
              claim_token = NULL,
              lease_expires_at = NULL,
              completed_at = clock_timestamp(),
+             reason_code = $5::text,
+             error_data = $6::jsonb,
+             receipt_id = $7::text,
+             receipt_acknowledged_at = NULL,
              updated_at = clock_timestamp()
          WHERE idempotency_key = $1
            AND state = 'claimed'
@@ -570,7 +570,15 @@ export class PostgresWorkQueue {
            AND lease_expires_at > clock_timestamp()
          RETURNING *
        ), ${INSERT_EVIDENCE_SQL}`,
-      [claim.idempotencyKey, claim.claimToken, "failure", safeFailureCode(failure.code)],
+      [
+        claim.idempotencyKey,
+        claim.claimToken,
+        "failure",
+        failureCode,
+        failureCode,
+        data === undefined ? null : JSON.stringify(data),
+        receiptId,
+      ],
     );
     if (failed.rows.length === 0) {
       throw new WorkClaimLostError();
@@ -612,6 +620,13 @@ export class PostgresWorkQueue {
                WHEN work.attempt_count >= $2::integer THEN clock_timestamp()
                ELSE NULL
              END,
+             reason_code = CASE
+               WHEN work.attempt_count >= $2::integer THEN $4::text
+               ELSE NULL
+             END,
+             error_data = NULL,
+             receipt_id = NULL,
+             receipt_acknowledged_at = NULL,
              updated_at = clock_timestamp()
          FROM candidates
          WHERE work.idempotency_key = candidates.idempotency_key
@@ -642,6 +657,10 @@ export class PostgresWorkQueue {
          UPDATE occ.controller_work AS work
          SET state = 'failed_permanent',
              completed_at = clock_timestamp(),
+             reason_code = $4::text,
+             error_data = NULL,
+             receipt_id = NULL,
+             receipt_acknowledged_at = NULL,
              updated_at = clock_timestamp()
          FROM candidates
          WHERE work.idempotency_key = candidates.idempotency_key
@@ -665,6 +684,70 @@ export class PostgresWorkQueue {
       failedPermanent,
       exhaustedQueued: exhausted.rows.length,
     });
+  }
+
+  async pendingReceiptAcknowledgements(
+    input: RecoveryRequest = {},
+  ): Promise<readonly ReceiptAcknowledgementWork[]> {
+    const requestedLimit = positiveInteger(input.limit ?? DEFAULT_RECOVERY_LIMIT, "Receipt limit");
+    if (requestedLimit > MAX_RECOVERY_LIMIT) {
+      throw new ScopeViolationError(`Receipt limit cannot exceed ${MAX_RECOVERY_LIMIT}.`);
+    }
+    const pending = await this.client.query(
+      `SELECT *
+       FROM occ.controller_work
+       WHERE state IN ('succeeded', 'failed_permanent')
+         AND revision_id IS NOT NULL
+         AND idempotency_key = 'agent_revision:' || revision_id || ':reconcile'
+         AND reason_code IS NOT NULL
+         AND receipt_id IS NOT NULL
+         AND receipt_acknowledged_at IS NULL
+         ${this.namespaceFilter()}
+       ORDER BY completed_at, idempotency_key
+       LIMIT $1::integer`,
+      [requestedLimit],
+    );
+    return Object.freeze(
+      pending.rows.map((row): ReceiptAcknowledgementWork => {
+        const work = asWork(row);
+        if (
+          (work.state !== "succeeded" && work.state !== "failed_permanent") ||
+          work.reasonCode === undefined ||
+          work.receiptId === undefined
+        ) {
+          throw new ScopeViolationError("PostgreSQL returned an invalid receipt work row.");
+        }
+        return Object.freeze({
+          ...work,
+          state: work.state,
+          reasonCode: work.reasonCode,
+          receiptId: work.receiptId,
+        });
+      }),
+    );
+  }
+
+  async acknowledgeReceipt(identity: ReceiptAcknowledgementIdentity): Promise<ControllerWork> {
+    const acknowledged = await this.client.query(
+      `UPDATE occ.controller_work
+       SET receipt_acknowledged_at = COALESCE(receipt_acknowledged_at, clock_timestamp()),
+           updated_at = clock_timestamp()
+       WHERE idempotency_key = $1
+         AND state = $2::text
+         AND state IN ('succeeded', 'failed_permanent')
+         AND reason_code = $3::text
+         AND receipt_id = $4::text
+       RETURNING *`,
+      [
+        nonempty(identity.idempotencyKey, "Controller work idempotency key"),
+        identity.state,
+        nonempty(identity.reasonCode, "Controller work reason code"),
+        nonempty(identity.receiptId, "Controller work receipt ID"),
+      ],
+    );
+    if (acknowledged.rows[0] === undefined)
+      throw new ResourceConflictError("The receipt does not match terminal controller work.");
+    return asWork(acknowledged.rows[0]);
   }
 
   private nextRandom(): number {

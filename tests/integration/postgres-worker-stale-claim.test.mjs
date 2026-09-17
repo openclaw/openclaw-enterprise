@@ -66,6 +66,18 @@ function authorizedPrincipal(iam) {
   );
 }
 
+function codexPluginRevisionState(pluginId) {
+  return {
+    driver: { id: "codex-plugin", implementation: "occ/codex-plugin" },
+    plugins: {
+      [pluginId]: {
+        enabled: true,
+        approvalMode: "auto",
+      },
+    },
+  };
+}
+
 test(
   "a worker that loses its claim during Compute cannot publish Namespace status, lifecycle audit, or completion",
   requiresPostgres,
@@ -239,6 +251,243 @@ test(
     );
     assert.deepEqual(published.rows, [
       { action: "openclaw.namespaces.lifecycle.ensure", outcome: "success" },
+    ]);
+  },
+);
+
+test(
+  "a worker that loses its claim before committing a plugin receipt cannot write or acknowledge it",
+  requiresPostgres,
+  async (context) => {
+    const [
+      { Pool },
+      { createControllerWorker },
+      { createDevelopmentComputeDriver },
+      { DEVELOPMENT_HARNESS_DESCRIPTOR },
+      { createAuthPrincipalSeed },
+      { PostgresPlatformState },
+      { PostgresWorkQueue },
+      { createDevelopmentIAMState },
+    ] = await Promise.all([
+      import("pg"),
+      import("../../apps/controller/src/worker.ts"),
+      import("../helpers/development.mjs"),
+      import("../../apps/controller/src/composition/production-harness.ts"),
+      import("../../packages/iam/src/index.ts"),
+      import("../../packages/occ/src/state/postgres-state.ts"),
+      import("../../packages/occ/src/state/postgres-work-queue.ts"),
+      import("../helpers/development-iam-state.mjs"),
+    ]);
+
+    const observerPool = new Pool({ connectionString: databaseUrl, max: 8 });
+    const workerPool = new Pool({ connectionString: databaseUrl, max: 4 });
+    const recoveryPool = new Pool({ connectionString: databaseUrl, max: 2 });
+    const recoveredWorkerPool = new Pool({ connectionString: databaseUrl, max: 4 });
+    const state = new PostgresPlatformState(observerPool);
+    const releasePreparation = Promise.withResolvers();
+    const installation = await ensureInstallation(
+      state,
+      createDevelopmentIAMState,
+      createAuthPrincipalSeed,
+    );
+    const actor = authorizedPrincipal(await state.loadNativeIAMState());
+    assert.ok(actor, "persisted IAM must contain an unrestricted Namespace-create Principal");
+
+    let worker;
+    context.after(async () => {
+      releasePreparation.resolve();
+      if (worker !== undefined) await worker.stop();
+      await observerPool.end();
+      await recoveryPool.end();
+    });
+
+    const namespace = {
+      id: `ns_${randomUUID()}`,
+      name: `worker-stale-plugin-${randomUUID()}`,
+      status: "ready",
+      createdAt: new Date().toISOString(),
+    };
+    const owner = {
+      id: `agt_${randomUUID()}`,
+      namespaceId: namespace.id,
+      name: `stale-plugin-${randomUUID()}`,
+      configurationId: `cfg_${randomUUID()}`,
+      providerId: null,
+      harnessAuth: { method: "runtime" },
+      executionMode: "embedded",
+      servicePrincipalId: `service-agent-${randomUUID()}`,
+      createdAt: new Date().toISOString(),
+    };
+    const pluginId = "codex-plugin:gmail@openai-curated-remote";
+    const compute = createDevelopmentComputeDriver();
+    const revision = {
+      id: `rev_${randomUUID()}`,
+      namespaceId: namespace.id,
+      agentId: owner.id,
+      revision: 1,
+      providerId: null,
+      configuration: { revision: "1" },
+      configurationId: owner.configurationId,
+      configurationKind: "agent",
+      configurationGeneration: 1,
+      harness: { ...DEVELOPMENT_HARNESS_DESCRIPTOR, mode: "embedded" },
+      compute: {
+        id: compute.id,
+        implementation: compute.implementation,
+      },
+      plugins: codexPluginRevisionState(pluginId),
+      harnessAuth: { method: "runtime" },
+      servicePrincipalId: owner.servicePrincipalId,
+      createdAt: new Date().toISOString(),
+    };
+    const idempotencyKey = `agent_revision:${revision.id}:reconcile`;
+    await state.transactWithQueue(async (unit, queue) => {
+      await unit.namespaces.createNamespace(namespace);
+      await unit.configurations.createConfiguration({
+        id: owner.configurationId,
+        namespaceId: namespace.id,
+        kind: "agent",
+        generation: 1,
+        createdAt: new Date().toISOString(),
+      });
+      await unit.agents.createAgent(owner);
+      await unit.revisions.createRevision(revision);
+      await unit.agents.transitionAgentDesiredRuntimeState(
+        namespace.id,
+        owner.id,
+        ["stopped", "running"],
+        "running",
+      );
+      await queue.enqueue({
+        idempotencyKey,
+        namespaceId: namespace.id,
+        agentId: owner.id,
+        revisionId: revision.id,
+        actorId: actor.id,
+        availableAt: new Date(0),
+      });
+    });
+
+    const prepareStarted = Promise.withResolvers();
+    const acknowledgements = [];
+    worker = createControllerWorker({
+      pool: workerPool,
+      installationId: installation.id,
+      pollIntervalMs: 20,
+      leaseDurationMs: 30_000,
+      maxAttempts: 5,
+      computeDriver: {
+        ...compute,
+        async prepareRevision(candidate) {
+          prepareStarted.resolve();
+          await releasePreparation.promise;
+          return {
+            namespaceId: candidate.namespaceId,
+            agentId: candidate.agentId,
+            revisionId: candidate.id,
+            ready: false,
+            receiptId: `receipt-${candidate.id}`,
+            failure: { code: "PLUGIN_INSTALL_FAILED", pluginId },
+          };
+        },
+        async acknowledgeRevisionReceipt(candidate, receipt) {
+          acknowledgements.push({ revisionId: candidate.id, receipt });
+        },
+      },
+    });
+    await worker.start();
+    await prepareStarted.promise;
+
+    const original = await observerPool.query(
+      `SELECT state, claim_token, attempt_count
+       FROM occ.controller_work WHERE idempotency_key = $1`,
+      [idempotencyKey],
+    );
+    assert.equal(original.rows[0].state, "claimed");
+    assert.equal(original.rows[0].attempt_count, 1);
+
+    await observerPool.query(
+      `UPDATE occ.controller_work
+       SET lease_expires_at = clock_timestamp() - interval '1 second'
+       WHERE idempotency_key = $1 AND claim_token = $2::uuid`,
+      [idempotencyKey, original.rows[0].claim_token],
+    );
+    const recoveryQueue = new PostgresWorkQueue(recoveryPool, {
+      leaseDurationMs: 30_000,
+      maxAttempts: 5,
+      random: () => 0,
+    });
+    const recovery = await recoveryQueue.recoverStale();
+    assert.ok(recovery.recovered >= 1);
+    const recovered = await recoveryQueue.claim();
+    assert.ok(recovered, "the recovered deployment must receive a fresh claim");
+    assert.equal(recovered.idempotencyKey, idempotencyKey);
+    assert.equal(recovered.attemptCount, 2);
+    assert.notEqual(recovered.claimToken, original.rows[0].claim_token);
+
+    releasePreparation.resolve();
+    await waitFor("stolen plugin receipt to remain uncommitted", async () => {
+      const rows = await observerPool.query(
+        `SELECT state, claim_token, reason_code, error_data, receipt_id, receipt_acknowledged_at
+         FROM occ.controller_work WHERE idempotency_key = $1`,
+        [idempotencyKey],
+      );
+      const row = rows.rows[0];
+      return row?.state === "claimed" && row.claim_token === recovered.claimToken ? row : undefined;
+    });
+    assert.deepEqual(acknowledgements, []);
+
+    await worker.stop();
+    worker = undefined;
+    await recoveryQueue.retry(recovered, { code: "TEST_RECOVERY_HANDOFF" });
+
+    const recoveredCompute = createDevelopmentComputeDriver();
+    worker = createControllerWorker({
+      pool: recoveredWorkerPool,
+      installationId: installation.id,
+      pollIntervalMs: 20,
+      leaseDurationMs: 30_000,
+      maxAttempts: 5,
+      computeDriver: {
+        ...recoveredCompute,
+        async prepareRevision(candidate) {
+          return {
+            namespaceId: candidate.namespaceId,
+            agentId: candidate.agentId,
+            revisionId: candidate.id,
+            ready: false,
+            receiptId: `receipt-${candidate.id}`,
+            failure: { code: "PLUGIN_INSTALL_FAILED", pluginId },
+          };
+        },
+        async acknowledgeRevisionReceipt(candidate, receipt) {
+          acknowledgements.push({ revisionId: candidate.id, receipt });
+        },
+      },
+    });
+    await worker.start();
+
+    const terminal = await waitFor("recovered worker terminal plugin failure", async () => {
+      const rows = await observerPool.query(
+        `SELECT state, reason_code, error_data, receipt_id,
+                receipt_acknowledged_at IS NOT NULL AS acknowledged
+         FROM occ.controller_work WHERE idempotency_key = $1`,
+        [idempotencyKey],
+      );
+      return rows.rows[0]?.acknowledged ? rows.rows[0] : undefined;
+    });
+    assert.deepEqual(terminal, {
+      state: "failed_permanent",
+      reason_code: "PLUGIN_INSTALL_FAILED",
+      error_data: { pluginId },
+      receipt_id: `receipt-${revision.id}`,
+      acknowledged: true,
+    });
+    assert.deepEqual(acknowledgements, [
+      {
+        revisionId: revision.id,
+        receipt: { receiptId: `receipt-${revision.id}`, outcome: "failed" },
+      },
     ]);
   },
 );
