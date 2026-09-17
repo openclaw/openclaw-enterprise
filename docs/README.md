@@ -20,6 +20,8 @@ Use the [feature and Driver index](reference/README.md) for supported behavior,
 configuration, and limits. The [HTTP API](reference/api.md) describes request and
 response schemas. The [console guide](reference/console.md) covers browser tasks.
 Compare bundled implementations in the [ComputeDriver feature matrix](reference/drivers/compute-matrix.md).
+Use the [PluginDriver feature matrix](reference/drivers/plugin-matrix.md) to
+compare plugin discovery and approval-policy support.
 [Agent plugins](reference/agent-plugins.md) and
 [PluginDriver](reference/drivers/plugin.md) cover curated plugin selection, startup
 validation, and native runtime policy.

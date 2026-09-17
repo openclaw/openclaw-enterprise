@@ -104,6 +104,7 @@
                   "reference/drivers/kubernetes-secret",
                   "reference/drivers/openshell-sandbox",
                   "reference/drivers/plugin",
+                  "reference/drivers/plugin-matrix",
                   "reference/drivers/sandbox",
                   "reference/drivers/selection",
                   "reference/drivers/service-account",

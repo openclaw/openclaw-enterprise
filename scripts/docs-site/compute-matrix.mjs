@@ -1,21 +1,57 @@
 import fs from "node:fs";
 import path from "node:path";
-import { renderMatrixMarkdown } from "../generate-compute-matrix.mjs";
+import {
+  computeMatrixOptions,
+  pluginMatrixOptions,
+  renderDriverMatrixMarkdown,
+} from "../generate-compute-matrix.mjs";
 
-const blockPattern = /<!--\s*compute-matrix:start\s*-->([\s\S]*?)<!--\s*compute-matrix:end\s*-->/g;
-const statuses = new Set(["supported", "partial", "unsupported", "unknown"]);
+const statuses = new Set(["supported", "partial", "unsupported", "not-applicable", "unknown"]);
 const statusLabels = {
   supported: "Supported",
   partial: "Partial",
   unsupported: "Unsupported",
+  "not-applicable": "Not applicable",
   unknown: "Unknown",
 };
 const statusMarks = {
   supported: "✓",
   partial: "✓",
   unsupported: "No",
+  "not-applicable": "N/A",
   unknown: "?",
 };
+
+const matrixDefinitions = [
+  {
+    ...computeMatrixOptions,
+    title: "ComputeDriver feature matrix",
+    ariaLabel: "ComputeDriver feature matrix",
+    searchLabel: "Search ComputeDriver feature matrix",
+    categoryLabel: "Filter ComputeDriver feature matrix by category",
+    statusLabel: null,
+    testLabel: "Tests (not run)",
+    liveProof: "unknown/not run",
+    requirementLabel: "Requirement",
+    requirementSourceLabel: "Requirement source",
+    notice:
+      "Unknown means the available evidence does not establish support for that driver cell. Test links identify repository coverage only; they are not live-runtime proof.",
+  },
+  {
+    ...pluginMatrixOptions,
+    title: "PluginDriver feature matrix",
+    ariaLabel: "PluginDriver feature matrix",
+    searchLabel: "Search PluginDriver feature matrix",
+    categoryLabel: "Filter PluginDriver feature matrix by category",
+    statusLabel: "Filter PluginDriver feature matrix by status",
+    testLabel: "Test coverage",
+    liveProof: "unknown/not run",
+    requirementLabel: "Scope",
+    requirementSourceLabel: "Reference",
+    notice:
+      "The status filter matches either Driver cell. Test links identify repository coverage; source support is not live-runtime proof.",
+  },
+];
 
 function escapeHtml(value) {
   return String(value)
@@ -132,7 +168,7 @@ function validateMatrix(data, source) {
   }
 }
 
-function renderCell(data, cell) {
+function renderCell(data, cell, definition) {
   const status = cell.status;
   return (
     '<details class="compute-matrix-cell compute-matrix-status-' +
@@ -145,17 +181,30 @@ function renderCell(data, cell) {
     escapeHtml(cell.detail) +
     "</p>" +
     renderReferenceList(data, "Source", cell.evidence) +
-    renderReferenceList(data, "Tests (not run)", cell.tests) +
-    '<p class="compute-matrix-live-proof"><span>Live proof:</span> unknown/not run</p>' +
+    renderReferenceList(data, definition.testLabel, cell.tests) +
+    '<p class="compute-matrix-live-proof"><span>Live proof:</span> ' +
+    escapeHtml(definition.liveProof) +
+    "</p>" +
     "</details>"
   );
 }
 
-export function renderComputeMatrix(data) {
+export function renderComputeMatrix(data, definition = matrixDefinitions[0]) {
   validateMatrix(data, "compute matrix");
   const categories = [...new Set(data.rows.map((row) => row.category))].sort((a, b) =>
     a.localeCompare(b),
   );
+  const statusOptions = Object.entries(statusLabels)
+    .filter(([status]) =>
+      data.rows.some((row) =>
+        data.drivers.some((driver) => row.cells[driver.id].status === status),
+      ),
+    )
+    .map(
+      ([status, label]) =>
+        '<option value="' + escapeAttr(status) + '">' + escapeHtml(label) + "</option>",
+    )
+    .join("");
   const driverHeaders = data.drivers
     .map((driver) => '<th scope="col">' + escapeHtml(driver.name) + "</th>")
     .join("");
@@ -177,12 +226,15 @@ export function renderComputeMatrix(data) {
         )
         .join(" ")
         .toLocaleLowerCase("en-US");
+      const rowStatuses = data.drivers.map((driver) => row.cells[driver.id].status).join(" ");
       const cells = data.drivers
-        .map((driver) => "<td>" + renderCell(data, row.cells[driver.id]) + "</td>")
+        .map((driver) => "<td>" + renderCell(data, row.cells[driver.id], definition) + "</td>")
         .join("");
       return (
         '<tr data-compute-matrix-row data-category="' +
         escapeAttr(row.category) +
+        '" data-statuses="' +
+        escapeAttr(rowStatuses) +
         '" data-search="' +
         escapeAttr(text) +
         '"><th scope="row"><span class="compute-matrix-category">' +
@@ -196,7 +248,7 @@ export function renderComputeMatrix(data) {
             escapeHtml(row.requirementDetail) +
             "</p>"
           : "") +
-        renderReferenceList(data, "Requirement source", row.requirementEvidence) +
+        renderReferenceList(data, definition.requirementSourceLabel, row.requirementEvidence) +
         "</td>" +
         cells +
         "</tr>"
@@ -204,18 +256,38 @@ export function renderComputeMatrix(data) {
     })
     .join("");
   return (
-    '<section class="compute-matrix" data-compute-matrix><div class="compute-matrix-head"><div><p class="compute-matrix-eyebrow">ComputeDriver feature matrix</p><p class="compute-matrix-meta">Reviewed ' +
+    '<section class="compute-matrix" data-compute-matrix><div class="compute-matrix-head"><div><p class="compute-matrix-eyebrow">' +
+    escapeHtml(definition.title) +
+    '</p><p class="compute-matrix-meta">Reviewed ' +
     escapeHtml(data.reviewedAt) +
     ' at baseline <a href="https://github.com/openclaw/openclaw-enterprise/commit/' +
     escapeAttr(data.baseline) +
     '"><code>' +
     escapeHtml(data.baseline) +
-    '</code></a>.</p><p class="compute-matrix-notice">Unknown means the available evidence does not establish support for that driver cell. Test links identify repository coverage only; they are not live-runtime proof.</p></div><div class="compute-matrix-controls" role="search"><label>Search <input type="search" data-compute-matrix-search aria-label="Search ComputeDriver feature matrix"></label><label>Category <select data-compute-matrix-category aria-label="Filter ComputeDriver feature matrix by category"><option value="">All categories</option>' +
+    '</code></a>.</p><p class="compute-matrix-notice">' +
+    escapeHtml(definition.notice) +
+    '</p></div><div class="compute-matrix-controls" role="search"><label>Search <input type="search" data-compute-matrix-search aria-label="' +
+    escapeAttr(definition.searchLabel) +
+    '"></label><label>Category <select data-compute-matrix-category aria-label="' +
+    escapeAttr(definition.categoryLabel) +
+    '"><option value="">All categories</option>' +
     categoryOptions +
-    '</select></label></div></div><p class="compute-matrix-count" data-compute-matrix-count aria-live="polite">' +
+    "</select></label>" +
+    (definition.statusLabel
+      ? '<label>Status <select data-compute-matrix-status aria-label="' +
+        escapeAttr(definition.statusLabel) +
+        '"><option value="">All statuses</option>' +
+        statusOptions +
+        "</select></label>"
+      : "") +
+    '</div></div><p class="compute-matrix-count" data-compute-matrix-count aria-live="polite">' +
     data.rows.length +
     " rows</p>" +
-    '<div class="compute-matrix-table" role="region" aria-label="ComputeDriver feature matrix" tabindex="0"><table><thead><tr><th scope="col">Capability</th><th scope="col">Requirement</th>' +
+    '<div class="compute-matrix-table" role="region" aria-label="' +
+    escapeAttr(definition.ariaLabel) +
+    '" tabindex="0"><table><thead><tr><th scope="col">Capability</th><th scope="col">' +
+    escapeHtml(definition.requirementLabel) +
+    "</th>" +
     driverHeaders +
     "</tr></thead><tbody>" +
     rows +
@@ -224,23 +296,33 @@ export function renderComputeMatrix(data) {
 }
 
 export function renderComputeMatrixBlocks(markdown, { sourceFile, root }) {
-  return markdown.replace(blockPattern, (match) => {
-    const matrixSource = "assets/compute-driver-matrix.json";
-    const matrixFile = path.resolve(root, matrixSource);
-    let data;
-    try {
-      data = JSON.parse(fs.readFileSync(matrixFile, "utf8"));
-    } catch (error) {
-      throw new Error(
-        `${sourceFile}: compute-matrix could not read ${matrixSource}: ${error.message}`,
-      );
-    }
-    validateMatrix(data, matrixSource);
-    const expected = renderMatrixMarkdown(data);
-    if (match !== expected)
-      throw new Error(
-        `${sourceFile}: compute-matrix fallback is stale; run node scripts/generate-compute-matrix.mjs`,
-      );
-    return "\n" + renderComputeMatrix(data) + "\n";
-  });
+  let rendered = markdown;
+  for (const definition of matrixDefinitions) {
+    const blockPattern = new RegExp(
+      definition.matrixStart.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") +
+        "([\\s\\S]*?)" +
+        definition.matrixEnd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+      "g",
+    );
+    rendered = rendered.replace(blockPattern, (match) => {
+      const matrixSource = definition.dataPath.replace(/^docs\//, "");
+      const matrixFile = path.resolve(root, matrixSource);
+      let data;
+      try {
+        data = JSON.parse(fs.readFileSync(matrixFile, "utf8"));
+      } catch (error) {
+        throw new Error(
+          `${sourceFile}: ${definition.name}-matrix could not read ${matrixSource}: ${error.message}`,
+        );
+      }
+      validateMatrix(data, matrixSource);
+      const expected = renderDriverMatrixMarkdown(data, definition);
+      if (match !== expected)
+        throw new Error(
+          `${sourceFile}: ${definition.name}-matrix fallback is stale; run node ${definition.generator}`,
+        );
+      return "\n" + renderComputeMatrix(data, definition) + "\n";
+    });
+  }
+  return rendered;
 }

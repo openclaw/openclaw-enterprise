@@ -58,7 +58,7 @@ Assets under `docs/assets/` are served at `/assets/`.
 For the generated [HTTP API reference](reference/api.md), edit the owning routes,
 schemas, or generator and run `pnpm openapi:generate`; never edit its output by hand.
 
-## Interactive ComputeDriver matrix
+## Interactive Driver matrices
 
 The [ComputeDriver feature matrix](reference/drivers/compute-matrix.md) renders
 inside the existing docs page, with search, category filters, and expandable
@@ -77,6 +77,12 @@ The build rejects stale table content. Check the refreshed page at
 `/reference/drivers/compute-matrix/`; open a cell to inspect pinned source and
 unrun test evidence. A successful docs build proves presentation and links,
 not Driver behavior or live deployment.
+
+The [PluginDriver feature matrix](reference/drivers/plugin-matrix.md) uses the
+same layout and evidence controls, with a status filter matching either Driver.
+Its data lives in `docs/assets/plugin-driver-matrix.json`. Regenerate with
+`node scripts/generate-plugin-matrix.mjs`, check with the same command plus
+`--check`, then rebuild and open `/reference/drivers/plugin-matrix/`.
 
 The custom renderer accepts raw HTML, but GitHub
 [sanitizes rendered Markdown](https://github.com/github/markup#github-markup),

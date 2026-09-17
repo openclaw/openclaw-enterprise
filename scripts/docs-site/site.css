@@ -404,14 +404,24 @@ kbd {
   padding: 0 18px;
 }
 .compute-matrix-table {
+  max-height: min(70vh, 760px);
   overflow: auto;
 }
 .compute-matrix .compute-matrix-table table {
+  display: table;
+  width: 100%;
   margin: 0;
   border: 0;
   border-radius: 0;
   min-width: 900px;
   table-layout: fixed;
+}
+.compute-matrix thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--surface);
+  box-shadow: 0 1px 0 var(--line);
 }
 .compute-matrix th:first-child {
   width: 20%;
