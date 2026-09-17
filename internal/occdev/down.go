@@ -41,7 +41,7 @@ func Down(ctx context.Context, opts Options) error {
 		if len(opts.ComposeArgs) > 0 {
 			return fmt.Errorf("Compose options come from recorded Kubernetes development state")
 		}
-		directory, err := stateDirectory(r.setting("OCC_DEVELOPMENT_STATE_DIRECTORY", filepath.Join(os.TempDir(), "openclaw-development")), opts.Repository, true)
+		directory, err := stateDirectory(r.env["OCC_DEVELOPMENT_STATE_DIRECTORY"], opts.Repository, true)
 		if err != nil {
 			return err
 		}

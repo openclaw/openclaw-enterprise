@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import test from "node:test";
 import { once } from "node:events";
@@ -835,3 +835,25 @@ for (const driver of ["docker", "kubernetes"]) {
     }
   }
 }
+
+test("Kubernetes development uses a canonical default state directory through a temporary-directory alias", async (t) => {
+  const fixture = await kubernetesFixture(t);
+  const temporary = join(fixture.directory, "system-temporary");
+  const alias = join(fixture.directory, "temporary-alias");
+  await mkdir(temporary, { mode: 0o700 });
+  await symlink(temporary, alias);
+  fixture.env.TMPDIR = alias;
+  delete fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
+
+  // macOS temporary directories commonly contain a system symlink. The
+  // helper-selected default must resolve it consistently for startup and cleanup.
+  const started = fixture.start();
+  assert.equal(started.status, 0, started.stderr);
+  const directory = join(temporary, "openclaw-development");
+  assert.ok((await stat(directory)).isDirectory());
+  assert.ok(started.stdout.includes(`OCC_DEVELOPMENT_STATE_DIRECTORY='${directory}'`));
+  const stopped = runDevDown(fixture.env);
+  assert.equal(stopped.status, 0, stopped.stderr);
+  await assert.rejects(stat(directory), { code: "ENOENT" });
+  assert.ok((await stat(temporary)).isDirectory());
+});

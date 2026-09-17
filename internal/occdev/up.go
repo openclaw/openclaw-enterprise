@@ -36,7 +36,7 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if err != nil {
 		return err
 	}
-	directory, err := stateDirectory(r.setting("OCC_DEVELOPMENT_STATE_DIRECTORY", filepath.Join(os.TempDir(), "openclaw-development")), opts.Repository, false)
+	directory, err := stateDirectory(r.env["OCC_DEVELOPMENT_STATE_DIRECTORY"], opts.Repository, false)
 	if err != nil {
 		return err
 	}

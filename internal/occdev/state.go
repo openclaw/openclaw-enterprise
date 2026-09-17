@@ -47,6 +47,15 @@ func exclusiveWrite(path string, data []byte, mode os.FileMode) error {
 	return closeErr
 }
 func stateDirectory(raw, repository string, existing bool) (string, error) {
+	if raw == "" {
+		// System temporary directories may contain aliases, such as /var on macOS.
+		// Resolve the helper-selected default once; explicit paths remain canonical.
+		temporary, err := filepath.EvalSymlinks(os.TempDir())
+		if err != nil {
+			return "", err
+		}
+		raw = filepath.Join(temporary, "openclaw-development")
+	}
 	if !filepath.IsAbs(raw) {
 		return "", fmt.Errorf("state directory must be absolute")
 	}

@@ -181,9 +181,11 @@ named volume. The configuration volume is mounted only into the controller at
 `/app/.development/configurations`; it is not mounted into the worker or
 runtime containers. Initial service-key output uses a third bootstrap-only
 volume, `occ_bootstrap_data`, at `/var/lib/openclaw/bootstrap`; the API and
-worker do not mount it. The cleanup command printed by `dev-up` retains all
-three volumes. Add `--volumes` only when intentionally deleting them, including
-the initial credential delivery copy.
+worker do not mount it. For Docker Compute, the printed cleanup command retains
+all three volumes. Add `--volumes` before any `--` separator only when
+intentionally deleting them, including the initial credential delivery copy.
+[Kubernetes development cleanup](../../guides/deploy/local-kubernetes-development.md#stop-and-clean-up)
+always deletes the selected profile's volumes.
 
 ### Migration environment
 

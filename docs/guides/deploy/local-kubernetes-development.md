@@ -69,8 +69,10 @@ remain inaccessible to other host users through that private directory. The
 helper does not modify the default kubeconfig or current kubectl context.
 
 For separate stacks, select distinct state directories, Compose projects,
-cluster names, and published API ports. Keep each stack's resources under the
-helper's lifecycle until cleanup; do not reuse its names for unrelated resources.
+cluster names, and published API ports. Set an unused, non-overlapping
+`OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR` and a distinct `OCC_POSTGRES_PORT` for each
+stack. Keep each stack's resources under the helper's lifecycle until cleanup;
+do not reuse its names for unrelated resources.
 
 Podman delegates Compose to `podman-compose`. On rootless Linux, its
 Docker-compatible API socket must be running so k3d can create the cluster.
