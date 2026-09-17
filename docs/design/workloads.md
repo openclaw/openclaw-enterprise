@@ -26,8 +26,9 @@ Namespace-owned infrastructure after the Namespace is empty; it does not remove
 shared control-plane infrastructure or another tenant's resources.
 
 OCC prepares a nonserving route for the candidate Agent workload and enables
-it only after the candidate's revision is the sole active revision and its
-Harness is ready. Gateway routing binds the exact Namespace, Agent, and active
+it only after the candidate's Harness is ready and durable cutover intent is
+recorded. OCC records the candidate as the sole active revision after the
+Driver confirms the route. Gateway routing binds the exact Namespace, Agent, and
 revision, including when a route crosses runtime targets.
 A gateway, configuration, or route failure leaves the previously active
 revision and its credentials inaccessible to any other revision; failed
@@ -143,9 +144,10 @@ Deploying an Agent follows one path.
 11. OCC configures a nonserving route through the exact Agent-owned gateway for
     the candidate workload and verifies owner-bound connectivity across the
     selected targets.
-12. OCC records the ready candidate as the sole active revision and enables its
-    exact Agent-owned route. Only that active revision can receive traffic or
-    execute Agent turns.
+12. OCC records a durable cutover intent for the ready candidate, enables its
+    exact Agent-owned route, and records it as the sole active revision only
+    after the Driver confirms the route. Outside that bounded cutover, only the
+    active revision can receive traffic or execute Agent turns.
 13. Once the new route is active, OCC retires the previous revision's owned
     runtime resources while preserving the stable Agent gateway and resources
     needed by the active revision. If activation or routing fails in either
@@ -154,7 +156,10 @@ Deploying an Agent follows one path.
 The active AgentRevision is the immutable record of the Agent's deployed
 version. OCC serializes activation for each Agent and uses its single active
 revision as the source of truth for Agent workload authorization and gateway
-routing. A candidate app-server can start idle, but a candidate or retired
-revision cannot receive traffic or execute Agent turns.
+routing. During default production cutover, the durable queue row temporarily
+owns the transition between confirmed route publication and the active pointer
+commit. A candidate app-server can start idle, but a candidate or retired
+revision cannot receive traffic or execute Agent turns outside that cutover.
 Failures before activation leave the previously active revision and Agent
-workload unchanged. Failures after activation require fail-closed rollback.
+workload unchanged. Failures after activation require confirmed active-pointer
+publication or fail-closed rollback before terminal failure.

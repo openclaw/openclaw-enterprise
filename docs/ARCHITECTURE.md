@@ -94,7 +94,7 @@ identities and an Agent-owned shared workspace. See
 
 Agent creation records a definition; deployment admits an immutable
 AgentRevision for the worker to provision asynchronously. The sequence below
-shows successful provisioning and activation.
+shows successful provisioning and default production cutover.
 
 ```mermaid
 sequenceDiagram
@@ -140,16 +140,18 @@ sequenceDiagram
         Compute->>Runtime: Prepare combined gateway and Harness
     end
     Compute-->>Worker: Revision ready for activation
-    opt Driver activates before commit
-        Worker->>Compute: Activate prepared revision
-    end
-    Worker->>DB: Commit active revision under the live claim
-    opt Driver activates after commit
-        Worker->>Compute: Activate committed revision
-    end
+    Worker->>DB: Record durable cutover intent under the live claim
+    Worker->>Compute: Activate prepared revision and confirm route
+    Worker->>DB: Commit confirmed active revision under the live claim
     Worker->>Compute: Retire prior revision when present
     Worker->>DB: Commit activation audit and work completion
 ```
+
+Production recovery retains unfinished cutover work across claim loss and retry
+exhaustion. Once the active pointer is committed, recovery preserves that revision
+and finishes predecessor retirement and audit. Drivers selecting singleton
+adoption and development activation follow the
+[Compute contract](reference/drivers/compute.md#production-revision-stages).
 
 Editing a draft does not change the running revision. Admission alone does not
 prove runtime readiness. The [controller reference](reference/controller.md)

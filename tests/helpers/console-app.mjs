@@ -206,7 +206,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     return signInWithEmailPassword({ origin, ...credentials, ...overrides });
   }
 
-  const adminSession = await signIn();
+  const adminSession = options.autoSignIn === false ? null : await signIn();
 
   async function request(method, path, { session = adminSession, headers = {}, body } = {}) {
     const result = await rawRequest(method, path, {

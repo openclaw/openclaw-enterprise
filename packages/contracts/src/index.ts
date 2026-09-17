@@ -178,6 +178,8 @@ export interface SecretEnvironmentProjection {
 
 export interface ComputeRevisionContext {
   readonly secretEnvironment: readonly SecretEnvironmentProjection[];
+  /** Failed candidate ID, set only by worker recovery when restoring its recorded predecessor. */
+  readonly rollbackFromRevisionId?: string;
 }
 
 export type PluginApprovalMode = "always" | "never" | "prompt" | "auto";

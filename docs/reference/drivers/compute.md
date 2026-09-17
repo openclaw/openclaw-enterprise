@@ -19,8 +19,12 @@ and [deployment](../../guides/deploy.md) for operator setup.
   Agent exists; providers must not require a startup-guessed Agent identity.
 - Optional `bindAgent({ namespace, agent })` receives the actual server-admitted
   Namespace, Agent, and service-principal identities after IAM authorization
-  and before any revision operation. A name-configured provider can use it to
-  bind an existing company-specific tenant without caller-authored resource IDs.
+  and before any revision operation. On worker restart, retained durable cutovers
+  rebuild this binding from validated persisted ownership and Compute identity
+  before cleanup or compensation. Committed cleanup does not require a new deploy
+  authorization; revocation still permits restoring the predecessor before failure.
+  A name-configured provider can use the binding to identify an existing
+  company-specific tenant without caller-authored resource IDs.
 - `prepareRevision(revision)` creates or reuses that Agent's gateway and
   realizes its immutable Harness topology: one combined gateway/Harness for
   `embedded` OpenClaw or a separate exact-revision Codex workload for
@@ -77,11 +81,17 @@ preserves the predecessor's Service selector until fenced activation succeeds.
 
 Drivers that keep one stable Agent-owned runtime across revisions can declare
 `activationOrder: "beforeCommit"`. The worker then activates and verifies the
-candidate before publishing its active revision and does not deactivate an
-already-serving dedicated runtime during initial adoption. Existing Drivers
-retain their default post-commit activation behavior. A Driver's activation
-must remain idempotent and must not report success before its effective
-configuration and authenticated runtime are actually ready.
+candidate during observation and does not deactivate an already-serving
+dedicated runtime during initial adoption. In production, Drivers without that preference use
+the default production cutover path: the queue records an unresolved cutover,
+the Driver publishes the route, and the worker records `activeRevisionId` only
+after the route is confirmed. A Driver's activation must remain idempotent and
+must not report success before its effective configuration and authenticated
+runtime are actually ready. Compensation support is Driver-specific. Bundled Kubernetes restores a dedicated
+predecessor route while its workload remains available. Embedded rollback first
+disables the failed route, then permits replacement only from the exact failed
+gateway revision named by worker recovery. Unconfirmed restoration leaves the
+cutover queued; see [Kubernetes recovery](kubernetes-compute.md#activation-recovery).
 
 ## Optional gateway endpoint resolution
 

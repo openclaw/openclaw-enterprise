@@ -263,6 +263,7 @@ Sign in with email and password
 | --- | --- |
 | `200` | OK |
 | `401` | Unauthorized |
+| `429` | Too Many Requests |
 | `503` | Service Unavailable |
 
 **`200` response body:** `application/json`

@@ -241,6 +241,7 @@
           "expectedTests": [
             "Drizzle generates repository schema migrations without redundant regeneration",
             "Agent stop migration rejects pre-existing active runtime state",
+            "Cutover migration preserves populated Agent stop schema and application queue access",
             "Drizzle second migration preserves the applied journal and PostgreSQL schema"
           ]
         },
@@ -325,9 +326,26 @@
             "a worker binds persisted Namespace, Agent, and service principal before provider effects",
             "a production singleton driver activates under its claim heartbeat before CAS and retires only after CAS",
             "failed singleton activation retries without publishing or retiring the previous revision",
-            "production Drivers without an activation preference retain after-commit Kubernetes ordering",
+            "default production dedicated Drivers publish the route before active revision",
+            "default production embedded Drivers publish the route before active revision",
+            "failed route-before-CAS cutover retries without committing or retiring the predecessor",
+            "lost claim after route switch recovers before recording the active revision",
+            "revoked route-before-CAS cutover rolls back before permanent failure",
+            "expired route-before-CAS cutover restores the predecessor before terminal failure",
+            "failed deadline compensation keeps unresolved cutover queued",
+            "mismatched Drivers preserve marked route-before-CAS cutovers",
+            "post-CAS cleanup finishes without reauthorizing a new deployment",
+            "compensation guard preserves a DB-active route for an invalid marked cutover",
+            "queue recovery completes exhausted cutovers before same-Agent successors with the same retry cap",
             "an opted-in active runtime continuously repairs under its original authorized actor",
-            "active maintenance recovers after its convergence deadline and stops when its actor is denied"
+            "active maintenance recovers after its convergence deadline and stops when its actor is denied",
+            "development after-commit Drivers activate after CAS and retry before retiring the previous revision",
+            "a cold SSH worker recovers post-CAS cutover with persisted bindings",
+            "a cold SSH worker recovers revoked pre-CAS cutover with persisted bindings",
+            "production SSH cutover honors stop during activation",
+            "production SSH cutover honors stop during recovery",
+            "production SSH cutover honors stop during revoked recovery",
+            "production SSH cutover honors stop during retirement"
           ]
         },
         {

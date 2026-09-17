@@ -1,7 +1,7 @@
 ---
 created: 2026-08-31
-updated: 2026-09-01
-last_updated_session: codex/01a05f95-dd80-7011-990f-d1c46b5bb3cc
+updated: 2026-09-02
+last_updated_session: codex/01a05f75-a97e-70c0-bfe4-e14b74e6ba3d
 ---
 
 # Production TUI Flow
@@ -43,10 +43,11 @@ graph TD
   G --> H{"Existing embedded gateway?"}
   H -->|no| I["First prepare waits for inactive Deployment readiness"]
   H -->|yes| J["Replacement prepare returns ready before running a new Pod"]
-  I --> K["Worker commits Agent.activeRevisionId with compare-and-set"]
+  I --> K["Worker records durable cutover intent"]
   J --> K
-  K --> L["Post-commit activateRevision replaces the Recreate Deployment and Service selector"]
-  L --> M["Worker retires predecessor and completes activation audit"]
+  K --> L["activateRevision updates gateway and confirms the ready route"]
+  L --> L2["Worker commits Agent.activeRevisionId with compare-and-set"]
+  L2 --> M["Retire predecessor, clear cutover metadata, and complete activation audit"]
   M --> N["Operator discovers Ready gateway Pod by labels and mounted ConfigMap"]
   N --> O["kubectl exec starts native OpenClaw TUI in the gateway container"]
   O --> P["TUI exchanges prompts with the Pod-local gateway and stays open"]
@@ -133,23 +134,16 @@ is ready. When a predecessor gateway exists, embedded replacement preparation
 returns ready after staging the immutable ConfigMap and related ownership
 resources; it does not start the replacement gateway process.
 
-For the bundled Kubernetes Compute Driver, the worker first records the active
-revision through a guarded `Agent.activeRevisionId` compare-and-set. Because the
-driver does not request `beforeCommit` activation, production then calls
-`KubernetesComputeDriver.activateRevision` after that commit. Embedded
-`activateRevision` rechecks the existing gateway Deployment, then replaces that
-same `Recreate` Deployment with the new revision configuration, applies Agent
-runtime NetworkPolicies, updates the gateway Service selector, and waits for the
-exact revision gateway to become ready. This replacement can make the gateway
-temporarily unavailable while Kubernetes recreates the Pod.
+Production records durable cutover intent before activating the embedded gateway.
+The Driver replaces its `Recreate` Deployment, updates the Service route, and
+confirms readiness before the worker commits `Agent.activeRevisionId`. This can
+interrupt service while Kubernetes recreates the Pod. Unconfirmed activation or
+compensation remains queued; cleanup after commit preserves the confirmed revision.
+See the [worker flow](controller-worker.md) for recovery ordering.
 
-After post-commit activation succeeds, the worker retires the predecessor and
-then completes the activation audit. If activation or retirement fails after the
-active pointer commit, the worker records pending
-`REVISION_FINALIZATION_INCOMPLETE` work and retries finalization; an operator
-should not attach until `GET /namespaces/:namespaceId/agents/:agentId` returns
-the intended `data.activeRevisionId` and Pod discovery verifies the matching
-ConfigMap-mounted gateway is Running and Ready.
+Attach only after `GET /namespaces/:namespaceId/agents/:agentId` returns the intended
+`data.activeRevisionId` and Pod discovery verifies that the matching ConfigMap-mounted
+gateway is Running and Ready. A database pointer alone does not establish TUI readiness.
 
 ### 4–6. Attach the native TUI and exit the client
 
@@ -214,6 +208,7 @@ ConfigMap-mounted gateway is Running and Ready.
 
 ## Changelog
 
+- 2026-09-02 03:27 PDT: Align embedded TUI provisioning with confirmed routing before active state and durable cutover recovery. (01a05f75-a97e-70c0-bfe4-e14b74e6ba3d - 873418425b89fe909d813a081ca4b9ea3379760c)
 - 2026-09-01 19:09: Correct production embedded activation ordering and replacement behavior for the post-commit Kubernetes TUI path. (01a05f95-dd80-7011-990f-d1c46b5bb3cc - aa366c49c44834d59f74994c5fd37fb8096f169f)
 - 2026-08-31 20:34: Use the checked-in operator API helper for service-key requests. (01a05a3d-526f-7553-8cd8-070bd1847acb - b6f213cbcee11ba3dd69886c936c7e5abe233eb3)
 

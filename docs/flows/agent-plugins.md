@@ -141,13 +141,12 @@ Codex readiness path remains responsible for runtime health.
 
 `apps/controller/src/worker.ts:finalizeRevision`
 
-Preparation failure before the worker commits `activeRevisionId` leaves the
-prior pointer unchanged. After that commit, activation/finalization failure
-retains the candidate pointer and records `REVISION_FINALIZATION_INCOMPLETE` for
-retry. Existing embedded Kubernetes replacement runs in this after-commit phase;
-the old gateway may already be stopped. The previous revision record remains
-stored, but there is no pointer rollback or guarantee of availability during
-cutover. See the [controller worker flow](controller-worker.md).
+Production confirms activation before committing `activeRevisionId`; embedded
+replacement can interrupt service. Plugin admission does not change this order.
+An unresolved cutover remains queued until activation or compensation is confirmed;
+retirement failures after commit preserve the active candidate for cleanup.
+Development retains activation after the pointer commit. See the
+[controller worker flow](controller-worker.md) for recovery and authorization.
 
 Successful worker completion reports `REVISION_ACTIVATED` or, on the idempotent
 already-active path, `REVISION_ALREADY_ACTIVE`. A candidate pointer alone

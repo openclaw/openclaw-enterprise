@@ -81,6 +81,14 @@ interface RevisionDispatchResult extends DispatchResult {
   readonly context?: ComputeRevisionContext;
 }
 
+interface LoadedRevisionResources {
+  readonly namespace: Readonly<Namespace> | undefined;
+  readonly agent: Readonly<Agent> | undefined;
+  readonly revision: Readonly<AgentRevision> | undefined;
+  readonly active: Readonly<AgentRevision> | undefined;
+  readonly cutoverExpected: Readonly<AgentRevision> | undefined;
+}
+
 interface AgentStopDispatchResult extends DispatchResult {
   readonly agent?: Readonly<Agent>;
   readonly revision?: Readonly<AgentRevision>;
@@ -461,6 +469,14 @@ export class ControllerWorker {
     await stage.call(this.compute, revision, context);
   }
 
+  private usesDurableCutover(): boolean {
+    return this.mode === "production" && this.compute.activationOrder !== "beforeCommit";
+  }
+
+  private convergenceExpired(claim: ClaimedWork): boolean {
+    return Date.now() - claim.createdAt.getTime() >= this.convergenceTimeoutMs;
+  }
+
   private shouldActivateAfterCommit(compute: ComputeDriver): boolean {
     return (
       compute.activationOrder !== "beforeCommit" &&
@@ -792,7 +808,7 @@ export class ControllerWorker {
         await this.finalizeRevision(claim, { outcome: "permanent", code: "INVALID_TARGET" });
         return;
       }
-      const resources = await this.state.read(async (view) => {
+      const resources: LoadedRevisionResources = await this.state.read(async (view) => {
         const namespace = await view.namespaces.findNamespace(claim.namespaceId);
         const agent = await view.agents.findAgent(claim.namespaceId, claim.agentId!);
         const revision = await view.revisions.findRevision(
@@ -800,7 +816,7 @@ export class ControllerWorker {
           claim.agentId!,
           claim.revisionId!,
         );
-        const previous =
+        const active =
           agent?.activeRevisionId === undefined
             ? undefined
             : await view.revisions.findRevision(
@@ -808,51 +824,93 @@ export class ControllerWorker {
                 claim.agentId!,
                 agent.activeRevisionId,
               );
-        return { namespace, agent, revision, previous };
+        const cutoverExpected =
+          claim.cutoverExpectedActiveRevisionId === undefined
+            ? undefined
+            : await view.revisions.findRevision(
+                claim.namespaceId,
+                claim.agentId!,
+                claim.cutoverExpectedActiveRevisionId,
+              );
+        return { namespace, agent, revision, active, cutoverExpected };
       });
-      const { namespace, agent, revision, previous } = resources;
+      const { namespace, agent, revision, active, cutoverExpected } = resources;
       if (namespace === undefined || agent === undefined || revision === undefined) {
-        await this.finalizeRevision(claim, {
+        const invalid: RevisionDispatchResult = {
           outcome: "permanent",
           code: "INVALID_REVISION_OWNER",
-        });
-        return;
-      }
-      if (namespace.status !== "ready") {
-        await this.finalizeRevision(claim, { outcome: "permanent", code: "NAMESPACE_NOT_READY" });
+        };
+        if (claim.cutoverStartedAt !== undefined) {
+          await this.deferRevisionCutover(claim, invalid.code);
+        } else {
+          await this.finalizeRevision(claim, invalid);
+        }
         return;
       }
       if (
+        agent.namespaceId !== namespace.id ||
         revision.namespaceId !== namespace.id ||
         revision.agentId !== agent.id ||
         revision.servicePrincipalId !== agent.servicePrincipalId
       ) {
-        await this.finalizeRevision(claim, {
-          outcome: "permanent",
-          code: "INVALID_ADMITTED_REVISION",
-        });
-        return;
-      }
-      const approvedHarness = resolveApprovedHarness(revision.harness.id, revision.harness.mode);
-      if (approvedHarness === undefined || revision.harness.version !== approvedHarness.version) {
-        await this.finalizeRevision(claim, {
-          outcome: "permanent",
-          code: "HARNESS_DESCRIPTOR_MISMATCH",
-        });
+        if (claim.cutoverStartedAt !== undefined) {
+          await this.deferRevisionCutover(claim, "INVALID_ADMITTED_REVISION");
+        } else {
+          await this.finalizeRevision(claim, {
+            outcome: "permanent",
+            code: "INVALID_ADMITTED_REVISION",
+          });
+        }
         return;
       }
       if (
         revision.compute.id !== this.compute.id ||
         revision.compute.implementation !== this.compute.implementation
       ) {
-        await this.finalizeRevision(claim, {
+        if (claim.cutoverStartedAt !== undefined) {
+          await this.deferRevisionCutover(claim, "COMPUTE_DRIVER_MISMATCH");
+        } else {
+          await this.finalizeRevision(claim, {
+            outcome: "permanent",
+            code: "COMPUTE_DRIVER_MISMATCH",
+          });
+        }
+        return;
+      }
+      if (claim.cutoverStartedAt !== undefined && !this.usesDurableCutover()) {
+        await this.deferRevisionCutover(claim, "REVISION_CUTOVER_DRIVER_MISMATCH");
+        return;
+      }
+      // A retained cutover belongs to an already authorized attempt. Rebuild
+      // process-local Driver bindings before cleanup, including after revocation.
+      if (claim.cutoverStartedAt !== undefined) {
+        await this.bindRevisionAgent(claim, namespace, agent);
+      }
+      if (namespace.status !== "ready") {
+        await this.finalizeOrCompensateRevision(claim, revision, active, {
           outcome: "permanent",
-          code: "COMPUTE_DRIVER_MISMATCH",
+          code: "NAMESPACE_NOT_READY",
         });
         return;
       }
-      if (agent.activeRevisionId !== undefined && previous === undefined) {
-        await this.finalizeRevision(claim, {
+      const approvedHarness = resolveApprovedHarness(revision.harness.id, revision.harness.mode);
+      if (approvedHarness === undefined || revision.harness.version !== approvedHarness.version) {
+        await this.finalizeOrCompensateRevision(claim, revision, active, {
+          outcome: "permanent",
+          code: "HARNESS_DESCRIPTOR_MISMATCH",
+        });
+        return;
+      }
+      if (
+        agent.activeRevisionId === revision.id &&
+        claim.cutoverStartedAt !== undefined &&
+        this.usesDurableCutover()
+      ) {
+        await this.finishActivatedRevision(claim, revision, cutoverExpected);
+        return;
+      }
+      if (agent.activeRevisionId !== undefined && active === undefined) {
+        await this.finalizeOrCompensateRevision(claim, revision, active, {
           outcome: "permanent",
           code: "INVALID_ACTIVE_REVISION",
         });
@@ -860,13 +918,16 @@ export class ControllerWorker {
       }
       const denied = await this.authorizeRevision(claim, agent, revision);
       if (denied !== undefined) {
-        await this.finalizeRevision(claim, denied);
+        await this.finalizeOrCompensateRevision(claim, revision, active, denied);
         return;
       }
       const provider = await this.resolveRevisionProvider(revision);
       if (provider !== undefined) {
-        await this.finalizeRevision(claim, provider);
+        await this.finalizeOrCompensateRevision(claim, revision, active, provider);
         return;
+      }
+      if (claim.cutoverStartedAt === undefined) {
+        await this.bindRevisionAgent(claim, namespace, agent);
       }
       if (agent.desiredRuntimeState === "stopped") {
         if (claim.idempotencyKey.startsWith(`agent_revision:${revision.id}:maintenance:`)) {
@@ -888,17 +949,12 @@ export class ControllerWorker {
         await this.completeStoppedRevisionWork(claim, revision, "REVISION_STOPPED");
         return;
       }
-      if (this.compute.bindAgent !== undefined) {
-        await this.withClaimHeartbeat(claim, async () => {
-          await this.compute.bindAgent!({ namespace, agent });
-        });
-      }
       const secretContext = await this.resolveRevisionSecretContext(revision);
       if ("result" in secretContext) {
         if (agent.activeRevisionId === revision.id) {
           await this.finalizeActiveRevision(claim, revision, secretContext.result.code);
         } else {
-          await this.finalizeRevision(claim, secretContext.result);
+          await this.finalizeOrCompensateRevision(claim, revision, active, secretContext.result);
         }
         return;
       }
@@ -946,11 +1002,18 @@ export class ControllerWorker {
         });
         return;
       }
-      if (previous !== undefined && previous.revision >= revision.revision) {
+      if (active !== undefined && active.revision >= revision.revision) {
         await this.finalizeRevision(claim, {
           outcome: "success",
           code: "REVISION_SUPERSEDED",
-          supersededBy: previous,
+          supersededBy: active,
+        });
+        return;
+      }
+      if (claim.cutoverStartedAt !== undefined && this.convergenceExpired(claim)) {
+        await this.compensateRevisionCutover(claim, revision, active, {
+          outcome: "permanent",
+          code: "CONVERGENCE_DEADLINE_EXCEEDED",
         });
         return;
       }
@@ -958,13 +1021,42 @@ export class ControllerWorker {
       result = await this.observeRevision(
         claim,
         revision,
-        previous,
+        active,
         agent.activeRevisionId,
         secretContext.context,
       );
     } catch (error) {
       if (error instanceof WorkClaimLostError) throw error;
       result = { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
+    }
+    await this.finalizeRevision(claim, result);
+  }
+
+  private async bindRevisionAgent(
+    claim: ClaimedWork,
+    namespace: Readonly<Namespace>,
+    agent: Readonly<Agent>,
+  ): Promise<void> {
+    if (this.compute.bindAgent !== undefined) {
+      await this.withClaimHeartbeat(claim, async () => {
+        await this.compute.bindAgent!({ namespace, agent });
+      });
+    }
+  }
+
+  private async finalizeOrCompensateRevision(
+    claim: ClaimedWork,
+    revision: Readonly<AgentRevision>,
+    active: Readonly<AgentRevision> | undefined,
+    result: RevisionDispatchResult,
+  ): Promise<void> {
+    if (
+      claim.cutoverStartedAt !== undefined &&
+      this.usesDurableCutover() &&
+      result.outcome === "permanent"
+    ) {
+      await this.compensateRevisionCutover(claim, revision, active, result);
+      return;
     }
     await this.finalizeRevision(claim, result);
   }
@@ -1219,6 +1311,34 @@ export class ControllerWorker {
     const resolved: RevisionDispatchResult = expired
       ? { ...result, outcome: "permanent", code: "CONVERGENCE_DEADLINE_EXCEEDED" }
       : result;
+    if (
+      resolved.revision !== undefined &&
+      this.usesDurableCutover() &&
+      (resolved.outcome === "success" ||
+        (claim.cutoverStartedAt !== undefined && resolved.outcome === "permanent"))
+    ) {
+      if (resolved.outcome === "success" && this.convergenceExpired(claim)) {
+        if (claim.cutoverStartedAt === undefined) {
+          await this.finalizeRevision(claim, {
+            outcome: "permanent",
+            code: "CONVERGENCE_DEADLINE_EXCEEDED",
+          });
+          return;
+        }
+        await this.compensateRevisionCutover(claim, resolved.revision, resolved.previous, {
+          ...resolved,
+          outcome: "permanent",
+          code: "CONVERGENCE_DEADLINE_EXCEEDED",
+        });
+        return;
+      }
+      if (resolved.outcome === "success") {
+        await this.activateAndCommitRevision(claim, resolved);
+      } else {
+        await this.compensateRevisionCutover(claim, resolved.revision, resolved.previous, resolved);
+      }
+      return;
+    }
     let activated: Readonly<AgentRevision> | undefined;
     let stoppedCandidate: Readonly<AgentRevision> | undefined;
     await this.state.transactWithQueue(async (unit, queue) => {
@@ -1257,8 +1377,7 @@ export class ControllerWorker {
 
       if (resolved.outcome === "success") await queue.complete(claim);
       else if (resolved.outcome === "pending") await queue.defer(claim, { code: resolved.code });
-      else if (resolved.outcome === "permanent" || claim.attemptCount >= this.maxAttempts)
-        await queue.fail(claim, { code: resolved.code });
+      else if (resolved.outcome === "permanent") await queue.fail(claim, { code: resolved.code });
       else await queue.retry(claim, { code: resolved.code });
     }, this.queueOptions);
     if (stoppedCandidate !== undefined) {
@@ -1304,6 +1423,229 @@ export class ControllerWorker {
       result: resolved.outcome,
       outcome: resolved.outcome,
       code: resolved.code,
+    });
+  }
+
+  private async startRevisionCutover(
+    claim: ClaimedWork,
+    result: RevisionDispatchResult,
+  ): Promise<ClaimedWork | undefined> {
+    const revision = result.revision;
+    if (revision === undefined) throw new Error("The revision cutover is unavailable.");
+    let started: ClaimedWork | undefined;
+    let stopped = false;
+    await this.state.transactWithQueue(async (unit, queue) => {
+      if ((await queue.heartbeat(claim)) === undefined) throw new WorkClaimLostError();
+      const current = await unit.agents.lockAgent(claim.namespaceId, claim.agentId!);
+      if (
+        current === undefined ||
+        current.servicePrincipalId !== revision.servicePrincipalId ||
+        current.activeRevisionId !== result.expectedActiveRevisionId
+      ) {
+        await queue.retry(claim, { code: "ACTIVE_REVISION_CHANGED" });
+        return;
+      }
+      if (current.desiredRuntimeState !== "running") {
+        stopped = true;
+        return;
+      }
+      started = await queue.startRevisionCutover(claim, result.expectedActiveRevisionId);
+    }, this.queueOptions);
+    if (stopped) {
+      await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(revision));
+      await this.completeStoppedRevisionWork(claim, revision, "REVISION_STOPPED");
+    }
+    return started;
+  }
+
+  private async heartbeatClaim(claim: ClaimedWork): Promise<ClaimedWork> {
+    const renewed = await this.queue.heartbeat(claim);
+    if (renewed === undefined) throw new WorkClaimLostError();
+    return renewed;
+  }
+
+  private async activateAndCommitRevision(
+    claim: ClaimedWork,
+    result: RevisionDispatchResult,
+  ): Promise<void> {
+    const revision = result.revision;
+    if (revision === undefined) throw new Error("The activated Agent revision is unavailable.");
+    let activeClaim =
+      claim.cutoverStartedAt === undefined ? await this.startRevisionCutover(claim, result) : claim;
+    if (activeClaim === undefined) return;
+    try {
+      activeClaim = await this.heartbeatClaim(activeClaim);
+      await this.withClaimHeartbeat(activeClaim, () =>
+        this.stagedRevision("activateRevision", revision, result.context),
+      );
+    } catch (error) {
+      if (error instanceof WorkClaimLostError) throw error;
+      await this.deferRevisionCutover(activeClaim, "REVISION_CUTOVER_INCOMPLETE");
+      return;
+    }
+
+    let activated = false;
+    let stopped = false;
+    await this.state.transactWithQueue(async (unit, queue) => {
+      if ((await queue.heartbeat(activeClaim!)) === undefined) throw new WorkClaimLostError();
+      const current = await unit.agents.lockAgent(claim.namespaceId, claim.agentId!);
+      if (
+        current === undefined ||
+        current.servicePrincipalId !== revision.servicePrincipalId ||
+        current.activeRevisionId !== result.expectedActiveRevisionId
+      ) {
+        await queue.retry(activeClaim!, { code: "ACTIVE_REVISION_CHANGED" });
+        return;
+      }
+      if (current.desiredRuntimeState !== "running") {
+        stopped = true;
+        return;
+      }
+      const activeAgent = await unit.agents.compareAndSetActiveRevision(
+        claim.namespaceId,
+        current.id,
+        result.expectedActiveRevisionId,
+        revision.id,
+      );
+      if (activeAgent === undefined) {
+        await queue.retry(activeClaim!, { code: "ACTIVE_REVISION_CHANGED" });
+        return;
+      }
+      activated = true;
+    }, this.queueOptions);
+    if (stopped) {
+      await this.withClaimHeartbeat(activeClaim, () => this.compute.stopRevision(revision));
+      await this.completeStoppedRevisionWork(activeClaim, revision, "REVISION_STOPPED");
+      return;
+    }
+    if (!activated) return;
+    await this.finishActivatedRevision(activeClaim, revision, result.previous, result);
+  }
+
+  private async finishActivatedRevision(
+    claim: ClaimedWork,
+    revision: Readonly<AgentRevision>,
+    previous: Readonly<AgentRevision> | undefined,
+    result?: RevisionDispatchResult,
+  ): Promise<void> {
+    let stopped = false;
+    try {
+      const current = await this.state.read((view) =>
+        view.agents.findAgent(claim.namespaceId, claim.agentId!),
+      );
+      stopped = current?.desiredRuntimeState === "stopped";
+      if (stopped) {
+        await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(revision));
+      }
+      if (previous !== undefined) {
+        const compute = this.compute;
+        await this.heartbeatClaim(claim);
+        await this.withClaimHeartbeat(claim, () => compute.retireRevision(previous));
+      }
+    } catch (error) {
+      if (error instanceof WorkClaimLostError) throw error;
+      await this.deferRevisionCutover(claim, "REVISION_FINALIZATION_INCOMPLETE");
+      return;
+    }
+    if (stopped) {
+      await this.completeStoppedRevisionWork(claim, revision, "REVISION_STOPPED");
+      return;
+    }
+    await this.completeActivatedRevision(claim, {
+      outcome: "success",
+      code: result?.code ?? "REVISION_ACTIVATED",
+      revision,
+      ...(previous === undefined ? {} : { previous }),
+    });
+  }
+
+  private async compensateRevisionCutover(
+    claim: ClaimedWork,
+    revision: Readonly<AgentRevision>,
+    active: Readonly<AgentRevision> | undefined,
+    result: RevisionDispatchResult,
+  ): Promise<void> {
+    const current = await this.state.read((view) =>
+      view.agents.findAgent(claim.namespaceId, claim.agentId!),
+    );
+    if (current?.activeRevisionId === revision.id) {
+      await this.deferRevisionCutover(claim, "REVISION_CUTOVER_CONFIRMED_ACTIVE");
+      return;
+    }
+
+    let activeClaim = claim;
+    try {
+      activeClaim = await this.heartbeatClaim(activeClaim);
+      await this.withClaimHeartbeat(activeClaim, () =>
+        this.stagedRevision("deactivateRevision", revision),
+      );
+      // Stop admission supersedes restoration; its queued work owns stopping the
+      // predecessor after this cutover has released the same-Agent recovery fence.
+      const latest = await this.state.read((view) =>
+        view.agents.findAgent(claim.namespaceId, claim.agentId!),
+      );
+      if (
+        latest?.desiredRuntimeState === "running" &&
+        active !== undefined &&
+        active.id !== revision.id
+      ) {
+        const restoredContext = await this.resolveRevisionSecretContext(active);
+        if ("result" in restoredContext) {
+          await this.deferRevisionCutover(activeClaim, "REVISION_CUTOVER_COMPENSATION_INCOMPLETE");
+          return;
+        }
+        activeClaim = await this.heartbeatClaim(activeClaim);
+        await this.withClaimHeartbeat(activeClaim, () =>
+          this.stagedRevision("activateRevision", active, {
+            ...restoredContext.context,
+            rollbackFromRevisionId: revision.id,
+          }),
+        );
+      }
+    } catch (error) {
+      if (error instanceof WorkClaimLostError) throw error;
+      await this.deferRevisionCutover(activeClaim, "REVISION_CUTOVER_COMPENSATION_INCOMPLETE");
+      return;
+    }
+
+    await this.state.transactWithQueue(async (unit, queue) => {
+      const renewed = await queue.heartbeat(activeClaim);
+      if (renewed === undefined) throw new WorkClaimLostError();
+      const current = await unit.agents.lockAgent(claim.namespaceId, claim.agentId!);
+      if (current?.activeRevisionId === revision.id) {
+        await queue.retry(renewed, { code: "REVISION_CUTOVER_CONFIRMED_ACTIVE" });
+        return;
+      }
+      if (current?.activeRevisionId !== active?.id) {
+        await queue.retry(renewed, { code: "ACTIVE_REVISION_CHANGED" });
+        return;
+      }
+      if (result.decision !== undefined) await this.appendRevisionDenial(unit, claim, result);
+      const cleared = await queue.clearRevisionCutover(renewed);
+      await queue.fail(cleared, { code: result.code });
+    }, this.queueOptions);
+    this.emit({
+      event: "worker.completed",
+      namespaceId: claim.namespaceId,
+      agentId: claim.agentId,
+      revisionId: claim.revisionId,
+      outcome: "permanent",
+      code: result.code,
+    });
+  }
+
+  private async deferRevisionCutover(claim: ClaimedWork, code: string): Promise<void> {
+    await this.state.transactWithQueue(async (_unit, queue) => {
+      if ((await queue.heartbeat(claim)) === undefined) throw new WorkClaimLostError();
+      await queue.defer(claim, { code });
+    }, this.queueOptions);
+    this.emit({
+      event: "worker.completed",
+      namespaceId: claim.namespaceId,
+      agentId: claim.agentId,
+      revisionId: claim.revisionId,
+      outcome: "pending",
+      code,
     });
   }
 

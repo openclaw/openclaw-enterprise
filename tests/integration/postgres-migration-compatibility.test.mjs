@@ -197,33 +197,15 @@ test(
   },
 );
 
-test(
-  "Agent stop migration rejects pre-existing active runtime state",
-  requiresOwnedPostgres,
-  async (context) => {
-    const fixture = await ownedPostgres();
-    const database = `openclaw_ci_agent_stop_${randomUUID().replaceAll("-", "").slice(0, 16)}`;
-    let pool;
-    context.after(async () => {
-      try {
-        if (pool !== undefined) await pool.end();
-      } finally {
-        await runCommand(fixture, "docker", [
-          ...fixture.composeArgs,
-          "psql",
-          "-v",
-          "ON_ERROR_STOP=1",
-          "-U",
-          "postgres",
-          "-d",
-          "postgres",
-          "-c",
-          `DROP DATABASE IF EXISTS ${database} WITH (FORCE)`,
-        ]);
-      }
-    });
-
-    await runCommand(fixture, "docker", [
+// Historical-schema tests cannot use the current StateStore fixture: its writes
+// already require columns that these migrations have not added yet.
+async function migrationDatabase(context, baselineTag) {
+  const fixture = await ownedPostgres();
+  const database = `openclaw_ci_migration_${randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const directory = await mkdtemp(join(tmpdir(), "openclaw-ci-migration-"));
+  const pools = [];
+  const admin = (databaseName, sql) =>
+    runCommand(fixture, "docker", [
       ...fixture.composeArgs,
       "psql",
       "-v",
@@ -231,106 +213,212 @@ test(
       "-U",
       "postgres",
       "-d",
-      "postgres",
+      databaseName,
       "-c",
-      `CREATE DATABASE ${database}`,
+      sql,
     ]);
-    await runCommand(fixture, "docker", [
-      ...fixture.composeArgs,
-      "psql",
-      "-v",
-      "ON_ERROR_STOP=1",
-      "-U",
-      "postgres",
-      "-d",
-      database,
-      "-c",
-      `GRANT CREATE ON DATABASE ${database} TO occ_migrator; CREATE SCHEMA occ AUTHORIZATION occ_migrator; CREATE SCHEMA drizzle AUTHORIZATION occ_migrator; REVOKE CREATE ON SCHEMA public FROM PUBLIC;`,
-    ]);
-
-    const migrationUrl = new URL(fixture.migrationUrl);
-    migrationUrl.pathname = `/${database}`;
-    pool = new pg.Pool({ connectionString: migrationUrl.toString(), max: 1 });
-    const migrationFiles = (await readdir(migrationsDirectory))
-      .filter((name) => /^\d{4}_.+\.sql$/.test(name) && name < "0016_agent_stop.sql")
-      .sort();
-    assert.equal(migrationFiles.at(-1), "0015_agent_plugins.sql");
-    for (const name of migrationFiles) {
-      await pool.query(await readFile(join(migrationsDirectory, name), "utf8"));
-    }
-
-    const namespaceId = `ns_${randomUUID()}`;
-    const configurationId = `cfg_${randomUUID()}`;
-    const agentId = `agt_${randomUUID()}`;
-    const revisionId = `rev_${randomUUID()}`;
-    const servicePrincipalId = `service-agent-${agentId}`;
-    const client = await pool.connect();
+  context.after(async () => {
     try {
-      await client.query("BEGIN");
-      await client.query(
-        `INSERT INTO occ.namespaces (id, name, status, created_at)
-         VALUES ($1, $2, 'ready', clock_timestamp())`,
-        [namespaceId, `active-agent-${randomUUID()}`],
-      );
-      await client.query(
-        `INSERT INTO occ.configurations (id, namespace_id, kind, generation, created_at)
-         VALUES ($1, $2, 'agent', 1, clock_timestamp())`,
-        [configurationId, namespaceId],
-      );
-      await client.query(
-        `INSERT INTO occ.iam_identities (id, namespace_id, agent_id, kind)
-         VALUES ($1, $2, $3, 'service_principal')`,
-        [servicePrincipalId, namespaceId, agentId],
-      );
-      await client.query(
-        `INSERT INTO occ.agents
-           (id, namespace_id, name, configuration_id, provider_id, execution_mode,
-            service_principal_id, created_at)
-         VALUES ($1, $2, $3, $4, NULL, 'dedicated', $5, clock_timestamp())`,
-        [agentId, namespaceId, `active-agent-${randomUUID()}`, configurationId, servicePrincipalId],
-      );
+      await Promise.all(pools.map((pool) => pool.end()));
+    } finally {
+      try {
+        await admin("postgres", `DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    }
+  });
+  await chmod(directory, 0o700);
+  await admin("postgres", `CREATE DATABASE ${database}`);
+  await admin(
+    database,
+    `GRANT CREATE ON DATABASE ${database} TO occ_migrator;
+     CREATE SCHEMA occ AUTHORIZATION occ_migrator;
+     CREATE SCHEMA drizzle AUTHORIZATION occ_migrator;
+     REVOKE CREATE ON SCHEMA public FROM PUBLIC;`,
+  );
+  const migrationUrl = new URL(fixture.migrationUrl);
+  migrationUrl.pathname = `/${database}`;
+  const upgradeFixture = { ...fixture, migrationUrl: migrationUrl.toString() };
+  const migrate = (...args) =>
+    runCommand(upgradeFixture, "corepack", ["pnpm", "db:migrate", ...args]);
+
+  // Copy an actual journal prefix so Drizzle owns both schema and migration history.
+  const journal = JSON.parse(
+    await readFile(join(migrationsDirectory, "meta", "_journal.json"), "utf8"),
+  );
+  const baselineEntries = journal.entries.filter((entry) => entry.tag <= baselineTag);
+  assert.equal(baselineEntries.at(-1).tag, baselineTag);
+  const baselineDirectory = join(directory, "migrations");
+  await mkdir(join(baselineDirectory, "meta"), { recursive: true, mode: 0o700 });
+  for (const entry of baselineEntries) {
+    const name = `${entry.tag}.sql`;
+    await writeFile(
+      join(baselineDirectory, name),
+      await readFile(join(migrationsDirectory, name)),
+      { mode: 0o600, flag: "wx" },
+    );
+  }
+  await writeFile(
+    join(baselineDirectory, "meta", "_journal.json"),
+    JSON.stringify({ ...journal, entries: baselineEntries }),
+    { mode: 0o600, flag: "wx" },
+  );
+  const configPath = join(directory, "drizzle.config.ts");
+  await writeFile(
+    configPath,
+    `import config from ${JSON.stringify(join(repositoryRoot, "drizzle.config.ts"))};\nexport default { ...config, out: ${JSON.stringify(baselineDirectory)} };\n`,
+    { mode: 0o600, flag: "wx" },
+  );
+  await migrate("--config", configPath);
+
+  const connect = (role, password) => {
+    const url = new URL(migrationUrl);
+    url.username = role;
+    url.password = password;
+    const pool = new pg.Pool({ connectionString: url.toString(), max: 1 });
+    pools.push(pool);
+    return pool;
+  };
+  const migrator = connect("occ_migrator", "occ-migrator-local");
+  const application = connect("occ_app", "occ-app-local");
+  const appliedMigrations = async () =>
+    (
+      await migrator.query(
+        "SELECT id, hash, created_at FROM drizzle.__drizzle_migrations ORDER BY id",
+      )
+    ).rows;
+  assert.equal((await appliedMigrations()).length, baselineEntries.length);
+  return { migrator, application, migrate, appliedMigrations };
+}
+
+async function seedActiveAgent(pool, { workStates = [] } = {}) {
+  const namespaceId = `ns_${randomUUID()}`;
+  const configurationId = `cfg_${randomUUID()}`;
+  const agentId = `agt_${randomUUID()}`;
+  const servicePrincipalId = `service-agent-${agentId}`;
+  const revisions = Array.from(
+    { length: Math.max(1, workStates.length) },
+    () => `rev_${randomUUID()}`,
+  );
+  const actorId = `principal_${randomUUID()}`;
+  const claimToken = randomUUID();
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      `INSERT INTO occ.namespaces (id, name, status, created_at)
+       VALUES ($1, $2, 'ready', clock_timestamp())`,
+      [namespaceId, `migration-${randomUUID()}`],
+    );
+    await client.query(
+      `INSERT INTO occ.configurations (id, namespace_id, kind, generation, created_at)
+       VALUES ($1, $2, 'agent', 1, clock_timestamp())`,
+      [configurationId, namespaceId],
+    );
+    await client.query(
+      `INSERT INTO occ.iam_identities (id, namespace_id, agent_id, kind)
+       VALUES ($1, $2, $3, 'service_principal')`,
+      [servicePrincipalId, namespaceId, agentId],
+    );
+    await client.query(
+      `INSERT INTO occ.agents
+         (id, namespace_id, name, configuration_id, provider_id, execution_mode,
+          service_principal_id, created_at)
+       VALUES ($1, $2, $3, $4, NULL, 'dedicated', $5, clock_timestamp())`,
+      [agentId, namespaceId, "migration-agent", configurationId, servicePrincipalId],
+    );
+    for (const [index, revisionId] of revisions.entries()) {
       await client.query(
         `INSERT INTO occ.agent_revisions
            (id, namespace_id, agent_id, revision_number, admitted_spec, provider_id, admitted_at)
-         VALUES ($1, $2, $3, 1, $4, NULL, clock_timestamp())`,
+         VALUES ($1, $2, $3, $4, $5, NULL, clock_timestamp())`,
         [
           revisionId,
           namespaceId,
           agentId,
+          index + 1,
           {
             configuration_id: configurationId,
             configuration_kind: "agent",
             configuration_generation: 1,
             draft_spec: {},
             harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
-            compute: { id: "kubernetes", implementation: "test" },
+            compute: { id: "compute-kubernetes", implementation: "occ/kubernetes" },
           },
         ],
       );
-      await client.query(
-        "UPDATE occ.agents SET active_revision_id = $1 WHERE namespace_id = $2 AND id = $3",
-        [revisionId, namespaceId, agentId],
-      );
-      await client.query("COMMIT");
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
-    } finally {
-      client.release();
     }
+    await client.query(
+      "UPDATE occ.agents SET active_revision_id = $1 WHERE namespace_id = $2 AND id = $3",
+      [revisions[0], namespaceId, agentId],
+    );
+    if (workStates.length > 0) {
+      // Work is seeded only after 0016, which introduces desired_runtime_state.
+      await client.query(
+        "UPDATE occ.agents SET desired_runtime_state = 'running' WHERE namespace_id = $1 AND id = $2",
+        [namespaceId, agentId],
+      );
+      await client.query(
+        `INSERT INTO occ.iam_identities (id, kind, issuer, subject)
+         VALUES ($1, 'principal', 'migration-fixture', $1)`,
+        [actorId],
+      );
+      for (const [index, state] of workStates.entries()) {
+        await client.query(
+          `INSERT INTO occ.controller_work
+             (idempotency_key, namespace_id, agent_id, revision_id, actor_id, state,
+              available_at, attempt_count, claim_token, lease_expires_at, completed_at,
+              created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, clock_timestamp(), $7, $8,
+             CASE WHEN $6 = 'claimed' THEN clock_timestamp() + interval '10 minutes' END,
+             CASE WHEN $6 IN ('succeeded', 'failed_permanent') THEN clock_timestamp() END,
+             clock_timestamp(), clock_timestamp())`,
+          [
+            `agent_revision:${revisions[index]}:reconcile`,
+            namespaceId,
+            agentId,
+            revisions[index],
+            actorId,
+            state,
+            state === "queued" ? 0 : 1,
+            state === "claimed" ? claimToken : null,
+          ],
+        );
+      }
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+  return { namespaceId, agentId, revisions, claimToken };
+}
 
+test(
+  "Agent stop migration rejects pre-existing active runtime state",
+  requiresOwnedPostgres,
+  async (context) => {
+    const { migrator } = await migrationDatabase(context, "0015_agent_plugins");
+    const {
+      namespaceId,
+      agentId,
+      revisions: [revisionId],
+    } = await seedActiveAgent(migrator);
     const agentStopMigration = await readFile(
       join(migrationsDirectory, "0016_agent_stop.sql"),
       "utf8",
     );
     await assert.rejects(
-      pool.query(agentStopMigration),
+      migrator.query(agentStopMigration),
       ({ code, message }) =>
         code === "55000" &&
         message ===
           "Agent stop migration requires active revisions and pending revision work to be removed before cutover",
     );
-    const unchanged = await pool.query(
+    const unchanged = await migrator.query(
       `SELECT active_revision_id,
               EXISTS (
                 SELECT 1 FROM information_schema.columns
@@ -343,6 +431,69 @@ test(
     assert.deepEqual(unchanged.rows, [
       { active_revision_id: revisionId, migration_started: false },
     ]);
+  },
+);
+
+test(
+  "Cutover migration preserves populated Agent stop schema and application queue access",
+  requiresOwnedPostgres,
+  async (context) => {
+    const { migrator, application, migrate, appliedMigrations } = await migrationDatabase(
+      context,
+      "0016_agent_stop",
+    );
+    // Current-main state is populated after 0016; older active Agents cannot cross 0016.
+    const { namespaceId, agentId, revisions, claimToken } = await seedActiveAgent(migrator, {
+      workStates: ["succeeded", "failed_permanent", "claimed", "queued"],
+    });
+    const beforeJournal = await appliedMigrations();
+    const rowsQuery = "SELECT * FROM occ.controller_work ORDER BY idempotency_key";
+    const beforeRows = (await migrator.query(rowsQuery)).rows;
+    const agentQuery = "SELECT * FROM occ.agents WHERE namespace_id = $1 AND id = $2";
+    const beforeAgent = (await migrator.query(agentQuery, [namespaceId, agentId])).rows;
+
+    // Apply the actual new migration through the repository's migration command;
+    // existing claims and terminal outcomes must not be reset or reinterpreted.
+    await migrate();
+    const afterJournal = await appliedMigrations();
+    assert.deepEqual(afterJournal.slice(0, beforeJournal.length), beforeJournal);
+    assert.equal(afterJournal.length, beforeJournal.length + 1);
+    assert.equal(
+      afterJournal.at(-1).hash,
+      createHash("sha256")
+        .update(await readFile(join(migrationsDirectory, "0017_controller_work_cutover.sql")))
+        .digest("hex"),
+    );
+    assert.equal((await application.query("SELECT current_user AS role")).rows[0].role, "occ_app");
+    assert.deepEqual(
+      (await application.query(agentQuery, [namespaceId, agentId])).rows,
+      beforeAgent,
+    );
+    assert.deepEqual(
+      (await application.query(rowsQuery)).rows,
+      beforeRows.map((row) => ({
+        ...row,
+        cutover_started_at: null,
+        cutover_expected_active_revision_id: null,
+      })),
+    );
+
+    // The limited role must resume an existing claim using the actual queue,
+    // including both newly granted cutover columns and ordinary completion.
+    const { PostgresWorkQueue } =
+      await import("../../packages/occ/src/state/postgres-work-queue.ts");
+    const queue = new PostgresWorkQueue(application);
+    const retained = { idempotencyKey: `agent_revision:${revisions[2]}:reconcile`, claimToken };
+    const started = await queue.startRevisionCutover(retained, revisions[0]);
+    assert.ok(started.cutoverStartedAt instanceof Date);
+    assert.equal(started.cutoverExpectedActiveRevisionId, revisions[0]);
+    const cleared = await queue.clearRevisionCutover(started);
+    assert.equal(cleared.cutoverStartedAt, undefined);
+    assert.equal(cleared.cutoverExpectedActiveRevisionId, undefined);
+    await queue.complete(cleared);
+    const successor = await queue.claim();
+    assert.equal(successor?.revisionId, revisions[3]);
+    await queue.complete(successor);
   },
 );
 

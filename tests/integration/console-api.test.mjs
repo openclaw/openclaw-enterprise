@@ -217,3 +217,74 @@ test("console auth routes reject untrusted browser origins and issue production 
   });
   assert.equal(cliSignOut.response.status, 200, cliSignOut.text);
 });
+
+test("console email sign-in sanitizes adapter write failures and recovers", async (t) => {
+  const fixture = await createConsoleAppFixture(t, { autoSignIn: false });
+  const signInBody = {
+    email: fixture.credentials.email,
+    password: fixture.credentials.password,
+  };
+
+  // Make the real memory adapter's session storage read-only after provisioning.
+  // Correct credentials reach session creation, whose failed write must become a
+  // dependency error rather than an authentication or authorization rejection.
+  assert.equal(fixture.memoryDatabase.session.length, 0);
+  Object.freeze(fixture.memoryDatabase.session);
+  const unavailable = await fixture.request("POST", "/api/auth/sign-in/email", {
+    session: null,
+    body: signInBody,
+  });
+  assert.equal(unavailable.status, 503);
+  assert.equal(unavailable.body.error.code, "DEPENDENCY_UNAVAILABLE");
+  assert.equal(unavailable.headers.get("set-cookie"), null);
+  assert.doesNotMatch(JSON.stringify(unavailable.body), /TypeError|extensible|stack|password/i);
+
+  // Restoring writable storage admits the same credentials and issues a usable session.
+  fixture.memoryDatabase.session = [];
+  const session = await fixture.signIn();
+  const inspected = await fixture.request("GET", "/api/auth/session", { session });
+  assert.equal(inspected.status, 200);
+  assert.equal(inspected.data.authenticated, true);
+  assert.equal(inspected.data.user.email, fixture.credentials.email);
+});
+
+test("console email sign-in rate limits repeated password failures by socket address", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  const fixture = await createConsoleAppFixture(t, { autoSignIn: false });
+  const attemptPassword = (forwardedFor) =>
+    fixture.request("POST", "/api/auth/sign-in/email", {
+      session: null,
+      headers: { "x-forwarded-for": forwardedFor },
+      body: { email: fixture.credentials.email, password: "incorrect-password" },
+    });
+
+  // The limiter must use the server-observed socket address, not spoofable forwarding headers.
+  const statuses = [];
+  for (const forwardedFor of ["198.51.100.1", "198.51.100.2", "198.51.100.3", "198.51.100.4"]) {
+    const result = await attemptPassword(forwardedFor);
+    statuses.push(result.status);
+    assert.equal(
+      result.body.error.code,
+      result.status === 429 ? "TOO_MANY_REQUESTS" : "UNAUTHENTICATED",
+    );
+    if (result.status === 429) {
+      // Better Auth supplies its retry delay as X-Retry-After.
+      assert.match(result.headers.get("x-retry-after") ?? "", /^\d+$/);
+      assert.ok(Number(result.headers.get("x-retry-after")) > 0);
+    }
+  }
+  assert.deepEqual(statuses, [401, 401, 401, 429]);
+
+  // An expired window admits requests again; concurrent failures must consume one shared budget.
+  t.mock.timers.tick(60_001);
+  const concurrent = await Promise.all(
+    ["198.51.100.10", "198.51.100.11", "198.51.100.12", "198.51.100.13"].map(attemptPassword),
+  );
+  assert.deepEqual(concurrent.map(({ status }) => status).sort(), [401, 401, 401, 429]);
+
+  const isolated = await createConsoleAppFixture(t);
+  const session = await isolated.signIn();
+  const inspected = await isolated.request("GET", "/api/auth/session", { session });
+  assert.equal(inspected.status, 200);
+  assert.equal(inspected.data.authenticated, true);
+});

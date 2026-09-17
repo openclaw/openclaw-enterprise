@@ -804,6 +804,8 @@ export class PostgresPlatformState implements PlatformStateStore {
           "enqueue",
           "claim",
           "heartbeat",
+          "startRevisionCutover",
+          "clearRevisionCutover",
           "pending",
           "complete",
           "defer",

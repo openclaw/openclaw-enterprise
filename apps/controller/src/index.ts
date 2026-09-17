@@ -2266,12 +2266,15 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               password: accountBody.properties.password,
             },
           },
-          response: responses({
-            type: "object",
-            additionalProperties: false,
-            required: ["authenticated"],
-            properties: { authenticated: { type: "boolean", const: true } },
-          }),
+          response: {
+            ...responses({
+              type: "object",
+              additionalProperties: false,
+              required: ["authenticated"],
+              properties: { authenticated: { type: "boolean", const: true } },
+            }),
+            429: { description: "Too Many Requests", ...error },
+          },
         },
       },
       async (request, reply) => options.auth.signInEmail(request, reply),

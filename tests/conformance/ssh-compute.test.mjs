@@ -164,7 +164,7 @@ async function fixture(t, selection = {}) {
         const child = spawn(process.execPath, ["-", command.operation], {
           env: {
             ...process.env,
-            PATH: `${fixtureBin}:${process.env.PATH}`,
+            PATH: `${join(base, "bin")}:${fixtureBin}:${process.env.PATH}`,
             OCC_SSH_FIXTURE_STATE: state,
             OCC_SSH_FIXTURE_UNIT_DIRECTORY: units,
           },
@@ -555,6 +555,13 @@ WantedBy=multi-user.target
   await f.driver.activateRevision(rev);
   await f.driver.activateRevision(rev);
   await f.driver.deactivateRevision(rev);
+  await f.driver.deactivateRevision(rev);
+  await missing(join(f.state, `${f.unit(rev)}.pid`));
+  await missing(join(f.state, `${f.unit(rev)}.enabled`));
+  await missing(join(dir, "served.json"));
+  assert.equal((await json(join(dir, "deactivated.json"))).revisionId, rev.id);
+  assert.equal(await readlink(join(dir, "current")), `revisions/${digest(rev.id).slice(0, 12)}`);
+  await assert.rejects(fetch(`http://127.0.0.1:${port}/readyz`));
   assert.equal((await f.driver.prepareRevision(rev)).ready, true);
   assert.equal(
     (await readFile(join(f.state, "systemctl.log"), "utf8"))
@@ -571,6 +578,87 @@ WantedBy=multi-user.target
   assert.equal(await readFile(join(dir, "state", "retained-after-stop"), "utf8"), "persistent");
   await f.driver.activateRevision(rev);
   assert.equal(await readlink(join(dir, "current")), `revisions/${digest(rev.id).slice(0, 12)}`);
+});
+
+test("SSH rollback restores only the exact deactivated candidate's predecessor", async (t) => {
+  const f = await fixture(t);
+  const first = await prepare(f);
+  const second = revision(f.driver, 2);
+  const dir = f.agentDir(first);
+  const rollback = { secretEnvironment: [], rollbackFromRevisionId: second.id };
+  await writeFile(join(dir, "state", "persisted"), "state survives");
+  await writeFile(join(dir, "env"), "OPERATOR_OWNED=unchanged\n", { mode: 0o600 });
+  await prepare(f, second);
+
+  // A stale cleanup cannot stop a successor, and an active candidate cannot be rolled back.
+  const pid = await readFile(join(f.state, `${f.unit(second)}.pid`), "utf8");
+  await f.driver.deactivateRevision(first);
+  assert.equal(await readFile(join(f.state, `${f.unit(second)}.pid`), "utf8"), pid);
+  assert.deepEqual(await json(join(dir, "served.json")), { revisionId: second.id });
+  await assert.rejects(f.driver.activateRevision(first), /ownership/);
+  await assert.rejects(f.driver.activateRevision(first, rollback), /ownership/);
+  await f.driver.deactivateRevision(second);
+  await assert.rejects(f.driver.activateRevision(first), /ownership/);
+  await assert.rejects(
+    f.driver.activateRevision(first, { ...rollback, rollbackFromRevisionId: "unrelated-revision" }),
+    /ownership/,
+  );
+
+  // The helper retains both snapshots while disabling the failed revision, allowing guarded retry.
+  assert.equal((await stat(f.revisionDir(first))).isDirectory(), true);
+  assert.equal((await stat(f.revisionDir(second))).isDirectory(), true);
+  assert.equal((await f.driver.prepareRevision(first)).ready, false);
+  const unitPath = join(f.units, f.unit(second));
+  const ownedUnit = await readFile(unitPath, "utf8");
+  await rm(unitPath);
+  await assert.rejects(f.driver.activateRevision(first, rollback), /ownership/);
+  await writeFile(unitPath, ownedUnit);
+  await f.driver.activateRevision(first, rollback);
+  await f.driver.activateRevision(first, rollback);
+  await f.driver.deactivateRevision(second);
+  assert.equal(await readlink(join(dir, "current")), `revisions/${digest(first.id).slice(0, 12)}`);
+  assert.deepEqual(await json(join(dir, "served.json")), { revisionId: first.id });
+  await missing(join(dir, "deactivated.json"));
+  const { port } = await json(join(dir, "agent.json"));
+  const response = await fetch(`http://127.0.0.1:${port}/readyz`);
+  assert.equal(response.status, 200);
+  await response.body?.cancel();
+  assert.equal(await readFile(join(dir, "state", "persisted"), "utf8"), "state survives");
+  assert.equal(await readFile(join(dir, "env"), "utf8"), "OPERATOR_OWNED=unchanged\n");
+});
+
+test("SSH failed deactivation retains serving evidence and cannot authorize rollback", async (t) => {
+  const f = await fixture(t);
+  const first = await prepare(f);
+  const second = await prepare(f, revision(f.driver, 2));
+  const dir = f.agentDir(second);
+  const rollback = { secretEnvironment: [], rollbackFromRevisionId: second.id };
+
+  // A retained current pointer does not establish ownership of a missing unit file.
+  const unitPath = join(f.units, f.unit(second));
+  const ownedUnit = await readFile(unitPath, "utf8");
+  await rm(unitPath);
+  await assert.rejects(f.driver.deactivateRevision(second), /ownership/);
+  await writeFile(unitPath, ownedUnit);
+
+  // Fail the real helper's systemctl command at the existing process boundary.
+  // The gateway remains live; no successful deactivation marker may be published.
+  const bin = join(f.base, "bin");
+  await mkdir(bin);
+  await writeFile(join(bin, "systemctl"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  await assert.rejects(f.driver.deactivateRevision(second), /SSH host operation failed/);
+  assert.deepEqual(await json(join(dir, "served.json")), { revisionId: second.id });
+  await missing(join(dir, "deactivated.json"));
+  await assert.rejects(f.driver.activateRevision(first, rollback), /ownership/);
+  const { port } = await json(join(dir, "agent.json"));
+  const response = await fetch(`http://127.0.0.1:${port}/readyz`);
+  assert.equal(response.status, 200);
+  await response.body?.cancel();
+
+  await rm(join(bin, "systemctl"));
+  await f.driver.deactivateRevision(second);
+  await f.driver.activateRevision(first, rollback);
+  assert.deepEqual(await json(join(dir, "served.json")), { revisionId: first.id });
 });
 
 test("SSH trusted-proxy omits gateway.env, and allocation spans Agents and Namespaces on a host", async (t) => {

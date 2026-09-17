@@ -403,7 +403,12 @@ export class SshComputeDriver implements ComputeDriver {
     let launch: Readonly<WorkloadLaunchContext> | undefined;
     try {
       launch = await this.lifecycle.beforeWorkloadStart(revision);
-      await this.revisionOperation("activate-revision", revision, launch);
+      await this.revisionOperation(
+        "activate-revision",
+        revision,
+        launch,
+        context?.rollbackFromRevisionId,
+      );
     } catch (error) {
       if (launch === undefined) throw error;
       try {
@@ -420,7 +425,7 @@ export class SshComputeDriver implements ComputeDriver {
 
   async deactivateRevision(revision: AgentRevision): Promise<void> {
     this.lifecycleStarted = true;
-    await this.revisionOperation("verify-revision", revision);
+    await this.revisionOperation("deactivate-revision", revision);
   }
 
   async stopRevision(revision: AgentRevision): Promise<void> {
@@ -484,6 +489,7 @@ export class SshComputeDriver implements ComputeDriver {
     operation: string,
     revision: AgentRevision,
     launch?: Readonly<WorkloadLaunchContext>,
+    rollbackFromRevisionId?: string,
   ): Promise<Record<string, unknown>> {
     const namespace = this.validateRevision(revision);
     return this.execute(this.host(namespace), {
@@ -492,6 +498,7 @@ export class SshComputeDriver implements ComputeDriver {
       revision,
       configurationHash: sha256Hex(JSON.stringify(revision.configuration)),
       ...(launch === undefined ? {} : { launchEnvironment: launch.environment }),
+      ...(rollbackFromRevisionId === undefined ? {} : { rollbackFromRevisionId }),
     });
   }
 

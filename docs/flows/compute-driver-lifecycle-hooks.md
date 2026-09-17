@@ -89,14 +89,17 @@ owners with `beforeNamespaceDelete` in reverse.
 Kubernetes `prepareRevision` invokes selected workload hooks for initial embedded gateway creation
 and for dedicated Codex workload preparation. Embedded replacement revisions are different: after
 staging the immutable configuration, Service, and private claim, `prepareRevision` can return ready
-without starting the replacement gateway. After the worker commits the new active revision,
+without starting the replacement gateway. During the worker's durable production cutover,
 `KubernetesComputeDriver.activateRevision` invokes `beforeWorkloadStart`, updates the `Recreate`
-gateway Deployment and Service, then checks gateway readiness.
+gateway Deployment and Service, then checks gateway readiness. These effects can temporarily
+interrupt service. The worker records the new `activeRevisionId` only after activation confirms
+the ready route; unconfirmed cutover remains queued for retry or compensation.
 
-SSH stages embedded snapshots without starting the candidate gateway. After the
-worker commits the active revision, `SshComputeDriver.activateRevision` invokes
-`beforeWorkloadStart`, then projects accepted launch placeholders into the
-Agent's systemd unit before restart. Failed activation compensates prepared
+SSH stages embedded snapshots without starting the candidate gateway.
+`SshComputeDriver.activateRevision` invokes `beforeWorkloadStart`, then projects
+accepted launch placeholders into the Agent's systemd unit before restart.
+Production invokes activation during durable cutover; development invokes it
+after committing the active revision. Failed activation compensates prepared
 bindings through `beforeWorkloadStop`.
 
 The dispatcher rejects reserved environment keys and values outside the explicit `opaque-`

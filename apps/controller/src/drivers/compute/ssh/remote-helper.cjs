@@ -232,6 +232,7 @@ function verifyAgent(input, path) {
   for (const name of ["home", "state", "revisions"]) directory(join(path, name));
   verifyUnit(input, marker);
   servedRevision(path);
+  deactivatedRevision(input, path);
   return marker;
 }
 
@@ -241,6 +242,16 @@ function servedRevision(agentDir) {
   if (inspect(path) === undefined) return undefined;
   const marker = readJson(path);
   if (typeof marker.revisionId !== "string") throw new OwnershipFailure("Invalid served marker.");
+  return marker.revisionId;
+}
+
+function deactivatedRevision(input, agentDir) {
+  const path = join(agentDir, "deactivated.json");
+  if (inspect(path) === undefined) return undefined;
+  const marker = verify(readJson(path), agentOwnership(input));
+  if (typeof marker.revisionId !== "string")
+    throw new OwnershipFailure("Invalid deactivated revision marker.");
+  snapshot(input, agentDir, marker.revisionId);
   return marker.revisionId;
 }
 
@@ -536,6 +547,12 @@ async function active(unit) {
   return (await command("systemctl", ["is-active", "--quiet", unit], true)).success;
 }
 
+async function requireInactive(unit) {
+  // A failed status command is not evidence that a gateway has stopped.
+  const result = await systemctl("show", "-p", "ActiveState", "--value", unit);
+  if (result.stdout !== "inactive") throw new Error("Gateway unit has not stopped.");
+}
+
 async function ready(port) {
   try {
     const response = await fetch(`http://127.0.0.1:${port}/readyz`, {
@@ -623,10 +640,36 @@ async function prepare(input, nsDir) {
   return { ready: true };
 }
 
+async function deactivate(input, agentDir, agent, current) {
+  if (current?.revisionId !== input.revision.id) return {};
+  const unit = unitName(input.revision.agentId);
+  if (verifyUnit(input, agent) === undefined)
+    throw new OwnershipFailure("Current revision has no owned systemd unit.");
+  await systemctl("stop", unit);
+  await systemctl("disable", unit);
+  await requireInactive(unit);
+  // Retain the immutable current snapshot as the exact rollback anchor. Publish
+  // stopped evidence only after systemd confirms the gateway is inactive.
+  atomicWrite(
+    join(agentDir, "deactivated.json"),
+    JSON.stringify({ ...agentOwnership(input), revisionId: input.revision.id }),
+  );
+  fs.rmSync(join(agentDir, "served.json"), { force: true });
+  return {};
+}
+
 async function activate(input, agentDir, agent, current) {
   const revision = input.revision;
   if (current !== undefined && current.revision > revision.revision) {
-    throw new OwnershipFailure("A newer revision is already current.");
+    if (
+      input.rollbackFromRevisionId !== current.revisionId ||
+      deactivatedRevision(input, agentDir) !== current.revisionId ||
+      servedRevision(agentDir) !== undefined ||
+      verifyUnit(input, agent) === undefined
+    ) {
+      throw new OwnershipFailure("A newer revision is already current.");
+    }
+    await requireInactive(unitName(revision.agentId));
   }
   if (
     current !== undefined &&
@@ -650,8 +693,10 @@ async function activate(input, agentDir, agent, current) {
     servedRevision(agentDir) === revision.id &&
     (await active(unit)) &&
     (await ready(agent.port))
-  )
+  ) {
+    fs.rmSync(join(agentDir, "deactivated.json"), { force: true });
     return { ready: true };
+  }
   const pending = temporary(join(agentDir, "current"));
   try {
     fs.symlinkSync(`revisions/${hash(revision.id).slice(0, 12)}`, pending);
@@ -662,6 +707,7 @@ async function activate(input, agentDir, agent, current) {
   await systemctl("restart", unit);
   await waitReady(unit, agent.port);
   atomicWrite(join(agentDir, "served.json"), JSON.stringify({ revisionId: revision.id }));
+  fs.rmSync(join(agentDir, "deactivated.json"), { force: true });
   return {};
 }
 
@@ -753,7 +799,8 @@ async function run(input) {
     )
       return {};
     snapshot(input, agentDir, revision.id, revisionMetadata(input));
-    if (input.operation === "verify-revision") return {};
+    if (input.operation === "deactivate-revision")
+      return await deactivate(input, agentDir, agent, current);
     if (input.operation === "activate-revision")
       return await activate(input, agentDir, agent, current);
     if (input.operation === "stop-revision" || input.operation === "retire-revision") {
@@ -766,6 +813,8 @@ async function run(input) {
         fs.unlinkSync(join(agentDir, "current"));
         fs.rmSync(join(agentDir, "served.json"), { force: true });
       }
+      if (deactivatedRevision(input, agentDir) === revision.id)
+        fs.rmSync(join(agentDir, "deactivated.json"), { force: true });
       if (input.operation === "stop-revision") return {};
       fs.rmSync(revisionDir, { recursive: true });
       return {};

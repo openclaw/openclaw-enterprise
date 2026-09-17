@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +11,7 @@ import {
   kubernetesNamespaceName,
   resolveKubernetesNamespace,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   currentComputeAbortSignal,
   withComputeAbortSignal,
@@ -1334,70 +1335,47 @@ test("embedded replacement preparation recovers past an unready active gateway w
     }),
   );
   const namespace = kubernetesNamespaceName(tenant.id);
-  const agentId = "agent-embedded-recovery";
+  const agentId = `agt_${randomUUID()}`;
   const suffix = createHash("sha256").update(agentId).digest("hex").slice(0, 12);
+  const configuration = createHarnessConfiguration("openclaw", "gpt-4.1");
+  configuration.logging = { level: "info", consoleLevel: "info", consoleStyle: "json" };
+  configuration.diagnostics = { otel: { logs: false } };
+  configuration.gateway = {
+    ...configuration.gateway,
+    trustedProxies: ["10.42.0.0/16"],
+    allowRealIpFallback: true,
+    auth: {
+      mode: "trusted-proxy",
+      trustedProxy: {
+        userHeader: "x-occ-identity",
+        allowUsers: ["occ-workspace-files"],
+      },
+      identityScopes: { "occ-workspace-files": ["operator.admin"] },
+    },
+  };
+  configuration.models.providers.openai.apiKey = { source: "env" };
   const base = {
     namespaceId: tenant.id,
     agentId,
     configurationId: "cfg_00000000-0000-4000-8000-000000000077",
     configurationKind: "agent",
     configurationGeneration: 1,
+    configuration,
     harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
     compute: { id: driver.id, implementation: driver.implementation },
-    servicePrincipalId: "service-principal-embedded-recovery",
+    servicePrincipalId: `service-agent-${agentId}`,
+    providerId: null,
     createdAt: tenant.createdAt,
   };
   const oldRevision = {
     ...base,
-    id: "revision-embedded-recovery-bad",
+    id: `rev_${randomUUID()}`,
     revision: 7,
-    configuration: {
-      logging: {
-        level: "info",
-        consoleLevel: "info",
-        consoleStyle: "json",
-      },
-      diagnostics: { otel: { logs: false } },
-      gateway: {
-        trustedProxies: ["10.42.0.0/16"],
-        allowRealIpFallback: true,
-        auth: {
-          mode: "trusted-proxy",
-          trustedProxy: {
-            userHeader: "x-occ-identity",
-            allowUsers: ["occ-workspace-files"],
-          },
-          identityScopes: { "occ-workspace-files": ["operator.admin"] },
-        },
-      },
-      models: { providers: { openai: { apiKey: { source: "env" } } } },
-    },
   };
   const replacement = {
     ...base,
-    id: "revision-embedded-recovery-restored",
+    id: `rev_${randomUUID()}`,
     revision: 8,
-    configuration: {
-      logging: {
-        level: "info",
-        consoleLevel: "info",
-        consoleStyle: "json",
-      },
-      diagnostics: { otel: { logs: false } },
-      gateway: {
-        trustedProxies: ["10.42.0.0/16"],
-        allowRealIpFallback: true,
-        auth: {
-          mode: "trusted-proxy",
-          trustedProxy: {
-            userHeader: "x-occ-identity",
-            allowUsers: ["occ-workspace-files"],
-          },
-          identityScopes: { "occ-workspace-files": ["operator.admin"] },
-        },
-      },
-      models: { providers: { openai: { apiKey: { source: "env" } } } },
-    },
   };
   const tenantOwnership = { namespaceId: tenant.id };
   const gatewayOwnership = { namespaceId: tenant.id, agentId };
@@ -1567,7 +1545,7 @@ test("embedded replacement preparation recovers past an unready active gateway w
   });
 
   // The candidate revision is activation-ready after its immutable snapshot is staged;
-  // the old crashed gateway stays in place until the worker wins the active-revision CAS.
+  // the old crashed gateway stays in place until the candidate is activated.
   assert.deepEqual(await driver.prepareRevision(replacement), {
     namespaceId: tenant.id,
     agentId,
@@ -1605,6 +1583,44 @@ test("embedded replacement preparation recovers past an unready active gateway w
     [{ kind: "Deployment", name: gatewayName }],
   );
   assert.equal(patches.filter(({ kind }) => kind === "HTTPRoute").length, 2);
+
+  // Ordinary stale activation remains blocked even if the failed gateway has been observed.
+  for (const context of [
+    undefined,
+    { secretEnvironment: [], rollbackFromRevisionId: `rev_${randomUUID()}` },
+    { secretEnvironment: [], rollbackFromRevisionId: replacement.id },
+  ]) {
+    await assert.rejects(driver.activateRevision(oldRevision, context), /stale.*activation/i);
+  }
+
+  await driver.deactivateRevision(replacement);
+  assert.equal(
+    objects.get(key("Service", gatewayName)).spec.selector["app.kubernetes.io/name"],
+    `${gatewayName}-inactive`,
+  );
+  assert.deepEqual(await driver.prepareRevision(oldRevision), {
+    namespaceId: tenant.id,
+    agentId,
+    revisionId: oldRevision.id,
+    ready: false,
+  });
+  const rollbackContext = { secretEnvironment: [], rollbackFromRevisionId: replacement.id };
+  await driver.activateRevision(oldRevision, rollbackContext);
+  await driver.activateRevision(oldRevision, rollbackContext);
+
+  const restored = objects.get(key("Deployment", gatewayName));
+  assert.equal(restored.metadata.annotations["openclaw.dev/agent-revision-id"], oldRevision.id);
+  assert.equal(
+    objects.get(key("Service", gatewayName)).spec.selector["app.kubernetes.io/name"],
+    gatewayName,
+  );
+  assert.deepEqual(
+    patches.filter(({ kind }) => kind === "Deployment"),
+    [
+      { kind: "Deployment", name: gatewayName },
+      { kind: "Deployment", name: gatewayName },
+    ],
+  );
 });
 
 test("SDK resource requirements still require explicit CPU and memory requests and limits", () => {

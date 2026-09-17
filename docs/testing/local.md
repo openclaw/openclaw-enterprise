@@ -68,6 +68,13 @@ bodyless operations through the compiled OCC CLI. See
 [PostgreSQL tests](postgresql.md#service-key-persistence) for database-backed
 verification.
 
+`tests/integration/console-api.test.mjs` covers a real loopback Fastify listener
+with Better Auth memory storage, including trusted-origin rejection, cookie-only
+session responses, CLI-style sign-in, and a `401, 401, 401, 429` wrong-password
+sequence that ignores spoofed forwarded-IP headers. It verifies preservation of
+Better Auth's `X-Retry-After` header. This is HTTP integration, not PostgreSQL
+adapter or production deployment proof.
+
 ## Packaged-driver integration
 
 `tests/integration/driver-plugin-installation.test.mjs` installs scoped,

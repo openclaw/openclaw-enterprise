@@ -25,6 +25,8 @@ export interface ControllerWork {
   readonly claimToken?: string;
   readonly leaseExpiresAt?: Date;
   readonly completedAt?: Date;
+  readonly cutoverStartedAt?: Date;
+  readonly cutoverExpectedActiveRevisionId?: string;
   readonly createdAt: Date;
   readonly updatedAt: Date;
 }
@@ -102,6 +104,8 @@ interface WorkRow {
   readonly claim_token: string | null;
   readonly lease_expires_at: Date | string | null;
   readonly completed_at: Date | string | null;
+  readonly cutover_started_at: Date | string | null;
+  readonly cutover_expected_active_revision_id: string | null;
   readonly created_at: Date | string;
   readonly updated_at: Date | string;
 }
@@ -169,6 +173,12 @@ function asWork(value: unknown): ControllerWork {
     ...(row.claim_token === null ? {} : { claimToken: row.claim_token }),
     ...(row.lease_expires_at === null ? {} : { leaseExpiresAt: asDate(row.lease_expires_at) }),
     ...(row.completed_at === null ? {} : { completedAt: asDate(row.completed_at) }),
+    ...(row.cutover_started_at === null
+      ? {}
+      : { cutoverStartedAt: asDate(row.cutover_started_at) }),
+    ...(row.cutover_expected_active_revision_id === null
+      ? {}
+      : { cutoverExpectedActiveRevisionId: row.cutover_expected_active_revision_id }),
     createdAt: asDate(row.created_at),
     updatedAt: asDate(row.updated_at),
   });
@@ -373,7 +383,7 @@ export class PostgresWorkQueue {
              FROM occ.controller_work AS work
              WHERE work.state = 'queued'
                AND work.available_at <= clock_timestamp()
-               AND work.attempt_count < $2::integer
+               AND (work.attempt_count < $2::integer OR work.cutover_started_at IS NOT NULL)
                ${this.namespaceFilter("work")}
                AND NOT EXISTS (
                  SELECT 1
@@ -381,6 +391,15 @@ export class PostgresWorkQueue {
                  WHERE in_flight.state = 'claimed'
                    AND COALESCE(in_flight.agent_id, in_flight.namespace_id) =
                        COALESCE(work.agent_id, work.namespace_id)
+               )
+               AND NOT EXISTS (
+                 SELECT 1
+                 FROM occ.controller_work AS cutover
+                 WHERE cutover.state IN ('queued', 'claimed')
+                   AND cutover.cutover_started_at IS NOT NULL
+                   AND cutover.namespace_id = work.namespace_id
+                   AND cutover.agent_id = work.agent_id
+                   AND cutover.idempotency_key <> work.idempotency_key
                )
              ORDER BY work.available_at, work.created_at, work.idempotency_key
              FOR UPDATE OF work SKIP LOCKED
@@ -405,6 +424,50 @@ export class PostgresWorkQueue {
       }
     }
     return undefined;
+  }
+
+  async startRevisionCutover(
+    claim: WorkClaim,
+    expectedActiveRevisionId: string | undefined,
+  ): Promise<ClaimedWork> {
+    validateClaim(claim);
+    const started = await this.client.query(
+      `UPDATE occ.controller_work
+       SET cutover_started_at = COALESCE(cutover_started_at, clock_timestamp()),
+           cutover_expected_active_revision_id = $3::text,
+           updated_at = clock_timestamp()
+       WHERE idempotency_key = $1
+         AND state = 'claimed'
+         AND claim_token = $2::uuid
+         AND lease_expires_at > clock_timestamp()
+         AND revision_id IS NOT NULL
+         AND (
+           (cutover_started_at IS NULL AND cutover_expected_active_revision_id IS NULL)
+           OR cutover_expected_active_revision_id IS NOT DISTINCT FROM $3::text
+         )
+       RETURNING *`,
+      [claim.idempotencyKey, claim.claimToken, expectedActiveRevisionId ?? null],
+    );
+    if (started.rows[0] === undefined) throw new WorkClaimLostError();
+    return asClaimedWork(started.rows[0]);
+  }
+
+  async clearRevisionCutover(claim: WorkClaim): Promise<ClaimedWork> {
+    validateClaim(claim);
+    const cleared = await this.client.query(
+      `UPDATE occ.controller_work
+       SET cutover_started_at = NULL,
+           cutover_expected_active_revision_id = NULL,
+           updated_at = clock_timestamp()
+       WHERE idempotency_key = $1
+         AND state = 'claimed'
+         AND claim_token = $2::uuid
+         AND lease_expires_at > clock_timestamp()
+       RETURNING *`,
+      [claim.idempotencyKey, claim.claimToken],
+    );
+    if (cleared.rows[0] === undefined) throw new WorkClaimLostError();
+    return asClaimedWork(cleared.rows[0]);
   }
 
   async heartbeat(claim: WorkClaim): Promise<ClaimedWork | undefined> {
@@ -442,11 +505,13 @@ export class PostgresWorkQueue {
     const completed = await this.client.query(
       `WITH transitioned AS (
          UPDATE occ.controller_work
-         SET state = 'succeeded',
-             claim_token = NULL,
-             lease_expires_at = NULL,
-             completed_at = clock_timestamp(),
-             updated_at = clock_timestamp()
+       SET state = 'succeeded',
+           claim_token = NULL,
+           lease_expires_at = NULL,
+           completed_at = clock_timestamp(),
+           cutover_started_at = NULL,
+           cutover_expected_active_revision_id = NULL,
+           updated_at = clock_timestamp()
          WHERE idempotency_key = $1
            AND state = 'claimed'
            AND claim_token = $2::uuid
@@ -500,11 +565,12 @@ export class PostgresWorkQueue {
       `WITH transitioned AS (
          UPDATE occ.controller_work
          SET state = CASE
+               WHEN cutover_started_at IS NOT NULL THEN 'queued'
                WHEN attempt_count >= $5::integer THEN 'failed_permanent'
                ELSE 'queued'
              END,
              available_at = CASE
-               WHEN attempt_count >= $5::integer THEN available_at
+               WHEN cutover_started_at IS NULL AND attempt_count >= $5::integer THEN available_at
                ELSE clock_timestamp() +
                  LEAST($6::double precision,
                    $7::double precision * POWER(2::double precision,
@@ -514,7 +580,7 @@ export class PostgresWorkQueue {
              claim_token = NULL,
              lease_expires_at = NULL,
              completed_at = CASE
-               WHEN attempt_count >= $5::integer THEN clock_timestamp()
+               WHEN cutover_started_at IS NULL AND attempt_count >= $5::integer THEN clock_timestamp()
                ELSE NULL
              END,
              updated_at = clock_timestamp()
@@ -552,6 +618,7 @@ export class PostgresWorkQueue {
            AND state = 'claimed'
            AND claim_token = $2::uuid
            AND lease_expires_at > clock_timestamp()
+           AND cutover_started_at IS NULL
          RETURNING *
        ), ${INSERT_EVIDENCE_SQL}`,
       [claim.idempotencyKey, claim.claimToken, "failure", safeFailureCode(failure.code)],
@@ -577,11 +644,12 @@ export class PostgresWorkQueue {
        ), transitioned AS (
          UPDATE occ.controller_work AS work
          SET state = CASE
+               WHEN work.cutover_started_at IS NOT NULL THEN 'queued'
                WHEN work.attempt_count >= $2::integer THEN 'failed_permanent'
                ELSE 'queued'
              END,
              available_at = CASE
-               WHEN work.attempt_count >= $2::integer THEN work.available_at
+               WHEN work.cutover_started_at IS NULL AND work.attempt_count >= $2::integer THEN work.available_at
                ELSE clock_timestamp() +
                  LEAST($5::double precision,
                    $6::double precision * POWER(2::double precision,
@@ -591,7 +659,7 @@ export class PostgresWorkQueue {
              claim_token = NULL,
              lease_expires_at = NULL,
              completed_at = CASE
-               WHEN work.attempt_count >= $2::integer THEN clock_timestamp()
+               WHEN work.cutover_started_at IS NULL AND work.attempt_count >= $2::integer THEN clock_timestamp()
                ELSE NULL
              END,
              updated_at = clock_timestamp()
@@ -616,6 +684,7 @@ export class PostgresWorkQueue {
          FROM occ.controller_work
          WHERE state = 'queued'
            AND attempt_count >= $2::integer
+           AND cutover_started_at IS NULL
            ${this.namespaceFilter()}
          ORDER BY available_at, created_at, idempotency_key
          FOR UPDATE SKIP LOCKED

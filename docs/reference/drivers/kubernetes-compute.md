@@ -184,6 +184,22 @@ and converges when the runtime objects are already absent.
 See the [Harness execution topology flow](../../flows/harness-execution-topology.md)
 for additional execution details.
 
+### Activation recovery
+
+The worker records durable cutover intent, switches the ready route, then
+records `activeRevisionId`. If current authorization or the convergence deadline
+prevents completion, it disables the failed candidate route before restoring
+the recorded predecessor. Failed restoration leaves the cutover queued; see
+[controller recovery](../controller/reconciliation.md#deferred-namespace-and-agent-convergence).
+
+Embedded rollback can replace the shared gateway with an older admitted
+revision only when worker recovery names the exact failed revision currently
+on that gateway and its owned Service already has the inactive selector.
+Ordinary stale activation, a different failed revision, or an enabled route
+cannot use this exception. Repeating an already completed restoration is safe.
+See [Kubernetes testing](../../testing/kubernetes.md) for driver-boundary and
+real-cluster verification limits.
+
 ## Failure conditions
 
 - **Namespace provisioning fails:** Verify tenant-local RoleBindings, namespace

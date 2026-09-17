@@ -156,10 +156,12 @@ Agent, and ServicePrincipal identities; an unbound revision fails closed.
 It verifies ownership, creates or verifies the Agent's Unix identity, allocates
 or reuses the Agent port, and writes the immutable snapshot. A superseded
 candidate returns not-ready. Preparation does not replace `current`, write the
-systemd unit, or restart the running gateway. An OCC publication failure leaves
+systemd unit, or restart the running gateway. Failure before activation leaves
 the previous gateway serving its existing revision.
 
-After OCC commits the active revision, `activateRevision` runs selected
+Production records durable cutover intent before `activateRevision` and commits
+the active pointer after readiness is confirmed. Development invokes activation
+after that commit. `activateRevision` runs selected
 Configuration and IAM `beforeWorkloadStart` hooks, renders the systemd unit,
 switches `current`, restarts the unit, and waits for loopback `/readyz`. The
 bounded opaque environment placeholders returned by those hooks are projected
@@ -174,16 +176,32 @@ with `HOME`, `OPENCLAW_STATE_DIR`, `OPENCLAW_CONFIG_PATH`, and
 `TimeoutStopSec=30`, `NoNewPrivileges=true`, and `PrivateTmp=true`. The admitted
 document owns logging; the Driver sets no `OPENCLAW_LOG_LEVEL`. Logs go to journald.
 
-`deactivateRevision` verifies
-ownership and returns; the worker only needs deactivation for the dedicated
-topology, which SSH preparation rejects. `stopRevision` invokes selected
+`deactivateRevision` verifies exact ownership, stops and disables the current
+revision's unit, and requires a positively observed inactive state before writing
+`deactivated.json` with the exact Agent ownership and revision ID. It then clears
+`served.json`, retaining the snapshots, `current` anchor, environment, and state
+for recovery. Stale deactivation leaves a successor untouched. A first deployment
+can therefore fail closed with no gateway serving.
+
+Production rollback supplies `rollbackFromRevisionId` for the exact failed
+revision. Restoring an older snapshot requires that failed revision's current
+anchor and stopped marker, an absent `served.json`, and an inactive unit. It
+uses the retained snapshot; ordinary preparation still rejects an older candidate.
+Ordinary stale activation, a different failed revision, or a running unit cannot
+use this exception. Restoration must pass readiness before the worker treats
+compensation as complete; success clears the stopped marker, and repeating the
+restored revision is safe. Otherwise durable cutover stays queued. See
+[controller recovery](../controller/reconciliation.md#deferred-namespace-and-agent-convergence).
+
+`stopRevision` invokes selected
 `beforeWorkloadStop` hooks, stops and disables the unit, and removes `current`
-and `served.json` while retaining the immutable revision snapshot, home, state,
-and operator credentials. A later deployment can activate its newly admitted
-snapshot. `retireRevision` invokes selected
+and matching serving or stopped markers while retaining the immutable revision
+snapshot, home, state, and operator credentials. A later deployment can activate
+its newly admitted snapshot. `retireRevision` invokes selected
 `beforeWorkloadStop` hooks and removes only that snapshot. If it is still
-current, retirement stops/disables the unit and removes the pointer first.
-Home, state, operator credentials, and other revisions remain.
+current, retirement stops/disables the unit and removes the pointer and matching
+serving or stopped markers first. Home, state, operator credentials, and other
+revisions remain.
 
 `deleteNamespace` invokes `beforeNamespaceDelete`, verifies all owned Agents,
 stops/disables their units, removes the unit files, reloads systemd, and removes

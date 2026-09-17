@@ -1437,7 +1437,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         existingGatewayRevision < revision.revision
       ) {
         // A broken old gateway must not block recovery. This only stages the replacement;
-        // post-commit activation replaces the Deployment and verifies its readiness.
+        // cutover activation replaces the Deployment and verifies its readiness.
         return { ...result, ready: true };
       }
       if (inactiveEmbeddedGateway) {
@@ -1573,7 +1573,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
         currentRevision > revision.revision ||
         (currentRevision === revision.revision && currentRevisionId !== revision.id)
       ) {
-        throw new ConfigurationFailure("Refusing stale AgentRevision gateway activation.");
+        const rollbackAllowed =
+          currentRevision > revision.revision &&
+          this.embeddedRollbackFromObservedRevision(revision, context, currentRevisionId) &&
+          (await this.embeddedGatewayRouteDisabled(gatewayName, namespace, gatewayOwnership));
+        if (!rollbackAllowed) {
+          throw new ConfigurationFailure("Refusing stale AgentRevision gateway activation.");
+        }
       }
       if (currentRevisionId !== revision.id) {
         const launch = await this.lifecycle.beforeWorkloadStart(revision);
@@ -3039,6 +3045,29 @@ export class KubernetesComputeDriver implements ComputeDriver {
       observed >= generation &&
       typeof ready === "number" &&
       ready >= replicas
+    );
+  }
+
+  private embeddedRollbackFromObservedRevision(
+    revision: AgentRevision,
+    context: ComputeRevisionContext | undefined,
+    currentRevisionId: string,
+  ): boolean {
+    return (
+      revision.harness.mode === "embedded" &&
+      this.options.runtime !== undefined &&
+      context?.rollbackFromRevisionId === currentRevisionId
+    );
+  }
+
+  private async embeddedGatewayRouteDisabled(
+    gatewayName: string,
+    namespace: string,
+    ownership: Ownership,
+  ): Promise<boolean> {
+    const service = await this.getOwned("Service", gatewayName, namespace, ownership);
+    return (
+      asRecord(service?.spec?.selector)?.["app.kubernetes.io/name"] === `${gatewayName}-inactive`
     );
   }
 

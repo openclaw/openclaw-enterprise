@@ -31,10 +31,10 @@ graph TD
   B --> C["Freeze configuration, harness identity, and opaque account credential"]
   C --> D["Claim and reauthorize revision work"]
   D --> E{"Approved topology"}
-  E -->|embedded OpenClaw| F["Start one Agent-owned OpenClaw gateway"]
-  E -->|dedicated Codex| G["Start gateway and authenticated Codex workload"]
+  E -->|embedded OpenClaw| F["Prepare Agent-owned OpenClaw gateway inputs"]
+  E -->|dedicated Codex| G["Prepare gateway and nonserving Codex workload"]
   E -->|unsupported or mismatched| H["Reject before workload creation"]
-  F --> I["Activate exact revision without disconnecting its predecessor"]
+  F --> I["Record cutover, activate route, then record active revision"]
   G --> I
   I --> J["Retire predecessor and commit activation audit with claim"]
 ```
@@ -99,16 +99,13 @@ for candidate rules and the limits of this observation.
 
 `apps/controller/src/worker.ts:ControllerWorker`
 
-The predecessor's Kubernetes Service selector remains intact while
-`prepareRevision` stages the replacement. The worker then commits the database
-`activeRevisionId` with an exact compare-and-set before Kubernetes default
-after-commit activation. During that cutover, `KubernetesComputeDriver.activateRevision`
-can mutate the `Recreate` gateway Deployment and Service before the replacement
-is ready. If activation, readiness, predecessor retirement, or audit completion
-fails, the worker requeues the revision with `REVISION_FINALIZATION_INCOMPLETE`;
-recovery retries activation and retirement for the already-active revision.
-This path does not guarantee the previous route stays serving through every
-failed cutover. Lost claims and foreign/stale workloads fail closed.
+Preparation preserves the predecessor's Kubernetes Service selector. Production
+records durable cutover intent, confirms the candidate route, then commits its
+active pointer and retires the predecessor. Embedded replacement can interrupt
+service. Lost claims and unconfirmed compensation keep the cutover ahead of later
+same-Agent work. Ordinary stale or foreign revisions fail closed; rollback permits
+only the exact recorded failed revision. See [worker recovery](controller-worker.md)
+and [Kubernetes activation recovery](../reference/drivers/kubernetes-compute.md#activation-recovery).
 
 Kubernetes gateways in both modes mount their own persistent SQLite and media
 directories. Embedded gateways also retain their attested default workspace on

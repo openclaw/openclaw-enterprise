@@ -22,7 +22,15 @@ export const OCC_BETTER_AUTH_ISSUER_PREFIX = "occ:installation:";
 export const OCC_AUTH_COOKIE_PREFIX = "openclaw_occ";
 export const OCC_SERVICE_KEY_HEADER = "x-api-key";
 const SERVICE_KEY_CONFIG = "occ-service";
+const OCC_AUTH_SOCKET_IP_HEADER = "x-openclaw-auth-socket-ip";
+const AUTH_ERROR_CODES: Readonly<Partial<Record<number, string>>> = {
+  400: "INVALID_REQUEST",
+  401: "UNAUTHENTICATED",
+  409: "RESOURCE_CONFLICT",
+  429: "TOO_MANY_REQUESTS",
+};
 type ControllerBetterAuth = Auth<BetterAuthOptions & { plugins: ReturnType<typeof apiKey>[] }>;
+type RateLimitStorage = NonNullable<NonNullable<BetterAuthOptions["rateLimit"]>["customStorage"]>;
 
 export interface ServiceKey {
   readonly id: string;
@@ -127,17 +135,39 @@ function setAuthHeaders(reply: FastifyReply, headers?: Headers | null): void {
   if (!headers) return;
   const cookies: string[] = [];
   headers.forEach((value, name) => {
-    if (name.toLowerCase() === "set-cookie") {
+    const headerName = name.toLowerCase();
+    if (headerName === "set-cookie") {
       cookies.push(...splitSetCookieHeader(value));
       return;
     }
+    if (headerName === "content-length" || headerName === "content-type") return;
     reply.header(name, value);
   });
   if (cookies.length > 0) reply.header("set-cookie", cookies);
 }
 
+class AuthEndpointFailure extends Error {
+  readonly status: number;
+  readonly code: string;
+  readonly headers: Headers;
+
+  constructor(response: Response) {
+    const code = AUTH_ERROR_CODES[response.status] ?? "FORBIDDEN";
+    super(code);
+    this.name = "AuthEndpointFailure";
+    this.status = response.status;
+    this.code = code;
+    this.headers = new Headers(response.headers);
+  }
+}
+
 function authFailure(error: unknown): { readonly status: number; readonly code: string } {
   if (error instanceof AdmissionFailure) return { status: error.status, code: error.code };
+  if (error instanceof AuthEndpointFailure) {
+    // Better Auth's HTTP handler turns adapter failures into server-error responses.
+    if (error.status >= 500) return { status: 503, code: "DEPENDENCY_UNAVAILABLE" };
+    return { status: error.status, code: error.code };
+  }
   if (error instanceof APIError || (typeof error === "object" && error !== null)) {
     const candidate = error as Record<string, unknown>;
     const status =
@@ -145,8 +175,7 @@ function authFailure(error: unknown): { readonly status: number; readonly code: 
     if (typeof status === "number" && Number.isSafeInteger(status) && status >= 400 && status < 500)
       return {
         status,
-        code:
-          status === 401 ? "UNAUTHENTICATED" : status === 409 ? "RESOURCE_CONFLICT" : "FORBIDDEN",
+        code: AUTH_ERROR_CODES[status] ?? "FORBIDDEN",
       };
     if (error instanceof APIError) return { status: 401, code: "UNAUTHENTICATED" };
   }
@@ -181,6 +210,32 @@ function requireTrustedBrowserOrigin(request: FastifyRequest, expectedOrigin: st
   if (request.headers["sec-fetch-site"] === "cross-site") {
     throw new AdmissionFailure(403, "FORBIDDEN", "The browser origin is not trusted.");
   }
+}
+
+function createRateLimitStorage(): RateLimitStorage {
+  const records = new Map<string, { readonly count: number; readonly expiresAt: number }>();
+  const prune = (now: number) => {
+    for (const [key, record] of records) {
+      if (record.expiresAt <= now) records.delete(key);
+    }
+  };
+  return {
+    async consume(key, rule) {
+      const now = Date.now();
+      prune(now);
+      const record = records.get(key);
+      if (record !== undefined && record.count >= rule.max) {
+        return { allowed: false, retryAfter: Math.ceil((record.expiresAt - now) / 1000) };
+      }
+      // No await separates the decision and update, so concurrent requests share one limit.
+      // Better Auth's rolling window starts again on each accepted request.
+      records.set(key, {
+        count: (record?.count ?? 0) + 1,
+        expiresAt: now + rule.window * 1000,
+      });
+      return { allowed: true, retryAfter: null };
+    },
+  };
 }
 
 function accountName(input: ProvisionAuthAccountInput): string {
@@ -222,8 +277,15 @@ async function sendAuthEndpoint(
     });
   } catch (error) {
     const failure = authFailure(error);
+    if (error instanceof AuthEndpointFailure) setAuthHeaders(reply, error.headers);
     reply.status(failure.status).send({
-      error: { code: failure.code, message: failureMessage },
+      error: {
+        code: failure.code,
+        message:
+          failure.code === "TOO_MANY_REQUESTS"
+            ? "Too many authentication attempts. Please retry later."
+            : failureMessage,
+      },
       meta: { requestId: request.id },
     });
   }
@@ -369,7 +431,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
   const auth = betterAuth<BetterAuthOptions & { plugins: ReturnType<typeof apiKey>[] }>({
     appName: "OpenClaw Enterprise Controller",
     baseURL: options.baseURL,
-    basePath: "/auth",
+    basePath: "/api/auth",
     secret: options.secret,
     database:
       options.database ??
@@ -401,8 +463,11 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
       maxPasswordLength: 128,
     },
     trustedOrigins: [options.baseURL],
-    rateLimit: { enabled: true },
+    rateLimit: { enabled: true, customStorage: createRateLimitStorage() },
     advanced: {
+      ipAddress: {
+        ipAddressHeaders: [OCC_AUTH_SOCKET_IP_HEADER],
+      },
       cookiePrefix: OCC_AUTH_COOKIE_PREFIX,
       defaultCookieAttributes: {
         httpOnly: true,
@@ -479,17 +544,34 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     await sendAuthEndpoint(
       request,
       reply,
-      () => {
-        // Better Auth server API calls skip origin middleware without a Request context.
+      async () => {
         requireTrustedBrowserOrigin(request, expectedBrowserOrigin);
         const body = ensureEmailPassword(authBody(request));
-        return api.signInEmail({
-          body: { ...body, rememberMe: true },
-          headers: authHeaders(request.headers),
-          asResponse: false,
-          returnHeaders: true,
-          returnStatus: true,
-        });
+        const headers = authHeaders(request.headers);
+        headers.delete("content-length");
+        if (!headers.has("origin") && !headers.has("sec-fetch-site")) {
+          headers.delete("sec-fetch-mode");
+          headers.delete("sec-fetch-dest");
+        }
+        headers.set("content-type", "application/json");
+        headers.set(
+          OCC_AUTH_SOCKET_IP_HEADER,
+          request.raw.socket.remoteAddress ?? request.ip ?? "127.0.0.1",
+        );
+        const response = await auth.handler(
+          new Request(new URL(request.url, options.baseURL), {
+            method: request.method,
+            headers,
+            body: JSON.stringify({ ...body, rememberMe: true }),
+          }),
+        );
+        if (!response.ok) throw new AuthEndpointFailure(response);
+        const responseBody = await response.json().catch(() => null);
+        return {
+          response: responseBody,
+          headers: response.headers,
+          status: response.status,
+        };
       },
       () => ({ authenticated: true }),
       "The caller did not provide valid authentication credentials.",

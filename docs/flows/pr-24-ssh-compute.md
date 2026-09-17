@@ -11,8 +11,9 @@ pr: 24
 
 The worker realizes an admitted embedded OpenClaw AgentRevision on a configured
 Linux host. The SSH Compute Driver sends a controller-owned helper to the host,
-which stages the revision and activates the Agent's systemd gateway after OCC
-commits its active revision. This trace covers preparation, activation,
+which stages the revision and activates the Agent's systemd gateway. Production
+confirms activation before committing the active revision; development activates
+after that commit. This trace covers preparation, activation,
 retirement, and Namespace deletion. It stops when
 control returns to the worker; gateway request execution is outside this flow.
 The [SSH reference](../reference/drivers/ssh-compute.md) owns configuration and
@@ -43,16 +44,16 @@ graph TD
     C --> D["Verify ownership and private Agent account"]
     D --> E["Stage immutable snapshot; preserve running gateway"]
   end
-  E --> F{"OCC active revision commit"}
-  F -->|fails| G["Previous gateway continues serving"]
-  F -->|succeeds| H["Run beforeWorkloadStart hooks"]
+  E --> F["Production: record cutover intent; development: commit active pointer"]
+  F --> H["Run beforeWorkloadStart hooks"]
   subgraph Activate["Host activation under shared-root flock"]
     H --> I["Render unit and switch current pointer"]
     I --> J["Restart systemd gateway and poll readiness"]
     J -->|ready| K["Record served revision"]
   end
-  J -->|fails| L["Compensate lifecycle bindings; retry finalization"]
-  K --> M["Retire previous snapshot and complete work"]
+  J -->|fails| L["Compensate lifecycle bindings; retain work for recovery"]
+  K --> P["Production: commit confirmed active pointer"]
+  P --> M["Retire previous snapshot and complete work"]
 ```
 
 ## Execution Trace
@@ -119,9 +120,10 @@ pointer untouched, so failed OCC publication does not cut over the gateway.
 `ssh/index.ts:activateRevision`, `retireRevision`,
 `ssh/remote-helper.cjs:activate`, `renderUnit`, `waitReady`
 
-SSH uses the default activation order. After successful preparation, OCC
-compare-and-sets the Agent's active revision in its database. The worker then
-calls `activateRevision`, which invokes selected Configuration and IAM
+SSH uses the default activation order. After successful preparation, production
+records durable cutover intent and invokes `activateRevision` before committing
+the confirmed active pointer. Development commits the pointer first.
+`activateRevision` invokes selected Configuration and IAM
 `beforeWorkloadStart` hooks before sending the activation operation. Accepted
 opaque launch placeholders enter the systemd unit's environment. Hook failure
 prevents launch; failure after hook preparation invokes bounded workload-stop
@@ -135,11 +137,17 @@ the driver-generated gateway token unless trusted-proxy authentication is
 selected, and optionally loads the operator-owned `env` file. The Driver never
 reads or writes that operator credential file.
 
+Production compensation stops the exact failed revision under the shared-root
+lock and requires positive `ActiveState=inactive` evidence. Restoring an older
+snapshot requires its exact failed-revision anchor and stopped marker; stale or
+mismatched operations leave newer workloads untouched. Snapshots and persistent
+state remain available for recovery. Restoration must pass readiness before the
+cutover can finish; see [SSH lifecycle rules](../reference/drivers/ssh-compute.md#namespace-and-revision-lifecycle).
+
 Retirement runs `beforeWorkloadStop` hooks and removes the specified snapshot.
 If that snapshot is current, it first stops/disables the unit and removes
-`current` and `served.json`. Persistent state, the private account, and other
-snapshots remain. `deactivateRevision` only verifies ownership; the worker's
-dedicated-only deactivation path is outside SSH's supported topology.
+`current` and its serving and stopped markers. Persistent state, the private
+account, and other snapshots remain.
 
 ### 5. Delete the Namespace host state
 

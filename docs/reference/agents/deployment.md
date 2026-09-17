@@ -96,8 +96,8 @@ an account's selected credential reference affect only future deployments. A
 snapshot freezes a Secret reference, not the value stored at that reference.
 
 The separate PostgreSQL controller worker prepares the exact Agent gateway and
-revision, activates its route, retires its predecessor, and sets
-`activeRevisionId`. Each Agent owns its gateway; sibling Agents never share
+revision, activates its route, records `activeRevisionId` after the production
+route is confirmed, and retires its predecessor. Each Agent owns its gateway; sibling Agents never share
 one. The default PostgreSQL-backed development Compute Driver starts Docker
 runtime containers for embedded OpenClaw or dedicated Codex topologies. Selected
 Kubernetes Compute starts either an Agent-owned gateway plus a dedicated
@@ -105,8 +105,10 @@ Codex workload with its separate ServiceAccount, or one embedded combined
 gateway/Harness. Without a SandboxDriver, Compute owns the Codex Deployment;
 with one selected, that Driver provisions the dedicated Harness workload.
 Both embedded and dedicated modes are supported in production, subject to the
-selected Drivers' mode constraints. A replacement must preserve
-its predecessor's Service selector until activation succeeds. Without an
+selected Drivers' mode constraints. Preparation preserves the predecessor's
+Service selector; production cutover can interrupt service until activation or
+rollback finishes. See [controller recovery](../controller/reconciliation.md#deferred-namespace-and-agent-convergence)
+for durable recovery and the development activation distinction. Without an
 eligible worker, revision work remains queued.
 
 Revision list and read operations are scoped beneath the exact Namespace and

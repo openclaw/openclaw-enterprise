@@ -120,6 +120,13 @@
       "when": 1787000000016,
       "tag": "0016_agent_stop",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1787000000017,
+      "tag": "0017_controller_work_cutover",
+      "breakpoints": true
     }
   ]
 }
