@@ -23,6 +23,23 @@ Read its [implementation status](docs/design.md#implementation-status) before
 treating a target-design capability as implemented; verify current code and tests.
 Do not create a competing architecture specification in this checkout.
 
+## Keep agents in their lane
+
+"Our PRs" and "my PRs" mean PRs authored by the requesting user's GitHub
+account unless the user explicitly selects a broader scope. Verify identity
+and filter by author before making changes; ask if unclear.
+
+Keep other authors' PRs, branches, and worktrees read-only unless explicitly
+assigned. Repository permissions and dependencies do not expand scope.
+Subagents inherit these limits.
+
+"Refresh against main" does not authorize force pushes. Preserve published
+history by default. Rewrite history only with explicit authorization for the
+selected branches, using `--force-with-lease` against a freshly verified head;
+never use `--force`.
+Before each push, verify the PR author, destination ref, and remote head;
+stop on unexpected changes.
+
 ## Development style
 
 Follow these rules when developing or changing code.
