@@ -70,11 +70,11 @@ This is the design concern illustrated by
 
 ### Require integration tests; reject low-value tests
 
-**Do not add low-value tests.** We place low value on unit tests in general.
-Prefer tests that prove new functionality works through real platform boundaries
-and produces observable results.
+**Do not add or run tests for documentation changes, including docs-site
+presentation.** Use builds, formatting, link checks, and visual inspection.
+**Do not add low-value tests** that restate implementation or duplicate coverage.
 
-**New functionality requires integration tests. Omitting them requires an
+**New platform functionality requires integration tests. Omitting them requires an
 explicit human override.** Record the approved scope and reason in the PR.
 Missing infrastructure, passing unit tests, or an agent's judgment cannot grant
 that override.

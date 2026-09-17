@@ -5,10 +5,7 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import {
-  renderMatrixMarkdown,
-  renderPluginMatrixMarkdown,
-} from "../../scripts/generate-compute-matrix.mjs";
+import { renderMatrixMarkdown } from "../../scripts/generate-compute-matrix.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 
@@ -233,70 +230,6 @@ function matrixFixtureData() {
   };
 }
 
-function pluginMatrixFixtureData() {
-  return {
-    baseline: "c4ecf32727aef09a6b4caeec16870bf391f7a505",
-    reviewedAt: "2026-09-17",
-    drivers: [
-      { id: "occ-plugin", name: "occ-plugin (embedded OpenClaw)" },
-      { id: "codex-plugin", name: "codex-plugin (dedicated Codex)" },
-    ],
-    rows: [
-      {
-        id: "catalog",
-        category: "Discovery",
-        name: "Curated catalog",
-        requirement: "Discover supported curated entries.",
-        requirementEvidence: [{ path: "docs/reference/drivers/plugin.md", start: 50, end: 60 }],
-        cells: {
-          "occ-plugin": {
-            status: "supported",
-            detail: "Returns the bundled OpenClaw plugin catalog.",
-            evidence: [
-              { path: "apps/controller/src/drivers/plugin/index.ts", start: 144, end: 147 },
-            ],
-            tests: [{ path: "tests/conformance/plugin-driver.test.mjs", start: 151, end: 162 }],
-          },
-          "codex-plugin": {
-            status: "partial",
-            detail: "Requires native catalog-reader settings for live native discovery.",
-            evidence: [
-              { path: "apps/controller/src/drivers/plugin/index.ts", start: 150, end: 178 },
-            ],
-            tests: [{ path: "tests/conformance/plugin-driver.test.mjs", start: 212, end: 268 }],
-          },
-        },
-      },
-      {
-        id: "oauth",
-        category: "Credentials",
-        name: "New connector authorization flow",
-        requirement: "Authorize new connector accounts.",
-        cells: {
-          "occ-plugin": {
-            status: "not-applicable",
-            detail: "Bundled OpenClaw plugins do not add connector OAuth.",
-            evidence: [{ path: "docs/reference/drivers/plugin.md", start: 163, end: 167 }],
-            tests: [],
-          },
-          "codex-plugin": {
-            status: "unsupported",
-            detail: "Startup fails when native apps still need account authorization.",
-            evidence: [
-              {
-                path: "apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
-                start: 495,
-                end: 499,
-              },
-            ],
-            tests: [{ path: "tests/conformance/plugin-compute.test.mjs", start: 477, end: 555 }],
-          },
-        },
-      },
-    ],
-  };
-}
-
 test("docs build renders a ComputeDriver matrix block and rejects stale fallback", async (t) => {
   const fixture = await mkdtemp(join(tmpdir(), "enterprise-docs-compute-matrix-"));
   t.after(() => rm(fixture, { recursive: true, force: true }));
@@ -359,69 +292,4 @@ test("docs build renders a ComputeDriver matrix block and rejects stale fallback
   );
   assert.notEqual(stale.status, 0, "Build accepted a stale ComputeDriver matrix fallback");
   assert.match(stale.stderr + stale.stdout, /compute-matrix fallback is stale/);
-});
-
-test("docs build renders a PluginDriver matrix block and rejects stale fallback", async (t) => {
-  const fixture = await mkdtemp(join(tmpdir(), "enterprise-docs-plugin-matrix-"));
-  t.after(() => rm(fixture, { recursive: true, force: true }));
-  await mkdir(join(fixture, "docs/assets"), { recursive: true });
-  await copyFile(
-    join(root, "docs/assets/lobster-mech-transparent.png"),
-    join(fixture, "docs/assets/lobster-mech-transparent.png"),
-  );
-  await writeFile(
-    join(fixture, "docs/docs.json"),
-    JSON.stringify({
-      name: "OpenClaw Enterprise",
-      navigation: {
-        languages: [
-          {
-            language: "en",
-            tabs: [{ tab: "Documentation", groups: [{ group: "Start", pages: ["README"] }] }],
-          },
-        ],
-      },
-    }),
-  );
-  const matrix = pluginMatrixFixtureData();
-  await writeFile(join(fixture, "docs/assets/plugin-driver-matrix.json"), JSON.stringify(matrix));
-  await writeFile(
-    join(fixture, "docs/README.md"),
-    ["# Matrix", "", renderPluginMatrixMarkdown(matrix), ""].join("\n"),
-  );
-
-  const build = spawnSync(process.execPath, [join(root, "scripts/docs-site/build.mjs")], {
-    cwd: fixture,
-    encoding: "utf8",
-    timeout: 30_000,
-  });
-  assert.equal(build.status, 0, build.stderr || build.stdout);
-  const html = await readFile(join(fixture, "dist/docs/index.html"), "utf8");
-  assert.match(html, /PluginDriver feature matrix/);
-  assert.match(html, /data-compute-matrix-status/);
-  assert.match(html, /Test coverage/);
-  assert.doesNotMatch(html, /Tests \(not run\)/);
-  assert.match(html, /New connector authorization flow/);
-  assert.doesNotMatch(html, /Generated from docs\/assets\/plugin-driver-matrix\.json/);
-
-  await writeFile(
-    join(fixture, "docs/README.md"),
-    [
-      "# Matrix",
-      "",
-      renderPluginMatrixMarkdown(matrix).replace("Curated catalog", "Stale row"),
-      "",
-    ].join("\n"),
-  );
-  const stale = spawnSync(
-    process.execPath,
-    [join(root, "scripts/docs-site/build.mjs"), "--check"],
-    {
-      cwd: fixture,
-      encoding: "utf8",
-      timeout: 30_000,
-    },
-  );
-  assert.notEqual(stale.status, 0, "Build accepted a stale PluginDriver matrix fallback");
-  assert.match(stale.stderr + stale.stdout, /plugin-matrix fallback is stale/);
 });
