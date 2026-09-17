@@ -82,6 +82,8 @@ services:
   worker:
     build: *development-build
     user: "0:0"
+    security_opt:
+      - label=disable
     environment:
       NODE_ENV: development
       OCC_DATABASE_URL: postgresql://occ_app:occ-app-local@postgres:5432/openclaw_enterprise

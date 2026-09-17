@@ -40,9 +40,9 @@ services:
       - "127.0.0.1:${OTEL_COLLECTOR_PORT:-24224}:24224"
       - "127.0.0.1:${OTEL_COLLECTOR_METRICS_PORT:-8888}:8888"
     volumes:
-      - ./deploy/logging/collector.yaml:/etc/otel/collector.yaml:ro
-      - ./deploy/logging/docker.yaml:/etc/otel/receiver.yaml:ro
-      - ./deploy/logging/exporter.yaml:/etc/otel/exporter.yaml:ro
+      - ./deploy/logging/collector.yaml:/etc/otel/collector.yaml:ro,Z
+      - ./deploy/logging/docker.yaml:/etc/otel/receiver.yaml:ro,Z
+      - ./deploy/logging/exporter.yaml:/etc/otel/exporter.yaml:ro,Z
       - occ_otelcol_data:/var/lib/otelcol
     logging:
       driver: local
@@ -62,7 +62,7 @@ services:
       org.openclaw.enterprise.version: 0.1.0
     logging: *otel-fluentd-logging
     volumes:
-      - ./deploy/logging/occ.yaml:/etc/openclaw/occ.yaml:ro
+      - ./deploy/logging/occ.yaml:/etc/openclaw/occ.yaml:ro,z
     depends_on:
       collector:
         condition: service_started
@@ -77,7 +77,7 @@ services:
       org.openclaw.enterprise.version: 0.1.0
     logging: *otel-fluentd-logging
     volumes:
-      - ./deploy/logging/occ.yaml:/etc/openclaw/occ.yaml:ro
+      - ./deploy/logging/occ.yaml:/etc/openclaw/occ.yaml:ro,z
     depends_on:
       collector:
         condition: service_started
@@ -91,7 +91,7 @@ services:
       org.openclaw.enterprise.version: 0.1.0
     logging: *otel-fluentd-logging
     volumes:
-      - ./deploy/logging/occ.yaml:/etc/openclaw/occ.yaml:ro
+      - ./deploy/logging/occ.yaml:/etc/openclaw/occ.yaml:ro,z
     depends_on:
       collector:
         condition: service_started
@@ -106,7 +106,7 @@ services:
       org.openclaw.enterprise.version: 0.1.0
     logging: *otel-fluentd-logging
     volumes:
-      - ./deploy/logging/occ.yaml:/etc/openclaw/occ.yaml:ro
+      - ./deploy/logging/occ.yaml:/etc/openclaw/occ.yaml:ro,z
     depends_on:
       collector:
         condition: service_started

@@ -114,4 +114,5 @@ so use Kubernetes Compute for plugin-enabled runtime proof. See
 - [Service API keys, rotation, and bootstrap recovery](deploy/service-keys.md)
 - [Credential renewal and revocation](deploy/credential-lifecycle.md)
 - [Local Kubernetes, development TUI, and cleanup](deploy/local-operations.md)
+- [Local Kubernetes development inner loop](deploy/local-kubernetes-development.md)
 - [Configuration and settings](../reference/settings.md)

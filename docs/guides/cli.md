@@ -12,8 +12,8 @@ occ installation get
 occ namespace list
 ```
 
-The command groups are `installation`, `namespace`, `configuration`, and
-`agent`. Walk their built-in help when discovering an operation:
+The resource command groups are `installation`, `namespace`, `configuration`,
+and `agent`. Walk their built-in help when discovering an operation:
 
 ```bash
 occ --help
@@ -36,6 +36,26 @@ occ agent stop '<agent-id>'
 Human-readable tables are the default. Use `--output json` or `--output yaml`
 for automation. Structured output contains the resource or resource collection
 directly; HTTP response envelopes are an internal client detail.
+
+## Manage local development
+
+From the checkout root, start the default Docker Compute profile and use the
+cleanup command printed after startup:
+
+```bash
+occ dev up
+occ dev down
+```
+
+`occ dev up` runs the [development quickstart](quickstart.md), including its
+container-engine, runtime-image, and readiness checks. The default cleanup
+preserves the Docker profile's database and configuration volumes; pass
+`--volumes` only to delete the local Installation.
+
+Set `OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes` for the
+[local Kubernetes profile](deploy/local-kubernetes-development.md). Its cleanup
+deletes the profile's k3d cluster, Compose volumes, and private state. Keep the
+printed cleanup command so it selects the same profile and state directory.
 
 ## Connection and credential boundaries
 

@@ -28,7 +28,10 @@ Compute Driver through trusted Installation configuration.
 `scripts/dev-up` is the supported Podman entry point. It auto-detects Podman
 without a `docker` alias, pins the standalone `podman-compose` provider, mounts
 the reported API socket through `compose.podman.yaml`, and preserves the
-driver's existing `/var/run/docker.sock` contract inside the worker. The current
+driver's existing `/var/run/docker.sock` contract inside the worker. The
+Docker Compute worker disables SELinux process labeling because relabeling the
+host engine socket could disrupt the engine; the API, database, initializer,
+and migration services remain confined. The verified
 baseline is Podman client 6.1.0, server 5.7.1, and podman-compose 1.6.0. Verified
 Podman coverage includes control-plane startup, worker API preflight,
 authenticated Installation access, isolated Namespace networks, one embedded

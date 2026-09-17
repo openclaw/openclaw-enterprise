@@ -1,4 +1,4 @@
-# Docker or Podman Compose startup
+# Compose development startup
 
 Trace host preflight, database initialization, and API/worker startup. See the [parent flow](../docker-compose-development.md) for its context and overall sequence.
 
@@ -6,12 +6,18 @@ Trace host preflight, database initialization, and API/worker startup. See the [
 
 ### 1. scripts/dev-up: host preflight and runtime image selection
 
-`scripts/dev-up:50`, `deploy/runtime`
+`scripts/dev-up:require_command`, `internal/occdev/compose.go:AnalyzeCompose`,
+`deploy/runtime/Dockerfile`
 
 The helper runs from the checkout root. It accepts an optional `--key-output`
 destination and forwards arguments after `--` to the selected Compose
 implementation, so native project names, profiles, and override files keep
-their normal precedence. It first probes a running Docker Engine and the JSON
+their normal precedence. This trace covers the default
+`OCC_DEVELOPMENT_COMPUTE_DRIVER=docker` path. Selecting `kubernetes` dispatches
+to the [local Kubernetes development profile](../../guides/deploy/local-kubernetes-development.md),
+which keeps OCC in Compose and uses k3d for Compute.
+
+The Docker Compute path first probes a running Docker Engine and the JSON
 configuration capability required from Docker Compose. If that probe fails, it
 selects `podman` directly; a `docker` compatibility alias is neither required
 nor treated as Docker merely because of its name. Podman requires the standalone
@@ -20,9 +26,13 @@ and stopped one-shot container behavior stay consistent.
 
 Docker Compose supplies resolved JSON directly. Podman Compose supplies YAML,
 which `dev-up` converts to JSON inside its private temporary directory before
-running the same effective port, image, and service checks. The helper appends
+passing it to `occ dev analyze-compose`. The shared Go analyzer enforces
+loopback controller and database publications and resolves the Docker runtime
+image selection. The helper appends
 `compose.podman.yaml` last so the worker receives Podman's reported API socket
-at `/var/run/docker.sock` and disables SELinux labeling only for that service.
+at `/var/run/docker.sock`. The base Docker Compute worker disables SELinux
+process labeling because relabeling a host engine socket is unsafe; other
+services retain SELinux confinement.
 The override also gives migration, bootstrap, API, and worker one shared
 development image. Because podman-compose otherwise rebuilds that identical
 target once per service, `dev-up` builds it once through the migration service
@@ -134,6 +144,68 @@ claim durable work; it does not mean an Agent, AgentRevision, or TUI exists.
 Every claimed operation reauthorizes the original actor before calling Compute.
 The worker is the only Compose service with Docker-compatible engine access. It
 does not mount the configuration volume.
+
+### 12. Select Kubernetes development and preserve cleanup ownership
+
+`internal/occdev/command.go:selectEngine`,
+`internal/occdev/command.go:pinEndpoint`,
+`internal/occdev/up.go:Up`.
+
+The Kubernetes lifecycle selects Docker or Podman, resolves the selected local
+Unix socket, and records it with the Compose project and generated `occ-dev-*`
+cluster name in a private state directory. Cleanup validates that state and
+reuses the recorded endpoint. Changing the active Docker context after startup
+does not redirect cleanup to another engine.
+
+Startup refuses existing cluster or project resources, validates the resolved
+Compose publications through `internal/occdev/compose.go:AnalyzeCompose`, and
+rejects external or unscoped networks and volumes through
+`internal/occdev/up.go:validateResourceOwnership`. It then claims the state directory with an exclusive `0700` creation. It writes the
+rendered Compose snapshot privately before creating resources. Startup and
+cleanup both use that snapshot, so later `.env` edits cannot change the saved
+project configuration.
+
+### 13. Bootstrap OCC, create k3d, and prepare runtime configuration
+
+`internal/occdev/up.go:Up`, `internal/occdev/up.go:waitCompleted`,
+`internal/occdev/kubernetes.go:writeKubeconfigs`,
+`internal/occdev/kubernetes.go:importRuntime`,
+`internal/occdev/kubernetes.go:writeInstallation`.
+
+Compose starts PostgreSQL, migration, and bootstrap. The lifecycle waits for
+successful migration and bootstrap exits before creating the dedicated k3d
+cluster on the Compose network. The cluster API binds host loopback; creation
+leaves the default kubeconfig and current context unchanged.
+
+The host kubeconfig remains owner-readable. The container kubeconfig uses the
+cluster's internal load-balancer hostname with TLS verification. The lifecycle
+imports the selected local runtime image, resolves its in-cluster digest, and
+writes Installation configuration selecting Kubernetes Compute, Configuration,
+and Secret Drivers with native IAM. The container configuration and kubeconfig
+are individually readable by non-root containers, behind the private host
+directory, and mounted read-only into the API and Kubernetes worker. Neither
+service receives the engine socket.
+
+### 14. Prove readiness and clean up the owned Kubernetes profile
+
+`internal/occdev/up.go:waitReady`, `internal/occdev/up.go:copyAndVerifyKey`,
+`internal/occdev/down.go:Down`, `internal/occdev/down.go:cleanup`,
+`internal/occdev/state.go:readState`.
+
+The lifecycle starts the API and Kubernetes worker, waits for API health and
+worker readiness, copies bootstrap output to a private temporary file, and
+uses `occclient` to read the Installation. Its ID must match the bootstrap
+response before the final key file is written exclusively and readiness is
+reported. This hands an initialized profile to the operator; it does not prove
+Agent deployment or a model turn.
+
+On failure, startup attempts resource cleanup. Explicit Kubernetes shutdown
+validates the marker, state, and Compose snapshot before using the recorded
+engine endpoint. Cleanup stops the API and worker before deleting the named
+k3d cluster and Compose project volumes. It continues cleanup after individual
+errors and retains state when any cleanup step fails. Complete cleanup removes
+the state directory and its helper-owned key; an external `--key-output` file
+remains operator-owned.
 
 ## Related
 

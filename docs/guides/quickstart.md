@@ -90,8 +90,8 @@ an Agent.
 
 If you are stopping after this API check, remove only the temporary local key
 copy printed by `dev-up`, then run the exact command under `Cleanup` in its
-output. That command includes the Podman socket and override when Podman was
-selected:
+output. The command records the selected Compute Driver and container engine; `dev-down` resolves
+the corresponding Compose cleanup details:
 
 ```bash
 rm -- "$OCC_SERVICE_KEY_FILE"
@@ -100,10 +100,13 @@ unset OCC_SERVICE_KEY_FILE OCC_SERVICE_KEY_DIRECTORY
 # Run the Cleanup command printed by dev-up.
 ```
 
-Local cleanup does not revoke the service key. Compose `down` preserves the
+For the default Docker Compute profile, local cleanup does not revoke the
+service key. Compose `down` preserves the
 database, [Configuration](concepts.md#configuration-and-secrets), and
-bootstrap-key volumes. Add `--volumes` to the printed cleanup command only when
-intentionally deleting the local Installation.
+bootstrap-key volumes. Add `--volumes` after `occ dev down` and before any
+`--` separator only when intentionally deleting the local Installation. Kubernetes-profile cleanup is
+destructive and is documented separately in the
+[local Kubernetes guide](deploy/local-kubernetes-development.md#stop-and-clean-up).
 
 Next, use [Deploy OpenClaw Enterprise](deploy.md) for production installation,
 customization, Agent/TUI proof, and startup-error diagnosis. For supported

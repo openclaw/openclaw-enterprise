@@ -89,6 +89,7 @@ func New(out, errOut io.Writer) *cobra.Command {
 		app.namespaceCommand(),
 		app.configurationCommand(),
 		app.agentCommand(),
+		developmentCommand(),
 	)
 	return command
 }

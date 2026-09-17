@@ -1,17 +1,22 @@
 ---
 created: 2026-08-24
-updated: 2026-09-09
-last_updated_session: codex/01a08890-87c8-7293-bd75-d7fc58e52cf2
+updated: 2026-09-17
+last_updated_session: 01a0ae15-3bad-7d92-92b7-f8be208cbb49
 ---
 
-# Docker or Podman Compose Development Flow
+# Compose development flow
 
 ## Overview
 
-`scripts/dev-up` is the supported local OpenClaw Enterprise development entry
-point. The helper performs host preflight, selects Docker Engine or Podman,
-selects or verifies runtime images, wraps the selected Compose implementation,
-waits for PostgreSQL migration, Installation bootstrap,
+`occ dev up` starts local OpenClaw Enterprise development from a checkout.
+The `scripts/dev-up` entry point selects the same profile. Setting
+`OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes` keeps OCC in Compose but dispatches
+Compute to the [local k3d profile](../guides/deploy/local-kubernetes-development.md).
+The Kubernetes branch stops after authenticated API and worker readiness;
+Agent execution continues through the selected Kubernetes Compute Driver.
+For Docker Compute, the helper performs host preflight, selects Docker Engine
+or Podman, selects or verifies runtime images, wraps the selected Compose
+implementation, waits for PostgreSQL migration, Installation bootstrap,
 API health, and worker readiness, then proves authenticated `/installation`
 access with a protected local copy of the bootstrap service key. That startup
 proof does not create an Agent, deploy an AgentRevision, or start a TUI. The
@@ -35,17 +40,15 @@ the first authenticated development API checks.
 
 ## Entry Points
 
-- Trigger: `./scripts/dev-up [--key-output PATH] [-- COMPOSE_GLOBAL_OPTIONS...]`
+- Trigger: `occ dev up [--key-output PATH] [-- COMPOSE_GLOBAL_OPTIONS...]`
   from the repository root, followed by authenticated API calls and Agent
   provisioning. Interactive `docker exec -it` TUI attachment remains
   Docker-only.
-- Source: `scripts/dev-up`, `compose.yaml`, `compose.podman.yaml`,
-  `apps/controller/src/server.mjs:start`,
-  `apps/controller/src/worker.ts:ControllerWorker`, and
-  `apps/controller/src/drivers/compute/docker/index.ts:DockerComputeDriver`.
+- Source: `scripts/dev-up:require_command`, `internal/occdev/up.go:Up`, and
+  `internal/occdev/down.go:Down`.
 - Assumptions: Docker Engine with Docker Compose, or Podman with
-  `podman-compose` and `yq` v4, is available; Bash, `curl`, and Python 3 are
-  available; PostgreSQL can write `occ_postgres_data`; the controller can write
+  `podman-compose` and `yq` v4, is available; the installed `occ` CLI, Bash, `curl`, and Python 3 are
+  available for the Docker profile; PostgreSQL can write `occ_postgres_data`; the controller can write
   `occ_configuration_data` at `/app/.development/configurations`; runtime
   images are supplied through `OCC_DOCKER_GATEWAY_IMAGE` and
   `OCC_DOCKER_AGENT_IMAGE`, shared `OCC_DOCKER_RUNTIME_IMAGE`, or the helper's
@@ -54,11 +57,29 @@ the first authenticated development API checks.
   the API is published only on host loopback; the TUI runs from an interactive
   terminal attached with `docker exec -it`.
 
+The Kubernetes profile additionally uses `compose.kubernetes.yaml`,
+`internal/occdev`, k3d, and kubectl. `occ dev down` owns profile cleanup;
+`scripts/dev-down` dispatches to it. The local Kubernetes development guide
+owns the operator procedure and destructive cleanup boundary.
+
 ## Flow
 
 ```mermaid
 graph TD
-  A["scripts/dev-up"] --> B["Preflight host tools and resolved Compose config"]
+  A["occ dev up"] --> Profile{"Compute profile"}
+  Profile -->|Docker| B["Preflight host tools and resolved Compose config"]
+  Profile -->|Kubernetes| KPre["Pin local engine endpoint<br/>and reject existing resources"]
+  KPre --> KConfig["Validate Compose and claim<br/>private state with snapshot"]
+  KConfig --> KStart["Bootstrap OCC and create<br/>the owned k3d cluster"]
+  KStart --> KReady["Import runtime and start<br/>API and Kubernetes worker"]
+  KReady --> KProof["Prove authenticated<br/>Installation access"]
+  KProof --> KDown["occ dev down reuses<br/>recorded endpoint and project"]
+  KStart -->|failure| KRollback["Roll back owned resources<br/>retain state if cleanup fails"]
+  KReady -->|failure| KRollback
+  KProof -->|failure| KRollback
+  KDown --> KRemove["Stop reconcilers and delete<br/>owned cluster and volumes"]
+  KRemove -->|success| KDone["Remove private state"]
+  KRemove -->|failure| KRetain["Keep state for recovery"]
   B --> C["Select quickstart runtime image or validate custom images"]
   C --> D["Selected Compose starts PostgreSQL, migrate, bootstrap, API, and worker"]
   D --> E["Copy bootstrap service-key response to private local file"]
@@ -83,11 +104,24 @@ graph TD
 
 ### 1–5. Start and initialize the local stack
 
+`scripts/dev-up:require_command`, `compose.yaml:services.postgres`.
+
 [Docker or Podman Compose startup](docker-compose-development/startup.md) covers engine and image selection, PostgreSQL/migration/bootstrap ordering, local API admission, and worker startup.
 
 ### 6–11. Deploy an Agent, run the TUI, and clean up
 
+`apps/controller/src/worker.ts:ControllerWorker`,
+`apps/controller/src/drivers/compute/docker/index.ts:DockerComputeDriver`.
+
 [Docker-compatible Agent execution and cleanup](docker-compose-development/agent-execution.md) continues through authenticated deployment, network/container ownership, credential placement, TUI dispatch, and resource removal.
+
+### 12. Start and clean up Kubernetes development
+
+`internal/occdev/up.go:Up`, `internal/occdev/down.go:Down`.
+
+[The Kubernetes startup and cleanup trace](docker-compose-development/startup.md#12-select-kubernetes-development-and-preserve-cleanup-ownership)
+follows profile selection, the private Compose snapshot, k3d creation, runtime
+import, authenticated readiness, and cleanup through the recorded engine.
 
 ## Debugging and Verification
 
@@ -96,6 +130,9 @@ graph TD
   fresh-database initialization, `worker.started` with `computeDriverId` set to
   `compute-docker-development`, a private copied service-key path, and a
   successful authenticated `/installation` proof.
+- With `OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes`, startup should instead
+  report Kubernetes Compute, a private kubeconfig, and the disposable k3d
+  context; it does not mount the engine socket into the Kubernetes worker.
 - Podman startup verification should show Podman as the selected engine, mount
   only its reported API socket into the worker, and complete the same
   authenticated Installation proof without a `docker` alias.
@@ -125,6 +162,7 @@ graph TD
 
 - [Deployment guide: development and production](../guides/deploy.md)
 - [Deployment guide: development end-to-end TUI](../guides/deploy/local-operations.md#development-end-to-end-tui)
+- [Local Kubernetes development](../guides/deploy/local-kubernetes-development.md)
 - [Quickstart](../guides/quickstart.md)
 - [Controller worker execution flow](controller-worker.md)
 - [Docker Compute Driver on Docker or Podman](../reference/drivers/docker-compute.md)
@@ -139,6 +177,8 @@ graph TD
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-17 06:42: Trace the accompanying Go CLI development lifecycle, Kubernetes startup and cleanup ownership, and retained Docker startup path. (01a0ae15-3bad-7d92-92b7-f8be208cbb49 - 14ad14c04deeeaa79f325b14d492ab13730adc7f)
 
 - 2026-09-09: Added automatic Podman selection, API socket delivery, Podman
   status and bootstrap-copy handling, and the Docker-only Fluentd and Agent

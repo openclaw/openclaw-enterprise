@@ -1,11 +1,22 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { after } from "node:test";
 
-import { composeConfigurationProvider } from "./compose.mjs";
+import { commandPath, composeConfigurationProvider } from "./compose.mjs";
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const serviceKey = "sk-test-secret-value";
@@ -15,16 +26,31 @@ const defaultRuntimeImage = "openclaw-enterprise-runtime:quickstart";
 const nodeExecutable = process.execPath;
 const bashExecutable = "/bin/bash";
 
+let cliBuild;
+let cliDirectory;
+after(async () => {
+  if (cliDirectory) await rm(cliDirectory, { recursive: true, force: true });
+});
+
+function developmentCli() {
+  cliBuild ??= (async () => {
+    const directory = await mkdtemp(join(tmpdir(), "openclaw-dev-cli-"));
+    cliDirectory = directory;
+    const executable = join(directory, "occ");
+    const build = spawnSync("go", ["build", "-o", executable, "./cmd/occ"], {
+      cwd: repository,
+      encoding: "utf8",
+      env: process.env,
+    });
+    assert.equal(build.status, 0, build.stderr || build.error?.message);
+    return executable;
+  })();
+  return cliBuild;
+}
+
 async function writeExecutable(path, body) {
   await writeFile(path, body, { mode: 0o755 });
   await chmod(path, 0o755);
-}
-
-function commandPath(name) {
-  return spawnSync(bashExecutable, ["-c", `command -v ${name}`], {
-    encoding: "utf8",
-    env: process.env,
-  }).stdout.trim();
 }
 
 async function createFixture(t, options = {}) {
@@ -36,6 +62,7 @@ async function createFixture(t, options = {}) {
   const engine = options.engine ?? "docker";
   const engineLog = join(directory, `${engine}.log`);
   const provider = composeConfigurationProvider();
+  const cli = await developmentCli();
 
   if (engine === "podman") {
     for (const command of [
@@ -132,7 +159,13 @@ function delegateComposeConfig() {
 }
 if (args[0] === "--version") exit(0, engine === "podman" ? "podman version 6.1.0" : "Docker version 29.4.0");
 if (args[0] === "version") {
-  if (engine === "docker") process.stdout.write(${JSON.stringify((options.dockerPlatformName ?? "Docker Engine - Community") + "\n")});
+  const platform = ${JSON.stringify(options.dockerPlatformName ?? "Docker Engine - Community")};
+  const server = engine === "docker"
+    ? { Platform: { Name: platform }, Components: [{ Name: "Engine" }] }
+    : { Platform: { Name: "Podman Engine" }, Components: [{ Name: "Podman Engine" }] };
+  if (args.includes("{{json .Server}}") && (engine === "docker" || podmanDockerApi)) {
+    process.stdout.write(JSON.stringify(server) + "\\n");
+  } else if (engine === "docker") process.stdout.write(platform + "\\n");
   else if (podmanDockerApi) process.stdout.write("Podman Engine\\n");
   else exit(1);
   exit(0);
@@ -248,6 +281,11 @@ exit(99, "unhandled " + engine + " compose command: " + command);
     `#!${nodeExecutable}
 const fs = require("node:fs");
 const args = process.argv.slice(2);
+if (args[0] === "dev") {
+  const { spawnSync } = require("node:child_process");
+  const result = spawnSync(${JSON.stringify(cli)}, args, { env: process.env, stdio: "inherit" });
+  process.exit(result.status ?? 1);
+}
 const log = process.env.DEV_UP_OCC_LOG;
 if (log) fs.appendFileSync(log, JSON.stringify({ args }) + "\\n");
 const scenario = process.env.DEV_UP_FAKE_SCENARIO || "success";
@@ -299,14 +337,105 @@ process.exit(exitCode);
     DEV_UP_REPOSITORY: repository,
   };
 
+  // Shell startup configuration is outside this disposable command environment.
+  delete env.BASH_ENV;
+  delete env.ENV;
+  delete env.SHELLOPTS;
+
   return {
     directory,
+    cli,
     emptyEnv,
     dockerLog,
     podmanLog,
     occLog,
     env,
   };
+}
+
+// Only external engine and cluster commands are inert. Configuration rendering,
+// selection, state ownership, rollback, and authenticated HTTP use the real code.
+async function prepareLifecycleCommands(fixture, scenario = "success") {
+  const bin = join(fixture.directory, "bin");
+  await rename(join(bin, "docker"), join(bin, "docker-config"));
+  fixture.env.SAFETY_LOG = join(fixture.directory, "lifecycle.log");
+  fixture.env.DEV_UP_RESOURCE_STATE = join(fixture.directory, "resources.json");
+  fixture.env.DEV_UP_LIFECYCLE_SCENARIO = scenario;
+  fixture.env.OCC_DEVELOPMENT_CONTAINER_ENGINE = "docker";
+  fixture.env.OCC_DEVELOPMENT_KUBERNETES_CLUSTER = "occ-dev-owned";
+  fixture.env.OCC_DEVELOPMENT_COMPOSE_PROJECT = "owned-kubernetes";
+  fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY = join(fixture.directory, "kubernetes state");
+  fixture.env.OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS = "1";
+  fixture.env.DOCKER_HOST = "unix:///fixture/owned-docker.sock";
+  delete fixture.env.DOCKER_CONTEXT;
+  await writeFile(
+    fixture.env.DEV_UP_RESOURCE_STATE,
+    JSON.stringify({ clusters: ["occ-dev-unrelated"], compose: false }),
+  );
+  for (const command of ["docker", "k3d", "kubectl"]) {
+    await writeExecutable(
+      join(bin, command),
+      `#!${nodeExecutable}
+const fs = require("node:fs");
+const { spawnSync } = require("node:child_process");
+const args = process.argv.slice(2);
+const command = ${JSON.stringify(command)};
+const scenario = process.env.DEV_UP_LIFECYCLE_SCENARIO;
+const statePath = process.env.DEV_UP_RESOURCE_STATE;
+const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+function save() { fs.writeFileSync(statePath, JSON.stringify(state)); }
+function output(value) { process.stdout.write(value + "\\n"); }
+function fail(message) { process.stderr.write(message + "\\n"); process.exit(77); }
+fs.appendFileSync(process.env.SAFETY_LOG, JSON.stringify({ command, args, dockerHost: process.env.DOCKER_HOST || "", dockerContext: process.env.DOCKER_CONTEXT || "" }) + "\\n");
+if (command === "docker") {
+  if (args[0] === "version" || (args[0] === "compose" && (args.includes("config") || args[1] === "version"))) {
+    const result = spawnSync(${JSON.stringify(join(bin, "docker-config"))}, args, { env: process.env, stdio: "inherit" });
+    process.exit(result.status ?? 1);
+  }
+  if (args[0] === "context" && args[1] === "show") output("fixture-context");
+  else if (args[0] === "context" && args[1] === "inspect") output(JSON.stringify([{ Endpoints: { docker: { Host: "unix:///fixture/owned-docker.sock" } } }]));
+  else if (args[0] === "info") output("/var/lib/docker");
+  else if (["volume", "network", "image"].includes(args[0]) && args[1] === "inspect") process.exit(1);
+  else if (args[0] === "ps" || (["volume", "network"].includes(args[0]) && args[1] === "ls") || args[0] === "build") {}
+  else if (args[0] === "inspect") {
+    if (args.includes("{{.State.Status}}")) output("exited");
+    else if (args.includes("{{.State.ExitCode}}")) output("0");
+    else fail("unexpected inspect: " + args.join(" "));
+  } else if (args[0] === "exec" && args.includes("images")) {
+    if (args.includes("list")) output("docker.io/library/openclaw-enterprise-runtime:kubernetes-quickstart application/vnd.oci.image.manifest.v1+json sha256:" + "a".repeat(64));
+  } else if (args[0] === "cp") {
+    fs.writeFileSync(args.at(-1), JSON.stringify({ data: { id: "key_fixture", key: ${JSON.stringify(serviceKey)} }, meta: { installationId: ${JSON.stringify(matchingInstallationId)} } }));
+  } else if (args[0] === "compose") {
+    if (args.includes("up")) {
+      state.compose = true; save();
+      if (scenario === "compose-up-failed") fail("partial compose startup");
+    } else if (args.includes("down")) {
+      if (scenario === "compose-down-failed") fail("compose cleanup unavailable");
+      state.compose = false; save();
+    } else if (args.includes("ps")) output(args.at(-1) + "-container-id");
+    else if (!args.includes("exec") && !args.includes("logs") && !args.includes("stop")) fail("unexpected compose: " + args.join(" "));
+  } else fail("unexpected docker: " + args.join(" "));
+} else if (command === "k3d") {
+  if (args[0] === "cluster" && args[1] === "list") output(JSON.stringify(state.clusters.map(name => ({ name }))));
+  else if (args[0] === "cluster" && args[1] === "create") {
+    state.clusters.push(args[2]); save();
+    if (scenario === "cluster-create-failed") fail("partial cluster creation");
+  } else if (args[0] === "cluster" && args[1] === "delete") {
+    if (scenario === "cluster-delete-failed") fail("cluster cleanup unavailable");
+    state.clusters = state.clusters.filter(name => name !== args[2]); save();
+  } else if (args[0] === "kubeconfig" && args[1] === "get") output(JSON.stringify({
+    apiVersion: "v1", kind: "Config", "current-context": "k3d-occ-dev-owned",
+    contexts: [{ name: "k3d-occ-dev-owned", context: { cluster: "k3d-occ-dev-owned", user: "admin" } }],
+    clusters: [{ name: "k3d-occ-dev-owned", cluster: { server: "https://127.0.0.1:6443", "certificate-authority-data": "fixture-ca" } }],
+    users: [{ name: "admin", user: { token: "fixture-kubernetes-token" } }]
+  }));
+  else if (args[0] !== "image") fail("unexpected k3d: " + args.join(" "));
+} else if (command === "kubectl" && !args.includes("get")) {
+  fail("unexpected kubectl: " + args.join(" "));
+}
+`,
+    );
+  }
 }
 
 async function writeOverride(fixture, name, lines) {
@@ -401,6 +530,7 @@ export {
   matchingInstallationId,
   mismatchedInstallationId,
   perImageOverride,
+  prepareLifecycleCommands,
   publicControllerOverride,
   readJsonLines,
   runDevUp,

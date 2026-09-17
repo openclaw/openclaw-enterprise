@@ -25,6 +25,7 @@
                   "guides/quickstart",
                   "guides/cli",
                   "guides/deploy",
+                  "guides/deploy/local-kubernetes-development",
                   "guides/deploy/production-installation",
                   "guides/deploy/production-agents",
                   "guides/deploy/production-handoff",

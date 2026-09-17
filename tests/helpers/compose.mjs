@@ -1,14 +1,22 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { accessSync, constants, statSync } from "node:fs";
+import { delimiter, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 
-function commandPath(name) {
-  return spawnSync("/bin/bash", ["-c", `command -v ${name}`], {
-    encoding: "utf8",
-    env: process.env,
-  }).stdout.trim();
+export function commandPath(name) {
+  for (const directory of (process.env.PATH ?? "/usr/bin:/bin").split(delimiter)) {
+    const candidate = resolve(directory || ".", name);
+    try {
+      accessSync(candidate, constants.X_OK);
+      if (statSync(candidate).isFile()) return candidate;
+    } catch {
+      // PATH entries may be absent or inaccessible; continue like executable lookup.
+    }
+  }
+  return "";
 }
 
 export function composeConfigurationProvider() {
