@@ -19,6 +19,8 @@ existing root or nested `node_modules/` directories.
 
 The authoritative architecture is the repository's
 [platform design](docs/design.md).
+Read its [implementation status](docs/design.md#implementation-status) before
+treating a target-design capability as implemented; verify current code and tests.
 Do not create a competing architecture specification in this checkout.
 
 ## Development style

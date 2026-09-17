@@ -9,11 +9,12 @@ for deploying and managing [Agents](docs/guides/concepts.md#agents-and-revisions
 
 Requires either Docker Engine with Docker Compose, or Podman with
 `podman-compose` and `yq` v4. Bash, Python 3, and the Go version selected by
-[`go.mod`](go.mod) are also required. Install the OCC CLI and start the local
-stack with:
+[`go.mod`](go.mod) are also required, along with Node.js 24 or newer and the pnpm
+version pinned in [`package.json`](package.json). Build the checkout-local OCC
+CLI and start the local stack with:
 
 ```bash
-go install ./cmd/occ
+pnpm cli:build
 ./scripts/dev-up
 ```
 
@@ -31,9 +32,9 @@ A model credential is required to run Agent model turns, but not to start the
 stack.
 
 The verified Podman boundary includes control-plane startup, authenticated API
-access, Namespace isolation, one embedded OpenClaw Agent deployment, a real
-provider-backed model turn, and exact test cleanup. Dedicated Codex, interactive
-TUI, and Fluentd/OTLP verification remain Docker-only.
+access, Namespace isolation, embedded OpenClaw and recovered dedicated Codex
+model turns, and exact test cleanup. Interactive TUI and Fluentd/OTLP
+verification remain Docker-only.
 
 The local worker has access to the selected engine's Docker-compatible API
 socket. Use the

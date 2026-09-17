@@ -8,7 +8,7 @@ last_updated_session: 01a0ae15-3bad-7d92-92b7-f8be208cbb49
 
 ## Overview
 
-`occ dev up` starts local OpenClaw Enterprise development from a checkout.
+`./bin/occ dev up` starts local OpenClaw Enterprise development from a checkout.
 The `scripts/dev-up` entry point selects the same profile. Setting
 `OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes` keeps OCC in Compose but dispatches
 Compute to the [local k3d profile](../guides/deploy/local-kubernetes-development.md).
@@ -21,8 +21,8 @@ API health, and worker readiness, then proves authenticated `/installation`
 access with a protected local copy of the bootstrap service key. That startup
 proof does not create an Agent, deploy an AgentRevision, or start a TUI. The
 Podman real-runtime proof continues through isolated Namespace creation, one
-embedded OpenClaw Agent, and a provider-backed nonce response. Dedicated Codex
-and interactive TUI execution remain Docker-verified.
+embedded OpenClaw Agent, dedicated Codex recovery, and provider-backed nonce
+responses. Interactive TUI execution remains Docker-verified.
 
 After startup, the operator uses authenticated API calls to select a Namespace,
 create a Configuration and Agent, then deploy it. The worker then claims durable
@@ -40,15 +40,16 @@ the first authenticated development API checks.
 
 ## Entry Points
 
-- Trigger: `occ dev up [--key-output PATH] [-- COMPOSE_GLOBAL_OPTIONS...]`
+- Trigger: `./bin/occ dev up [--key-output PATH] [-- COMPOSE_GLOBAL_OPTIONS...]`
   from the repository root, followed by authenticated API calls and Agent
   provisioning. Interactive `docker exec -it` TUI attachment remains
   Docker-only.
 - Source: `scripts/dev-up:require_command`, `internal/occdev/up.go:Up`, and
   `internal/occdev/down.go:Down`.
 - Assumptions: Docker Engine with Docker Compose, or Podman with
-  `podman-compose` and `yq` v4, is available; the installed `occ` CLI, Bash, `curl`, and Python 3 are
-  available for the Docker profile; PostgreSQL can write `occ_postgres_data`; the controller can write
+  `podman-compose` and `yq` v4, is available; Bash, `curl`, and Python 3 are
+  available for the Docker profile; `pnpm cli:build` has created executable
+  `bin/occ`; PostgreSQL can write `occ_postgres_data`; the controller can write
   `occ_configuration_data` at `/app/.development/configurations`; runtime
   images are supplied through `OCC_DOCKER_GATEWAY_IMAGE` and
   `OCC_DOCKER_AGENT_IMAGE`, shared `OCC_DOCKER_RUNTIME_IMAGE`, or the helper's
@@ -58,7 +59,7 @@ the first authenticated development API checks.
   terminal attached with `docker exec -it`.
 
 The Kubernetes profile additionally uses `compose.kubernetes.yaml`,
-`internal/occdev`, k3d, and kubectl. `occ dev down` owns profile cleanup;
+`internal/occdev`, k3d, and kubectl. `./bin/occ dev down` owns profile cleanup;
 `scripts/dev-down` dispatches to it. The local Kubernetes development guide
 owns the operator procedure and destructive cleanup boundary.
 
@@ -66,14 +67,14 @@ owns the operator procedure and destructive cleanup boundary.
 
 ```mermaid
 graph TD
-  A["occ dev up"] --> Profile{"Compute profile"}
+  A["./bin/occ dev up"] --> Profile{"Compute profile"}
   Profile -->|Docker| B["Preflight host tools and resolved Compose config"]
   Profile -->|Kubernetes| KPre["Pin local engine endpoint<br/>and reject existing resources"]
   KPre --> KConfig["Validate Compose and claim<br/>private state with snapshot"]
   KConfig --> KStart["Bootstrap OCC and create<br/>the owned k3d cluster"]
   KStart --> KReady["Import runtime and start<br/>API and Kubernetes worker"]
   KReady --> KProof["Prove authenticated<br/>Installation access"]
-  KProof --> KDown["occ dev down reuses<br/>recorded endpoint and project"]
+  KProof --> KDown["./bin/occ dev down reuses<br/>recorded endpoint and project"]
   KStart -->|failure| KRollback["Roll back owned resources<br/>retain state if cleanup fails"]
   KReady -->|failure| KRollback
   KProof -->|failure| KRollback
@@ -83,7 +84,7 @@ graph TD
   B --> C["Select quickstart runtime image or validate custom images"]
   C --> D["Selected Compose starts PostgreSQL, migrate, bootstrap, API, and worker"]
   D --> E["Copy bootstrap service-key response to private local file"]
-  E --> F["occ installation get proves authenticated access"]
+  E --> F["./bin/occ installation get proves authenticated access"]
   F --> G["Operator sends authenticated API provisioning and deploy calls"]
   G --> H["Worker claims durable Namespace and AgentRevision work"]
   H --> I["Docker driver ensures one network per Namespace"]
@@ -153,7 +154,7 @@ import, authenticated readiness, and cleanup through the recorded engine.
   gateway through the Namespace network or through the Docker-published
   `127.0.0.1` gateway port.
 - With `OCC_TEST_PODMAN_COMPUTE_REAL=1`, that same test file runs the embedded
-  journey only and must receive a real nonce response before exact resource
+  and dedicated recovery journeys and must receive real nonce responses before exact resource
   teardown passes.
 - After Namespace deletion, the matching labeled containers and network should
   be absent while unrelated Namespaces remain.
@@ -177,6 +178,8 @@ import, authenticated readiness, and cleanup through the recorded engine.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-17 16:47: Merge current main's Podman dedicated recovery proof and checkout-local CLI requirement while preserving the Kubernetes lifecycle trace. (01a0ae15-3bad-7d92-92b7-f8be208cbb49 - b13b2f479f824891ab3c5bf71e6851d704dba458)
 
 - 2026-09-17 06:42: Trace the accompanying Go CLI development lifecycle, Kubernetes startup and cleanup ownership, and retained Docker startup path. (01a0ae15-3bad-7d92-92b7-f8be208cbb49 - 14ad14c04deeeaa79f325b14d492ab13730adc7f)
 

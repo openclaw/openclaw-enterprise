@@ -1,7 +1,7 @@
 # Docker or Podman Compose tests
 
 Verify the development Compose stack with embedded OpenClaw and dedicated
-Codex model turns on Docker, or the embedded OpenClaw model turn on Podman.
+Codex model turns on Docker or Podman.
 Prepare [credentials](README.md#requirements-and-credentials) and the
 [runtime image](images.md) before selecting this suite.
 
@@ -38,7 +38,7 @@ and container provisioning, both Harness topologies, cleanup, and a fresh nonce
 in the provider response. Requests may reach the gateway through its Namespace
 network address or the driver-published loopback host port.
 
-## Podman embedded model turn
+## Podman model turns
 
 The same integration file and journey helpers run the Podman proof; there is no
 duplicated Podman test implementation. The test requires `podman-compose`, a
@@ -54,12 +54,20 @@ OCC_TEST_OPENAI_MODEL=gpt-5.6-sol \
   pnpm podman:test
 ```
 
-This first increment provisions isolated Namespaces, deploys one embedded
-OpenClaw Agent, verifies the model credential reaches only its gateway/Harness
-container, rejects a missing gateway token, requires a real provider response
-containing a fresh nonce, and asserts exact test teardown. It does not select
-the dedicated Codex, interactive TUI, or Fluentd/OTLP cases; those remain
-Docker-only.
+The Podman journey provisions isolated Namespaces and deploys embedded OpenClaw
+and dedicated Codex Agents. It verifies credential placement, rejects a missing
+gateway token, requires real provider responses containing fresh nonces, and
+asserts exact teardown. Interactive TUI and Fluentd/OTLP cases remain Docker-only.
+
+Both engines kill the test-owned worker after the dedicated Codex container
+starts but before gateway creation. The test waits for the surviving Codex
+container to become healthy, restarts the worker, and verifies that real lease
+recovery activates the revision using that same container and matching transport
+tokens. A model response through the recovered gateway proves authentication.
+No container-engine response or worker lifecycle method is mocked.
+The Podman test adds an init process to its PostgreSQL container to reap exec
+and healthcheck children during interruption testing; the deployed Compose
+configuration is unchanged.
 
 ## Docker Compose development test environment
 
@@ -74,7 +82,7 @@ skipping. Python and PTY support are required only by Docker's TUI case.
 | Variable                       | Requirement or default                                                                  |
 | ------------------------------ | --------------------------------------------------------------------------------------- |
 | `OCC_TEST_DOCKER_COMPUTE_REAL` | Set to `1` to explicitly opt into the real Docker Compute proof.                        |
-| `OCC_TEST_PODMAN_COMPUTE_REAL` | Set to `1` to select Podman and its embedded-only real-runtime proof.                   |
+| `OCC_TEST_PODMAN_COMPUTE_REAL` | Set to `1` to select Podman and its embedded and dedicated real-runtime proof.          |
 | `OCC_DOCKER_GATEWAY_IMAGE`     | Existing production-equivalent OpenClaw gateway image; defaults to the runtime image.   |
 | `OCC_DOCKER_AGENT_IMAGE`       | Existing production-equivalent Codex Agent image; defaults to the runtime image.        |
 | `OCC_DOCKER_RUNTIME_IMAGE`     | Optional shared image fallback for both gateway and Agent.                              |

@@ -1,0 +1,4 @@
+services:
+  postgres:
+    # Reap Podman exec/healthcheck children without delivering their exits to PostgreSQL.
+    init: true

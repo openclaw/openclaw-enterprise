@@ -103,22 +103,22 @@ docker compose exec -T worker \
 Select the initial `default` Namespace and save its server-generated ID:
 
 ```bash
-NAMESPACE_ID="$(occ namespace list --output json | python3 -c 'import json,sys; matches=[n for n in json.load(sys.stdin) if n["name"] == "default"]; assert len(matches) == 1, "Expected one bootstrap-created default Namespace"; print(matches[0]["id"])')"
+NAMESPACE_ID="$(./bin/occ namespace list --output json | python3 -c 'import json,sys; matches=[n for n in json.load(sys.stdin) if n["name"] == "default"]; assert len(matches) == 1, "Expected one bootstrap-created default Namespace"; print(matches[0]["id"])')"
 export NAMESPACE_ID OCC_NAMESPACE="$NAMESPACE_ID"
 ```
 
-Poll `occ namespace get "$NAMESPACE_ID"` until `STATUS` is
+Poll `./bin/occ namespace get "$NAMESPACE_ID"` until `STATUS` is
 `ready`. Create `configuration.json` from the embedded OpenClaw example in
 [Configure the Agent runtime](production-agents.md#configure-the-agent-runtime), then create and
 deploy the Agent:
 
 ```bash
-CONFIGURATION_RESPONSE="$(occ configuration create --file configuration.json --output json)"
+CONFIGURATION_RESPONSE="$(./bin/occ configuration create --file configuration.json --output json)"
 CONFIGURATION_ID="$(printf '%s' "$CONFIGURATION_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
 printf '{"name":"tui-agent","configurationId":"%s","executionMode":"embedded"}\n' "$CONFIGURATION_ID" > agent.json
-AGENT_RESPONSE="$(occ agent create --file agent.json --output json)"
+AGENT_RESPONSE="$(./bin/occ agent create --file agent.json --output json)"
 AGENT_ID="$(printf '%s' "$AGENT_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
-REVISION_RESPONSE="$(occ agent deploy "$AGENT_ID" --output json)"
+REVISION_RESPONSE="$(./bin/occ agent deploy "$AGENT_ID" --output json)"
 REVISION_ID="$(printf '%s' "$REVISION_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
 export AGENT_ID REVISION_ID
 ```
@@ -158,8 +158,8 @@ To stop the Agent without deleting its revision or workspace, submit the
 bodyless operation and poll until the active pointer is absent:
 
 ```bash
-occ agent stop "$AGENT_ID"
-occ agent get "$AGENT_ID"
+./bin/occ agent stop "$AGENT_ID"
+./bin/occ agent get "$AGENT_ID"
 ```
 
 The stop result reports `DESIRED STATE` as `stopped`. The later read must retain

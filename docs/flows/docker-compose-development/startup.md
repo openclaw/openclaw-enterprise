@@ -9,8 +9,10 @@ Trace host preflight, database initialization, and API/worker startup. See the [
 `scripts/dev-up:require_command`, `internal/occdev/compose.go:AnalyzeCompose`,
 `deploy/runtime/Dockerfile`
 
-The helper runs from the checkout root. It accepts an optional `--key-output`
-destination and forwards arguments after `--` to the selected Compose
+The helper runs from the checkout root and requires the executable OCC CLI at
+`bin/occ`, as produced by `pnpm cli:build`; it does not resolve `occ` from
+`PATH`. It accepts an optional `--key-output` destination and forwards arguments
+after `--` to the selected Compose
 implementation, so native project names, profiles, and override files keep
 their normal precedence. This trace covers the default
 `OCC_DEVELOPMENT_COMPUTE_DRIVER=docker` path. Selecting `kubernetes` dispatches
@@ -26,7 +28,7 @@ and stopped one-shot container behavior stay consistent.
 
 Docker Compose supplies resolved JSON directly. Podman Compose supplies YAML,
 which `dev-up` converts to JSON inside its private temporary directory before
-passing it to `occ dev analyze-compose`. The shared Go analyzer enforces
+passing it to `./bin/occ dev analyze-compose`. The shared Go analyzer enforces
 loopback controller and database publications and resolves the Docker runtime
 image selection. The helper appends
 `compose.podman.yaml` last so the worker receives Podman's reported API socket
@@ -112,8 +114,8 @@ directory; otherwise the helper creates a private temporary directory. The
 helper never overwrites an existing local file, never prints `data.key`, and
 never reruns bootstrap to replace a missing key.
 
-`dev-up` then reads the Installation with `occ installation get` and the copied
-service-key response. `apps/controller/src/auth/index.ts:ControllerAdmissionVerifier.verify`
+`dev-up` then reads the Installation with `./bin/occ installation get` and the
+copied service-key response. `apps/controller/src/auth/index.ts:ControllerAdmissionVerifier.verify`
 validates the `x-api-key` and maps it to the Installation-scoped service
 administrator; current IAM policy still authorizes each resource operation. The
 startup proof succeeds only when the returned resource ID matches the copied

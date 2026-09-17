@@ -7,17 +7,18 @@ authenticated API request. This proves controller access; it does not deploy an
 
 You need either Docker Engine with Docker Compose, or Podman with
 `podman-compose` and `yq` v4. Bash, Python 3, and the Go version selected by the
-repository's `go.mod` are also required. Podman needs no `docker` alias. Run
-commands from the repository root and install the [OCC CLI](cli.md) first:
+repository's `go.mod` are also required, along with Node.js 24 or newer and the
+repository-pinned pnpm. Podman needs no `docker` alias. Run commands from the
+repository root and build the checkout-local [OCC CLI](cli.md) first:
 
 ```bash
-go install ./cmd/occ
+pnpm cli:build
 ```
 
 ## Start the local stack
 
 ```bash
-./scripts/dev-up
+./bin/occ dev up
 ```
 
 The helper selects a usable Docker Engine or falls back to Podman, validates the
@@ -62,7 +63,7 @@ commands, export the URL and service-key path printed by the helper:
 ```bash
 export OCC_URL='http://127.0.0.1:3000'
 export OCC_SERVICE_KEY_FILE='/private/path/initial-admin-service-key.json'
-occ installation get
+./bin/occ installation get
 ```
 
 Expect an Installation row containing its ID and name. The Installation ID must
@@ -79,7 +80,7 @@ must never enter a workload or TUI.
 ## Find the initial Namespace
 
 ```bash
-occ namespace list
+./bin/occ namespace list
 ```
 
 On a fresh Installation, expect one Namespace named `default` with a server-assigned ID. Export it as
@@ -103,7 +104,7 @@ unset OCC_SERVICE_KEY_FILE OCC_SERVICE_KEY_DIRECTORY
 For the default Docker Compute profile, local cleanup does not revoke the
 service key. Compose `down` preserves the
 database, [Configuration](concepts.md#configuration-and-secrets), and
-bootstrap-key volumes. Add `--volumes` after `occ dev down` and before any
+bootstrap-key volumes. Add `--volumes` after the printed `dev down` and before any
 `--` separator only when intentionally deleting the local Installation. Kubernetes-profile cleanup is
 destructive and is documented separately in the
 [local Kubernetes guide](deploy/local-kubernetes-development.md#stop-and-clean-up).

@@ -12,7 +12,7 @@ the [deployment guide](../guides/deploy.md) and [settings reference](../referenc
 | `pnpm test`             | All conformance and integration tests.                                    |
 | `pnpm test:conformance` | Conformance tests only.                                                   |
 | `pnpm test:integration` | Integration tests only, including infrastructure and real-runtime suites. |
-| `pnpm podman:test`      | Podman Compose with one real embedded OpenClaw model turn.                |
+| `pnpm podman:test`      | Podman Compose with embedded and recovered dedicated model turns.         |
 
 `pnpm test` can finish green with skipped infrastructure cases; inspect skips
 before claiming coverage. Run prepared infrastructure suites by exact filename,

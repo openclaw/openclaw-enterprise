@@ -21,11 +21,11 @@ capability-specific Drivers; neither the Provider nor its client is a Driver or
 an OCC resource. Each Agent has a nullable `providerId`, copied into each
 immutable AgentRevision. Provider membership does not change model configuration
 or authorize operations. The configured provider workspace is
-provider connection context, not an OCC Namespace mapping. The selected Compute
-Driver contains each Namespace's Agent-owned gateways and
-workloads in the same exact tenant boundary. The bundled Kubernetes Driver uses
-the Installation-selected cluster and each Namespace's backing Kubernetes
-namespace.
+provider connection context, not an OCC Namespace mapping. A platform Namespace
+retains its tenant ownership across physical runtime targets; it is not
+synonymous with one Kubernetes namespace or cluster. The selected Compute Driver
+preserves that boundary for gateways and Harnesses under the
+[topology placement rules](workloads.md#openclaw-gateways).
 
 The Installation identifier crosses only boundaries that require a deployment
 identity: configuration, admission, trusted ingress, exported audit evidence,
@@ -52,10 +52,10 @@ Installation-scoped resources belong to the same server-owned Installation.
 
 OCC owns persistent Namespace lifecycle and readiness. A Namespace starts
 `provisioning` and becomes `ready` only after its backing tenant infrastructure
-is ready. In the Installation-selected cluster, the bundled Kubernetes Driver
-either provisions a driver-owned backing namespace or uses the exact existing,
-operator-owned namespace requested through `POST /namespaces` with
-`existingNamespace`. Existing-namespace selection additionally requires
+is ready in the selected runtime targets. In the selected tenant data-plane
+target, the bundled Kubernetes Driver either provisions a driver-owned backing
+namespace or uses the exact existing, operator-owned namespace requested through
+`POST /namespaces` with `existingNamespace`. Existing-namespace selection additionally requires
 Installation `administer` authorization at admission and immediately before
 worker adoption. The requested name is persisted immutably and is unique across
 active Namespace records. The operator-prepared namespace

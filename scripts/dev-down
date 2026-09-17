@@ -2,5 +2,11 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$script_dir/.."
-exec occ dev down "$@"
+repo_root="$(cd "$script_dir/.." && pwd)"
+occ_cli="$repo_root/bin/occ"
+cd "$repo_root"
+if [ ! -x "$occ_cli" ]; then
+  echo "dev-down: prerequisite failed: OCC CLI is required at $occ_cli; run pnpm cli:build" >&2
+  exit 1
+fi
+exec "$occ_cli" dev down "$@"

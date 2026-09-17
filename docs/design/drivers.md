@@ -9,32 +9,36 @@ the [current architecture](../ARCHITECTURE.md) describes implementation status.
 `ComputeDriver` realizes two independently scoped infrastructure lifecycles:
 
 1. Namespace-scoped `ensureNamespace` creates or reconciles only the backing
-   tenant infrastructure; `deleteNamespace` removes that infrastructure after
+   tenant infrastructure in the selected runtime targets; `deleteNamespace`
+   removes that Namespace's owned infrastructure across those targets after
    OCC authorizes deletion of an empty Namespace. The bundled Kubernetes Driver
    provisions and removes a driver-owned Kubernetes namespace, or reconciles
    and removes only OCC-owned infrastructure inside a discovered,
-   operator-owned existing namespace.
+   operator-owned existing namespace in the tenant data plane. Cleanup preserves
+   shared control-plane infrastructure and resources outside the exact owner.
 2. Revision-scoped `prepareRevision` creates or reuses the exact Agent's
    configured gateway and realizes the topology pinned in its immutable
    revision: one embedded OpenClaw process or a separate, nonserving dedicated
-   Codex workload. Both are supported production topologies. `retireRevision`
-   stops only that
-   revision's owned runtime while preserving its Agent's gateway when a
-   replacement requires it. Agent deletion removes its own gateway.
+   Harness, following [topology placement](workloads.md#openclaw-gateways).
+   `retireRevision` stops only that revision's owned runtime while preserving its
+   Agent's gateway and any resources required by the replacement. Agent deletion
+   removes its own gateway and Harness resources across the selected targets.
 
-One selected Compute Driver owns both lifecycles in the same data plane. There
-is no separately selectable `GatewayDriver`. Namespace lifecycle observations
-identify the exact Namespace and report backing-infrastructure readiness or
-deletion without repeating the singleton Installation identifier. Gateway and
-workload observations identify both the Namespace and owning Agent.
+One selected Compute Driver orchestrates both lifecycles across both runtime
+targets. There is no separately selectable `GatewayDriver`. Namespace lifecycle
+observations identify the exact Namespace and report backing-infrastructure
+readiness or deletion without repeating the singleton Installation identifier.
+Gateway and workload observations identify both the Namespace and owning Agent.
 
-Both operations use the same selected data plane and exact tenant boundary
-chosen for the platform Namespace. The bundled Kubernetes Driver uses the
-Installation-selected cluster and exact backing Kubernetes namespace. OCC owns
-the Namespace, gateway lifecycle, Agent, immutable revision, workload identity,
-route bindings, authorization decisions, and desired state. The driver consumes
-that admitted intent and reports readiness or failure without changing platform
-ownership.
+Installation configuration selects the allowed control-plane and tenant
+data-plane runtime targets. The Driver resolves exact physical placement for
+each operation while preserving the platform Namespace and Agent boundary.
+Physical target coordinates, runtime endpoints, and transport credentials are
+Driver-owned observations or materializations, not platform resources or
+persisted `AgentRevision` fields. OCC owns the Namespace, gateway lifecycle,
+Agent, immutable revision, workload identity, route bindings, authorization
+decisions, and desired state. The driver consumes that admitted intent and
+reports readiness or failure without changing platform ownership.
 
 The bundled `KubernetesComputeDriver` and reviewed installed implementations can
 be selected in development and production. Gateway reconciliation occurs
@@ -44,14 +48,16 @@ mutate another Agent's gateway or workload or expose the previously active
 revision's credentials. Kubernetes independently owns scheduling and the
 infrastructure lifecycle when the bundled Driver is selected.
 
-The driver cannot target another cluster or Namespace, adopt another tenant's
-resources, change an Agent's configuration, rewrite its revision, select another
-identity, authorize a platform operation, or grant permissions. Gateway
-provisioning failure keeps the exact Agent deployment unready without changing
-Namespace readiness. Agent workload provisioning failure leaves sibling Agents
+The driver cannot target an unselected location or another platform Namespace,
+adopt another tenant's resources, change an Agent's configuration, rewrite its
+revision, select another identity, authorize a platform operation, or grant
+permissions. Gateway provisioning failure keeps the exact Agent deployment
+unready without changing Namespace readiness. Agent workload provisioning failure leaves sibling Agents
 and their gateways untouched and restores or fails closed for the previous
-active Agent workload. OCC does not select a fallback cluster or compute
-implementation.
+active Agent workload. Readiness, activation, rollback, and cleanup account for
+both targets; partial failure cannot authorize traffic to an inactive revision
+or orphan resources by treating success in one target as overall success.
+OCC does not select a fallback target or compute implementation.
 
 ## SandboxDriver
 
@@ -84,7 +90,7 @@ without acquiring platform-resource ownership or permission to select itself.
 | `IAMDriver`            | Evaluate the exact platform action and resource using its selected native or external authority. `OCCIAMDriver` evaluates OCC-owned roles and bindings.                                                               |
 | `ServiceAccountDriver` | Create upstream service accounts and separately issue their credentials after exact OCC authorization; privately own provider bindings and credential lifecycle while the provider retains its independent authority. |
 | `InferenceDriver`      | Perform authorized inference against an admitted external-provider model or local model source without exposing provider credentials, secret values, or reusable model credentials to Agent workloads.                |
-| `ComputeDriver`        | Ensure Namespace infrastructure, store authorized account credentials, and provision one Agent-owned gateway with each Agent workload in the same exact tenant boundary.                                              |
+| `ComputeDriver`        | Ensure Namespace infrastructure, store authorized account credentials, and reconcile each Agent's gateway and Harness in their selected runtime targets with exact Namespace, Agent, and revision ownership.          |
 | `SandboxDriver`        | Enforce and verify the complete admitted containment policy before an Agent workload can execute Agent turns.                                                                                                         |
 | `SecretDriver`         | Store Namespace-owned secret material and validate safe delivery references. KubernetesSecretDriver is the default; broker/substitution delivery is deferred.                                                         |
 | `ChannelDriver`        | Realize authorized Namespace-local messaging operations while the messaging provider retains independent authorization and credentials.                                                                               |

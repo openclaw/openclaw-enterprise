@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
   chmod,
+  copyFile,
   mkdir,
   mkdtemp,
   readFile,
@@ -56,6 +57,19 @@ async function writeExecutable(path, body) {
 async function createFixture(t, options = {}) {
   const directory = await mkdtemp(join(tmpdir(), "openclaw-dev-up-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
+
+  const fixtureRepository = join(directory, "repository");
+  await mkdir(join(fixtureRepository, "scripts"), { recursive: true });
+  await mkdir(join(fixtureRepository, "bin"), { recursive: true });
+  for (const script of ["dev-up", "dev-down"]) {
+    const destination = join(fixtureRepository, "scripts", script);
+    await copyFile(join(repository, "scripts", script), destination);
+    await chmod(destination, 0o755);
+  }
+  // Real dev commands discover the disposable source root before selecting its CLI.
+  for (const source of ["go.mod", "compose.yaml", "compose.podman.yaml"]) {
+    await symlink(join(repository, source), join(fixtureRepository, source));
+  }
 
   const bin = join(directory, "bin");
   await mkdir(bin);
@@ -277,7 +291,7 @@ exit(99, "unhandled " + engine + " compose command: " + command);
     await symlink("podman", join(bin, "podman-compose"));
   }
   await writeExecutable(
-    join(bin, "occ"),
+    join(fixtureRepository, "bin", "occ"),
     `#!${nodeExecutable}
 const fs = require("node:fs");
 const args = process.argv.slice(2);
@@ -302,6 +316,13 @@ if (scenario === "api-unauthorized") {
 if (exitCode === 0) process.stdout.write(JSON.stringify(payload) + "\\n");
 else process.stderr.write(JSON.stringify(payload) + "\\nHTTP 401\\n");
 process.exit(exitCode);
+`,
+  );
+  await writeExecutable(
+    join(bin, "occ"),
+    `#!${nodeExecutable}
+process.stderr.write("dev-up invoked occ from PATH instead of the project bin directory\\n");
+process.exit(86);
 `,
   );
 
@@ -335,6 +356,7 @@ process.exit(exitCode);
     DEV_UP_REAL_YQ: provider.yq ?? "",
     DEV_UP_REAL_PATH: process.env.PATH ?? "",
     DEV_UP_REPOSITORY: repository,
+    DEV_UP_FIXTURE_REPOSITORY: fixtureRepository,
   };
 
   // Shell startup configuration is outside this disposable command environment.
@@ -345,6 +367,8 @@ process.exit(exitCode);
   return {
     directory,
     cli,
+    fixtureRepository,
+    occCli: join(fixtureRepository, "bin", "occ"),
     emptyEnv,
     dockerLog,
     podmanLog,
@@ -492,7 +516,7 @@ function composeOptions(fixture, overridePath) {
 
 function runDevUp(args, env) {
   return spawnSync(bashExecutable, ["scripts/dev-up", ...args], {
-    cwd: repository,
+    cwd: env.DEV_UP_FIXTURE_REPOSITORY,
     encoding: "utf8",
     env,
   });

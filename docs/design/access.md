@@ -99,13 +99,34 @@ credentials or provider sessions, or select another Agent's identity.
 
 Each Agent has one `WorkloadIdentity` backed by a dedicated Kubernetes
 `ServiceAccount`. Its workload authenticates to OCC using a short-lived,
-pod-bound `ServiceAccount` token. OCC verifies that the token is valid for OCC
-and belongs to the exact Namespace, `ServiceAccount`, and active workload
+pod-bound `ServiceAccount` token. OCC verifies the selected data-plane target's
+trusted issuer, that the token is valid for OCC, and that it belongs to the
+exact backing Kubernetes namespace, `ServiceAccount`, and active workload
 associated with the Agent's `WorkloadIdentity` and active `AgentRevision`.
 For each runtime operation, OCC checks the workload's current roles,
 permissions, and applicable Restrictions. A candidate, retired revision,
 revoked permission, or incorrectly scoped workload cannot authorize a runtime
 or secret-broker operation.
+
+## Runtime trust across targets
+
+The dedicated gateway and Harness cross an explicit trust and connectivity
+boundary even when their selected runtime targets share a cluster. Each peer
+must verify its exact Agent-owned counterpart and the admitted route binding;
+runtime traffic is permitted only for the exact Namespace, Agent, and active
+revision. A reachable endpoint, shared cluster, or matching namespace name is
+not identity evidence. Missing or mismatched peer identity, ownership, route
+binding, or permitted connectivity leaves routing disabled.
+
+The dedicated gateway is a trusted control-plane workload scoped to its owning
+Agent. Trusted placement gives it no OCC authorization authority, broad
+controller credentials, or access to other tenants. It retains its
+separate runtime identity and never receives the Harness's `WorkloadIdentity`
+or model credential. Network access is limited to each component's admitted
+operations; moving across targets cannot broaden those permissions. The Driver
+must realize mutually authenticated, protected connectivity. Direct routing
+versus reverse tunnel/relay and concrete credential protocols remain deferred;
+this design selects no service mesh or public endpoint.
 
 ## Authorization model
 

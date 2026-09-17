@@ -55,6 +55,23 @@ worker with Deployment write access can indirectly project tenant Secrets, so
 its effective trust boundary remains the backing namespace. Provider credentials
 never enter OCC resources, snapshots, routes, or audit records.
 
+These existing Kubernetes delivery paths do not establish delivery across
+runtime targets. In the target design, the selected `SecretDriver` materializes
+approved Secrets for each exact consumer without shared Kubernetes Secret
+references. Logical Secret ownership remains the Agent's Namespace; existing
+bindings and consumption checks still apply.
+
+A trusted dedicated gateway may receive its existing Agent-scoped gateway and
+Channel credentials and Secrets explicitly bound by its approved Configuration.
+Its [identity boundary](access.md#runtime-trust-across-targets) excludes dedicated
+Harness identity and model credentials as well as broad controller credentials.
+Direct model-credential delivery to the tenant data-plane Harness is a temporary
+implementation exception. Target model-credential mediation keeps real upstream
+credentials outside Harness execution; the Harness receives only scoped substitutes.
+Workload-write authority must be bounded in each target, since it can indirectly
+expose Secrets there. Cross-target materialization remains a prerequisite for
+dedicated gateway relocation; the concrete delivery mechanism is deferred.
+
 ## Failure behavior
 
 OpenClaw fails closed when any required boundary or dependency fails:
@@ -66,14 +83,16 @@ OpenClaw fails closed when any required boundary or dependency fails:
   broker-mediated secret access.
 - Selected sandbox support or verified policy enforcement.
 - Exact Agent-owned gateway readiness or candidate route activation.
-- Selected runtime availability or Kubernetes workload provisioning.
+- Selected runtime-target availability, workload provisioning, or verified
+  gateway/Harness peer identity and connectivity.
 
 The selected `IAMDriver` evaluates each exact request before a side effect.
 `ComputeDriver` ensures Namespace infrastructure only after its independently
 authorized Namespace lifecycle operation. Authorization, reference validation,
 backing Namespace readiness, selected inference target, and sandbox policy
 support complete before OCC creates a revision. The Agent-owned gateway is
-configured and becomes ready during that exact revision's preparation. A
+configured and becomes ready during that exact revision's preparation in its
+selected target, independently of the candidate Harness's placement. A
 denied request may invoke its authoritative `IAMDriver` but cannot create a
 gateway, workload, resource, inference request, or messaging side effect.
 
@@ -85,8 +104,11 @@ during or after cutover retains the previous workload but leaves routing
 disabled until the new route succeeds or the previous revision and route can be
 independently verified and restored.
 
-OCC never substitutes another Namespace, identity, `IAMDriver`,
-`SecretBroker`, `SecretDriver`, gateway, provider, or runtime implementation.
+Rollback and cleanup cover both selected runtime targets and preserve exact
+ownership; a failed or unreachable target cannot be treated as successful
+recovery or deletion. OCC never substitutes another runtime target, Namespace,
+identity, `IAMDriver`, `SecretBroker`, `SecretDriver`, gateway, provider, or
+runtime implementation.
 
 ## Audit
 
@@ -99,8 +121,9 @@ evidence remains attributable outside the singleton platform; nested resource
 references retain only their exact resource and applicable Namespace. Deployment
 audit identifies the candidate and previous active revisions, selected
 service-account, compute, sandbox, inference, channel, and secret Drivers,
-Agent-owned gateway and workload operations, the selected approved model
-target, readiness decisions, route changes, and any rollback outcome. Audit
+Agent-owned gateway and workload operations with nonsecret runtime-target
+observations, the selected approved model target, readiness decisions, route
+changes, and any rollback outcome. Audit
 records contain no credentials, secret values, prompts, provider message
 contents, or runtime message contents.
 
@@ -115,12 +138,12 @@ The platform preserves:
 - **Explicit scope:** each resource belongs to the Installation or exactly one
   Namespace. The Namespace is the tenant boundary; Namespace-scoped references
   cannot cross it.
-- **Agent-owned, Namespace-local runtime routing:** OCC manages exactly one
+- **Agent-owned, Namespace-scoped runtime routing:** OCC manages exactly one
   OpenClaw gateway for each deployed Agent; a Namespace may contain multiple
-  gateways. `ComputeDriver` creates each gateway with its owning Agent in the
-  same selected Kubernetes cluster and backing namespace. Routing identifies
-  both Namespace and Agent, and gateway ownership remains stable across that
-  Agent's revisions.
+  gateways. The selected `ComputeDriver` preserves exact ownership across the
+  [topology's runtime targets](workloads.md#openclaw-gateways). Routing binds
+  Namespace, Agent, and the sole active revision; gateway ownership remains
+  stable across that Agent's revisions.
 - **Independent authorization:** an external identity provider authenticates;
   OAG verifies identity and scope; OCC authorizes exact platform operations.
   Kubernetes and external providers retain their own authority.

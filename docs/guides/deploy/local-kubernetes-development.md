@@ -2,21 +2,22 @@
 
 Run the OpenClaw Control Plane (OCC) API and worker in Compose while the
 Kubernetes Compute Driver provisions workloads in a disposable, loopback-only
-k3d cluster. The `occ dev up` and `occ dev down` commands manage both the Docker and
+k3d cluster. The `./bin/occ dev up` and `./bin/occ dev down` commands manage both the Docker and
 Kubernetes development profiles; `scripts/dev-up` and `scripts/dev-down`
 provide checkout-local entry points.
 
 ## Start the profile
 
 You need Docker Engine with Docker Compose, or Podman with `podman-compose`,
-plus k3d and kubectl. Install the [OCC CLI](../cli.md) from this checkout
-and put `occ` on `PATH`. Compose runs PostgreSQL, migration, bootstrap,
-controller, and worker processes; those services do not require host Node.js.
+plus k3d and kubectl. Build the checkout-local [OCC CLI](../cli.md) with the
+Go version in `go.mod`, Node.js 24 or newer, and the repository-pinned pnpm.
+Compose runs PostgreSQL, migration, bootstrap, controller, and worker processes.
 
-From the repository root, select Kubernetes Compute:
+From the repository root, build the CLI and select Kubernetes Compute:
 
 ```bash
-OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes occ dev up
+pnpm cli:build
+OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes ./bin/occ dev up
 ```
 
 The default `OCC_DEVELOPMENT_COMPUTE_DRIVER=docker` retains the ordinary
@@ -87,7 +88,7 @@ With the default API port and state directory:
 ```bash
 export OCC_URL=http://127.0.0.1:3000
 export OCC_SERVICE_KEY_FILE=/tmp/openclaw-development/initial-admin-service-key.json
-occ installation get
+./bin/occ installation get
 kubectl --kubeconfig /tmp/openclaw-development/kubeconfig \
   --context <context-printed-by-startup> get namespaces
 ```
@@ -102,10 +103,10 @@ Run the exact `Cleanup` command printed by startup. It selects Kubernetes Comput
 and the recorded state directory explicitly. For the default state directory:
 
 ```bash
-OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes occ dev down
+OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes ./bin/occ dev down
 ```
 
-`occ dev down` defaults to Docker Compute even when Kubernetes state exists.
+`./bin/occ dev down` defaults to Docker Compute even when Kubernetes state exists.
 For explicitly selected Kubernetes mode, it reads the private recorded state
 and removes only the named `occ-dev-*` cluster and its Compose project, deletes
 profile volumes, then removes the state directory. This permanently deletes the development

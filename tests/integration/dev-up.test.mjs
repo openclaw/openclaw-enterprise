@@ -33,14 +33,16 @@ test("dev-up builds the default runtime only when real Compose leaves runtime im
 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /OpenClaw Enterprise development stack is ready/);
-  assert.match(
-    result.stdout,
-    /OCC_DEVELOPMENT_COMPUTE_DRIVER=docker OCC_DEVELOPMENT_CONTAINER_ENGINE=docker occ dev down/,
+  assert.ok(
+    result.stdout.includes(
+      `OCC_DEVELOPMENT_COMPUTE_DRIVER=docker OCC_DEVELOPMENT_CONTAINER_ENGINE=docker ${fixture.occCli} dev down`,
+    ),
   );
   assert.ok(result.stdout.includes("API URL: http://127.0.0.1:3000"));
   assert.ok(result.stdout.includes(`Installation ID: ${matchingInstallationId}`));
   assert.ok(result.stdout.includes(`Service key file: ${keyOutput}`));
   assert.ok(result.stdout.includes(`OCC_SERVICE_KEY_FILE=${keyOutput.replaceAll(" ", "\\ ")}`));
+  assert.ok(result.stdout.includes(`${fixture.occCli} installation get`));
   assert.doesNotMatch(result.stdout + result.stderr, new RegExp(serviceKey));
 
   const outputMode = (await stat(keyOutput)).mode & 0o777;
@@ -274,9 +276,10 @@ test("dev-up selects Podman when no docker command exists and completes the supp
 
   assert.equal(result.status, 0, result.stderr ?? result.error?.message ?? "dev-up did not exit");
   assert.match(result.stdout, /Container engine: Podman/);
-  assert.match(
-    result.stdout,
-    /Cleanup:\n  env OCC_DEVELOPMENT_COMPUTE_DRIVER=docker OCC_DEVELOPMENT_CONTAINER_ENGINE=podman occ dev down -- /,
+  assert.ok(
+    result.stdout.includes(
+      `Cleanup:\n  env OCC_DEVELOPMENT_COMPUTE_DRIVER=docker OCC_DEVELOPMENT_CONTAINER_ENGINE=podman ${fixture.occCli} dev down -- `,
+    ),
   );
   assert.doesNotMatch(result.stdout + result.stderr, new RegExp(serviceKey));
   assert.match(await readFile(keyOutput, "utf8"), new RegExp(serviceKey));
@@ -546,7 +549,11 @@ server.listen(0, "127.0.0.1", () => process.stdout.write(String(server.address()
 }
 
 function runDevDown(env) {
-  return spawnSync("/bin/bash", ["scripts/dev-down"], { encoding: "utf8", env });
+  return spawnSync("/bin/bash", ["scripts/dev-down"], {
+    cwd: env.DEV_UP_FIXTURE_REPOSITORY,
+    encoding: "utf8",
+    env,
+  });
 }
 
 async function kubernetesFixture(t, scenario = "success") {
@@ -708,6 +715,7 @@ test("Kubernetes dev-down preserves recovery state after incomplete cleanup and 
 test("cancelling Kubernetes startup during readiness rolls back its owned resources", async (t) => {
   const fixture = await kubernetesFixture(t, "readiness-blocked");
   const child = spawn(fixture.cli, ["dev", "up", "--", "--env-file", fixture.emptyEnv], {
+    cwd: fixture.fixtureRepository,
     env: { ...fixture.env, OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS: "60" },
     stdio: ["ignore", "pipe", "pipe"],
   });

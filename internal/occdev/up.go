@@ -183,7 +183,7 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(r.opts.Out, "OpenClaw Enterprise development stack is ready.\nContainer engine: %s\nCompute Driver: Kubernetes\nAPI URL: %s\nInstallation ID: %s\nService key file: %s\nKubeconfig: %s\nKubernetes context: k3d-%s\n\nCleanup:\n  env OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes OCC_DEVELOPMENT_STATE_DIRECTORY=%s occ dev down\n", r.engine, apiURL, installation, state.KeyPath, filepath.Join(directory, "kubeconfig"), state.Cluster, shellQuote(directory))
+	fmt.Fprintf(r.opts.Out, "OpenClaw Enterprise development stack is ready.\nContainer engine: %s\nCompute Driver: Kubernetes\nAPI URL: %s\nInstallation ID: %s\nService key file: %s\nKubeconfig: %s\nKubernetes context: k3d-%s\n\nCleanup:\n  env OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes OCC_DEVELOPMENT_STATE_DIRECTORY=%s %s dev down\n", r.engine, apiURL, installation, state.KeyPath, filepath.Join(directory, "kubeconfig"), state.Cluster, shellQuote(directory), shellQuote(filepath.Join(opts.Repository, "bin", "occ")))
 	return nil
 }
 func shellQuote(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }

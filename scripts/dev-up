@@ -9,13 +9,18 @@ STARTUP_TIMEOUT_SECONDS=300
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
+occ_cli="$repo_root/bin/occ"
 cd "$repo_root"
 
 development_compute_driver="${OCC_DEVELOPMENT_COMPUTE_DRIVER:-docker}"
 case "$development_compute_driver" in
   docker) ;;
   kubernetes)
-    exec occ dev up "$@"
+    if [ ! -x "$occ_cli" ]; then
+      echo "dev-up: prerequisite failed: OCC CLI is required at $occ_cli; run pnpm cli:build" >&2
+      exit 1
+    fi
+    exec "$occ_cli" dev up "$@"
     ;;
   *)
     echo "dev-up: configuration failed: OCC_DEVELOPMENT_COMPUTE_DRIVER must be docker or kubernetes" >&2
@@ -92,8 +97,10 @@ require_command() {
   fi
 }
 
-require_command occ
 require_command python3
+if [ ! -x "$occ_cli" ]; then
+  fail "prerequisite" "OCC CLI is required at $occ_cli; run pnpm cli:build"
+fi
 
 temporary_directory="$(mktemp -d "${TMPDIR:-/tmp}/openclaw-dev-up.XXXXXXXXXX")"
 chmod 700 "$temporary_directory"
@@ -272,7 +279,7 @@ fi
 
 compose_analysis="$temporary_directory/compose-analysis"
 compose_analysis_error="$temporary_directory/compose-analysis.err"
-if ! occ dev analyze-compose --profile docker <"$compose_config" >"$compose_analysis" 2>"$compose_analysis_error"; then
+if ! "$occ_cli" dev analyze-compose --profile docker <"$compose_config" >"$compose_analysis" 2>"$compose_analysis_error"; then
   analysis_error="$(cat "$compose_analysis_error" 2>/dev/null || true)"
   if [ -z "$analysis_error" ]; then
     analysis_error="could not inspect Compose services"
@@ -549,8 +556,8 @@ PY
 fi
 
 installation_response="$temporary_directory/installation-response.json"
-if ! OCC_URL="$api_url" OCC_SERVICE_KEY_FILE="$key_output" occ installation get --output json >"$installation_response"; then
-  fail "authorization" "occ could not read the Installation" occ installation get --output json
+if ! OCC_URL="$api_url" OCC_SERVICE_KEY_FILE="$key_output" "$occ_cli" installation get --output json >"$installation_response"; then
+  fail "authorization" "occ could not read the Installation" "$occ_cli" installation get --output json
 fi
 
 if ! installation_id="$(
@@ -568,11 +575,11 @@ print(observed)
 PY
 )"; then
   match_error="$(cat "$temporary_directory/installation-match.err" 2>/dev/null || true)"
-  fail "authorization" "${match_error:-Installation ID mismatch}" occ installation get --output json
+  fail "authorization" "${match_error:-Installation ID mismatch}" "$occ_cli" installation get --output json
 fi
 
-cleanup_command="$(quote_command env "OCC_DEVELOPMENT_COMPUTE_DRIVER=docker" "OCC_DEVELOPMENT_CONTAINER_ENGINE=$container_engine" occ dev down -- "${compose_args[@]}")"
-next_check_command="$(quote_command "OCC_URL=$api_url" "OCC_SERVICE_KEY_FILE=$key_output" occ installation get)"
+cleanup_command="$(quote_command env "OCC_DEVELOPMENT_COMPUTE_DRIVER=docker" "OCC_DEVELOPMENT_CONTAINER_ENGINE=$container_engine" "$occ_cli" dev down -- "${compose_args[@]}")"
+next_check_command="$(quote_command "OCC_URL=$api_url" "OCC_SERVICE_KEY_FILE=$key_output" "$occ_cli" installation get)"
 
 cat <<EOF
 OpenClaw Enterprise development stack is ready.

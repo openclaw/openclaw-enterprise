@@ -1,8 +1,15 @@
 # OCC CLI
 
-Install `occ` from a trusted OpenClaw Enterprise checkout, select the OCC
-endpoint and protected service-key response file, then work with platform
-resources through domain commands:
+Build the checkout-local `occ` used by `scripts/dev-up` and `scripts/dev-down` from a trusted OpenClaw
+Enterprise checkout:
+
+```bash
+pnpm cli:build
+```
+
+Install `occ` on `PATH` when using resource commands outside the checkout, select
+the OCC endpoint and protected service-key response file, then work with
+platform resources through domain commands:
 
 ```bash
 go install ./cmd/occ
@@ -43,11 +50,11 @@ From the checkout root, start the default Docker Compute profile and use the
 cleanup command printed after startup:
 
 ```bash
-occ dev up
-occ dev down
+./bin/occ dev up
+./bin/occ dev down
 ```
 
-`occ dev up` runs the [development quickstart](quickstart.md), including its
+`./bin/occ dev up` runs the [development quickstart](quickstart.md), including its
 container-engine, runtime-image, and readiness checks. The default cleanup
 preserves the Docker profile's database and configuration volumes; pass
 `--volumes` only to delete the local Installation.

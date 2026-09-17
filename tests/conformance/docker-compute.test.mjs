@@ -189,3 +189,103 @@ function splitEnvironment(entry) {
   assert.ok(separator > 0, `Docker Env entry must be NAME=value: ${entry}`);
   return [entry.slice(0, separator), entry.slice(separator + 1)];
 }
+
+test("Docker Compute recovery keeps dedicated transport paired across container reuse and replacement", async () => {
+  // Model only the Docker inspect/create boundary; token selection and reconciliation
+  // run in the real Driver. The Compose integration separately kills a real worker.
+  const containers = new Map();
+  const createDriver = () => {
+    const driver = new DockerComputeDriver({
+      images: { gateway: "gateway:local", agent: "agent:local" },
+    });
+    driver.network = async () => ({
+      Labels: {
+        "org.openclaw.enterprise.managed": "true",
+        "org.openclaw.enterprise.compute-driver": "docker",
+        "org.openclaw.enterprise.namespace-id": tenant.id,
+      },
+    });
+    driver.request = async (method, path, body) => {
+      const url = new URL(path, "http://docker.invalid");
+      if (method === "POST" && url.pathname === "/containers/create") {
+        containers.set(url.searchParams.get("name"), {
+          Config: structuredClone(body),
+          State: { Running: true, Health: { Status: "healthy" } },
+        });
+        return "";
+      }
+      const [, name, action] = /^\/containers\/([^/]+)(?:\/(\w+))?$/.exec(url.pathname) ?? [];
+      if (method === "POST" && action === "start") return "";
+      if (method === "DELETE") {
+        containers.delete(name);
+        return "";
+      }
+      throw new Error(`Unexpected Docker API request ${method} ${path}`);
+    };
+    driver.container = async (name) => containers.get(name);
+    return driver;
+  };
+  const driver = createDriver();
+  const revision = {
+    id: "revision-docker-recovery",
+    namespaceId: tenant.id,
+    agentId: "agent-recovery",
+    revision: 1,
+    configurationId: "cfg_00000000-0000-4000-8000-000000000001",
+    configurationKind: "agent",
+    configurationGeneration: 1,
+    configuration: admitLoggingConfiguration({}, "info"),
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+    compute: { id: driver.id, implementation: driver.implementation },
+    servicePrincipalId: "service-principal-docker-recovery",
+    createdAt: tenant.createdAt,
+  };
+  const role = (name) =>
+    [...containers.entries()].find(
+      ([, value]) => value.Config.Labels["org.openclaw.enterprise.role"] === name,
+    );
+  const token = (container) =>
+    container.Config.Env.find((value) => value.startsWith("APP_SERVER_TOKEN="));
+  const previousKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "test-openai-api-key";
+  try {
+    assert.equal((await driver.prepareRevision(revision)).ready, true);
+    const [agentName, agent] = role("agent");
+    const [gatewayName, gateway] = role("gateway");
+    assert.match(token(agent) ?? "", /^APP_SERVER_TOKEN=[0-9a-f]{64}$/);
+    assert.equal(token(agent) === token(gateway), true);
+
+    // A fresh Driver sees only the surviving Codex container, as after an interrupted startup.
+    containers.delete(gatewayName);
+    assert.equal((await createDriver().prepareRevision(revision)).ready, true);
+    assert.equal(role("agent")[1], agent);
+    assert.equal(
+      token(role("gateway")[1]) === token(agent),
+      true,
+      "recovery must preserve the surviving transport token",
+    );
+    const recoveredGateway = role("gateway")[1];
+    assert.equal((await createDriver().prepareRevision(revision)).ready, true);
+    assert.equal(role("gateway")[1], recoveredGateway, "a healthy matching pair must be reused");
+
+    // Replacing Codex rotates its token, so a previously healthy gateway must be refreshed too.
+    containers.delete(agentName);
+    assert.equal((await createDriver().prepareRevision(revision)).ready, true);
+    assert.notEqual(role("gateway")[1], recoveredGateway);
+    assert.equal(token(role("gateway")[1]) === token(role("agent")[1]), true);
+
+    const invalidAgent = role("agent")[1];
+    invalidAgent.Config.Env = invalidAgent.Config.Env.filter(
+      (value) => !value.startsWith("APP_SERVER_TOKEN="),
+    );
+    await assert.rejects(createDriver().prepareRevision(revision), /transport token/i);
+    assert.equal(
+      role("agent")[1],
+      invalidAgent,
+      "missing credentials must fail closed without adopting a new token",
+    );
+  } finally {
+    if (previousKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousKey;
+  }
+});

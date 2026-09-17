@@ -33,8 +33,13 @@ runs the Harness. Dedicated Codex starts one gateway container plus one
 exact-revision Codex container connected by authenticated `APP_SERVER_URL` and
 `APP_SERVER_TOKEN` transport.
 
-The Podman proof currently selects only the embedded topology. Docker verifies
-both topologies and the interactive TUI sequence below.
+When a worker restarts during preparation, `reconcileAgent` verifies the
+surviving container's ownership and returns its existing transport token.
+`reconcileGateway` uses that token and replaces a gateway with mismatched
+transport credentials. Missing tokens on reused Codex containers fail closed.
+
+Docker and Podman verify both topologies and interrupted dedicated preparation.
+Docker also verifies the interactive TUI sequence below.
 
 Runtime images come from `OCC_DOCKER_GATEWAY_IMAGE` and
 `OCC_DOCKER_AGENT_IMAGE`, or from `OCC_DOCKER_RUNTIME_IMAGE` when one supplied

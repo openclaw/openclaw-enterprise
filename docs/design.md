@@ -3,10 +3,26 @@ title: OpenClaw as the Open Enterprise Agent Platform
 authors:
   - Kevin Lin
 created: 2026-07-08
-last_updated: 2026-08-24
+last_updated: 2026-09-11
 ---
 
 # OpenClaw as the Open Enterprise Agent Platform
+
+## Implementation status
+
+This page and its design chapters, including their diagrams, define the normative
+**target architecture**, not a record of implemented capabilities. At commit
+`ea6a7d56`, the Kubernetes dedicated gateway and Harness still run in the same
+tenant namespace and share an Agent-owned workspace PVC.
+[Control-plane gateway placement (#75)](https://github.com/openclaw/openclaw-enterprise/issues/75)
+and [removal of the common PVC requirement (#76)](https://github.com/openclaw/openclaw-enterprise/issues/76)
+remain unimplemented. These statements reflect source and test assertions, not
+a live deployment verification.
+
+See [current architecture](ARCHITECTURE.md) and
+[Kubernetes execution modes](reference/drivers/kubernetes-compute.md#execution-modes)
+for implemented behavior, and verify current code and tests before relying on a
+target-design capability. Update this note as these gaps close.
 
 ## Summary
 
@@ -14,7 +30,8 @@ OpenClaw Enterprise provides a multi-tenant control plane for configuring,
 deploying, and operating agents. Each deployment owns exactly one Installation
 containing multiple isolated Namespaces.
 
-Enterprise functionality is mediated by the OpenClaw Controller (OCC). This is a new component that is responsible for provisioning and orchestrating agents.
+Enterprise functionality is mediated by OpenClaw Control Plane (OCC). Its
+controller is responsible for provisioning and orchestrating agents.
 
 The platform introduces a small set of resource primitives for managing agents.
 OCC owns these platform resources and their lifecycles; external systems own
@@ -93,10 +110,11 @@ runtime detail.
    `ServiceAccount`, `Agent`, `AgentRevision`, `Harness`, `Channel`, `Secret`,
    `SecretBroker`, `SandboxPolicy`, and `Restriction`.
 5. Have OCC manage one OpenClaw gateway for each deployed Agent. The selected
-   `ComputeDriver` creates that gateway with its Agent in the same tenant
-   boundary. The bundled `KubernetesComputeDriver` uses the same exact cluster
-   and Kubernetes namespace. A Namespace may contain multiple independently
-   owned gateways; gateway lifecycle follows its owning Agent.
+   `ComputeDriver` places a dedicated gateway in the control-plane runtime
+   target and its revision-scoped Harness in the selected tenant data-plane
+   target. Embedded execution keeps gateway and Harness together in the tenant
+   data plane. Namespace isolation and Agent ownership apply across both
+   targets; gateway lifecycle follows its owning Agent.
 6. Provision an Agent workload from an admitted immutable `AgentRevision`
    through the selected `ComputeDriver` and enforce its exact `SandboxPolicy`
    through the selected `SandboxDriver`.
@@ -112,8 +130,8 @@ runtime detail.
 ## Architecture
 
 This overview shows the target architecture. Dashed arrows describe target
-relationships, not verified implementation or deployment status. The runtime
-box is a logical grouping; the deployment topologies are described below.
+relationships, not verified implementation or deployment status. Runtime targets show the two alternative execution modes; each Agent selects
+one. Placement preserves the owning Namespace and Agent across targets.
 
 ```mermaid
 ---
@@ -140,12 +158,14 @@ flowchart TB
         SURFACES["<b>OCC API and Console</b>"]
         OCC["<b>OpenClaw Control Plane</b><br/>Resource lifecycles<br/>and authorization"]
         STATE[("<b>Platform state</b><br/>Resources, revisions,<br/>and audit evidence")]
+        GATEWAY["<b>Dedicated Agent gateway</b><br/>Control-plane runtime target"]
     end
 
     DRIVERS["<b>Selected Drivers</b><br/>Capability contracts"]
 
     subgraph DATA["Namespace-isolated data plane"]
-        RUNTIME["<b>One Agent's runtime</b><br/>OpenClaw gateway<br/>and selected Harness"]
+        HARNESS["<b>Dedicated Harness</b><br/>Revision-scoped workload"]
+        EMBEDDED["<b>Embedded Agent runtime</b><br/>Combined gateway and Harness"]
     end
 
     subgraph EXTERNAL["External systems"]
@@ -159,7 +179,10 @@ flowchart TB
     SURFACES -.->|"resource operations"| OCC
     OCC -.->|"persists"| STATE
     OCC -.->|"invokes scoped contracts"| DRIVERS
-    DRIVERS -.->|"provisions and contains"| RUNTIME
+    DRIVERS -.->|"provisions exact Agent gateway"| GATEWAY
+    DRIVERS -.->|"provisions and contains"| HARNESS
+    DRIVERS -.->|"provisions and contains"| EMBEDDED
+    GATEWAY <-.->|"exact Agent and active revision traffic"| HARNESS
     DRIVERS -.->|"authorized operations"| PROVIDERS
     DRIVERS -.->|"stores secret material"| SECRETS
 
@@ -167,7 +190,7 @@ flowchart TB
     classDef capability fill:#e4efeb,stroke:#78968b,color:#19372d,stroke-width:1px
     classDef external fill:#eee9f2,stroke:#95859f,color:#35263f,stroke-width:1px
     class INGRESS,SURFACES,OCC,STATE platform
-    class OAG,DRIVERS,RUNTIME capability
+    class OAG,DRIVERS,GATEWAY,HARNESS,EMBEDDED capability
     class USERS,PROVIDERS,SECRETS external
     style CONTROL fill:#fafafa,stroke:#b7bec6,stroke-width:1px
     style DATA fill:#fafafa,stroke:#b7bec6,stroke-width:1px
@@ -187,9 +210,13 @@ Harness runs either inside that gateway (`embedded`) or in a distinct Codex
 workload (`dedicated`); a dedicated gateway routes only its owner's runtime
 traffic and does not receive the Codex workload's identity or model credential.
 A Namespace can contain multiple independently owned Agent runtimes. The selected
-`ComputeDriver` provisions each gateway and workload in the same tenant boundary
-from an immutable `AgentRevision`; the bundled Kubernetes implementation uses the
-same exact cluster and backing namespace. `SandboxDriver` verifies the admitted
+`ComputeDriver` reconciles the dedicated gateway in the control-plane runtime
+target and its Harness in the selected tenant data-plane target from an immutable
+`AgentRevision`. Embedded execution keeps both in the tenant data plane. Targets
+initially share a Kubernetes cluster but may later occupy separate clusters or
+other Compute-backed locations. Physical separation does not change Namespace
+isolation or Agent ownership. The implementation-status note above distinguishes
+this target from the current same-namespace Kubernetes implementation. `SandboxDriver` verifies the admitted
 containment policy before Agent turns can execute. See [execution topologies and
 activation](design/workloads.md).
 

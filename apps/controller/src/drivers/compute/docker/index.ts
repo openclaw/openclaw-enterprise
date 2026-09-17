@@ -38,6 +38,7 @@ export interface DockerComputeDriverOptions {
 interface DockerContainerInspect {
   readonly Config?: {
     readonly Labels?: Readonly<Record<string, string>>;
+    readonly Env?: readonly string[];
   };
   readonly State?: {
     readonly Running?: boolean;
@@ -178,6 +179,11 @@ function statusCode(error: unknown): number | undefined {
 
 function healthy(inspect: DockerContainerInspect): boolean {
   return inspect.State?.Running === true && inspect.State.Health?.Status === "healthy";
+}
+
+function containerTransportToken(inspect: DockerContainerInspect): string | undefined {
+  const prefix = "APP_SERVER_TOKEN=";
+  return inspect.Config?.Env?.find((entry) => entry.startsWith(prefix))?.slice(prefix.length);
 }
 
 function validTopology(revision: AgentRevision): boolean {
@@ -376,8 +382,7 @@ export class DockerComputeDriver implements ComputeDriver {
         return { ...result, ready: gateway.ready };
       }
 
-      const appServerToken = randomBytes(32).toString("hex");
-      const agent = await this.reconcileAgent(prepared, network, appServerToken, loggingLevel, {
+      const agent = await this.reconcileAgent(prepared, network, loggingLevel, {
         ...provider,
         ...launch.environment,
         ...this.pluginRuntimeEnvironmentForWorkload(pluginRuntime, "agent", false),
@@ -386,7 +391,7 @@ export class DockerComputeDriver implements ComputeDriver {
       if (!agent.ready) return result;
       const gateway = await this.reconcileGateway(prepared, network, {
         APP_SERVER_URL: `ws://${agent.containerName}:${AGENT_TRANSPORT_PORT}`,
-        APP_SERVER_TOKEN: appServerToken,
+        APP_SERVER_TOKEN: agent.appServerToken,
         ...this.pluginRuntimeEnvironmentForWorkload(pluginRuntime, "gateway", false),
       });
       gatewayCreated = gateway.created ? gateway.containerName : undefined;
@@ -486,7 +491,11 @@ export class DockerComputeDriver implements ComputeDriver {
             "Immutable AgentRevision gateway configuration cannot change.",
           );
         }
-        if (healthy(existing)) return { containerName, created: false, ready: true };
+        const transportMatches =
+          revision.harness.mode === "embedded" ||
+          containerTransportToken(existing) === environment.APP_SERVER_TOKEN;
+        if (healthy(existing) && transportMatches)
+          return { containerName, created: false, ready: true };
         await this.removeContainer(containerName, true);
       }
       if (currentRevision !== revision.revision || currentRevisionId !== revision.id) {
@@ -532,13 +541,13 @@ export class DockerComputeDriver implements ComputeDriver {
   private async reconcileAgent(
     revision: Readonly<AgentRevision>,
     network: string,
-    appServerToken: string,
     loggingLevel: LoggingLevel,
     environment: Readonly<Record<string, string>>,
   ): Promise<{
     readonly containerName: string;
     readonly created: boolean;
     readonly ready: boolean;
+    readonly appServerToken: string;
   }> {
     const containerName = this.agentContainerName(
       revision.namespaceId,
@@ -549,9 +558,16 @@ export class DockerComputeDriver implements ComputeDriver {
     const existing = await this.container(containerName);
     if (existing !== undefined) {
       this.verifyOwnership(existing.Config?.Labels, ownership, `container ${containerName}`);
-      if (healthy(existing)) return { containerName, created: false, ready: true };
+      if (healthy(existing))
+        return {
+          containerName,
+          created: false,
+          ready: true,
+          appServerToken: required(containerTransportToken(existing), "Codex transport token"),
+        };
       await this.removeContainer(containerName, true);
     }
+    const appServerToken = randomBytes(32).toString("hex");
     await this.createRuntimeContainer({
       name: containerName,
       image: this.options.images.agent,
@@ -577,7 +593,7 @@ export class DockerComputeDriver implements ComputeDriver {
         [HARNESS_VERSION_LABEL]: revision.harness.version,
       },
     });
-    return { containerName, created: true, ready: true };
+    return { containerName, created: true, ready: true, appServerToken };
   }
 
   private async createRuntimeContainer(

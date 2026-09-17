@@ -23,7 +23,7 @@ const python = process.env.PYTHON ?? "python3";
 const podmanSelected = process.env.OCC_TEST_PODMAN_COMPUTE_REAL === "1";
 const engineBinary = podmanSelected ? "podman" : "docker";
 const engineName = podmanSelected ? "Podman" : "Docker";
-const executionModes = podmanSelected ? ["embedded"] : ["embedded", "dedicated"];
+const executionModes = ["embedded", "dedicated"];
 const selected =
   podmanSelected ||
   process.env.OCC_TEST_DOCKER_COMPUTE_REAL === "1" ||
@@ -162,7 +162,9 @@ function composeArguments(project, commandName, args = [], { withLogging = false
   const files = [
     COMPOSE_FILE,
     ...(withLogging ? [LOGGING_COMPOSE_FILE] : []),
-    ...(podmanSelected ? [PODMAN_COMPOSE_FILE] : []),
+    ...(podmanSelected
+      ? [PODMAN_COMPOSE_FILE, "tests/fixtures/docker-compute/compose.podman.yaml"]
+      : []),
   ];
   return [
     "compose",
@@ -851,7 +853,41 @@ async function deleteEmptyNamespace({ request, cleanupNamespace, requestOptions 
   });
 }
 
-async function createAgentJourney({ request, namespaceId, mode, label }) {
+async function interruptDedicatedPreparation(project, namespaceId, agentId, revisionId) {
+  const worker = await composeServiceContainer(project, "worker");
+  const filters = [
+    [LABEL_NAMESPACE, namespaceId],
+    [LABEL_AGENT, agentId],
+    [LABEL_REVISION, revisionId],
+  ];
+  // Kill the real worker during Codex startup, before it can create the gateway.
+  // The surviving container and expired database lease must be recovered by a fresh process.
+  let survivingAgent;
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline) {
+    [survivingAgent] = await inspectContainers([...filters, [LABEL_ROLE, "agent"]]);
+    if (survivingAgent?.State?.Running) break;
+    await delay(25);
+  }
+  assert.ok(survivingAgent?.State?.Running, "Codex must start before worker interruption");
+  await docker(["kill", "--signal", "KILL", worker.Id]);
+  try {
+    assert.equal(
+      await containerCount([...filters, [LABEL_ROLE, "gateway"]]),
+      0,
+      "interruption must occur before gateway creation",
+    );
+    await waitFor("surviving Codex container to become healthy", async () => {
+      const [current] = await dockerJson(["inspect", survivingAgent.Id]);
+      return current.State?.Health?.Status === "healthy";
+    });
+  } finally {
+    await docker(["start", worker.Id]);
+  }
+  return survivingAgent.Id;
+}
+
+async function createAgentJourney({ request, namespaceId, mode, label, afterAdmission }) {
   const harnessId = mode === "dedicated" ? "codex" : "openclaw";
   const values = createHarnessConfiguration(harnessId, providerModel);
   if (mode === "embedded") {
@@ -879,6 +915,7 @@ async function createAgentJourney({ request, namespaceId, mode, label }) {
     /docker/i,
     "admitted revisions must select the Docker Compute Driver",
   );
+  await afterAdmission?.(agent.data, revision.data);
   await waitFor(`Agent ${agent.data.id} to activate ${revision.data.id}`, async () => {
     const current = await request("GET", `/namespaces/${namespaceId}/agents/${agent.data.id}`);
     assert.equal(current.status, 200, JSON.stringify(current.error));
@@ -901,7 +938,7 @@ test(
           Boolean(process.env.OCC_TEST_OTEL_LOGS_JSONL) ||
           Boolean(process.env.OCC_TEST_OTEL_LOGS_URL)),
       false,
-      "the first Podman increment does not include Docker Fluentd/OTLP logging proof",
+      "Podman does not support Docker Fluentd/OTLP logging proof",
     );
     const providerKey = nonempty(
       process.env.OPENAI_API_KEY,
@@ -1151,18 +1188,12 @@ test(
     );
     const cleanupNamespace = helperNamespace.data;
     assert.ok(embeddedNamespace, "embedded Namespace must be provisioned");
+    assert.ok(dedicatedNamespace, "dedicated Namespace must be provisioned");
     const embeddedNetwork = await waitForNamespaceNetwork(embeddedNamespace.id);
-    const dedicatedNetwork =
-      dedicatedNamespace === undefined
-        ? undefined
-        : await waitForNamespaceNetwork(dedicatedNamespace.id);
+    const dedicatedNetwork = await waitForNamespaceNetwork(dedicatedNamespace.id);
     const cleanupNetwork = await waitForNamespaceNetwork(cleanupNamespace.id);
     assert.equal(
-      new Set(
-        [embeddedNetwork, dedicatedNetwork, cleanupNetwork]
-          .filter((network) => network !== undefined)
-          .map(inspectedNetworkName),
-      ).size,
+      new Set([embeddedNetwork, dedicatedNetwork, cleanupNetwork].map(inspectedNetworkName)).size,
       namespaces.length,
       "each Namespace must receive a dedicated Docker network",
     );
@@ -1180,15 +1211,29 @@ test(
       mode: "embedded",
       label: "embedded",
     });
-    const dedicated =
-      dedicatedNamespace === undefined
-        ? undefined
-        : await createAgentJourney({
-            request,
-            namespaceId: dedicatedNamespace.id,
-            mode: "dedicated",
-            label: "dedicated",
-          });
+    let survivingCodexId;
+    const dedicated = await createAgentJourney({
+      request,
+      namespaceId: dedicatedNamespace.id,
+      mode: "dedicated",
+      label: "dedicated",
+      afterAdmission: async (agent, revision) => {
+        survivingCodexId = await interruptDedicatedPreparation(
+          project,
+          dedicatedNamespace.id,
+          agent.id,
+          revision.id,
+        );
+      },
+    }).catch(async (error) => {
+      const logs = await composeFailureLogs(
+        project,
+        env,
+        [providerKey, adminPassword, serviceKey],
+        composeOptions,
+      );
+      throw new Error(`${error.message}\n${logs}`, { cause: error });
+    });
 
     await assertRuntimeDatabaseEvidence({
       project,
@@ -1196,10 +1241,7 @@ test(
       serviceKeyOutput,
       serviceKey,
       namespaceIds,
-      revisionIds: [
-        embedded.revision.id,
-        ...(dedicated === undefined ? [] : [dedicated.revision.id]),
-      ],
+      revisionIds: [embedded.revision.id, dedicated.revision.id],
     });
 
     const [embeddedGateway] = await waitForContainers(
@@ -1230,27 +1272,6 @@ test(
       containerEnv(embeddedGateway, "OPENCLAW_GATEWAY_TOKEN"),
       "embedded gateway token",
     );
-    if (podmanSelected) {
-      await invokeGateway({
-        networkName: inspectedNetworkName(embeddedNetwork),
-        gateway: embeddedGateway,
-        gatewayToken: embeddedToken,
-        mode: "embedded",
-        onFailure: () => containerLogs([embeddedGateway], [embeddedToken]),
-      });
-      // Exercise the supported controller cleanup path without inventing Agent deletion semantics.
-      await deleteEmptyNamespace({ request, cleanupNamespace });
-      assert.equal((await inspectNetworks(embeddedNamespace.id)).length, 1);
-      assert.equal(
-        await containerCount([
-          [LABEL_NAMESPACE, embeddedNamespace.id],
-          [LABEL_ROLE, "gateway"],
-        ]),
-        1,
-      );
-      await assertComposeLogsDoNotLeakBootstrapServiceKey({ project, env, serviceKey });
-      return;
-    }
 
     const dedicatedGateway = (
       await waitForContainers(
@@ -1293,12 +1314,52 @@ test(
       hasContainerEnv(dedicatedAgent, "APP_SERVER_TOKEN"),
       "dedicated Codex app-server must receive the matching app-server token",
     );
+    assert.equal(
+      dedicatedAgent.Id,
+      survivingCodexId,
+      "recovery must reuse the surviving Codex container",
+    );
+    assert.equal(
+      containerEnv(dedicatedGateway, "APP_SERVER_TOKEN") ===
+        containerEnv(dedicatedAgent, "APP_SERVER_TOKEN"),
+      true,
+      "recovered gateway and surviving Codex must share a transport token",
+    );
     assertNamespaceOnlyAttachment(dedicatedAgent, inspectedNetworkName(dedicatedNetwork));
     assertDockerRuntimeOtelSettings(otelLogs, [embeddedGateway, dedicatedGateway, dedicatedAgent]);
     const dedicatedToken = nonempty(
       containerEnv(dedicatedGateway, "OPENCLAW_GATEWAY_TOKEN"),
       "dedicated gateway token",
     );
+
+    await invokeGateway({
+      networkName: inspectedNetworkName(dedicatedNetwork),
+      gateway: dedicatedGateway,
+      gatewayToken: dedicatedToken,
+      mode: "dedicated",
+      onFailure: () => containerLogs([dedicatedGateway, dedicatedAgent], [dedicatedToken]),
+    });
+    if (podmanSelected) {
+      await invokeGateway({
+        networkName: inspectedNetworkName(embeddedNetwork),
+        gateway: embeddedGateway,
+        gatewayToken: embeddedToken,
+        mode: "embedded",
+        onFailure: () => containerLogs([embeddedGateway], [embeddedToken]),
+      });
+      // Exercise the supported controller cleanup path without inventing Agent deletion semantics.
+      await deleteEmptyNamespace({ request, cleanupNamespace });
+      assert.equal((await inspectNetworks(embeddedNamespace.id)).length, 1);
+      assert.equal(
+        await containerCount([
+          [LABEL_NAMESPACE, embeddedNamespace.id],
+          [LABEL_ROLE, "gateway"],
+        ]),
+        1,
+      );
+      await assertComposeLogsDoNotLeakBootstrapServiceKey({ project, env, serviceKey });
+      return;
+    }
 
     await assertInvalidTokenTuiDenied({
       context,
@@ -1328,13 +1389,6 @@ test(
       gatewayToken: embeddedToken,
       mode: "embedded",
       onFailure: () => containerLogs([embeddedGateway], [embeddedToken]),
-    });
-    await invokeGateway({
-      networkName: inspectedNetworkName(dedicatedNetwork),
-      gateway: dedicatedGateway,
-      gatewayToken: dedicatedToken,
-      mode: "dedicated",
-      onFailure: () => containerLogs([dedicatedGateway, dedicatedAgent], [dedicatedToken]),
     });
     await otelLogs.assertRecords({
       forbidden: [providerKey, adminPassword, serviceKey, embeddedToken, dedicatedToken],
