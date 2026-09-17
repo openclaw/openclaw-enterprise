@@ -17,7 +17,7 @@ import {
   waitFor,
 } from "../helpers/postgres-provider-state.mjs";
 
-async function setup(context, { leaseDurationMs = 30_000 } = {}) {
+async function setup(context, { leaseDurationMs = 30_000, onHealthy } = {}) {
   const [
     { Pool },
     { createControllerWorker },
@@ -236,6 +236,7 @@ async function setup(context, { leaseDurationMs = 30_000 } = {}) {
       pollIntervalMs: 15,
       leaseDurationMs,
       maxAttempts: 5,
+      onHealthy,
       ...(drivers === undefined ? { computeDriver } : { drivers }),
       ...(convergenceTimeoutMs === undefined ? {} : { convergenceTimeoutMs }),
       emit,
@@ -267,6 +268,149 @@ async function setup(context, { leaseDurationMs = 30_000 } = {}) {
     workerPool,
   };
 }
+
+test(
+  "worker health remains current while a Compute operation holds a renewed PostgreSQL lease",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context, { leaseDurationMs: 1_200 });
+    const owner = await fixture.agent("long-compute-health");
+    const candidate = await fixture.revision(owner, 1);
+    const entered = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    const events = [];
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision(revision, deploymentContext) {
+          entered.resolve();
+          await release.promise;
+          return fixture.compute.prepareRevision(revision, deploymentContext);
+        },
+      },
+      (event) => events.push(event),
+    );
+    try {
+      await entered.promise;
+      const healthCount = () => events.filter(({ event }) => event === "worker.health").length;
+      const before = healthCount();
+      // A busy worker must report fresh database health before Compute returns,
+      // not only after completion. The real queue continues renewing its lease.
+      await waitFor("health observations during the unfinished Compute operation", async () =>
+        healthCount() >= before + 2 ? true : undefined,
+      );
+      const claimed = await fixture.work(candidate, "claimed");
+      assert.equal(claimed.attempt_count, 1);
+    } finally {
+      release.resolve();
+    }
+    await fixture.work(candidate, "succeeded");
+  },
+);
+
+for (const slowCall of [1, 2]) {
+  test(
+    `slow health update ${slowCall} does not block Compute or PostgreSQL lease renewal`,
+    requiresPostgres,
+    async (context) => {
+      const healthEntered = Promise.withResolvers();
+      const releaseHealth = Promise.withResolvers();
+      const releaseCompute = Promise.withResolvers();
+      let healthCalls = 0;
+      const fixture = await setup(context, {
+        leaseDurationMs: 1_200,
+        async onHealthy() {
+          if (++healthCalls !== slowCall) return;
+          healthEntered.resolve();
+          await releaseHealth.promise;
+        },
+      });
+      const owner = await fixture.agent("slow-health");
+      const candidate = await fixture.revision(owner, 1);
+      const events = [];
+      let preparing = false;
+      await fixture.start(
+        {
+          ...fixture.compute,
+          async prepareRevision(revision, deploymentContext) {
+            preparing = true;
+            await releaseCompute.promise;
+            return fixture.compute.prepareRevision(revision, deploymentContext);
+          },
+        },
+        (event) => events.push(event),
+      );
+      try {
+        await healthEntered.promise;
+        // Cover both the health update before the first effect and one started
+        // during Compute. Neither may hold the claim's renewal chain hostage.
+        await waitFor("Compute to start despite the pending health update", async () =>
+          preparing ? true : undefined,
+        );
+        const original = await fixture.work(candidate, "claimed");
+        await delay(2_600);
+        const lease = await fixture.observerPool.query(
+          `SELECT claim_token, attempt_count, lease_expires_at > clock_timestamp() AS live
+           FROM occ.controller_work WHERE idempotency_key = $1`,
+          [candidate.idempotencyKey],
+        );
+        assert.deepEqual(lease.rows, [
+          { claim_token: original.claim_token, attempt_count: 1, live: true },
+        ]);
+        assert.equal(healthCalls, slowCall, "health updates must not overlap");
+        assert.equal(
+          events.some(({ code }) => code === "CLAIM_LOST"),
+          false,
+        );
+      } finally {
+        releaseHealth.resolve();
+        releaseCompute.resolve();
+      }
+      await fixture.work(candidate, "succeeded");
+      const active = await fixture.state.read((view) =>
+        view.agents.findAgent(fixture.namespace.id, owner.id),
+      );
+      assert.equal(active.activeRevisionId, candidate.id);
+    },
+  );
+}
+
+test(
+  "failed readiness updates do not abort Compute or spend its retry budget",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context, {
+      leaseDurationMs: 1_200,
+      async onHealthy() {
+        throw new Error("readiness sink unavailable");
+      },
+    });
+    const owner = await fixture.agent("failed-health");
+    const candidate = await fixture.revision(owner, 1);
+    const events = [];
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision(revision, deploymentContext) {
+          await delay(2_600);
+          return fixture.compute.prepareRevision(revision, deploymentContext);
+        },
+      },
+      (event) => events.push(event),
+    );
+    const completed = await fixture.work(candidate, "succeeded");
+    assert.equal(completed.attempt_count, 1);
+    assert.ok(events.some(({ code }) => code === "HEALTH_UNAVAILABLE"));
+    assert.equal(
+      events.some(({ code }) => code === "CLAIM_LOST"),
+      false,
+    );
+    assert.equal(
+      events.some(({ event }) => event === "worker.health"),
+      false,
+    );
+  },
+);
 
 test(
   "Agent stop clears only the exact active pointer after Compute shutdown and retries safely",
@@ -362,6 +506,89 @@ test(
     ]);
   },
 );
+
+for (const recovery of [false, true]) {
+  test(
+    `fresh worker binds SSH ownership before ${recovery ? "stopped revision recovery" : "Agent stop"}`,
+    requiresPostgres,
+    async (context) => {
+      const fixture = await setup(context);
+      const owner = await fixture.agent("cold-stop", "embedded", undefined, null, true, true);
+      let candidate = await fixture.revision(owner, 1);
+      await fixture.start(fixture.compute);
+      await fixture.work(candidate, "succeeded");
+      await fixture.stop();
+      if (recovery) {
+        const previous = candidate;
+        candidate = await fixture.revision(owner, 2);
+        // A worker can exit after publication but before completing revision work.
+        await fixture.state.transact((unit) =>
+          unit.agents.compareAndSetActiveRevision(
+            fixture.namespace.id,
+            owner.id,
+            previous.id,
+            candidate.id,
+          ),
+        );
+      }
+      const stop = await fixture.requestStop(owner);
+      const { SshComputeDriver } =
+        await import("../../apps/controller/src/drivers/compute/ssh/index.ts");
+      const operations = [];
+      // Exercise the bundled SSH Driver's actual cold binding validation. Only
+      // remote SSH execution is controlled; the queue and worker use PostgreSQL.
+      const cold = new SshComputeDriver(
+        {
+          ssh: { identityFile: "/fixture/identity", knownHostsFile: "/fixture/hosts" },
+          hosts: { [fixture.namespace.name]: { address: "127.0.0.1", user: "root" } },
+          runtime: {
+            nodePath: "/usr/bin/node",
+            openclawPath: "/opt/openclaw/index.js",
+            user: "runtime",
+            root: "/var/lib/openclaw-enterprise",
+          },
+          network: { gatewayPortRange: { start: 18800, end: 18899 } },
+        },
+        {
+          id: fixture.compute.id,
+          implementation: fixture.compute.implementation,
+          executor: {
+            async execute(request) {
+              operations.push(JSON.parse(Buffer.from(request.operation, "base64").toString()));
+              return { code: 0, stdout: '{"ok":true}', stderr: "" };
+            },
+          },
+        },
+      );
+      await fixture.start(
+        {
+          ...fixture.compute,
+          bindAgent: cold.bindAgent.bind(cold),
+          stopRevision: cold.stopRevision.bind(cold),
+          retireRevision: cold.retireRevision.bind(cold),
+        },
+        () => {},
+        undefined,
+        undefined,
+        fixture.createWorkerPool(),
+      );
+      if (recovery) assert.equal((await fixture.work(candidate, "succeeded")).attempt_count, 1);
+      assert.equal((await fixture.work(stop, "succeeded")).attempt_count, 1);
+      const current = await fixture.state.read((view) =>
+        view.agents.findAgent(fixture.namespace.id, owner.id),
+      );
+      assert.equal(current.activeRevisionId, undefined);
+      assert.equal(current.desiredRuntimeState, "stopped");
+      assert.ok(operations.some((op) => op.operation === "stop-revision"));
+      assert.ok(
+        operations.every(
+          (op) => op.namespace.id === fixture.namespace.id && op.revision.agentId === owner.id,
+        ),
+      );
+      if (recovery) assert.ok(operations.some((op) => op.operation === "retire-revision"));
+    },
+  );
+}
 
 test(
   "a deployment admitted after stop supersedes stale stop work before Compute mutation",

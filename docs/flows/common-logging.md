@@ -89,6 +89,13 @@ step 7.
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
+This stamping step applies to default platform-owned runtime logging. When the
+trusted ComputeDriver declares `runtimeLogging: "driver"`, admission instead
+validates and freezes the native document without rewriting logging fields;
+[the Compute contract](../reference/drivers/compute.md#runtime-logging-ownership)
+owns that pipeline's obligations. OCC process logging and audit still follow the
+normal path.
+
 Deployment reads the exact Namespace-owned Configuration and allows the selected
 SandboxDriver to transform a frozen copy. OCC then stamps platform-owned native
 logging fields after sandbox configuration and before validation. The admitted

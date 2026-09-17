@@ -55,7 +55,8 @@ is unchanged; the revision freezes the admitted document, source Configuration
 identity and generation, approved Harness identity/version, execution mode,
 Compute identity, and any selected sandbox or account binding.
 
-Admission also stamps the platform-owned native logging settings after any
+With the default Compute logging ownership, admission stamps the platform-owned
+native logging settings after any
 SandboxDriver transformation and before validation. The frozen AgentRevision
 contains `logging.level`, matching `logging.consoleLevel`, JSON console style,
 and disabled native OTLP log export. Runtime-owned console and tool redaction
@@ -134,6 +135,12 @@ See [renewal and revocation](../guides/deploy/credential-lifecycle.md).
 
 For level changes, collection, and backend verification, use the
 [observability guide](../guides/observability.md).
+
+A trusted ComputeDriver can instead declare deployment-managed runtime logging
+for either new or adopted runtimes; see the
+[logging design options](drivers/compute.md#runtime-logging-ownership). Admission
+then preserves its native configuration without requiring the Driver to collect
+logs. The following rendering policy applies to the default platform-owned path.
 
 Compute renders logging from the admitted revision. Kubernetes mounts the
 admitted native Configuration read-only under `/etc/openclaw`, with

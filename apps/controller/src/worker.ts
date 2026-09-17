@@ -248,6 +248,7 @@ export class ControllerWorker {
   private loop: Promise<void> | undefined;
   private stopping = false;
   private lastHealthAt = 0;
+  private pendingHealth: Promise<void> | undefined;
 
   constructor(options: ControllerWorkerOptions) {
     this.mode = options.mode ?? "development";
@@ -404,12 +405,22 @@ export class ControllerWorker {
   }
 
   private async health(force: boolean): Promise<void> {
+    if (this.pendingHealth !== undefined) return this.pendingHealth;
     const now = Date.now();
     if (!force && now - this.lastHealthAt < Math.max(1_000, this.pollIntervalMs * 20)) return;
-    const pending = await this.queue.pending();
-    await this.onHealthy?.();
     this.lastHealthAt = now;
-    this.emit({ event: "worker.health", status: "ready", pending });
+    this.pendingHealth = (async () => {
+      const pending = await this.queue.pending();
+      await this.onHealthy?.();
+      this.emit({ event: "worker.health", status: "ready", pending });
+    })()
+      .catch(() => {
+        this.emit({ event: "worker.error", code: "HEALTH_UNAVAILABLE" });
+      })
+      .finally(() => {
+        this.pendingHealth = undefined;
+      });
+    return this.pendingHealth;
   }
 
   private async loadIAMState(): Promise<NativeIAMState> {
@@ -611,11 +622,16 @@ export class ControllerWorker {
       // Agent immediately before any provider effect so a later deployment wins.
       const resources = await this.state.read(async (view) => {
         const agent = await view.agents.findAgent(claim.namespaceId, claim.agentId!);
+        const namespace = await view.namespaces.findNamespace(claim.namespaceId);
         const revisions = await view.revisions.listRevisions(claim.namespaceId, claim.agentId!);
-        return { agent, revisions };
+        return { namespace, agent, revisions };
       });
-      const { agent, revisions } = resources;
-      if (agent === undefined || agent.servicePrincipalId !== authorizedAgent.servicePrincipalId) {
+      const { namespace, agent, revisions } = resources;
+      if (
+        namespace === undefined ||
+        agent === undefined ||
+        agent.servicePrincipalId !== authorizedAgent.servicePrincipalId
+      ) {
         await this.finalizeAgentStop(claim, {
           outcome: "permanent",
           code: "INVALID_AGENT_OWNER",
@@ -672,6 +688,11 @@ export class ControllerWorker {
           agent,
         });
         return;
+      }
+      if (cleanup.length > 0 && this.compute.bindAgent !== undefined) {
+        await this.withClaimHeartbeat(claim, async () => {
+          await this.compute.bindAgent!({ namespace, agent });
+        });
       }
       for (const revision of cleanup) {
         const current = await this.state.read((view) =>
@@ -923,6 +944,11 @@ export class ControllerWorker {
           );
           return;
         }
+        if (this.compute.bindAgent !== undefined) {
+          await this.withClaimHeartbeat(claim, async () => {
+            await this.compute.bindAgent!({ namespace, agent });
+          });
+        }
         await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(revision));
         // Once this reconciliation has published its candidate, it owns retiring
         // every predecessor even if stop admission clears the active pointer before
@@ -944,9 +970,16 @@ export class ControllerWorker {
         return;
       }
       if (this.compute.bindAgent !== undefined) {
-        await this.withClaimHeartbeat(claim, async () => {
-          await this.compute.bindAgent!({ namespace, agent });
-        });
+        try {
+          await this.withClaimHeartbeat(claim, async () => {
+            await this.compute.bindAgent!({ namespace, agent });
+          });
+        } catch (error) {
+          if (error instanceof WorkClaimLostError || agent.activeRevisionId !== revision.id)
+            throw error;
+          await this.finalizeActiveRevision(claim, revision, "COMPUTE_BINDING_INCOMPLETE");
+          return;
+        }
       }
       if (agent.activeRevisionId === revision.id) {
         try {
@@ -1300,6 +1333,7 @@ export class ControllerWorker {
       () => {
         pending = pending.then(async () => {
           if ((await this.queue.heartbeat(claim)) === undefined) abandon();
+          else if (!lost) void this.health(false);
         });
         pending.catch(() => {
           abandon();
@@ -1308,6 +1342,9 @@ export class ControllerWorker {
       Math.max(1, Math.floor(this.leaseDurationMs / 3)),
     );
     heartbeat.unref();
+    // Readiness callbacks must not delay Compute or the next claim renewal.
+    // health() serializes its own updates and reports failures separately.
+    void this.health(false);
     try {
       return await withComputeAbortSignal(operation.signal, effect);
     } finally {

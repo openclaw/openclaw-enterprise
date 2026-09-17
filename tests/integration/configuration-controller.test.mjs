@@ -366,123 +366,134 @@ test("Configuration authorization failures target the exact Configuration resour
   assert.equal(context.auditSink.events.at(-1).resource.id, created.body.data.id);
 });
 
-test("Configuration deletion rejects an Agent reference and deployments retain immutable snapshots", async () => {
-  const computeDriver = {
-    id: "compute-configuration-integration",
-    capability: "compute",
-    implementation: "integration-compute-substrate",
-    validateHarnessAuth() {},
-    async ensureNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceReady: true };
-    },
-    async deleteNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceDeleted: true };
-    },
-    async prepareRevision(revision) {
-      return {
-        namespaceId: revision.namespaceId,
-        agentId: revision.agentId,
-        revisionId: revision.id,
-        ready: true,
-      };
-    },
-    async retireRevision() {},
-  };
-  const context = await fixture({ computeDriver });
-  const namespace = await bootstrapAndCreateNamespace(context);
-  const collection = `/namespaces/${namespace.id}/configurations`;
-  const initialValues = createOpenClawConfiguration();
-  const created = await request(context.app, "POST", collection, {
-    body: { kind: "agent", values: initialValues },
-  });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const configurationId = created.body.data.id;
-  const agent = await request(context.app, "POST", `/namespaces/${namespace.id}/agents`, {
-    body: { name: "Configuration consumer", configurationId },
-  });
-  assert.equal(agent.status, 201, JSON.stringify(agent.body));
-  assert.equal(agent.body.data.configurationId, configurationId);
+for (const runtimeLogging of [undefined, "driver"]) {
+  test(`Configuration references and immutable revisions with ${runtimeLogging ?? "platform"} logging`, async () => {
+    const computeDriver = {
+      id: "compute-configuration-integration",
+      capability: "compute",
+      implementation: "integration-compute-substrate",
+      validateHarnessAuth() {},
+      ...(runtimeLogging === undefined ? {} : { runtimeLogging }),
+      async ensureNamespace(namespace) {
+        return { namespaceId: namespace.id, namespaceReady: true };
+      },
+      async deleteNamespace(namespace) {
+        return { namespaceId: namespace.id, namespaceDeleted: true };
+      },
+      async prepareRevision(revision) {
+        return {
+          namespaceId: revision.namespaceId,
+          agentId: revision.agentId,
+          revisionId: revision.id,
+          ready: true,
+        };
+      },
+      async retireRevision() {},
+    };
+    const context = await fixture({ computeDriver });
+    const namespace = await bootstrapAndCreateNamespace(context);
+    const collection = `/namespaces/${namespace.id}/configurations`;
+    // Existing managed runtimes can own native export; only the selected Driver, not
+    // tenant configuration, decides whether admission preserves that policy.
+    const initialValues = {
+      ...createOpenClawConfiguration(),
+      logging: { consoleLevel: "warn", consoleStyle: "json" },
+      diagnostics: { otel: { logs: true, captureContent: false } },
+    };
+    const created = await request(context.app, "POST", collection, {
+      body: { kind: "agent", values: initialValues },
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const configurationId = created.body.data.id;
+    const agent = await request(context.app, "POST", `/namespaces/${namespace.id}/agents`, {
+      body: { name: "Configuration consumer", configurationId },
+    });
+    assert.equal(agent.status, 201, JSON.stringify(agent.body));
+    assert.equal(agent.body.data.configurationId, configurationId);
 
-  // A referenced Configuration cannot be deleted and leave an Agent with a dangling reference.
-  const referenced = await request(context.app, "DELETE", `${collection}/${configurationId}`);
-  assert.equal(referenced.status, 409);
-  assert.equal(referenced.body.error.code, "RESOURCE_CONFLICT");
+    // A referenced Configuration cannot be deleted and leave an Agent with a dangling reference.
+    const referenced = await request(context.app, "DELETE", `${collection}/${configurationId}`);
+    assert.equal(referenced.status, 409);
+    assert.equal(referenced.body.error.code, "RESOURCE_CONFLICT");
 
-  // Admission requires a ready Namespace; revision snapshots remain immutable independently.
-  await context.controller.transact((state) =>
-    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
-  );
-  const source = await context.controller.createSecret(context.principal.id, {
-    namespaceId: namespace.id,
-    name: "configuration-model-key",
-    value: "synthetic-configuration-key",
-  });
-  const admittedAgent = await context.controller.updateAgent(context.principal.id, {
-    namespaceId: namespace.id,
-    agentId: agent.body.data.id,
-    configurationId,
-    harnessAuth: { method: "api_key", source: source.ref },
-  });
-  context.identities.push({
-    kind: "service_principal",
-    id: admittedAgent.servicePrincipalId,
-    namespaceId: namespace.id,
-    agentId: admittedAgent.id,
-  });
-  context.roles.push({
-    id: "model-consumer",
-    permissions: [{ action: "operate", resourceKind: "secret" }],
-  });
-  context.bindings.push({
-    id: "model-consumer",
-    subjectKind: "identity",
-    subjectId: admittedAgent.servicePrincipalId,
-    roleId: "model-consumer",
-    namespaceId: namespace.id,
-    resourceKind: "secret",
-    resourceId: source.id,
-  });
-  const deployed = await request(
-    context.app,
-    "POST",
-    `/namespaces/${namespace.id}/agents/${agent.body.data.id}/deploy`,
-  );
-  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
-  assert.equal(deployed.body.data.configurationId, configurationId);
-  assert.equal(deployed.body.data.configurationKind, "agent");
-  assert.equal(deployed.body.data.configurationGeneration, 1);
-  assert.deepEqual(
-    deployed.body.data.configuration,
-    admitLoggingConfiguration(initialValues, "info"),
-  );
+    // Admission requires a ready Namespace; revision snapshots remain immutable independently.
+    await context.controller.transact((state) =>
+      state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+    );
+    const harnessSecret = await context.controller.createSecret(context.principal.id, {
+      namespaceId: namespace.id,
+      name: "configuration-model-key",
+      value: "synthetic-configuration-key",
+    });
+    const admittedAgent = await context.controller.updateAgent(context.principal.id, {
+      namespaceId: namespace.id,
+      agentId: agent.body.data.id,
+      configurationId,
+      harnessAuth: { method: "api_key", source: harnessSecret.ref },
+    });
+    context.identities.push({
+      kind: "service_principal",
+      id: admittedAgent.servicePrincipalId,
+      namespaceId: namespace.id,
+      agentId: admittedAgent.id,
+    });
+    context.roles.push({
+      id: "model-consumer",
+      permissions: [{ action: "operate", resourceKind: "secret" }],
+    });
+    context.bindings.push({
+      id: "model-consumer",
+      subjectKind: "identity",
+      subjectId: admittedAgent.servicePrincipalId,
+      roleId: "model-consumer",
+      namespaceId: namespace.id,
+      resourceKind: "secret",
+      resourceId: harnessSecret.id,
+    });
+    const deployed = await request(
+      context.app,
+      "POST",
+      `/namespaces/${namespace.id}/agents/${agent.body.data.id}/deploy`,
+    );
+    assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
+    assert.equal(deployed.body.data.configurationId, configurationId);
+    assert.equal(deployed.body.data.configurationKind, "agent");
+    assert.equal(deployed.body.data.configurationGeneration, 1);
+    assert.deepEqual(
+      deployed.body.data.configuration,
+      runtimeLogging === "driver"
+        ? initialValues
+        : admitLoggingConfiguration(initialValues, "info"),
+    );
 
-  const expectedHistorical = createOpenClawConfiguration();
+    const source = await request(context.app, "GET", `${collection}/${configurationId}`);
+    assert.equal(source.status, 200);
+    assert.deepEqual(source.body.data.values, initialValues);
+    const expectedHistorical = structuredClone(deployed.body.data.configuration);
 
-  const updated = await request(context.app, "PATCH", `${collection}/${configurationId}`, {
-    body: {
-      values: {
-        models: {
-          providers: {
-            openai: { apiKey: { source: "store", provider: "teamstore", id: "NEXT_API_KEY" } },
+    const updated = await request(context.app, "PATCH", `${collection}/${configurationId}`, {
+      body: {
+        values: {
+          models: {
+            providers: {
+              openai: { apiKey: { source: "store", provider: "teamstore", id: "NEXT_API_KEY" } },
+            },
           },
         },
       },
-    },
+    });
+    assert.equal(updated.status, 200);
+    assert.equal(updated.body.data.generation, 2);
+    const historical = await request(
+      context.app,
+      "GET",
+      `/namespaces/${namespace.id}/agents/${agent.body.data.id}/revisions/${deployed.body.data.id}`,
+    );
+    assert.equal(historical.status, 200);
+    assert.equal(historical.body.data.configurationGeneration, 1);
+    assert.deepEqual(historical.body.data.configuration, expectedHistorical);
   });
-  assert.equal(updated.status, 200);
-  assert.equal(updated.body.data.generation, 2);
-  const historical = await request(
-    context.app,
-    "GET",
-    `/namespaces/${namespace.id}/agents/${agent.body.data.id}/revisions/${deployed.body.data.id}`,
-  );
-  assert.equal(historical.status, 200);
-  assert.equal(historical.body.data.configurationGeneration, 1);
-  assert.deepEqual(
-    historical.body.data.configuration,
-    admitLoggingConfiguration(expectedHistorical, "info"),
-  );
-});
+}
 
 test("Configuration operations fail closed when no ConfigurationDriver is selected", async () => {
   const context = await fixture({ configurationDriver: null });

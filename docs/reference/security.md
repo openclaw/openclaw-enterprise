@@ -154,7 +154,14 @@ reviewed controller events for debugging and operations; audit remains the
 durable record for bootstrap, mutation, authorization denial, and lifecycle
 completion.
 
-Gateway and Codex native OTLP log exporters stay disabled. Remote export is
+For platform-owned runtime logging, Gateway and Codex native OTLP log exporters
+stay disabled. A trusted Driver that declares
+[deployment-managed logging](drivers/compute.md#runtime-logging-ownership) instead
+retains its operator-managed pipeline; the guarantees below do not extend to
+that pipeline. Its operator must verify destinations, redaction, credential
+isolation, and access controls separately. OCC logging and audit are unchanged.
+
+In the platform-owned path, remote export is
 owned by an operator-managed OpenTelemetry Collector that reads container output
 and protected container or Pod metadata. Tenant Configuration, SecretBindings,
 lifecycle hooks, and runtime payload fields cannot supply `RUST_LOG`,

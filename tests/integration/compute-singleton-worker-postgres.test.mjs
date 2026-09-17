@@ -452,83 +452,97 @@ test(
   },
 );
 
-test(
-  "active maintenance recovers after its convergence deadline and stops when its actor is denied",
-  requiresPostgres,
-  async (context) => {
-    const fixture = await setup(context);
-    const owner = await fixture.agent();
-    const candidate = await fixture.revision(owner, 1);
-    let available = false;
-    let maintenanceAttempts = 0;
+for (const failure of ["observation", "binding"]) {
+  test(
+    `active maintenance recovers from ${failure} failures beyond its retry budget and stops when its actor is denied`,
+    requiresPostgres,
+    async (context) => {
+      const fixture = await setup(context);
+      const owner = await fixture.agent();
+      const candidate = await fixture.revision(owner, 1);
+      let available = false;
+      let maintenanceAttempts = 0;
+      let bindingAttempts = 0;
 
-    await fixture.start(
-      {
-        ...fixture.compute,
-        activationOrder: "beforeCommit",
-        maintenanceIntervalMs: 75,
-        async preflight() {},
-        async prepareRevision(revision) {
-          const observation = await fixture.compute.prepareRevision(revision);
-          if ((await fixture.activeRevision(owner)) === revision.id) {
-            maintenanceAttempts += 1;
-            if (!available) return { ...observation, ready: false };
-          }
-          return observation;
+      await fixture.start(
+        {
+          ...fixture.compute,
+          activationOrder: "beforeCommit",
+          maintenanceIntervalMs: 75,
+          async preflight() {},
+          async bindAgent() {
+            if ((await fixture.activeRevision(owner)) === candidate.id) {
+              bindingAttempts += 1;
+              if (failure === "binding" && !available)
+                throw new Error("Binding lookup unavailable");
+            }
+          },
+          async prepareRevision(revision) {
+            const observation = await fixture.compute.prepareRevision(revision);
+            if ((await fixture.activeRevision(owner)) === revision.id) {
+              maintenanceAttempts += 1;
+              if (!available) return { ...observation, ready: false };
+            }
+            return observation;
+          },
+          async activateRevision() {},
         },
-        async activateRevision() {},
-      },
-      30_000,
-      40,
-    );
-    await fixture.work(candidate);
+        30_000,
+        40,
+      );
+      await fixture.work(candidate);
 
-    // Each failed maintenance observation must schedule another exact-Agent
-    // pass even though the original deployment convergence deadline elapsed.
-    await waitFor("multiple failed but rescheduled maintenance passes", async () => {
-      const result = await fixture.observerPool.query(
-        `SELECT COUNT(*)::integer AS failures
+      // Six failed passes exceed the worker's ordinary five-attempt budget.
+      // Active maintenance must survive both binding and observation outages;
+      // neither the queue nor the worker recovery logic is replaced by the fixture.
+      await waitFor("multiple failed but rescheduled maintenance passes", async () => {
+        const result = await fixture.observerPool.query(
+          `SELECT COUNT(*)::integer AS failures
          FROM occ.controller_work
          WHERE namespace_id = $1 AND revision_id = $2
            AND idempotency_key LIKE $3 AND state = 'failed_permanent'`,
-        [fixture.namespace.id, candidate.id, `agent_revision:${candidate.id}:maintenance:%`],
-      );
-      return result.rows[0].failures >= 2 ? result.rows[0] : undefined;
-    });
-    available = true;
+          [fixture.namespace.id, candidate.id, `agent_revision:${candidate.id}:maintenance:%`],
+        );
+        return result.rows[0].failures >= 6 ? result.rows[0] : undefined;
+      });
+      if (failure === "binding") assert.equal(maintenanceAttempts, 0);
+      available = true;
 
-    await waitFor("active runtime recovery after a prolonged provider outage", async () => {
-      const result = await fixture.observerPool.query(
-        `SELECT actor_id, state
+      await waitFor("active runtime recovery after a prolonged provider outage", async () => {
+        const result = await fixture.observerPool.query(
+          `SELECT actor_id, state
          FROM occ.controller_work
          WHERE namespace_id = $1 AND revision_id = $2
            AND idempotency_key LIKE $3 AND state = 'succeeded'
          ORDER BY completed_at DESC LIMIT 1`,
-        [fixture.namespace.id, candidate.id, `agent_revision:${candidate.id}:maintenance:%`],
-      );
-      return result.rows[0];
-    });
-    assert.equal(await fixture.activeRevision(owner), candidate.id);
+          [fixture.namespace.id, candidate.id, `agent_revision:${candidate.id}:maintenance:%`],
+        );
+        return result.rows[0];
+      });
+      assert.equal(await fixture.activeRevision(owner), candidate.id);
 
-    // Revoking the original actor must halt the chain before another provider
-    // effect; maintenance never grants an Agent permission to deploy itself.
-    await fixture.observerPool.query(
-      `INSERT INTO occ.iam_restrictions
+      // Revoking the original actor must halt the chain before another provider
+      // effect; maintenance never grants an Agent permission to deploy itself.
+      await fixture.observerPool.query(
+        `INSERT INTO occ.iam_restrictions
          (id, namespace_id, action, resource_kind, resource_id, effect)
        VALUES ($1, $2, 'deploy', 'agent', $3, 'deny')`,
-      [`restriction-${randomUUID()}`, fixture.namespace.id, owner.id],
-    );
-    const effectsBeforeDenial = maintenanceAttempts;
-    await waitFor("the denied maintenance pass to stop without a successor", async () => {
-      const result = await fixture.observerPool.query(
-        `SELECT COUNT(*)::integer AS pending
+        [`restriction-${randomUUID()}`, fixture.namespace.id, owner.id],
+      );
+      const effectsBeforeDenial = maintenanceAttempts;
+      const bindingsBeforeDenial = bindingAttempts;
+      await waitFor("the denied maintenance pass to stop without a successor", async () => {
+        const result = await fixture.observerPool.query(
+          `SELECT COUNT(*)::integer AS pending
          FROM occ.controller_work
          WHERE namespace_id = $1 AND revision_id = $2
            AND idempotency_key LIKE $3 AND state IN ('queued', 'claimed')`,
-        [fixture.namespace.id, candidate.id, `agent_revision:${candidate.id}:maintenance:%`],
-      );
-      return result.rows[0].pending === 0 ? result.rows[0] : undefined;
-    });
-    assert.equal(maintenanceAttempts, effectsBeforeDenial);
-  },
-);
+          [fixture.namespace.id, candidate.id, `agent_revision:${candidate.id}:maintenance:%`],
+        );
+        return result.rows[0].pending === 0 ? result.rows[0] : undefined;
+      });
+      assert.equal(maintenanceAttempts, effectsBeforeDenial);
+      assert.equal(bindingAttempts, bindingsBeforeDenial);
+    },
+  );
+}

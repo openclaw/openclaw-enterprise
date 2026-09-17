@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
 updated: 2026-09-17
-last_updated_session: codex/01a0acbf-4d5a-7413-9411-dce911f3ad23
+last_updated_session: codex/01a03526-12b3-7f50-b599-e8414052909d
 ---
 
 # Controller Worker Flow
@@ -110,7 +110,9 @@ ownership of that target.
 
 An empty queue causes a bounded idle delay. After processing or while idle,
 `health()` queries pending work, refreshes readiness through `onHealthy`, and emits
-`worker.health`. Readiness requires a successful queue-health query.
+`worker.health`. Readiness requires a successful queue-health query and callback.
+Only one health update runs at a time; failures emit `HEALTH_UNAVAILABLE` without
+consuming a work item's retry budget.
 
 ### 4. Reload ownership and reauthorize before infrastructure effects
 
@@ -167,6 +169,10 @@ Before each shutdown, the worker rechecks the Agent owner and stopped desired
 state. Later admissions are not added to this cleanup set. Partial failure retries
 the idempotent shutdowns without clearing the active pointer or deleting retained
 workspace data.
+
+Before shutdown, the worker binds the server-owned Namespace and Agent. Stopped
+revision recovery also binds before shutdown and retirement. IAM and exact
+resource checks precede binding.
 Revision preparation and maintenance recheck `desiredRuntimeState`; a candidate
 that overlaps stop is shut down instead of activated.
 
@@ -178,6 +184,11 @@ Compute. A lost lease, failed
 heartbeat, or worker shutdown aborts the operation context and raises
 `WorkClaimLostError`. The stale worker cannot publish its result under an expired
 or replaced token.
+
+While Compute runs, successful renewals also request a throttled health update.
+Neither starting an effect nor renewing its lease waits for that update: slow
+readiness callbacks do not block the renewal promise chain. Health failure does not
+imply lease loss; a failed claim heartbeat still aborts Compute.
 
 Compute owns infrastructure dispatch and delegation to Sandbox; the worker
 cannot create sandbox resources independently. See the
@@ -232,9 +243,9 @@ and the [settings reference](../reference/settings/operations.md#controller-work
 for their timing controls.
 
 If Compute declares a maintenance interval, successful activation schedules
-another exact-revision observation. An incomplete active-runtime maintenance
-observation closes the current bounded item and schedules a new one so that a
-provider outage does not abandon reconciliation of an authorized active runtime.
+another exact-revision observation. An incomplete active-runtime observation or
+Compute binding closes the bounded item and schedules another so that a provider
+outage does not abandon reconciliation of an authorized active runtime.
 Each new claim reauthorizes its original actor.
 
 `worker.completed` reports the target, outcome, and code; polling then continues.
@@ -283,6 +294,7 @@ aborts in-flight work, waits for the loop, closes PostgreSQL, and emits
 
 ## Changelog
 
+- 2026-09-17 12:09: Separate health reporting from claim renewal, preserve lease-loss fencing, and restore admitted Agent bindings before stop effects. (01a03526-12b3-7f50-b599-e8414052909d - 683d0e253ad827af7c6098650097fa6a8ad61f57)
 - 2026-09-17 01:22: Include failed candidates and interrupted retirement in exact Agent-stop cleanup, preserving later deployments and retained state. (01a0acbf-4d5a-7413-9411-dce911f3ad23 - 73c2ef49)
 
 - 2026-09-08 07:53: Include optional development activation and retry in the post-commit handoff. (01a07d92-d866-7731-afe5-abab67d8966c - 4d83087229961f3665b923d2581c0b71b988cc9c)

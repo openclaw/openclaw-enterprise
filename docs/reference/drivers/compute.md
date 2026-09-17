@@ -111,6 +111,42 @@ retain their default post-commit activation behavior. A Driver's activation
 must remain idempotent and must not report success before its effective
 configuration and authenticated runtime are actually ready.
 
+## Runtime logging ownership
+
+Runtime logging ownership is a deployment design choice, independent of whether
+the runtime is newly provisioned or adopted. The installed ComputeDriver declares
+one of two modes:
+
+- **Platform-managed (default):** OCC admits the logging policy described in
+  [Harness execution](../harness-execution.md#runtime-logging). Bundled Docker,
+  Kubernetes, and SSH Compute use this policy, with optional Collector export.
+- **Deployment-managed (`runtimeLogging: "driver"`):** the runtime platform
+  manages its logging configuration and collection. This allows deployments to
+  use their own logging infrastructure without moving collection into ComputeDriver.
+
+Keep the default when using the bundled logging policy. Select deployment-managed
+logging only when the runtime platform provides its own configuration and
+collection path; it does not automatically connect that path to OCC. Gateway and
+Harness continue to emit their own logs in either mode. Neither mode requires a
+separate log backend per component or routes runtime logs through the OCC API.
+
+In deployment-managed mode, OCC preserves the native logging configuration
+(after any Sandbox transformation), validates it through ConfigurationDriver,
+and freezes it in the revision without imposing the bundled Collector's policy.
+The Driver must reject unsupported logging changes and realize the admitted
+configuration exactly; this does not permit ignoring revision fields.
+
+The `"driver"` value declares responsibility at the Driver boundary; it does not
+require the Driver to transport, store, or query logs. The Compute contract has
+no runtime-log query operation. Lifecycle results and failures still reach OCC
+through Driver operations, independently of the log collection path.
+
+This declaration belongs to the trusted installed Driver, not tenant YAML or a
+request option. Its operator owns runtime logging destinations, credentials,
+redaction, access controls, and delivery verification. The bundled Collector's
+privacy and export guarantees do not cover that separate pipeline. OCC process
+logging, authorization, immutable revisions, and durable audit are unchanged.
+
 ## Optional gateway endpoint resolution
 
 `getGatewayEndpoint(revision)` returns the private WSS endpoint for an admitted
@@ -139,6 +175,11 @@ preserves the current active revision, stops naturally when a newer revision
 supersedes it, and survives worker restarts without a separate scheduler,
 provider database, or elevated service identity. Drivers without the optional
 interval retain their existing event-driven lifecycle.
+
+Failed active-runtime observations, including asynchronous `bindAgent` lookups,
+schedule another authorized maintenance pass without changing the active revision.
+Binding failure prevents subsequent runtime effects; each new pass checks the
+original actor again. New deployments retain their bounded retry budget.
 
 ## Optional selected-driver hooks
 

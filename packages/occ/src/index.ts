@@ -1588,7 +1588,9 @@ export class OpenClawController {
           ? frozenValues(sandbox.configureAgent(frozenValues(configuration.values)))
           : configuration.values;
       const admittedConfiguration = frozenValues(
-        admitLoggingConfiguration(sandboxConfiguration, this.loggingLevel),
+        compute.runtimeLogging === "driver"
+          ? sandboxConfiguration
+          : admitLoggingConfiguration(sandboxConfiguration, this.loggingLevel),
       );
       await configurationDriver.validate({ ...configuration, values: admittedConfiguration });
       if (!validExecutionMode(lockedAgent.executionMode))

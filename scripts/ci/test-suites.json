@@ -340,7 +340,8 @@
             "failed singleton activation retries without publishing or retiring the previous revision",
             "production Drivers without an activation preference retain after-commit Kubernetes ordering",
             "an opted-in active runtime continuously repairs under its original authorized actor",
-            "active maintenance recovers after its convergence deadline and stops when its actor is denied"
+            "active maintenance recovers from observation failures beyond its retry budget and stops when its actor is denied",
+            "active maintenance recovers from binding failures beyond its retry budget and stops when its actor is denied"
           ]
         },
         {

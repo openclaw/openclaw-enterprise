@@ -707,6 +707,8 @@ export interface ComputePreflightResult {
 
 export interface ComputeDriver extends Driver {
   readonly capability: "compute";
+  /** Default: platform admission policy. Driver ownership preserves native logging settings. */
+  readonly runtimeLogging?: "platform" | "driver";
   readonly activationOrder?: "beforeCommit" | "afterCommit";
   readonly maintenanceIntervalMs?: number;
   validateHarnessAuth?(

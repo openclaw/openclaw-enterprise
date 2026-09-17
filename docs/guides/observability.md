@@ -15,6 +15,11 @@ excludes arbitrary messages, prompts, responses, and Codex protocol stdout, even
 at `debug`. See the
 [security boundary](../reference/security.md#operational-log-collection-boundary).
 
+For a ComputeDriver that declares
+[deployment-managed runtime logging](../reference/drivers/compute.md#runtime-logging-ownership),
+use that runtime platform's collection and verification procedures instead of
+rewiring it to this Collector. OCC logging and audit remain unchanged.
+
 ## Requirements
 
 - A working [development stack](deploy.md#development), or the protected YAML

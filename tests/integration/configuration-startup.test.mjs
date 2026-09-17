@@ -230,6 +230,9 @@ test("production embedded and dedicated replacements preserve their active Servi
     drivers,
     emit: () => {},
   });
+  // Queue health is outside this selector unit; the PostgreSQL suites exercise
+  // real health observations while activation holds and renews its claim.
+  t.mock.method(worker.queue, "pending", async () => 0);
 
   const shortHash = (value, length) =>
     createHash("sha256").update(value).digest("hex").slice(0, length);
