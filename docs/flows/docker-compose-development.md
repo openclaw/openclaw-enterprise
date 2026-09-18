@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
 updated: 2026-09-17
-last_updated_session: authoring-run/566921ff-3342-4dec-aa19-110acc8aa1e4
+last_updated_session: authoring-run/b044b43c-e713-4006-93a0-c129cdf5578e
 ---
 
 # Compose development flow
@@ -158,6 +158,8 @@ import, authenticated readiness, and cleanup through the recorded engine.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-17 17:42: Pin Kubernetes development to the supported 1.35 family and emit only runtime settings accepted by the current Kubernetes Compute Driver schema. (authoring-run/b044b43c-e713-4006-93a0-c129cdf5578e - 9310d5b025e84f885e4f7facae2e2906b50d58f8)
 
 - 2026-09-17 16:21: Preserve Podman's host connection during Compose cleanup and verify explicit volume deletion with the real CLI and engine. (authoring-run/566921ff-3342-4dec-aa19-110acc8aa1e4 - 58ead9943ee6b2560eea2c327967b50a30f7644e)
 

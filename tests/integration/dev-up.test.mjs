@@ -676,6 +676,14 @@ test("Kubernetes dev-up authenticates the Installation and cleanup uses its save
     config,
     /gateway: docker.io\/library\/openclaw-enterprise-runtime@sha256:[a-f0-9]{64}/,
   );
+  assert.match(config, /transportSecretPrefix: openclaw-agent-transport/);
+  assert.doesNotMatch(config, /modelSecretPrefix/);
+  const startupCommands = await readJsonLines(fixture.env.SAFETY_LOG);
+  const clusterCreate = startupCommands.find(
+    (entry) => entry.command === "k3d" && entry.args[0] === "cluster" && entry.args[1] === "create",
+  );
+  assert.ok(clusterCreate, "Kubernetes development must create its owned k3d cluster");
+  assert.equal(clusterCreate.args[clusterCreate.args.indexOf("--image") + 1], "+v1.35");
 
   const duplicate = fixture.start();
   assert.notEqual(duplicate.status, 0);

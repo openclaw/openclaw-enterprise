@@ -180,17 +180,20 @@ project configuration.
 
 Compose starts PostgreSQL, migration, and bootstrap. The lifecycle waits for
 successful migration and bootstrap exits before creating the dedicated k3d
-cluster on the Compose network. The cluster API binds host loopback; creation
-leaves the default kubeconfig and current context unchanged.
+cluster on the Compose network. k3d resolves the latest K3s patch in the 1.35
+family, which matches the supported Kubernetes minimum. The cluster API binds
+host loopback; creation leaves the default kubeconfig and current context
+unchanged.
 
 The host kubeconfig remains owner-readable. The container kubeconfig uses the
 cluster's internal load-balancer hostname with TLS verification. The lifecycle
 imports the selected local runtime image, resolves its in-cluster digest, and
 writes Installation configuration selecting Kubernetes Compute, Configuration,
-and Secret Drivers with native IAM. The container configuration and kubeconfig
-are individually readable by non-root containers, behind the private host
-directory, and mounted read-only into the API and Kubernetes worker. Neither
-service receives the engine socket.
+and Secret Drivers with native IAM. Its runtime section configures the transport
+Secret prefix and gateway storage class accepted by the current Compute Driver
+schema. The container configuration and kubeconfig are individually readable by
+non-root containers, behind the private host directory, and mounted read-only
+into the API and Kubernetes worker. Neither service receives the engine socket.
 
 ### 14. Prove readiness and clean up the owned Kubernetes profile
 

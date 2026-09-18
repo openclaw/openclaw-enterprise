@@ -152,7 +152,7 @@ func writeInstallation(s *developmentState, reference string) error {
 				"resources":                   map[string]any{"gateway": resources, "agent": resources, "namespace": map[string]any{"quota": map[string]string{"pods": "10"}, "containerDefaults": resources}},
 				"network":                     map[string]any{"dns": map[string]any{"namespace": "kube-system", "podLabels": map[string]string{"k8s-app": "kube-dns"}}, "gatewayPort": 8080, "gatewayClients": []any{map[string]any{"namespace": "default", "podLabels": map[string]string{"app.kubernetes.io/name": "occ-kubernetes-dev-client"}}}},
 				"servicePrincipalCredentials": map[string]any{"mode": "projectedServiceAccountToken", "audience": "openclaw-enterprise", "expirationSeconds": 900},
-				"runtime":                     map[string]string{"gatewayStorageClassName": "local-path", "transportSecretPrefix": "openclaw-agent-transport", "modelSecretPrefix": "openclaw-agent-model"},
+				"runtime":                     map[string]string{"gatewayStorageClassName": "local-path", "transportSecretPrefix": "openclaw-agent-transport"},
 			}},
 		},
 	}
