@@ -1693,6 +1693,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
       for (const policy of this.agentNetworkPolicies(revision, namespace)) {
         await this.reconcile(policy, gatewayOwnership, namespace);
       }
+    } else if (this.options.runtime !== undefined) {
+      for (const policy of this.pluginStatusNetworkPolicies(revision, namespace)) {
+        await this.reconcile(policy, gatewayOwnership, namespace);
+      }
     }
     if (
       embedded &&
@@ -1726,11 +1730,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (embedded) {
         launchPrepared = true;
       }
-      if (
-        existingGateway === undefined ||
-        this.options.runtime === undefined ||
-        existingGateway.metadata.annotations?.[AGENT_REVISION_ID_ANNOTATION] === revision.id
-      ) {
+      const deferInitialDedicatedGatewayForPluginStatus =
+        !embedded &&
+        this.options.runtime !== undefined &&
+        pluginStatusContainer !== undefined &&
+        existingGateway === undefined;
+      const reconcileGatewayDeployment = async (environment: Record<string, string>) => {
         await this.reconcileChannelNetworkPolicy(revision, channels, namespace);
         await this.reconcile(
           this.deployment(
@@ -1740,7 +1745,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
             this.options.images.gateway,
             gatewayAccountName,
             "gateway",
-            embeddedEnvironment,
+            environment,
             configuration.loggingLevel,
             configuration,
             embedded,
@@ -1754,6 +1759,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
           gatewayOwnership,
           namespace,
         );
+      };
+      if (
+        (existingGateway === undefined && !deferInitialDedicatedGatewayForPluginStatus) ||
+        this.options.runtime === undefined ||
+        existingGateway?.metadata.annotations?.[AGENT_REVISION_ID_ANNOTATION] === revision.id
+      ) {
+        await reconcileGatewayDeployment(embeddedEnvironment);
       }
       const existingGatewayService = await this.getOwned(
         "Service",
@@ -1891,6 +1903,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
         agentOwnership,
         namespace,
       );
+      if (deferInitialDedicatedGatewayForPluginStatus) {
+        await reconcileGatewayDeployment({});
+      }
       if (!(await this.gatewayReady(gatewayOwnership, gatewayName, namespace))) {
         return incomplete();
       }

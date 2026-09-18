@@ -127,8 +127,16 @@ OpenClaw proof passed with OpenClaw `2026.9.1`, Codex `0.152.1`, and `gpt-4.1`:
 the Diffs plugin installs and executes during a normal Agent turn while sibling
 state remains unchanged. The exact runtime image is
 `localhost/oce-spec25-runtime@sha256:f9f4c0a02ecb837c44cc8e21de460af228457e4bdc25149fa308fcd6d7bda43b`.
-The native Codex best-effort/restart proof remains in progress; a completed
-controlled status test does not establish that native acceptance.
+Native Codex proof also passed with `gpt-5.6-sol`: Google Calendar
+remained usable, Outlook Calendar produced `PLUGIN_AUTH_REQUIRED`, and the
+deployment succeeded with the failed bridge selection and failed-only apps
+disabled. An Agent-only restart preserved the gateway Pod, refreshed its effective
+configuration, and completed a real `codex_apps.google_calendar.list_calendars`
+call. Requested selections and sibling Agent/workspace state were unchanged.
+Both native scenarios passed without skips; the Codex proof passed again after
+correcting initial gateway startup ordering, with zero initial gateway restarts.
+These proofs do not establish
+production Helm installation or shared-cluster admission guardrails.
 
 ### Historical port evidence
 

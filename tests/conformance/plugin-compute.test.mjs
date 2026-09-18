@@ -1557,6 +1557,99 @@ test("embedded plugin preparation applies runtime egress before gateway readines
   assert.deepEqual(reconciled[runtimePolicyIndex].spec.egress[0].ports, [
     { protocol: "TCP", port: 443 },
   ]);
+
+  const dedicatedDriver = createKubernetesComputeDriver(kubernetesOptions());
+  const dedicated = revision({
+    compute: { id: dedicatedDriver.id, implementation: dedicatedDriver.implementation },
+    plugins: codexLinearPluginState({ approvalsReviewer: "auto_review" }),
+  });
+  const dedicatedNamespace = kubernetesNamespaceName(dedicated.namespaceId);
+  const dedicatedTenantOwnership = { namespaceId: dedicated.namespaceId };
+  const dedicatedDefaultPolicies = new Map(
+    dedicatedDriver
+      .networkPolicies(dedicatedTenantOwnership, dedicatedNamespace)
+      .map((policy) => [policy.metadata.name, policy]),
+  );
+  const dedicatedReconciled = [];
+
+  dedicatedDriver.clients = async () => ({
+    apps: { listNamespacedDeployment: async () => ({ items: [] }) },
+    core: {
+      createNamespacedConfigMap: async () => ({}),
+      patchNamespacedConfigMap: async () => ({}),
+      listNamespacedPod: async () => ({ apiVersion: "v1", kind: "PodList", items: [] }),
+    },
+  });
+  dedicatedDriver.resolveNamespace = async () => ({ name: dedicatedNamespace, external: false });
+  dedicatedDriver.get = async (kind, name) =>
+    kind === "Namespace"
+      ? {
+          ...dedicatedDriver.manifest("v1", "Namespace", name, dedicatedTenantOwnership),
+          status: { phase: "Active" },
+        }
+      : undefined;
+  dedicatedDriver.getOwned = async (kind, name) => {
+    if (kind === "NetworkPolicy") {
+      return dedicatedDefaultPolicies.get(name);
+    }
+    if (kind === "Deployment" && name.startsWith("agent-") && name.includes("-rev-")) {
+      const reconciledDeployment = dedicatedReconciled.find(
+        (object) => object.kind === "Deployment" && object.metadata?.name === name,
+      );
+      if (reconciledDeployment === undefined) {
+        return undefined;
+      }
+      return {
+        ...structuredClone(reconciledDeployment),
+        metadata: { ...reconciledDeployment.metadata, generation: 1 },
+        status: { observedGeneration: 1, readyReplicas: 1 },
+      };
+    }
+    return undefined;
+  };
+  dedicatedDriver.reconcile = async (object) => {
+    dedicatedReconciled.push(structuredClone(object));
+  };
+  dedicatedDriver.gatewayReady = async () => true;
+  dedicatedDriver.pluginRuntimeStatus = async () => ({
+    failures: [],
+    successfulPluginIds: ["codex-plugin:linear@openai-curated-remote"],
+  });
+
+  const dedicatedReadiness = await dedicatedDriver.prepareRevision(
+    dedicated,
+    harnessAuthContext(dedicated),
+  );
+  assert.deepEqual(dedicatedReadiness, {
+    namespaceId: dedicated.namespaceId,
+    agentId: dedicated.agentId,
+    revisionId: dedicated.id,
+    ready: true,
+  });
+  const statusGatewayPolicyIndex = dedicatedReconciled.findIndex(
+    ({ kind, metadata }) =>
+      kind === "NetworkPolicy" && metadata.name.startsWith("allow-plugin-status-gateway-"),
+  );
+  const statusAgentPolicyIndex = dedicatedReconciled.findIndex(
+    ({ kind, metadata }) =>
+      kind === "NetworkPolicy" && metadata.name.startsWith("allow-plugin-status-agent-"),
+  );
+  const dedicatedAgentServiceIndex = dedicatedReconciled.findIndex(
+    ({ kind, metadata, spec }) =>
+      kind === "Service" &&
+      metadata.name.startsWith("agent-") &&
+      spec.selector?.["openclaw.dev/revision"] === dedicated.id,
+  );
+  const dedicatedGatewayDeploymentIndex = dedicatedReconciled.findIndex(
+    ({ kind, metadata }) => kind === "Deployment" && metadata.name.startsWith("gateway-"),
+  );
+  assert.ok(statusGatewayPolicyIndex >= 0);
+  assert.ok(statusAgentPolicyIndex >= 0);
+  assert.ok(dedicatedAgentServiceIndex >= 0);
+  assert.ok(dedicatedGatewayDeploymentIndex >= 0);
+  assert.ok(statusGatewayPolicyIndex < dedicatedGatewayDeploymentIndex);
+  assert.ok(statusAgentPolicyIndex < dedicatedGatewayDeploymentIndex);
+  assert.ok(dedicatedAgentServiceIndex < dedicatedGatewayDeploymentIndex);
 });
 
 test("Kubernetes plugin runtime status requires the exact ready Pod report", async (t) => {
