@@ -502,6 +502,13 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
       "    throw error;",
       "  }",
       "});",
+      'for (const stage of ["ready-status", "warning-status", "secretauthvalue-stage"]) {',
+      '  test(stage === "secretauthvalue-stage" ? "unsafe plugin stage" : stage, () => {',
+      '    const error = new Error("secretauthvalue-message");',
+      '    error.openclawCiDiagnostic = { kind: "kubernetes-plugin-status", stage, body: "secretauthvalue-body" };',
+      "    throw error;",
+      "  });",
+      "}",
       "",
     ].join("\n"),
   );
@@ -567,6 +574,13 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     (entry) => entry.name === "rejects unsafe controller HTTP diagnostic",
   );
   assert.equal(unsafeFailure.error.diagnostic, undefined);
+  // Keep the failed wait identifiable without exposing arbitrary runtime output.
+  for (const stage of ["ready-status", "warning-status"]) {
+    const failure = summary.files[0].tests.find((entry) => entry.name === stage);
+    assert.deepEqual(failure.error.diagnostic, { kind: "kubernetes-plugin-status", stage });
+  }
+  const unsafeStage = summary.files[0].tests.find((entry) => entry.name === "unsafe plugin stage");
+  assert.equal(unsafeStage.error.diagnostic, undefined);
 });
 
 test("audit rejects obsolete manifest selectors", async (t) => {

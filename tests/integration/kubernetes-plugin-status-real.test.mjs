@@ -384,6 +384,9 @@ async function waitForReadyPluginStatus(fixture) {
     );
     if (status?.phase !== "ready") return undefined;
     return { observation, pod, status };
+  }).catch((error) => {
+    error.openclawCiDiagnostic = { kind: "kubernetes-plugin-status", stage: "ready-status" };
+    throw error;
   });
 }
 
@@ -404,6 +407,9 @@ async function waitForReadyPluginWarning(fixture, warning) {
     if (status?.phase !== "ready") return undefined;
     if (JSON.stringify(status.failures) !== JSON.stringify([warning])) return undefined;
     return { observation, pod, status };
+  }).catch((error) => {
+    error.openclawCiDiagnostic = { kind: "kubernetes-plugin-status", stage: "warning-status" };
+    throw error;
   });
 }
 
@@ -502,16 +508,19 @@ test(
     await patchGatewayEnvironment(fixture.namespaceName, fixture.agentId, [
       { name: "OPENCLAW_FIXTURE_DIFFS_INSTALL_RESULT", value: "fail" },
     ]);
+    // The environment patch already replaces the Pod. Let that rollout finish
+    // before reconciliation observes the new startup's injected install failure.
     await kubectl(
-      "delete",
-      "pod",
-      ready.pod.metadata.name,
+      "rollout",
+      "status",
+      `deployment/${gatewayName(fixture.agentId)}`,
       "--namespace",
       fixture.namespaceName,
-      "--wait=false",
+      "--timeout=180s",
     );
 
     const failedInstall = await waitForReadyPluginWarning(fixture, warning);
+    assert.notEqual(failedInstall.pod.metadata.uid, ready.pod.metadata.uid);
     assert.equal(failedInstall.pod.spec.nodeName, fixture.targetNodeName);
     assert.equal(failedInstall.observation.ready, true);
     assert.deepEqual(failedInstall.observation.warnings, [warning]);

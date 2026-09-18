@@ -32,7 +32,15 @@ function safeStatus(value) {
 
 function failureDiagnostic(error) {
   const diagnostic = error?.openclawCiDiagnostic;
-  if (!isRecord(diagnostic) || diagnostic.kind !== "controller-http") {
+  if (!isRecord(diagnostic)) {
+    return undefined;
+  }
+  if (diagnostic.kind === "kubernetes-plugin-status") {
+    return ["ready-status", "warning-status"].includes(diagnostic.stage)
+      ? { kind: "kubernetes-plugin-status", stage: diagnostic.stage }
+      : undefined;
+  }
+  if (diagnostic.kind !== "controller-http") {
     return undefined;
   }
   const status = safeStatus(diagnostic.status);
