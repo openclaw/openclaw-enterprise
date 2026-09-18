@@ -1,6 +1,7 @@
 FROM docker.io/library/node:24-bookworm
 
 COPY --chown=node:node server.mjs probe.mjs /fixture/
+COPY --chown=node:node openclaw.mjs /app/openclaw.mjs
 
 USER 1000:1000
 EXPOSE 8080

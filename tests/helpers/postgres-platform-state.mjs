@@ -142,6 +142,16 @@ async function createKubernetesStartupEnvironment(context) {
         path: "/rules/-",
         value: {
           apiGroups: [""],
+          resources: ["pods"],
+          // Match the worker's production receipt observation and finalizer permissions.
+          verbs: ["get", "list", "watch", "patch"],
+        },
+      },
+      {
+        op: "add",
+        path: "/rules/-",
+        value: {
+          apiGroups: [""],
           resources: ["persistentvolumeclaims"],
           verbs: ["get", "create", "patch", "delete"],
         },
