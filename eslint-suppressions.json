@@ -169,9 +169,6 @@
     }
   },
   "tests/helpers/envoy-workspace-gateway.mjs": {
-    "no-regex-spaces": {
-      "count": 2
-    },
     "preserve-caught-error": {
       "count": 1
     }

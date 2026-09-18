@@ -356,8 +356,8 @@ function renderedNamespacedObjects(manifests) {
       const metadataStart = document.search(/^metadata:\s*$/mu);
       if (kind === undefined || metadataStart < 0) return undefined;
       const metadata = document.slice(metadataStart);
-      const name = /^  name:\s*(\S+)\s*$/mu.exec(metadata)?.[1];
-      const namespace = /^  namespace:\s*(\S+)\s*$/mu.exec(metadata)?.[1];
+      const name = /^ {2}name:\s*(\S+)\s*$/mu.exec(metadata)?.[1];
+      const namespace = /^ {2}namespace:\s*(\S+)\s*$/mu.exec(metadata)?.[1];
       return name === undefined || namespace === undefined
         ? undefined
         : { kind, name: unquoteYaml(name), namespace: unquoteYaml(namespace) };
