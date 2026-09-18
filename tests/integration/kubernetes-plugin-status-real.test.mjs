@@ -42,7 +42,9 @@ function hash(value, length = 12) {
 }
 
 function parsePluginStatusProxyCidrs(value) {
-  if (value === undefined || value.trim() === "") return [];
+  if (value === undefined || value.trim() === "") {
+    return [];
+  }
   return value.split(",").map((entry) => {
     const cidr = entry.trim();
     assert.match(
@@ -54,7 +56,7 @@ function parsePluginStatusProxyCidrs(value) {
   });
 }
 
-const { kubectl, resource, resources, waitFor } = createKubernetesClient({
+const { kubectl, kubectlArguments, resources, waitFor } = createKubernetesClient({
   selection: { kubeconfigPath, kubernetesContext },
   waitTimeoutMs: 180_000,
   waitIntervalMs: 500,
@@ -76,7 +78,9 @@ async function prepareRevisionEventually(fixture, driver = fixture.driver) {
       try {
         return await driver.prepareRevision(fixture.candidate, fixture.auth.context);
       } catch (error) {
-        if (isKubernetesObjectConflict(error)) return undefined;
+        if (isKubernetesObjectConflict(error)) {
+          return undefined;
+        }
         throw error;
       }
     },
@@ -335,14 +339,68 @@ async function scheduleGatewayOnNonServerNode(fixture) {
     }),
   );
   fixture.targetNodeName = nodeName;
-  await kubectl(
-    "rollout",
-    "status",
-    `deployment/${gatewayName(fixture.agentId)}`,
-    "--namespace",
-    fixture.namespaceName,
-    "--timeout=180s",
-  );
+  await waitForGatewayRollout(fixture, "initial-rollout");
+}
+
+async function waitForGatewayRollout(fixture, stage) {
+  try {
+    await kubectl(
+      "rollout",
+      "status",
+      `deployment/${gatewayName(fixture.agentId)}`,
+      "--namespace",
+      fixture.namespaceName,
+      "--timeout=180s",
+    );
+  } catch (error) {
+    error.openclawCiDiagnostic = { kind: "kubernetes-plugin-status", stage };
+    try {
+      // Retain only bounded Pod lifecycle fields. The CI reporter independently
+      // allowlists these values; raw Pod data and exception text stay private.
+      const { stdout } = await execute(
+        "kubectl",
+        kubectlArguments([
+          "get",
+          "pods",
+          "--namespace",
+          fixture.namespaceName,
+          "--selector",
+          `openclaw.dev/agent=${fixture.agentId},openclaw.dev/revision=${fixture.candidate.id},openclaw.dev/workload-role=gateway`,
+          "--request-timeout=10s",
+          "-o",
+          "json",
+        ]),
+        { timeout: 15_000, maxBuffer: 4 * 1024 * 1024 },
+      );
+      error.openclawCiDiagnostic.pods = JSON.parse(stdout)
+        .items.slice(0, 3)
+        .map((pod) => ({
+          phase: pod.status?.phase,
+          ready: isReadyPod(pod),
+          scheduled: pod.status?.conditions?.some(
+            ({ type, status }) => type === "PodScheduled" && status === "True",
+          ),
+          containers: [
+            ...(pod.status?.initContainerStatuses ?? []),
+            ...(pod.status?.containerStatuses ?? []),
+          ]
+            .filter(({ name }) => ["gateway", "prepare-private-state"].includes(name))
+            .slice(0, 2)
+            .map((container) => ({
+              name: container.name,
+              restartCount: container.restartCount,
+              exitCode:
+                container.state?.terminated?.exitCode ?? container.lastState?.terminated?.exitCode,
+              waitingReason: container.state?.waiting?.reason,
+              terminatedReason:
+                container.state?.terminated?.reason ?? container.lastState?.terminated?.reason,
+            })),
+        }));
+    } catch {
+      // Failed diagnostics must preserve the original rollout failure.
+    }
+    throw error;
+  }
 }
 
 function isReadyPod(pod) {
@@ -374,7 +432,9 @@ async function waitForReadyPluginStatus(fixture) {
     const pods = (await exactGatewayPods(fixture.namespaceName, fixture.candidate)).filter(
       (pod) => pod.metadata.deletionTimestamp === undefined && isReadyPod(pod),
     );
-    if (pods.length !== 1) return undefined;
+    if (pods.length !== 1) {
+      return undefined;
+    }
     const pod = pods[0];
     if (fixture.targetNodeName !== undefined && pod.spec?.nodeName !== fixture.targetNodeName) {
       return undefined;
@@ -382,7 +442,9 @@ async function waitForReadyPluginStatus(fixture) {
     const status = await pluginRuntimeStatus(fixture.namespaceName, pod.metadata.name).catch(
       () => undefined,
     );
-    if (status?.phase !== "ready") return undefined;
+    if (status?.phase !== "ready") {
+      return undefined;
+    }
     return { observation, pod, status };
   }).catch((error) => {
     error.openclawCiDiagnostic = { kind: "kubernetes-plugin-status", stage: "ready-status" };
@@ -396,7 +458,9 @@ async function waitForReadyPluginWarning(fixture, warning) {
     const pods = (await exactGatewayPods(fixture.namespaceName, fixture.candidate)).filter(
       (pod) => pod.metadata.deletionTimestamp === undefined && isReadyPod(pod),
     );
-    if (pods.length !== 1) return undefined;
+    if (pods.length !== 1) {
+      return undefined;
+    }
     const pod = pods[0];
     if (fixture.targetNodeName !== undefined && pod.spec?.nodeName !== fixture.targetNodeName) {
       return undefined;
@@ -404,8 +468,12 @@ async function waitForReadyPluginWarning(fixture, warning) {
     const status = await pluginRuntimeStatus(fixture.namespaceName, pod.metadata.name).catch(
       () => undefined,
     );
-    if (status?.phase !== "ready") return undefined;
-    if (JSON.stringify(status.failures) !== JSON.stringify([warning])) return undefined;
+    if (status?.phase !== "ready") {
+      return undefined;
+    }
+    if (JSON.stringify(status.failures) !== JSON.stringify([warning])) {
+      return undefined;
+    }
     return { observation, pod, status };
   }).catch((error) => {
     error.openclawCiDiagnostic = { kind: "kubernetes-plugin-status", stage: "warning-status" };
@@ -510,14 +578,7 @@ test(
     ]);
     // The environment patch already replaces the Pod. Let that rollout finish
     // before reconciliation observes the new startup's injected install failure.
-    await kubectl(
-      "rollout",
-      "status",
-      `deployment/${gatewayName(fixture.agentId)}`,
-      "--namespace",
-      fixture.namespaceName,
-      "--timeout=180s",
-    );
+    await waitForGatewayRollout(fixture, "warning-rollout");
 
     const failedInstall = await waitForReadyPluginWarning(fixture, warning);
     assert.notEqual(failedInstall.pod.metadata.uid, ready.pod.metadata.uid);

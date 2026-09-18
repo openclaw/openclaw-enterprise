@@ -30,14 +30,80 @@ function safeStatus(value) {
   return Number.isInteger(value) && value >= 100 && value <= 599 ? value : undefined;
 }
 
+function pluginStatusPods(value) {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const phases = ["Pending", "Running", "Succeeded", "Failed", "Unknown"];
+  const reasons = [
+    "ContainerCreating",
+    "PodInitializing",
+    "CrashLoopBackOff",
+    "ErrImagePull",
+    "ImagePullBackOff",
+    "CreateContainerConfigError",
+    "CreateContainerError",
+    "RunContainerError",
+    "Error",
+    "Completed",
+    "OOMKilled",
+    "ContainerCannotRun",
+    "StartError",
+  ];
+  return value
+    .slice(0, 3)
+    .filter((pod) => isRecord(pod) && phases.includes(pod.phase))
+    .map((pod) => ({
+      phase: pod.phase,
+      ready: typeof pod.ready === "boolean" ? pod.ready : undefined,
+      scheduled: typeof pod.scheduled === "boolean" ? pod.scheduled : undefined,
+      containers: Array.isArray(pod.containers)
+        ? pod.containers
+            .slice(0, 2)
+            .filter(
+              (container) =>
+                isRecord(container) &&
+                ["gateway", "prepare-private-state"].includes(container.name),
+            )
+            .map((container) => ({
+              name: container.name,
+              restartCount:
+                Number.isInteger(container.restartCount) &&
+                container.restartCount >= 0 &&
+                container.restartCount <= 2147483647
+                  ? container.restartCount
+                  : undefined,
+              exitCode:
+                Number.isInteger(container.exitCode) &&
+                container.exitCode >= 0 &&
+                container.exitCode <= 255
+                  ? container.exitCode
+                  : undefined,
+              waitingReason: reasons.includes(container.waitingReason)
+                ? container.waitingReason
+                : undefined,
+              terminatedReason: reasons.includes(container.terminatedReason)
+                ? container.terminatedReason
+                : undefined,
+            }))
+        : undefined,
+    }));
+}
+
 function failureDiagnostic(error) {
   const diagnostic = error?.openclawCiDiagnostic;
   if (!isRecord(diagnostic)) {
     return undefined;
   }
   if (diagnostic.kind === "kubernetes-plugin-status") {
-    return ["ready-status", "warning-status"].includes(diagnostic.stage)
-      ? { kind: "kubernetes-plugin-status", stage: diagnostic.stage }
+    return ["ready-status", "warning-status", "initial-rollout", "warning-rollout"].includes(
+      diagnostic.stage,
+    )
+      ? {
+          kind: "kubernetes-plugin-status",
+          stage: diagnostic.stage,
+          pods: pluginStatusPods(diagnostic.pods),
+        }
       : undefined;
   }
   if (diagnostic.kind !== "controller-http") {
