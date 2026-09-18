@@ -715,9 +715,86 @@ async function ensureK3dCluster(statePath, state) {
       );
     }
     resource.pluginStatusProxyCidrs = `${sources[0]}/32`;
+    await verifyFixtureStorage(resource);
   }
   await markResourceReady(statePath, state, resource);
   return resource;
+}
+
+async function verifyFixtureStorage(cluster, timeoutSeconds = 120) {
+  const kubectl = process.env.OCC_KUBECTL_BIN ?? "kubectl";
+  const scope = [
+    "--kubeconfig",
+    cluster.kubeconfig,
+    "--context",
+    cluster.context,
+    "--namespace",
+    "kube-system",
+  ];
+  try {
+    await execFile(
+      kubectl,
+      [
+        ...scope,
+        "rollout",
+        "status",
+        "deployment/local-path-provisioner",
+        `--timeout=${timeoutSeconds}s`,
+      ],
+      { timeoutMs: (timeoutSeconds + 10) * 1_000 },
+    );
+  } catch {
+    // This fixture lane has no provider credentials. Limit diagnostics to its
+    // storage controller; never serialize arbitrary Pod specs or tenant logs.
+    const observations = await Promise.allSettled([
+      execFile(
+        kubectl,
+        [...scope, "get", "pods", "--selector=app=local-path-provisioner", "-o", "json"],
+        { timeoutMs: 10_000 },
+      ),
+      ...[false, true].map((previous) =>
+        execFile(
+          kubectl,
+          [
+            ...scope,
+            "logs",
+            "deployment/local-path-provisioner",
+            "--tail=30",
+            ...(previous ? ["--previous"] : []),
+          ],
+          { timeoutMs: 10_000 },
+        ),
+      ),
+    ]);
+    let pods = [];
+    if (observations[0].status === "fulfilled") {
+      try {
+        pods = (JSON.parse(observations[0].value.stdout).items ?? []).map((pod) => ({
+          name: pod.metadata?.name,
+          node: pod.spec?.nodeName,
+          phase: pod.status?.phase,
+          containers: (pod.status?.containerStatuses ?? []).map((container) => ({
+            name: container.name,
+            image: container.image,
+            ready: container.ready,
+            restarts: container.restartCount,
+            waiting: container.state?.waiting,
+            terminated: container.state?.terminated?.reason,
+          })),
+        }));
+      } catch {
+        // Preserve the storage failure even when Kubernetes diagnostics are incomplete.
+      }
+    }
+    const logs = observations
+      .slice(1)
+      .map((result) =>
+        result.status === "fulfilled" ? result.value.stdout.slice(-4_000) : "unavailable",
+      );
+    throw new Error(
+      `CI fixture storage controller is not ready: ${JSON.stringify({ kubernetesVersion: cluster.kubernetesVersion, pods, logs })}`,
+    );
+  }
 }
 
 async function validateLoopbackKubeconfig(
@@ -1304,7 +1381,26 @@ async function prepareFile({ lane, file, statePath }) {
   }
   return {
     env,
-    cleanup: async () => cleanupResourceIds(resolvedStatePath, resourceIds),
+    cleanup: async () => {
+      try {
+        if (name === "k3d-fixture-configuration") {
+          const cluster = effectiveState.resources.find(
+            (resource) => resource.kind === "k3d-cluster",
+          );
+          // Suites restart the storage controller after selecting shared storage.
+          // Run this in the runner parent so sanitized child reports cannot hide
+          // infrastructure diagnostics after that configuration change.
+          try {
+            await verifyFixtureStorage(cluster, 5);
+          } catch (error) {
+            console.error(error.message);
+            throw error;
+          }
+        }
+      } finally {
+        await cleanupResourceIds(resolvedStatePath, resourceIds);
+      }
+    },
   };
 }
 

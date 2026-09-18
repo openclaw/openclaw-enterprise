@@ -819,6 +819,7 @@ function createNativePluginAssertions({
   gatewayUrl,
   execGateway,
   execCodex,
+  waitFor,
   proofMode = "openclaw",
 }) {
   assert.ok(
@@ -838,6 +839,27 @@ function createNativePluginAssertions({
       })}`,
     );
     return { runtime: execution.label, ...summary };
+  }
+
+  function isTransientGatewayReadinessAssertion(error) {
+    return (
+      error?.name === "AssertionError" &&
+      (String(error.message).includes("the exact Agent must have running workload Pods") ||
+        String(error.message).includes("the exact Agent gateway Pod"))
+    );
+  }
+
+  async function waitForGatewayChatCompletionsEnabled(agent) {
+    return waitFor("gateway runtime configuration readiness", async () => {
+      try {
+        return await assertGatewayChatCompletionsEnabled(agent);
+      } catch (error) {
+        if (isTransientGatewayReadinessAssertion(error)) {
+          return undefined;
+        }
+        throw error;
+      }
+    });
   }
 
   async function normalGatewayTurn({
@@ -1091,7 +1113,7 @@ function createNativePluginAssertions({
       "native Codex effective plugin configuration requires Codex proof mode.",
     );
     const [gateway, appConfig] = await Promise.all([
-      assertGatewayChatCompletionsEnabled(agent),
+      waitForGatewayChatCompletionsEnabled(agent),
       codexAppConfiguration(agent),
     ]);
     const bridgePlugins = gateway.codexPlugins ?? {};
@@ -1588,16 +1610,21 @@ export async function createPluginDriverRealFixture(
       `/namespaces/${createdNamespace.data.id}/agents/${agent.id}/deploy`,
     );
     assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
-    await waitFor(`revision ${deployed.data.id} activation`, async () => {
-      const observed = await request(
-        "GET",
-        `/namespaces/${createdNamespace.data.id}/agents/${agent.id}`,
-      );
-      assert.equal(observed.status, 200, JSON.stringify(observed.error));
-      const deployment = await getDeploymentStatus(agent.id, deployed.data.id);
-      assert.notEqual(deployment.status, "failed", JSON.stringify(deployment.error));
-      return observed.data.activeRevisionId === deployed.data.id ? observed.data : undefined;
-    });
+    try {
+      await waitFor(`revision ${deployed.data.id} activation`, async () => {
+        const observed = await request(
+          "GET",
+          `/namespaces/${createdNamespace.data.id}/agents/${agent.id}`,
+        );
+        assert.equal(observed.status, 200, JSON.stringify(observed.error));
+        const deployment = await getDeploymentStatus(agent.id, deployed.data.id);
+        assert.notEqual(deployment.status, "failed", JSON.stringify(deployment.error));
+        return observed.data.activeRevisionId === deployed.data.id ? observed.data : undefined;
+      });
+    } catch (error) {
+      const diagnostics = await deploymentActivationDiagnostics(agent, deployed.data.id, events);
+      assert.fail(`${error.message} Diagnostics: ${JSON.stringify(diagnostics)}`);
+    }
     await waitForPluginProofWorkerSuccess(waitFor, events, deployed.data.id, {
       description: `worker completion of ${deployed.data.id}`,
       diagnostics: () => sanitizedPluginProofWorkerEvents(events, deployed.data.id),
@@ -1616,17 +1643,117 @@ export async function createPluginDriverRealFixture(
     return status.data;
   }
 
-  async function gatewayPod(agent) {
-    const pods = (await resources("pods", tenantNamespace)).filter(
+  async function deploymentActivationDiagnostics(agent, revisionId, workerEvents) {
+    return {
+      revisionId,
+      agentId: agent.id,
+      namespaceId: createdNamespace.data.id,
+      agent: await safeDiagnostic(async () => {
+        const observed = await request(
+          "GET",
+          `/namespaces/${createdNamespace.data.id}/agents/${agent.id}`,
+        );
+        assert.equal(observed.status, 200, JSON.stringify(observed.error));
+        return {
+          activeRevisionId: observed.data.activeRevisionId ?? null,
+          desiredRuntimeState: observed.data.desiredRuntimeState ?? null,
+        };
+      }),
+      deployment: await safeDiagnostic(async () => {
+        const status = await getDeploymentStatus(agent.id, revisionId);
+        return {
+          deploymentId: status.deploymentId,
+          status: status.status,
+          namespaceId: status.namespaceId,
+          agentId: status.agentId,
+          warnings: status.warnings,
+        };
+      }),
+      controllerWork: await safeDiagnostic(async () => {
+        const { rows } = await pool.query(
+          `SELECT state, reason_code, plugin_warnings, attempt_count, available_at, created_at, updated_at, completed_at
+             FROM occ.controller_work
+            WHERE revision_id = $1
+            ORDER BY created_at DESC
+            LIMIT 1`,
+          [revisionId],
+        );
+        if (rows[0] === undefined) {
+          return null;
+        }
+        const row = rows[0];
+        return {
+          state: row.state,
+          reasonCode: row.reason_code,
+          pluginWarnings: row.plugin_warnings,
+          attemptCount: row.attempt_count,
+          availableAt: row.available_at,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+          completedAt: row.completed_at,
+        };
+      }),
+      workerEvents: sanitizedPluginProofWorkerEvents(workerEvents, revisionId),
+    };
+  }
+
+  async function safeDiagnostic(operation) {
+    try {
+      return await operation();
+    } catch (error) {
+      return {
+        unavailable: true,
+        reason: error?.name ?? "Error",
+      };
+    }
+  }
+
+  function isPodReady(pod) {
+    return pod.status?.conditions?.some(
+      ({ type, status }) => type === "Ready" && status === "True",
+    );
+  }
+
+  function gatewayPodPrefix(agent) {
+    return `gateway-${hash(agent.id)}`;
+  }
+
+  async function gatewayPods(agent) {
+    const prefix = gatewayPodPrefix(agent);
+    return (await resources("pods", tenantNamespace)).filter(
       (pod) =>
         pod.metadata.labels?.["openclaw.dev/agent"] === agent.id &&
         pod.metadata.deletionTimestamp === undefined &&
-        pod.status?.conditions?.some(({ type, status }) => type === "Ready" && status === "True"),
+        pod.metadata.name?.startsWith(prefix),
     );
+  }
+
+  async function waitForSameGatewayPodReady(agent, expected) {
+    return waitFor(`existing gateway Pod ${expected.podName} to become Ready`, async () => {
+      const pods = await gatewayPods(agent);
+      const samePod = pods.find(
+        (pod) => pod.metadata.name === expected.podName && pod.metadata.uid === expected.podUid,
+      );
+      if (samePod !== undefined) {
+        return isPodReady(samePod) ? podIdentity(samePod) : undefined;
+      }
+      const replacement = pods.find(
+        (pod) => pod.metadata.name !== expected.podName || pod.metadata.uid !== expected.podUid,
+      );
+      assert.equal(
+        replacement,
+        undefined,
+        `Codex Agent restart must not replace gateway Pod ${expected.podName}.`,
+      );
+      return undefined;
+    });
+  }
+
+  async function gatewayPod(agent) {
+    const pods = await gatewayPods(agent);
     assert.ok(pods.length > 0, "the exact Agent must have running workload Pods to inspect.");
-    const prefix = `gateway-${hash(agent.id)}`;
-    const pod = pods.find((candidate) => candidate.metadata.name?.startsWith(prefix));
-    assert.ok(pod, `the exact Agent gateway Pod ${prefix} must be running.`);
+    const pod = pods.find(isPodReady);
+    assert.ok(pod, `the exact Agent gateway Pod ${gatewayPodPrefix(agent)} must be running.`);
     return pod;
   }
 
@@ -1691,7 +1818,7 @@ export async function createPluginDriverRealFixture(
         return candidate.podUid === agentBefore.podUid ? undefined : candidate;
       },
     );
-    const gatewayAfter = await gatewayPodIdentity(agent);
+    const gatewayAfter = await waitForSameGatewayPodReady(agent, gatewayBefore);
     assert.deepEqual(
       gatewayAfter,
       gatewayBefore,
@@ -1708,6 +1835,7 @@ export async function createPluginDriverRealFixture(
 
   const nativeAssertions = createNativePluginAssertions({
     proofMode: pluginDriverId === "codex-plugin" ? "codex" : "openclaw",
+    waitFor,
     execCodex: async (agent, argv) => {
       const current = await agentApi.getAgent(agent.id);
       const pods = (await resources("pods", tenantNamespace)).filter(

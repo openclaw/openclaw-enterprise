@@ -170,6 +170,25 @@ if (command === "kubectl") {
     if (equals(args.slice(4), ["get", "node", "k3d-" + state.cluster + "-agent-0", "-o", "json"])) {
       finish(JSON.stringify({ spec: { podCIDR: "10.42.7.0/24" } }));
     }
+    if (equals(args.slice(4, 6), ["--namespace", "kube-system"])) {
+      if (equals(args.slice(6), ["rollout", "status", "deployment/local-path-provisioner", "--timeout=120s"])) {
+        if (scenario === "storage-unready") {
+          process.stderr.write("deployment exceeded its progress deadline\n");
+          process.exit(1);
+        }
+        finish();
+      }
+      if (equals(args.slice(6), ["get", "pods", "--selector=app=local-path-provisioner", "-o", "json"])) {
+        finish(JSON.stringify({ items: [{ metadata: { name: "local-path-provisioner-fixture" },
+          spec: { nodeName: "worker", containers: [{ env: [{ name: "PRIVATE", value: "do-not-publish-pod-spec" }] }] },
+          status: { phase: "Running", containerStatuses: [{ name: "local-path-provisioner", ready: false,
+            restartCount: 3, state: { waiting: { reason: "CrashLoopBackOff" } } }] } }] }));
+      }
+      if (equals(args.slice(6), ["logs", "deployment/local-path-provisioner", "--tail=30"]) ||
+          equals(args.slice(6), ["logs", "deployment/local-path-provisioner", "--tail=30", "--previous"])) {
+        finish("Error starting daemon: fixture configuration rejected\n");
+      }
+    }
   }
 }
 throw new Error("Unexpected external command: " + command + " " + JSON.stringify(args));
@@ -322,6 +341,21 @@ test("fixture preparation rejects an unknown proxy source before publishing its 
   const cleanup = commands.cleanup();
   assert.equal(cleanup.status, 0, cleanup.stderr);
   await assert.rejects(() => stat(commands.statePath), { code: "ENOENT" });
+});
+
+test("fixture preparation reports unavailable storage without publishing workload inputs", async (t) => {
+  const commands = await fixtureImageCommands(t, "storage-unready");
+  const result = commands.prepare();
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /CI fixture storage controller is not ready/);
+  assert.match(result.stderr, /CrashLoopBackOff/);
+  assert.match(result.stderr, /fixture configuration rejected/);
+  assert.doesNotMatch(result.stderr, /do-not-publish-pod-spec/);
+  await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
+  const state = JSON.parse(await readFile(commands.statePath, "utf8"));
+  assert.equal(state.env, undefined);
+  const cleanup = commands.cleanup();
+  assert.equal(cleanup.status, 0, cleanup.stderr);
 });
 
 const digest = "a".repeat(64);

@@ -118,11 +118,25 @@ identifiers.
 
 ## Current proof notes
 
+Best-effort installation verification for
+[PR #228](https://github.com/openclaw/openclaw-enterprise/pull/228) uses an isolated
+Podman-backed, two-node k3d cluster and separately migrated PostgreSQL databases.
+The current checks passed 54 PostgreSQL cases, all three standard Kubernetes
+fixture cases, and both controlled status cases without skips. Native embedded
+OpenClaw proof passed with OpenClaw `2026.9.1`, Codex `0.152.1`, and `gpt-4.1`:
+the Diffs plugin installs and executes during a normal Agent turn while sibling
+state remains unchanged. The exact runtime image is
+`localhost/oce-spec25-runtime@sha256:f9f4c0a02ecb837c44cc8e21de460af228457e4bdc25149fa308fcd6d7bda43b`.
+The native Codex best-effort/restart proof remains in progress; a completed
+controlled status test does not establish that native acceptance.
+
+### Historical port evidence
+
 The target port is based on branch `dev/kevinlin/plugin-driver-port`; the initial
 port commit was `185afba1608260adfa5b1fe9bda9ee700a4d9fee` in
 [PR #121](https://github.com/openclaw/openclaw-enterprise/pull/121).
 
-Current target-port evidence recorded for that port:
+Evidence recorded for that port:
 
 - Workspace, build, OpenAPI, format, docs, and flow validation passed.
 - Baseline checks passed: 495 checks.

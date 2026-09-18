@@ -273,7 +273,15 @@ function objectAtPath(root, path) {
   return isPlainObject(current) ? current : undefined;
 }
 
-function assertNoOpenClawPluginConfigConflict(base, overlay) {
+function isManagedOpenClawPluginEntry(value) {
+  return (
+    isPlainObject(value) &&
+    typeof value.enabled === "boolean" &&
+    Object.keys(value).length === 1
+  );
+}
+
+function assertNoOpenClawPluginConfigConflict(base, overlay, options = {}) {
   const baseEntries = objectAtPath(base, ["plugins", "entries"]);
   const overlayEntries = objectAtPath(overlay, ["plugins", "entries"]);
   if (overlayEntries === undefined) return;
@@ -283,6 +291,13 @@ function assertNoOpenClawPluginConfigConflict(base, overlay) {
       baseEntries?.[pluginId] !== undefined &&
       JSON.stringify(baseEntries[pluginId]) !== JSON.stringify(overlayEntries[pluginId])
     ) {
+      if (
+        options.allowManagedOpenClawPluginReplacement === true &&
+        isManagedOpenClawPluginEntry(baseEntries[pluginId]) &&
+        isManagedOpenClawPluginEntry(overlayEntries[pluginId])
+      ) {
+        continue;
+      }
       throw new Error("OpenClaw plugin configuration conflicts with managed plugin selections.");
     }
   }
@@ -295,8 +310,8 @@ function assertNoOpenClawPluginConfigConflict(base, overlay) {
   }
 }
 
-function mergeOpenClawPluginConfiguration(base, overlay) {
-  assertNoOpenClawPluginConfigConflict(base, overlay);
+function mergeOpenClawPluginConfiguration(base, overlay, options = {}) {
+  assertNoOpenClawPluginConfigConflict(base, overlay, options);
   const next = mergeConfig(base, overlay);
   const baseAllow = Array.isArray(base?.tools?.alsoAllow) ? base.tools.alsoAllow : [];
   const overlayAllow = Array.isArray(overlay?.tools?.alsoAllow) ? overlay.tools.alsoAllow : [];
@@ -306,6 +321,15 @@ function mergeOpenClawPluginConfiguration(base, overlay) {
       ...baseAllow,
       ...overlayAllow.filter((tool) => !baseAllow.includes(tool)),
     ];
+  }
+  const overlayEntries = objectAtPath(overlay, ["plugins", "entries"]);
+  if (overlayEntries !== undefined) {
+    const disabledManagedTools = Object.entries(overlayEntries)
+      .filter(([pluginId, entry]) => pluginId !== "codex" && isManagedOpenClawPluginEntry(entry) && entry.enabled === false)
+      .map(([pluginId]) => pluginId);
+    if (disabledManagedTools.length > 0 && Array.isArray(next.tools?.alsoAllow)) {
+      next.tools.alsoAllow = next.tools.alsoAllow.filter((tool) => !disabledManagedTools.includes(tool));
+    }
   }
   return next;
 }
@@ -400,10 +424,10 @@ function openClawPluginConfiguration(runtime, failures = []) {
   return undefined;
 }
 
-function applyOpenClawPluginConfiguration(runtime, failures = []) {
+function applyOpenClawPluginConfiguration(runtime, failures = [], options = {}) {
   const overlay = openClawPluginConfiguration(runtime, failures);
   if (overlay === undefined) return;
-  writeOpenClawConfig(mergeOpenClawPluginConfiguration(readOpenClawConfig(), overlay));
+  writeOpenClawConfig(mergeOpenClawPluginConfiguration(readOpenClawConfig(), overlay, options));
 }
 
 function assertConfigContainsOverlay(base, overlay, path) {
@@ -528,6 +552,7 @@ function installOpenClawPlugins(runtime, failures = []) {
   const failed = [...failures];
   const successfulPluginIds = [];
   const failedIds = pluginFailureIds(failed);
+  applyOpenClawPluginConfiguration(runtime, failed);
   for (const plugin of installs) {
     if (failedIds.has(plugin.pluginId)) continue;
     const spec = openClawPluginPackageSpec(plugin);
@@ -551,7 +576,7 @@ function installOpenClawPlugins(runtime, failures = []) {
   if (successfulPluginIds.length > 0) {
     runOpenClawJson(["plugins", "registry", "--refresh", "--json"], "OpenClaw plugin registry refresh");
   }
-  applyOpenClawPluginConfiguration(runtime, failed);
+  applyOpenClawPluginConfiguration(runtime, failed, { allowManagedOpenClawPluginReplacement: true });
   const overlay = openClawPluginConfiguration(runtime, failed);
   if (overlay !== undefined) {
     assertConfigContainsOverlay(readOpenClawConfig(), overlay);
