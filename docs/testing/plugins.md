@@ -89,12 +89,18 @@ The Calendar proof also needs `OCC_TEST_CODEX_CALENDAR_TOOL_NAME` and
 `list_calendars(max_results:1)` read during a normal Agent turn.
 
 The Codex failure proof uses
-`--test-name-pattern 'curated Codex plugin failure'`. It selects a successful
-native Codex plugin from the live catalog or `OCC_TEST_CODEX_SUCCESS_PLUGIN_ID`,
-then selects a failure candidate from newline-delimited
-`OCC_TEST_CODEX_FAILURE_PLUGIN_IDS` or the default GitHub, Linear, and Slack
-candidate list. It proves the failed candidate reports `PLUGIN_AUTH_REQUIRED` or
-`PLUGIN_INSTALL_FAILED`, remains nonserving, preserves the sibling Agent Pod and
+`--test-name-pattern 'curated Codex plugin failure'`. It selects plugin A
+through OCC before the first deployment, then reads the actual native catalog
+from A's enabled app-server. Plugin A defaults to
+`codex-plugin:google-calendar@openai-curated-remote` and must already be
+authenticated for the selected test account; override it with
+`OCC_TEST_CODEX_SUCCESS_PLUGIN_ID` only for another connected app. Plugin B is
+chosen from newline-delimited `OCC_TEST_CODEX_FAILURE_PLUGIN_IDS` or the default
+Microsoft SharePoint, Outlook Calendar, and Financial Charts candidates. B must
+produce a real native authentication or install failure; do not substitute a
+synthetic or controlled producer for this proof. The test proves the admitted
+A-before-B order, reports `PLUGIN_AUTH_REQUIRED` or `PLUGIN_INSTALL_FAILED` for
+B, keeps the failed candidate nonserving, preserves the sibling Agent Pod and
 workspace file, and exposes only the admitted plugin ID through deployment
 status. It is the native proof layer; it does not replace the controlled receipt
 boundary suite above.

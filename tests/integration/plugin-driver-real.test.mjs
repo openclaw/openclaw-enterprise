@@ -265,18 +265,20 @@ test(
     timeout: 900_000,
   },
   async (context) => {
-    const requestedSuccessPluginId = process.env.OCC_TEST_CODEX_SUCCESS_PLUGIN_ID;
+    const successPluginId =
+      process.env.OCC_TEST_CODEX_SUCCESS_PLUGIN_ID ??
+      "codex-plugin:google-calendar@openai-curated-remote";
     const failureCandidates = (
       process.env.OCC_TEST_CODEX_FAILURE_PLUGIN_IDS ??
       [
-        "codex-plugin:github@openai-curated-remote",
-        "codex-plugin:linear@openai-curated-remote",
-        "codex-plugin:slack@openai-curated-remote",
+        "codex-plugin:microsoft-sharepoint@openai-curated-remote",
+        "codex-plugin:outlook-calendar@openai-curated-remote",
+        "codex-plugin:financial-charts@openai-curated-remote",
       ].join("\n")
     )
       .split("\n")
       .map((entry) => entry.trim())
-      .filter((entry) => entry.length > 0 && entry !== requestedSuccessPluginId);
+      .filter((entry) => entry.length > 0 && entry !== successPluginId);
 
     const credential = await readCodexServiceAccountCredential();
     const fixture = await createPluginDriverRealFixture(context, {
@@ -309,36 +311,35 @@ test(
       providerId: "openai",
     });
 
-    const baselinePrimary = await fixture.deployAndWait(primary);
-    const catalog = await fixture.listCodexNativeCatalog(primary);
+    // Select the known connected app through OCC before native discovery: a
+    // plugin-free revision deliberately disables the remote catalog feature.
+    const selectedSuccess = await fixture.selectPlugin(primary.id, {
+      pluginId: successPluginId,
+      enabled: true,
+      approvalMode: "auto",
+      approvalsReviewer: "auto_review",
+    });
+    assert.equal(selectedSuccess.enabled, true);
+    const deployedPrimary = await fixture.deployAndWait(primary);
+    assert.deepEqual(Object.keys(deployedPrimary.revision.plugins?.plugins ?? {}), [
+      successPluginId,
+    ]);
+    const catalog = await fixture.listCodexNativeCatalog(primary, [
+      successPluginId,
+      ...failureCandidates,
+    ]);
+    context.diagnostic(
+      `native Codex catalog candidates: ${catalog.length} entries, ${catalog.filter((entry) => entry.detailAvailable).length} readable details, ${catalog.filter((entry) => entry.appCount > 0).length} with apps`,
+    );
     const catalogById = new Map(catalog.map((entry) => [entry.id, entry]));
-    const successEntry =
-      requestedSuccessPluginId === undefined
-        ? catalog
-            .filter(
-              (entry) =>
-                entry.detailAvailable === true &&
-                entry.appCount === 0 &&
-                !failureCandidates.includes(entry.id),
-            )
-            .sort(
-              (left, right) => left.id.length - right.id.length || left.id.localeCompare(right.id),
-            )[0]
-        : catalogById.get(requestedSuccessPluginId);
+    const successEntry = catalogById.get(successPluginId);
     assert.ok(
       successEntry,
-      requestedSuccessPluginId === undefined
-        ? "native Codex catalog did not expose a no-app plugin candidate for the successful install."
-        : `native Codex catalog did not contain configured success plugin ${requestedSuccessPluginId}`,
+      `native Codex catalog did not contain success plugin ${successPluginId}`,
     );
-    const successPluginId = successEntry.id;
-    const failureEntry =
-      failureCandidates
-        .map((pluginId) => catalogById.get(pluginId))
-        .find((entry) => entry?.appCount > 0) ??
-      failureCandidates
-        .map((pluginId) => catalogById.get(pluginId))
-        .find((entry) => entry !== undefined);
+    const failureEntry = failureCandidates
+      .map((pluginId) => catalogById.get(pluginId))
+      .find((entry) => entry?.detailAvailable === true && entry.appCount > 0);
     assert.ok(
       failureEntry,
       `native Codex catalog did not contain any configured failure candidate: ${failureCandidates.join(
@@ -350,20 +351,6 @@ test(
       `native Codex catalog selected success=${successPluginId} apps=${successEntry.appCount ?? "unknown"} failure=${failurePluginId} apps=${failureEntry.appCount ?? "unknown"}`,
     );
 
-    const selectedSuccess = await fixture.selectPlugin(primary.id, {
-      pluginId: successPluginId,
-      enabled: true,
-      approvalMode: "auto",
-      approvalsReviewer: "auto_review",
-    });
-    assert.equal(selectedSuccess.enabled, true);
-
-    const deployedPrimary = await fixture.deployAndWait(primary);
-    assert.ok(
-      Object.hasOwn(deployedPrimary.revision.plugins?.plugins ?? {}, successPluginId),
-      "the second candidate must admit the successful native plugin selection.",
-    );
-    assert.equal(Object.keys(baselinePrimary.revision.plugins?.plugins ?? {}).length, 0);
     const installedSuccess = await fixture.codexNativePluginDetail(primary, successEntry);
     assert.equal(installedSuccess.installed, true);
     assert.equal(installedSuccess.enabled, true);

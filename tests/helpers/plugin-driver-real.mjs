@@ -18,6 +18,7 @@ import {
 const authSecret = "plugin-driver-real-auth-secret-32-bytes";
 const authBaseURL = "http://127.0.0.1";
 const proofPrefix = "occ-plugin-01a08228";
+const pluginReceiptFinalizer = "compute.openclaw.dev/plugin-receipt";
 
 export const realPluginProofSelected = process.env.OCC_TEST_PLUGIN_DRIVER_REAL === "1";
 
@@ -251,8 +252,9 @@ function installationConfiguration({
     pods: "8",
     "requests.cpu": "2",
     "requests.memory": "2Gi",
-    "limits.cpu": "8",
-    "limits.memory": "4Gi",
+    // Two Agent/gateway pairs plus an overlapping revision during cutover.
+    "limits.cpu": "12",
+    "limits.memory": "6Gi",
   };
   configuration.drivers.compute.configuration.servicePrincipalCredentials.expirationSeconds = 3_600;
   return configuration;
@@ -596,9 +598,12 @@ const gatewayHttpConfigScript = String.raw`
 const codexNativeCatalogScript = String.raw`
 ${PLUGIN_RUNTIME_HELPERS}
 (async () => {
+  // Startup has already resolved and installed A from this native catalog.
   const listed = await codexAppServerRequest("plugin/list", {});
+  const requestedIds = new Set(JSON.parse(process.argv[1]));
   const entries = [];
   for (const entry of pluginRuntimeTranslator.codexCatalogEntries(listed)) {
+    if (!requestedIds.has(entry.id)) continue;
     const [params] = pluginRuntimeTranslator.codexReadParamsForSelections({
       [entry.id]: { enabled: true, approvalMode: "auto", approvalsReviewer: "auto_review" },
     }, listed);
@@ -933,9 +938,14 @@ function createNativePluginAssertions({
     );
   }
 
-  async function listCodexNativeCatalog(agent) {
+  async function listCodexNativeCatalog(agent, pluginIds) {
     assert.equal(proofMode, "codex", "native Codex catalog discovery requires Codex proof mode.");
-    const execution = await execCodex(agent, ["node", "-e", codexNativeCatalogScript]);
+    const execution = await execCodex(agent, [
+      "node",
+      "-e",
+      codexNativeCatalogScript,
+      JSON.stringify(pluginIds),
+    ]);
     const parsed = JSON.parse(execution.stdout);
     assert.ok(Array.isArray(parsed.entries), "native Codex catalog discovery must return entries.");
     return parsed.entries.map((entry) => ({
@@ -1041,6 +1051,77 @@ export async function createPluginDriverRealFixture(
   const gatewayTokens = new Map();
   let tenantNamespace;
 
+  function isKubernetesNotFound(error) {
+    return /NotFound|not found/i.test(`${error?.stderr ?? ""}\n${error?.message ?? ""}`);
+  }
+
+  async function waitForTenantNamespaceDeletion() {
+    if (tenantNamespace === undefined) return;
+    try {
+      await kubectl("wait", "--for=delete", `namespace/${tenantNamespace}`, "--timeout=60s");
+    } catch (error) {
+      if (isKubernetesNotFound(error)) return;
+      throw error;
+    }
+  }
+
+  async function releaseTenantPluginReceiptFinalizers() {
+    if (tenantNamespace === undefined) return;
+    await waitFor(
+      "plugin receipt finalizers to be released before tenant namespace cleanup",
+      async () => {
+        let pods;
+        try {
+          pods = await resources("pods", tenantNamespace);
+        } catch (error) {
+          if (isKubernetesNotFound(error)) return true;
+          throw error;
+        }
+        const blocked = pods.filter((pod) =>
+          pod.metadata?.finalizers?.includes(pluginReceiptFinalizer),
+        );
+        if (blocked.length === 0) return true;
+        for (const pod of blocked) {
+          const name = pod.metadata?.name;
+          const uid = pod.metadata?.uid;
+          const resourceVersion = pod.metadata?.resourceVersion;
+          const finalizers = pod.metadata?.finalizers ?? [];
+          assert.ok(name, "receipt-finalized Pod name is required for cleanup.");
+          assert.ok(uid, "receipt-finalized Pod UID is required for cleanup.");
+          assert.ok(
+            resourceVersion,
+            "receipt-finalized Pod resourceVersion is required for cleanup.",
+          );
+          const nextFinalizers = finalizers.filter((value) => value !== pluginReceiptFinalizer);
+          try {
+            await kubectl(
+              "patch",
+              "pod",
+              name,
+              "--namespace",
+              tenantNamespace,
+              "--type=json",
+              "--patch",
+              JSON.stringify([
+                { op: "test", path: "/metadata/uid", value: uid },
+                { op: "test", path: "/metadata/resourceVersion", value: resourceVersion },
+                { op: "replace", path: "/metadata/finalizers", value: nextFinalizers },
+              ]),
+            );
+          } catch (error) {
+            const details = `${error?.stderr ?? ""}\n${error?.message ?? ""}`;
+            if (isKubernetesNotFound(error) || /test failed|Conflict|409/i.test(details)) {
+              return undefined;
+            }
+            throw error;
+          }
+        }
+        return undefined;
+      },
+      30_000,
+    );
+  }
+
   context.after(async () => {
     const failures = [];
     async function cleanup(operation) {
@@ -1063,9 +1144,11 @@ export async function createPluginDriverRealFixture(
       await cleanup(() => pool.end());
     }
     if (tenantNamespace !== undefined) {
+      await cleanup(() => releaseTenantPluginReceiptFinalizers());
       await cleanup(() =>
-        kubectl("delete", "namespace", tenantNamespace, "--ignore-not-found=true"),
+        kubectl("delete", "namespace", tenantNamespace, "--ignore-not-found=true", "--wait=false"),
       );
+      await cleanup(() => waitForTenantNamespaceDeletion());
     }
     for (const role of ["api", "worker"]) {
       await cleanup(() =>
@@ -1406,6 +1489,25 @@ export async function createPluginDriverRealFixture(
     return status.data;
   }
 
+  async function assertFailedRevisionIsNotServing(agent, revision) {
+    await waitFor(`failed revision ${revision.id} to stop serving Kubernetes traffic`, async () => {
+      const selector = `openclaw.dev/agent=${agent.id},openclaw.dev/revision=${revision.id}`;
+      const [deployments, pods] = await Promise.all([
+        resources("deployments", tenantNamespace, "--selector", selector),
+        resources("pods", tenantNamespace, "--selector", selector),
+      ]);
+      const liveDeployments = deployments.filter((deployment) => {
+        const replicas = deployment.spec?.replicas ?? 1;
+        return replicas > 0;
+      });
+      const readyPods = pods.filter((pod) =>
+        pod.status?.conditions?.some(({ type, status }) => type === "Ready" && status === "True"),
+      );
+      if (liveDeployments.length === 0 && readyPods.length === 0) return true;
+      return undefined;
+    });
+  }
+
   async function deployAndWaitForFailure(agent, { pluginId, expectedCodes }) {
     let gatewayToken = gatewayTokens.get(agent.id);
     if (gatewayToken === undefined) {
@@ -1435,6 +1537,7 @@ export async function createPluginDriverRealFixture(
           event.code === status.error.code,
       ),
     );
+    await assertFailedRevisionIsNotServing(agent, deployed.data);
     return { revision: deployed.data, gatewayToken, status };
   }
 
