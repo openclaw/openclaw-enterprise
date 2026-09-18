@@ -765,6 +765,9 @@ async function verifyFixtureStorage(cluster, timeoutSeconds = 120) {
           { timeoutMs: 10_000 },
         ),
       ),
+      execFile(kubectl, [...scope.slice(0, 4), "get", "nodes", "-o", "json"], {
+        timeoutMs: 10_000,
+      }),
     ]);
     let pods = [];
     if (observations[0].status === "fulfilled") {
@@ -772,7 +775,14 @@ async function verifyFixtureStorage(cluster, timeoutSeconds = 120) {
         pods = (JSON.parse(observations[0].value.stdout).items ?? []).map((pod) => ({
           name: pod.metadata?.name,
           node: pod.spec?.nodeName,
+          nodeSelector: pod.spec?.nodeSelector,
           phase: pod.status?.phase,
+          conditions: (pod.status?.conditions ?? []).map(({ type, status, reason, message }) => ({
+            type,
+            status,
+            reason,
+            message,
+          })),
           containers: (pod.status?.containerStatuses ?? []).map((container) => ({
             name: container.name,
             image: container.image,
@@ -786,13 +796,30 @@ async function verifyFixtureStorage(cluster, timeoutSeconds = 120) {
         // Preserve the storage failure even when Kubernetes diagnostics are incomplete.
       }
     }
+    let nodes = [];
+    if (observations[3].status === "fulfilled") {
+      try {
+        nodes = (JSON.parse(observations[3].value.stdout).items ?? []).map((node) => ({
+          name: node.metadata?.name,
+          unschedulable: node.spec?.unschedulable,
+          taints: node.spec?.taints,
+          conditions: (node.status?.conditions ?? [])
+            .filter(({ type }) =>
+              ["Ready", "DiskPressure", "MemoryPressure", "PIDPressure"].includes(type),
+            )
+            .map(({ type, status, reason, message }) => ({ type, status, reason, message })),
+        }));
+      } catch {
+        // Do not replace the storage failure with a diagnostic parsing failure.
+      }
+    }
     const logs = observations
-      .slice(1)
+      .slice(1, 3)
       .map((result) =>
         result.status === "fulfilled" ? result.value.stdout.slice(-4_000) : "unavailable",
       );
     throw new Error(
-      `CI fixture storage controller is not ready: ${JSON.stringify({ kubernetesVersion: cluster.kubernetesVersion, pods, logs })}`,
+      `CI fixture storage controller is not ready: ${JSON.stringify({ kubernetesVersion: cluster.kubernetesVersion, pods, nodes, logs })}`,
     );
   }
 }
@@ -1224,6 +1251,24 @@ async function prepareLane({ lane, statePath }) {
       await ensurePostgresServer(resolvedStatePath, state);
       const cluster = await ensureK3dCluster(resolvedStatePath, state);
       const fixture = await prepareFixtureImage(resolvedStatePath, state, cluster);
+      // The suites restart this controller when enabling shared storage. Verify
+      // replacement scheduling after image imports consume the runner's disk.
+      await execFile(
+        process.env.OCC_KUBECTL_BIN ?? "kubectl",
+        [
+          "--kubeconfig",
+          cluster.kubeconfig,
+          "--context",
+          cluster.context,
+          "--namespace",
+          "kube-system",
+          "rollout",
+          "restart",
+          "deployment/local-path-provisioner",
+        ],
+        { timeoutMs: 10_000 },
+      );
+      await verifyFixtureStorage(cluster);
       env.OCC_TEST_KUBERNETES_KUBECONFIG = cluster.kubeconfig;
       env.OCC_TEST_KUBERNETES_CONTEXT = cluster.context;
       env.OCC_TEST_KUBERNETES_IMAGE = fixture.image;
