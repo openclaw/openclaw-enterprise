@@ -14,8 +14,8 @@
     "cli:build": "go build -trimpath -o bin/occ ./cmd/occ",
     "cli:check": "test -z \"$(gofmt -l cmd internal)\" && go vet ./...",
     "cli:test": "go test ./...",
-    "format:fix": "prettier --write \"{apps,packages,scripts,tests}/**/*.{ts,mjs,cjs,json,html,css}\" \"*.{json,yaml,yml,md}\" \"docs/**/*.md\" \"!docs/reference/api.md\" \".github/**/*.yml\"",
-    "format:check": "prettier --check \"{apps,packages,scripts,tests}/**/*.{ts,mjs,cjs,json,html,css}\" \"*.{json,yaml,yml,md}\" \"docs/**/*.md\" \"!docs/reference/api.md\" \".github/**/*.yml\"",
+    "format:fix": "prettier --write \"{apps,packages,scripts,tests}/**/*.{ts,mjs,cjs,json,html,css}\" \"*.{ts,mjs,cjs,json,yaml,yml,md}\" \"docs/**/*.md\" \"!docs/reference/api.md\" \".github/**/*.yml\"",
+    "format:check": "prettier --check \"{apps,packages,scripts,tests}/**/*.{ts,mjs,cjs,json,html,css}\" \"*.{ts,mjs,cjs,json,yaml,yml,md}\" \"docs/**/*.md\" \"!docs/reference/api.md\" \".github/**/*.yml\"",
     "hooks:install": "node scripts/install-git-hooks.mjs",
     "prepare": "node scripts/install-git-hooks.mjs --if-git-present",
     "check:workspace": "node scripts/verify-workspace-boundary.mjs",
@@ -46,15 +46,23 @@
     "docs:check-length": "node scripts/docs-site/word-count.mjs",
     "docs:check": "node scripts/docs-site/word-count.mjs && node --test tests/docs/*.test.mjs",
     "docs:install": "pnpm --dir scripts/docs-site install --frozen-lockfile --ignore-scripts",
-    "test:files": "node scripts/test-files.mjs"
+    "test:files": "node scripts/test-files.mjs",
+    "lint": "eslint . --max-warnings 0",
+    "lint:fix": "pnpm lint --fix",
+    "format": "pnpm format:fix"
   },
   "devDependencies": {
+    "@eslint/js": "10.0.1",
     "@types/node": "26.5.0",
     "@types/pg": "8.23.1",
+    "@typescript/native": "npm:typescript@7.0.2",
     "drizzle-kit": "0.31.10",
+    "eslint": "10.10.0",
+    "globals": "17.12.0",
     "pg": "8.23.0",
     "playwright": "1.63.0",
     "prettier": "3.9.6",
-    "typescript": "7.0.2"
+    "typescript": "npm:@typescript/typescript6@6.0.2",
+    "typescript-eslint": "8.70.0"
   }
 }

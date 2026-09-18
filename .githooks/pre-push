@@ -14,7 +14,7 @@ fi
 
 exec node "$prettier_binary" --check \
   '{apps,packages,scripts,tests}/**/*.{ts,mjs,cjs,json,html,css}' \
-  '*.{json,yaml,yml,md}' \
+  '*.{ts,mjs,cjs,json,yaml,yml,md}' \
   'docs/**/*.md' \
   '!docs/reference/api.md' \
   '.github/**/*.yml'

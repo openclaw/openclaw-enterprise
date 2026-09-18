@@ -9,6 +9,7 @@ With infrastructure selectors unset:
 
 ```sh
 pnpm check:workspace
+pnpm lint
 pnpm format:check
 pnpm typecheck
 pnpm openapi:check
@@ -51,6 +52,37 @@ To target a file or one named case:
 node --test tests/integration/secret-api.test.mjs
 node --test --test-name-pattern='part of the test name' tests/integration/secret-api.test.mjs
 ```
+
+## Linting and formatting
+
+Run `pnpm lint` for authored JavaScript and TypeScript, and `pnpm lint:fix` for
+safe automatic fixes. The root [ESLint configuration](../../eslint.config.mjs)
+uses ESLint and typescript-eslint recommended rules. Browser console and docs
+scripts receive browser globals; other modules receive Node.js globals.
+Underscore-prefixed unused bindings and object-rest omissions are allowed.
+Generated build output, dependencies, archived code, and vendored skills and docs
+renderer code are excluded.
+
+The initial [suppression baseline](../../eslint-suppressions.json) records existing
+findings by file and rule so adoption does not rewrite unrelated runtime code.
+`pnpm lint` fails on findings above those recorded counts and on unused
+suppressions. When fixing a recorded finding, run
+`pnpm exec eslint . --prune-suppressions` and commit the reduced baseline.
+Do not regenerate or expand the baseline to make new code pass. Because counts
+are per file and rule, replacing an existing finding with another of the same
+rule may not increase the count; review still needs to catch that case.
+
+TypeScript 7 remains the build compiler (`tsc`). ESLint needs the TypeScript 6
+JavaScript API, so the manifest uses Microsoft's
+[side-by-side aliases](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/#running-side-by-side-with-typescript-6-0):
+`@typescript/native` provides TypeScript 7 and `typescript` resolves to
+`@typescript/typescript6`. Lint uses syntax rules; `pnpm typecheck` owns type checking.
+
+Prettier owns formatting. Run `pnpm format` (an alias for `pnpm format:fix`),
+review the diff, and run `pnpm format:check`. Root JavaScript and TypeScript
+configuration files are included in both the scripts and the pre-push check.
+Go retains `gofmt` and `go vet` through `pnpm cli:check`.
+The shared CI baseline runs lint and formatting as separate required steps.
 
 ## Authentication and authorization coverage
 

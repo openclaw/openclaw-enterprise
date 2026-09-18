@@ -55,6 +55,10 @@ runs:
       if: inputs.lane == 'checks-baseline'
       shell: bash
       run: pnpm check:workspace
+    - name: Run lint check
+      if: inputs.lane == 'checks-baseline'
+      shell: bash
+      run: pnpm lint
     - name: Run format check
       if: inputs.lane == 'checks-baseline'
       shell: bash

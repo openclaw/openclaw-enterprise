@@ -56,6 +56,7 @@ With matching dependencies installed and infrastructure selectors unset:
 
 ```sh
 pnpm check:workspace
+pnpm lint
 pnpm format:check
 pnpm typecheck
 pnpm cli:check

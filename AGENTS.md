@@ -334,6 +334,11 @@ not verify shared-cluster admission guardrails.
 
 ## TypeScript style and verification
 
+- Run `pnpm lint` for JavaScript and TypeScript changes; `pnpm lint:fix` applies
+  supported automatic fixes. Follow `eslint.config.mjs` and the
+  [linting guide](docs/testing/local.md#linting-and-formatting). Do not expand
+  `eslint-suppressions.json` to admit new findings; prune entries as they are fixed.
+
 - Use `ts-pattern` for tagged unions and branches that would otherwise become
   nested ternaries. Prefer `match(value).with(...).exhaustive()` so every case
   is explicit and checked by TypeScript.
