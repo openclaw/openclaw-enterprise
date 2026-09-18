@@ -11,7 +11,9 @@ export function createApiClient({ lifetime, hasSession, onExpired }) {
         : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
     });
     // Expiry invalidates the whole view, including other reads or saves still pending.
-    if (response.status === 401 && hasSession() && lifetime.isCurrent(active)) onExpired();
+    if (response.status === 401 && hasSession() && lifetime.isCurrent(active)) {
+      onExpired();
+    }
     let payload;
     try {
       payload = await response.json();
@@ -25,8 +27,9 @@ export function createApiClient({ lifetime, hasSession, onExpired }) {
       if (
         typeof requestId === "string" &&
         /^req_[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(requestId)
-      )
+      ) {
         error.requestId = requestId;
+      }
       throw error;
     }
     return payload.data;

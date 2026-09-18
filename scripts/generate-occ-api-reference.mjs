@@ -35,12 +35,18 @@ function schemaType(schema, document) {
     return document.components?.schemas?.[name]?.title ?? name;
   }
 
-  if (Object.hasOwn(schema, "const")) return JSON.stringify(schema.const);
-  if (schema.enum) return schema.enum.map((value) => JSON.stringify(value)).join(" or ");
+  if (Object.hasOwn(schema, "const")) {
+    return JSON.stringify(schema.const);
+  }
+  if (schema.enum) {
+    return schema.enum.map((value) => JSON.stringify(value)).join(" or ");
+  }
   if (schema.anyOf) {
     return schema.anyOf.map((alternative) => schemaType(alternative, document)).join(" or ");
   }
-  if (schema.type === "array") return `array<${schemaType(schema.items ?? {}, document)}>`;
+  if (schema.type === "array") {
+    return `array<${schemaType(schema.items ?? {}, document)}>`;
+  }
   if (
     schema.type === "object" &&
     schema.additionalProperties &&
@@ -53,9 +59,13 @@ function schemaType(schema, document) {
 }
 
 function resolveSchema(schema, document) {
-  if (!schema?.$ref) return schema;
+  if (!schema?.$ref) {
+    return schema;
+  }
 
-  if (!schema.$ref.startsWith("#/")) return schema;
+  if (!schema.$ref.startsWith("#/")) {
+    return schema;
+  }
 
   return (
     schema.$ref
@@ -71,15 +81,33 @@ function resolveSchema(schema, document) {
 function schemaConstraints(schema) {
   const constraints = [];
 
-  if (schema.minLength !== undefined) constraints.push(`min length: ${schema.minLength}`);
-  if (schema.maxLength !== undefined) constraints.push(`max length: ${schema.maxLength}`);
-  if (schema.minimum !== undefined) constraints.push(`minimum: ${schema.minimum}`);
-  if (schema.maximum !== undefined) constraints.push(`maximum: ${schema.maximum}`);
-  if (schema.minItems !== undefined) constraints.push(`min items: ${schema.minItems}`);
-  if (schema.maxItems !== undefined) constraints.push(`max items: ${schema.maxItems}`);
-  if (schema.pattern) constraints.push(`pattern: \`${schema.pattern.replaceAll("|", "\\|")}\``);
-  if (schema.default !== undefined) constraints.push(`default: ${JSON.stringify(schema.default)}`);
-  if (schema.description) constraints.push(schema.description.replaceAll("|", "\\|"));
+  if (schema.minLength !== undefined) {
+    constraints.push(`min length: ${schema.minLength}`);
+  }
+  if (schema.maxLength !== undefined) {
+    constraints.push(`max length: ${schema.maxLength}`);
+  }
+  if (schema.minimum !== undefined) {
+    constraints.push(`minimum: ${schema.minimum}`);
+  }
+  if (schema.maximum !== undefined) {
+    constraints.push(`maximum: ${schema.maximum}`);
+  }
+  if (schema.minItems !== undefined) {
+    constraints.push(`min items: ${schema.minItems}`);
+  }
+  if (schema.maxItems !== undefined) {
+    constraints.push(`max items: ${schema.maxItems}`);
+  }
+  if (schema.pattern) {
+    constraints.push(`pattern: \`${schema.pattern.replaceAll("|", "\\|")}\``);
+  }
+  if (schema.default !== undefined) {
+    constraints.push(`default: ${JSON.stringify(schema.default)}`);
+  }
+  if (schema.description) {
+    constraints.push(schema.description.replaceAll("|", "\\|"));
+  }
 
   return constraints.join("; ") || "—";
 }
@@ -104,7 +132,9 @@ function schemaRows(schema, document, parent = "") {
       rows.push(...schemaRows(resolvedProperty, document, field));
     } else if (resolvedProperty.type === "array") {
       const resolvedItems = resolveSchema(resolvedProperty.items, document);
-      if (resolvedItems.properties) rows.push(...schemaRows(resolvedItems, document, `${field}[]`));
+      if (resolvedItems.properties) {
+        rows.push(...schemaRows(resolvedItems, document, `${field}[]`));
+      }
     }
   }
 
@@ -114,7 +144,9 @@ function schemaRows(schema, document, parent = "") {
 function schemaTable(schema, document) {
   const resolvedSchema = resolveSchema(schema, document);
   const rows = schemaRows(resolvedSchema, document);
-  if (rows.length === 0) return `Schema: \`${schemaType(schema, document)}\`.`;
+  if (rows.length === 0) {
+    return `Schema: \`${schemaType(schema, document)}\`.`;
+  }
 
   return ["| Field | Type | Required | Constraints |", "| --- | --- | --- | --- |", ...rows].join(
     "\n",
@@ -195,7 +227,9 @@ function operationReference(path, method, operation, document, { headingLevel = 
   );
 
   for (const [status, response] of Object.entries(operation.responses)) {
-    if (!status.startsWith("2")) continue;
+    if (!status.startsWith("2")) {
+      continue;
+    }
 
     for (const [contentType, content] of Object.entries(response.content ?? {})) {
       sections.push(
@@ -386,15 +420,18 @@ async function walkMarkdown(directoryUrl) {
   try {
     entries = await readdir(directoryUrl, { withFileTypes: true });
   } catch (error) {
-    if (error?.code === "ENOENT") return [];
+    if (error?.code === "ENOENT") {
+      return [];
+    }
     throw error;
   }
 
   const files = [];
   for (const entry of entries) {
     const url = new URL(`${entry.name}${entry.isDirectory() ? "/" : ""}`, directoryUrl);
-    if (entry.isDirectory()) files.push(...(await walkMarkdown(url)));
-    else if (entry.isFile() && entry.name.endsWith(".md")) {
+    if (entry.isDirectory()) {
+      files.push(...(await walkMarkdown(url)));
+    } else if (entry.isFile() && entry.name.endsWith(".md")) {
       files.push(relative(repositoryRoot, fileURLToPath(url)).split("\\").join("/"));
     }
   }

@@ -10,17 +10,21 @@ import { createControllerWorker } from "./worker.ts";
 
 function positiveEnvironment(name, fallback) {
   const raw = process.env[name];
-  if (raw === undefined) return fallback;
+  if (raw === undefined) {
+    return fallback;
+  }
   const value = Number(raw);
-  if (!/^\d+$/.test(raw) || !Number.isSafeInteger(value) || value < 1)
+  if (!/^\d+$/.test(raw) || !Number.isSafeInteger(value) || value < 1) {
     throw new Error(`${name} must be a positive safe integer.`);
+  }
   return value;
 }
 
 function configuration() {
   const mode = process.env.NODE_ENV;
-  if (mode !== "development" && mode !== "production")
+  if (mode !== "development" && mode !== "production") {
     throw new Error("The controller worker requires development or production mode.");
+  }
 
   const databaseUrl = process.env.OCC_DATABASE_URL;
   let parsed;
@@ -29,8 +33,9 @@ function configuration() {
   } catch {
     throw new Error("A valid PostgreSQL connection URL must be explicitly configured.");
   }
-  if (parsed.protocol !== "postgresql:" && parsed.protocol !== "postgres:")
+  if (parsed.protocol !== "postgresql:" && parsed.protocol !== "postgres:") {
     throw new Error("A valid PostgreSQL connection URL must be explicitly configured.");
+  }
 
   return {
     mode,
@@ -44,7 +49,9 @@ function configuration() {
 
 function workerStartupFailureCode(error) {
   const message = error instanceof Error ? error.message : "";
-  if (/PostgreSQL connection URL/.test(message)) return "DATABASE_CONFIGURATION_INVALID";
+  if (/PostgreSQL connection URL/.test(message)) {
+    return "DATABASE_CONFIGURATION_INVALID";
+  }
   if (/platform persistence repository|ECONNREFUSED|ECONNRESET|connect /i.test(message)) {
     return "PERSISTENCE_UNAVAILABLE";
   }
@@ -64,12 +71,15 @@ try {
   logger = createOccLogger({ component: "occ-worker", level: logging.level });
   readinessPath = process.env.OCC_WORKER_READINESS_PATH;
   if (readinessPath !== undefined) {
-    if (!readinessPath.startsWith("/"))
+    if (!readinessPath.startsWith("/")) {
       throw new Error("OCC_WORKER_READINESS_PATH must identify an absolute writable path.");
+    }
     try {
       await unlink(readinessPath);
     } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
+      if (error?.code !== "ENOENT") {
+        throw error;
+      }
     }
   }
   const drivers = await loadInstallationConfiguration({ mode, startupConfiguration });
@@ -78,7 +88,9 @@ try {
     const { createDevelopmentDockerComputeDriver } =
       await import("./composition/development-postgres.ts");
     computeDriver = createDevelopmentDockerComputeDriver();
-    if (typeof computeDriver.preflight === "function") await computeDriver.preflight();
+    if (typeof computeDriver.preflight === "function") {
+      await computeDriver.preflight();
+    }
   }
   pool = await createPostgresPool(databaseUrl);
   worker = createControllerWorker({
@@ -98,7 +110,9 @@ try {
 
   async function shutdown() {
     try {
-      if (readinessPath !== undefined) await unlink(readinessPath).catch(() => {});
+      if (readinessPath !== undefined) {
+        await unlink(readinessPath).catch(() => {});
+      }
       await worker.stop();
       process.exitCode = 0;
     } catch {
@@ -109,9 +123,14 @@ try {
   process.once("SIGTERM", shutdown);
   process.once("SIGINT", shutdown);
 } catch (error) {
-  if (readinessPath !== undefined) await unlink(readinessPath).catch(() => {});
-  if (worker !== undefined) await worker.stop().catch(() => {});
-  else if (pool !== undefined) await pool.end();
+  if (readinessPath !== undefined) {
+    await unlink(readinessPath).catch(() => {});
+  }
+  if (worker !== undefined) {
+    await worker.stop().catch(() => {});
+  } else if (pool !== undefined) {
+    await pool.end();
+  }
   try {
     const mode = process.env.NODE_ENV === "production" ? "production" : "development";
     logging =

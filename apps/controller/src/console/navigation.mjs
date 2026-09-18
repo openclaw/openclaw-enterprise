@@ -26,20 +26,25 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }) {
 
   function pageUrl(feature, selection = getNamespaceId()) {
     const url = new URL(`/console/${feature}`, location.origin);
-    if (selection !== null) url.searchParams.set("namespace", selection);
+    if (selection !== null) {
+      url.searchParams.set("namespace", selection);
+    }
     return `${url.pathname}${url.search}`;
   }
 
   function safeReturn(value) {
-    if (!value || !value.startsWith("/console/")) return null;
+    if (!value || !value.startsWith("/console/")) {
+      return null;
+    }
     try {
       const url = new URL(value, location.origin);
       const path = url.pathname.slice(9);
       if (
         url.origin !== location.origin ||
         (!Object.hasOwn(pages, path) && !/^agents\/(new|agt_[a-f0-9-]+)$/.test(path))
-      )
+      ) {
         return null;
+      }
       return pageUrl(path + url.search, url.searchParams.get("namespace"));
     } catch {
       return null;
@@ -47,10 +52,13 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }) {
   }
 
   function navigate(feature, selection = getNamespaceId(), replace = false) {
-    if (isLoggingOut()) return;
+    if (isLoggingOut()) {
+      return;
+    }
     const current = route().feature;
-    if (feature === "settings" && ["agents", "providers", "namespaces"].includes(current))
+    if (feature === "settings" && ["agents", "providers", "namespaces"].includes(current)) {
       previousCollection = current;
+    }
     history[replace ? "replaceState" : "pushState"](
       { previousCollection },
       "",
@@ -68,8 +76,9 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }) {
       return previousCollection;
     },
     restoreHistory() {
-      if (["agents", "providers", "namespaces"].includes(history.state?.previousCollection))
+      if (["agents", "providers", "namespaces"].includes(history.state?.previousCollection)) {
         previousCollection = history.state.previousCollection;
+      }
     },
     resetHistory() {
       previousCollection = "agents";

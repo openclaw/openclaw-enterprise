@@ -28,7 +28,9 @@ test("the Driver contract exposes IAM, Compute, Configuration, ServiceAccount, S
   ]);
   assert.equal(Object.isFrozen(DRIVER_CAPABILITIES), true);
 
-  for (const capability of DRIVER_CAPABILITIES) assert.equal(isDriverCapability(capability), true);
+  for (const capability of DRIVER_CAPABILITIES) {
+    assert.equal(isDriverCapability(capability), true);
+  }
   for (const unsupported of ["gateway", "secrets", "providers", "legacy", "", undefined]) {
     assert.equal(isDriverCapability(unsupported), false);
   }
@@ -48,7 +50,9 @@ test("Sandbox facets expose only the initial containment surfaces", () => {
   assert.deepEqual(SANDBOX_FACETS, ["networking", "filesystem", "process"]);
   assert.equal(Object.isFrozen(SANDBOX_FACETS), true);
 
-  for (const facet of SANDBOX_FACETS) assert.equal(isSandboxFacet(facet), true);
+  for (const facet of SANDBOX_FACETS) {
+    assert.equal(isSandboxFacet(facet), true);
+  }
   for (const unsupported of ["exec", "tool", "workspace", "network", "", undefined]) {
     assert.equal(isSandboxFacet(unsupported), false);
   }
@@ -154,7 +158,9 @@ test("the singleton platform resource model keeps Namespace ownership explicit",
   ]);
   assert.equal(Object.isFrozen(RESOURCE_KINDS), true);
 
-  for (const kind of RESOURCE_KINDS) assert.equal(isResourceKind(kind), true);
+  for (const kind of RESOURCE_KINDS) {
+    assert.equal(isResourceKind(kind), true);
+  }
   for (const unsupported of ["provider", "driver", "plugin", "gateway", "claw", "", undefined]) {
     assert.equal(isResourceKind(unsupported), false);
   }

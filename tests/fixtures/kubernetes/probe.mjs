@@ -8,7 +8,9 @@ const timeoutMs = 2_500;
 try {
   if (operation === "http") {
     const response = await fetch(target, { signal: AbortSignal.timeout(timeoutMs) });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
     process.stdout.write(JSON.stringify({ status: response.status }) + "\n");
   } else if (operation === "dns") {
     const result = await lookup(target);

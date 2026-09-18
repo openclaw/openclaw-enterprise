@@ -250,7 +250,9 @@ test("prepareOpenShell fails before downloads when the k3d node lacks the select
 
   async function execFile(command, args) {
     calls.push([command, args]);
-    if (command === "docker" && args[0] === "exec") return { stdout: "", stderr: "" };
+    if (command === "docker" && args[0] === "exec") {
+      return { stdout: "", stderr: "" };
+    }
     return { stdout: "", stderr: "" };
   }
 

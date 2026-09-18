@@ -65,7 +65,9 @@ test(
         "Collector file exporter JSONL output",
       );
     } finally {
-      if (resource) await cleanupLogging(resource, { execFile: execute });
+      if (resource) {
+        await cleanupLogging(resource, { execFile: execute });
+      }
     }
   },
 );

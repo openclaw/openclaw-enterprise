@@ -99,8 +99,9 @@ export function createAuthPrincipalSeed(
     subject: account.id,
   };
   const existingRoleId = options.roleId;
-  if (existingRoleId !== undefined && !isNonEmptyString(existingRoleId))
+  if (existingRoleId !== undefined && !isNonEmptyString(existingRoleId)) {
     throw new Error("Additional auth accounts require a Role id.");
+  }
 
   const roleId = existingRoleId ?? `role_admin_${randomUUID()}`;
   const administrator: Role = {
@@ -154,14 +155,20 @@ export function validateAuthAccountPrincipalSeed(
   state: Pick<NativeIAMState, "roles">,
   installationId: string,
 ): void {
-  if (seed.roles.length !== 0) throw new Error("Auth account creation cannot create IAM Roles.");
-  if (seed.principal.kind !== "principal" || seed.principal.namespaceId !== undefined)
+  if (seed.roles.length !== 0) {
+    throw new Error("Auth account creation cannot create IAM Roles.");
+  }
+  if (seed.principal.kind !== "principal" || seed.principal.namespaceId !== undefined) {
     throw new Error("Auth account creation requires one Installation-scoped Principal.");
-  if (seed.bindings.length === 0)
+  }
+  if (seed.bindings.length === 0) {
     throw new Error("Auth account creation requires an existing IAM Role binding.");
+  }
   for (const binding of seed.bindings) {
     const role = state.roles.find((candidate) => candidate.id === binding.roleId);
-    if (role === undefined) throw new AuthAccountRoleNotFoundError(binding.roleId);
+    if (role === undefined) {
+      throw new AuthAccountRoleNotFoundError(binding.roleId);
+    }
     if (
       role.namespaceId !== undefined ||
       binding.namespaceId !== undefined ||
@@ -169,8 +176,9 @@ export function validateAuthAccountPrincipalSeed(
       binding.subjectId !== seed.principal.id ||
       binding.resourceKind !== "installation" ||
       binding.resourceId !== installationId
-    )
+    ) {
       throw new Error("Auth account creation must bind an existing Installation IAM Role.");
+    }
   }
 }
 
@@ -193,7 +201,9 @@ function sameOptionalScope(left: string | undefined, right: string | undefined):
 }
 
 function assertCondition(condition: boolean, message: string): asserts condition {
-  if (!condition) throw new TypeError(`Invalid native IAM state: ${message}`);
+  if (!condition) {
+    throw new TypeError(`Invalid native IAM state: ${message}`);
+  }
 }
 
 function assertUniqueIds(values: readonly { readonly id: string }[], collection: string): void {
@@ -398,16 +408,17 @@ export function validateNativeIAMState(state: NativeIAMState): void {
       subject !== undefined,
       `AccessBinding ${binding.id} references an unknown subject`,
     );
-    if (binding.subjectKind === "group")
+    if (binding.subjectKind === "group") {
       assertCondition(
         subject.namespaceId === binding.namespaceId,
         `AccessBinding ${binding.id} and Group subject have different scopes`,
       );
-    else
+    } else {
       assertCondition(
         subject.namespaceId === undefined || subject.namespaceId === binding.namespaceId,
         `AccessBinding ${binding.id} and subject cross a Namespace`,
       );
+    }
   }
 
   for (const restriction of state.restrictions) {
@@ -505,7 +516,9 @@ function validRequest(request: AuthorizationRequest): boolean {
 }
 
 function sameResource(binding: AccessBinding, resource: ResourceRef): boolean {
-  if (binding.resourceKind === undefined) return true;
+  if (binding.resourceKind === undefined) {
+    return true;
+  }
   return binding.resourceKind === resource.kind && binding.resourceId === resource.id;
 }
 
@@ -531,30 +544,36 @@ function evaluateValidatedAuthorization(
   state: Readonly<NativeIAMState>,
   driverId: string,
 ): AuthorizationDecision {
-  if (!validRequest(request))
+  if (!validRequest(request)) {
     return decision(driverId, false, "The exact authorization request is invalid.");
+  }
 
   const identities = state.identities.filter((identity) => identity.id === request.principalId);
-  if (identities.length === 0)
+  if (identities.length === 0) {
     return decision(
       driverId,
       false,
       "The identity is not explicitly provisioned for the singleton Installation.",
     );
-  if (identities.length !== 1)
+  }
+  if (identities.length !== 1) {
     return decision(driverId, false, "The provisioned identity is ambiguous.");
+  }
 
   const identity = identities[0];
-  if (!identity) return decision(driverId, false, "The provisioned identity is unavailable.");
+  if (!identity) {
+    return decision(driverId, false, "The provisioned identity is unavailable.");
+  }
 
   const identityEvidence = { identityId: identity.id };
-  if (identity.namespaceId !== undefined && identity.namespaceId !== request.resource.namespaceId)
+  if (identity.namespaceId !== undefined && identity.namespaceId !== request.resource.namespaceId) {
     return decision(
       driverId,
       false,
       "The identity cannot access another namespace.",
       evidence(identityEvidence),
     );
+  }
 
   const applicableGroupIds = new Set(
     identity.kind !== "principal"
@@ -576,7 +595,9 @@ function evaluateValidatedAuthorization(
     const subjectMatches =
       (binding.subjectKind === "identity" && binding.subjectId === identity.id) ||
       (binding.subjectKind === "group" && applicableGroupIds.has(binding.subjectId));
-    if (!subjectMatches || !bindingScopeMatches(binding, request.resource)) continue;
+    if (!subjectMatches || !bindingScopeMatches(binding, request.resource)) {
+      continue;
+    }
 
     const role = state.roles.find((candidate) => candidate.id === binding.roleId);
     if (
@@ -586,12 +607,15 @@ function evaluateValidatedAuthorization(
         (permission) =>
           permission.action === request.action && permission.resourceKind === request.resource.kind,
       )
-    )
+    ) {
       continue;
+    }
 
     matchedBindingIds.add(binding.id);
     matchedRoleIds.add(role.id);
-    if (binding.subjectKind === "group") grantingGroupIds.add(binding.subjectId);
+    if (binding.subjectKind === "group") {
+      grantingGroupIds.add(binding.subjectId);
+    }
   }
 
   const applicableRestrictionIds = state.restrictions
@@ -605,21 +629,23 @@ function evaluateValidatedAuthorization(
     restrictionIds: applicableRestrictionIds,
   });
 
-  if (matchedBindingIds.size === 0)
+  if (matchedBindingIds.size === 0) {
     return decision(
       driverId,
       false,
       "No explicit scoped binding grants the exact action and resource.",
       authorizationEvidence,
     );
+  }
 
-  if (applicableRestrictionIds.length > 0)
+  if (applicableRestrictionIds.length > 0) {
     return decision(
       driverId,
       false,
       "An applicable Restriction denies the exact action and resource.",
       authorizationEvidence,
     );
+  }
 
   return decision(
     driverId,
@@ -634,8 +660,9 @@ export function evaluateAuthorization(
   state: NativeIAMState,
   driverId = "occ-native-iam",
 ): AuthorizationDecision {
-  if (!isNonEmptyString(driverId))
+  if (!isNonEmptyString(driverId)) {
     return decision("occ-native-iam", false, "The selected IAM Driver is invalid.");
+  }
 
   try {
     validateNativeIAMState(state);
@@ -673,11 +700,15 @@ export class NativeIAMDriver implements IAMDriver {
   constructor(state: NativeIAMStateStore, options: NativeIAMDriverOptions = {}) {
     this.id = options.id ?? "occ-native-iam";
     this.implementation = options.implementation ?? "native";
-    if (!isNonEmptyString(this.id)) throw new TypeError("Native IAM Driver id must be nonempty.");
-    if (!isNonEmptyString(this.implementation))
+    if (!isNonEmptyString(this.id)) {
+      throw new TypeError("Native IAM Driver id must be nonempty.");
+    }
+    if (!isNonEmptyString(this.implementation)) {
       throw new TypeError("Native IAM Driver implementation must be nonempty.");
-    if (!state || typeof state.loadNativeIAMState !== "function")
+    }
+    if (!state || typeof state.loadNativeIAMState !== "function") {
       throw new TypeError("Native IAM Driver requires a platform state store.");
+    }
     this.state = state;
   }
 
@@ -691,9 +722,12 @@ export class NativeIAMDriver implements IAMDriver {
         : !isNonEmptyString(input.servicePrincipalId) ||
           input.issuer !== undefined ||
           input.subject !== undefined)
-    )
+    ) {
       return undefined;
-    if (!optionalNonempty(input.namespaceId)) return undefined;
+    }
+    if (!optionalNonempty(input.namespaceId)) {
+      return undefined;
+    }
 
     const state = await this.state.loadNativeIAMState();
     try {
@@ -703,11 +737,15 @@ export class NativeIAMDriver implements IAMDriver {
     }
 
     const matches = state.identities.filter((identity) => {
-      if (identity.namespaceId !== undefined && identity.namespaceId !== input.namespaceId)
+      if (identity.namespaceId !== undefined && identity.namespaceId !== input.namespaceId) {
         return false;
-      if (input.servicePrincipalId !== undefined)
+      }
+      if (input.servicePrincipalId !== undefined) {
         return identity.kind === "service_principal" && identity.id === input.servicePrincipalId;
-      if (!("issuer" in identity) || !("subject" in identity)) return false;
+      }
+      if (!("issuer" in identity) || !("subject" in identity)) {
+        return false;
+      }
       return identity.issuer === input.issuer && identity.subject === input.subject;
     });
 

@@ -73,12 +73,15 @@ function kubernetesSecretName(identity: SecretIdentity): string {
 
 function validateIdentity(identity: SecretIdentity): void {
   const value = asRecord(identity);
-  if (value === undefined) throw new SecretValidationError("Secret identity is required.");
+  if (value === undefined) {
+    throw new SecretValidationError("Secret identity is required.");
+  }
   const id = required(value.id, "Secret ID");
   const namespaceId = required(value.namespaceId, "Secret Namespace ID");
   required(value.name, "Secret name");
-  if (!id.startsWith("sec_"))
+  if (!id.startsWith("sec_")) {
     throw new SecretValidationError("Secret IDs must use the sec_ prefix.");
+  }
   if (!namespaceId.startsWith("ns_")) {
     throw new SecretValidationError("Secret Namespace IDs must use the ns_ prefix.");
   }
@@ -88,7 +91,9 @@ function validateValue(value: string): void {
   if (typeof value !== "string" || value.length === 0) {
     throw new SecretValidationError("Secret value must be a nonempty UTF-8 string.");
   }
-  if (value.includes("\0")) throw new SecretValidationError("Secret value cannot contain NUL.");
+  if (value.includes("\0")) {
+    throw new SecretValidationError("Secret value cannot contain NUL.");
+  }
   if (containsUnpairedSurrogate(value)) {
     throw new SecretValidationError("Secret value must be well-formed UTF-16 for UTF-8 storage.");
   }
@@ -100,7 +105,9 @@ function validateValue(value: string): void {
 function containsUnpairedSurrogate(value: string): boolean {
   for (let index = 0; index < value.length; index += 1) {
     const code = value.charCodeAt(index);
-    if (code < 0xd800 || code > 0xdfff) continue;
+    if (code < 0xd800 || code > 0xdfff) {
+      continue;
+    }
     if (
       code >= 0xd800 &&
       code <= 0xdbff &&
@@ -118,12 +125,16 @@ function containsUnpairedSurrogate(value: string): boolean {
 
 function validateBackendRef(reference: SecretBackendRef): void {
   const value = asRecord(reference);
-  if (value === undefined) throw new SecretValidationError("Secret backend reference is required.");
+  if (value === undefined) {
+    throw new SecretValidationError("Secret backend reference is required.");
+  }
   required(value.namespaceName, "Secret backend namespace");
   required(value.name, "Secret backend name");
   const key = required(value.key, "Secret backend key");
   required(value.uid, "Secret backend UID");
-  if (key !== SECRET_KEY) throw new SecretOwnershipError("Secret backend key is unsupported.");
+  if (key !== SECRET_KEY) {
+    throw new SecretOwnershipError("Secret backend key is unsupported.");
+  }
 }
 
 function sanitizedFailure(error: unknown, action: string): Error {
@@ -200,8 +211,9 @@ export class KubernetesSecretDriver implements SecretDriver {
 
   static validateConfiguration(configuration: unknown): void {
     const value = asRecord(configuration);
-    if (value === undefined)
+    if (value === undefined) {
       throw new SecretValidationError("Kubernetes Secret options are required.");
+    }
     if ("clients" in value || Object.keys(value).some((key) => key !== "authentication")) {
       throw new SecretValidationError(
         "Injected clients and unknown Kubernetes Secret options are not supported.",
@@ -320,7 +332,9 @@ export class KubernetesSecretDriver implements SecretDriver {
         "read",
       );
     } catch (error) {
-      if (error instanceof SecretBackendMissingError) return;
+      if (error instanceof SecretBackendMissingError) {
+        return;
+      }
       throw error;
     }
     this.checkedBackendRef(existing, secret, namespace, secret.backendRef);
@@ -476,8 +490,9 @@ export class KubernetesSecretDriver implements SecretDriver {
         throw new SecretOwnershipError("Secret storage requires a ready Kubernetes namespace.");
       }
     } catch (error) {
-      if (error instanceof SecretOwnershipError || error instanceof SecretValidationError)
+      if (error instanceof SecretOwnershipError || error instanceof SecretValidationError) {
         throw error;
+      }
       throw sanitizedFailure(error, "namespace verification");
     }
     return placement.name;
@@ -500,7 +515,9 @@ export class KubernetesSecretDriver implements SecretDriver {
         if (ownerSignal?.aborted) {
           throw new SecretBackendUnavailableError(`The Kubernetes Secret ${action} was cancelled.`);
         }
-        if (deadline.aborted) throw timeoutFailure(action);
+        if (deadline.aborted) {
+          throw timeoutFailure(action);
+        }
         const status = numericErrorStatus(error);
         const retryable =
           status === 429 ||
@@ -517,7 +534,9 @@ export class KubernetesSecretDriver implements SecretDriver {
   }
 
   private async core(): Promise<CoreV1Api> {
-    if (this.client === undefined) this.client = this.createCore();
+    if (this.client === undefined) {
+      this.client = this.createCore();
+    }
     return this.client;
   }
 

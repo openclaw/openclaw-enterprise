@@ -71,7 +71,9 @@ async function fetchFromInjectedApp(app, request) {
   const convertedHeaders = new Headers();
   for (const [name, value] of Object.entries(result.headers)) {
     if (Array.isArray(value)) {
-      for (const entry of value) convertedHeaders.append(name, entry);
+      for (const entry of value) {
+        convertedHeaders.append(name, entry);
+      }
     } else if (value !== undefined) {
       convertedHeaders.set(name, String(value));
     }
@@ -90,7 +92,9 @@ test(
     const outputDirectory = await mkdtemp(join(tmpdir(), "openclaw-development-bootstrap-key-"));
     let app;
     context.after(async () => {
-      if (app !== undefined) await app.close();
+      if (app !== undefined) {
+        await app.close();
+      }
       await observerPool.end();
       await rm(outputDirectory, { recursive: true, force: true });
     });
@@ -239,8 +243,12 @@ test(
     let appA;
     let appB;
     context.after(async () => {
-      if (appB !== undefined) await appB.close();
-      if (appA !== undefined) await appA.close();
+      if (appB !== undefined) {
+        await appB.close();
+      }
+      if (appA !== undefined) {
+        await appA.close();
+      }
       await observerPool.end();
     });
 
@@ -379,7 +387,9 @@ test(
     const observerPool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
     let app;
     context.after(async () => {
-      if (app !== undefined) await app.close();
+      if (app !== undefined) {
+        await app.close();
+      }
       await observerPool.end();
     });
 

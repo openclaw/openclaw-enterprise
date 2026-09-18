@@ -127,37 +127,43 @@ const NAMESPACE_IDENTIFIER =
 
 function rows(value: unknown[]): PostgresRow[] {
   return value.map((row) => {
-    if (row === null || typeof row !== "object" || Array.isArray(row))
+    if (row === null || typeof row !== "object" || Array.isArray(row)) {
       throw new DependencyUnavailableError("The persistence repository returned invalid data.");
+    }
     return row as PostgresRow;
   });
 }
 
 function text(row: PostgresRow, key: string): string {
   const value = row[key];
-  if (typeof value !== "string" || value.length === 0)
+  if (typeof value !== "string" || value.length === 0) {
     throw new DependencyUnavailableError("Persisted platform state is invalid or incomplete.");
+  }
   return value;
 }
 
 function optionalText(row: PostgresRow, key: string): string | undefined {
   const value = row[key];
-  if (value === null || value === undefined) return undefined;
+  if (value === null || value === undefined) {
+    return undefined;
+  }
   return text(row, key);
 }
 
 function timestamp(row: PostgresRow, key: string): string {
   const value = row[key];
   const date = value instanceof Date ? value : typeof value === "string" ? new Date(value) : null;
-  if (date === null || Number.isNaN(date.getTime()))
+  if (date === null || Number.isNaN(date.getTime())) {
     throw new DependencyUnavailableError("Persisted platform state has an invalid timestamp.");
+  }
   return date.toISOString();
 }
 
 function jsonObject(value: unknown): Record<string, unknown> {
   const parsed = typeof value === "string" ? (JSON.parse(value) as unknown) : value;
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed))
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new DependencyUnavailableError("Persisted platform state contains invalid JSON.");
+  }
   return parsed as Record<string, unknown>;
 }
 
@@ -174,7 +180,9 @@ function normalizedPlugins(plugins?: PluginDesiredState): PluginDesiredState | u
 }
 
 function pluginStateFromJson(value: unknown): PluginDesiredState | undefined {
-  if (value === null || value === undefined) return undefined;
+  if (value === null || value === undefined) {
+    return undefined;
+  }
   const parsed = jsonObject(value);
   return normalizePluginDesiredState(parsed, invalidPersistedPluginState);
 }
@@ -189,8 +197,9 @@ function installationFromRow(row: PostgresRow): Readonly<Installation> {
 
 function namespaceFromRow(row: PostgresRow): Readonly<PersistedNamespace> {
   const status = text(row, "status");
-  if (!["provisioning", "ready", "failed", "deleting"].includes(status))
+  if (!["provisioning", "ready", "failed", "deleting"].includes(status)) {
     throw new DependencyUnavailableError("Persisted Namespace status is invalid.");
+  }
   const deletedAt =
     row.deleted_at === null || row.deleted_at === undefined
       ? undefined
@@ -216,8 +225,9 @@ function agentFromRow(row: PostgresRow): Readonly<Agent> {
   }
   const providerId = row.provider_id === null ? null : text(row, "provider_id");
   const desiredRuntimeState = text(row, "desired_runtime_state");
-  if (desiredRuntimeState !== "running" && desiredRuntimeState !== "stopped")
+  if (desiredRuntimeState !== "running" && desiredRuntimeState !== "stopped") {
     throw new DependencyUnavailableError("Persisted Agent desired runtime state is invalid.");
+  }
   return immutableCopy({
     id: text(row, "id"),
     namespaceId: text(row, "namespace_id"),
@@ -280,8 +290,9 @@ function secretFromRow(row: PostgresRow): Readonly<Secret> {
 function revisionFromRow(row: PostgresRow): Readonly<AgentRevision> {
   const rawNumber = row.revision_number;
   const revision = typeof rawNumber === "string" ? Number(rawNumber) : rawNumber;
-  if (typeof revision !== "number" || !Number.isSafeInteger(revision) || revision <= 0)
+  if (typeof revision !== "number" || !Number.isSafeInteger(revision) || revision <= 0) {
     throw new DependencyUnavailableError("Persisted AgentRevision numbering is invalid.");
+  }
   const admitted = jsonObject(row.admitted_spec) as {
     configuration_id: AgentRevision["configurationId"];
     configuration_kind: AgentRevision["configurationKind"];
@@ -298,16 +309,18 @@ function revisionFromRow(row: PostgresRow): Readonly<AgentRevision> {
   if (
     Object.hasOwn(admitted, "service_account") ||
     !validHarnessAuthSnapshot(admitted.harness_auth, text(row, "namespace_id"))
-  )
+  ) {
     throw new DependencyUnavailableError(
       "Persisted AgentRevision harness authentication is invalid or legacy.",
     );
+  }
   const secretBindings =
     admitted.secret_bindings === undefined
       ? undefined
       : secretBindingsFromJson(admitted.secret_bindings, text(row, "namespace_id"));
-  if (!validPluginRevisionState(admitted.plugins))
+  if (!validPluginRevisionState(admitted.plugins)) {
     throw new DependencyUnavailableError("Persisted AgentRevision plugin state is invalid.");
+  }
   return immutableCopy({
     id: text(row, "id"),
     namespaceId: text(row, "namespace_id"),
@@ -335,8 +348,9 @@ function revisionFromRow(row: PostgresRow): Readonly<AgentRevision> {
 }
 
 function secretBindingsFromJson(value: unknown, namespaceId: string): SecretBindings | undefined {
-  if (!NAMESPACE_IDENTIFIER.test(namespaceId))
+  if (!NAMESPACE_IDENTIFIER.test(namespaceId)) {
     throw new DependencyUnavailableError("Persisted Secret bindings have an invalid Namespace.");
+  }
   let parsed: unknown;
   try {
     parsed = typeof value === "string" ? (JSON.parse(value) as unknown) : value;
@@ -350,8 +364,9 @@ function secretBindingsFromJson(value: unknown, namespaceId: string): SecretBind
     throw new DependencyUnavailableError("Persisted Secret bindings are invalid.");
   }
   for (const { source } of Object.values(normalized)) {
-    if (source.namespaceId !== namespaceId || !SECRET_IDENTIFIER.test(source.id))
+    if (source.namespaceId !== namespaceId || !SECRET_IDENTIFIER.test(source.id)) {
       throw new DependencyUnavailableError("Persisted Secret bindings reference invalid Secrets.");
+    }
   }
   return Object.keys(normalized).length === 0 ? undefined : immutableCopy(normalized);
 }
@@ -363,8 +378,9 @@ function secretBindingsFromState(
   try {
     return secretBindingsFromJson(value, namespaceId);
   } catch (error) {
-    if (error instanceof DependencyUnavailableError)
+    if (error instanceof DependencyUnavailableError) {
       throw new ScopeViolationError("Secret bindings are invalid.");
+    }
     throw error;
   }
 }
@@ -384,7 +400,9 @@ function referencedSecretIds(
 ): readonly string[] {
   const normalized =
     bindings === undefined ? undefined : secretBindingsFromState(bindings, namespaceId);
-  if (normalized === undefined) return Object.freeze([]);
+  if (normalized === undefined) {
+    return Object.freeze([]);
+  }
   return Object.freeze(
     Array.from(new Set(Object.values(normalized).map(({ source }) => source.id))),
   );
@@ -395,24 +413,27 @@ function databaseError(error: unknown): Error {
     error instanceof ScopeViolationError ||
     error instanceof DependencyUnavailableError ||
     !(error instanceof Error)
-  )
+  ) {
     return error instanceof Error
       ? error
       : new DependencyUnavailableError("The platform persistence repository is unavailable.");
+  }
 
   const code = "code" in error && typeof error.code === "string" ? error.code : undefined;
-  if (code === "23505")
+  if (code === "23505") {
     return new ResourceConflictError(
       "A platform resource with this identity or name already exists.",
     );
+  }
   if (
     code === "23001" ||
     code === "23503" ||
     code === "23514" ||
     code === "23502" ||
     code === "55000"
-  )
+  ) {
     return new ScopeViolationError("The resource violates its exact platform ownership or state.");
+  }
   if (
     code?.startsWith("08") ||
     code?.startsWith("53") ||
@@ -423,8 +444,9 @@ function databaseError(error: unknown): Error {
     code === "ECONNREFUSED" ||
     code === "ECONNRESET" ||
     code === "ETIMEDOUT"
-  )
+  ) {
     return new DependencyUnavailableError("The platform persistence repository is unavailable.");
+  }
   return error;
 }
 
@@ -443,8 +465,9 @@ function commitOutcomeUnknown(error: unknown): boolean {
 
 function auditDetails(event: AuditEvent): Record<string, unknown> | undefined {
   const details: Record<string, unknown> = { ...(event.details ?? {}) };
-  if (AUDIT_METADATA_KEY in details)
+  if (AUDIT_METADATA_KEY in details) {
     throw new ScopeViolationError("The audit details contain reserved persistence metadata.");
+  }
 
   const metadata: Record<string, unknown> = {};
   for (const key of [
@@ -459,9 +482,13 @@ function auditDetails(event: AuditEvent): Record<string, unknown> | undefined {
     "reasonCode",
   ] as const) {
     const value = event[key];
-    if (value !== undefined) metadata[key] = value;
+    if (value !== undefined) {
+      metadata[key] = value;
+    }
   }
-  if (Object.keys(metadata).length > 0) details[AUDIT_METADATA_KEY] = metadata;
+  if (Object.keys(metadata).length > 0) {
+    details[AUDIT_METADATA_KEY] = metadata;
+  }
   return Object.keys(details).length > 0 ? details : undefined;
 }
 
@@ -474,13 +501,16 @@ function auditFromRow(row: PostgresRow, installationId: string): Readonly<AuditE
     !RESOURCE_KINDS.has(resourceKind) ||
     !["success", "denied", "failure"].includes(outcome) ||
     !["bootstrap", "mutation", "authorization_denial"].includes(kind)
-  )
+  ) {
     throw new DependencyUnavailableError("Persisted audit evidence contains an invalid event.");
+  }
 
   const rawDetails = row.details === null ? undefined : jsonObject(row.details);
   const details = rawDetails === undefined ? undefined : { ...rawDetails };
   const rawMetadata = details?.[AUDIT_METADATA_KEY];
-  if (details !== undefined) delete details[AUDIT_METADATA_KEY];
+  if (details !== undefined) {
+    delete details[AUDIT_METADATA_KEY];
+  }
   const metadata = rawMetadata === undefined ? {} : jsonObject(rawMetadata);
 
   return immutableCopy({
@@ -504,8 +534,9 @@ function auditFromRow(row: PostgresRow, installationId: string): Readonly<AuditE
 
 function permissions(value: unknown): readonly Permission[] {
   const parsed = typeof value === "string" ? (JSON.parse(value) as unknown) : value;
-  if (!Array.isArray(parsed))
+  if (!Array.isArray(parsed)) {
     throw new DependencyUnavailableError("Persisted IAM permissions must be an array.");
+  }
   return Object.freeze(
     parsed.map((permission): Permission => {
       if (
@@ -515,8 +546,9 @@ function permissions(value: unknown): readonly Permission[] {
         !PERMISSION_ACTIONS.has(permission.action) ||
         typeof permission.resourceKind !== "string" ||
         !RESOURCE_KINDS.has(permission.resourceKind)
-      )
+      ) {
         throw new DependencyUnavailableError("Persisted IAM permissions are invalid.");
+      }
       return immutableCopy({
         action: permission.action as Permission["action"],
         resourceKind: permission.resourceKind as Permission["resourceKind"],
@@ -551,11 +583,14 @@ export class PostgresPlatformState implements PlatformStateStore {
     return this.execute(true, async (_state, context) => {
       const installation = await this.currentInstallation(context);
       if (installation === undefined) {
-        if (this.bootstrapNativeIAM !== undefined) return this.bootstrapNativeIAM;
+        if (this.bootstrapNativeIAM !== undefined) {
+          return this.bootstrapNativeIAM;
+        }
         throw new DependencyUnavailableError("The platform Installation has not been initialized.");
       }
-      if (installationId !== undefined && installation.id !== installationId)
+      if (installationId !== undefined && installation.id !== installationId) {
         throw new ScopeViolationError("IAM state belongs to another Installation.");
+      }
 
       const identityRows = rows(
         (
@@ -608,17 +643,19 @@ export class PostgresPlatformState implements PlatformStateStore {
         const id = text(row, "id");
         const kind = text(row, "kind");
         const namespaceId = optionalText(row, "namespace_id");
-        if (kind === "principal")
+        if (kind === "principal") {
           return immutableCopy({
             id,
             kind,
             issuer: text(row, "issuer"),
             subject: text(row, "subject"),
           });
+        }
         if (kind === "service_principal") {
           const agentId = optionalText(row, "agent_id");
-          if (agentId !== undefined && namespaceId === undefined)
+          if (agentId !== undefined && namespaceId === undefined) {
             throw new DependencyUnavailableError("Persisted IAM identity has an invalid owner.");
+          }
           return immutableCopy({
             id,
             kind,
@@ -665,12 +702,14 @@ export class PostgresPlatformState implements PlatformStateStore {
         if (
           (resourceKind === undefined) !== (resourceId === undefined) ||
           (resourceKind !== undefined && !RESOURCE_KINDS.has(resourceKind))
-        )
+        ) {
           throw new DependencyUnavailableError("Persisted IAM binding has an invalid resource.");
+        }
         const identitySubjectId = optionalText(row, "identity_subject_id");
         const groupSubjectId = optionalText(row, "group_subject_id");
-        if ((identitySubjectId === undefined) === (groupSubjectId === undefined))
+        if ((identitySubjectId === undefined) === (groupSubjectId === undefined)) {
           throw new DependencyUnavailableError("Persisted IAM binding has an ambiguous subject.");
+        }
         return immutableCopy({
           id: text(row, "id"),
           ...(namespaceId === undefined ? {} : { namespaceId }),
@@ -693,8 +732,9 @@ export class PostgresPlatformState implements PlatformStateStore {
           !PERMISSION_ACTIONS.has(action) ||
           !RESOURCE_KINDS.has(resourceKind) ||
           text(row, "effect") !== "deny"
-        )
+        ) {
           throw new DependencyUnavailableError("Persisted IAM restriction is invalid.");
+        }
         return immutableCopy({
           id: text(row, "id"),
           ...(namespaceId === undefined ? {} : { namespaceId }),
@@ -714,11 +754,13 @@ export class PostgresPlatformState implements PlatformStateStore {
   async seedNativeIAM(state: PersistedNativeIAMState): Promise<void> {
     return this.transact(async (unit) => {
       const context = this.contexts.get(unit);
-      if (context === undefined)
+      if (context === undefined) {
         throw new DependencyUnavailableError("The platform transaction is unavailable.");
+      }
       const installation = await this.currentInstallation(context);
-      if (installation === undefined)
+      if (installation === undefined) {
         throw new ScopeViolationError("IAM state requires an initialized Installation.");
+      }
       await this.insertIAMState(context, state);
     });
   }
@@ -730,14 +772,17 @@ export class PostgresPlatformState implements PlatformStateStore {
     let installationId: string | undefined;
     await this.transact(async (unit) => {
       const context = this.contexts.get(unit);
-      if (context === undefined)
+      if (context === undefined) {
         throw new DependencyUnavailableError("The platform transaction is unavailable.");
+      }
       const installation = await this.currentInstallation(context);
-      if (installation === undefined)
+      if (installation === undefined) {
         throw new ScopeViolationError("IAM state requires an initialized Installation.");
+      }
       installationId = installation.id;
-      if (seed.roles.length > 0)
+      if (seed.roles.length > 0) {
         throw new ScopeViolationError("Account provisioning must bind an existing IAM Role.");
+      }
       for (const binding of seed.bindings) {
         if (
           binding.subjectKind !== "identity" ||
@@ -745,10 +790,11 @@ export class PostgresPlatformState implements PlatformStateStore {
           binding.resourceKind !== "installation" ||
           binding.resourceId !== installation.id ||
           binding.namespaceId !== undefined
-        )
+        ) {
           throw new ScopeViolationError(
             "Account provisioning requires an exact Installation binding.",
           );
+        }
       }
       await context.client.query(
         `INSERT INTO occ.iam_identities (id, namespace_id, agent_id, kind, issuer, subject)
@@ -779,7 +825,9 @@ export class PostgresPlatformState implements PlatformStateStore {
           ],
         );
       }
-      if (auditEvent !== undefined) await unit.audit.append(auditEvent);
+      if (auditEvent !== undefined) {
+        await unit.audit.append(auditEvent);
+      }
     });
     return this.loadNativeIAMState(installationId);
   }
@@ -804,8 +852,9 @@ export class PostgresPlatformState implements PlatformStateStore {
     parameters?: readonly unknown[],
   ): Promise<{ rows: unknown[]; rowCount: number | null }> {
     const context = this.contexts.get(unit);
-    if (context === undefined)
+    if (context === undefined) {
       throw new DependencyUnavailableError("The platform transaction is unavailable.");
+    }
     return context.lifetime.run(() => context.client.query(statement, parameters));
   }
 
@@ -883,13 +932,17 @@ export class PostgresPlatformState implements PlatformStateStore {
       this.contexts.set(unit, context);
       const result = await work(unit, context);
       await lifetime.finish();
-      if (transportError) throw transportError;
+      if (transportError) {
+        throw transportError;
+      }
       committing = true;
       let completion: unknown;
       try {
         completion = await client.query("COMMIT");
       } catch (error) {
-        if (commitOutcomeUnknown(error)) throw new PostgresCommitOutcomeUnknownError();
+        if (commitOutcomeUnknown(error)) {
+          throw new PostgresCommitOutcomeUnknownError();
+        }
         committing = false;
         throw error;
       }
@@ -901,7 +954,9 @@ export class PostgresPlatformState implements PlatformStateStore {
         started = false;
         throw new DependencyUnavailableError("The platform transaction was rolled back.");
       }
-      if (command !== "COMMIT") throw new PostgresCommitOutcomeUnknownError();
+      if (command !== "COMMIT") {
+        throw new PostgresCommitOutcomeUnknownError();
+      }
       acknowledged = true;
       committing = false;
       started = false;
@@ -920,7 +975,9 @@ export class PostgresPlatformState implements PlatformStateStore {
       throw committing ? new PostgresCommitOutcomeUnknownError() : databaseError(error);
     } finally {
       lifetime.close();
-      if (unit !== undefined) this.contexts.delete(unit);
+      if (unit !== undefined) {
+        this.contexts.delete(unit);
+      }
       let cleanupFailed = false;
       try {
         client.release(discard || transportError !== undefined);
@@ -934,7 +991,9 @@ export class PostgresPlatformState implements PlatformStateStore {
       }
       // Preserve the original failure. A failure after acknowledged COMMIT can
       // never be reported as definite rollback or authorize an automatic replay.
-      if (!failed && cleanupFailed && acknowledged) throw new PostgresCommitOutcomeUnknownError();
+      if (!failed && cleanupFailed && acknowledged) {
+        throw new PostgresCommitOutcomeUnknownError();
+      }
     }
   }
 
@@ -949,8 +1008,9 @@ export class PostgresPlatformState implements PlatformStateStore {
           )
         ).rows,
       );
-      if (candidates.length > 1)
+      if (candidates.length > 1) {
         throw new DependencyUnavailableError("The platform Installation is ambiguous.");
+      }
       context.installation =
         candidates[0] === undefined ? undefined : installationFromRow(candidates[0]);
       context.installationLoaded = true;
@@ -960,8 +1020,9 @@ export class PostgresPlatformState implements PlatformStateStore {
 
   private async requireInitialized(context: TransactionContext): Promise<Readonly<Installation>> {
     const installation = await this.currentInstallation(context);
-    if (installation === undefined)
+    if (installation === undefined) {
       throw new ScopeViolationError("The server-owned Installation has not been initialized.");
+    }
     return installation;
   }
 
@@ -970,10 +1031,11 @@ export class PostgresPlatformState implements PlatformStateStore {
     installationId: string,
   ): Promise<Readonly<Installation>> {
     const installation = await this.requireInitialized(context);
-    if (installation.id !== installationId)
+    if (installation.id !== installationId) {
       throw new ScopeViolationError(
         "The resource does not belong to the server-owned Installation.",
       );
+    }
     return installation;
   }
 
@@ -991,16 +1053,18 @@ export class PostgresPlatformState implements PlatformStateStore {
         return installation === undefined ? undefined : immutableCopy(installation);
       },
       createInstallation: async (installation) => {
-        if ((await this.currentInstallation(context)) !== undefined)
+        if ((await this.currentInstallation(context)) !== undefined) {
           throw new ResourceConflictError("An Installation has already been bootstrapped.");
+        }
         await client.query(
           "INSERT INTO occ.installation (id, name, created_at) VALUES ($1, $2, $3)",
           [installation.id, installation.name, installation.createdAt],
         );
         context.installation = immutableCopy(installation);
         context.installationLoaded = true;
-        if (this.bootstrapNativeIAM !== undefined)
+        if (this.bootstrapNativeIAM !== undefined) {
           await this.insertIAMState(context, this.bootstrapNativeIAM);
+        }
         return immutableCopy(installation);
       },
     };
@@ -1129,7 +1193,9 @@ export class PostgresPlatformState implements PlatformStateStore {
             )
           ).rows,
         )[0];
-        if (updated !== undefined) return namespaceFromRow(updated);
+        if (updated !== undefined) {
+          return namespaceFromRow(updated);
+        }
         const existing = rows(
           (
             await client.query(
@@ -1169,7 +1235,9 @@ export class PostgresPlatformState implements PlatformStateStore {
       bindings: SecretBindings | undefined,
     ): Promise<void> => {
       const secretIds = referencedSecretIds(namespaceId, bindings);
-      if (secretIds.length === 0) return;
+      if (secretIds.length === 0) {
+        return;
+      }
       const found = rows(
         (
           await client.query(
@@ -1180,8 +1248,9 @@ export class PostgresPlatformState implements PlatformStateStore {
           )
         ).rows,
       );
-      if (found.length !== secretIds.length)
+      if (found.length !== secretIds.length) {
         throw new ScopeViolationError("Secret bindings reference unavailable Secret metadata.");
+      }
     };
 
     const findConfiguration = async (
@@ -1212,8 +1281,9 @@ export class PostgresPlatformState implements PlatformStateStore {
         if (
           namespace === undefined ||
           (namespace.status !== "provisioning" && namespace.status !== "ready")
-        )
+        ) {
           throw new ScopeViolationError("The Configuration belongs to an unavailable Namespace.");
+        }
         const serializedSecretBindings = serializeSecretBindings(
           configuration.namespaceId,
           configuration.secretBindings,
@@ -1257,7 +1327,9 @@ export class PostgresPlatformState implements PlatformStateStore {
         nextSecretBindings,
       ) => {
         const current = await findConfiguration(namespaceId, configurationId, true);
-        if (current === undefined || current.generation !== expectedGeneration) return undefined;
+        if (current === undefined || current.generation !== expectedGeneration) {
+          return undefined;
+        }
         const secretBindings =
           nextSecretBindings === undefined ? current.secretBindings : nextSecretBindings;
         await validateSecretBindingsAvailable(namespaceId, secretBindings);
@@ -1298,8 +1370,9 @@ export class PostgresPlatformState implements PlatformStateStore {
         if (
           namespace === undefined ||
           (namespace.status !== "provisioning" && namespace.status !== "ready")
-        )
+        ) {
           throw new ScopeViolationError("The Secret belongs to an unavailable Namespace.");
+        }
         await client.query(
           `INSERT INTO occ.secrets
            (id, namespace_id, name, driver_id, backend_namespace_name, backend_name,
@@ -1320,7 +1393,9 @@ export class PostgresPlatformState implements PlatformStateStore {
         return immutableCopy(secret);
       },
       hasReferences: async (namespaceId, secretId) => {
-        if ((await findSecret(namespaceId, secretId)) === undefined) return false;
+        if ((await findSecret(namespaceId, secretId)) === undefined) {
+          return false;
+        }
         const found = rows(
           (
             await client.query(
@@ -1384,9 +1459,12 @@ export class PostgresPlatformState implements PlatformStateStore {
         return found?.present === true;
       },
       deleteSecret: async (namespaceId, secretId) => {
-        if ((await findSecret(namespaceId, secretId)) === undefined) return false;
-        if (await secrets.hasReferences(namespaceId, secretId))
+        if ((await findSecret(namespaceId, secretId)) === undefined) {
+          return false;
+        }
+        if (await secrets.hasReferences(namespaceId, secretId)) {
           throw new ScopeViolationError("The Secret is referenced by active platform state.");
+        }
         const deleted = await client.query(
           `DELETE FROM occ.secrets AS s USING occ.namespaces AS n
            WHERE s.namespace_id = $1 AND s.id = $2
@@ -1463,8 +1541,9 @@ export class PostgresPlatformState implements PlatformStateStore {
         if (
           namespace === undefined ||
           (namespace.status !== "provisioning" && namespace.status !== "ready")
-        )
+        ) {
           throw new ScopeViolationError("The ServiceAccount belongs to an unavailable Namespace.");
+        }
         await client.query(
           `INSERT INTO occ.service_accounts
            (id, namespace_id, name, credential)
@@ -1495,7 +1574,9 @@ export class PostgresPlatformState implements PlatformStateStore {
         return updated === undefined ? undefined : serviceAccountFromRow(updated);
       },
       hasReferences: async (namespaceId, serviceAccountId) => {
-        if ((await findServiceAccount(namespaceId, serviceAccountId)) === undefined) return false;
+        if ((await findServiceAccount(namespaceId, serviceAccountId)) === undefined) {
+          return false;
+        }
         // One statement observes both sides of the worker's pending-to-active handoff.
         const found = rows(
           (
@@ -1528,10 +1609,11 @@ export class PostgresPlatformState implements PlatformStateStore {
         return found?.present === true;
       },
       deleteServiceAccount: async (namespaceId, serviceAccountId) => {
-        if (await serviceAccounts.hasReferences(namespaceId, serviceAccountId))
+        if (await serviceAccounts.hasReferences(namespaceId, serviceAccountId)) {
           throw new ScopeViolationError(
             "The ServiceAccount is referenced by active platform state.",
           );
+        }
         const deleted = await client.query(
           `DELETE FROM occ.service_accounts AS s USING occ.namespaces AS n
            WHERE s.namespace_id = $1 AND s.id = $2
@@ -1588,17 +1670,20 @@ export class PostgresPlatformState implements PlatformStateStore {
         if (
           namespace === undefined ||
           (namespace.status !== "provisioning" && namespace.status !== "ready")
-        )
+        ) {
           throw new ScopeViolationError("The Agent belongs to an unavailable Namespace.");
+        }
         const configuration = await configurations.findConfiguration(
           agent.namespaceId,
           agent.configurationId,
         );
-        if (configuration === undefined)
+        if (configuration === undefined) {
           throw new ScopeViolationError("The Agent references an unavailable Configuration.");
+        }
         await validateSecretBindingsAvailable(agent.namespaceId, configuration.secretBindings);
-        if (Object.hasOwn(agent, "serviceAccountId"))
+        if (Object.hasOwn(agent, "serviceAccountId")) {
           throw new ScopeViolationError("Legacy Agent authentication selectors are unsupported.");
+        }
         await assertHarnessAuthAvailable(
           { secrets, serviceAccounts },
           agent.namespaceId,
@@ -1646,11 +1731,13 @@ export class PostgresPlatformState implements PlatformStateStore {
         providerId,
         plugins,
       ) => {
-        if (harnessAuth !== undefined)
+        if (harnessAuth !== undefined) {
           await assertHarnessAuthAvailable({ secrets, serviceAccounts }, namespaceId, harnessAuth);
+        }
         const configuration = await configurations.findConfiguration(namespaceId, configurationId);
-        if (configuration === undefined)
+        if (configuration === undefined) {
           throw new ScopeViolationError("The Agent references an unavailable Configuration.");
+        }
         await validateSecretBindingsAvailable(namespaceId, configuration.secretBindings);
         const nextPlugins = plugins === undefined ? undefined : normalizedPlugins(plugins);
         const updated = rows(
@@ -1785,10 +1872,11 @@ export class PostgresPlatformState implements PlatformStateStore {
         if (
           Object.hasOwn(revision, "serviceAccount") ||
           !validHarnessAuthSnapshot(revision.harnessAuth, revision.namespaceId)
-        )
+        ) {
           throw new ScopeViolationError(
             "The AgentRevision harness authentication is invalid or legacy.",
           );
+        }
         await assertHarnessAuthAvailable(
           { secrets, serviceAccounts },
           revision.namespaceId,
@@ -1800,15 +1888,17 @@ export class PostgresPlatformState implements PlatformStateStore {
           owner.servicePrincipalId !== revision.servicePrincipalId ||
           owner.providerId !== revision.providerId ||
           !harnessAuthMatches(owner.harnessAuth, revision.harnessAuth)
-        )
+        ) {
           throw new ScopeViolationError("The AgentRevision belongs to an unavailable Agent.");
+        }
         const secretBindings =
           revision.secretBindings === undefined
             ? undefined
             : secretBindingsFromState(revision.secretBindings, revision.namespaceId);
         await validateSecretBindingsAvailable(revision.namespaceId, secretBindings);
-        if (!validPluginRevisionState(revision.plugins))
+        if (!validPluginRevisionState(revision.plugins)) {
           throw new ScopeViolationError("The AgentRevision plugin state is invalid.");
+        }
         await client.query(
           `INSERT INTO occ.agent_revisions
            (id, namespace_id, agent_id, revision_number, provider_id, admitted_spec, admitted_at)
@@ -1858,8 +1948,9 @@ export class PostgresPlatformState implements PlatformStateStore {
       audit: {
         append: async (event) => {
           await this.requireInstallation(context, event.installationId);
-          if (event.resource.namespaceId !== event.namespaceId)
+          if (event.resource.namespaceId !== event.namespaceId) {
             throw new ScopeViolationError("The audit event and resource scopes do not match.");
+          }
           const details = auditDetails(event);
           await client.query(
             `INSERT INTO occ.audit_events
@@ -1882,7 +1973,9 @@ export class PostgresPlatformState implements PlatformStateStore {
         },
         list: async () => {
           const installation = await this.currentInstallation(context);
-          if (installation === undefined) return Object.freeze([]);
+          if (installation === undefined) {
+            return Object.freeze([]);
+          }
           const found = rows(
             (
               await client.query(
@@ -1899,16 +1992,18 @@ export class PostgresPlatformState implements PlatformStateStore {
         append: async (operation) => {
           await this.requireInitialized(context);
           const namespaceId = operation.namespaceId;
-          if (namespaceId === undefined)
+          if (namespaceId === undefined) {
             throw new ScopeViolationError("Controller work requires an exact Namespace owner.");
+          }
 
           let agentId: string | undefined;
           let revisionId: string | undefined;
           let namespaceTarget: "ready" | "deleted" | undefined;
           let agentTarget: "stopped" | undefined;
           if (operation.kind === "namespace") {
-            if (namespaceId !== operation.resourceId)
+            if (namespaceId !== operation.resourceId) {
               throw new ScopeViolationError("Namespace work does not match its exact owner.");
+            }
             namespaceTarget = operation.target;
           } else if (operation.kind === "agent_revision") {
             revisionId = operation.resourceId;
@@ -1920,8 +2015,9 @@ export class PostgresPlatformState implements PlatformStateStore {
                 )
               ).rows,
             )[0];
-            if (owner === undefined)
+            if (owner === undefined) {
               throw new ScopeViolationError("AgentRevision work does not match its exact owner.");
+            }
             agentId = text(owner, "agent_id");
           } else if (operation.kind === "agent") {
             const owner = rows(
@@ -1932,8 +2028,9 @@ export class PostgresPlatformState implements PlatformStateStore {
                 )
               ).rows,
             )[0];
-            if (owner === undefined)
+            if (owner === undefined) {
               throw new ScopeViolationError("Agent work does not match its exact owner.");
+            }
             agentId = text(owner, "id");
             agentTarget = operation.target;
           } else {
@@ -1979,24 +2076,27 @@ export class PostgresPlatformState implements PlatformStateStore {
               };
               if (agentId === undefined) {
                 const target = text(row, "namespace_target");
-                if (target !== "ready" && target !== "deleted")
+                if (target !== "ready" && target !== "deleted") {
                   throw new DependencyUnavailableError(
                     "Persisted Namespace work has an invalid target.",
                   );
+                }
                 return immutableCopy({ ...base, kind: "namespace", target });
               }
               if (revisionId === undefined) {
                 const target = text(row, "agent_target");
-                if (target !== "stopped")
+                if (target !== "stopped") {
                   throw new DependencyUnavailableError(
                     "Persisted Agent work has an invalid target.",
                   );
+                }
                 const key = text(row, "idempotency_key");
                 const prefix = `agent:${agentId}:reconcile:${target}:`;
-                if (!key.startsWith(prefix) || key.length === prefix.length)
+                if (!key.startsWith(prefix) || key.length === prefix.length) {
                   throw new DependencyUnavailableError(
                     "Persisted Agent work has an invalid operation identity.",
                   );
+                }
                 return immutableCopy({
                   ...base,
                   kind: "agent",
@@ -2020,13 +2120,15 @@ export class PostgresPlatformState implements PlatformStateStore {
     const bindingIds = new Set<string>();
     const restrictionIds = new Set<string>();
     for (const identity of state.identities) {
-      if (identities.has(identity.id))
+      if (identities.has(identity.id)) {
         throw new DependencyUnavailableError("Persisted IAM identities are invalid or ambiguous.");
+      }
       identities.set(identity.id, identity);
     }
     for (const group of state.groups) {
-      if (groups.has(group.id))
+      if (groups.has(group.id)) {
         throw new DependencyUnavailableError("Persisted IAM groups are invalid or ambiguous.");
+      }
       groups.set(group.id, group);
     }
     for (const membership of state.memberships) {
@@ -2038,13 +2140,15 @@ export class PostgresPlatformState implements PlatformStateStore {
         principal?.kind !== "principal" ||
         group.namespaceId !== membership.namespaceId ||
         membershipKeys.has(key)
-      )
+      ) {
         throw new DependencyUnavailableError("Persisted IAM group memberships violate scope.");
+      }
       membershipKeys.add(key);
     }
     for (const role of state.roles) {
-      if (roles.has(role.id))
+      if (roles.has(role.id)) {
         throw new DependencyUnavailableError("Persisted IAM roles are invalid or ambiguous.");
+      }
       permissions(role.permissions);
       roles.set(role.id, role);
     }
@@ -2069,8 +2173,9 @@ export class PostgresPlatformState implements PlatformStateStore {
           binding.resourceKind === "namespace" &&
           binding.resourceId !== undefined &&
           binding.resourceId !== binding.namespaceId)
-      )
+      ) {
         throw new DependencyUnavailableError("Persisted IAM access bindings violate exact scope.");
+      }
       bindingIds.add(binding.id);
     }
     for (const restriction of state.restrictions) {
@@ -2084,8 +2189,9 @@ export class PostgresPlatformState implements PlatformStateStore {
           restriction.resourceId !== undefined &&
           restriction.resourceId !== restriction.namespaceId) ||
         (restriction.namespaceId !== undefined && restriction.resourceKind === "installation")
-      )
+      ) {
         throw new DependencyUnavailableError("Persisted IAM restrictions violate exact scope.");
+      }
       restrictionIds.add(restriction.id);
     }
     if (
@@ -2093,8 +2199,9 @@ export class PostgresPlatformState implements PlatformStateStore {
       (!state.identities.some((identity) => identity.kind === "principal") ||
         state.roles.length === 0 ||
         state.bindings.length === 0)
-    )
+    ) {
       throw new DependencyUnavailableError("Persisted native IAM state is incomplete.");
+    }
   }
 
   private async insertIAMState(

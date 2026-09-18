@@ -39,5 +39,7 @@ try {
   });
   process.exitCode = 1;
 } finally {
-  if (pool !== undefined) await pool.end();
+  if (pool !== undefined) {
+    await pool.end();
+  }
 }

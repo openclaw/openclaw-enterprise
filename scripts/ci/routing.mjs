@@ -106,13 +106,19 @@ async function downloadPinnedArtifact({ artifact, directory }) {
   assertInsideDirectory(directory, destination, `${artifact.name} manifest`);
   try {
     const existing = await readFile(destination);
-    if (sha256(existing) === artifact.sha256) return destination;
+    if (sha256(existing) === artifact.sha256) {
+      return destination;
+    }
   } catch (error) {
-    if (error.code !== "ENOENT") throw error;
+    if (error.code !== "ENOENT") {
+      throw error;
+    }
   }
 
   const response = await fetch(artifact.url, { signal: AbortSignal.timeout(60_000) });
-  if (!response.ok) throw new Error(`${artifact.name} download failed: HTTP ${response.status}.`);
+  if (!response.ok) {
+    throw new Error(`${artifact.name} download failed: HTTP ${response.status}.`);
+  }
   const data = Buffer.from(await response.arrayBuffer());
   const actual = sha256(data);
   if (actual !== artifact.sha256) {

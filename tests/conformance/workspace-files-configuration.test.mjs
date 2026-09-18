@@ -164,8 +164,9 @@ test("workspace-files access resolves native gateway endpoints through the selec
     computeDriver({
       getGatewayEndpoint(candidate) {
         endpoints.push(candidate);
-        if (candidate.namespaceId !== namespaceId || candidate.agentId !== agentId)
+        if (candidate.namespaceId !== namespaceId || candidate.agentId !== agentId) {
           return undefined;
+        }
         return "https://gateway.example/openclaw";
       },
     }),

@@ -266,7 +266,9 @@ const PLUGIN_SCHEMA_REFS = {
 };
 
 function validPluginDriverIdentity(value: unknown): value is PluginDriverIdentity {
-  if (!Check(PLUGIN_SCHEMA_REFS, PluginDriverIdentitySchema, value)) return false;
+  if (!Check(PLUGIN_SCHEMA_REFS, PluginDriverIdentitySchema, value)) {
+    return false;
+  }
   const driver = value as PluginDriverIdentity;
   return isNonEmptyString(driver.id) && isNonEmptyString(driver.implementation);
 }
@@ -275,7 +277,9 @@ export function normalizePluginDesiredState(
   plugins: unknown,
   fail: PluginValidationFailure,
 ): PluginDesiredState | undefined {
-  if (plugins === undefined) return undefined;
+  if (plugins === undefined) {
+    return undefined;
+  }
   if (!Check(PLUGIN_SCHEMA_REFS, PluginDesiredStateSchema, plugins)) {
     return fail("Agent plugin selections are invalid.");
   }
@@ -283,7 +287,9 @@ export function normalizePluginDesiredState(
 }
 
 export function validPluginRevisionState(value: unknown): value is PluginRevisionState | undefined {
-  if (value === undefined) return true;
+  if (value === undefined) {
+    return true;
+  }
   const record = asRecord(value);
   if (
     record === undefined ||

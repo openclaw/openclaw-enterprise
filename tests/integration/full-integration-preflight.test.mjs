@@ -153,7 +153,9 @@ test("preflight fetches only the provider environment for manual provider runs",
     },
     github: async ({ repository, path }) => {
       fetched.push({ repository, path });
-      if (path === "/environments/integration-provider-account") return providerEnvironment();
+      if (path === "/environments/integration-provider-account") {
+        return providerEnvironment();
+      }
       if (path === "/environments/integration-provider-account/deployment-branch-policies") {
         return mainOnlyPolicies;
       }
@@ -218,9 +220,12 @@ test("manual branch model runs require an exact environment branch grant and ind
     validateFullIntegrationPreflight({
       env: selectedEnv,
       github: async ({ path }) => {
-        if (path === "/environments/integration-model") return selectedEnvironment;
-        if (path === "/environments/integration-model/deployment-branch-policies")
+        if (path === "/environments/integration-model") {
+          return selectedEnvironment;
+        }
+        if (path === "/environments/integration-model/deployment-branch-policies") {
           return selectedPolicies;
+        }
         throw new Error(`unexpected path ${path}`);
       },
     });

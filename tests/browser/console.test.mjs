@@ -50,7 +50,9 @@ async function newPage(t, fixture) {
         cleanupError ??= error;
       }
     }
-    if (cleanupError) throw cleanupError;
+    if (cleanupError) {
+      throw cleanupError;
+    }
   });
   context = await browser.newContext();
   return { page: await context.newPage(), artifacts };
@@ -72,7 +74,9 @@ async function newMobilePage(t, fixture) {
         cleanupError ??= error;
       }
     }
-    if (cleanupError) throw cleanupError;
+    if (cleanupError) {
+      throw cleanupError;
+    }
   });
   context = await browser.newContext({
     hasTouch: true,
@@ -115,7 +119,9 @@ async function waitForRoutePhase(promise, description, release, signal) {
     function fail(reason) {
       release();
       const error = new Error(`${description} did not finish within ${routeHoldTimeoutMs}ms`);
-      if (reason !== undefined) error.cause = reason;
+      if (reason !== undefined) {
+        error.cause = reason;
+      }
       reject(error);
     }
 
@@ -132,7 +138,9 @@ async function waitForRoutePhase(promise, description, release, signal) {
     return await Promise.race([promise, deadline]);
   } finally {
     clearTimeout(timeout);
-    if (onAbort !== undefined) signal?.removeEventListener("abort", onAbort);
+    if (onAbort !== undefined) {
+      signal?.removeEventListener("abort", onAbort);
+    }
   }
 }
 
@@ -144,7 +152,9 @@ async function holdRoute(t, page, pattern, continueRoute) {
   let releaseWatchdog;
 
   function release() {
-    if (released) return;
+    if (released) {
+      return;
+    }
     released = true;
     clearTimeout(releaseWatchdog);
     releaseGate.resolve();

@@ -12,7 +12,9 @@ async function waitFor(description, read, timeoutMs = 10_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const value = await read();
-    if (value !== undefined) return value;
+    if (value !== undefined) {
+      return value;
+    }
     await delay(20);
   }
   assert.fail(`Timed out waiting for ${description}.`);
@@ -20,7 +22,9 @@ async function waitFor(description, read, timeoutMs = 10_000) {
 
 async function ensureInstallation(state, createDevelopmentIAMState, createAuthPrincipalSeed) {
   const existing = await state.loadInstallation();
-  if (existing !== undefined) return existing;
+  if (existing !== undefined) {
+    return existing;
+  }
 
   const installation = {
     id: `ins_${randomUUID()}`,

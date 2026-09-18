@@ -15,7 +15,9 @@ function inspect(path) {
   try {
     return fs.lstatSync(path);
   } catch (error) {
-    if (error.code === "ENOENT") return undefined;
+    if (error.code === "ENOENT") {
+      return undefined;
+    }
     throw error;
   }
 }
@@ -26,11 +28,15 @@ function directory(path, create = false) {
     fs.mkdirSync(path, { recursive: true, mode: 0o755 });
     return;
   }
-  if (!info?.isDirectory()) throw new OwnershipFailure("Expected an owned directory.");
+  if (!info?.isDirectory()) {
+    throw new OwnershipFailure("Expected an owned directory.");
+  }
 }
 
 function regular(path) {
-  if (!inspect(path)?.isFile()) throw new OwnershipFailure("Expected an owned regular file.");
+  if (!inspect(path)?.isFile()) {
+    throw new OwnershipFailure("Expected an owned regular file.");
+  }
 }
 
 function readJson(path) {
@@ -52,11 +58,15 @@ function verify(marker, expected) {
 }
 
 function atomicWrite(path, contents, mode = 0o600, owner) {
-  if (inspect(path) !== undefined) regular(path);
+  if (inspect(path) !== undefined) {
+    regular(path);
+  }
   const pending = temporary(path);
   try {
     fs.writeFileSync(pending, contents, { mode, flag: "wx" });
-    if (owner !== undefined) fs.chownSync(pending, owner.uid, owner.gid);
+    if (owner !== undefined) {
+      fs.chownSync(pending, owner.uid, owner.gid);
+    }
     fs.renameSync(pending, path);
   } finally {
     fs.rmSync(pending, { force: true });
@@ -82,8 +92,11 @@ async function command(file, args, allowFailure = false) {
       { encoding: "utf8", timeout: 60_000, maxBuffer: 64 * 1024 },
       (error, stdout) => {
         child = undefined;
-        if (error && !allowFailure) reject(new Error("Host command failed."));
-        else resolve({ success: !error, stdout: stdout.trim() });
+        if (error && !allowFailure) {
+          reject(new Error("Host command failed."));
+        } else {
+          resolve({ success: !error, stdout: stdout.trim() });
+        }
       },
     );
   });
@@ -99,7 +112,9 @@ async function userOwner(user) {
   if (!Number.isSafeInteger(uid) || !Number.isSafeInteger(gid)) {
     throw new ConfigurationFailure("Runtime user is unavailable.");
   }
-  if (uid === 0) throw new ConfigurationFailure("Runtime user must not resolve to uid 0.");
+  if (uid === 0) {
+    throw new ConfigurationFailure("Runtime user must not resolve to uid 0.");
+  }
   return { uid, gid };
 }
 
@@ -141,7 +156,9 @@ async function acquireLock(root) {
     });
     holder.once("error", () => reject(new ConfigurationFailure("Host flock is unavailable.")));
     holder.once("exit", () => {
-      if (!acquired) reject(new Error("Host operation lock timed out."));
+      if (!acquired) {
+        reject(new Error("Host operation lock timed out."));
+      }
     });
   });
   lockHolder = holder;
@@ -204,7 +221,9 @@ function unitHeader(namespaceId, agentId) {
 
 function verifyUnit(input, agent) {
   const path = join(input.runtime.systemdUnitDirectory, unitName(agent.agentId));
-  if (inspect(path) === undefined) return undefined;
+  if (inspect(path) === undefined) {
+    return undefined;
+  }
   regular(path);
   const contents = fs.readFileSync(path, "utf8");
   if (!contents.split("\n").includes(unitHeader(agent.namespaceId, agent.agentId))) {
@@ -229,7 +248,9 @@ function verifyAgent(input, path) {
   if (marker.runtimeUser !== accountName(input) || marker.runtimeGroup !== marker.runtimeUser) {
     throw new OwnershipFailure("Invalid Agent runtime account marker.");
   }
-  for (const name of ["home", "state", "revisions"]) directory(join(path, name));
+  for (const name of ["home", "state", "revisions"]) {
+    directory(join(path, name));
+  }
   verifyUnit(input, marker);
   servedRevision(path);
   return marker;
@@ -238,9 +259,13 @@ function verifyAgent(input, path) {
 // Written only after a restart reached readiness; a pointer flip alone never counts.
 function servedRevision(agentDir) {
   const path = join(agentDir, "served.json");
-  if (inspect(path) === undefined) return undefined;
+  if (inspect(path) === undefined) {
+    return undefined;
+  }
   const marker = readJson(path);
-  if (typeof marker.revisionId !== "string") throw new OwnershipFailure("Invalid served marker.");
+  if (typeof marker.revisionId !== "string") {
+    throw new OwnershipFailure("Invalid served marker.");
+  }
   return marker.revisionId;
 }
 
@@ -268,11 +293,16 @@ function snapshot(input, agentDir, revisionId, expected) {
 function currentSnapshot(input, agentDir) {
   const path = join(agentDir, "current");
   const info = inspect(path);
-  if (info === undefined) return undefined;
-  if (!info.isSymbolicLink()) throw new OwnershipFailure("Current pointer is not a symlink.");
+  if (info === undefined) {
+    return undefined;
+  }
+  if (!info.isSymbolicLink()) {
+    throw new OwnershipFailure("Current pointer is not a symlink.");
+  }
   const target = fs.readlinkSync(path);
-  if (!/^revisions\/[a-f0-9]{12}$/.test(target))
+  if (!/^revisions\/[a-f0-9]{12}$/.test(target)) {
     throw new OwnershipFailure("Current pointer escapes Agent revisions.");
+  }
   const marker = readJson(join(agentDir, target, "revision.json"));
   if (
     typeof marker.revisionId !== "string" ||
@@ -350,8 +380,12 @@ async function ensureRuntimeIdentity(input) {
       );
       return owner;
     } catch (error) {
-      if (userCreated) await command("userdel", [name], true);
-      if (groupCreated) await command("groupdel", [name], true);
+      if (userCreated) {
+        await command("userdel", [name], true);
+      }
+      if (groupCreated) {
+        await command("groupdel", [name], true);
+      }
       throw error;
     }
   }
@@ -407,7 +441,9 @@ async function removeNamespaceRuntimeIdentities(input, knownAgents) {
   const accounts = join(input.runtime.root, "accounts");
   if (inspect(accounts) !== undefined) {
     for (const name of fs.readdirSync(accounts)) {
-      if (!name.endsWith(".json")) continue;
+      if (!name.endsWith(".json")) {
+        continue;
+      }
       const marker = readJson(join(accounts, name));
       if (
         marker.driverId === input.driverId &&
@@ -424,7 +460,9 @@ async function removeNamespaceRuntimeIdentities(input, knownAgents) {
   const seen = new Set();
   for (const agent of agents) {
     const name = agent.runtimeUser;
-    if (typeof name !== "string" || seen.has(name)) continue;
+    if (typeof name !== "string" || seen.has(name)) {
+      continue;
+    }
     seen.add(name);
     await removeRuntimeIdentity({ ...input, revision: agent }, agent);
   }
@@ -552,8 +590,12 @@ async function ready(port) {
 async function waitReady(unit, port) {
   const deadline = Date.now() + 120_000;
   do {
-    if (!(await active(unit))) throw new Error("Gateway unit is inactive.");
-    if (await ready(port)) return;
+    if (!(await active(unit))) {
+      throw new Error("Gateway unit is inactive.");
+    }
+    if (await ready(port)) {
+      return;
+    }
     await delay(250);
   } while (Date.now() < deadline);
   throw new Error("Gateway readiness timed out.");
@@ -561,10 +603,12 @@ async function waitReady(unit, port) {
 
 async function prepare(input, nsDir) {
   const revision = input.revision;
-  if (revision.harness.id !== "openclaw" || revision.harness.mode !== "embedded")
+  if (revision.harness.id !== "openclaw" || revision.harness.mode !== "embedded") {
     throw new ConfigurationFailure("Only embedded OpenClaw is supported.");
-  if (input.configurationHash !== hash(JSON.stringify(revision.configuration)))
+  }
+  if (input.configurationHash !== hash(JSON.stringify(revision.configuration))) {
     throw new OwnershipFailure("Admitted configuration hash differs.");
+  }
   const agents = join(nsDir, "agents");
   directory(agents);
   const agentDir = join(agents, hash(revision.agentId).slice(0, 12));
@@ -575,8 +619,12 @@ async function prepare(input, nsDir) {
     const used = allocatedPorts(input);
     const range = input.network.gatewayPortRange;
     let port = range.start;
-    while (used.has(port) && port <= range.end) port++;
-    if (port > range.end) throw new ConfigurationFailure("Host gateway port range is exhausted.");
+    while (used.has(port) && port <= range.end) {
+      port++;
+    }
+    if (port > range.end) {
+      throw new ConfigurationFailure("Host gateway port range is exhausted.");
+    }
     atomicDirectory(agentDir, (pending) => {
       fs.writeFileSync(join(pending, "agent.json"), JSON.stringify({ ...account, port }), {
         mode: 0o600,
@@ -593,9 +641,13 @@ async function prepare(input, nsDir) {
   const current = currentSnapshot(input, agentDir);
   const revisionDir = join(agentDir, "revisions", hash(revision.id).slice(0, 12));
   const snapshotExists = inspect(revisionDir) !== undefined;
-  if (snapshotExists) snapshot(input, agentDir, revision.id, revisionMetadata(input));
+  if (snapshotExists) {
+    snapshot(input, agentDir, revision.id, revisionMetadata(input));
+  }
   // A late worker must not write snapshots, tokens, units, or pointers over a newer revision.
-  if (current !== undefined && current.revision > revision.revision) return { ready: false };
+  if (current !== undefined && current.revision > revision.revision) {
+    return { ready: false };
+  }
   if (
     current !== undefined &&
     current.revision === revision.revision &&
@@ -616,9 +668,11 @@ async function prepare(input, nsDir) {
   }
   if (revision.configuration.gateway?.auth?.mode !== "trusted-proxy") {
     const tokenFile = join(agentDir, "gateway.env");
-    if (inspect(tokenFile) === undefined)
+    if (inspect(tokenFile) === undefined) {
       atomicWrite(tokenFile, `OPENCLAW_GATEWAY_TOKEN=${randomBytes(32).toString("hex")}\n`);
-    else regular(tokenFile);
+    } else {
+      regular(tokenFile);
+    }
   }
   return { ready: true };
 }
@@ -641,7 +695,9 @@ async function activate(input, agentDir, agent, current) {
   const existingUnit = verifyUnit(input, agent);
   const content = renderUnit(input, agentDir, agent.port, agent.runtimeUser);
   const changed = existingUnit !== content;
-  if (changed) atomicWrite(unitPath, content, 0o644);
+  if (changed) {
+    atomicWrite(unitPath, content, 0o644);
+  }
   await systemctl("daemon-reload");
   await systemctl("enable", unit);
   if (
@@ -650,8 +706,9 @@ async function activate(input, agentDir, agent, current) {
     servedRevision(agentDir) === revision.id &&
     (await active(unit)) &&
     (await ready(agent.port))
-  )
+  ) {
     return { ready: true };
+  }
   const pending = temporary(join(agentDir, "current"));
   try {
     fs.symlinkSync(`revisions/${hash(revision.id).slice(0, 12)}`, pending);
@@ -690,8 +747,9 @@ async function removeNamespace(input, nsDir) {
       if (
         typeof marker.revisionId !== "string" ||
         revision !== hash(marker.revisionId).slice(0, 12)
-      )
+      ) {
         throw new OwnershipFailure("Invalid revision ownership marker.");
+      }
       snapshot(scoped, agentDir, marker.revisionId);
     }
     agents.push(agent);
@@ -734,15 +792,20 @@ async function run(input) {
       return {};
     }
     verifyNamespace(input);
-    if (input.operation === "delete-namespace") return await removeNamespace(input, nsDir);
-    if (input.operation === "prepare-revision") return await prepare(input, nsDir);
+    if (input.operation === "delete-namespace") {
+      return await removeNamespace(input, nsDir);
+    }
+    if (input.operation === "prepare-revision") {
+      return await prepare(input, nsDir);
+    }
     const revision = input.revision;
     const agentDir = join(nsDir, "agents", hash(revision.agentId).slice(0, 12));
     if (
       (input.operation === "stop-revision" || input.operation === "retire-revision") &&
       inspect(agentDir) === undefined
-    )
+    ) {
       return {};
+    }
     const agent = verifyAgent(input, agentDir);
     await verifyRuntimeIdentity(input, agent);
     const current = currentSnapshot(input, agentDir);
@@ -750,12 +813,16 @@ async function run(input) {
     if (
       (input.operation === "stop-revision" || input.operation === "retire-revision") &&
       inspect(revisionDir) === undefined
-    )
+    ) {
       return {};
+    }
     snapshot(input, agentDir, revision.id, revisionMetadata(input));
-    if (input.operation === "verify-revision") return {};
-    if (input.operation === "activate-revision")
+    if (input.operation === "verify-revision") {
+      return {};
+    }
+    if (input.operation === "activate-revision") {
       return await activate(input, agentDir, agent, current);
+    }
     if (input.operation === "stop-revision" || input.operation === "retire-revision") {
       if (current?.revisionId === revision.id) {
         const unit = unitName(revision.agentId);
@@ -766,7 +833,9 @@ async function run(input) {
         fs.unlinkSync(join(agentDir, "current"));
         fs.rmSync(join(agentDir, "served.json"), { force: true });
       }
-      if (input.operation === "stop-revision") return {};
+      if (input.operation === "stop-revision") {
+        return {};
+      }
       fs.rmSync(revisionDir, { recursive: true });
       return {};
     }
@@ -782,7 +851,9 @@ function abandon() {
   process.exit(1);
 }
 
-for (const signal of ["SIGTERM", "SIGINT"]) process.once(signal, abandon);
+for (const signal of ["SIGTERM", "SIGINT"]) {
+  process.once(signal, abandon);
+}
 
 // A cancelled SSH client does not signal this process (no PTY, stdin already
 // consumed). The reliable loss signal is a failed write to the closed session
@@ -799,7 +870,9 @@ const heartbeat = setInterval(() => {
 function parseInput() {
   try {
     const input = JSON.parse(Buffer.from(process.argv[2], "base64").toString("utf8"));
-    if (Number.isSafeInteger(input.deadlineMs) && input.deadlineMs > 0) return input;
+    if (Number.isSafeInteger(input.deadlineMs) && input.deadlineMs > 0) {
+      return input;
+    }
   } catch {
     /* Reported below as invalid input. */
   }
@@ -817,7 +890,9 @@ const deadline = setTimeout(() => {
 
 Promise.resolve()
   .then(() => {
-    if (input === undefined) throw new ConfigurationFailure("Invalid helper operation input.");
+    if (input === undefined) {
+      throw new ConfigurationFailure("Invalid helper operation input.");
+    }
     return run(input);
   })
   .then((result) => {

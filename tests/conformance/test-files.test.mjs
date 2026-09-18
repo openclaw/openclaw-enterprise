@@ -183,7 +183,9 @@ for (const signal of ["SIGTERM", "SIGINT"]) {
       const closed = once(child, "close");
       let testPid;
       t.after(() => {
-        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+        if (child.exitCode === null && child.signalCode === null) {
+          child.kill("SIGKILL");
+        }
         if (testPid) {
           try {
             process.kill(testPid, "SIGKILL");
@@ -191,7 +193,9 @@ for (const signal of ["SIGTERM", "SIGINT"]) {
         }
       });
       const deadline = Date.now() + 5000;
-      while (!existsSync(marker) && Date.now() < deadline) await setTimeout(20);
+      while (!existsSync(marker) && Date.now() < deadline) {
+        await setTimeout(20);
+      }
       assert.ok(existsSync(marker), "real test child started");
       testPid = Number(readFileSync(marker, "utf8"));
       await setTimeout(100);

@@ -37,7 +37,9 @@ function memoryDestination() {
     destination: {
       write(chunk) {
         for (const line of String(chunk).split("\n")) {
-          if (line.length > 0) lines.push(JSON.parse(line));
+          if (line.length > 0) {
+            lines.push(JSON.parse(line));
+          }
         }
         return true;
       },

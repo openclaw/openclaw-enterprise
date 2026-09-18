@@ -56,25 +56,35 @@ const UNSAFE_PROPERTY = /^(?:__proto__|constructor|prototype)$/;
 const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f]/g;
 
 function redact(value: unknown, visited: WeakSet<object>, depth: number): unknown {
-  if (depth > 16) return REDACTED;
+  if (depth > 16) {
+    return REDACTED;
+  }
   if (typeof value === "string") {
     return value.replace(SENSITIVE_VALUE, REDACTED).replace(CONTROL_CHARACTER, " ");
   }
   if (value === null || typeof value !== "object") {
     return typeof value === "bigint" ? value.toString() : value;
   }
-  if (visited.has(value)) return REDACTED;
+  if (visited.has(value)) {
+    return REDACTED;
+  }
   visited.add(value);
 
   if (Array.isArray(value)) {
     return value.map((entry) => redact(entry, visited, depth + 1));
   }
-  if (value instanceof Date) return value.toISOString();
-  if (value instanceof Error) return { name: value.name, reason: REDACTED };
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  if (value instanceof Error) {
+    return { name: value.name, reason: REDACTED };
+  }
 
   const sanitized: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(value)) {
-    if (UNSAFE_PROPERTY.test(key)) continue;
+    if (UNSAFE_PROPERTY.test(key)) {
+      continue;
+    }
     const sensitive = SENSITIVE_KEY.test(key) && !SAFE_REFERENCE_KEY.test(key);
     sanitized[key] = sensitive ? REDACTED : redact(entry, visited, depth + 1);
   }
@@ -149,11 +159,15 @@ export class InMemoryAuditSink implements AuditSink {
 
     return {
       append: async (event: AuditEvent): Promise<void> => {
-        if (completed) throw new Error("Audit transaction is closed.");
+        if (completed) {
+          throw new Error("Audit transaction is closed.");
+        }
         staged.push(sanitizeEvent(event));
       },
       commit: async (): Promise<void> => {
-        if (completed) throw new Error("Audit transaction is closed.");
+        if (completed) {
+          throw new Error("Audit transaction is closed.");
+        }
         if (this.append === InMemoryAuditSink.prototype.append) {
           this.recorded.push(...staged);
           completed = true;
@@ -162,7 +176,9 @@ export class InMemoryAuditSink implements AuditSink {
 
         const checkpoint = this.checkpoint();
         try {
-          for (const event of staged) await this.append(event);
+          for (const event of staged) {
+            await this.append(event);
+          }
           completed = true;
         } catch (error) {
           this.restore(checkpoint);
@@ -171,7 +187,9 @@ export class InMemoryAuditSink implements AuditSink {
         }
       },
       rollback: async (): Promise<void> => {
-        if (completed) return;
+        if (completed) {
+          return;
+        }
         staged.length = 0;
         completed = true;
       },

@@ -201,13 +201,14 @@ async function fixture(options = {}) {
   }
 
   function grantAgentSecretOperate(targetAgent, secret) {
-    if (!iamState.identities.some(({ id }) => id === targetAgent.servicePrincipalId))
+    if (!iamState.identities.some(({ id }) => id === targetAgent.servicePrincipalId)) {
       iamState.identities.push({
         kind: "service_principal",
         id: targetAgent.servicePrincipalId,
         namespaceId: targetAgent.namespaceId,
         agentId: targetAgent.id,
       });
+    }
     iamState.bindings.push({
       id: `secret-occ-agent-binding-${targetAgent.id}-${secret.id}`,
       namespaceId: targetAgent.namespaceId,

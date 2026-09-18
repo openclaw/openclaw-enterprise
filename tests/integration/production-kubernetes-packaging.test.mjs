@@ -310,12 +310,13 @@ test(
     }
     for (const role of roles.filter(
       ({ metadata }) => metadata.name !== tenantApiRole.metadata.name,
-    ))
+    )) {
       for (const rule of role.rules) {
         assert.ok(rule.resources?.includes("secrets") !== true);
         assert.ok(rule.resources?.includes("rolebindings") !== true);
         assert.ok(!rule.verbs.includes("*"));
       }
+    }
 
     // Real rendered workloads retain restricted execution and mount credentials only by Secret reference.
     for (const component of ["api", "worker"]) {
@@ -414,8 +415,11 @@ test(
     );
     for (const role of roles.filter(
       ({ metadata }) => metadata.name !== tenantApiRole.metadata.name,
-    ))
-      for (const rule of role.rules) assert.ok(rule.resources?.includes("secrets") !== true);
+    )) {
+      for (const rule of role.rules) {
+        assert.ok(rule.resources?.includes("secrets") !== true);
+      }
+    }
 
     // Only API Pods may reach the single approved provider/proxy host, exclusively over HTTPS.
     const providerPolicy = objects.find(

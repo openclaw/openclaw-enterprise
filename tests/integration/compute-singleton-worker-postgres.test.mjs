@@ -473,15 +473,18 @@ for (const failure of ["observation", "binding"]) {
           async bindAgent() {
             if ((await fixture.activeRevision(owner)) === candidate.id) {
               bindingAttempts += 1;
-              if (failure === "binding" && !available)
+              if (failure === "binding" && !available) {
                 throw new Error("Binding lookup unavailable");
+              }
             }
           },
           async prepareRevision(revision) {
             const observation = await fixture.compute.prepareRevision(revision);
             if ((await fixture.activeRevision(owner)) === revision.id) {
               maintenanceAttempts += 1;
-              if (!available) return { ...observation, ready: false };
+              if (!available) {
+                return { ...observation, ready: false };
+              }
             }
             return observation;
           },
@@ -505,7 +508,9 @@ for (const failure of ["observation", "binding"]) {
         );
         return result.rows[0].failures >= 6 ? result.rows[0] : undefined;
       });
-      if (failure === "binding") assert.equal(maintenanceAttempts, 0);
+      if (failure === "binding") {
+        assert.equal(maintenanceAttempts, 0);
+      }
       available = true;
 
       await waitFor("active runtime recovery after a prolonged provider outage", async () => {

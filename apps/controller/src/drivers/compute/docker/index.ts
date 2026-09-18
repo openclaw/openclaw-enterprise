@@ -204,7 +204,9 @@ function healthcheckCommand(script: string): string {
 }
 
 function loopbackHost(host: string): boolean {
-  if (host === "localhost" || host === "::1") return true;
+  if (host === "localhost" || host === "::1") {
+    return true;
+  }
   const parts = host.split(".");
   return (
     parts.length === 4 &&
@@ -215,7 +217,9 @@ function loopbackHost(host: string): boolean {
 
 function dockerLoggingAddress(value: string | undefined): string | undefined {
   const trimmed = optionalEnvironment(value);
-  if (trimmed === undefined) return undefined;
+  if (trimmed === undefined) {
+    return undefined;
+  }
   const bracketed = /^\[([^\]]+)\]:(\d+)$/.exec(trimmed);
   const plain = bracketed === null ? /^([^:]+):(\d+)$/.exec(trimmed) : null;
   const host = bracketed?.[1] ?? plain?.[1];
@@ -298,12 +302,16 @@ export class DockerComputeDriver implements ComputeDriver {
         this.verifyOwnership(existing.Labels, ownership, `network ${name}`);
       }
       const observed = await this.network(name);
-      if (observed === undefined) return result;
+      if (observed === undefined) {
+        return result;
+      }
       this.verifyOwnership(observed.Labels, ownership, `network ${name}`);
       await this.lifecycle.afterNamespacePrepared(namespace);
       return { ...result, namespaceReady: true };
     } catch (error) {
-      if (created) await this.removeNetwork(name).catch(() => {});
+      if (created) {
+        await this.removeNetwork(name).catch(() => {});
+      }
       return { ...result, failure: failure(error) };
     }
   }
@@ -314,7 +322,9 @@ export class DockerComputeDriver implements ComputeDriver {
     const name = this.networkName(namespace.id);
     try {
       const existing = await this.network(name);
-      if (existing === undefined) return { ...result, namespaceDeleted: true };
+      if (existing === undefined) {
+        return { ...result, namespaceDeleted: true };
+      }
       this.verifyOwnership(existing.Labels, { namespaceId: namespace.id }, `network ${name}`);
       await this.lifecycle.beforeNamespaceDelete(namespace);
       for (const containerId of await this.containerIdsForNamespace(namespace.id)) {
@@ -334,7 +344,9 @@ export class DockerComputeDriver implements ComputeDriver {
   }
 
   async prepareRevision(revision: AgentRevision): Promise<ComputeReadiness> {
-    if (revision.harnessAuth !== undefined) this.validateHarnessAuth();
+    if (revision.harnessAuth !== undefined) {
+      this.validateHarnessAuth();
+    }
     this.lifecycleStarted = true;
     const result = {
       namespaceId: revision.namespaceId,
@@ -362,7 +374,9 @@ export class DockerComputeDriver implements ComputeDriver {
 
     const network = this.networkName(revision.namespaceId);
     const observed = await this.network(network);
-    if (observed === undefined) return result;
+    if (observed === undefined) {
+      return result;
+    }
     this.verifyOwnership(
       observed.Labels,
       { namespaceId: revision.namespaceId },
@@ -395,7 +409,9 @@ export class DockerComputeDriver implements ComputeDriver {
         ...this.pluginRuntimeEnvironmentForWorkload(pluginRuntime, "agent", false),
       });
       agentCreated = agent.created ? agent.containerName : undefined;
-      if (!agent.ready) return result;
+      if (!agent.ready) {
+        return result;
+      }
       const gateway = await this.reconcileGateway(prepared, network, {
         APP_SERVER_URL: `ws://${agent.containerName}:${AGENT_TRANSPORT_PORT}`,
         APP_SERVER_TOKEN: agent.appServerToken,
@@ -406,7 +422,9 @@ export class DockerComputeDriver implements ComputeDriver {
     } catch (error) {
       const failures = [error];
       for (const name of [gatewayCreated, agentCreated]) {
-        if (name === undefined) continue;
+        if (name === undefined) {
+          continue;
+        }
         try {
           await this.removeContainer(name, true);
         } catch (cleanupError) {
@@ -501,8 +519,9 @@ export class DockerComputeDriver implements ComputeDriver {
         const transportMatches =
           revision.harness.mode === "embedded" ||
           containerTransportToken(existing) === environment.APP_SERVER_TOKEN;
-        if (healthy(existing) && transportMatches)
+        if (healthy(existing) && transportMatches) {
           return { containerName, created: false, ready: true };
+        }
         await this.removeContainer(containerName, true);
       }
       if (currentRevision !== revision.revision || currentRevisionId !== revision.id) {
@@ -565,13 +584,14 @@ export class DockerComputeDriver implements ComputeDriver {
     const existing = await this.container(containerName);
     if (existing !== undefined) {
       this.verifyOwnership(existing.Config?.Labels, ownership, `container ${containerName}`);
-      if (healthy(existing))
+      if (healthy(existing)) {
         return {
           containerName,
           created: false,
           ready: true,
           appServerToken: required(containerTransportToken(existing), "Codex transport token"),
         };
+      }
       await this.removeContainer(containerName, true);
     }
     const appServerToken = randomBytes(32).toString("hex");
@@ -727,7 +747,9 @@ export class DockerComputeDriver implements ComputeDriver {
     role: "agent" | "gateway",
     embedded: boolean,
   ): Readonly<Record<string, string>> {
-    if (runtime === undefined) return {};
+    if (runtime === undefined) {
+      return {};
+    }
     const applies =
       (runtime.kind === "openclaw" && role === "gateway" && embedded) ||
       (runtime.kind === "codex" && role === "agent" && !embedded) ||
@@ -735,7 +757,9 @@ export class DockerComputeDriver implements ComputeDriver {
         role === "gateway" &&
         !embedded &&
         Object.keys(runtime.selections).length > 0);
-    if (!applies) return {};
+    if (!applies) {
+      return {};
+    }
     try {
       return {
         ...pluginRuntimeEnvironment(runtime),
@@ -817,7 +841,9 @@ export class DockerComputeDriver implements ComputeDriver {
         [200],
       )) as DockerNetworkInspect;
     } catch (error) {
-      if (statusCode(error) === 404) return undefined;
+      if (statusCode(error) === 404) {
+        return undefined;
+      }
       throw error;
     }
   }
@@ -835,7 +861,9 @@ export class DockerComputeDriver implements ComputeDriver {
         [200],
       )) as DockerContainerInspect;
     } catch (error) {
-      if (statusCode(error) === 404) return undefined;
+      if (statusCode(error) === 404) {
+        return undefined;
+      }
       throw error;
     }
   }
@@ -858,9 +886,13 @@ export class DockerComputeDriver implements ComputeDriver {
     )) as readonly { readonly Id?: string }[];
     const containerIds: string[] = [];
     for (const container of listed) {
-      if (container.Id === undefined) continue;
+      if (container.Id === undefined) {
+        continue;
+      }
       const current = await this.container(container.Id);
-      if (current === undefined) continue;
+      if (current === undefined) {
+        continue;
+      }
       this.verifyOwnership(current.Config?.Labels, { namespaceId }, `container ${container.Id}`);
       containerIds.push(container.Id);
     }
@@ -881,8 +913,12 @@ export class DockerComputeDriver implements ComputeDriver {
     const started = Date.now();
     while (Date.now() - started < STARTUP_TIMEOUT_MS) {
       const inspected = await this.container(name);
-      if (inspected === undefined) throw new Error(`Docker container ${name} disappeared.`);
-      if (healthy(inspected)) return inspected;
+      if (inspected === undefined) {
+        throw new Error(`Docker container ${name} disappeared.`);
+      }
+      if (healthy(inspected)) {
+        return inspected;
+      }
       if (inspected.State?.Running === false) {
         throw new Error(`Docker container ${name} exited before readiness.`);
       }
@@ -949,7 +985,9 @@ export class DockerComputeDriver implements ComputeDriver {
             },
           );
           request.once("error", reject);
-          if (payload !== undefined) request.write(payload);
+          if (payload !== undefined) {
+            request.write(payload);
+          }
           request.end();
         }),
     );

@@ -89,14 +89,20 @@ export function createPluginRuntimeTranslator() {
   }
 
   function requiredArray(value: unknown, description: string): readonly unknown[] {
-    if (!Array.isArray(value)) throw new Error(description + " must be an array.");
+    if (!Array.isArray(value)) {
+      throw new Error(description + " must be an array.");
+    }
     return value;
   }
 
   function selectionEntries(selections: unknown): readonly [string, Record<string, unknown>][] {
-    if (!isRecord(selections)) throw new Error("Plugin selections must be an object.");
+    if (!isRecord(selections)) {
+      throw new Error("Plugin selections must be an object.");
+    }
     return Object.entries(selections).map(([pluginId, value]) => {
-      if (!isRecord(value)) throw new Error("Plugin selection must be an object.");
+      if (!isRecord(value)) {
+        throw new Error("Plugin selection must be an object.");
+      }
       return [pluginId, value];
     });
   }
@@ -111,15 +117,23 @@ export function createPluginRuntimeTranslator() {
 
   function reviewer(selection: Record<string, unknown>): string | undefined {
     const value = selection.approvalsReviewer;
-    if (value === undefined) return undefined;
-    if (value === "user" || value === "auto_review") return value;
+    if (value === undefined) {
+      return undefined;
+    }
+    if (value === "user" || value === "auto_review") {
+      return value;
+    }
     throw new Error("Plugin approvals reviewer is unsupported.");
   }
 
   function enabled(selection: Record<string, unknown>): boolean {
     const value = selection.enabled;
-    if (value === undefined) return true;
-    if (typeof value !== "boolean") throw new Error("Plugin enabled must be a boolean.");
+    if (value === undefined) {
+      return true;
+    }
+    if (typeof value !== "boolean") {
+      throw new Error("Plugin enabled must be a boolean.");
+    }
     return value;
   }
 
@@ -160,7 +174,9 @@ export function createPluginRuntimeTranslator() {
   }
 
   function codexPluginSummary(summary: unknown): Record<string, unknown> {
-    if (!isRecord(summary)) throw new Error("Codex plugin summary is missing.");
+    if (!isRecord(summary)) {
+      throw new Error("Codex plugin summary is missing.");
+    }
     return summary;
   }
 
@@ -199,7 +215,9 @@ export function createPluginRuntimeTranslator() {
     const curated = marketplaces.find(
       (marketplace) => isRecord(marketplace) && marketplace.name === CODEX_MARKETPLACE,
     );
-    if (!isRecord(curated)) return [];
+    if (!isRecord(curated)) {
+      return [];
+    }
     return array(curated.plugins).map(codexCatalogEntry);
   }
 
@@ -210,7 +228,9 @@ export function createPluginRuntimeTranslator() {
     const marketplaces = array(response.marketplaces);
     const entries = new Map<string, Record<string, unknown>>();
     for (const marketplace of marketplaces) {
-      if (!isRecord(marketplace) || marketplace.name !== CODEX_MARKETPLACE) continue;
+      if (!isRecord(marketplace) || marketplace.name !== CODEX_MARKETPLACE) {
+        continue;
+      }
       for (const summary of array(marketplace.plugins)) {
         const record = codexPluginSummary(summary);
         entries.set(codexSummaryNativeId(record), record);
@@ -239,12 +259,16 @@ export function createPluginRuntimeTranslator() {
 
   function detailRecord(value: unknown): Record<string, unknown> {
     const wrapped = isRecord(value) && isRecord(value.plugin) ? value.plugin : value;
-    if (!isRecord(wrapped)) throw new Error("Codex plugin detail is missing.");
+    if (!isRecord(wrapped)) {
+      throw new Error("Codex plugin detail is missing.");
+    }
     return wrapped;
   }
 
   function detailSummary(detail: Record<string, unknown>): Record<string, unknown> {
-    if (!isRecord(detail.summary)) throw new Error("Codex plugin detail summary is missing.");
+    if (!isRecord(detail.summary)) {
+      throw new Error("Codex plugin detail summary is missing.");
+    }
     return detail.summary;
   }
 
@@ -260,7 +284,9 @@ export function createPluginRuntimeTranslator() {
     details: readonly unknown[],
   ): ReadonlyMap<string, Record<string, unknown>> {
     const byNativeId = new Map<string, Record<string, unknown>>();
-    for (const detail of details.map(detailRecord)) byNativeId.set(detailNativeId(detail), detail);
+    for (const detail of details.map(detailRecord)) {
+      byNativeId.set(detailNativeId(detail), detail);
+    }
     return byNativeId;
   }
 
@@ -298,7 +324,9 @@ export function createPluginRuntimeTranslator() {
 
   function appIds(detail: Record<string, unknown>): readonly string[] {
     return requiredArray(detail.apps, "Codex plugin detail apps").map((app) => {
-      if (!isRecord(app)) throw new Error("Codex plugin app mapping is invalid.");
+      if (!isRecord(app)) {
+        throw new Error("Codex plugin app mapping is invalid.");
+      }
       return requiredString(app.id, "Codex plugin app ID");
     });
   }
@@ -317,7 +345,9 @@ export function createPluginRuntimeTranslator() {
 
   function codexOpenClawConfiguration(selections: unknown): Record<string, unknown> | undefined {
     const selected = selectionEntries(selections);
-    if (selected.length === 0) return undefined;
+    if (selected.length === 0) {
+      return undefined;
+    }
     return {
       plugins: {
         entries: {
@@ -412,7 +442,9 @@ export function createPluginRuntimeTranslator() {
       const nativeId = pluginId.startsWith(OCC_DRIVER_ID + ":")
         ? pluginId.slice((OCC_DRIVER_ID + ":").length)
         : pluginId;
-      if (nativeId !== "diffs") throw new Error("Unknown OpenClaw plugin selection.");
+      if (nativeId !== "diffs") {
+        throw new Error("Unknown OpenClaw plugin selection.");
+      }
       if (reviewer(selection) !== undefined) {
         throw new Error("OpenClaw plugin reviewer selection is unsupported.");
       }
@@ -434,7 +466,9 @@ export function createPluginRuntimeTranslator() {
         version: OCC_DIFFS_VERSION,
         integrity: OCC_DIFFS_INTEGRITY,
       });
-      if (enabledByPolicy(selection)) alsoAllow.push(nativeId);
+      if (enabledByPolicy(selection)) {
+        alsoAllow.push(nativeId);
+      }
     }
     return {
       kind: "openclaw",

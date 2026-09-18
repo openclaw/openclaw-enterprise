@@ -30,7 +30,9 @@ const bashExecutable = "/bin/bash";
 let cliBuild;
 let cliDirectory;
 after(async () => {
-  if (cliDirectory) await rm(cliDirectory, { recursive: true, force: true });
+  if (cliDirectory) {
+    await rm(cliDirectory, { recursive: true, force: true });
+  }
 });
 
 function developmentCli() {
@@ -574,7 +576,9 @@ async function readJsonLines(path) {
       .filter(Boolean)
       .map((line) => JSON.parse(line));
   } catch (error) {
-    if (error.code === "ENOENT") return [];
+    if (error.code === "ENOENT") {
+      return [];
+    }
     throw error;
   }
 }

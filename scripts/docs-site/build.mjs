@@ -10,8 +10,9 @@ import {
   resolveDocsFragment,
 } from "./vendor/docs-markdown.mjs";
 
-if (process.argv.slice(2).some((arg) => arg !== "--check"))
+if (process.argv.slice(2).some((arg) => arg !== "--check")) {
   throw new Error("Usage: build.mjs [--check]");
+}
 const checkOnly = process.argv.includes("--check");
 const root = process.cwd();
 const docs = path.join(root, "docs");
@@ -55,7 +56,9 @@ function yamlCommentMarkdownBlocks(file) {
       block = [];
     }
   }
-  if (block.length) blocks.push(block.join("\n"));
+  if (block.length) {
+    blocks.push(block.join("\n"));
+  }
   return blocks;
 }
 
@@ -68,7 +71,9 @@ for (const file of walk(docs)) {
   const ids = new Set(parsed.ids);
   for (let i = 0; i < parsed.tokens.length; i++) {
     const token = parsed.tokens[i];
-    if (token.type !== "heading_open") continue;
+    if (token.type !== "heading_open") {
+      continue;
+    }
     const alias = github.slug(parsed.tokens[i + 1].content);
     if (!ids.has(alias)) {
       githubAliases.set(token.attrGet("id"), alias);
@@ -92,30 +97,43 @@ for (const file of walk(docs)) {
   });
 }
 const tabs = config.navigation.languages.find((language) => language.language === "en")?.tabs;
-if (!tabs?.length) throw new Error("docs/docs.json must declare English navigation tabs");
+if (!tabs?.length) {
+  throw new Error("docs/docs.json must declare English navigation tabs");
+}
 const covered = new Set();
-for (const tab of tabs)
-  for (const group of tab.groups)
+for (const tab of tabs) {
+  for (const group of tab.groups) {
     for (const slug of group.pages) {
       const source = slug + ".md";
-      if (!pages.has(source)) throw new Error("Missing navigation page: " + source);
-      if (covered.has(source)) throw new Error("Duplicate navigation page: " + source);
+      if (!pages.has(source)) {
+        throw new Error("Missing navigation page: " + source);
+      }
+      if (covered.has(source)) {
+        throw new Error("Duplicate navigation page: " + source);
+      }
       covered.add(source);
       Object.assign(pages.get(source), { tab, group });
     }
+  }
+}
 for (const page of pages.values()) {
-  if (!covered.has(page.source)) throw new Error("Page missing from navigation: " + page.source);
+  if (!covered.has(page.source)) {
+    throw new Error("Page missing from navigation: " + page.source);
+  }
 }
 
 // Resolve links against their Markdown source, including README indexes and
 // parent-directory links, before emitting browser routes.
 function resolveLink(page, href) {
-  if (/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(href)) return href;
+  if (/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(href)) {
+    return href;
+  }
   const url = new URL(href, "https://local.invalid/" + page.source);
   const pathname = decodeURIComponent(url.pathname);
   let target;
-  if (href.startsWith("#") || href.startsWith("?") || href === "") target = page.file;
-  else if (href.startsWith("/")) {
+  if (href.startsWith("#") || href.startsWith("?") || href === "") {
+    target = page.file;
+  } else if (href.startsWith("/")) {
     const linked = [...pages.values()].find(
       (candidate) => candidate.route.replace(/\/$/, "") === pathname.replace(/\/$/, ""),
     );
@@ -125,29 +143,36 @@ function resolveLink(page, href) {
     target = path.resolve(path.dirname(page.file), decodeURIComponent(sourcePath));
   }
   const relative = path.relative(root, target);
-  if (relative.startsWith("..") || path.isAbsolute(relative))
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
     throw new Error(page.source + ": link escapes repository: " + href);
-  if (!fs.existsSync(target)) throw new Error(page.source + ": missing link target: " + href);
+  }
+  if (!fs.existsSync(target)) {
+    throw new Error(page.source + ": missing link target: " + href);
+  }
   if (fs.statSync(target).isDirectory()) {
     const readme = path.join(target, "README.md");
-    if (target.startsWith(docs + path.sep) && fs.existsSync(readme)) target = readme;
-    else
+    if (target.startsWith(docs + path.sep) && fs.existsSync(readme)) {
+      target = readme;
+    } else {
       return (
         repository +
         "/tree/main/" +
         relative.split(path.sep).map(encodeURIComponent).join("/") +
         url.hash
       );
+    }
   }
   const docSource = path.relative(docs, target).split(path.sep).join("/");
   const linked = pages.get(docSource);
   if (linked) {
-    if (url.hash && !resolveDocsFragment(url.hash, linked.ids))
+    if (url.hash && !resolveDocsFragment(url.hash, linked.ids)) {
       throw new Error(page.source + ": missing heading in " + href);
+    }
     return linked.route + url.search + url.hash;
   }
-  if (target.startsWith(docs + path.sep))
+  if (target.startsWith(docs + path.sep)) {
     return "/" + docSource.split("/").map(encodeURIComponent).join("/") + url.search + url.hash;
+  }
   return (
     repository +
     "/blob/main/" +
@@ -203,8 +228,9 @@ if (checkOnly) {
 
 fs.rmSync(output, { recursive: true, force: true });
 fs.mkdirSync(path.join(output, "assets"), { recursive: true });
-if (fs.existsSync(path.join(docs, "assets")))
+if (fs.existsSync(path.join(docs, "assets"))) {
   fs.cpSync(path.join(docs, "assets"), path.join(output, "assets"), { recursive: true });
+}
 fs.cpSync(path.join(assets, "fonts"), path.join(output, "assets/fonts"), { recursive: true });
 const carapaceCss = [
   "tokens.css",

@@ -152,7 +152,9 @@ async function gatewayContainerEnvironment(configuration = {}) {
   });
   driver.container = async () => {
     const latest = createdContainers.at(-1);
-    if (latest === undefined) return undefined;
+    if (latest === undefined) {
+      return undefined;
+    }
     return {
       Config: { Labels: latest.Labels },
       State: { Running: true, Health: { Status: "healthy" } },
@@ -176,8 +178,11 @@ async function gatewayContainerEnvironment(configuration = {}) {
       ready: true,
     });
   } finally {
-    if (previousOpenAiApiKey === undefined) delete process.env.OPENAI_API_KEY;
-    else process.env.OPENAI_API_KEY = previousOpenAiApiKey;
+    if (previousOpenAiApiKey === undefined) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = previousOpenAiApiKey;
+    }
   }
 
   assert.equal(createdContainers.length, 1);
@@ -215,7 +220,9 @@ test("Docker Compute recovery keeps dedicated transport paired across container 
         return "";
       }
       const [, name, action] = /^\/containers\/([^/]+)(?:\/(\w+))?$/.exec(url.pathname) ?? [];
-      if (method === "POST" && action === "start") return "";
+      if (method === "POST" && action === "start") {
+        return "";
+      }
       if (method === "DELETE") {
         containers.delete(name);
         return "";
@@ -285,7 +292,10 @@ test("Docker Compute recovery keeps dedicated transport paired across container 
       "missing credentials must fail closed without adopting a new token",
     );
   } finally {
-    if (previousKey === undefined) delete process.env.OPENAI_API_KEY;
-    else process.env.OPENAI_API_KEY = previousKey;
+    if (previousKey === undefined) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = previousKey;
+    }
   }
 });

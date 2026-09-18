@@ -13,7 +13,9 @@ function parseArgs(argv) {
   const args = {};
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
-    if (!arg.startsWith("--")) throw new Error(`Unexpected argument: ${arg}`);
+    if (!arg.startsWith("--")) {
+      throw new Error(`Unexpected argument: ${arg}`);
+    }
     const value = argv[index + 1];
     if (value === undefined || value.startsWith("--")) {
       throw new Error(`Missing value for ${arg}`);
@@ -53,14 +55,18 @@ function execFile(command, args, options = {}) {
 
 async function readState(path) {
   const state = JSON.parse(await readFile(path, "utf8"));
-  if (state.version !== 1) throw new Error(`Unsupported cleanup state version: ${state.version}`);
+  if (state.version !== 1) {
+    throw new Error(`Unsupported cleanup state version: ${state.version}`);
+  }
   if (state.repositoryRoot !== repositoryRoot) {
     throw new Error(`Cleanup state belongs to another repository root: ${state.repositoryRoot}`);
   }
   if (!state.prefix?.startsWith("openclaw-ci-")) {
     throw new Error("Cleanup state prefix is not an OpenClaw Enterprise CI prefix.");
   }
-  if (!Array.isArray(state.resources)) throw new Error("Cleanup state resources must be an array.");
+  if (!Array.isArray(state.resources)) {
+    throw new Error("Cleanup state resources must be an array.");
+  }
   return state;
 }
 
@@ -80,8 +86,9 @@ function assertString(value, description) {
 
 function assertOwnedName(prefix, value, description) {
   assertString(value, description);
-  if (!value.startsWith(prefix))
+  if (!value.startsWith(prefix)) {
     throw new Error(`Refusing to clean unowned ${description}: ${value}`);
+  }
 }
 
 function assertResourceOwner(resource, state) {
@@ -131,13 +138,16 @@ function composeArgs(resource, state, ...args) {
     throw new Error(`Refusing cleanup with unexpected Compose file: ${resource.composeFile}`);
   }
   assertOwnedName("openclaw_ci_pg_", resource.name, "Compose PostgreSQL project");
-  if (Number(resource.port) === 55432)
+  if (Number(resource.port) === 55432) {
     throw new Error("Refusing to clean developer PostgreSQL port 55432.");
+  }
   return ["compose", "-f", resource.composeFile, "-p", resource.name, ...args];
 }
 
 function quoteIdentifier(value) {
-  if (!/^[a-z0-9_]+$/.test(value)) throw new Error(`Unsafe PostgreSQL identifier: ${value}`);
+  if (!/^[a-z0-9_]+$/.test(value)) {
+    throw new Error(`Unsafe PostgreSQL identifier: ${value}`);
+  }
   return `"${value.replaceAll('"', '""')}"`;
 }
 
@@ -158,7 +168,9 @@ async function cleanupDatabase(resource, state) {
     (candidate) =>
       candidate.kind === "compose-postgres" && candidate.name === resource.composeProject,
   );
-  if (!compose) return;
+  if (!compose) {
+    return;
+  }
   await execFile(
     process.env.OCC_DOCKER_BIN ?? "docker",
     [
@@ -193,7 +205,9 @@ async function cleanupImageTag(resource, state) {
     "-f",
     resource.name,
   ]).catch((error) => {
-    if (/No such image|image is referenced in multiple repositories/i.test(error.message)) return;
+    if (/No such image|image is referenced in multiple repositories/i.test(error.message)) {
+      return;
+    }
     throw error;
   });
 }
@@ -212,7 +226,9 @@ async function cleanupK3dImage(resource, state) {
       "rm",
       reference,
     ]).catch((error) => {
-      if (/not found|No such container/i.test(error.message)) return;
+      if (/not found|No such container/i.test(error.message)) {
+        return;
+      }
       throw error;
     });
   }
@@ -246,11 +262,15 @@ async function cleanupResource(resource, state) {
 
 async function cleanupResourceIds(statePath, resourceIds) {
   const path = resolve(statePath);
-  if (!isAbsolute(path)) throw new Error("Cleanup state path must resolve to an absolute path.");
+  if (!isAbsolute(path)) {
+    throw new Error("Cleanup state path must resolve to an absolute path.");
+  }
   try {
     await access(path, constants.F_OK);
   } catch (error) {
-    if (error.code === "ENOENT") return;
+    if (error.code === "ENOENT") {
+      return;
+    }
     throw error;
   }
   const state = await readState(path);
@@ -258,7 +278,9 @@ async function cleanupResourceIds(statePath, resourceIds) {
   const failures = [];
 
   for (const resource of [...state.resources].reverse()) {
-    if (!selected.has(resource.id)) continue;
+    if (!selected.has(resource.id)) {
+      continue;
+    }
     try {
       await cleanupResource(resource, state);
       state.resources = state.resources.filter((candidate) => candidate.id !== resource.id);
@@ -283,7 +305,9 @@ async function cleanupState(statePath) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  if (!args.state) throw new Error("--state is required.");
+  if (!args.state) {
+    throw new Error("--state is required.");
+  }
   await cleanupState(args.state);
 }
 

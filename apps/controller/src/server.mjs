@@ -15,7 +15,9 @@ const DEFAULT_BETTER_AUTH_BASE_URL = "http://127.0.0.1:3000";
 
 function startupFailureCode(error) {
   const message = error instanceof Error ? error.message : "";
-  if (/OCC_AUTH_SECRET/.test(message)) return "AUTH_SECRET_INVALID";
+  if (/OCC_AUTH_SECRET/.test(message)) {
+    return "AUTH_SECRET_INVALID";
+  }
   if (/OCC_AUTH_BASE_URL|loopback host|loopback HTTP\(S\) URL/.test(message)) {
     return "AUTH_BASE_URL_INVALID";
   }
@@ -25,7 +27,9 @@ function startupFailureCode(error) {
   if (/OCC_GATEWAY_API_KEY_PATH|gateway API key file/i.test(message)) {
     return "GATEWAY_API_KEY_UNAVAILABLE";
   }
-  if (/ChatGPT admin-key Secret/.test(message)) return "CHATGPT_ADMIN_KEY_UNAVAILABLE";
+  if (/ChatGPT admin-key Secret/.test(message)) {
+    return "CHATGPT_ADMIN_KEY_UNAVAILABLE";
+  }
   if (/ServiceAccounts require PostgreSQL persistence/.test(message)) {
     return "SERVICE_ACCOUNT_REQUIRES_POSTGRES";
   }
@@ -61,8 +65,9 @@ function optionalEnvironment(name, fallback) {
 
 function configuration() {
   const mode = process.env.NODE_ENV;
-  if (mode !== "development" && mode !== "production")
+  if (mode !== "development" && mode !== "production") {
     throw new Error("NODE_ENV must explicitly select development or production mode.");
+  }
 
   const host = requiredEnvironment("OCC_HOST");
   const trustedDevelopmentBridgeCidr = process.env.OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR;
@@ -86,8 +91,9 @@ function configuration() {
       host === "::1" ||
       /^127\./.test(host) ||
       /^::ffff:127\./i.test(host))
-  )
+  ) {
     throw new Error("Production OCC_HOST must identify one explicit Pod interface address.");
+  }
 
   const rawPort = requiredEnvironment("OCC_PORT");
   if (!/^\d+$/.test(rawPort)) {
@@ -99,8 +105,9 @@ function configuration() {
   }
 
   const databaseUrl = process.env.OCC_DATABASE_URL;
-  if (mode === "production" && databaseUrl === undefined)
+  if (mode === "production" && databaseUrl === undefined) {
     throw new Error("OCC_DATABASE_URL must be explicitly configured in production.");
+  }
   if (databaseUrl !== undefined) {
     let parsed;
     try {
@@ -248,7 +255,9 @@ async function start() {
   }
   let app;
   if (settings.mode === "production") {
-    if (drivers === undefined) throw new Error("Production Driver configuration is unavailable.");
+    if (drivers === undefined) {
+      throw new Error("Production Driver configuration is unavailable.");
+    }
     app = await composeProduction({
       ...compositionSettings,
       drivers,
@@ -266,7 +275,9 @@ async function start() {
 
   let closing = false;
   async function shutdown() {
-    if (closing) return;
+    if (closing) {
+      return;
+    }
     closing = true;
     try {
       await app.close();

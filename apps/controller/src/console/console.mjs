@@ -45,7 +45,9 @@ function showLogin(message = "", returnPath = null) {
   clearPrivate();
   const url = new URL("/console/login", location.origin);
   const destination = safeReturn(returnPath);
-  if (destination) url.searchParams.set("return", destination);
+  if (destination) {
+    url.searchParams.set("return", destination);
+  }
   history.replaceState(null, "", `${url.pathname}${url.search}`);
   const username = element("input", {
     id: "username",
@@ -78,7 +80,9 @@ function showLogin(message = "", returnPath = null) {
   let pending = false;
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (pending || !form.reportValidity()) return;
+    if (pending || !form.reportValidity()) {
+      return;
+    }
     pending = true;
     submit.disabled = true;
     feedback.textContent = "";
@@ -88,12 +92,16 @@ function showLogin(message = "", returnPath = null) {
         method: "POST",
         body: { email: username.value, password: password.value },
       });
-      if (!lifetime.isCurrent(active)) return;
+      if (!lifetime.isCurrent(active)) {
+        return;
+      }
       password.value = "";
       history.replaceState(null, "", destination ?? "/console/agents");
       await loadPage();
     } catch (error) {
-      if (!lifetime.isCurrent(active)) return;
+      if (!lifetime.isCurrent(active)) {
+        return;
+      }
       feedback.textContent =
         error.status === 429
           ? "Too many attempts. Please try again later."
@@ -120,7 +128,9 @@ function showLogin(message = "", returnPath = null) {
 }
 
 async function loadPage() {
-  if (loggingOut) return;
+  if (loggingOut) {
+    return;
+  }
   const current = route();
   const active = resetReads();
   clearPrivate();
@@ -142,7 +152,9 @@ async function loadPage() {
   }
   try {
     const resolvedSession = await request("/api/auth/session");
-    if (!lifetime.isCurrent(active)) return;
+    if (!lifetime.isCurrent(active)) {
+      return;
+    }
     session = resolvedSession;
     if (session === null) {
       const destination =
@@ -169,8 +181,12 @@ async function loadPage() {
       return;
     }
     const readable = await request("/namespaces");
-    if (!lifetime.isCurrent(active)) return;
-    if (!Array.isArray(readable)) throw new Error("Invalid collection response");
+    if (!lifetime.isCurrent(active)) {
+      return;
+    }
+    if (!Array.isArray(readable)) {
+      throw new Error("Invalid collection response");
+    }
     namespaces = sorted(readable);
     namespaceId =
       current.namespace ??
@@ -223,8 +239,9 @@ async function loadPage() {
       pageUrl,
       isCurrent: () => lifetime.isCurrent(active),
       onExpired: () => {
-        if (lifetime.isCurrent(active))
+        if (lifetime.isCurrent(active)) {
           showLogin("Your session has expired.", pageUrl(current.target, current.namespace));
+        }
       },
       setTitle: (title) => {
         app.querySelector("h1").textContent = title;
@@ -248,12 +265,21 @@ async function loadPage() {
               ? "/providers"
               : `/namespaces/${encodeURIComponent(namespaceId)}/agents`,
           );
-    if (!lifetime.isCurrent(active)) return;
-    if (!Array.isArray(items)) throw new Error("Invalid collection response");
-    if (current.feature === "agents") renderAgentList({ ...agentContext, items });
-    else renderRows(shell.view, current.feature, items);
+    if (!lifetime.isCurrent(active)) {
+      return;
+    }
+    if (!Array.isArray(items)) {
+      throw new Error("Invalid collection response");
+    }
+    if (current.feature === "agents") {
+      renderAgentList({ ...agentContext, items });
+    } else {
+      renderRows(shell.view, current.feature, items);
+    }
   } catch (error) {
-    if (!lifetime.isCurrent(active) || error.name === "AbortError") return;
+    if (!lifetime.isCurrent(active) || error.name === "AbortError") {
+      return;
+    }
     if (error.status === 401) {
       showLogin("Your session has expired.", pageUrl(current.target, current.namespace));
       return;
@@ -315,29 +341,37 @@ async function logout() {
       /* Keep the blocking view until the server can confirm revocation. */
     }
   }
-  if (!lifetime.isCurrent(active)) return;
+  if (!lifetime.isCurrent(active)) {
+    return;
+  }
   if (confirmed) {
     loggingOut = false;
     navigation.resetHistory();
     showLogin();
-  } else
+  } else {
     publicPanel(
       "Could not confirm logout",
       "Private content is hidden. Retry to end your session.",
       "Retry",
       () => void logout(),
     );
+  }
 }
 
 window.addEventListener("popstate", () => {
-  if (!loggingOut) void loadPage();
+  if (!loggingOut) {
+    void loadPage();
+  }
 });
 window.addEventListener("focus", () => {
-  if (session && !loggingOut && !app.querySelector("form, dialog[open]")) void loadPage();
+  if (session && !loggingOut && !app.querySelector("form, dialog[open]")) {
+    void loadPage();
+  }
 });
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden && session && !loggingOut && !app.querySelector("form, dialog[open]"))
+  if (!document.hidden && session && !loggingOut && !app.querySelector("form, dialog[open]")) {
     void loadPage();
+  }
 });
 window.addEventListener("pagehide", () => {
   resetReads();
@@ -348,7 +382,9 @@ window.addEventListener("pagehide", () => {
   app.replaceChildren();
 });
 window.addEventListener("pageshow", (event) => {
-  if (!event.persisted) return;
+  if (!event.persisted) {
+    return;
+  }
   if (loggingOut) {
     publicPanel(
       "Could not confirm logout",
@@ -356,6 +392,8 @@ window.addEventListener("pageshow", (event) => {
       "Retry",
       () => void logout(),
     );
-  } else void loadPage();
+  } else {
+    void loadPage();
+  }
 });
 void loadPage();

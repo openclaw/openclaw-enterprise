@@ -86,7 +86,9 @@ function memoryLog() {
       destination: {
         write(chunk) {
           for (const line of String(chunk).split("\n")) {
-            if (line.length > 0) lines.push(JSON.parse(line));
+            if (line.length > 0) {
+              lines.push(JSON.parse(line));
+            }
           }
           return true;
         },
@@ -594,8 +596,12 @@ test(
       });
       assert.equal(publicSignup.status, 404);
     } finally {
-      if (app !== undefined) await app.close();
-      if (pool !== undefined) await pool.end();
+      if (app !== undefined) {
+        await app.close();
+      }
+      if (pool !== undefined) {
+        await pool.end();
+      }
       await rm(passwordDirectory, { recursive: true, force: true });
     }
   },

@@ -105,7 +105,9 @@ function credentialFixture({ secrets = {}, deployments = [] } = {}) {
       calls.push({ kind: "readSecret", name: request.name });
       assert.equal(request.namespace, namespaceName);
       const secret = secrets[request.name];
-      if (secret === undefined) throw httpError(404);
+      if (secret === undefined) {
+        throw httpError(404);
+      }
       return structuredClone(secret);
     },
     async createNamespacedSecret(request) {

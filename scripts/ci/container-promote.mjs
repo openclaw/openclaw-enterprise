@@ -121,7 +121,9 @@ async function hub(path, token, options = {}, allowMissing = false) {
     redirect: "error",
     signal: AbortSignal.timeout(30_000),
   });
-  if (allowMissing && response.status === 404) return undefined;
+  if (allowMissing && response.status === 404) {
+    return undefined;
+  }
   assert.equal(response.status, 200, `Docker Hub preflight failed (${response.status}).`);
   return response.json();
 }
@@ -136,7 +138,9 @@ async function verifyHub(image, digest, tag, env) {
   assert.ok(auth.access_token, "Docker Hub did not issue an access token.");
   validateHubRepository(await hub(path, auth.access_token), image);
   const existing = await hub(`${path}/tags/${tag}`, auth.access_token, {}, true);
-  if (existing) assert.equal(existing.digest, digest, "Refusing to overwrite a different digest.");
+  if (existing) {
+    assert.equal(existing.digest, digest, "Refusing to overwrite a different digest.");
+  }
   return existing !== undefined;
 }
 

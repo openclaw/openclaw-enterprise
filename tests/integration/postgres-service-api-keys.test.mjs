@@ -21,7 +21,9 @@ test(
     let key;
     t.after(async () => {
       try {
-        if (key) await issuer.revokeServiceKey(key);
+        if (key) {
+          await issuer.revokeServiceKey(key);
+        }
       } finally {
         await pool.end();
       }

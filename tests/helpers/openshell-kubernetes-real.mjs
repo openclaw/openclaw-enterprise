@@ -184,7 +184,9 @@ function renderedOpenShellImage(image, defaultTag) {
   const withoutDigest = image.slice(0, -digest.length);
   const lastSlash = withoutDigest.lastIndexOf("/");
   const tagSeparator = withoutDigest.lastIndexOf(":");
-  if (tagSeparator > lastSlash) return image;
+  if (tagSeparator > lastSlash) {
+    return image;
+  }
   return `${withoutDigest}:${defaultTag}${digest}`;
 }
 
@@ -329,7 +331,9 @@ export function createOpenShellKubernetesFixture({
     try {
       return await base.resource(kind, name, namespace);
     } catch (error) {
-      if (/NotFound|not found/i.test(error.stderr ?? error.message)) return undefined;
+      if (/NotFound|not found/i.test(error.stderr ?? error.message)) {
+        return undefined;
+      }
       throw error;
     }
   }
@@ -345,7 +349,9 @@ export function createOpenShellKubernetesFixture({
   async function ensureOpenShellJwtSecret(namespace) {
     const serviceName = openShellGatewayServiceName(namespace);
     const secretName = `${serviceName}-jwt-keys`;
-    if ((await maybeResource("secret", secretName, namespace)) !== undefined) return secretName;
+    if ((await maybeResource("secret", secretName, namespace)) !== undefined) {
+      return secretName;
+    }
 
     const directory = await mkdtemp(join(tmpdir(), "openshell-jwt-"));
     const signingPath = join(directory, "signing.pem");
@@ -372,7 +378,9 @@ export function createOpenShellKubernetesFixture({
           `--from-file=kid=${kidPath}`,
         );
       } catch (error) {
-        if (!/AlreadyExists|already exists/i.test(error.stderr ?? error.message)) throw error;
+        if (!/AlreadyExists|already exists/i.test(error.stderr ?? error.message)) {
+          throw error;
+        }
       }
       return secretName;
     } finally {
@@ -392,11 +400,14 @@ export function createOpenShellKubernetesFixture({
       await kubectl("get", "endpoints", "kubernetes", "--namespace", "default", "-o", "json"),
     );
     const addresses = new Set();
-    if (service.spec?.clusterIP && service.spec.clusterIP !== "None")
+    if (service.spec?.clusterIP && service.spec.clusterIP !== "None") {
       addresses.add(service.spec.clusterIP);
+    }
     for (const subset of endpoints.subsets ?? []) {
       for (const address of subset.addresses ?? []) {
-        if (typeof address.ip === "string") addresses.add(address.ip);
+        if (typeof address.ip === "string") {
+          addresses.add(address.ip);
+        }
       }
     }
     assert.ok(

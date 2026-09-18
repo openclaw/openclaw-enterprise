@@ -36,8 +36,9 @@ export interface ProductionConfig {
 }
 
 export async function composeProduction(config: ProductionConfig) {
-  if (config.mode !== "production")
+  if (config.mode !== "production") {
     throw new Error("Production OCC composition requires explicit production mode.");
+  }
   const {
     installation,
     computeDriver,
@@ -98,8 +99,9 @@ export async function composeProduction(config: ProductionConfig) {
       issuer: principal.issuer,
       subject: principal.subject,
     });
-    if (!resolved || resolved.kind !== "principal" || resolved.id !== principal.id)
+    if (!resolved || resolved.kind !== "principal" || resolved.id !== principal.id) {
       throw new Error("The persisted IAM Principal cannot be resolved uniquely.");
+    }
 
     const preflight = computeDriver.preflight;
     if (preflight !== undefined && typeof preflight !== "function") {
@@ -131,11 +133,13 @@ export async function composeProduction(config: ProductionConfig) {
       loggingLevel: config.drivers.installation.logging.level,
     });
     controller.registerDriver(iamDriver);
-    if (controller.selectDriver("iam", driverId) !== iamDriver)
+    if (controller.selectDriver("iam", driverId) !== iamDriver) {
       throw new Error("The server-owned IAM Driver was not selected correctly.");
+    }
     controller.registerDriver(computeDriver);
-    if (controller.selectDriver("compute", computeDriver.id) !== computeDriver)
+    if (controller.selectDriver("compute", computeDriver.id) !== computeDriver) {
       throw new Error("The configured Compute Driver was not selected correctly.");
+    }
     controller.registerDriver(secretDriver);
     if (controller.selectDriver("secret", secretDriver.id) !== secretDriver) {
       throw new Error("The configured Secret Driver was not selected correctly.");

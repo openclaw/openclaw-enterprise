@@ -783,8 +783,9 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
   await store.read(async (state) => {
     const stored = await state.serviceAccounts.findServiceAccount(accountNamespace.id, account.id);
     assert.deepEqual(stored, { ...account, credential });
-    for (const value of [stored, stored.credential, stored.credential.secretRef])
+    for (const value of [stored, stored.credential, stored.credential.secretRef]) {
       assert.ok(Object.isFrozen(value));
+    }
     assert.equal(
       await state.serviceAccounts.findServiceAccount(namespace.id, account.id),
       undefined,
@@ -801,8 +802,9 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
       snapshot.harnessAuth.credential,
       snapshot.harnessAuth.credential.secretRef,
       snapshot.harnessAuth.providerBinding,
-    ])
+    ]) {
       assert.ok(Object.isFrozen(value));
+    }
   });
 
   await assert.rejects(

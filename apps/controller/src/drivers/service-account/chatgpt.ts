@@ -134,7 +134,9 @@ export class ChatGPTServiceAccountDriver implements ServiceAccountDriver {
 
   async delete(account: ServiceAccount): Promise<void> {
     const linked = await this.findBinding(account);
-    if (linked === undefined) return;
+    if (linked === undefined) {
+      return;
+    }
     if (linked.externalCredentialId !== null) {
       if (account.credential?.kind !== "access_token") {
         throw new ScopeViolationError("The exact service-account credential is missing.");
@@ -161,7 +163,9 @@ export class ChatGPTServiceAccountDriver implements ServiceAccountDriver {
        WHERE service_account_id = $1 AND namespace_id = $2`,
       [account.id, account.namespaceId],
     );
-    if (result.rows.length === 0) return undefined;
+    if (result.rows.length === 0) {
+      return undefined;
+    }
     const linked = result.rows[0] as ServiceAccountBinding;
     if (linked.providerId !== this.providerId) {
       throw new DependencyUnavailableError("The service-account Provider does not match.");

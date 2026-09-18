@@ -48,8 +48,9 @@ function normalizedStatus(data) {
     Array.isArray(data) ||
     typeof data.transportConfigured !== "boolean" ||
     typeof data.slackConfigured !== "boolean"
-  )
+  ) {
     throw new Error("Invalid credential status response");
+  }
   return {
     transportConfigured: data.transportConfigured,
     slackConfigured: data.slackConfigured,
@@ -62,19 +63,23 @@ function groupStatus(status, key) {
 
 function credentialError(error, mutation = false) {
   let text;
-  if (error.status === 403)
+  if (error.status === 403) {
     text = "Access denied. You do not have permission for this credential operation.";
-  else if (error.status === 409)
+  } else if (error.status === 409) {
     text =
       "Credential metadata conflicts with the saved Agent state or is unsupported for this draft.";
-  else if (error.status === 400) text = "Check the entered credential fields and refresh status.";
-  else if (error.status === 429) text = "Too many requests. Wait before trying again.";
-  else if (error.status === 404)
+  } else if (error.status === 400) {
+    text = "Check the entered credential fields and refresh status.";
+  } else if (error.status === 429) {
+    text = "Too many requests. Wait before trying again.";
+  } else if (error.status === 404) {
     text = "Credential metadata is unavailable for this Agent. Check the ID and your access.";
-  else if (error.status === 503 || mutation)
+  } else if (error.status === 503 || mutation) {
     text =
       "Outcome unknown. Credential storage could not be confirmed. Refresh status before trying again.";
-  else text = "Credential metadata unavailable. Refresh status before trying again.";
+  } else {
+    text = "Credential metadata unavailable. Refresh status before trying again.";
+  }
   return text + (error.requestId ? ` Request ID: ${error.requestId}` : "");
 }
 
@@ -115,21 +120,30 @@ export function createRuntimeCredentialsPanel({
   }
 
   function deployGateMessage() {
-    if (!revisionsLoaded) return "Revision history is required before deploying this saved draft.";
-    if (state.loading || (!state.loaded && state.error === null))
+    if (!revisionsLoaded) {
+      return "Revision history is required before deploying this saved draft.";
+    }
+    if (state.loading || (!state.loaded && state.error === null)) {
       return "Loading runtime credential metadata before deployment.";
-    if (state.error !== null)
+    }
+    if (state.error !== null) {
       return "Credential metadata unavailable. Refresh status before deploying.";
+    }
     const blockReason = runtimeCredentialBlockReason(values);
-    if (blockReason !== null) return blockReason;
+    if (blockReason !== null) {
+      return blockReason;
+    }
     const missing = missingRuntimeCredentialGroups(state.status, values);
-    if (missing.length)
+    if (missing.length) {
       return `Deploy requires stored runtime credential metadata: ${missing.join(", ")}.`;
+    }
     return "Stored runtime credential metadata is present. This does not confirm live Slack readiness.";
   }
 
   async function loadStatus() {
-    if (state.loading || !context.isCurrent()) return;
+    if (state.loading || !context.isCurrent()) {
+      return;
+    }
     state.loading = true;
     state.error = null;
     state.saveError = null;
@@ -139,10 +153,14 @@ export function createRuntimeCredentialsPanel({
     onStatusChange();
     try {
       state.status = normalizedStatus(await context.request(endpoint));
-      if (!context.isCurrent()) return;
+      if (!context.isCurrent()) {
+        return;
+      }
       state.loaded = true;
     } catch (error) {
-      if (!context.isCurrent()) return;
+      if (!context.isCurrent()) {
+        return;
+      }
       if (error.status === 401) {
         context.onExpired();
         return;
@@ -223,7 +241,7 @@ export function createRuntimeCredentialsPanel({
         missingRequiredInput ||
         (!transportMissing && !slackEntered);
     };
-    for (const input of [slackAppToken, slackBotToken])
+    for (const input of [slackAppToken, slackBotToken]) {
       input.addEventListener("input", () => {
         state.saveError = null;
         state.saveMessage = "";
@@ -231,6 +249,7 @@ export function createRuntimeCredentialsPanel({
         status.textContent = "";
         updateControls();
       });
+    }
     const fields = [
       ...(needsSlack
         ? [
@@ -271,8 +290,12 @@ export function createRuntimeCredentialsPanel({
     );
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
-      if (state.saving || !canEnterCredentials() || state.outcomeUnknown) return;
-      if (!form.reportValidity()) return;
+      if (state.saving || !canEnterCredentials() || state.outcomeUnknown) {
+        return;
+      }
+      if (!form.reportValidity()) {
+        return;
+      }
       let payload = {};
       const slackApp = slackAppToken.value;
       const slackBot = slackBotToken.value;
@@ -289,13 +312,17 @@ export function createRuntimeCredentialsPanel({
         state.status = normalizedStatus(
           await context.request(endpoint, { method: "POST", body: payload }),
         );
-        if (!context.isCurrent()) return;
+        if (!context.isCurrent()) {
+          return;
+        }
         state.loaded = true;
         state.outcomeUnknown = false;
         state.saveMessage = "Credential metadata refreshed.";
         status.textContent = state.saveMessage;
       } catch (cause) {
-        if (!context.isCurrent()) return;
+        if (!context.isCurrent()) {
+          return;
+        }
         if (cause.status === 401) {
           context.onExpired();
           return;
@@ -323,24 +350,27 @@ export function createRuntimeCredentialsPanel({
   }
 
   function renderUnavailableReason() {
-    if (!revisionsLoaded)
+    if (!revisionsLoaded) {
       return element(
         "p",
         { className: "muted", role: "status" },
         "Credential entry requires readable revision history.",
       );
-    if (revisionCount > 0)
+    }
+    if (revisionCount > 0) {
       return element(
         "p",
         { className: "muted", role: "status" },
         "Initial credentials are locked after the first AgentRevision exists.",
       );
-    if (state.error !== null)
+    }
+    if (state.error !== null) {
       return element(
         "p",
         { className: "error", role: "alert" },
         `Credential metadata unavailable. ${credentialError(state.error)}`,
       );
+    }
     return null;
   }
 

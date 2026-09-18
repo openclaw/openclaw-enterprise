@@ -21,12 +21,15 @@ export class AuthorizationDeniedError extends Error {
   ) {
     super(message);
     this.name = "AuthorizationDeniedError";
-    if (evidence !== undefined) this.evidence = evidence;
-    if (authorization !== undefined)
+    if (evidence !== undefined) {
+      this.evidence = evidence;
+    }
+    if (authorization !== undefined) {
       this.authorization = Object.freeze({
         action: authorization.action,
         resource: Object.freeze({ ...authorization.resource }),
       });
+    }
   }
 }
 

@@ -115,7 +115,9 @@ async function slackApi(method, token, body = {}) {
   const writesMessage = method === "chat.postMessage";
   const url = new URL(`https://slack.com/api/${method}`);
   if (!writesMessage) {
-    for (const [key, value] of Object.entries(body)) url.searchParams.set(key, String(value));
+    for (const [key, value] of Object.entries(body)) {
+      url.searchParams.set(key, String(value));
+    }
   }
   let response;
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -136,11 +138,15 @@ async function slackApi(method, token, body = {}) {
         ["UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT", "ECONNRESET", "EPIPE", "ETIMEDOUT"].includes(
           error?.cause?.code ?? error?.code,
         );
-      if (writesMessage || attempt === 2 || !transient) throw error;
+      if (writesMessage || attempt === 2 || !transient) {
+        throw error;
+      }
       await delay(250 * 2 ** attempt);
       continue;
     }
-    if (writesMessage || attempt === 2 || (response.status !== 429 && response.status < 500)) break;
+    if (writesMessage || attempt === 2 || (response.status !== 429 && response.status < 500)) {
+      break;
+    }
     const retryAfterSeconds = Number(response.headers.get("retry-after"));
     const retryDelay =
       Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
@@ -349,7 +355,9 @@ function nativeConfiguration(harnessId, slack, options = {}) {
       fs: { workspaceOnly: true },
     };
   }
-  if (slack === undefined) return configuration;
+  if (slack === undefined) {
+    return configuration;
+  }
 
   configuration.plugins.allow.push("slack");
   configuration.plugins.entries.slack = { enabled: true };
@@ -391,8 +399,11 @@ async function captureCommand(command, args, options = {}) {
     });
     child.once("error", reject);
     child.once("exit", (code) => {
-      if (code === 0) resolve(stdout);
-      else reject(new Error(`${command} failed (${code}): ${stderr}`));
+      if (code === 0) {
+        resolve(stdout);
+      } else {
+        reject(new Error(`${command} failed (${code}): ${stderr}`));
+      }
     });
   });
 }
@@ -400,7 +411,9 @@ async function captureCommand(command, args, options = {}) {
 function assertNoSecretMaterial(value, secrets, description) {
   const serialized = JSON.stringify(value);
   for (const secret of secrets) {
-    if (secret === undefined || secret.length === 0) continue;
+    if (secret === undefined || secret.length === 0) {
+      continue;
+    }
     assert.equal(serialized.includes(secret), false, description);
   }
 }
@@ -860,9 +873,14 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
     try {
       await forwarding?.stop();
     } finally {
-      if (worker !== undefined) await worker.stop();
-      else if (workerPool !== undefined) await workerPool.end();
-      if (productionApp !== undefined) await productionApp.close();
+      if (worker !== undefined) {
+        await worker.stop();
+      } else if (workerPool !== undefined) {
+        await workerPool.end();
+      }
+      if (productionApp !== undefined) {
+        await productionApp.close();
+      }
       await observerPool.end();
       if (placement !== undefined) {
         await kubectl(
@@ -977,7 +995,9 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
     try {
       return await resource("namespace", placement);
     } catch (error) {
-      if (/NotFound|not found/i.test(error.stderr ?? error.message)) return undefined;
+      if (/NotFound|not found/i.test(error.stderr ?? error.message)) {
+        return undefined;
+      }
       throw error;
     }
   });
@@ -1163,8 +1183,9 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
     ...(secretBindings === undefined ? {} : { secretBindings }),
   });
   assert.equal(configuration.status, 201, JSON.stringify(configuration.error));
-  if (secretBindings !== undefined)
+  if (secretBindings !== undefined) {
     assert.deepEqual(configuration.data.secretBindings, secretBindings);
+  }
   const agent = await request("POST", `/namespaces/${namespaceId}/agents`, {
     name: `production-${mode}-${randomUUID()}`,
     configurationId: configuration.data.id,
@@ -1349,7 +1370,9 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
     `${harnessId === "codex" ? "codex" : "openai"}/${providerModel}`,
   );
 
-  if (slack === undefined) forwarding = await startPortForward(placement, gatewayServiceName);
+  if (slack === undefined) {
+    forwarding = await startPortForward(placement, gatewayServiceName);
+  }
   return {
     mode,
     placement,
@@ -1550,7 +1573,9 @@ async function assertInvalidHarnessAuthStaysUnready(context, topology) {
             : pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway" &&
               gatewayConsumesRevision(pod, topology.agent.id, candidate.data.id)),
       );
-      if (!pod?.status.containerStatuses?.some(({ state }) => state?.running)) return undefined;
+      if (!pod?.status.containerStatuses?.some(({ state }) => state?.running)) {
+        return undefined;
+      }
       let logs;
       try {
         logs = await kubectl(
@@ -1562,8 +1587,9 @@ async function assertInvalidHarnessAuthStaysUnready(context, topology) {
         );
       } catch (error) {
         // A Pod can be replaced between observation and log retrieval; wait for its successor.
-        if (/NotFound|not found|PodInitializing|ContainerCreating/.test(error.stderr ?? ""))
+        if (/NotFound|not found|PodInitializing|ContainerCreating/.test(error.stderr ?? "")) {
           return undefined;
+        }
         throw error;
       }
       assertNoSecretMaterial(
@@ -1571,7 +1597,9 @@ async function assertInvalidHarnessAuthStaysUnready(context, topology) {
         [invalidKey, process.env.OPENAI_API_KEY],
         "failed native authentication logs",
       );
-      if (!logs.includes("Harness model authentication probe failed.")) return undefined;
+      if (!logs.includes("Harness model authentication probe failed.")) {
+        return undefined;
+      }
       assert.equal(
         pod.status.conditions?.some(({ type, status }) => type === "Ready" && status === "True"),
         false,
@@ -1945,7 +1973,9 @@ async function assertGatewayEffectiveDefaultModel(context, topology, expectedMod
 }
 
 function messageText(message) {
-  if (typeof message.content === "string") return message.content;
+  if (typeof message.content === "string") {
+    return message.content;
+  }
   return (message.content ?? [])
     .filter(({ type }) => type === "text")
     .map(({ text }) => text)
@@ -2102,7 +2132,9 @@ async function assertRetainedImage(
         (expectedId === undefined || id === expectedId) &&
         (messageSeq === undefined || artifactMessageSeq === messageSeq),
     );
-    if (artifact === undefined) await delay(750);
+    if (artifact === undefined) {
+      await delay(750);
+    }
   }
   assert.ok(
     artifact,
@@ -2180,7 +2212,9 @@ async function assertGatewayPodContinuity(context, topology, privateClaim) {
     messageSeq: imageMessageSeq,
   });
   const before = await inspectGatewayPersistence(topology, digest, sessionKey, history.sessionId);
-  for (const database of before.databases) assert.deepEqual(database.integrity, ["ok"]);
+  for (const database of before.databases) {
+    assert.deepEqual(database.integrity, ["ok"]);
+  }
   assert.equal(before.transcript.sessionKey, sessionKey);
   assert.equal(before.transcript.sessionId, history.sessionId);
   for (const role of ["user", "assistant"]) {
@@ -2238,14 +2272,17 @@ async function assertGatewayPodContinuity(context, topology, privateClaim) {
     sessionKey,
     before.transcript.sessionId,
   );
-  for (const database of restored.databases) assert.deepEqual(database.integrity, ["ok"]);
+  for (const database of restored.databases) {
+    assert.deepEqual(database.integrity, ["ok"]);
+  }
   assert.deepEqual(
     restored.transcript,
     before.transcript,
     "the exact visible session transcript messages must survive Pod replacement",
   );
-  for (const file of before.media)
+  for (const file of before.media) {
     assert.ok(restored.media.includes(file), "all retained PNG files must survive");
+  }
   const afterNonce = `OCE-AFTER-${randomUUID()}`;
   await gatewayCall(topology, "chat.send", {
     sessionKey,
@@ -2734,7 +2771,9 @@ async function assertCrossNamespaceSecretBindingDenied(context, topology) {
     try {
       return await resource("namespace", placement);
     } catch (error) {
-      if (/NotFound|not found/i.test(error.stderr ?? error.message)) return undefined;
+      if (/NotFound|not found/i.test(error.stderr ?? error.message)) {
+        return undefined;
+      }
       throw error;
     }
   });

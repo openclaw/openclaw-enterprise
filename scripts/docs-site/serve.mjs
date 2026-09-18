@@ -8,7 +8,9 @@ if (args.length !== 0 && (args.length !== 2 || args[0] !== "--port" || !/^\d+$/.
   throw new Error("Usage: node scripts/docs-site/serve.mjs [--port <0..65535>]");
 }
 const port = args.length ? Number(args[1]) : 4173;
-if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("Invalid preview port");
+if (!Number.isInteger(port) || port < 0 || port > 65535) {
+  throw new Error("Invalid preview port");
+}
 const root = await realpath(resolve("dist/docs")).catch(() => {
   throw new Error("Missing dist/docs; run npm run docs:build first.");
 });
@@ -39,7 +41,9 @@ const server = createServer(async (request, response) => {
   try {
     url = new URL(request.url, `http://${request.headers.host}`);
     pathname = decodeURIComponent(url.pathname);
-    if (pathname.includes("\0")) throw new Error("Invalid path");
+    if (pathname.includes("\0")) {
+      throw new Error("Invalid path");
+    }
   } catch {
     response.writeHead(400).end("Invalid request");
     return;
@@ -50,7 +54,9 @@ const server = createServer(async (request, response) => {
   }
   try {
     let file = resolve(root, `.${pathname}`);
-    if (!file.startsWith(`${root}${sep}`) && file !== root) throw new Error("Outside site");
+    if (!file.startsWith(`${root}${sep}`) && file !== root) {
+      throw new Error("Outside site");
+    }
     const info = await stat(file);
     if (info.isDirectory()) {
       if (!url.pathname.endsWith("/")) {
@@ -60,18 +66,24 @@ const server = createServer(async (request, response) => {
       file = resolve(file, "index.html");
     }
     file = await realpath(file);
-    if (!file.startsWith(`${root}${sep}`)) throw new Error("Outside site");
+    if (!file.startsWith(`${root}${sep}`)) {
+      throw new Error("Outside site");
+    }
     const details = await stat(file);
-    if (!details.isFile()) throw new Error("Not a file");
+    if (!details.isFile()) {
+      throw new Error("Not a file");
+    }
     response.writeHead(200, {
       "Content-Type": mime[extname(file)] ?? "application/octet-stream",
       "Content-Length": details.size,
     });
-    if (request.method === "HEAD") response.end();
-    else
+    if (request.method === "HEAD") {
+      response.end();
+    } else {
       createReadStream(file)
         .on("error", () => response.destroy())
         .pipe(response);
+    }
   } catch {
     response.writeHead(404).end("Page not found");
   }

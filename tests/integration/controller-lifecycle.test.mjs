@@ -102,8 +102,9 @@ function createDrivers(iam) {
           (harness.id === "openclaw" && harness.mode === "embedded") ||
           (harness.id === "codex" && harness.mode === "dedicated")
         )
-      )
+      ) {
         throw new ScopeViolationError("Unsupported lifecycle fixture authentication.");
+      }
     },
     async ensureNamespace(namespace) {
       calls.ensureNamespace += 1;

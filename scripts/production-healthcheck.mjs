@@ -1,7 +1,9 @@
 import { stat } from "node:fs/promises";
 
 try {
-  if (process.argv[2] !== "worker") throw new Error("Only worker health requires an exec probe.");
+  if (process.argv[2] !== "worker") {
+    throw new Error("Only worker health requires an exec probe.");
+  }
   const marker = process.env.OCC_WORKER_READINESS_PATH;
   if (typeof marker !== "string" || !marker.startsWith("/")) {
     throw new Error("The worker readiness marker must be an explicit absolute path.");

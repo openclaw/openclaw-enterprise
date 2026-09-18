@@ -285,7 +285,9 @@ test("explicit existing namespace adoption claims tenant identity only after sec
         },
         async readNamespace({ name }) {
           assert.equal(name, selection.existingNamespace);
-          if (observed === undefined) throw httpError(404);
+          if (observed === undefined) {
+            throw httpError(404);
+          }
           return structuredClone(observed);
         },
         async patchNamespace(request) {
@@ -309,12 +311,16 @@ test("explicit existing namespace adoption claims tenant identity only after sec
       networking: {
         async listNamespacedNetworkPolicy({ namespace }) {
           assert.equal(namespace, selection.existingNamespace);
-          if (forbiddenPolicies) throw httpError(403);
+          if (forbiddenPolicies) {
+            throw httpError(403);
+          }
           return { items: policies ?? [] };
         },
       },
     });
-    if (mutate === null) observed = undefined;
+    if (mutate === null) {
+      observed = undefined;
+    }
     const result = deleting
       ? await driver.deleteNamespace({ ...selection, status: "deleting" })
       : await driver.ensureNamespace(
@@ -1487,7 +1493,9 @@ test("embedded replacement cuts over an unready shared gateway and waits for act
     ...driver.manifest("v1", "Namespace", namespace, tenantOwnership),
     status: { phase: "Active" },
   });
-  for (const policy of driver.networkPolicies(tenantOwnership, namespace)) save(policy);
+  for (const policy of driver.networkPolicies(tenantOwnership, namespace)) {
+    save(policy);
+  }
   save({
     ...driver.manifest("v1", "ServiceAccount", agentName, agentOwnership, namespace),
     automountServiceAccountToken: false,
@@ -1553,7 +1561,9 @@ test("embedded replacement cuts over an unready shared gateway and waits for act
       },
       async readNamespacedConfigMap({ name }) {
         const current = objects.get(key("ConfigMap", name));
-        if (current === undefined) throw missing(name);
+        if (current === undefined) {
+          throw missing(name);
+        }
         return structuredClone(current);
       },
       async patchNamespacedConfigMap({ body }) {
@@ -1562,7 +1572,9 @@ test("embedded replacement cuts over an unready shared gateway and waits for act
       },
       async readNamespacedServiceAccount({ name }) {
         const current = objects.get(key("ServiceAccount", name));
-        if (current === undefined) throw missing(name);
+        if (current === undefined) {
+          throw missing(name);
+        }
         return structuredClone(current);
       },
       async patchNamespacedServiceAccount({ body }) {
@@ -1571,7 +1583,9 @@ test("embedded replacement cuts over an unready shared gateway and waits for act
       },
       async readNamespacedService({ name }) {
         const current = objects.get(key("Service", name));
-        if (current === undefined) throw missing(name);
+        if (current === undefined) {
+          throw missing(name);
+        }
         return structuredClone(current);
       },
       async patchNamespacedService({ body }) {
@@ -1580,7 +1594,9 @@ test("embedded replacement cuts over an unready shared gateway and waits for act
       },
       async readNamespacedPersistentVolumeClaim({ name }) {
         const current = objects.get(key("PersistentVolumeClaim", name));
-        if (current === undefined) throw missing(name);
+        if (current === undefined) {
+          throw missing(name);
+        }
         return structuredClone(current);
       },
       async patchNamespacedPersistentVolumeClaim({ body }) {
@@ -1591,19 +1607,24 @@ test("embedded replacement cuts over an unready shared gateway and waits for act
     apps: {
       async readNamespacedDeployment({ name }) {
         const current = objects.get(key("Deployment", name));
-        if (current === undefined) throw missing(name);
+        if (current === undefined) {
+          throw missing(name);
+        }
         const observed = structuredClone(current);
         // Readiness is an explicit transport observation, never inferred from a successful write.
-        if (readyDeployments.has(name))
+        if (readyDeployments.has(name)) {
           observed.status = {
             observedGeneration: observed.metadata.generation,
             readyReplicas: 1,
           };
+        }
         return observed;
       },
       async patchNamespacedDeployment({ body }) {
         patches.push({ kind: body.kind, name: body.metadata.name });
-        if (body.metadata.name === gatewayName) replacementDeploymentPatched = true;
+        if (body.metadata.name === gatewayName) {
+          replacementDeploymentPatched = true;
+        }
         const previous = objects.get(key("Deployment", body.metadata.name));
         save({
           ...previous,
@@ -1636,7 +1657,9 @@ test("embedded replacement cuts over an unready shared gateway and waits for act
     networking: {
       async readNamespacedNetworkPolicy({ name }) {
         const current = objects.get(key("NetworkPolicy", name));
-        if (current === undefined) throw missing(name);
+        if (current === undefined) {
+          throw missing(name);
+        }
         return structuredClone(current);
       },
       async patchNamespacedNetworkPolicy({ body }) {
@@ -1647,7 +1670,9 @@ test("embedded replacement cuts over an unready shared gateway and waits for act
     objects: {
       async read({ metadata }) {
         const current = objects.get(key("HTTPRoute", metadata.name));
-        if (current === undefined) throw missing(metadata.name);
+        if (current === undefined) {
+          throw missing(metadata.name);
+        }
         return structuredClone(current);
       },
       async patch(body) {
@@ -1947,7 +1972,9 @@ test("containment-only Sandbox cleanup retries after its Compute-owned workload 
     async cleanup(context) {
       assert.equal(deploymentPresent, false);
       cleanupCalls.push(context);
-      if (cleanupCalls.length === 1) throw new Error("sandbox cleanup failed");
+      if (cleanupCalls.length === 1) {
+        throw new Error("sandbox cleanup failed");
+      }
     },
   };
   const driver = new KubernetesComputeDriver(options(), { sandboxDriver });
@@ -2010,8 +2037,12 @@ test("containment-only Sandbox cleanup retries after its Compute-owned workload 
     },
     apps: {
       async readNamespacedDeployment({ name }) {
-        if (name === deploymentName && deploymentPresent) return structuredClone(deployment);
-        if (name === gatewayName) gatewayReads += 1;
+        if (name === deploymentName && deploymentPresent) {
+          return structuredClone(deployment);
+        }
+        if (name === gatewayName) {
+          gatewayReads += 1;
+        }
         throw notFound();
       },
       async deleteNamespacedDeployment(request) {
@@ -2300,7 +2331,9 @@ function providerReadinessFixture({ provisionHarness, lifecycleDrivers = [] } = 
       sandboxDriver: {
         id: "sandbox-provider",
         async provisionHarness(context) {
-          if (provisionHarness !== undefined) return provisionHarness(context);
+          if (provisionHarness !== undefined) {
+            return provisionHarness(context);
+          }
           assert.fail("activation must only observe the previously provisioned Harness");
         },
       },
@@ -2409,8 +2442,11 @@ test("provider Harness readiness requires exactly one live matching Pod", async 
   ];
   for (const missing of ["status", "conditions"]) {
     const waiting = fixture.pod(`harness-no-${missing}`);
-    if (missing === "status") delete waiting.status;
-    else delete waiting.status.conditions;
+    if (missing === "status") {
+      delete waiting.status;
+    } else {
+      delete waiting.status.conditions;
+    }
     cases.push([`missing optional ${missing}`, [waiting], false]);
   }
   for (const [field, value] of [
@@ -2420,8 +2456,11 @@ test("provider Harness readiness requires exactly one live matching Pod", async 
     ["openclaw.dev/workload-role", "gateway"],
   ]) {
     const unrelated = fixture.pod("unrelated");
-    if (field === "namespace") unrelated.metadata.namespace = value;
-    else unrelated.metadata.labels[field] = value;
+    if (field === "namespace") {
+      unrelated.metadata.namespace = value;
+    } else {
+      unrelated.metadata.labels[field] = value;
+    }
     cases.push([`wrong ${field}`, [unrelated], false]);
     cases.push([`Ready plus wrong ${field}`, [ready, unrelated], true]);
   }
@@ -2595,7 +2634,9 @@ test("provider Harness preparation preserves readiness and cleanup contracts", a
     ...driver.manifest("v1", "Namespace", namespace, { namespaceId: tenant.id }),
     status: { phase: "Active" },
   });
-  for (const policy of driver.networkPolicies({ namespaceId: tenant.id }, namespace)) save(policy);
+  for (const policy of driver.networkPolicies({ namespaceId: tenant.id }, namespace)) {
+    save(policy);
+  }
   // Seed an already-ready gateway; the fixture never derives readiness from a write.
   const gateway = driver.deployment(
     gatewayName,
@@ -2639,7 +2680,9 @@ test("provider Harness preparation preserves readiness and cleanup contracts", a
       api[`readNamespaced${kind}`] = async ({ name, namespace: requestedNamespace }) => {
         assert.equal(requestedNamespace, namespace);
         const object = objects.get(key(kind, name));
-        if (object === undefined) throw Object.assign(new Error("not found"), { statusCode: 404 });
+        if (object === undefined) {
+          throw Object.assign(new Error("not found"), { statusCode: 404 });
+        }
         return structuredClone(object);
       };
       api[`patchNamespaced${kind}`] = async ({ body, namespace: requestedNamespace }) => {
@@ -2737,8 +2780,9 @@ test("provider Harness readiness preserves API errors and owner cancellation", a
       started(signal);
       return new Promise((resolve, reject) => {
         release = () => resolve({ items: [fixture.pod("late-ready")] });
-        if (!lateSuccess)
+        if (!lateSuccess) {
           signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        }
       });
     });
     // Manual owner cancellation exercises the driver context; it is not database lease-loss proof.
@@ -2747,7 +2791,9 @@ test("provider Harness readiness preserves API errors and owner cancellation", a
     const requestSignal = await observing;
     owner.abort(cancellation);
     assert.equal(requestSignal.aborted, true);
-    if (lateSuccess) release();
+    if (lateSuccess) {
+      release();
+    }
     await rejected;
   }
   assert.equal(fixture.requests.length, 6);
@@ -2868,7 +2914,7 @@ test("revision lifecycle rejects another driver or missing identity before clust
   };
 
   // Operator credentials do not weaken either managed Kubernetes topology.
-  for (const mode of ["embedded", "dedicated"])
+  for (const mode of ["embedded", "dedicated"]) {
     await assert.rejects(
       production.prepareRevision({
         ...accessTokenRevision,
@@ -2877,6 +2923,7 @@ test("revision lifecycle rejects another driver or missing identity before clust
       }),
       /incompatible.*topology/i,
     );
+  }
   // Unsupported access-token execution and cross-account references fail before cluster access.
   await assert.rejects(
     production.prepareRevision({
@@ -3270,7 +3317,9 @@ test("private gateway claim reuse and deletion verify exact ownership and storag
   driver.apiClients = Promise.resolve({
     core: {
       async readNamespacedPersistentVolumeClaim() {
-        if (observed === undefined) throw Object.assign(new Error("Not found"), { code: 404 });
+        if (observed === undefined) {
+          throw Object.assign(new Error("Not found"), { code: 404 });
+        }
         return structuredClone(observed);
       },
       async patchNamespacedPersistentVolumeClaim(request) {
@@ -3403,7 +3452,9 @@ test("stopping a Kubernetes revision removes routing and execution but retains p
   driver.apiClients = Promise.resolve({
     apps: {
       async readNamespacedDeployment({ name }) {
-        if (name !== gatewayName) throw Object.assign(new Error("Not found"), { code: 404 });
+        if (name !== gatewayName) {
+          throw Object.assign(new Error("Not found"), { code: 404 });
+        }
         return structuredClone(gateway);
       },
       async deleteNamespacedDeployment(request) {
@@ -3478,7 +3529,9 @@ test("stopping a containment-only Kubernetes revision removes its workload befor
       assert.equal(deploymentPresent, false);
       assert.ok(podObservations >= 2, "cleanup must wait for the exact workload Pod to terminate");
       cleanupCalls.push(context);
-      if (cleanupCalls.length === 1) throw new Error("sandbox cleanup failed");
+      if (cleanupCalls.length === 1) {
+        throw new Error("sandbox cleanup failed");
+      }
     },
   };
   const driver = new KubernetesComputeDriver(options(), { sandboxDriver });
@@ -3561,7 +3614,9 @@ test("stopping a containment-only Kubernetes revision removes its workload befor
     },
     apps: {
       async readNamespacedDeployment({ name }) {
-        if (name === deploymentName && deploymentPresent) return structuredClone(deployment);
+        if (name === deploymentName && deploymentPresent) {
+          return structuredClone(deployment);
+        }
         throw notFound();
       },
       async deleteNamespacedDeployment(request) {
@@ -3717,7 +3772,9 @@ test("retiring a predecessor preserves both claims and final retirement deletes 
     driver.gatewayPrivateStateClaim(agentId, ownership, namespace),
     driver.sharedWorkspaceClaim(agentId, ownership, namespace),
   ];
-  for (const claim of claims) claim.metadata.uid = claim.metadata.name + "-uid";
+  for (const claim of claims) {
+    claim.metadata.uid = claim.metadata.name + "-uid";
+  }
   const deletions = [];
   let failServiceDelete = false;
   const missing = async () => {
@@ -3726,7 +3783,9 @@ test("retiring a predecessor preserves both claims and final retirement deletes 
   driver.apiClients = Promise.resolve({
     apps: {
       async readNamespacedDeployment() {
-        if (observedGateway === undefined) return missing();
+        if (observedGateway === undefined) {
+          return missing();
+        }
         return structuredClone(observedGateway);
       },
       async deleteNamespacedDeployment(request) {
@@ -3736,22 +3795,30 @@ test("retiring a predecessor preserves both claims and final retirement deletes 
     core: {
       async readNamespacedPersistentVolumeClaim({ name }) {
         const claim = claims.find(({ metadata }) => metadata.name === name);
-        if (claim === undefined) return missing();
+        if (claim === undefined) {
+          return missing();
+        }
         return structuredClone(claim);
       },
       async deleteNamespacedPersistentVolumeClaim(request) {
         deletions.push(["PersistentVolumeClaim", request]);
       },
       async readNamespacedService() {
-        if (observedService === undefined) return missing();
+        if (observedService === undefined) {
+          return missing();
+        }
         return structuredClone(observedService);
       },
       async deleteNamespacedService(request) {
         deletions.push(["Service", request]);
-        if (failServiceDelete) throw new Error("service delete failed");
+        if (failServiceDelete) {
+          throw new Error("service delete failed");
+        }
       },
       async readNamespacedServiceAccount() {
-        if (observedServiceAccount === undefined) return missing();
+        if (observedServiceAccount === undefined) {
+          return missing();
+        }
         return structuredClone(observedServiceAccount);
       },
       async deleteNamespacedServiceAccount(request) {
@@ -3760,7 +3827,9 @@ test("retiring a predecessor preserves both claims and final retirement deletes 
     },
     objects: {
       async read() {
-        if (observedRoute === undefined) return missing();
+        if (observedRoute === undefined) {
+          return missing();
+        }
         return structuredClone(observedRoute);
       },
       async delete(

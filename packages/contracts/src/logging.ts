@@ -23,7 +23,9 @@ export function normalizeLoggingLevel(
   input: unknown = "info",
   description = "logging.level",
 ): LoggingLevel {
-  if (LOGGING_LEVELS.some((level) => level === input)) return input as LoggingLevel;
+  if (LOGGING_LEVELS.some((level) => level === input)) {
+    return input as LoggingLevel;
+  }
   throw new Error(`${description} must be one of debug, info, warn, or error.`);
 }
 

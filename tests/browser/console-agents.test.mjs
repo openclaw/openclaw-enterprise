@@ -51,7 +51,9 @@ async function newPage(t, fixture) {
         cleanupError ??= error;
       }
     }
-    if (cleanupError) throw cleanupError;
+    if (cleanupError) {
+      throw cleanupError;
+    }
   });
   context = await browser.newContext();
   return { page: await context.newPage(), artifacts };

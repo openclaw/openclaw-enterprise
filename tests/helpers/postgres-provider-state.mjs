@@ -52,7 +52,9 @@ export async function waitFor(description, read, timeoutMs = 10_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const value = await read();
-    if (value !== undefined) return value;
+    if (value !== undefined) {
+      return value;
+    }
     await delay(20);
   }
   assert.fail(`Timed out waiting for ${description}.`);
@@ -87,7 +89,9 @@ export function authorizedPrincipal(iam, required = [["deploy", "agent"]]) {
 
 export async function ensureInstallation(state, label) {
   const existing = await state.loadInstallation();
-  if (existing !== undefined) return existing;
+  if (existing !== undefined) {
+    return existing;
+  }
 
   const installation = {
     id: `ins_${randomUUID()}`,
@@ -119,7 +123,9 @@ async function inTransaction(pool, operation) {
 }
 
 export async function cleanupNamespaces(pool, namespaceIds) {
-  if (namespaceIds.length === 0) return;
+  if (namespaceIds.length === 0) {
+    return;
+  }
   await inTransaction(pool, async (client) => {
     await client.query(
       `UPDATE occ.controller_work
@@ -150,8 +156,9 @@ export async function cleanupProviderFixtures(pool, namespaceId, cleanup) {
     [cleanup.serviceAccountIds, cleanup.agentIds, cleanup.revisionIds].every(
       (ids) => ids.length === 0,
     )
-  )
+  ) {
     return;
+  }
   await inTransaction(pool, async (client) => {
     await client.query(
       `UPDATE occ.controller_work
@@ -181,7 +188,9 @@ export async function cleanupProviderFixtures(pool, namespaceId, cleanup) {
 function trackNamespaces(context, pool, close) {
   const namespaceIds = new Set();
   context.after(async () => {
-    if (close !== undefined) await close();
+    if (close !== undefined) {
+      await close();
+    }
     await cleanupNamespaces(pool, [...namespaceIds]);
     await pool.end();
   });
@@ -193,7 +202,9 @@ function trackNamespaces(context, pool, close) {
     async cleanup(...namespaces) {
       const ids = namespaces.filter(Boolean).map(({ id }) => id);
       await cleanupNamespaces(pool, ids);
-      for (const id of ids) namespaceIds.delete(id);
+      for (const id of ids) {
+        namespaceIds.delete(id);
+      }
     },
   };
 }
@@ -276,7 +287,9 @@ export function createProviderWorkerDrivers(
   const installation = createInstallationDriverConfiguration();
   installation.provider = providers;
   installation.drivers.compute.id = computeDriver.id;
-  if (options.secretDriver !== undefined) installation.drivers.secret.id = options.secretDriver.id;
+  if (options.secretDriver !== undefined) {
+    installation.drivers.secret.id = options.secretDriver.id;
+  }
   if (providers.length > 0) {
     installation.drivers.service_account = {
       id: providers[0]?.drivers.service_account ?? serviceAccountDriverId,
@@ -317,8 +330,11 @@ export async function createProviderFixture(context) {
   const state = new PostgresPlatformState(pool);
   let worker;
   const namespaces = trackNamespaces(context, pool, async () => {
-    if (worker === undefined) await workerPool.end();
-    else await worker.stop();
+    if (worker === undefined) {
+      await workerPool.end();
+    } else {
+      await worker.stop();
+    }
   });
 
   const installation = await ensureInstallation(state, "provider-ownership");
@@ -434,7 +450,9 @@ export async function availablePort() {
 }
 
 export async function stopProcess(child) {
-  if (child.exitCode !== null || child.signalCode !== null) return;
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return;
+  }
   const exited = once(child, "exit");
   child.kill("SIGTERM");
   const force = setTimeout(() => child.kill("SIGKILL"), 2_000);

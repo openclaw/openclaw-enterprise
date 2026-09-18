@@ -28,7 +28,9 @@ function requiredString(value: unknown, path: string): string {
 }
 
 function requestTimeout(value: unknown): number {
-  if (value === undefined) return DEFAULT_REQUEST_TIMEOUT_MS;
+  if (value === undefined) {
+    return DEFAULT_REQUEST_TIMEOUT_MS;
+  }
   if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > 60_000) {
     throw new NotImplementedError(
       "codex-plugin-catalog-discovery",
@@ -137,13 +139,18 @@ export class NativeCodexPluginCatalogReader implements CodexPluginCatalogReader 
       signal?.addEventListener("abort", abort, { once: true });
 
       const finish = (error?: Error) => {
-        if (settled) return;
+        if (settled) {
+          return;
+        }
         settled = true;
         clearTimeout(timeout);
         signal?.removeEventListener("abort", abort);
         child.kill("SIGTERM");
-        if (error) reject(error);
-        else resolve(results);
+        if (error) {
+          reject(error);
+        } else {
+          resolve(results);
+        }
       };
 
       const sendNext = () => {
@@ -168,7 +175,9 @@ export class NativeCodexPluginCatalogReader implements CodexPluginCatalogReader 
           );
           return;
         }
-        if (message.id !== requests[next]?.id) return;
+        if (message.id !== requests[next]?.id) {
+          return;
+        }
         if (message.error !== undefined) {
           const error = asRecord(message.error);
           finish(
@@ -182,10 +191,15 @@ export class NativeCodexPluginCatalogReader implements CodexPluginCatalogReader 
           return;
         }
         results.push(message.result);
-        if (requests[next]?.method === "initialize") sendInitialized();
+        if (requests[next]?.method === "initialize") {
+          sendInitialized();
+        }
         next += 1;
-        if (next >= requests.length) finish();
-        else sendNext();
+        if (next >= requests.length) {
+          finish();
+        } else {
+          sendNext();
+        }
       });
 
       child.stderr.resume();
@@ -198,7 +212,9 @@ export class NativeCodexPluginCatalogReader implements CodexPluginCatalogReader 
         );
       });
       child.on("exit", (code) => {
-        if (settled) return;
+        if (settled) {
+          return;
+        }
         finish(
           new NotImplementedError(
             "codex-plugin-catalog-discovery",

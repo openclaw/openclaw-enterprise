@@ -30,8 +30,9 @@ function summary(values, details) {
   const model = values?.agents?.defaults?.model;
   const primary = typeof model === "string" ? model : model?.primary;
   const list = element("dl", { className: "configuration-summary" });
-  for (const [name, value] of [["Model", primary ?? "Not specified"], ...details])
+  for (const [name, value] of [["Model", primary ?? "Not specified"], ...details]) {
     list.append(element("dt", {}, name), element("dd", {}, value ?? "None"));
+  }
   return list;
 }
 
@@ -48,7 +49,9 @@ export async function renderAgentDetail(context) {
   const { view, namespaceId, agentId, request, url } = context;
   const path = `${namespacePath(namespaceId)}/agents/${encodeURIComponent(agentId)}`;
   const agent = await request(path);
-  if (!context.isCurrent()) return;
+  if (!context.isCurrent()) {
+    return;
+  }
   context.setTitle(agent.name);
   const selected = url.searchParams.get("revision") ?? agent.activeRevisionId ?? "draft";
   const tab = url.searchParams.get("tab");
@@ -86,12 +89,13 @@ export async function renderAgentDetail(context) {
     ["channels", "Channels"],
     ...(selected === "draft" ? [["credentials", "Credentials"]] : []),
     ["workspace", "Workspace files"],
-  ])
+  ]) {
     tabs.append(
       button(label, () => change(selected, id), {
         ...(id === selectedTab ? { "aria-current": "page" } : {}),
       }),
     );
+  }
   // TODO: consume authenticated serving observations when the lifecycle status API ships.
   const serving = element(
     "section",
@@ -122,7 +126,9 @@ export async function renderAgentDetail(context) {
         : `${path}/revisions/${encodeURIComponent(selected)}`,
     ),
   ]);
-  if (!context.isCurrent()) return;
+  if (!context.isCurrent()) {
+    return;
+  }
   if (results.some((result) => result.status === "rejected" && result.reason.status === 401)) {
     context.onExpired();
     return;
@@ -134,14 +140,15 @@ export async function renderAgentDetail(context) {
       : [];
   const snapshot = results[1].status === "fulfilled" ? results[1].value : null;
   const activeRevision = revisions.find((revision) => revision.id === agent.activeRevisionId);
-  if (activeRevision)
+  if (activeRevision) {
     header.lastChild.textContent = `Selected revision · v${activeRevision.revision}`;
+  }
   const chooser = element(
     "select",
     { id: "revision-selector", "aria-label": "AgentRevision" },
     element("option", { value: "draft" }, "Saved draft · editable Configuration"),
   );
-  for (const revision of revisions)
+  for (const revision of revisions) {
     chooser.append(
       element(
         "option",
@@ -149,7 +156,8 @@ export async function renderAgentDetail(context) {
         `v${revision.revision} · ${displayDate(revision.createdAt)} · ${revision.id === agent.activeRevisionId ? "Selected by Agent" : "Not selected by Agent"}`,
       ),
     );
-  if (selected !== "draft" && !revisions.some((revision) => revision.id === selected))
+  }
+  if (selected !== "draft" && !revisions.some((revision) => revision.id === selected)) {
     chooser.append(
       element(
         "option",
@@ -157,6 +165,7 @@ export async function renderAgentDetail(context) {
         snapshot ? `v${snapshot.revision} · Viewed snapshot` : "Viewed snapshot unavailable",
       ),
     );
+  }
   chooser.value = selected;
   chooser.addEventListener("change", () => change(chooser.value));
   const position = revisions.findIndex((revision) => revision.id === selected);
@@ -191,7 +200,7 @@ export async function renderAgentDetail(context) {
       ),
     ].filter(Boolean),
   );
-  if (revisionResult.status === "rejected")
+  if (revisionResult.status === "rejected") {
     selector.append(
       element(
         "p",
@@ -199,7 +208,7 @@ export async function renderAgentDetail(context) {
         `Revision history unavailable. ${message(revisionResult.reason)}`,
       ),
     );
-  else if (!revisions.length)
+  } else if (!revisions.length) {
     selector.append(
       element(
         "p",
@@ -207,6 +216,7 @@ export async function renderAgentDetail(context) {
         "No readable AgentRevisions. Creation alone does not create a revision.",
       ),
     );
+  }
   if (!snapshot) {
     content.replaceChildren(errorPanel(results[1].reason, context, () => change(selected)));
     return;
@@ -230,23 +240,26 @@ export async function renderAgentDetail(context) {
         })
       : null;
   function updateDeployControls() {
-    if (!deploy || !deployStatus) return;
+    if (!deploy || !deployStatus) {
+      return;
+    }
     deploy.disabled =
       deployPending ||
       !agent.harnessAuth ||
       revisionResult.status !== "fulfilled" ||
       (!runtimeAuth && !credentials?.canDeploy());
     if (!deployPending) {
-      if (revisionResult.status !== "fulfilled")
+      if (revisionResult.status !== "fulfilled") {
         deployStatus.textContent =
           "Revision history is required before deploying this saved draft.";
-      else if (runtimeAuth)
+      } else if (runtimeAuth) {
         deployStatus.textContent =
           "Configured on the runtime host; not validated by OCC. Gateway readiness does not confirm model access.";
-      else
+      } else {
         deployStatus.textContent = agent.harnessAuth
           ? credentials.deployGateMessage()
           : "Select a harness authentication source in Credentials before deployment.";
+      }
     }
   }
   if (draft) {
@@ -264,7 +277,9 @@ export async function renderAgentDetail(context) {
           ),
           runtimeAuth ? Promise.resolve(null) : request(`${path}/runtime-credentials`),
         ]);
-        if (!context.isCurrent()) return;
+        if (!context.isCurrent()) {
+          return;
+        }
         if (
           freshAgent.configurationId !== snapshot.id ||
           JSON.stringify(freshAgent.harnessAuth) !== JSON.stringify(agent.harnessAuth) ||
@@ -286,24 +301,34 @@ export async function renderAgentDetail(context) {
         submitted = true;
         deployStatus.textContent = "Requesting deployment…";
         const revision = await request(`${path}/deploy`, { method: "POST" });
-        if (context.isCurrent()) change(revision.id, "workspace");
+        if (context.isCurrent()) {
+          change(revision.id, "workspace");
+        }
       } catch (error) {
-        if (!context.isCurrent()) return;
+        if (!context.isCurrent()) {
+          return;
+        }
         if (error.status === 401) {
           context.onExpired();
           return;
         }
         deployStatus.textContent = message(error, submitted);
-        if (!submitted || [400, 403, 404, 409, 429].includes(error.status)) deployPending = false;
+        if (!submitted || [400, 403, 404, 409, 429].includes(error.status)) {
+          deployPending = false;
+        }
       } finally {
         if (context.isCurrent()) {
-          if (!submitted) deployPending = false;
+          if (!submitted) {
+            deployPending = false;
+          }
           updateDeployControls();
         }
       }
     });
     updateDeployControls();
-    if (credentials) void credentials.loadStatus();
+    if (credentials) {
+      void credentials.loadStatus();
+    }
     selector.append(
       element(
         "p",
@@ -314,7 +339,9 @@ export async function renderAgentDetail(context) {
       deployStatus,
     );
   }
-  if (!draft) selector.append(element("p", { className: "resource-id" }, snapshot.id));
+  if (!draft) {
+    selector.append(element("p", { className: "resource-id" }, snapshot.id));
+  }
   selector.append(
     element(
       "p",
@@ -347,15 +374,17 @@ export async function renderAgentDetail(context) {
               `${namespacePath(namespaceId)}/configurations/${encodeURIComponent(snapshot.id)}`,
             ),
           ]);
-          if (!context.isCurrent())
+          if (!context.isCurrent()) {
             throw new Error("This view has changed. Reopen the Configuration before saving.");
+          }
           if (
             freshAgent.configurationId !== snapshot.id ||
             freshConfig.generation !== snapshot.generation
-          )
+          ) {
             throw new Error(
               "The saved Configuration changed while you were editing. Close this editor and refresh before saving.",
             );
+          }
           mutationStarted = true;
           await request(
             `${namespacePath(namespaceId)}/configurations/${encodeURIComponent(snapshot.id)}`,
@@ -364,9 +393,13 @@ export async function renderAgentDetail(context) {
               body: { values: updatedValues },
             },
           );
-          if (context.isCurrent()) change("draft", "channels");
+          if (context.isCurrent()) {
+            change("draft", "channels");
+          }
         } catch (error) {
-          if (!context.isCurrent()) throw error;
+          if (!context.isCurrent()) {
+            throw error;
+          }
           if (error.status === 401) {
             context.onExpired();
             throw new Error("Your session has expired.");
@@ -375,8 +408,9 @@ export async function renderAgentDetail(context) {
             error.status !== undefined ||
             error.name === "TimeoutError" ||
             error.name === "TypeError"
-          )
+          ) {
             error.message = message(error, mutationStarted);
+          }
           error.outcomeUnknown =
             mutationStarted && ![400, 403, 404, 409, 429].includes(error.status);
           throw error;
@@ -396,14 +430,18 @@ export async function renderAgentDetail(context) {
     let outcomeUnknown = false;
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
-      if (!form.reportValidity() || save.disabled) return;
+      if (!form.reportValidity() || save.disabled) {
+        return;
+      }
       save.disabled = true;
       auth.setDisabled(true);
       let mutationStarted = false;
       try {
         const harnessAuth = await auth.readBinding();
         const current = await request(path);
-        if (!context.isCurrent()) return;
+        if (!context.isCurrent()) {
+          return;
+        }
         if (
           current.configurationId !== agent.configurationId ||
           JSON.stringify(current.harnessAuth) !== JSON.stringify(agent.harnessAuth)
@@ -416,11 +454,16 @@ export async function renderAgentDetail(context) {
           method: "PATCH",
           body: { configurationId: agent.configurationId, harnessAuth },
         });
-        if (context.isCurrent()) change("draft", "credentials");
+        if (context.isCurrent()) {
+          change("draft", "credentials");
+        }
       } catch (error) {
-        if (!context.isCurrent()) return;
-        if (error.status === 401) context.onExpired();
-        else {
+        if (!context.isCurrent()) {
+          return;
+        }
+        if (error.status === 401) {
+          context.onExpired();
+        } else {
           feedback.textContent = message(error, mutationStarted);
           outcomeUnknown = mutationStarted && ![400, 403, 404, 409, 429].includes(error.status);
         }
@@ -432,7 +475,9 @@ export async function renderAgentDetail(context) {
       }
     });
     content.append(form);
-    if (credentials) content.append(credentials.section);
+    if (credentials) {
+      content.append(credentials.section);
+    }
   } else {
     const details = [
       ["Execution mode", executionMode === "dedicated" ? "Dedicated" : "Embedded"],
@@ -443,11 +488,12 @@ export async function renderAgentDetail(context) {
       ],
       ["Created", displayDate(snapshot.createdAt)],
     ];
-    if (!draft)
+    if (!draft) {
       details.push(
         ["Harness", `${snapshot.harness.id} · ${snapshot.harness.version}`],
         ["Compute", `${snapshot.compute.id} · ${snapshot.compute.implementation}`],
       );
+    }
     content.append(
       element(
         "section",

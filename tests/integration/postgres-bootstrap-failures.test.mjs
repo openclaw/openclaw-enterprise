@@ -182,7 +182,9 @@ async function exists(path) {
     await stat(path);
     return true;
   } catch (error) {
-    if (error?.code === "ENOENT") return false;
+    if (error?.code === "ENOENT") {
+      return false;
+    }
     throw error;
   }
 }
@@ -360,7 +362,9 @@ for (const sharedOutput of [false, true]) {
       assert.equal(output.data.id, winner.serviceKeyId);
 
       for (const [index, environment] of environments.entries()) {
-        if (index === winnerIndex || sharedOutput) continue;
+        if (index === winnerIndex || sharedOutput) {
+          continue;
+        }
         assert.equal(await exists(environment.OCC_BOOTSTRAP_PASSWORD_FILE), loserCreatedServiceKey);
         assert.equal(
           await exists(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE),

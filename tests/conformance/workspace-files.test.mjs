@@ -203,12 +203,17 @@ async function request(app, pathname, options = {}) {
     options.identity === false ? {} : authenticatedHeaders(options.session ?? app.defaultSession),
   );
   for (const [name, value] of Object.entries(options.headers ?? {})) {
-    if (value === null) headers.delete(name);
-    else headers.set(name, value);
+    if (value === null) {
+      headers.delete(name);
+    } else {
+      headers.set(name, value);
+    }
   }
 
   const hasBody = Object.hasOwn(options, "body");
-  if (hasBody && !headers.has("content-type")) headers.set("content-type", "application/json");
+  if (hasBody && !headers.has("content-type")) {
+    headers.set("content-type", "application/json");
+  }
   const body = hasBody
     ? typeof options.body === "string"
       ? options.body
@@ -521,7 +526,9 @@ test("Agent workspace file routes map provider file states without leaking conte
   const fixture = await createFixture({
     workspaceFilesAccess: {
       async read(read) {
-        if (read.filename === "SOUL.md") return { status: "missing" };
+        if (read.filename === "SOUL.md") {
+          return { status: "missing" };
+        }
         return { status: "unavailable" };
       },
       async write() {
@@ -595,7 +602,9 @@ test("Agent workspace file unknown outcomes stay bounded when audit persistence 
   const append = fixture.auditSink.append.bind(fixture.auditSink);
   fixture.auditSink.append = async (event) => {
     // Stall before storing the event, so the API must bound its audit attempt too.
-    if (event.action === "openclaw.agents.workspace.files.write") await new Promise(() => {});
+    if (event.action === "openclaw.agents.workspace.files.write") {
+      await new Promise(() => {});
+    }
     await append(event);
   };
 
@@ -723,8 +732,11 @@ test("Agent workspace file read aborts provider access on real HTTP client disco
     async read(read) {
       reads.push(read);
       enteredRead(read);
-      if (read.signal.aborted) observedAbort(read);
-      else read.signal.addEventListener("abort", () => observedAbort(read), { once: true });
+      if (read.signal.aborted) {
+        observedAbort(read);
+      } else {
+        read.signal.addEventListener("abort", () => observedAbort(read), { once: true });
+      }
       await readAborted;
       return { status: "ok", file: { name: read.filename, content: "late\n" } };
     },

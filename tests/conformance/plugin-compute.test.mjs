@@ -222,7 +222,9 @@ function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
         return {
           mkdirSync() {},
           readFileSync(path) {
-            if (!files.has(path)) throw new Error(`Missing mocked file: ${path}`);
+            if (!files.has(path)) {
+              throw new Error(`Missing mocked file: ${path}`);
+            }
             return files.get(path);
           },
           writeFileSync(path, data) {
@@ -336,11 +338,15 @@ async function runCodexRuntimeHelper(runtime, handler, options = {}) {
       return this;
     }
     dispatch(name, event) {
-      for (const listener of this.listeners.get(name) ?? []) listener(event);
+      for (const listener of this.listeners.get(name) ?? []) {
+        listener(event);
+      }
     }
     send(raw) {
       const request = JSON.parse(raw);
-      if (request.method === "initialized") return;
+      if (request.method === "initialized") {
+        return;
+      }
       requests.push({ method: request.method, params: request.params });
       Promise.resolve(handler(request.method, request.params)).then(
         (result) =>
@@ -371,12 +377,16 @@ async function runCodexRuntimeHelper(runtime, handler, options = {}) {
       },
     },
     require(specifier) {
-      if (specifier === "ws") return FakeWebSocket;
+      if (specifier === "ws") {
+        return FakeWebSocket;
+      }
       if (specifier === "node:fs") {
         return {
           mkdirSync() {},
           readFileSync(path) {
-            if (!files.has(path)) throw new Error(`Missing mocked file: ${path}`);
+            if (!files.has(path)) {
+              throw new Error(`Missing mocked file: ${path}`);
+            }
             return files.get(path);
           },
           writeFileSync(path, data) {
@@ -481,7 +491,9 @@ test("Codex runtime helper installs selected remote plugins before readiness", a
   };
   let readCount = 0;
   const { requests, sockets } = await runCodexRuntimeHelper(runtime, (method, params) => {
-    if (method === "initialize") return { serverInfo: { name: "codex", version: "0.149.0" } };
+    if (method === "initialize") {
+      return { serverInfo: { name: "codex", version: "0.149.0" } };
+    }
     if (method === "plugin/list") {
       assert.deepEqual(params, {});
       return codexListResponse();
@@ -566,8 +578,12 @@ test("Codex runtime keeps disabled selected plugins default-denied while preserv
     let readCount = 0;
     const installRequests = [];
     const { requests } = await runCodexRuntimeHelper(runtime, (method, params) => {
-      if (method === "initialize") return { serverInfo: { name: "codex", version: "0.149.0" } };
-      if (method === "plugin/list") return codexListResponse();
+      if (method === "initialize") {
+        return { serverInfo: { name: "codex", version: "0.149.0" } };
+      }
+      if (method === "plugin/list") {
+        return codexListResponse();
+      }
       if (method === "plugin/read") {
         readCount += 1;
         return codexReadResponse({ installed: readCount > 1, enabled: readCount > 1 });
@@ -641,7 +657,9 @@ test("Codex runtime helper fails before readiness when catalog identity is absen
   await assert.rejects(
     () =>
       runCodexRuntimeHelper(runtime, (method) => {
-        if (method === "initialize") return { serverInfo: { name: "codex", version: "0.149.0" } };
+        if (method === "initialize") {
+          return { serverInfo: { name: "codex", version: "0.149.0" } };
+        }
         if (method === "plugin/list") {
           return codexListResponse({
             nativeId: "asana@openai-curated-remote",
@@ -664,8 +682,12 @@ test("Codex runtime helper fails before readiness when native app mapping drifts
   await assert.rejects(
     () =>
       runCodexRuntimeHelper(runtime, (method, params) => {
-        if (method === "initialize") return { serverInfo: { name: "codex", version: "0.149.0" } };
-        if (method === "plugin/list") return codexListResponse();
+        if (method === "initialize") {
+          return { serverInfo: { name: "codex", version: "0.149.0" } };
+        }
+        if (method === "plugin/list") {
+          return codexListResponse();
+        }
         if (method === "plugin/read") {
           readCount += 1;
           return codexReadResponse({
@@ -678,7 +700,9 @@ test("Codex runtime helper fails before readiness when native app mapping drifts
             ],
           });
         }
-        if (method === "config/batchWrite") return { status: "ok", version: "test-config-1" };
+        if (method === "config/batchWrite") {
+          return { status: "ok", version: "test-config-1" };
+        }
         if (method === "plugin/install") {
           assert.deepEqual(params, {
             remoteMarketplaceName: "openai-curated-remote",
@@ -701,14 +725,22 @@ test("Codex runtime helper fails before readiness when native version drifts", a
   await assert.rejects(
     () =>
       runCodexRuntimeHelper(runtime, (method) => {
-        if (method === "initialize") return { serverInfo: { name: "codex", version: "0.149.0" } };
-        if (method === "plugin/list") return codexListResponse();
+        if (method === "initialize") {
+          return { serverInfo: { name: "codex", version: "0.149.0" } };
+        }
+        if (method === "plugin/list") {
+          return codexListResponse();
+        }
         if (method === "plugin/read") {
           readCount += 1;
           return codexReadResponse({ version: readCount === 1 ? "5.0.1" : "5.0.2" });
         }
-        if (method === "config/batchWrite") return { status: "ok", version: "test-config-1" };
-        if (method === "plugin/install") return { authPolicy: "ON_USE", appsNeedingAuth: [] };
+        if (method === "config/batchWrite") {
+          return { status: "ok", version: "test-config-1" };
+        }
+        if (method === "plugin/install") {
+          return { authPolicy: "ON_USE", appsNeedingAuth: [] };
+        }
         throw new Error(`unexpected request ${method}`);
       }),
     /installed release metadata does not match startup resolution/,
@@ -723,11 +755,21 @@ test("Codex runtime helper fails before readiness when effective native app conf
   await assert.rejects(
     () =>
       runCodexRuntimeHelper(runtime, (method) => {
-        if (method === "initialize") return { serverInfo: { name: "codex", version: "0.149.0" } };
-        if (method === "plugin/list") return codexListResponse();
-        if (method === "plugin/read") return codexReadResponse();
-        if (method === "config/batchWrite") return { status: "ok", version: "test-config-1" };
-        if (method === "plugin/install") return { authPolicy: "ON_USE", appsNeedingAuth: [] };
+        if (method === "initialize") {
+          return { serverInfo: { name: "codex", version: "0.149.0" } };
+        }
+        if (method === "plugin/list") {
+          return codexListResponse();
+        }
+        if (method === "plugin/read") {
+          return codexReadResponse();
+        }
+        if (method === "config/batchWrite") {
+          return { status: "ok", version: "test-config-1" };
+        }
+        if (method === "plugin/install") {
+          return { authPolicy: "ON_USE", appsNeedingAuth: [] };
+        }
         if (method === "config/read") {
           return {
             config: {
@@ -752,9 +794,15 @@ test("Codex runtime helper fails before readiness when selected plugin lacks app
   await assert.rejects(
     () =>
       runCodexRuntimeHelper(runtime, (method) => {
-        if (method === "initialize") return { serverInfo: { name: "codex", version: "0.149.0" } };
-        if (method === "plugin/list") return codexListResponse();
-        if (method === "plugin/read") return codexReadResponse({ apps: [] });
+        if (method === "initialize") {
+          return { serverInfo: { name: "codex", version: "0.149.0" } };
+        }
+        if (method === "plugin/list") {
+          return codexListResponse();
+        }
+        if (method === "plugin/read") {
+          return codexReadResponse({ apps: [] });
+        }
         throw new Error(`unexpected request ${method}`);
       }),
     /does not expose an app mapping/,

@@ -177,7 +177,9 @@ async function fixture(t, selection = {}) {
         const terminate = () => child.kill("SIGTERM");
         const timer = setTimeout(terminate, command.timeoutMs);
         command.signal?.addEventListener("abort", terminate, { once: true });
-        if (command.signal?.aborted) terminate();
+        if (command.signal?.aborted) {
+          terminate();
+        }
         child.stdout.setEncoding("utf8").on("data", (chunk) => (stdout += chunk));
         child.stderr.setEncoding("utf8").on("data", (chunk) => (stderr += chunk));
         child.on("error", reject);
@@ -185,8 +187,11 @@ async function fixture(t, selection = {}) {
         child.on("close", (code) => {
           clearTimeout(timer);
           command.signal?.removeEventListener("abort", terminate);
-          if (command.signal?.aborted) reject(new Error("Local helper aborted"));
-          else resolve({ code: code ?? 1, stdout, stderr });
+          if (command.signal?.aborted) {
+            reject(new Error("Local helper aborted"));
+          } else {
+            resolve({ code: code ?? 1, stdout, stderr });
+          }
         });
         child.stdin.end(command.helper);
       });
@@ -196,16 +201,23 @@ async function fixture(t, selection = {}) {
   t.after(async () => {
     // Detached readiness listeners survive helper exit, as systemd services would.
     for (const name of await readdir(state)) {
-      if (!name.endsWith(".pid")) continue;
+      if (!name.endsWith(".pid")) {
+        continue;
+      }
       const pid = Number(await readFile(join(state, name), "utf8"));
       try {
         process.kill(pid, "SIGTERM");
       } catch (error) {
-        if (error.code !== "ESRCH") throw error;
+        if (error.code !== "ESRCH") {
+          throw error;
+        }
       }
     }
-    for (const child of children)
-      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    for (const child of children) {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+      }
+    }
     await rm(base, { recursive: true, force: true });
   });
   const nsDir = join(root, "namespaces", digest(tenant.id).slice(0, 12));
@@ -292,7 +304,9 @@ async function missing(path) {
 
 function setOption(object, keys, value) {
   let target = object;
-  for (const key of keys.slice(0, -1)) target = target[key];
+  for (const key of keys.slice(0, -1)) {
+    target = target[key];
+  }
   target[keys.at(-1)] = value;
 }
 
@@ -340,7 +354,7 @@ test("SSH closed schema and semantic validation reject every invalid option", ()
     ["hosts", "stable", "nodePath"],
     ["hosts", "stable", "openclawPath"],
   ];
-  for (const key of paths)
+  for (const key of paths) {
     for (const value of [
       "relative",
       "",
@@ -351,12 +365,17 @@ test("SSH closed schema and semantic validation reject every invalid option", ()
       "/control\u0000",
       "/shell$(bad)",
       "/systemd%u",
-    ])
+    ]) {
       invalid.push([key, value]);
+    }
+  }
   for (const [keys, value] of invalid) {
     let candidate = options();
-    if (keys.length === 0) candidate = value;
-    else setOption(candidate, keys, value);
+    if (keys.length === 0) {
+      candidate = value;
+    } else {
+      setOption(candidate, keys, value);
+    }
     assert.equal(Check(schema, candidate), false, keys.join("."));
     assert.throws(
       () => SshComputeDriver.validateConfiguration(candidate),
@@ -497,8 +516,9 @@ test("SSH embedded revisions stop without deleting snapshots or persistent Agent
     join(dir, "agent.json"),
     join(dir, "gateway.env"),
     join(f.revisionDir(rev), "revision.json"),
-  ])
+  ]) {
     assert.equal((await stat(path)).mode & 0o777, 0o600);
+  }
   // The admitted document is controller-owned and only group-readable by the
   // Agent runtime account, so a live gateway cannot rewrite it and bypass admission.
   const snapshot = await stat(join(f.revisionDir(rev), "openclaw.json"));
@@ -699,17 +719,19 @@ test("SSH revisions fail closed on unbound identities, unsupported topology, san
     { method: "api_key" },
     { method: "chatgpt_service_account" },
     { method: "runtime", source: {} },
-  ])
+  ]) {
     await assert.rejects(f.driver.prepareRevision({ ...rev, harnessAuth }), /operator-managed/);
+  }
   for (const harness of [
     { id: "codex", mode: "dedicated" },
     { id: "openclaw", mode: "dedicated" },
     { id: "other", mode: "embedded" },
-  ])
+  ]) {
     await assert.rejects(
       f.driver.prepareRevision({ ...rev, harness: { version: "1", ...harness } }),
       /only embedded OpenClaw/,
     );
+  }
   await assert.rejects(
     f.driver.prepareRevision(rev, { secretEnvironment: [{ name: "MODEL_KEY" }] }),
     /operator-owned.*env/,
@@ -741,8 +763,9 @@ test("SSH revisions fail closed on unbound identities, unsupported topology, san
     { servicePrincipalId: "foreign" },
     { namespaceId: "foreign" },
     { compute: { id: "foreign", implementation: "occ/ssh" } },
-  ])
+  ]) {
     await assert.rejects(f.driver.prepareRevision({ ...rev, ...change }));
+  }
   await missing(f.agentDir(rev));
 });
 
@@ -864,7 +887,9 @@ test("SSH local executor cancellation terminates the real helper waiting for the
   t.after(() => held.kill());
   const controller = new AbortController();
   const pending = withComputeAbortSignal(controller.signal, () => f.driver.ensureNamespace(tenant));
-  while (f.children.length === 0) await delay(10);
+  while (f.children.length === 0) {
+    await delay(10);
+  }
   await delay(100);
   controller.abort();
   assert.equal((await pending).failure, "retryable");
@@ -901,7 +926,9 @@ test("SSH helper stops mutating when its session pipe closes, without any signal
   const held = await holdLock(f);
   t.after(() => held.kill());
   const pending = f.driver.ensureNamespace(tenant);
-  while (f.children.length === 0) await delay(10);
+  while (f.children.length === 0) {
+    await delay(10);
+  }
   const child = f.children[0];
   await delay(100);
   child.stdout.destroy();
@@ -920,7 +947,9 @@ test("SSH host lock excludes concurrent helpers and is released by the kernel wh
   const held = await holdLock(f);
   t.after(() => held.kill());
   const pending = f.driver.ensureNamespace(tenant);
-  while (f.children.length === 0) await delay(10);
+  while (f.children.length === 0) {
+    await delay(10);
+  }
   // While another helper holds the lock, this one must wait without mutating the host.
   await delay(1_500);
   await missing(f.nsDir);

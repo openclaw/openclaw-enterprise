@@ -22,7 +22,9 @@ async function sourceFiles(directory) {
     entries.map(async (entry) => {
       const path = join(directory, entry.name);
       if (entry.isDirectory()) {
-        if (entry.name === "node_modules" || entry.name === "dist") return [];
+        if (entry.name === "node_modules" || entry.name === "dist") {
+          return [];
+        }
         return sourceFiles(path);
       }
       return entry.isFile() && /\.(?:ts|mjs)$/.test(entry.name) ? [path] : [];

@@ -508,11 +508,12 @@ test("service API keys authenticate scoped automation without replacing sessions
         { ...body, servicePrincipalId: "missing" },
         { ...body, servicePrincipalId: seed.principal.id },
         { ...body, namespaceId: tenantB.data.id },
-      ])
+      ]) {
         assert.equal(
           (await request("POST", "/api/auth/service-keys", { body: candidate })).status,
           400,
         );
+      }
       // Creating an Agent through OCC provisions its real dedicated IAM identity.
       // Its workload-credential path must not be replaced by an ordinary service key.
       const configuration = await request("POST", `/namespaces/${namespaceId}/configurations`, {
@@ -543,11 +544,12 @@ test("service API keys authenticate scoped automation without replacing sessions
         { userId: account.id },
         { expiresIn: 0 },
         { expiresIn: 31536001 },
-      ])
+      ]) {
         assert.equal(
           (await request("POST", "/api/auth/service-keys", { body: { ...body, ...extra } })).status,
           400,
         );
+      }
     },
   );
 

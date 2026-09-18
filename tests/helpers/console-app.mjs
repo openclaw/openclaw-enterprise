@@ -146,7 +146,9 @@ export async function createConsoleAppFixture(t, options = {}) {
       return controller;
     },
   };
-  if (providerSummaries !== undefined) appOptions.providerSummaries = providerSummaries;
+  if (providerSummaries !== undefined) {
+    appOptions.providerSummaries = providerSummaries;
+  }
   const app = createFastifyApp(appOptions);
   await app.listen({ host: "127.0.0.1", port });
   const cleanupBeforeAppClose = [];
@@ -157,7 +159,9 @@ export async function createConsoleAppFixture(t, options = {}) {
   }
 
   async function close() {
-    if (appClosed) return;
+    if (appClosed) {
+      return;
+    }
     appClosed = true;
     let cleanupError;
     try {
@@ -175,7 +179,9 @@ export async function createConsoleAppFixture(t, options = {}) {
         cleanupError ??= error;
       }
     }
-    if (cleanupError) throw cleanupError;
+    if (cleanupError) {
+      throw cleanupError;
+    }
   }
 
   t.after(close);
@@ -233,7 +239,9 @@ export async function createConsoleAppFixture(t, options = {}) {
   async function createNamespace(name, { ready = false } = {}) {
     const result = await request("POST", "/namespaces", { body: { name } });
     assert.equal(result.status, 201);
-    if (ready) await makeNamespaceReady(result.data.id);
+    if (ready) {
+      await makeNamespaceReady(result.data.id);
+    }
     return ready ? (await request("GET", `/namespaces/${result.data.id}`)).data : result.data;
   }
 

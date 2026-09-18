@@ -122,7 +122,9 @@ test("failed namespace preparation rolls completed owners back in reverse order"
     selectedDriver("configuration", id, {
       async afterNamespacePrepared() {
         calls.push(`${id}:prepare`);
-        if (id === "c") throw new Error("sensitive-provider-token");
+        if (id === "c") {
+          throw new Error("sensitive-provider-token");
+        }
       },
       async beforeNamespaceDelete() {
         calls.push(`${id}:revoke`);
@@ -397,7 +399,9 @@ test("cancellation after workload preparation revokes every completed owner in r
         assert.equal(signal, cancellation.signal);
         launch.environment[`PLACEHOLDER_${id.toUpperCase()}`] = `opaque-${id}`;
         calls.push(`${id}:bind`);
-        if (id === "second") cancellation.abort();
+        if (id === "second") {
+          cancellation.abort();
+        }
       },
       async beforeWorkloadStop(_revision, signal) {
         // Revocation gets a fresh, bounded signal after the original lease is lost.

@@ -337,7 +337,9 @@ async function assertWorkerCompleted(options) {
 }
 
 function throwOpenShellAbortReason(signal) {
-  if (!signal.aborted) return;
+  if (!signal.aborted) {
+    return;
+  }
   throw signal.reason ?? new Error("OpenShell management port-forward operation was aborted.");
 }
 
@@ -347,7 +349,9 @@ function createIntegrationSandboxDriverFactory(OpenShellSandboxDriver) {
 
   async function stopGatewayForward(namespaceName, expectedState) {
     const state = gatewayState.get(namespaceName);
-    if (state === undefined || (expectedState !== undefined && state !== expectedState)) return;
+    if (state === undefined || (expectedState !== undefined && state !== expectedState)) {
+      return;
+    }
     gatewayState.delete(namespaceName);
     await state.forward.stop();
   }
@@ -359,7 +363,9 @@ function createIntegrationSandboxDriverFactory(OpenShellSandboxDriver) {
       ),
     );
     const failures = cleanup.filter((result) => result.status === "rejected");
-    if (failures.length > 0) throw new AggregateError(failures.map(({ reason }) => reason));
+    if (failures.length > 0) {
+      throw new AggregateError(failures.map(({ reason }) => reason));
+    }
   }
 
   // TODO(OpenShell per-Sandbox ServiceAccount support): stop reconfiguring the namespace gateway
@@ -375,7 +381,9 @@ function createIntegrationSandboxDriverFactory(OpenShellSandboxDriver) {
     await stopGatewayForward(namespaceName, prior);
     let ownedState;
     const stopOwnedForward = () => {
-      if (ownedState === undefined) return;
+      if (ownedState === undefined) {
+        return;
+      }
       void stopGatewayForward(namespaceName, ownedState).catch((error) => {
         process.stderr.write(
           `OpenShell management port-forward abort cleanup failed for ${namespaceName}: ${error.message}\n`,
@@ -396,7 +404,9 @@ function createIntegrationSandboxDriverFactory(OpenShellSandboxDriver) {
       }
       return ownedState.endpoint;
     } catch (error) {
-      if (ownedState !== undefined) await stopGatewayForward(namespaceName, ownedState);
+      if (ownedState !== undefined) {
+        await stopGatewayForward(namespaceName, ownedState);
+      }
       context.signal.removeEventListener("abort", stopOwnedForward);
       throw error;
     }
@@ -590,8 +600,11 @@ async function prepareProductionInstallation(
     };
 
     await cleanupStep("controller worker", async () => {
-      if (worker !== undefined) await worker.stop();
-      else if (workerPool !== undefined) await workerPool.end();
+      if (worker !== undefined) {
+        await worker.stop();
+      } else if (workerPool !== undefined) {
+        await workerPool.end();
+      }
     });
     await cleanupStep("OpenShell management port-forwards", async () => {
       await createSandboxDriver.disposeGatewayForwards();
@@ -600,7 +613,9 @@ async function prepareProductionInstallation(
       await gatewayForward?.stop();
     });
     await cleanupStep("production app", async () => {
-      if (productionApp !== undefined) await productionApp.close();
+      if (productionApp !== undefined) {
+        await productionApp.close();
+      }
     });
     await cleanupStep("observer pool", async () => {
       await observerPool.end();
@@ -675,7 +690,9 @@ async function prepareProductionInstallation(
     try {
       return await resource("namespace", placement);
     } catch (error) {
-      if (/NotFound|not found/i.test(error.stderr ?? error.message)) return undefined;
+      if (/NotFound|not found/i.test(error.stderr ?? error.message)) {
+        return undefined;
+      }
       throw error;
     }
   });
@@ -787,7 +804,9 @@ async function prepareProductionInstallation(
       false,
     );
     for (const pod of await resources("pods", placement)) {
-      if (pod.metadata.labels?.["openclaw.dev/workload-role"] !== "gateway") continue;
+      if (pod.metadata.labels?.["openclaw.dev/workload-role"] !== "gateway") {
+        continue;
+      }
       assert.equal(
         pod.spec.containers.some((container) =>
           (container.env ?? []).some(({ name }) => name === "OPENAI_API_KEY"),

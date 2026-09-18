@@ -69,7 +69,9 @@ function createRuntimeCredentialComputeDriver(options = {}) {
     async retireRevision() {},
     async getAgentRuntimeCredentialStatus(binding) {
       calls.push({ operation: "status", agentId: binding.agent.id });
-      if (options.statusError !== undefined) throw options.statusError;
+      if (options.statusError !== undefined) {
+        throw options.statusError;
+      }
       return { ...statusOf(binding) };
     },
     async provisionAgentRuntimeCredentials(binding, input) {
@@ -84,7 +86,9 @@ function createRuntimeCredentialComputeDriver(options = {}) {
         slackConfigured: input.slack !== undefined || previous.slackConfigured,
       };
       statusByAgent.set(keyOf(binding), status);
-      if (options.provisionError !== undefined) throw options.provisionError;
+      if (options.provisionError !== undefined) {
+        throw options.provisionError;
+      }
       return { ...status };
     },
   };
@@ -455,8 +459,9 @@ test("runtime credential driver and audit failures stay sanitized and recoverabl
   const auditSink = new InMemoryAuditSink();
   const originalAppend = auditSink.append.bind(auditSink);
   auditSink.append = async (event) => {
-    if (event.action === "openclaw.agents.runtime_credentials.provision")
+    if (event.action === "openclaw.agents.runtime_credentials.provision") {
       throw new Error(`must not leak ${leakedAuditValue}`);
+    }
     await originalAppend(event);
   };
   const auditFailureFixture = await createFixture(t, { auditSink });

@@ -47,8 +47,9 @@ function requiredString(value: unknown, description: string): string {
 
 function validateReference(reference: ConfigurationReference): void {
   const value = asRecord(reference);
-  if (value === undefined)
+  if (value === undefined) {
     throw new ConfigurationValidationError("Configuration reference is required.");
+  }
   const id = requiredString(value.id, "Configuration ID");
   if (!id.startsWith("cfg_")) {
     throw new ConfigurationValidationError("Configuration IDs must use the cfg_ prefix.");
@@ -167,8 +168,9 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
 
   async validate(configuration: Configuration): Promise<void> {
     const resource = asRecord(configuration);
-    if (resource === undefined)
+    if (resource === undefined) {
       throw new ConfigurationValidationError("Configuration is required.");
+    }
     validateReference(configuration);
     if (resource.kind !== "agent") {
       throw new ConfigurationValidationError("Configuration kind must identify an Agent.");
@@ -388,7 +390,9 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
   }
 
   private async core(): Promise<CoreV1Api> {
-    if (this.client === undefined) this.client = this.createCore();
+    if (this.client === undefined) {
+      this.client = this.createCore();
+    }
     return this.client;
   }
 

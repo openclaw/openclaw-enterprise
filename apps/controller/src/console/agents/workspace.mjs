@@ -4,16 +4,20 @@ const filenames = ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"];
 
 function fileError(error, writing) {
   let text = "Workspace access is unavailable. Check the Agent gateway and try reloading.";
-  if (error.status === 403)
+  if (error.status === 403) {
     text = "Access denied. You do not have permission for this file operation.";
-  if (error.status === 404)
+  }
+  if (error.status === 404) {
     text = "File unavailable or missing. Check Agent access before creating it.";
-  if (error.status === 400 || error.status === 413)
+  }
+  if (error.status === 400 || error.status === 413) {
     text =
       "The file was rejected. Use valid Unicode without NUL characters, within 16 KiB of UTF-8 content.";
-  if (writing && ![400, 403, 404, 409, 413, 429].includes(error.status))
+  }
+  if (writing && ![400, 403, 404, 409, 413, 429].includes(error.status)) {
     text =
       "Outcome unknown. Your write may have succeeded. Reload this file and review its current contents before saving again.";
+  }
   return text + (error.requestId ? ` Request ID: ${error.requestId}` : "");
 }
 
@@ -90,14 +94,18 @@ export function renderWorkspaceFiles(context, agent, path) {
       updateControls();
     });
     async function load() {
-      if (pending || !context.isCurrent()) return;
+      if (pending || !context.isCurrent()) {
+        return;
+      }
       pending = true;
       updateControls();
       error.textContent = "";
       status.textContent = `Loading ${name}…`;
       try {
         const file = await context.request(endpoint);
-        if (!context.isCurrent()) return;
+        if (!context.isCurrent()) {
+          return;
+        }
         editor.value = file.content;
         baseline = file.content;
         editor.setCustomValidity("");
@@ -105,7 +113,9 @@ export function renderWorkspaceFiles(context, agent, path) {
         outcomeUnknown = false;
         status.textContent = `${name} loaded.`;
       } catch (cause) {
-        if (!context.isCurrent()) return;
+        if (!context.isCurrent()) {
+          return;
+        }
         if (cause.status === 401) {
           context.onExpired();
           return;
@@ -116,7 +126,9 @@ export function renderWorkspaceFiles(context, agent, path) {
           baseline = undefined;
           editor.setCustomValidity("");
           loaded = true;
-        } else loaded = false;
+        } else {
+          loaded = false;
+        }
         status.textContent = "";
         error.textContent = fileError(cause, false);
       } finally {
@@ -128,8 +140,15 @@ export function renderWorkspaceFiles(context, agent, path) {
     }
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
-      if (pending || !loaded || outcomeUnknown || !context.isCurrent() || editor.value === baseline)
+      if (
+        pending ||
+        !loaded ||
+        outcomeUnknown ||
+        !context.isCurrent() ||
+        editor.value === baseline
+      ) {
         return;
+      }
       const content = editor.value;
       if (
         content.includes("\0") ||
@@ -148,11 +167,15 @@ export function renderWorkspaceFiles(context, agent, path) {
       status.textContent = `Saving ${name}…`;
       try {
         await context.request(endpoint, { method: "PUT", body: { content } });
-        if (!context.isCurrent()) return;
+        if (!context.isCurrent()) {
+          return;
+        }
         baseline = content;
         status.textContent = `${name} saved.`;
       } catch (cause) {
-        if (!context.isCurrent()) return;
+        if (!context.isCurrent()) {
+          return;
+        }
         if (cause.status === 401) {
           context.onExpired();
           return;

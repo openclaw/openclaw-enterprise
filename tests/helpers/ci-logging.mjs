@@ -27,7 +27,9 @@ async function readJsonlPayloads(path) {
       .filter(Boolean)
       .map((line) => JSON.parse(line));
   } catch (error) {
-    if (error.code === "ENOENT") return [];
+    if (error.code === "ENOENT") {
+      return [];
+    }
     throw error;
   }
 }
@@ -35,7 +37,9 @@ async function readJsonlPayloads(path) {
 async function waitFor(check, description) {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
-    if (await check()) return;
+    if (await check()) {
+      return;
+    }
     await delay(250);
   }
   assert.fail(`Timed out waiting for ${description}.`);

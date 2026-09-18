@@ -59,6 +59,10 @@ Run `pnpm lint` for authored JavaScript and TypeScript, and `pnpm lint:fix` for
 safe automatic fixes. The root [ESLint configuration](../../eslint.config.mjs)
 uses ESLint and typescript-eslint recommended rules. Browser console and docs
 scripts receive browser globals; other modules receive Node.js globals.
+Require a blank line after the final import, one variable per declaration, and
+braces around every `if`, `else`, and loop body. Consecutive imports may stay
+together; imports are not reordered. These readability rules are autofixable and
+must not be added to the suppression baseline.
 Underscore-prefixed unused bindings and object-rest omissions are allowed.
 Generated build output, dependencies, archived code, and vendored skills and docs
 renderer code are excluded.
@@ -78,7 +82,10 @@ JavaScript API, so the manifest uses Microsoft's
 `@typescript/native` provides TypeScript 7 and `typescript` resolves to
 `@typescript/typescript6`. Lint uses syntax rules; `pnpm typecheck` owns type checking.
 
-Prettier owns formatting. Run `pnpm format` (an alias for `pnpm format:fix`),
+Prettier owns layout: 100-column print width, two spaces, double quotes,
+semicolons, trailing commas, spaces inside object braces, parenthesized arrow
+parameters, and LF line endings. The print width is a wrapping preference, not
+a hard line-length limit. Run `pnpm format` (an alias for `pnpm format:fix`),
 review the diff, and run `pnpm format:check`. Root JavaScript and TypeScript
 configuration files are included in both the scripts and the pre-push check.
 Go retains `gofmt` and `go vet` through `pnpm cli:check`.

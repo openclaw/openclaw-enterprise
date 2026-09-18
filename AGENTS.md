@@ -334,6 +334,9 @@ not verify shared-cluster admission guardrails.
 
 ## TypeScript style and verification
 
+- Separate imports from following code with a blank line, declare one variable
+  per declaration, and use braces for control-flow bodies. Apply these rules with
+  `pnpm lint:fix`, then run `pnpm format:fix` for Prettier layout.
 - Run `pnpm lint` for JavaScript and TypeScript changes; `pnpm lint:fix` applies
   supported automatic fixes. Follow `eslint.config.mjs` and the
   [linting guide](docs/testing/local.md#linting-and-formatting). Do not expand

@@ -5,7 +5,9 @@ import { composeConfiguration } from "../helpers/compose.mjs";
 function volumeMounts(service) {
   // podman-compose preserves short syntax; Docker Compose expands it.
   return (service.volumes ?? []).map((mount) => {
-    if (typeof mount !== "string") return mount;
+    if (typeof mount !== "string") {
+      return mount;
+    }
     const [source, target, options = ""] = mount.split(":");
     return { source, target, read_only: options.split(",").includes("ro") };
   });

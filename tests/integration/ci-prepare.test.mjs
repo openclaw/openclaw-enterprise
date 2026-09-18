@@ -234,7 +234,9 @@ for (const { scenario, error } of [
     assert.equal(importedImage.sourceImage, localImage.name);
     assert.equal(importedImage.cluster, cluster.name);
     assert.equal(importedImage.hostImageId, `sha256:${"b".repeat(64)}`);
-    for (const resource of state.resources) assert.equal(resource.owner, state.prefix);
+    for (const resource of state.resources) {
+      assert.equal(resource.owner, state.prefix);
+    }
 
     const preparation = await commands.commands();
     const save = preparation.find(
@@ -464,9 +466,15 @@ test("codex seccomp preparation requires a namespace/seccomp RuntimeDefault deni
   const dockerCalls = [];
   const execFileForRuntimeDefaultFailure = (failure) => async (command, args) => {
     if (command === "kubectl") {
-      if (args.includes("create") && args.includes("namespace")) return { stdout: "", stderr: "" };
-      if (args.includes("delete") && args.includes("namespace")) return { stdout: "", stderr: "" };
-      if (args.includes("apply")) return { stdout: "", stderr: "" };
+      if (args.includes("create") && args.includes("namespace")) {
+        return { stdout: "", stderr: "" };
+      }
+      if (args.includes("delete") && args.includes("namespace")) {
+        return { stdout: "", stderr: "" };
+      }
+      if (args.includes("apply")) {
+        return { stdout: "", stderr: "" };
+      }
       if (args.includes("nodes")) {
         return {
           stdout: JSON.stringify({
@@ -492,7 +500,9 @@ test("codex seccomp preparation requires a namespace/seccomp RuntimeDefault deni
           stderr: "",
         };
       }
-      if (args.includes("exec")) throw failure(command, args);
+      if (args.includes("exec")) {
+        throw failure(command, args);
+      }
     }
     if (command === "docker") {
       dockerCalls.push(args);

@@ -13,7 +13,9 @@ export function createTestConfigurationDriver(options = {}) {
     },
     async read(reference) {
       const configuration = configurations.get(key(reference));
-      if (configuration === undefined) throw new Error("Configuration does not exist.");
+      if (configuration === undefined) {
+        throw new Error("Configuration does not exist.");
+      }
       return structuredClone(configuration);
     },
     async update(configuration) {

@@ -56,7 +56,9 @@ async function temporaryGatewayConfiguration(t, harnessId) {
 
 function createRuntimeImageConfiguration(harnessId, providerModel, options = {}) {
   const configuration = createHarnessConfiguration(harnessId, providerModel);
-  if (options.enableSlack !== true) return configuration;
+  if (options.enableSlack !== true) {
+    return configuration;
+  }
 
   const plugins = configuration.plugins ?? {};
   const entries = plugins.entries ?? {};
@@ -113,7 +115,9 @@ async function waitForGatewayReady(containerName) {
       lastReadinessOutput = commandOutput(error);
       return undefined;
     });
-    if (ready !== undefined) return;
+    if (ready !== undefined) {
+      return;
+    }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error(`Gateway readiness timed out.${lastReadinessOutput}`);

@@ -197,7 +197,7 @@ test(
   },
 );
 
-for (const legacyState of ["active_runtime", "harness_revision", "harness_account"])
+for (const legacyState of ["active_runtime", "harness_revision", "harness_account"]) {
   test(
     `Migration rejects legacy ${legacyState} state without changing persisted rows`,
     requiresOwnedPostgres,
@@ -207,7 +207,9 @@ for (const legacyState of ["active_runtime", "harness_revision", "harness_accoun
       let pool;
       context.after(async () => {
         try {
-          if (pool !== undefined) await pool.end();
+          if (pool !== undefined) {
+            await pool.end();
+          }
         } finally {
           await runCommand(fixture, "docker", [
             ...fixture.composeArgs,
@@ -306,7 +308,7 @@ for (const legacyState of ["active_runtime", "harness_revision", "harness_accoun
             servicePrincipalId,
           ],
         );
-        if (legacyState !== "harness_account")
+        if (legacyState !== "harness_account") {
           await client.query(
             `INSERT INTO occ.agent_revisions
            (id, namespace_id, agent_id, revision_number, admitted_spec, provider_id, admitted_at)
@@ -325,11 +327,13 @@ for (const legacyState of ["active_runtime", "harness_revision", "harness_accoun
               },
             ],
           );
-        if (legacyState === "active_runtime")
+        }
+        if (legacyState === "active_runtime") {
           await client.query(
             "UPDATE occ.agents SET active_revision_id = $1 WHERE namespace_id = $2 AND id = $3",
             [revisionId, namespaceId, agentId],
           );
+        }
         if (legacyState === "harness_account") {
           const serviceAccountId = `sa_${randomUUID()}`;
           await client.query(
@@ -388,6 +392,7 @@ for (const legacyState of ["active_runtime", "harness_revision", "harness_accoun
       ]);
     },
   );
+}
 
 test(
   "Drizzle second migration preserves the applied journal and PostgreSQL schema",

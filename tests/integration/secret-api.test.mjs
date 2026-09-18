@@ -157,7 +157,9 @@ async function request(app, method, pathname, options = {}) {
     ...options.headers,
   };
   const hasBody = Object.hasOwn(options, "body");
-  if (hasBody) headers["content-type"] ??= "application/json";
+  if (hasBody) {
+    headers["content-type"] ??= "application/json";
+  }
   const response = await app.fetch(
     new Request(`http://127.0.0.1${pathname}`, {
       method,

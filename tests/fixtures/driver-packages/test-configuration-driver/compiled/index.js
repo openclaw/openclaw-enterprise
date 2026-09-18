@@ -27,7 +27,7 @@ export function createDriver({ id, implementation, configuration }) {
     },
     async read(reference) {
       const value = values.get(key(reference));
-      if (value === undefined) throw new Error("The selected Configuration does not exist.");
+      if (value === undefined) {throw new Error("The selected Configuration does not exist.");}
       return structuredClone(value);
     },
     async update(value) {

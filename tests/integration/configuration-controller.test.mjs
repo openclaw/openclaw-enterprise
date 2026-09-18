@@ -130,7 +130,9 @@ async function request(
   { body, authorization = true, session = app.defaultSession } = {},
 ) {
   const headers = authorization ? authenticatedHeaders(session) : {};
-  if (body !== undefined) headers["content-type"] = "application/json";
+  if (body !== undefined) {
+    headers["content-type"] = "application/json";
+  }
   const response = await app.fetch(
     new Request(`http://127.0.0.1${pathname}`, {
       method,
@@ -547,8 +549,9 @@ for (const [method, action] of [
   test(`Configuration ${method} restores its external substrate when its mutation audit fails`, async () => {
     class FailingConfigurationAuditSink extends InMemoryAuditSink {
       async append(event) {
-        if (event.action === action)
+        if (event.action === action) {
           throw new Error("The durable configuration mutation audit is unavailable.");
+        }
         return super.append(event);
       }
     }

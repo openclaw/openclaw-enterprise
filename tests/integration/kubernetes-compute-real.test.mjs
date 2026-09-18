@@ -57,7 +57,9 @@ async function kubectl(...args) {
 
 async function resource(kind, name, namespace) {
   const args = ["get", kind, name, "-o", "json"];
-  if (namespace !== undefined) args.push("--namespace", namespace);
+  if (namespace !== undefined) {
+    args.push("--namespace", namespace);
+  }
   return JSON.parse(await kubectl(...args));
 }
 
@@ -70,7 +72,9 @@ async function missing(kind, name, namespace) {
     await resource(kind, name, namespace);
     return false;
   } catch (error) {
-    if (/NotFound|not found/i.test(error.stderr ?? error.message)) return true;
+    if (/NotFound|not found/i.test(error.stderr ?? error.message)) {
+      return true;
+    }
     throw error;
   }
 }
@@ -79,7 +83,9 @@ async function waitFor(description, operation, timeoutMs = 120_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const result = await operation();
-    if (result !== undefined && result !== false) return result;
+    if (result !== undefined && result !== false) {
+      return result;
+    }
     await delay(500);
   }
   assert.fail(`Timed out waiting for ${description}.`);
@@ -422,7 +428,9 @@ async function assertDeniedTraffic(description, namespaceName, podName, operatio
     await probe(namespaceName, podName, operation, target, port);
     assert.fail(`${description} unexpectedly succeeded`);
   } catch (error) {
-    if (error.code === "ERR_ASSERTION") throw error;
+    if (error.code === "ERR_ASSERTION") {
+      throw error;
+    }
     assert.equal(error.code, 1, `${description} must be denied by enforced NetworkPolicies`);
   }
 }
@@ -1496,8 +1504,9 @@ test(
         return observation.namespaceDeleted ? observation : undefined;
       },
     );
-    for (const kind of ["networkpolicies", "resourcequotas", "limitranges"])
+    for (const kind of ["networkpolicies", "resourcequotas", "limitranges"]) {
       assert.deepEqual(await resources(kind, cleanupName), []);
+    }
     const preservedNamespace = await resource("namespace", cleanupName);
     assert.equal(preservedNamespace.metadata.uid, originalCleanupNamespace.metadata.uid);
     assert.deepEqual(preservedNamespace.metadata.labels, originalCleanupNamespace.metadata.labels);
@@ -1597,9 +1606,14 @@ test(
     let worker;
     let workerPool;
     context.after(async () => {
-      if (worker !== undefined) await worker.stop();
-      else if (workerPool !== undefined) await workerPool.end();
-      if (app !== undefined) await app.close();
+      if (worker !== undefined) {
+        await worker.stop();
+      } else if (workerPool !== undefined) {
+        await workerPool.end();
+      }
+      if (app !== undefined) {
+        await app.close();
+      }
       await observerPool.end();
       await Promise.all(
         [...new Set([existingName, ...placements.values()])].map((name) =>
@@ -1888,8 +1902,12 @@ test(
         `/namespaces/${adopted.data.id}/agents/${adoptedTenant.id}`,
       );
       assert.equal(current.status, 200);
-      if (current.data.activeRevisionId !== undefined) return undefined;
-      if (!(await missing("deployment", revisionName(admitted[3]), existingName))) return undefined;
+      if (current.data.activeRevisionId !== undefined) {
+        return undefined;
+      }
+      if (!(await missing("deployment", revisionName(admitted[3]), existingName))) {
+        return undefined;
+      }
       if (!(await missing("deployment", gatewayName(adoptedTenant.id), existingName))) {
         return undefined;
       }

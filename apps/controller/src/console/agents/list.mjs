@@ -7,7 +7,9 @@ export const namespacePath = (id) => `/namespaces/${encodeURIComponent(id)}`;
 export function link(label, target, context) {
   const node = element("a", { href: context.pageUrl(target) }, label);
   node.addEventListener("click", (event) => {
-    if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+      return;
+    }
     event.preventDefault();
     context.navigate(target);
   });
@@ -15,13 +17,21 @@ export function link(label, target, context) {
 }
 
 export function message(error, mutation = false) {
-  if (error.status === 403) return "Access denied. You do not have permission for this operation.";
-  if (error.status === 404)
+  if (error.status === 403) {
+    return "Access denied. You do not have permission for this operation.";
+  }
+  if (error.status === 404) {
     return "Resource unavailable in this Namespace. Check the ID and your access.";
-  if (error.status === 409)
+  }
+  if (error.status === 409) {
     return "The request conflicts with the saved state. Check for an existing Agent name or changed Configuration, then refresh.";
-  if (error.status === 400) return "Check the entered values and resource IDs, then try again.";
-  if (error.status === 429) return "Too many requests. Wait before trying again.";
+  }
+  if (error.status === 400) {
+    return "Check the entered values and resource IDs, then try again.";
+  }
+  if (error.status === 429) {
+    return "Too many requests. Wait before trying again.";
+  }
   return mutation
     ? "Outcome unknown. The result could not be confirmed. Refresh and inspect the saved state before trying again."
     : error.name === "TypeError" || error.name === "TimeoutError"
@@ -78,7 +88,7 @@ export function renderAgentList(context) {
       ),
     );
     const body = element("tbody");
-    for (const item of matches)
+    for (const item of matches) {
       body.append(
         element(
           "tr",
@@ -104,6 +114,7 @@ export function renderAgentList(context) {
           element("td", {}, displayDate(item.createdAt)),
         ),
       );
+    }
     table.append(body);
     rows.replaceChildren(element("div", { className: "table-scroll" }, table));
   }

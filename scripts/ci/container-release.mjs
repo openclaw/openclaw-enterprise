@@ -45,7 +45,9 @@ export function validateCi(run, workflow, jobs, sourceSha, runId, attempt) {
   assert.equal(run.status, "completed");
   assert.equal(run.conclusion, "success", "The entire CI run must succeed.");
   assert.match(String(run.run_attempt), integerPattern);
-  if (attempt !== undefined) assert.equal(String(run.run_attempt), String(attempt));
+  if (attempt !== undefined) {
+    assert.equal(String(run.run_attempt), String(attempt));
+  }
   const required = jobs.filter((job) => job.name === "CI Required");
   assert.equal(required.length, 1, "Exactly one CI Required aggregate job is required.");
   assert.equal(required[0].conclusion, "success");
@@ -127,7 +129,9 @@ export async function githubPages(path, field) {
     const entries = field ? data[field] : data;
     assert.ok(Array.isArray(entries), "Invalid GitHub pagination response.");
     result.push(...entries);
-    if (entries.length < 100) return result;
+    if (entries.length < 100) {
+      return result;
+    }
   }
   throw new Error("GitHub metadata exceeded the bounded pagination limit.");
 }
@@ -182,7 +186,9 @@ async function validate(env) {
   const runtimeRecipe = await readFile("deploy/runtime/Dockerfile", "utf8");
   assert.equal(runtimeRecipe.match(/^ARG NODE_BASE_IMAGE=(.+)$/m)?.[1], testedBase);
   const attempt = await verifyCi(env);
-  if (env.PUBLISH === "true") await verifyEnvironment();
+  if (env.PUBLISH === "true") {
+    await verifyEnvironment();
+  }
   return attempt;
 }
 
@@ -203,7 +209,9 @@ function identity(env, image) {
 
 export async function fileDigest(path) {
   const hash = createHash("sha256");
-  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  for await (const chunk of createReadStream(path)) {
+    hash.update(chunk);
+  }
   return hash.digest("hex");
 }
 

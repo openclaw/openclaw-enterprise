@@ -37,7 +37,9 @@ export function createWorkspaceFilesAccess(
   validateGatewayApiKeyPath(apiKeyPath);
   return createNativeWorkspaceFilesAccess(async (request) => {
     const endpoint = computeDriver.getGatewayEndpoint?.(request.revision);
-    if (endpoint === undefined) return undefined;
+    if (endpoint === undefined) {
+      return undefined;
+    }
     return {
       url: validateUrl(endpoint),
       nativeAgentId: NATIVE_AGENT_ID,

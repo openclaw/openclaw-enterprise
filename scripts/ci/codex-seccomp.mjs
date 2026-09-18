@@ -185,7 +185,9 @@ function validateRuntimeDefaultSeccompProfile(
   );
   assert.ok(Array.isArray(profile.syscalls), `${description} must contain syscall rules.`);
   assert.ok(profile.syscalls.length > 0, `${description} syscall rules must be non-empty.`);
-  for (const rule of profile.syscalls) assertSyscallRule(rule, description);
+  for (const rule of profile.syscalls) {
+    assertSyscallRule(rule, description);
+  }
   assert.ok(
     profile.syscalls.some(
       (rule) =>
@@ -239,8 +241,9 @@ function assertLocalhostProfileName(profileName) {
 }
 
 function requireExecFile(execFile) {
-  if (typeof execFile !== "function")
+  if (typeof execFile !== "function") {
     throw new Error("Codex seccomp preparation requires execFile.");
+  }
   return execFile;
 }
 
@@ -261,8 +264,12 @@ function assertSelectedK3dCluster(cluster) {
     /^openclaw-k8s-[a-z0-9-]+$/,
     "Codex seccomp requires a run-owned openclaw-k8s k3d cluster.",
   );
-  if (!isAbsolute(cluster.directory)) throw new Error("cluster.directory must be absolute.");
-  if (!isAbsolute(cluster.kubeconfig)) throw new Error("cluster.kubeconfig must be absolute.");
+  if (!isAbsolute(cluster.directory)) {
+    throw new Error("cluster.directory must be absolute.");
+  }
+  if (!isAbsolute(cluster.kubeconfig)) {
+    throw new Error("cluster.kubeconfig must be absolute.");
+  }
   const directory = resolve(cluster.directory);
   if (!basename(directory).startsWith(`${cluster.name}-`)) {
     throw new Error("cluster.directory must be owned by the selected k3d cluster.");
@@ -316,7 +323,9 @@ async function waitFor(description, operation, timeoutMs = codexProbeTimeoutMs) 
   while (Date.now() < deadline) {
     try {
       const value = await operation();
-      if (value !== undefined && value !== false) return value;
+      if (value !== undefined && value !== false) {
+        return value;
+      }
     } catch (error) {
       lastError = error;
     }
@@ -388,7 +397,9 @@ function extractContainerId(pod, containerName = "probe") {
 
 function extractRuntimeSpec(criInspect) {
   const runtimeSpec = criInspect.info?.runtimeSpec ?? criInspect.status?.info?.runtimeSpec;
-  if (typeof runtimeSpec === "string") return JSON.parse(runtimeSpec);
+  if (typeof runtimeSpec === "string") {
+    return JSON.parse(runtimeSpec);
+  }
   return runtimeSpec;
 }
 
@@ -428,9 +439,13 @@ async function verifyRuntimeDefaultDeniesCodexSandbox(selection, namespace, podN
   try {
     await execCodexSandboxProbe(selection, namespace, podName, options);
   } catch (error) {
-    if (error.timedOut === true) throw error;
+    if (error.timedOut === true) {
+      throw error;
+    }
     const diagnostic = [error.stderr, error.stdout].filter(Boolean).join("\n");
-    if (/codex version mismatch/i.test(diagnostic)) throw error;
+    if (/codex version mismatch/i.test(diagnostic)) {
+      throw error;
+    }
     assert.match(
       diagnostic,
       /bwrap|bubblewrap|clone|namespace|operation not permitted|permission denied|seccomp|unshare/i,

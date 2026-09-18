@@ -28,7 +28,9 @@ test("owned reads preserve missing resources and reject mismatched workload iden
   driver.apiClients = Promise.resolve({
     apps: {
       async readNamespacedDeployment() {
-        if (observed === undefined) throw Object.assign(new Error("Not found"), { code: 404 });
+        if (observed === undefined) {
+          throw Object.assign(new Error("Not found"), { code: 404 });
+        }
         return structuredClone(observed);
       },
     },

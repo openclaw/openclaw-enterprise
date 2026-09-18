@@ -92,7 +92,9 @@ function sourceUrl(data, ref) {
 }
 
 function renderReferenceList(data, label, refs) {
-  if (!Array.isArray(refs) || refs.length === 0) return "";
+  if (!Array.isArray(refs) || refs.length === 0) {
+    return "";
+  }
   return (
     '<details class="compute-matrix-evidence"><summary>' +
     escapeHtml(label) +
@@ -112,58 +114,87 @@ function renderReferenceList(data, label, refs) {
 }
 
 function validateReference(ref, context) {
-  if (!ref || typeof ref !== "object") throw new Error(`${context}: reference must be an object`);
-  if (!ref.path || typeof ref.path !== "string")
+  if (!ref || typeof ref !== "object") {
+    throw new Error(`${context}: reference must be an object`);
+  }
+  if (!ref.path || typeof ref.path !== "string") {
     throw new Error(`${context}: reference path must be a string`);
-  if (ref.start !== undefined && !Number.isInteger(ref.start))
+  }
+  if (ref.start !== undefined && !Number.isInteger(ref.start)) {
     throw new Error(`${context}: reference start must be an integer`);
-  if (ref.end !== undefined && !Number.isInteger(ref.end))
+  }
+  if (ref.end !== undefined && !Number.isInteger(ref.end)) {
     throw new Error(`${context}: reference end must be an integer`);
+  }
 }
 
 function validateMatrix(data, source) {
-  if (!data || typeof data !== "object")
+  if (!data || typeof data !== "object") {
     throw new Error(`${source}: matrix JSON must be an object`);
-  if (!data.baseline || typeof data.baseline !== "string")
+  }
+  if (!data.baseline || typeof data.baseline !== "string") {
     throw new Error(`${source}: baseline must be a string`);
-  if (!data.reviewedAt || typeof data.reviewedAt !== "string")
+  }
+  if (!data.reviewedAt || typeof data.reviewedAt !== "string") {
     throw new Error(`${source}: reviewedAt must be a string`);
-  if (!Array.isArray(data.drivers) || data.drivers.length === 0)
+  }
+  if (!Array.isArray(data.drivers) || data.drivers.length === 0) {
     throw new Error(`${source}: drivers must be a non-empty array`);
-  if (!Array.isArray(data.rows)) throw new Error(`${source}: rows must be an array`);
+  }
+  if (!Array.isArray(data.rows)) {
+    throw new Error(`${source}: rows must be an array`);
+  }
   const ids = new Set();
   for (const driver of data.drivers) {
-    if (!driver || typeof driver !== "object")
+    if (!driver || typeof driver !== "object") {
       throw new Error(`${source}: driver must be an object`);
-    if (!driver.id || typeof driver.id !== "string")
+    }
+    if (!driver.id || typeof driver.id !== "string") {
       throw new Error(`${source}: driver id must be a string`);
-    if (ids.has(driver.id)) throw new Error(`${source}: duplicate driver id ${driver.id}`);
+    }
+    if (ids.has(driver.id)) {
+      throw new Error(`${source}: duplicate driver id ${driver.id}`);
+    }
     ids.add(driver.id);
-    if (!driver.name || typeof driver.name !== "string")
+    if (!driver.name || typeof driver.name !== "string") {
       throw new Error(`${source}: driver ${driver.id} name must be a string`);
+    }
   }
   for (const row of data.rows) {
-    if (!row || typeof row !== "object") throw new Error(`${source}: row must be an object`);
-    for (const key of ["id", "category", "name", "requirement"]) {
-      if (!row[key] || typeof row[key] !== "string")
-        throw new Error(`${source}: row ${key} must be a string`);
+    if (!row || typeof row !== "object") {
+      throw new Error(`${source}: row must be an object`);
     }
-    if (row.requirementDetail !== undefined && typeof row.requirementDetail !== "string")
+    for (const key of ["id", "category", "name", "requirement"]) {
+      if (!row[key] || typeof row[key] !== "string") {
+        throw new Error(`${source}: row ${key} must be a string`);
+      }
+    }
+    if (row.requirementDetail !== undefined && typeof row.requirementDetail !== "string") {
       throw new Error(`${source}: row ${row.id} requirementDetail must be a string`);
-    if (!row.cells || typeof row.cells !== "object")
+    }
+    if (!row.cells || typeof row.cells !== "object") {
       throw new Error(`${source}: row ${row.id} cells must be an object`);
-    for (const ref of row.requirementEvidence ?? [])
+    }
+    for (const ref of row.requirementEvidence ?? []) {
       validateReference(ref, `${source}: row ${row.id}`);
+    }
     for (const driver of data.drivers) {
       const cell = row.cells[driver.id];
-      if (!cell || typeof cell !== "object")
+      if (!cell || typeof cell !== "object") {
         throw new Error(`${source}: row ${row.id} missing ${driver.id} cell`);
-      if (!statuses.has(cell.status))
+      }
+      if (!statuses.has(cell.status)) {
         throw new Error(`${source}: row ${row.id} ${driver.id} has invalid status`);
-      if (typeof cell.detail !== "string")
+      }
+      if (typeof cell.detail !== "string") {
         throw new Error(`${source}: row ${row.id} ${driver.id} detail must be a string`);
-      for (const ref of cell.evidence ?? []) validateReference(ref, `${source}: row ${row.id}`);
-      for (const ref of cell.tests ?? []) validateReference(ref, `${source}: row ${row.id}`);
+      }
+      for (const ref of cell.evidence ?? []) {
+        validateReference(ref, `${source}: row ${row.id}`);
+      }
+      for (const ref of cell.tests ?? []) {
+        validateReference(ref, `${source}: row ${row.id}`);
+      }
     }
   }
 }
@@ -317,10 +348,11 @@ export function renderComputeMatrixBlocks(markdown, { sourceFile, root }) {
       }
       validateMatrix(data, matrixSource);
       const expected = renderDriverMatrixMarkdown(data, definition);
-      if (match !== expected)
+      if (match !== expected) {
         throw new Error(
           `${sourceFile}: ${definition.name}-matrix fallback is stale; run node ${definition.generator}`,
         );
+      }
       return "\n" + renderComputeMatrix(data, definition) + "\n";
     });
   }

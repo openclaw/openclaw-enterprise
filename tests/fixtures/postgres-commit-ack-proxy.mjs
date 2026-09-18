@@ -11,12 +11,14 @@ export async function commitAckProxy(databaseUrl) {
   const effective = new pg.Client({ connectionString: databaseUrl });
   const upstreamHost = effective.host.replace(/^\[|\]$/g, "");
   const upstreamPort = effective.port;
-  if (!["127.0.0.1", "localhost", "::1"].includes(upstreamHost))
+  if (!["127.0.0.1", "localhost", "::1"].includes(upstreamHost)) {
     throw new Error("The commit fault requires a disposable loopback PostgreSQL database.");
+  }
   // This fixture inspects PostgreSQL frames, so it cannot observe encrypted
   // COMMIT completion. Reject TLS intent rather than silently downgrading it.
-  if (effective.ssl)
+  if (effective.ssl) {
     throw new Error("The commit fault requires an explicitly non-TLS PostgreSQL connection.");
+  }
   let armed = false;
   let observed = false;
   const sockets = new Set();
@@ -47,8 +49,12 @@ export async function commitAckProxy(databaseUrl) {
       frontend = Buffer.concat([frontend, chunk]);
       while (frontend.length >= (startup ? 4 : 5)) {
         const size = frontend.readInt32BE(startup ? 0 : 1) + (startup ? 0 : 1);
-        if (size < 4 || size > 16 * 1024 * 1024) return close();
-        if (frontend.length < size) return;
+        if (size < 4 || size > 16 * 1024 * 1024) {
+          return close();
+        }
+        if (frontend.length < size) {
+          return;
+        }
         const frame = frontend.subarray(0, size);
         frontend = frontend.subarray(size);
         if (
@@ -68,15 +74,21 @@ export async function commitAckProxy(databaseUrl) {
       backend = Buffer.concat([backend, chunk]);
       while (backend.length >= 5) {
         const size = backend.readInt32BE(1) + 1;
-        if (size < 5 || size > 16 * 1024 * 1024) return close();
-        if (backend.length < size) return;
+        if (size < 5 || size > 16 * 1024 * 1024) {
+          return close();
+        }
+        if (backend.length < size) {
+          return;
+        }
         const frame = backend.subarray(0, size);
         backend = backend.subarray(size);
         if (dropping && frame[0] === 67 && frame.subarray(5, -1).toString() === "COMMIT") {
           observed = true;
           return close();
         }
-        if (!dropping) client.write(frame);
+        if (!dropping) {
+          client.write(frame);
+        }
       }
     });
   });
@@ -90,14 +102,18 @@ export async function commitAckProxy(databaseUrl) {
   return {
     url: proxyUrl.toString(),
     arm() {
-      if (armed || observed) throw new Error("The single-use fault is already armed or consumed.");
+      if (armed || observed) {
+        throw new Error("The single-use fault is already armed or consumed.");
+      }
       armed = true;
     },
     get observedCommit() {
       return observed;
     },
     async close() {
-      for (const socket of sockets) socket.destroy();
+      for (const socket of sockets) {
+        socket.destroy();
+      }
       await new Promise((resolve, reject) =>
         server.close((error) => (error ? reject(error) : resolve())),
       );

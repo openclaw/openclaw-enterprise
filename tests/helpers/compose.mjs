@@ -11,7 +11,9 @@ export function commandPath(name) {
     const candidate = resolve(directory || ".", name);
     try {
       accessSync(candidate, constants.X_OK);
-      if (statSync(candidate).isFile()) return candidate;
+      if (statSync(candidate).isFile()) {
+        return candidate;
+      }
     } catch {
       // PATH entries may be absent or inaccessible; continue like executable lookup.
     }
@@ -34,7 +36,9 @@ export function composeConfigurationProvider() {
         encoding: "utf8",
       },
     );
-    if (result.status === 0) return { command: docker, prefix: ["compose"], format: "json" };
+    if (result.status === 0) {
+      return { command: docker, prefix: ["compose"], format: "json" };
+    }
   }
   const podmanCompose = commandPath("podman-compose");
   const yq = commandPath("yq");
@@ -55,7 +59,9 @@ export function composeConfiguration(files = ["compose.yaml"], environment = {})
     "/dev/null",
     "config",
   ];
-  if (provider.format === "json") args.push("--format", "json");
+  if (provider.format === "json") {
+    args.push("--format", "json");
+  }
   const rendered = spawnSync(provider.command, args, {
     cwd: repository,
     env: { PATH: process.env.PATH, ...environment },
@@ -63,7 +69,9 @@ export function composeConfiguration(files = ["compose.yaml"], environment = {})
     maxBuffer: 2_000_000,
   });
   assert.equal(rendered.status, 0, rendered.error?.message ?? rendered.stderr);
-  if (provider.format === "json") return JSON.parse(rendered.stdout);
+  if (provider.format === "json") {
+    return JSON.parse(rendered.stdout);
+  }
   const converted = spawnSync(provider.yq, ["-o=json"], {
     input: rendered.stdout,
     encoding: "utf8",

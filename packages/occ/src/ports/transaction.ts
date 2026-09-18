@@ -11,12 +11,15 @@ export class RepositoryTransactionLifetime {
   private readonly pending = new Set<Promise<void>>();
 
   assertActive(): void {
-    if (!this.active) throw new ScopeViolationError("The platform transaction is closed.");
+    if (!this.active) {
+      throw new ScopeViolationError("The platform transaction is closed.");
+    }
   }
 
   run<T>(work: () => Promise<T>): Promise<T> {
-    if (!this.accepting)
+    if (!this.accepting) {
       return Promise.reject(new ScopeViolationError("The platform transaction is closed."));
+    }
     const result = (async () => {
       this.assertActive();
       const value = await work();

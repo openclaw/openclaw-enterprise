@@ -12,7 +12,9 @@ async function waitFor(description, read, timeoutMs = 10_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const value = await read();
-    if (value !== undefined) return value;
+    if (value !== undefined) {
+      return value;
+    }
     await delay(20);
   }
   assert.fail(`Timed out waiting for ${description}.`);
@@ -48,8 +50,11 @@ async function setup(context) {
   const state = new PostgresPlatformState(observerPool);
   let worker;
   context.after(async () => {
-    if (worker === undefined) await workerPool.end();
-    else await worker.stop();
+    if (worker === undefined) {
+      await workerPool.end();
+    } else {
+      await worker.stop();
+    }
     await observerPool.end();
   });
 

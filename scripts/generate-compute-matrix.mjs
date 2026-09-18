@@ -37,25 +37,35 @@ function sourceLabel(evidence) {
 }
 
 function evidenceLinks(data, refs) {
-  if (!Array.isArray(refs) || refs.length === 0) return "";
+  if (!Array.isArray(refs) || refs.length === 0) {
+    return "";
+  }
   return refs.map((ref) => `[${escapeCell(sourceLabel(ref))}](${sourceUrl(data, ref)})`).join(", ");
 }
 
 function renderCompactCell(data, cell, labels) {
   const label = labels[cell.status];
-  if (!label) throw new Error(`Unknown support status: ${cell.status}`);
+  if (!label) {
+    throw new Error(`Unknown support status: ${cell.status}`);
+  }
   const evidence = cell.evidence?.[0];
   return evidence ? `[${label}](${sourceUrl(data, evidence)})` : label;
 }
 
 function renderDetailedCell(data, cell, labels) {
   const label = labels[cell.status];
-  if (!label) throw new Error(`Unknown support status: ${cell.status}`);
+  if (!label) {
+    throw new Error(`Unknown support status: ${cell.status}`);
+  }
   const parts = [`**${label}.** ${escapeMarkdownText(cell.detail)}`];
   const sources = evidenceLinks(data, cell.evidence);
-  if (sources) parts.push(`Source: ${sources}`);
+  if (sources) {
+    parts.push(`Source: ${sources}`);
+  }
   const tests = evidenceLinks(data, cell.tests);
-  if (tests) parts.push(`Test coverage: ${tests}`);
+  if (tests) {
+    parts.push(`Test coverage: ${tests}`);
+  }
   return parts.join("<br>");
 }
 
@@ -100,8 +110,9 @@ export function renderDriverMatrixMarkdown(data, options) {
 export function replaceDriverMatrixMarkdown(markdown, data, options) {
   const start = markdown.indexOf(options.matrixStart);
   const end = markdown.indexOf(options.matrixEnd);
-  if (start < 0 || end < start || markdown.indexOf(options.matrixStart, start + 1) >= 0)
+  if (start < 0 || end < start || markdown.indexOf(options.matrixStart, start + 1) >= 0) {
     throw new Error(`Expected one complete ${options.name} matrix block`);
+  }
   return (
     markdown.slice(0, start) +
     renderDriverMatrixMarkdown(data, options) +
@@ -144,17 +155,19 @@ export function replaceMatrixMarkdown(markdown, data) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  if (process.argv.slice(2).some((arg) => arg !== "--check"))
+  if (process.argv.slice(2).some((arg) => arg !== "--check")) {
     throw new Error("Usage: generate-compute-matrix.mjs [--check]");
+  }
   const data = JSON.parse(fs.readFileSync(computeMatrixOptions.dataPath, "utf8"));
   const target = "docs/reference/drivers/compute-matrix.md";
   const current = fs.readFileSync(target, "utf8");
   const expected = replaceMatrixMarkdown(current, data);
   if (process.argv.includes("--check")) {
-    if (current !== expected)
+    if (current !== expected) {
       throw new Error(
         "Compute matrix fallback is stale; run node scripts/generate-compute-matrix.mjs",
       );
+    }
     console.log(`Compute matrix fallback is current (${data.rows.length} rows).`);
   } else {
     fs.writeFileSync(target, expected);

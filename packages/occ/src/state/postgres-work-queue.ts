@@ -207,7 +207,9 @@ function safeFailureCode(value: string): string {
 }
 
 function sqlState(error: unknown): string | undefined {
-  if (typeof error !== "object" || error === null || !("code" in error)) return undefined;
+  if (typeof error !== "object" || error === null || !("code" in error)) {
+    return undefined;
+  }
   return typeof error.code === "string" ? error.code : undefined;
 }
 
@@ -267,8 +269,9 @@ export class PostgresWorkQueue {
     );
     this.random = options.random ?? Math.random;
     this.workKind = options.workKind ?? "all";
-    if (this.workKind !== "all" && this.workKind !== "namespace")
+    if (this.workKind !== "all" && this.workKind !== "namespace") {
       throw new ScopeViolationError("The controller work kind must be all or namespace.");
+    }
   }
 
   async enqueue(input: EnqueueWork): Promise<ControllerWork> {
@@ -300,10 +303,11 @@ export class PostgresWorkQueue {
         revisionId === null &&
         (namespaceTarget !== null || agentTarget !== "stopped")) ||
       (revisionId !== null && (namespaceTarget !== null || agentTarget !== null))
-    )
+    ) {
       throw new ScopeViolationError(
         "Controller work requires one exact Namespace, Agent, or revision target shape.",
       );
+    }
     const availableAt = input.availableAt === undefined ? null : asDate(input.availableAt);
 
     const inserted = await this.client.query(
@@ -330,7 +334,9 @@ export class PostgresWorkQueue {
       ],
     );
 
-    if (inserted.rows[0] !== undefined) return asWork(inserted.rows[0]);
+    if (inserted.rows[0] !== undefined) {
+      return asWork(inserted.rows[0]);
+    }
 
     const existing = await this.client.query(
       `SELECT *,
@@ -400,8 +406,12 @@ export class PostgresWorkQueue {
         return claimed.rows[0] === undefined ? undefined : asClaimedWork(claimed.rows[0]);
       } catch (error) {
         const state = sqlState(error);
-        if (state === undefined || !CLAIM_RACE_CODES.has(state)) throw error;
-        if (attempt === this.claimRaceRetries - 1) throw error;
+        if (state === undefined || !CLAIM_RACE_CODES.has(state)) {
+          throw error;
+        }
+        if (attempt === this.claimRaceRetries - 1) {
+          throw error;
+        }
       }
     }
     return undefined;
@@ -455,7 +465,9 @@ export class PostgresWorkQueue {
        ), ${INSERT_EVIDENCE_SQL}`,
       [claim.idempotencyKey, claim.claimToken, "success", "RECONCILE_SUCCEEDED"],
     );
-    if (completed.rows.length === 0) throw new WorkClaimLostError();
+    if (completed.rows.length === 0) {
+      throw new WorkClaimLostError();
+    }
   }
 
   async defer(claim: WorkClaim, pending: RetryableFailure): Promise<void> {
@@ -489,7 +501,9 @@ export class PostgresWorkQueue {
         this.nextRandom(),
       ],
     );
-    if (deferred.rows.length === 0) throw new WorkClaimLostError();
+    if (deferred.rows.length === 0) {
+      throw new WorkClaimLostError();
+    }
   }
 
   async retry(claim: WorkClaim, failure: RetryableFailure): Promise<void> {
@@ -535,7 +549,9 @@ export class PostgresWorkQueue {
         jitter,
       ],
     );
-    if (retried.rows.length === 0) throw new WorkClaimLostError();
+    if (retried.rows.length === 0) {
+      throw new WorkClaimLostError();
+    }
   }
 
   async fail(claim: WorkClaim, failure: PermanentFailure): Promise<void> {
@@ -556,7 +572,9 @@ export class PostgresWorkQueue {
        ), ${INSERT_EVIDENCE_SQL}`,
       [claim.idempotencyKey, claim.claimToken, "failure", safeFailureCode(failure.code)],
     );
-    if (failed.rows.length === 0) throw new WorkClaimLostError();
+    if (failed.rows.length === 0) {
+      throw new WorkClaimLostError();
+    }
   }
 
   async recoverStale(input: RecoveryRequest = {}): Promise<RecoverySummary> {
@@ -635,8 +653,11 @@ export class PostgresWorkQueue {
     let requeued = 0;
     let failedPermanent = exhausted.rows.length;
     for (const row of stale.rows) {
-      if (asRow(row).state === "queued") requeued += 1;
-      else failedPermanent += 1;
+      if (asRow(row).state === "queued") {
+        requeued += 1;
+      } else {
+        failedPermanent += 1;
+      }
     }
     return Object.freeze({
       recovered: stale.rows.length,
@@ -655,7 +676,9 @@ export class PostgresWorkQueue {
   }
 
   private namespaceFilter(alias?: string): string {
-    if (this.workKind === "all") return "";
+    if (this.workKind === "all") {
+      return "";
+    }
     const prefix = alias === undefined ? "" : `${alias}.`;
     return `AND ${prefix}namespace_target IS NOT NULL
             AND ${prefix}agent_id IS NULL

@@ -2,8 +2,12 @@ import { element } from "../dom.mjs";
 import { message, namespacePath } from "./list.mjs";
 
 export function harnessAuthDescription(binding) {
-  if (!binding) return "None selected";
-  if (binding.method === "runtime") return "Operator-managed credentials";
+  if (!binding) {
+    return "None selected";
+  }
+  if (binding.method === "runtime") {
+    return "Operator-managed credentials";
+  }
   return binding.method === "api_key"
     ? `OpenAI API key · ${binding.source.id}`
     : `ChatGPT service account · ${binding.serviceAccountId}`;
@@ -89,7 +93,9 @@ export function createHarnessAuthFields(context, binding = null) {
   context
     .request(`${namespacePath(context.namespaceId)}/service-accounts`)
     .then((items) => {
-      if (!context.isCurrent()) return;
+      if (!context.isCurrent()) {
+        return;
+      }
       const issued = items.filter((item) => item.credential?.kind === "access_token");
       accountsLoaded = true;
       account.disabled = disabled;
@@ -98,17 +104,23 @@ export function createHarnessAuthFields(context, binding = null) {
         element("option", { value: "" }, "Select an issued account"),
         ...issued.map((item) => element("option", { value: item.id }, `${item.name} · ${item.id}`)),
       );
-      if (selected && !issued.some((item) => item.id === selected))
+      if (selected && !issued.some((item) => item.id === selected)) {
         account.append(element("option", { value: selected }, `${selected} · unavailable`));
+      }
       account.value = selected;
       feedback.textContent = issued.length
         ? "Issued accounts in this Namespace are available."
         : "No issued ChatGPT accounts available in this Namespace.";
     })
     .catch((error) => {
-      if (!context.isCurrent()) return;
-      if (error.status === 401) context.onExpired();
-      else feedback.textContent = `Service accounts unavailable. ${message(error)}`;
+      if (!context.isCurrent()) {
+        return;
+      }
+      if (error.status === 401) {
+        context.onExpired();
+      } else {
+        feedback.textContent = `Service accounts unavailable. ${message(error)}`;
+      }
     });
   return {
     section,
@@ -119,14 +131,22 @@ export function createHarnessAuthFields(context, binding = null) {
       account.disabled = value || !accountsLoaded;
     },
     async readBinding() {
-      if (!method.value) return null;
-      if (method.value === "runtime") return { method: "runtime" };
+      if (!method.value) {
+        return null;
+      }
+      if (method.value === "runtime") {
+        return { method: "runtime" };
+      }
       if (method.value === "chatgpt_service_account") {
-        if (!account.value) throw new Error("Select an issued ChatGPT service account.");
+        if (!account.value) {
+          throw new Error("Select an issued ChatGPT service account.");
+        }
         return { method: "chatgpt_service_account", serviceAccountId: account.value };
       }
       const id = secret.value.trim();
-      if (!id) throw new Error("Enter an OCC Secret ID.");
+      if (!id) {
+        throw new Error("Enter an OCC Secret ID.");
+      }
       return {
         method: "api_key",
         source: { kind: "secret", namespaceId: context.namespaceId, id },

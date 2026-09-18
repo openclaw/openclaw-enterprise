@@ -43,8 +43,11 @@ async function setup(context, { leaseDurationMs = 30_000, onHealthy } = {}) {
 
   let worker;
   context.after(async () => {
-    if (worker === undefined) await workerPool.end();
-    else await worker.stop();
+    if (worker === undefined) {
+      await workerPool.end();
+    } else {
+      await worker.stop();
+    }
     await observerPool.end();
   });
 
@@ -245,7 +248,9 @@ async function setup(context, { leaseDurationMs = 30_000, onHealthy } = {}) {
   }
 
   async function stop() {
-    if (worker !== undefined) await worker.stop();
+    if (worker !== undefined) {
+      await worker.stop();
+    }
   }
 
   return {
@@ -320,7 +325,9 @@ for (const slowCall of [1, 2]) {
       const fixture = await setup(context, {
         leaseDurationMs: 1_200,
         async onHealthy() {
-          if (++healthCalls !== slowCall) return;
+          if (++healthCalls !== slowCall) {
+            return;
+          }
           healthEntered.resolve();
           await releaseHealth.promise;
         },
@@ -435,12 +442,13 @@ test(
           const current = await fixture.state.read((view) =>
             view.agents.findAgent(fixture.namespace.id, owner.id),
           );
-          if (stoppedRevisions.length < 3)
+          if (stoppedRevisions.length < 3) {
             assert.equal(
               current.activeRevisionId,
               targetRevision.id,
               "the serving pointer remains until candidate cleanup succeeds",
             );
+          }
           if (revision.id === failedCandidate.id && failStopOnce) {
             failStopOnce = false;
             throw new Error("transient Compute stop failure");
@@ -572,7 +580,9 @@ for (const recovery of [false, true]) {
         undefined,
         fixture.createWorkerPool(),
       );
-      if (recovery) assert.equal((await fixture.work(candidate, "succeeded")).attempt_count, 1);
+      if (recovery) {
+        assert.equal((await fixture.work(candidate, "succeeded")).attempt_count, 1);
+      }
       assert.equal((await fixture.work(stop, "succeeded")).attempt_count, 1);
       const current = await fixture.state.read((view) =>
         view.agents.findAgent(fixture.namespace.id, owner.id),
@@ -585,7 +595,9 @@ for (const recovery of [false, true]) {
           (op) => op.namespace.id === fixture.namespace.id && op.revision.agentId === owner.id,
         ),
       );
-      if (recovery) assert.ok(operations.some((op) => op.operation === "retire-revision"));
+      if (recovery) {
+        assert.ok(operations.some((op) => op.operation === "retire-revision"));
+      }
     },
   );
 }
@@ -1506,7 +1518,9 @@ test(
             [candidate.idempotencyKey],
           );
           const row = result.rows[0];
-          if (row?.dependency_failures >= 1 && row.state !== "failed_permanent") return row;
+          if (row?.dependency_failures >= 1 && row.state !== "failed_permanent") {
+            return row;
+          }
           return undefined;
         },
       );
@@ -1742,7 +1756,9 @@ test(
         async retireRevision(previous) {
           retirements += 1;
           effects.push({ action: "retire", revisionId: previous.id });
-          if (retirements === 1) await releaseRetirement.promise;
+          if (retirements === 1) {
+            await releaseRetirement.promise;
+          }
           return fixture.compute.retireRevision(previous);
         },
       },

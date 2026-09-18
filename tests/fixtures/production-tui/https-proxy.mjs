@@ -44,7 +44,9 @@ createServer(
     );
     upstream.setTimeout(upstreamTimeoutMs, () => upstream.destroy());
     upstream.on("error", () => {
-      if (!outgoing.headersSent) outgoing.writeHead(502);
+      if (!outgoing.headersSent) {
+        outgoing.writeHead(502);
+      }
       outgoing.end("Bad Gateway\n");
     });
     incoming.pipe(upstream);

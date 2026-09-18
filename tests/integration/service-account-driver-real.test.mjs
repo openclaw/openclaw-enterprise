@@ -194,8 +194,12 @@ test(
       }
 
       forwarding?.stop();
-      if (worker !== undefined) await cleanup(() => worker.stop());
-      if (productionApp !== undefined) await cleanup(() => productionApp.close());
+      if (worker !== undefined) {
+        await cleanup(() => worker.stop());
+      }
+      if (productionApp !== undefined) {
+        await cleanup(() => productionApp.close());
+      }
       if (externalAccountId === undefined && createdServiceAccountId !== undefined) {
         await cleanup(async () => {
           const result = await observerPool.query(
@@ -208,7 +212,9 @@ test(
       if (externalAccountId !== undefined) {
         await cleanup(() => client.deleteServiceAccount(externalAccountId));
       }
-      if (observerPool !== undefined) await cleanup(() => observerPool.end());
+      if (observerPool !== undefined) {
+        await cleanup(() => observerPool.end());
+      }
       if (tenantNamespace !== undefined) {
         await cleanup(() =>
           kubectl("delete", "namespace", tenantNamespace, "--ignore-not-found=true"),
@@ -238,8 +244,9 @@ test(
         kubectl("delete", "namespace", platformNamespace, "--ignore-not-found=true"),
       );
       await cleanup(() => rm(directory, { recursive: true, force: true }));
-      if (failures.length !== 0)
+      if (failures.length !== 0) {
         throw new AggregateError(failures, "Real integration cleanup failed.");
+      }
     });
 
     await kubectl("create", "namespace", platformNamespace);
@@ -424,7 +431,9 @@ test(
       try {
         return await kubernetesResource("namespace", tenantNamespace);
       } catch (error) {
-        if (/NotFound|not found/i.test(error.stderr ?? error.message)) return undefined;
+        if (/NotFound|not found/i.test(error.stderr ?? error.message)) {
+          return undefined;
+        }
         throw error;
       }
     });

@@ -10,7 +10,9 @@ export function numericErrorStatus(error: unknown): number | undefined {
     response?.statusCode,
     response?.status,
   ]) {
-    if (typeof candidate === "number") return candidate;
+    if (typeof candidate === "number") {
+      return candidate;
+    }
   }
   return undefined;
 }

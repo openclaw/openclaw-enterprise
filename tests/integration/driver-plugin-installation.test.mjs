@@ -267,10 +267,14 @@ test("reviewed scoped Driver packages install, activate, and fail closed", async
         await stat(provisionPath);
         assert.fail(`Refusing to overwrite existing ${provisionPath}.`);
       } catch (error) {
-        if (error.code !== "ENOENT") throw error;
+        if (error.code !== "ENOENT") {
+          throw error;
+        }
       }
       scenario.after(async () => {
-        if (ownedArtifact) await rm(provisionPath, { force: true });
+        if (ownedArtifact) {
+          await rm(provisionPath, { force: true });
+        }
       });
 
       const configuration = installation();

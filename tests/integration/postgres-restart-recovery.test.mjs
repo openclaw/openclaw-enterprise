@@ -157,8 +157,12 @@ function revisionWork(namespaceId, idempotencyKey, agentId, revisionId, availabl
 async function claimExpected(queue, idempotencyKey) {
   for (let index = 0; index < 200; index += 1) {
     const claim = await queue.claim();
-    if (!claim) break;
-    if (claim.idempotencyKey === idempotencyKey) return claim;
+    if (!claim) {
+      break;
+    }
+    if (claim.idempotencyKey === idempotencyKey) {
+      return claim;
+    }
     await queue.complete(claim);
   }
   assert.fail(`The durable queue did not expose expected work ${idempotencyKey}.`);
@@ -450,7 +454,9 @@ test(
     let namespaceMutationReached = false;
     await assert.rejects(
       state.transactWithQueue(async (unit, transactionQueue) => {
-        if (!(await transactionQueue.heartbeat(claim))) throw new WorkClaimLostError();
+        if (!(await transactionQueue.heartbeat(claim))) {
+          throw new WorkClaimLostError();
+        }
         namespaceMutationReached = true;
         await unit.namespaces.transitionNamespaceStatus(namespaceId, "ready", "deleting");
       }),
@@ -496,7 +502,9 @@ test(
       revisionWork(namespaceId, `${prefix}:revision:second`, agents[0], revisions[1], new Date(3)),
       revisionWork(namespaceId, `${prefix}:other-revision`, agents[1], revisions[2], new Date(4)),
     ];
-    for (const input of inputs) await queue.enqueue(input);
+    for (const input of inputs) {
+      await queue.enqueue(input);
+    }
 
     const allClaims = (await Promise.all(Array.from({ length: 8 }, () => queue.claim()))).filter(
       Boolean,
@@ -518,7 +526,9 @@ test(
     assert.equal(locked.rowCount, 3);
     assert.ok(locked.rows.every(({ claims }) => claims === 1));
 
-    for (const claim of allClaims) await queue.complete(claim);
+    for (const claim of allClaims) {
+      await queue.complete(claim);
+    }
     const remaining = await pool.query(
       `SELECT idempotency_key
      FROM occ.controller_work
@@ -620,7 +630,9 @@ test(
     }
 
     const claims = [];
-    for (const key of keys) claims.push(await claimExpected(queue, key));
+    for (const key of keys) {
+      claims.push(await claimExpected(queue, key));
+    }
     assert.equal(claims.length, 2);
     await delay(75);
 
@@ -641,6 +653,8 @@ test(
     assert.ok(audits.rows.every(({ events }) => events === 1));
 
     const cleanupQueue = new PostgresWorkQueue(pool, { leaseDurationMs: 1_000, random: () => 0 });
-    for (const key of keys) await cleanupQueue.complete(await claimExpected(cleanupQueue, key));
+    for (const key of keys) {
+      await cleanupQueue.complete(await claimExpected(cleanupQueue, key));
+    }
   },
 );

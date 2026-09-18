@@ -250,7 +250,9 @@ export async function createEnvoyWorkspaceGatewayPlan(context, { platformNamespa
                 const candidate = await gatewayLeafCertificate(platformNamespace, helpers);
                 return candidate.serialNumber !== previous.serialNumber ? candidate : undefined;
               } catch (error) {
-                if (/NotFound|not found/i.test(error.stderr ?? error.message)) return undefined;
+                if (/NotFound|not found/i.test(error.stderr ?? error.message)) {
+                  return undefined;
+                }
                 throw error;
               }
             },
@@ -334,7 +336,9 @@ ${entries}
 
 function registerRenderedExternalCleanup(context, manifests, platformNamespace, { kubectl }) {
   for (const object of renderedNamespacedObjects(manifests)) {
-    if (object.kind !== "NetworkPolicy" || object.namespace === platformNamespace) continue;
+    if (object.kind !== "NetworkPolicy" || object.namespace === platformNamespace) {
+      continue;
+    }
     context.after(async () => {
       await kubectl(
         "delete",
@@ -354,7 +358,9 @@ function renderedNamespacedObjects(manifests) {
     .map((document) => {
       const kind = /^kind:\s*(\S+)\s*$/mu.exec(document)?.[1];
       const metadataStart = document.search(/^metadata:\s*$/mu);
-      if (kind === undefined || metadataStart < 0) return undefined;
+      if (kind === undefined || metadataStart < 0) {
+        return undefined;
+      }
       const metadata = document.slice(metadataStart);
       const name = /^ {2}name:\s*(\S+)\s*$/mu.exec(metadata)?.[1];
       const namespace = /^ {2}namespace:\s*(\S+)\s*$/mu.exec(metadata)?.[1];
@@ -593,7 +599,9 @@ async function waitForGatewayCertificate(platformNamespace, { resource, waitFor 
       const secret = await resource("secret", tlsSecretName, platformNamespace);
       return secret.data?.["tls.crt"] === undefined ? undefined : secret;
     } catch (error) {
-      if (/NotFound|not found/i.test(error.stderr ?? error.message)) return undefined;
+      if (/NotFound|not found/i.test(error.stderr ?? error.message)) {
+        return undefined;
+      }
       throw error;
     }
   });
@@ -763,8 +771,12 @@ spec:
   });
   await helpers.waitFor("unlabeled direct Envoy Gateway peer denial", async () => {
     const pod = await helpers.resource("pod", name, topology.platformNamespace);
-    if (pod.status?.phase === "Succeeded") return pod;
-    if (pod.status?.phase !== "Failed") return undefined;
+    if (pod.status?.phase === "Succeeded") {
+      return pod;
+    }
+    if (pod.status?.phase !== "Failed") {
+      return undefined;
+    }
     const logs = await helpers
       .kubectl("logs", name, "--namespace", topology.platformNamespace)
       .catch(() => "");
@@ -832,7 +844,9 @@ export async function requestNativeGatewayModelTurn({
         { signal, timeoutMs: 10_000 },
       );
       for (const message of history.messages ?? []) {
-        if (message.role !== "assistant") continue;
+        if (message.role !== "assistant") {
+          continue;
+        }
         assert.notEqual(
           message.stopReason,
           "error",
@@ -845,8 +859,9 @@ export async function requestNativeGatewayModelTurn({
                 .filter((part) => part.type === "text")
                 .map((part) => part.text)
                 .join("\n");
-        if (content.includes(expectedMarker))
+        if (content.includes(expectedMarker)) {
           return { sessionKey, content, deviceTokenIssued: false };
+        }
       }
       await delay(300, undefined, { signal });
     }

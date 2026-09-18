@@ -96,12 +96,16 @@ test(
     const run = (command, args, { input, timeout = 120_000, allowFailure = false, env } = {}) =>
       new Promise((resolve, reject) => {
         const childEnv = env ? { ...process.env, ...env } : undefined;
-        if (childEnv)
-          for (const [name, value] of Object.entries(childEnv))
-            if (value === undefined) delete childEnv[name];
+        if (childEnv) {
+          for (const [name, value] of Object.entries(childEnv)) {
+            if (value === undefined) {
+              delete childEnv[name];
+            }
+          }
+        }
         const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"], env: childEnv });
-        let stdout = "",
-          stderr = "";
+        let stdout = "";
+        let stderr = "";
         const timer = setTimeout(() => child.kill("SIGTERM"), timeout);
         child.stdout.on("data", (data) => {
           stdout += data;
@@ -115,8 +119,11 @@ test(
         });
         child.on("close", (code) => {
           clearTimeout(timer);
-          if (code === 0 || (allowFailure && code === 1)) resolve(stdout);
-          else reject(new Error(redact(`${command} failed (${code}): ${stderr}\n${stdout}`)));
+          if (code === 0 || (allowFailure && code === 1)) {
+            resolve(stdout);
+          } else {
+            reject(new Error(redact(`${command} failed (${code}): ${stderr}\n${stdout}`)));
+          }
         });
         child.stdin.on("error", () => {});
         child.stdin.end(input);
@@ -182,7 +189,9 @@ test(
     context.after(async () => {
       forwarding?.kill("SIGTERM");
       // Preserve nonsecret proof and attach.sh; delete locally copied TLS credentials.
-      for (const file of ["tls.key", "tls.crt"]) await rm(join(directory, file), { force: true });
+      for (const file of ["tls.key", "tls.crt"]) {
+        await rm(join(directory, file), { force: true });
+      }
       // These namespaces are unique to this run. Keep is an explicit operator rehearsal mode.
       if (process.env.OCC_TEST_PRODUCTION_TUI_KEEP === "1") {
         context.diagnostic(`Retained production setup: ${directory}`);
@@ -202,22 +211,24 @@ test(
         ],
         { timeout: 60_000 },
       ).catch(() => {});
-      for (const name of names.reverse())
+      for (const name of names.reverse()) {
         await kubectl("delete", "namespace", name, "--ignore-not-found", "--wait=false").catch(
           () => {},
         );
+      }
     });
 
     async function installProductionControlPlane() {
-      for (const name of names)
+      for (const name of names) {
         await apply({
           apiVersion: "v1",
           kind: "Namespace",
           metadata: { name, labels: { "oce-test": suffix } },
         });
-      const postgresPassword = secret(),
-        migrationPassword = secret(),
-        appPassword = secret();
+      }
+      const postgresPassword = secret();
+      const migrationPassword = secret();
+      const appPassword = secret();
       await createSecret("postgres-bootstrap", {
         password: postgresPassword,
         "init.sql": `CREATE ROLE occ_migrator LOGIN PASSWORD '${migrationPassword}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;\nCREATE ROLE occ_app LOGIN PASSWORD '${appPassword}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;\nGRANT CREATE ON DATABASE openclaw_enterprise TO occ_migrator;\nCREATE SCHEMA occ AUTHORIZATION occ_migrator;\nCREATE SCHEMA drizzle AUTHORIZATION occ_migrator;\nREVOKE CREATE ON SCHEMA public FROM PUBLIC;`,
@@ -521,8 +532,9 @@ test(
                 output += chunk;
               });
               response.on("end", () => {
-                for (const value of secrets)
+                for (const value of secrets) {
                   assert.ok(!output.includes(value), "API response leaked a protected credential");
+                }
                 resolve({
                   status: response.statusCode,
                   headers: response.headers,
@@ -577,8 +589,9 @@ test(
             OPENAI_API_KEY: undefined,
           },
         });
-        for (const value of secrets)
+        for (const value of secrets) {
           assert.ok(!output.includes(value), "Guide output leaked a credential");
+        }
         return JSON.parse(output);
       };
       const request = async (method, path, body, expected = 200) => {
@@ -638,7 +651,9 @@ test(
             "json",
           ),
         );
-        if (!list.items.length) return false;
+        if (!list.items.length) {
+          return false;
+        }
         assert.equal(list.items.length, 1);
         assert.equal(list.items[0].metadata.annotations["openclaw.dev/namespace-id"], namespace.id);
         return list.items[0].metadata.name;
@@ -648,7 +663,7 @@ test(
         ["worker", "worker", "worker"],
         ["configuration", "configuration", "api"],
         ["secrets", "api", "api"],
-      ])
+      ]) {
         await apply({
           apiVersion: "rbac.authorization.k8s.io/v1",
           kind: "RoleBinding",
@@ -662,6 +677,7 @@ test(
             { kind: "ServiceAccount", name: `openclaw-enterprise-${account}`, namespace: system },
           ],
         });
+      }
       await waitFor("OCC Namespace ready", async () => {
         const current = await api("GET", `/namespaces/${namespace.id}`);
         assert.ok(!["failed", "deleting"].includes(current.status), `Namespace ${current.status}`);
@@ -829,14 +845,17 @@ test(
           assert.ok(matches.length <= 1, "Ambiguous active gateway Pod");
           return matches[0];
         });
-        if (previousPod)
+        if (previousPod) {
           assert.notEqual(
             gateway.metadata.uid,
             previousPod.metadata.uid,
             "Cutover must serve the new immutable config in a new Pod",
           );
+        }
         previousPod = gateway;
-        if (round === 1) firstRevision = revision.id;
+        if (round === 1) {
+          firstRevision = revision.id;
+        }
         finalPod = gateway.metadata.name;
         finalRevision = revision.id;
         if (round === 1) {
@@ -861,15 +880,16 @@ test(
               invalidGatewayToken: true,
             }),
           ]);
-          for (const value of secrets)
+          for (const value of secrets) {
             assert.ok(!output.includes(value), "Denied TUI output leaked a credential");
+          }
           assert.equal(JSON.parse(output).denied, true);
           await record("Fresh-state invalid gateway token rejected");
         }
         const first = `TUI_${round}_A_${randomBytes(8).toString("hex")}`;
         const second = `TUI_${round}_B_${randomBytes(8).toString("hex")}`;
-        const firstPrompt = `Reply exactly: ${first}`,
-          secondPrompt = `Reply exactly: ${second}`;
+        const firstPrompt = `Reply exactly: ${first}`;
+        const secondPrompt = `Reply exactly: ${second}`;
         const output = await run(
           "python3",
           [
@@ -896,8 +916,9 @@ test(
           ],
           { timeout: 550_000 },
         );
-        for (const value of secrets)
+        for (const value of secrets) {
           assert.ok(!output.includes(value), "TUI output leaked a credential");
+        }
         const conversation = JSON.parse(output);
         assert.equal(conversation.exitCode, 0);
         await writeFile(join(directory, `tui-revision-${round}.json`), output, { mode: 0o600 });
@@ -1003,8 +1024,9 @@ test(
           "--all-containers",
           "--tail=200",
         );
-        for (const value of secrets)
+        for (const value of secrets) {
           assert.ok(!logs.includes(value), "Control-plane log leaked a credential");
+        }
       }
       const gatewayLogs = await kubectl(
         "-n",
@@ -1015,8 +1037,9 @@ test(
         "gateway",
         "--tail=200",
       );
-      for (const value of secrets)
+      for (const value of secrets) {
         assert.ok(!gatewayLogs.includes(value), "Gateway log leaked a credential");
+      }
       await record("Worker least privilege and credential output boundaries");
       await kubectl(
         "-n",
@@ -1028,7 +1051,9 @@ test(
         "-f",
         "/operator/occ-service-key.json",
       );
-      if (localServiceKeyFile) await rm(localServiceKeyFile, { force: true });
+      if (localServiceKeyFile) {
+        await rm(localServiceKeyFile, { force: true });
+      }
       const bootstrapServiceKeyMode = JSON.parse(
         await kubectl(
           "-n",

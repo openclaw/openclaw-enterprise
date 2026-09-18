@@ -32,7 +32,9 @@ function safeStatus(value) {
 
 function failureDiagnostic(error) {
   const diagnostic = error?.openclawCiDiagnostic;
-  if (!isRecord(diagnostic) || diagnostic.kind !== "controller-http") return undefined;
+  if (!isRecord(diagnostic) || diagnostic.kind !== "controller-http") {
+    return undefined;
+  }
   const status = safeStatus(diagnostic.status);
   const expectedStatus = safeStatus(diagnostic.expectedStatus);
   const occErrorCode = diagnostic.occErrorCode;
@@ -54,7 +56,9 @@ function failureDiagnostic(error) {
 }
 
 function upstreamDiagnostic(value) {
-  if (!isRecord(value) || value.kind !== "chatgpt-admin-http") return undefined;
+  if (!isRecord(value) || value.kind !== "chatgpt-admin-http") {
+    return undefined;
+  }
   const status = safeStatus(value.status);
   const operation = value.operation;
   if (

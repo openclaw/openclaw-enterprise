@@ -145,7 +145,9 @@ function port(value: unknown, description: string): number {
 }
 
 function optionalPort(value: unknown, description: string): number | undefined {
-  if (value === undefined) return undefined;
+  if (value === undefined) {
+    return undefined;
+  }
   return port(value, description);
 }
 
@@ -693,8 +695,9 @@ function validateOptions(options: OpenShellSandboxDriverOptions): void {
     );
   }
   optionalPort(options.gateway.port, "OpenShell gateway port");
-  if (options.gateway.workspace !== undefined)
+  if (options.gateway.workspace !== undefined) {
     nonempty(options.gateway.workspace, "OpenShell workspace");
+  }
   if (options.gateway.readiness !== undefined) {
     nonempty(options.gateway.readiness.serviceName, "OpenShell gateway Service name");
     labels(options.gateway.readiness.podSelector, "OpenShell gateway Pod selector");
@@ -913,7 +916,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       try {
         await kubernetes(context).delete(resourceReference(resource, namespace));
       } catch (error) {
-        if (!missingResource(error)) throw error;
+        if (!missingResource(error)) {
+          throw error;
+        }
       }
     }
   }
@@ -927,10 +932,14 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   }
 
   private gatewayClientForNamespace(namespace: string): OpenShellGatewayClient {
-    if (this.injectedGatewayClient !== undefined) return this.injectedGatewayClient;
+    if (this.injectedGatewayClient !== undefined) {
+      return this.injectedGatewayClient;
+    }
     const options = gatewayClientOptions(this.options, namespace);
     const existing = this.gatewayClients.get(options.endpoint);
-    if (existing !== undefined) return existing;
+    if (existing !== undefined) {
+      return existing;
+    }
     const created = new GrpcOpenShellGatewayClient(options);
     this.gatewayClients.set(options.endpoint, created);
     return created;

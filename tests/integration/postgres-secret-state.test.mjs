@@ -165,7 +165,9 @@ function revisionFor(agent, configuration, storedSecret, revisionNumber = 1) {
 
 async function ensureInstallation(store) {
   const existing = await store.read((state) => state.installations.getInstallation());
-  if (existing !== undefined) return existing;
+  if (existing !== undefined) {
+    return existing;
+  }
   return store.transact((state) =>
     state.installations.createInstallation({
       id: identifier("ins"),

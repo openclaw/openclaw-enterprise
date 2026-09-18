@@ -18,8 +18,12 @@ const outputPath = fileURLToPath(
 const documentationInstallationId = "ins_6054d30d-0f89-4cd0-aa56-2b76e3c5fb52";
 
 function sortKeys(value) {
-  if (Array.isArray(value)) return value.map(sortKeys);
-  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) {
+    return value.map(sortKeys);
+  }
+  if (value === null || typeof value !== "object") {
+    return value;
+  }
 
   return Object.fromEntries(
     Object.entries(value)

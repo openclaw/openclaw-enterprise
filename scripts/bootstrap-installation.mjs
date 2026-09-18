@@ -105,14 +105,18 @@ function randomPassword() {
 
 function bootstrapFailureCode(error) {
   const message = error instanceof Error ? error.message : "";
-  if (/OCC_AUTH_SECRET/.test(message)) return "AUTH_SECRET_INVALID";
+  if (/OCC_AUTH_SECRET/.test(message)) {
+    return "AUTH_SECRET_INVALID";
+  }
   if (/OCC_AUTH_BASE_URL|loopback host|loopback HTTP\(S\) URL/.test(message)) {
     return "AUTH_BASE_URL_INVALID";
   }
   if (/OCC_DATABASE_URL|PostgreSQL database|PostgreSQL connection URL/.test(message)) {
     return "DATABASE_CONFIGURATION_INVALID";
   }
-  if (/commit outcome is unknown/i.test(message)) return "COMMIT_OUTCOME_UNKNOWN";
+  if (/commit outcome is unknown/i.test(message)) {
+    return "COMMIT_OUTCOME_UNKNOWN";
+  }
   if (/platform persistence repository|ECONNREFUSED|ECONNRESET|connect /i.test(message)) {
     return "PERSISTENCE_UNAVAILABLE";
   }
@@ -238,7 +242,9 @@ function administratorPrincipal(state, issuer, userId) {
     (identity) =>
       identity.kind === "principal" && identity.issuer === issuer && identity.subject === userId,
   );
-  if (principal === undefined || principal.kind !== "principal") return undefined;
+  if (principal === undefined || principal.kind !== "principal") {
+    return undefined;
+  }
   const administratorRoles = new Set(
     state.roles
       .filter(

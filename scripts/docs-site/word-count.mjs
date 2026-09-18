@@ -43,13 +43,19 @@ export function collectMarkdownFiles({ root = process.cwd(), files } = {}) {
   const byRealPath = new Map();
   for (const file of files ?? gitMarkdownFiles(absoluteRoot)) {
     const relativePath = file.split(path.sep).join("/");
-    if (seenPaths.has(relativePath)) continue;
+    if (seenPaths.has(relativePath)) {
+      continue;
+    }
     seenPaths.add(relativePath);
     const absolutePath = path.resolve(absoluteRoot, relativePath);
-    if (!fs.existsSync(absolutePath)) continue;
+    if (!fs.existsSync(absolutePath)) {
+      continue;
+    }
     const realPath = fs.realpathSync.native(absolutePath);
     const stat = fs.statSync(realPath);
-    if (!stat.isFile()) continue;
+    if (!stat.isFile()) {
+      continue;
+    }
     const existing = byRealPath.get(realPath);
     if (existing) {
       existing.aliases.push(relativePath);
@@ -238,10 +244,13 @@ function parseCliArgs(argv) {
   };
   for (let index = 0; index < argv.length; index++) {
     const arg = argv[index];
-    if (arg === "--json") options.json = true;
-    else if (arg === "--root") options.root = argv[++index];
-    else if (arg === "--max") options.maxWords = Number(argv[++index]);
-    else {
+    if (arg === "--json") {
+      options.json = true;
+    } else if (arg === "--root") {
+      options.root = argv[++index];
+    } else if (arg === "--max") {
+      options.maxWords = Number(argv[++index]);
+    } else {
       throw new Error("Usage: word-count.mjs [--root <path>] [--max <words>] [--json]");
     }
   }

@@ -13,7 +13,9 @@ export function bindRepository<Repository extends object, Key extends keyof Repo
   const result = {} as Pick<Repository, Key>;
   for (const key of methods) {
     const method = repository[key];
-    if (typeof method !== "function") throw new TypeError("A repository method is required.");
+    if (typeof method !== "function") {
+      throw new TypeError("A repository method is required.");
+    }
     Object.defineProperty(result, key, {
       enumerable: true,
       value: (...args: unknown[]) => lifetime.run(() => Reflect.apply(method, repository, args)),

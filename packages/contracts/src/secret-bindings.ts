@@ -24,11 +24,16 @@ const controlNames = new Set([
 
 /** One canonical, closed binding grammar, used at admission and rendering. */
 export function normalizeSecretBindings(input: unknown): SecretBindings {
-  if (input === undefined) return Object.freeze({});
-  if (input === null || typeof input !== "object" || Array.isArray(input))
+  if (input === undefined) {
+    return Object.freeze({});
+  }
+  if (input === null || typeof input !== "object" || Array.isArray(input)) {
     throw new Error("Secret bindings must be an environment destination map.");
+  }
   const entries = Object.entries(input);
-  if (entries.length > 64) throw new Error("Too many secret bindings.");
+  if (entries.length > 64) {
+    throw new Error("Too many secret bindings.");
+  }
   return Object.freeze(
     Object.fromEntries(
       entries.map(([name, binding]) => {
@@ -37,16 +42,18 @@ export function normalizeSecretBindings(input: unknown): SecretBindings {
           reserved.test(name) ||
           controlNames.has(name.toUpperCase()) ||
           name.toUpperCase().startsWith("OPENAI_")
-        )
+        ) {
           throw new Error("A secret binding uses a reserved or invalid environment destination.");
+        }
         if (
           binding === null ||
           typeof binding !== "object" ||
           Array.isArray(binding) ||
           !Object.hasOwn(binding, "source") ||
           Object.keys(binding).some((key) => key !== "source" && key !== "delivery")
-        )
+        ) {
           throw new Error("A secret binding must identify one supported source and delivery.");
+        }
         const { source, delivery } = binding as Record<string, unknown>;
         if (
           source === null ||
@@ -61,8 +68,9 @@ export function normalizeSecretBindings(input: unknown): SecretBindings {
           !("id" in source) ||
           typeof source.id !== "string" ||
           !source.id
-        )
+        ) {
           throw new Error("A secret binding requires an exact Namespace-scoped Secret reference.");
+        }
         if (
           delivery !== undefined &&
           (delivery === null ||
@@ -71,8 +79,9 @@ export function normalizeSecretBindings(input: unknown): SecretBindings {
             Object.keys(delivery).length !== 1 ||
             !("type" in delivery) ||
             delivery.type !== "env")
-        )
+        ) {
           throw new Error("The secret delivery mode is unsupported.");
+        }
         return [
           name,
           Object.freeze({

@@ -64,7 +64,11 @@ async function syncDirectory(path: string): Promise<void> {
 
 function processOwnsParent(uid: number, gid: number): boolean {
   const currentUid = typeof process.getuid === "function" ? process.getuid() : undefined;
-  if (currentUid !== undefined && (uid === currentUid || uid === 0)) return true;
-  if (typeof process.getgroups !== "function") return false;
+  if (currentUid !== undefined && (uid === currentUid || uid === 0)) {
+    return true;
+  }
+  if (typeof process.getgroups !== "function") {
+    return false;
+  }
   return process.getgroups().includes(gid);
 }

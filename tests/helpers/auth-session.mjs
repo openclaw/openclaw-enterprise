@@ -9,14 +9,20 @@ export const betterAuthSignInPath = "/api/auth/sign-in/email";
 
 export function setCookieHeaders(response) {
   const headers = response.headers;
-  if (headers === undefined) return [];
+  if (headers === undefined) {
+    return [];
+  }
 
-  if (typeof headers.getSetCookie === "function") return headers.getSetCookie();
+  if (typeof headers.getSetCookie === "function") {
+    return headers.getSetCookie();
+  }
 
   if (typeof headers.raw === "function") {
     const raw = headers.raw();
     const values = raw["set-cookie"];
-    if (Array.isArray(values)) return values;
+    if (Array.isArray(values)) {
+      return values;
+    }
   }
 
   const single = typeof headers.get === "function" ? headers.get("set-cookie") : null;
@@ -118,7 +124,9 @@ export async function signInToControllerApp(app, credentials) {
             const headers = new Headers();
             for (const [name, values] of Object.entries(response.headers)) {
               for (const value of Array.isArray(values) ? values : [values]) {
-                if (value !== undefined) headers.append(name, String(value));
+                if (value !== undefined) {
+                  headers.append(name, String(value));
+                }
               }
             }
             return new Response(

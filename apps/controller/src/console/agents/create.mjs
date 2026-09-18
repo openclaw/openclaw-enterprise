@@ -113,7 +113,9 @@ export function renderCreateAgent(context) {
   mode.addEventListener("change", () => {
     const untouched = configuration.value === template;
     template = JSON.stringify(configurationTemplate(mode.value), null, 2);
-    if (untouched) configuration.value = template;
+    if (untouched) {
+      configuration.value = template;
+    }
     feedback.textContent = "";
     renderChannelEditor();
   });
@@ -170,7 +172,9 @@ export function renderCreateAgent(context) {
   function parseConfiguration(reportInvalid = false) {
     try {
       const values = JSON.parse(configuration.value);
-      if (values === null || Array.isArray(values) || typeof values !== "object") throw new Error();
+      if (values === null || Array.isArray(values) || typeof values !== "object") {
+        throw new Error();
+      }
       return values;
     } catch {
       if (reportInvalid) {
@@ -182,7 +186,9 @@ export function renderCreateAgent(context) {
   }
   function hasEnabledChannel(values) {
     const channels = values?.channels;
-    if (channels === null || typeof channels !== "object" || Array.isArray(channels)) return false;
+    if (channels === null || typeof channels !== "object" || Array.isArray(channels)) {
+      return false;
+    }
     return ["slack", "msteams"].some((id) => {
       const config = channels[id];
       return (
@@ -232,7 +238,9 @@ export function renderCreateAgent(context) {
         configuration.value = JSON.stringify(updatedValues, null, 2);
         configuration.setCustomValidity("");
         setTimeout(() => {
-          if (context.isCurrent()) renderChannelEditor();
+          if (context.isCurrent()) {
+            renderChannelEditor();
+          }
         }, 0);
       },
     });
@@ -249,8 +257,9 @@ export function renderCreateAgent(context) {
   }
   const updateControls = () => {
     for (const root of [form, actions]) {
-      for (const node of root.querySelectorAll("button, input, select, textarea"))
+      for (const node of root.querySelectorAll("button, input, select, textarea")) {
         node.disabled = pending;
+      }
     }
     channelEditor.toggleAttribute("inert", pending);
     channelEditor.setAttribute("aria-busy", pending ? "true" : "false");
@@ -264,7 +273,9 @@ export function renderCreateAgent(context) {
   renderChannelEditor();
   request("/providers")
     .then((items) => {
-      if (!context.isCurrent()) return;
+      if (!context.isCurrent()) {
+        return;
+      }
       provider.append(
         ...items.map((item) => element("option", { value: item.id }, `${item.id} · ${item.type}`)),
       );
@@ -275,16 +286,24 @@ export function renderCreateAgent(context) {
       updateControls();
     })
     .catch((error) => {
-      if (!context.isCurrent()) return;
-      if (error.status === 401) context.onExpired();
-      else
+      if (!context.isCurrent()) {
+        return;
+      }
+      if (error.status === 401) {
+        context.onExpired();
+      } else {
         providerStatus.textContent = `Providers unavailable. ${message(error)} You can continue with None.`;
+      }
     });
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (pending || outcomeUnknown || !form.reportValidity()) return;
+    if (pending || outcomeUnknown || !form.reportValidity()) {
+      return;
+    }
     const values = parseConfiguration(true);
-    if (values === undefined) return;
+    if (values === undefined) {
+      return;
+    }
     if (mode.value === "embedded" && hasEnabledChannel(values)) {
       feedback.textContent =
         "Channels require Dedicated execution. Select Dedicated or disable configured channels before creating the Agent.";
@@ -301,14 +320,18 @@ export function renderCreateAgent(context) {
     let mutationStarted = false;
     try {
       body.harnessAuth = await auth.readBinding();
-      if (!context.isCurrent()) return;
+      if (!context.isCurrent()) {
+        return;
+      }
       mutationStarted = true;
       if (!savedConfiguration) {
         savedConfiguration = await request(`${namespacePath(namespaceId)}/configurations`, {
           method: "POST",
           body: { kind: "agent", values },
         });
-        if (!context.isCurrent()) return;
+        if (!context.isCurrent()) {
+          return;
+        }
         savedStatus.textContent = `Configuration saved: ${savedConfiguration.id}. Its JSON and execution mode are now fixed for this form; retrying Agent creation will reuse it.`;
         renderChannelEditor();
       }
@@ -316,9 +339,13 @@ export function renderCreateAgent(context) {
         method: "POST",
         body: { ...body, configurationId: savedConfiguration.id },
       });
-      if (context.isCurrent()) context.navigate(`agents/${created.id}?revision=draft`);
+      if (context.isCurrent()) {
+        context.navigate(`agents/${created.id}?revision=draft`);
+      }
     } catch (error) {
-      if (!context.isCurrent()) return;
+      if (!context.isCurrent()) {
+        return;
+      }
       if (error.status === 401) {
         context.onExpired();
         return;

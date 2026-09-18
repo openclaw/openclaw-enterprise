@@ -34,9 +34,13 @@ export function createNativeWorkspaceFilesAccess(
 ): ControllerWorkspaceFilesAccess {
   return {
     read: async (request) => {
-      if (!isAllowedWorkspaceFileName(request.filename)) return { status: "unavailable" };
+      if (!isAllowedWorkspaceFileName(request.filename)) {
+        return { status: "unavailable" };
+      }
       const result = await requestNativeWorkspaceFile(request, resolveTarget, "read");
-      if (result.status !== "ok") return result;
+      if (result.status !== "ok") {
+        return result;
+      }
       return normalizeReadResponse(request.filename, result.payload);
     },
     write: async (request) => {
@@ -47,7 +51,9 @@ export function createNativeWorkspaceFilesAccess(
         return { status: "unavailable" };
       }
       const result = await requestNativeWorkspaceFile(request, resolveTarget, "write");
-      if (result.status !== "ok") return { status: "unavailable" };
+      if (result.status !== "ok") {
+        return { status: "unavailable" };
+      }
       const normalized = normalizeWriteResponse(request.filename, result.payload);
       if (normalized.status !== "ok") {
         throw new ControllerWorkspaceFileUnknownOutcomeError(
@@ -72,7 +78,9 @@ async function requestNativeWorkspaceFile(
   operation: WorkspaceFileOperation,
 ): Promise<NativeRequestResult> {
   const timeoutMs = remainingDeadlineMs(request.deadline);
-  if (timeoutMs === undefined || request.signal.aborted) return { status: "unavailable" };
+  if (timeoutMs === undefined || request.signal.aborted) {
+    return { status: "unavailable" };
+  }
 
   let requestSent = false;
   let resolveHello!: (hello: GatewayHello) => void;
@@ -85,7 +93,9 @@ async function requestNativeWorkspaceFile(
 
   try {
     const target = normalizeTarget(await resolveTarget(request));
-    if (target === undefined) return { status: "unavailable" };
+    if (target === undefined) {
+      return { status: "unavailable" };
+    }
     client = new GatewayClient({
       url: target.url,
       clientName: "gateway-client",
@@ -99,9 +109,13 @@ async function requestNativeWorkspaceFile(
     });
     client.start();
     const hello = await waitForHello(connected, request, timeoutMs);
-    if (!hasGrant(hello, operation)) return { status: "unavailable" };
+    if (!hasGrant(hello, operation)) {
+      return { status: "unavailable" };
+    }
     const requestTimeoutMs = remainingDeadlineMs(request.deadline);
-    if (requestTimeoutMs === undefined || request.signal.aborted) return { status: "unavailable" };
+    if (requestTimeoutMs === undefined || request.signal.aborted) {
+      return { status: "unavailable" };
+    }
     const params =
       operation === "read"
         ? { agentId: target.nativeAgentId, name: request.filename }
@@ -126,7 +140,9 @@ async function requestNativeWorkspaceFile(
     if (operation === "write" && writeOutcomeUnknown(error, requestSent)) {
       throw new ControllerWorkspaceFileUnknownOutcomeError(undefined, { cause: error });
     }
-    if (operation === "read" && isMissingFileError(error)) return { status: "missing" };
+    if (operation === "read" && isMissingFileError(error)) {
+      return { status: "missing" };
+    }
     return { status: "unavailable" };
   } finally {
     client?.stop();
@@ -143,9 +159,13 @@ function waitForHello(
     let settled = false;
     let timeout: NodeJS.Timeout | undefined;
     const finish = <T>(callback: (value: T) => void, value: T) => {
-      if (settled) return;
+      if (settled) {
+        return;
+      }
       settled = true;
-      if (timeout !== undefined) clearTimeout(timeout);
+      if (timeout !== undefined) {
+        clearTimeout(timeout);
+      }
       request.signal.removeEventListener("abort", abort);
       callback(value);
     };
@@ -170,14 +190,18 @@ function waitForHello(
 function normalizeTarget(
   target: NativeWorkspaceFilesTarget | undefined,
 ): NativeWorkspaceFilesTarget | undefined {
-  if (target === undefined) return undefined;
+  if (target === undefined) {
+    return undefined;
+  }
   let parsed: URL;
   try {
     parsed = new URL(target.url);
   } catch {
     return undefined;
   }
-  if (parsed.protocol !== "wss:") return undefined;
+  if (parsed.protocol !== "wss:") {
+    return undefined;
+  }
   if (!isNonEmptyString(target.nativeAgentId) || !isNonEmptyString(target.apiKey)) {
     return undefined;
   }
@@ -185,9 +209,13 @@ function normalizeTarget(
 }
 
 function hasGrant(hello: GatewayHello, operation: WorkspaceFileOperation): boolean {
-  if (hello.auth?.role !== "operator") return false;
+  if (hello.auth?.role !== "operator") {
+    return false;
+  }
   const scopes = Array.isArray(hello.auth.scopes) ? new Set(hello.auth.scopes) : new Set<string>();
-  if (scopes.has("operator.admin")) return true;
+  if (scopes.has("operator.admin")) {
+    return true;
+  }
   return operation === "read" && scopes.has("operator.read");
 }
 
@@ -196,13 +224,19 @@ function normalizeReadResponse(
   payload: unknown,
 ): ControllerWorkspaceFileReadResult {
   const file = asRecord(payload);
-  if (file?.missing === true) return { status: "missing" };
+  if (file?.missing === true) {
+    return { status: "missing" };
+  }
   const nativeFile = asRecord(file?.file);
-  if (nativeFile?.missing === true) return { status: "missing" };
+  if (nativeFile?.missing === true) {
+    return { status: "missing" };
+  }
   if (nativeFile?.name !== filename || typeof nativeFile.content !== "string") {
     return { status: "unavailable" };
   }
-  if (!validWorkspaceFileContent(nativeFile.content)) return { status: "unavailable" };
+  if (!validWorkspaceFileContent(nativeFile.content)) {
+    return { status: "unavailable" };
+  }
   const size = safeSize(nativeFile.size);
   const response: ControllerWorkspaceFileData = {
     name: filename,
@@ -217,22 +251,32 @@ function normalizeWriteResponse(
   payload: unknown,
 ): ControllerWorkspaceFileWriteResult {
   const file = asRecord(asRecord(payload)?.file);
-  if (file?.name !== filename) return { status: "unavailable" };
+  if (file?.name !== filename) {
+    return { status: "unavailable" };
+  }
   const size = safeSize(file.size);
   return { status: "ok", file: { name: filename, ...(size === undefined ? {} : { size }) } };
 }
 
 function isMissingFileError(error: unknown): boolean {
-  if (!(error instanceof GatewayClientRequestError)) return false;
+  if (!(error instanceof GatewayClientRequestError)) {
+    return false;
+  }
   const code = error.gatewayCode || error.code;
-  if (code === "NOT_FOUND" || code === "ENOENT") return true;
+  if (code === "NOT_FOUND" || code === "ENOENT") {
+    return true;
+  }
   const details = asRecord(error.details);
   return details?.missing === true || details?.fileMissing === true;
 }
 
 function writeOutcomeUnknown(error: unknown, requestSent: boolean): boolean {
-  if (error instanceof GatewayClientRequestError) return false;
-  if (error instanceof GatewayClientRequestTimeoutError) return error.requestSent || requestSent;
+  if (error instanceof GatewayClientRequestError) {
+    return false;
+  }
+  if (error instanceof GatewayClientRequestTimeoutError) {
+    return error.requestSent || requestSent;
+  }
   return requestSent;
 }
 

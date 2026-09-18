@@ -34,7 +34,7 @@ async function verifyCommit(databaseUrl) {
   try {
     // Validate the effective target and transport before any database mutation.
     proxy = await commitAckProxy(databaseUrl);
-    if (!(await state.loadInstallation()))
+    if (!(await state.loadInstallation())) {
       await state.transact((s) =>
         s.installations.createInstallation({
           id: `ins_${randomUUID()}`,
@@ -42,6 +42,7 @@ async function verifyCommit(databaseUrl) {
           createdAt: new Date().toISOString(),
         }),
       );
+    }
     const namespace = {
       id: `ns_${randomUUID()}`,
       name: `Commit ${randomUUID()}`,

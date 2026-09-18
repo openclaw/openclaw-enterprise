@@ -127,7 +127,9 @@ export function assertConfiguredProvider(
   value: string | null,
   label = "Provider",
 ): ProviderDefinition | undefined {
-  if (value === null) return undefined;
+  if (value === null) {
+    return undefined;
+  }
   const id = providerId(value, label);
   const provider = providers.get(id);
   if (provider === undefined) {

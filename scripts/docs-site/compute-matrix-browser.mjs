@@ -14,10 +14,14 @@ function updateMatrix(matrix) {
     const matchesStatus = !status || row.dataset.statuses.split(" ").includes(status);
     const shown = matchesSearch && matchesCategory && matchesStatus;
     row.hidden = !shown;
-    if (shown) visible++;
+    if (shown) {
+      visible++;
+    }
   }
   const count = matrix.querySelector("[data-compute-matrix-count]");
-  if (count) count.textContent = `${visible} ${visible === 1 ? "row" : "rows"}`;
+  if (count) {
+    count.textContent = `${visible} ${visible === 1 ? "row" : "rows"}`;
+  }
 }
 
 for (const matrix of document.querySelectorAll("[data-compute-matrix]")) {

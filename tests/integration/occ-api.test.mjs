@@ -63,7 +63,9 @@ function childEnvironment(port, overrides = {}) {
   };
 
   for (const [key, value] of Object.entries(environment)) {
-    if (value === undefined) delete environment[key];
+    if (value === undefined) {
+      delete environment[key];
+    }
   }
 
   return environment;
@@ -89,12 +91,16 @@ function startChild(port, overrides = {}) {
 }
 
 async function stopChild(child) {
-  if (child.exitCode !== null || child.signalCode !== null) return;
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return;
+  }
 
   const exited = once(child, "exit");
   child.kill("SIGTERM");
   const forced = setTimeout(() => {
-    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGKILL");
+    }
   }, 1_000);
   forced.unref();
 
@@ -405,12 +411,16 @@ async function createInjectedFixture(options = {}) {
   async function installAuthSeed(seed, { auditEvent } = {}) {
     const roleIds = new Set(state.roles.map((role) => role.id));
     for (const binding of seed.bindings) {
-      if (!roleIds.has(binding.roleId)) throw new AuthAccountRoleNotFoundError(binding.roleId);
+      if (!roleIds.has(binding.roleId)) {
+        throw new AuthAccountRoleNotFoundError(binding.roleId);
+      }
     }
     state.identities.push(seed.principal);
     state.roles.push(...seed.roles);
     state.bindings.push(...seed.bindings);
-    if (auditEvent !== undefined) await auditSink.append(auditEvent);
+    if (auditEvent !== undefined) {
+      await auditSink.append(auditEvent);
+    }
   }
 
   function createApp(identity = principal, createApplication = createControllerApp) {
@@ -539,10 +549,15 @@ async function injectedRequest(app, method, pathname, options = {}) {
   };
   const hasBody = Object.hasOwn(options, "body");
   const hasRawBody = Object.hasOwn(options, "rawBody");
-  if (hasBody || hasRawBody) headers["content-type"] ??= "application/json";
+  if (hasBody || hasRawBody) {
+    headers["content-type"] ??= "application/json";
+  }
   let payload;
-  if (hasRawBody) payload = options.rawBody;
-  else if (hasBody) payload = JSON.stringify(options.body);
+  if (hasRawBody) {
+    payload = options.rawBody;
+  } else if (hasBody) {
+    payload = JSON.stringify(options.body);
+  }
   const response = await app.fetch(
     new Request(`http://127.0.0.1${pathname}`, {
       method,
@@ -550,7 +565,9 @@ async function injectedRequest(app, method, pathname, options = {}) {
       ...(payload === undefined ? {} : { body: payload }),
     }),
   );
-  if (response.status === 204) return { status: response.status, headers: response.headers };
+  if (response.status === 204) {
+    return { status: response.status, headers: response.headers };
+  }
   const body = await response.json();
   assert.match(body.meta?.requestId ?? "", identifier("req"));
   return { status: response.status, headers: response.headers, body, data: body.data };
@@ -1622,7 +1639,9 @@ test("OCC Fastify enforces strict schemas, canonical errors, and its real 64 KiB
   }
 
   let deeplyNested = {};
-  for (let depth = 0; depth < 26; depth += 1) deeplyNested = { nested: deeplyNested };
+  for (let depth = 0; depth < 26; depth += 1) {
+    deeplyNested = { nested: deeplyNested };
+  }
   const tooDeep = await controller.request("POST", `/namespaces/${namespace.id}/configurations`, {
     body: { kind: "agent", values: deeplyNested },
   });
@@ -2381,8 +2400,8 @@ test("runtime auth admits SSH revisions without source permissions but retains d
     createHarnessConfiguration("openclaw", "gpt-5.1"),
   );
   // Neither an actor source grant nor an Agent source grant is needed: OCC owns no source.
-  for (const resourceKind of ["secret", "service_account"])
-    for (const action of ["read", "operate"])
+  for (const resourceKind of ["secret", "service_account"]) {
+    for (const action of ["read", "operate"]) {
       controller.fixture.state.restrictions.push({
         id: `deny-runtime-${resourceKind}-${action}`,
         namespaceId: namespace.id,
@@ -2390,6 +2409,8 @@ test("runtime auth admits SSH revisions without source permissions but retains d
         action,
         effect: "deny",
       });
+    }
+  }
   const collection = `/namespaces/${namespace.id}/agents`;
   for (const extra of [
     { source: { kind: "secret" } },

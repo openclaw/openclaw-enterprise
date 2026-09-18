@@ -28,9 +28,12 @@ function supportSlack(values) {
     };
   }
   const config = providerConfig(values, "slack");
-  if (config === undefined) return { supported: true, config: {} };
-  if (!isRecord(config))
+  if (config === undefined) {
+    return { supported: true, config: {} };
+  }
+  if (!isRecord(config)) {
     return { supported: false, reason: "Slack configuration is not an object.", config };
+  }
   if (config.enabled !== undefined && typeof config.enabled !== "boolean") {
     return { supported: false, reason: "Slack enabled state is not boolean.", config };
   }
@@ -140,8 +143,12 @@ function updatedSlack(values, body) {
     channels,
   };
   if (isRecord(existingConfig)) {
-    if (current.dmPolicy !== undefined) config.dmPolicy = current.dmPolicy;
-    if (current.groupPolicy !== undefined) config.groupPolicy = current.groupPolicy;
+    if (current.dmPolicy !== undefined) {
+      config.dmPolicy = current.dmPolicy;
+    }
+    if (current.groupPolicy !== undefined) {
+      config.groupPolicy = current.groupPolicy;
+    }
   } else {
     config.dmPolicy = "allowlist";
     config.groupPolicy = "allowlist";

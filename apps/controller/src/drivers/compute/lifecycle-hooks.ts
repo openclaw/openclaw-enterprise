@@ -71,7 +71,9 @@ export class ComputeLifecycleDispatcher {
 
     for (const owner of this.#drivers) {
       const hook = owner.callbacks.afterNamespacePrepared;
-      if (hook === undefined) continue;
+      if (hook === undefined) {
+        continue;
+      }
 
       try {
         signal.throwIfAborted();
@@ -97,7 +99,9 @@ export class ComputeLifecycleDispatcher {
     try {
       for (const owner of this.#drivers) {
         const hook = owner.callbacks.beforeWorkloadStart;
-        if (hook === undefined) continue;
+        if (hook === undefined) {
+          continue;
+        }
 
         currentOwner = owner;
         signal.throwIfAborted();
@@ -110,7 +114,9 @@ export class ComputeLifecycleDispatcher {
       return immutableCopy(launch);
     } catch {
       await this.#cleanup("beforeWorkloadStop", preparedRevision, completed, signal, true);
-      if (currentOwner === undefined) throw new Error("Compute workload preparation failed");
+      if (currentOwner === undefined) {
+        throw new Error("Compute workload preparation failed");
+      }
       throw hookFailure("beforeWorkloadStart", currentOwner);
     }
   }
@@ -153,7 +159,9 @@ export class ComputeLifecycleDispatcher {
             signal: AbortSignal,
           ) => Promise<void>)
         | undefined;
-      if (hook === undefined) continue;
+      if (hook === undefined) {
+        continue;
+      }
       cleanupSignal.throwIfAborted();
 
       try {

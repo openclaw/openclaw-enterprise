@@ -23,12 +23,24 @@ function selected() {
 }
 
 function otelValue(value) {
-  if (value === undefined) return undefined;
-  if (value === null || typeof value !== "object") return undefined;
-  if (Object.hasOwn(value, "stringValue")) return value.stringValue;
-  if (Object.hasOwn(value, "intValue")) return Number(value.intValue);
-  if (Object.hasOwn(value, "doubleValue")) return Number(value.doubleValue);
-  if (Object.hasOwn(value, "boolValue")) return Boolean(value.boolValue);
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === null || typeof value !== "object") {
+    return undefined;
+  }
+  if (Object.hasOwn(value, "stringValue")) {
+    return value.stringValue;
+  }
+  if (Object.hasOwn(value, "intValue")) {
+    return Number(value.intValue);
+  }
+  if (Object.hasOwn(value, "doubleValue")) {
+    return Number(value.doubleValue);
+  }
+  if (Object.hasOwn(value, "boolValue")) {
+    return Boolean(value.boolValue);
+  }
   return undefined;
 }
 
@@ -122,7 +134,9 @@ export function createOtelLogObservation(context, { description, startedAt = Dat
   let disabledDiagnosticEmitted = false;
 
   function noteDisabled() {
-    if (enabled || disabledDiagnosticEmitted) return;
+    if (enabled || disabledDiagnosticEmitted) {
+      return;
+    }
     disabledDiagnosticEmitted = true;
     context?.diagnostic(
       `${description ?? "OTLP log"} assertions disabled; set OCC_TEST_OTEL_LOGS=1 with OCC_TEST_OTEL_LOGS_JSONL or OCC_TEST_OTEL_LOGS_URL to require real Collector output.`,
@@ -151,17 +165,20 @@ export function createOtelLogObservation(context, { description, startedAt = Dat
       }
       const serialized = JSON.stringify(records);
       for (const secret of forbidden) {
-        if (secret)
+        if (secret) {
           assert.equal(
             serialized.includes(secret),
             false,
             "OTLP logs must not contain secret material",
           );
+        }
       }
       const missing = expected.filter(
         (entry) => !records.some((record) => matches(record, entry, startedAt)),
       );
-      if (missing.length === 0) return records;
+      if (missing.length === 0) {
+        return records;
+      }
       await delay(DEFAULT_INTERVAL_MS);
     }
     const missing = expected.filter(
@@ -187,7 +204,9 @@ function dockerEnvironment(container) {
 }
 
 export function assertDockerRuntimeOtelSettings(observation, containers) {
-  if (!observation.enabled) return;
+  if (!observation.enabled) {
+    return;
+  }
   for (const container of containers) {
     const env = dockerEnvironment(container);
     const labels = container.Config?.Labels ?? {};
@@ -226,7 +245,9 @@ export function assertDockerRuntimeOtelSettings(observation, containers) {
 }
 
 export function assertKubernetesRuntimeOtelSettings(observation, pods) {
-  if (!observation.enabled) return;
+  if (!observation.enabled) {
+    return;
+  }
   for (const pod of pods.filter(Boolean)) {
     const container = pod.spec.containers[0];
     const env = Object.fromEntries((container.env ?? []).map((entry) => [entry.name, entry.value]));

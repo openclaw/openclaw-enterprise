@@ -52,7 +52,9 @@ function assertIpv4(value, description) {
     throw new Error(`${description} must be an IPv4 address.`);
   }
   for (const part of value.split(".")) {
-    if (Number(part) > 255) throw new Error(`${description} must be an IPv4 address.`);
+    if (Number(part) > 255) {
+      throw new Error(`${description} must be an IPv4 address.`);
+    }
   }
 }
 
@@ -80,7 +82,9 @@ function assertKubernetesName(value, description) {
 function assertOwnedDirectory(directory, containerName) {
   assertString(directory, "OTel backend directory");
   const resolved = resolve(directory);
-  if (!isAbsolute(resolved)) throw new Error("OTel backend directory must be absolute.");
+  if (!isAbsolute(resolved)) {
+    throw new Error("OTel backend directory must be absolute.");
+  }
   if (!basename(resolved).startsWith(`${containerName}-`)) {
     throw new Error(`Refusing to clean OTel backend directory outside ownership: ${directory}`);
   }
@@ -88,7 +92,9 @@ function assertOwnedDirectory(directory, containerName) {
 }
 
 function assertCluster(cluster) {
-  if (!cluster) return undefined;
+  if (!cluster) {
+    return undefined;
+  }
   assertKubernetesName(cluster.name, "cluster.name");
   if (!cluster.name.startsWith("openclaw-k8s-")) {
     throw new Error(`Refusing to install logging Collector into unowned cluster: ${cluster.name}`);
@@ -97,8 +103,9 @@ function assertCluster(cluster) {
     assertString(cluster[field], `cluster.${field}`);
   }
   const directory = resolve(cluster.directory);
-  if (!isAbsolute(directory))
+  if (!isAbsolute(directory)) {
     throw new Error("cluster.directory must resolve to an absolute path.");
+  }
   if (!basename(directory).startsWith(`${cluster.name}-`)) {
     throw new Error("cluster.directory must be owned by the selected k3d cluster.");
   }
@@ -120,13 +127,17 @@ function assertInsideDirectory(parent, child, description) {
 
 async function assertExistingDirectory(path, description) {
   const info = await stat(path);
-  if (!info.isDirectory()) throw new Error(`${description} must be a directory: ${path}`);
+  if (!info.isDirectory()) {
+    throw new Error(`${description} must be a directory: ${path}`);
+  }
 }
 
 async function readDefaultCollectorImage(root = repositoryRoot) {
   const compose = await readFile(join(root, "compose.logging.yaml"), "utf8");
   const match = compose.match(/^\s*image:\s*(\S+)\s*$/m);
-  if (!match) throw new Error("compose.logging.yaml must define services.collector.image.");
+  if (!match) {
+    throw new Error("compose.logging.yaml must define services.collector.image.");
+  }
   assertImmutableImageReference(match[1], "compose.logging.yaml collector image");
   return match[1];
 }
@@ -168,7 +179,9 @@ async function reservePort(bindAddress) {
   await new Promise((resolvePromise, reject) => {
     server.close((error) => (error ? reject(error) : resolvePromise()));
   });
-  if (!address || typeof address === "string") throw new Error("Failed to reserve an OTel port.");
+  if (!address || typeof address === "string") {
+    throw new Error("Failed to reserve an OTel port.");
+  }
   return address.port;
 }
 
@@ -187,7 +200,9 @@ async function dockerBridgeGateway(execFile, docker) {
       return gateway;
     }
   } catch (error) {
-    if (error.code === "ENOENT") throw new Error(`Missing required command on PATH: ${docker}`);
+    if (error.code === "ENOENT") {
+      throw new Error(`Missing required command on PATH: ${docker}`);
+    }
   }
   return "172.17.0.1";
 }
@@ -214,7 +229,9 @@ async function dockerAddress({ cluster, env, execFile, docker }) {
 }
 
 function containerUser() {
-  if (typeof process.getuid !== "function" || typeof process.getgid !== "function") return "0:0";
+  if (typeof process.getuid !== "function" || typeof process.getgid !== "function") {
+    return "0:0";
+  }
   return `${process.getuid()}:${process.getgid()}`;
 }
 
@@ -229,7 +246,9 @@ async function waitForBackend(endpoint) {
         body: JSON.stringify({ resourceLogs: [] }),
         signal: AbortSignal.timeout(2_000),
       });
-      if (response.ok) return;
+      if (response.ok) {
+        return;
+      }
       lastError = new Error(`HTTP ${response.status}`);
     } catch (error) {
       lastError = error;
@@ -253,7 +272,9 @@ function dockerRunArgs({
   network,
 }) {
   const args = ["run", "--detach", "--name", containerName];
-  if (network) args.push("--network", network);
+  if (network) {
+    args.push("--network", network);
+  }
   args.push(
     "--user",
     containerUser(),
@@ -328,12 +349,18 @@ async function kubernetesApiEndpoint(cluster, execFile, kubectl, env) {
   const slices = JSON.parse(result.stdout);
   for (const slice of slices.items ?? []) {
     for (const port of slice.ports ?? []) {
-      if (port.protocol && port.protocol !== "TCP") continue;
+      if (port.protocol && port.protocol !== "TCP") {
+        continue;
+      }
       const endpointPort = assertPort(port.port, "Kubernetes API EndpointSlice port");
       for (const endpoint of slice.endpoints ?? []) {
-        if (endpoint.conditions?.ready === false) continue;
+        if (endpoint.conditions?.ready === false) {
+          continue;
+        }
         const ip = endpoint.addresses?.find((address) => /^\d{1,3}(?:\.\d{1,3}){3}$/.test(address));
-        if (!ip) continue;
+        if (!ip) {
+          continue;
+        }
         assertIpv4(ip, "Kubernetes API EndpointSlice address");
         return { cidr: `${ip}/32`, port: endpointPort };
       }
@@ -494,7 +521,9 @@ async function prepareLogging({
   root = repositoryRoot,
   waitForReady = true,
 } = {}) {
-  if (typeof execFile !== "function") throw new Error("prepareLogging requires execFile.");
+  if (typeof execFile !== "function") {
+    throw new Error("prepareLogging requires execFile.");
+  }
   if (typeof registerResource !== "function") {
     throw new Error("prepareLogging requires a registerResource callback.");
   }
@@ -560,12 +589,16 @@ async function prepareLogging({
         network: address.network,
       }),
     );
-    if (waitForReady) await waitForBackend(localEndpoint);
+    if (waitForReady) {
+      await waitForBackend(localEndpoint);
+    }
     if (ownedCluster && !endpointHost) {
       endpointHost = await dockerContainerIp(execFile, docker, containerName, address.network);
       endpointPort = defaultCollectorContainerPort;
     }
-    if (!endpointHost) throw new Error("OTel backend endpoint host could not be resolved.");
+    if (!endpointHost) {
+      throw new Error("OTel backend endpoint host could not be resolved.");
+    }
     const endpoint = `http://${endpointHost}:${endpointPort}/v1/logs`;
     if (ownedCluster) {
       await installKubernetesCollector({
@@ -623,7 +656,9 @@ async function prepareLogging({
 }
 
 async function cleanupLogging(resource, { env = process.env, execFile } = {}) {
-  if (typeof execFile !== "function") throw new Error("cleanupLogging requires execFile.");
+  if (typeof execFile !== "function") {
+    throw new Error("cleanupLogging requires execFile.");
+  }
   if (resource?.kind !== ciOtelBackendResourceKind) {
     throw new Error(`cleanupLogging requires a ${ciOtelBackendResourceKind} resource.`);
   }
@@ -634,7 +669,9 @@ async function cleanupLogging(resource, { env = process.env, execFile } = {}) {
   // cleanup owns all Kubernetes API objects, including Collector Namespace and
   // RBAC, so a dead cluster must not block backend container and JSONL cleanup.
   await execFile(docker, ["rm", "--force", resource.containerName]).catch((error) => {
-    if (/No such container/i.test(error.message)) return;
+    if (/No such container/i.test(error.message)) {
+      return;
+    }
     throw error;
   });
   await rm(directory, { recursive: true, force: true });

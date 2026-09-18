@@ -118,8 +118,9 @@ export async function composePostgresDevelopment(
       issuer: bootstrapPrincipal.issuer,
       subject: bootstrapPrincipal.subject,
     });
-    if (!principal || principal.kind !== "principal" || principal.id !== bootstrapPrincipal.id)
+    if (!principal || principal.kind !== "principal" || principal.id !== bootstrapPrincipal.id) {
       throw new Error("The configured development Principal is absent from persisted IAM policy.");
+    }
     const provisionAuthAccount = async (seed: AuthPrincipalSeed, auditEvent: AuditEvent) => {
       const current = await state.loadNativeIAMState(installationId);
       validateAuthAccountPrincipalSeed(seed, current, installationId);
@@ -220,7 +221,9 @@ export async function composePostgresDevelopment(
     });
     return app;
   } catch (error) {
-    if (!poolClosed) await pool.end();
+    if (!poolClosed) {
+      await pool.end();
+    }
     throw error;
   }
 }

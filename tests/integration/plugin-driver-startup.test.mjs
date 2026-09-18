@@ -10,7 +10,9 @@ async function load(t, plugin) {
   const directory = await mkdtemp(join(tmpdir(), "occ-plugin-startup-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const configuration = createInstallationDriverConfiguration();
-  if (plugin !== undefined) configuration.drivers.plugin = plugin;
+  if (plugin !== undefined) {
+    configuration.drivers.plugin = plugin;
+  }
   const path = join(directory, "installation.yaml");
   await writeFile(path, JSON.stringify(configuration));
   return loadInstallationConfiguration({

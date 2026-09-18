@@ -117,8 +117,9 @@ test(
     : "real SSH host prepares, cuts over, preserves state, retires and deletes an embedded OpenClaw Agent",
   { skip, timeout: 600_000 },
   async () => {
-    for (const name of requiredNames)
+    for (const name of requiredNames) {
       assert.ok(process.env[name]?.trim(), `${name} is required when OCC_TEST_SSH_REAL=1.`);
+    }
     const model = process.env.OCC_TEST_OPENAI_MODEL || "gpt-4.1";
     let providerKey;
     if (modelProof) {
@@ -440,7 +441,9 @@ test(
         assert.deepEqual(await inspect("env-state"), invalidEnv);
       }
     } finally {
-      if (meterStarted) await inspect("stop-meter");
+      if (meterStarted) {
+        await inspect("stop-meter");
+      }
       assert.equal((await driver.deleteNamespace(namespace)).namespaceDeleted, true);
     }
     assert.deepEqual(await inspect("deleted"), {

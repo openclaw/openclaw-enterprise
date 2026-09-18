@@ -104,27 +104,36 @@ function validHttpBaseURL(value: string): boolean {
 }
 
 export function betterAuthIssuer(installationId: string): string {
-  if (!isNonEmptyString(installationId))
+  if (!isNonEmptyString(installationId)) {
     throw new Error("Better Auth issuer requires an Installation.");
+  }
   return `${OCC_BETTER_AUTH_ISSUER_PREFIX}${installationId}:better-auth`;
 }
 
 function authHeaders(headers: AdmissionHeaders | FastifyRequest["headers"] | undefined): Headers {
-  if (headers instanceof Headers) return new Headers(headers);
+  if (headers instanceof Headers) {
+    return new Headers(headers);
+  }
   const prepared = new Headers();
   for (const [name, value] of Object.entries(headers ?? {})) {
-    if (value === undefined) continue;
+    if (value === undefined) {
+      continue;
+    }
     if (typeof value === "string") {
       prepared.set(name, value);
       continue;
     }
-    for (const entry of value) prepared.append(name, entry);
+    for (const entry of value) {
+      prepared.append(name, entry);
+    }
   }
   return prepared;
 }
 
 function setAuthHeaders(reply: FastifyReply, headers?: Headers | null): void {
-  if (!headers) return;
+  if (!headers) {
+    return;
+  }
   const cookies: string[] = [];
   headers.forEach((value, name) => {
     if (name.toLowerCase() === "set-cookie") {
@@ -133,22 +142,34 @@ function setAuthHeaders(reply: FastifyReply, headers?: Headers | null): void {
     }
     reply.header(name, value);
   });
-  if (cookies.length > 0) reply.header("set-cookie", cookies);
+  if (cookies.length > 0) {
+    reply.header("set-cookie", cookies);
+  }
 }
 
 function authFailure(error: unknown): { readonly status: number; readonly code: string } {
-  if (error instanceof AdmissionFailure) return { status: error.status, code: error.code };
+  if (error instanceof AdmissionFailure) {
+    return { status: error.status, code: error.code };
+  }
   if (error instanceof APIError || (typeof error === "object" && error !== null)) {
     const candidate = error as Record<string, unknown>;
     const status =
       error instanceof APIError ? error.statusCode : (candidate.statusCode ?? candidate.status);
-    if (typeof status === "number" && Number.isSafeInteger(status) && status >= 400 && status < 500)
+    if (
+      typeof status === "number" &&
+      Number.isSafeInteger(status) &&
+      status >= 400 &&
+      status < 500
+    ) {
       return {
         status,
         code:
           status === 401 ? "UNAUTHENTICATED" : status === 409 ? "RESOURCE_CONFLICT" : "FORBIDDEN",
       };
-    if (error instanceof APIError) return { status: 401, code: "UNAUTHENTICATED" };
+    }
+    if (error instanceof APIError) {
+      return { status: 401, code: "UNAUTHENTICATED" };
+    }
   }
   return { status: 503, code: "DEPENDENCY_UNAVAILABLE" };
 }
@@ -161,8 +182,9 @@ function authBody(request: FastifyRequest): Record<string, unknown> {
 
 function ensureEmailPassword(input: Record<string, unknown>): { email: string; password: string } {
   const { email, password } = input;
-  if (!isNonEmptyString(email) || !isNonEmptyString(password))
+  if (!isNonEmptyString(email) || !isNonEmptyString(password)) {
     throw new AdmissionFailure(401, "UNAUTHENTICATED", "Email and password are required.");
+  }
   return { email, password };
 }
 
@@ -191,11 +213,17 @@ function safeSessionResponse(response: unknown): {
   readonly authenticated: true;
   readonly user: { readonly id: string; readonly email: string; readonly name: string };
 } | null {
-  if (typeof response !== "object" || response === null) return null;
+  if (typeof response !== "object" || response === null) {
+    return null;
+  }
   const { session, user } = response as { readonly session?: unknown; readonly user?: unknown };
-  if (!session || typeof user !== "object" || user === null) return null;
+  if (!session || typeof user !== "object" || user === null) {
+    return null;
+  }
   const { id, email, name } = user as Record<string, unknown>;
-  if (!isNonEmptyString(id) || !isNonEmptyString(email) || !isNonEmptyString(name)) return null;
+  if (!isNonEmptyString(id) || !isNonEmptyString(email) || !isNonEmptyString(name)) {
+    return null;
+  }
   return {
     authenticated: true,
     user: { id, email, name },
@@ -290,11 +318,13 @@ export class ControllerAdmissionVerifier implements AdmissionVerifier {
       const result = await this.#auth.api.verifyApiKey({
         body: { key: headers.get(OCC_SERVICE_KEY_HEADER)!, configId: SERVICE_KEY_CONFIG },
       });
-      if (!result.valid || !result.key)
+      if (!result.valid || !result.key) {
         throw new AdmissionFailure(401, "UNAUTHENTICATED", "A valid service API key is required.");
+      }
       const key = serviceKeyDetails(result.key, this.#installationId);
-      if (!key)
+      if (!key) {
         throw new AdmissionFailure(401, "UNAUTHENTICATED", "A valid service API key is required.");
+      }
       return {
         externalIdentity: {
           issuer: `${this.#issuer}:service-key`,
@@ -346,8 +376,9 @@ function serviceKeyDetails(
     (metadata.namespaceId !== undefined && !isNonEmptyString(metadata.namespaceId)) ||
     !isNonEmptyString(key.name) ||
     !key.expiresAt
-  )
+  ) {
     return undefined;
+  }
   return {
     id: key.id,
     servicePrincipalId: key.referenceId,
@@ -358,11 +389,15 @@ function serviceKeyDetails(
 }
 
 export function createControllerAuth(options: ControllerAuthOptions): ControllerAuth {
-  if (options.mode !== "development" && options.mode !== "production")
+  if (options.mode !== "development" && options.mode !== "production") {
     throw new Error("Controller auth requires an explicit runtime mode.");
-  if (!isNonEmptyString(options.secret) || options.secret.length < 32)
+  }
+  if (!isNonEmptyString(options.secret) || options.secret.length < 32) {
     throw new Error("OCC_AUTH_SECRET must contain at least 256 bits of secret material.");
-  if (!validHttpBaseURL(options.baseURL)) throw new Error("OCC_AUTH_BASE_URL must be an HTTP URL.");
+  }
+  if (!validHttpBaseURL(options.baseURL)) {
+    throw new Error("OCC_AUTH_BASE_URL must be an HTTP URL.");
+  }
 
   const expectedBrowserOrigin = new URL(options.baseURL).origin;
   const issuer = betterAuthIssuer(options.installationId);
@@ -417,24 +452,28 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
   async function createAccount(input: ProvisionAuthAccountInput): Promise<AuthenticatedAccount> {
     const email = input.email.trim().toLowerCase();
     const password = input.password;
-    if (!isNonEmptyString(email) || !isNonEmptyString(password))
+    if (!isNonEmptyString(email) || !isNonEmptyString(password)) {
       throw new Error("Account creation requires email and password.");
-    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email))
+    }
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
       throw APIError.from("BAD_REQUEST", {
         code: "INVALID_EMAIL",
         message: "Email must be a valid address.",
       });
+    }
     const context = await auth.$context;
-    if (password.length < context.password.config.minPasswordLength)
+    if (password.length < context.password.config.minPasswordLength) {
       throw APIError.from("BAD_REQUEST", {
         code: "PASSWORD_TOO_SHORT",
         message: "Password is too short.",
       });
-    if (password.length > context.password.config.maxPasswordLength)
+    }
+    if (password.length > context.password.config.maxPasswordLength) {
       throw APIError.from("BAD_REQUEST", {
         code: "PASSWORD_TOO_LONG",
         message: "Password is too long.",
       });
+    }
     const existing = await context.internalAdapter.findUserByEmail(email);
     if (existing?.user) {
       await context.password.hash(password);

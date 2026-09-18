@@ -66,17 +66,26 @@ export function providerConfig(values, provider) {
 }
 
 function statusOf(config) {
-  if (config === undefined) return { label: "Not configured", enabled: false };
-  if (isRecord(config) && config.enabled === false) return { label: "Disabled", enabled: false };
+  if (config === undefined) {
+    return { label: "Not configured", enabled: false };
+  }
+  if (isRecord(config) && config.enabled === false) {
+    return { label: "Disabled", enabled: false };
+  }
   return { label: "Configured (enabled)", enabled: true };
 }
 
 function pluginBlockReason(values, provider) {
   const plugins = values?.plugins;
-  if (plugins === undefined) return null;
-  if (!isRecord(plugins)) return "Plugin configuration is not an object.";
-  if (plugins.enabled === false)
+  if (plugins === undefined) {
+    return null;
+  }
+  if (!isRecord(plugins)) {
+    return "Plugin configuration is not an object.";
+  }
+  if (plugins.enabled === false) {
     return "Native plugins are disabled. Enable them through the Configuration API before configuring channels.";
+  }
   for (const key of ["deny"]) {
     const list = plugins[key];
     if (Array.isArray(list) && list.includes(provider.plugin)) {
@@ -110,13 +119,17 @@ export function withProvider(values, provider, config) {
 
 function withPlugin(values, provider) {
   const next = clone(values) ?? {};
-  if (providerConfig(next, provider.id)?.enabled === false) return next;
+  if (providerConfig(next, provider.id)?.enabled === false) {
+    return next;
+  }
   const plugin = provider.plugin;
   const plugins = isRecord(next.plugins) ? { ...next.plugins } : {};
   const entries = isRecord(plugins.entries) ? { ...plugins.entries } : {};
   const entry = isRecord(entries[plugin]) ? { ...entries[plugin] } : {};
   // An omitted allowlist must stay omitted; introducing one can exclude another Harness plugin.
-  if (Array.isArray(plugins.allow)) plugins.allow = [...new Set([...plugins.allow, plugin])];
+  if (Array.isArray(plugins.allow)) {
+    plugins.allow = [...new Set([...plugins.allow, plugin])];
+  }
   entries[plugin] = { ...entry, enabled: true };
   plugins.entries = entries;
   next.plugins = plugins;
@@ -177,7 +190,7 @@ function renderCard(section, state, provider) {
       ),
     ),
   );
-  if (state.readOnly)
+  if (state.readOnly) {
     card.append(
       element(
         "p",
@@ -185,7 +198,7 @@ function renderCard(section, state, provider) {
         state.copy.readOnlyCardMessage ?? "Read-only AgentRevision values cannot be edited.",
       ),
     );
-  else if (disabledByMode)
+  } else if (disabledByMode) {
     card.append(
       element(
         "p",
@@ -193,31 +206,41 @@ function renderCard(section, state, provider) {
         "Channels require Dedicated execution. Embedded Agents can only keep channels disabled.",
       ),
     );
-  else if (blockReason) card.append(element("p", { className: "error" }, blockReason));
-  else if (!support.supported)
+  } else if (blockReason) {
+    card.append(element("p", { className: "error" }, blockReason));
+  } else if (!support.supported) {
     card.append(
       element("p", { className: "error" }, support.reason),
       nativeDocument(`${provider.name} native configuration`, support.config),
     );
+  }
   return card;
 }
 
 async function disableProvider(state, provider) {
   state.error.replaceChildren();
   const current = providerConfig(state.values, provider.id);
-  if (!isRecord(current)) return;
+  if (!isRecord(current)) {
+    return;
+  }
   const config = { ...current, enabled: false };
   await save(state, withProvider(state.values, provider.id, config));
 }
 
 async function save(state, values, dialog, targetError) {
-  if (state.pending || state.outcomeUnknown) return;
+  if (state.pending || state.outcomeUnknown) {
+    return;
+  }
   state.pending = true;
   const controlsRoot = dialog ?? state.section;
   const errorNode = targetError ?? state.error;
   errorNode.replaceChildren();
-  if (!dialog) state.error.replaceChildren();
-  for (const node of controlsRoot.querySelectorAll("button, input, select")) node.disabled = true;
+  if (!dialog) {
+    state.error.replaceChildren();
+  }
+  for (const node of controlsRoot.querySelectorAll("button, input, select")) {
+    node.disabled = true;
+  }
   let succeeded = false;
   try {
     await state.onSave(values);
@@ -235,10 +258,12 @@ async function save(state, values, dialog, targetError) {
     }
   } finally {
     state.pending = false;
-    if (succeeded || !dialog || state.outcomeUnknown) state.rerender();
-    else {
-      for (const node of controlsRoot.querySelectorAll("button, input, select"))
+    if (succeeded || !dialog || state.outcomeUnknown) {
+      state.rerender();
+    } else {
+      for (const node of controlsRoot.querySelectorAll("button, input, select")) {
         node.disabled = false;
+      }
     }
   }
 }
@@ -248,9 +273,13 @@ export function input(id, value, attrs = {}) {
 }
 
 function openDrawer(section, state, provider) {
-  if (state.pending || state.outcomeUnknown) return;
+  if (state.pending || state.outcomeUnknown) {
+    return;
+  }
   const support = provider.support(state.values);
-  if (!support.supported || pluginBlockReason(state.values, provider)) return;
+  if (!support.supported || pluginBlockReason(state.values, provider)) {
+    return;
+  }
   section.querySelector("dialog")?.remove();
   const dialog = element("dialog", {
     className: "channel-dialog",
@@ -307,7 +336,9 @@ function openDrawer(section, state, provider) {
   );
   body.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (state.pending) return;
+    if (state.pending) {
+      return;
+    }
     if (
       state.executionMode === "embedded" &&
       body.querySelector(`#${provider.id}-enabled`).checked
@@ -332,7 +363,9 @@ function openDrawer(section, state, provider) {
     void save(state, withPlugin(nextValues, provider), dialog, feedback);
   });
   dialog.addEventListener("cancel", (event) => {
-    if (state.pending) event.preventDefault();
+    if (state.pending) {
+      event.preventDefault();
+    }
   });
   dialog.append(body);
   section.append(dialog);

@@ -160,7 +160,9 @@ class RequestFailure extends Error {
     this.name = "RequestFailure";
     this.status = status;
     this.code = code;
-    if (details !== undefined) this.details = details;
+    if (details !== undefined) {
+      this.details = details;
+    }
   }
 }
 
@@ -193,12 +195,18 @@ function failure(
 
 function ipv4(value: string): number | undefined {
   const parts = value.split(".");
-  if (parts.length !== 4) return undefined;
+  if (parts.length !== 4) {
+    return undefined;
+  }
   let result = 0;
   for (const part of parts) {
-    if (!/^\d{1,3}$/.test(part)) return undefined;
+    if (!/^\d{1,3}$/.test(part)) {
+      return undefined;
+    }
     const octet = Number(part);
-    if (octet > 255) return undefined;
+    if (octet > 255) {
+      return undefined;
+    }
     result = (result << 8) | octet;
   }
   return result >>> 0;
@@ -206,16 +214,21 @@ function ipv4(value: string): number | undefined {
 
 function cidrContains(cidr: string, address: string): boolean {
   const [network, prefixText] = cidr.split("/");
-  if (network === undefined || prefixText === undefined || cidr.split("/").length !== 2)
+  if (network === undefined || prefixText === undefined || cidr.split("/").length !== 2) {
     throw new Error("Development trusted CIDRs must use IPv4 CIDR notation.");
+  }
   const prefix = Number(prefixText);
-  if (!/^\d+$/.test(prefixText) || !Number.isInteger(prefix) || prefix < 0 || prefix > 32)
+  if (!/^\d+$/.test(prefixText) || !Number.isInteger(prefix) || prefix < 0 || prefix > 32) {
     throw new Error("Development trusted CIDRs must use IPv4 CIDR notation.");
+  }
   const networkValue = ipv4(network);
   const addressValue = ipv4(address);
-  if (networkValue === undefined)
+  if (networkValue === undefined) {
     throw new Error("Development trusted CIDRs must use IPv4 CIDR notation.");
-  if (addressValue === undefined) return false;
+  }
+  if (addressValue === undefined) {
+    return false;
+  }
   const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
   return (networkValue & mask) === (addressValue & mask);
 }
@@ -224,9 +237,13 @@ function trustedDevelopmentAddress(
   development: DevelopmentAdmission,
   remoteAddress: string,
 ): boolean {
-  if (LOOPBACK_ADDRESSES.has(remoteAddress)) return true;
+  if (LOOPBACK_ADDRESSES.has(remoteAddress)) {
+    return true;
+  }
   const cidrs = development.trustedCidrs ?? [];
-  if (cidrs.length === 0) return false;
+  if (cidrs.length === 0) {
+    return false;
+  }
   const normalized = remoteAddress.startsWith("::ffff:")
     ? remoteAddress.slice("::ffff:".length)
     : remoteAddress;
@@ -240,9 +257,13 @@ function validateTrustedDevelopmentCidrs(development: DevelopmentAdmission): voi
 }
 
 function validAuthorizationEvidence(value: unknown): value is AuthorizationEvidence {
-  if (typeof value !== "object" || value === null) return false;
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
   const candidate = value as Partial<AuthorizationEvidence>;
-  if (candidate.identityId !== undefined && !isNonEmptyString(candidate.identityId)) return false;
+  if (candidate.identityId !== undefined && !isNonEmptyString(candidate.identityId)) {
+    return false;
+  }
   return [
     candidate.groupIds,
     candidate.bindingIds,
@@ -256,21 +277,26 @@ function jsonPointer(segment: string): string {
 }
 
 function validateConfiguration(value: unknown, depth = 0, path = ""): void {
-  if (depth > 24)
+  if (depth > 24) {
     throw failure(400, "INVALID_REQUEST", "The supplied configuration is invalid.", [
       { path, code: "TOO_DEEP" },
     ]);
-  if (value === null || typeof value !== "object") return;
+  }
+  if (value === null || typeof value !== "object") {
+    return;
+  }
   if (Array.isArray(value)) {
-    for (const [index, entry] of value.entries())
+    for (const [index, entry] of value.entries()) {
       validateConfiguration(entry, depth + 1, `${path}/${index}`);
+    }
     return;
   }
   for (const [key, entry] of Object.entries(value)) {
-    if (key === "__proto__" || key === "constructor" || key === "prototype")
+    if (key === "__proto__" || key === "constructor" || key === "prototype") {
       throw failure(400, "INVALID_REQUEST", "The supplied configuration is invalid.", [
         { path: `${path}/${jsonPointer(key)}`, code: "INVALID_VALUE" },
       ]);
+    }
     validateConfiguration(entry, depth + 1, `${path}/${jsonPointer(key)}`);
   }
 }
@@ -288,24 +314,39 @@ function operationTarget(
   const secretId = typeof params.secretId === "string" ? params.secretId : undefined;
   const agentId = typeof params.agentId === "string" ? params.agentId : undefined;
   const revisionId = typeof params.revisionId === "string" ? params.revisionId : undefined;
-  if (operation.operationId === "createNamespace") return { kind: "namespace", id: installationId };
-  if (operation.operationId === "createConfiguration" && namespaceId)
+  if (operation.operationId === "createNamespace") {
+    return { kind: "namespace", id: installationId };
+  }
+  if (operation.operationId === "createConfiguration" && namespaceId) {
     return { kind: "configuration", id: namespaceId, namespaceId };
-  if (configurationId && namespaceId)
+  }
+  if (configurationId && namespaceId) {
     return { kind: "configuration", id: configurationId, namespaceId };
-  if (operation.operationId === "createServiceAccount" && namespaceId)
+  }
+  if (operation.operationId === "createServiceAccount" && namespaceId) {
     return { kind: "service_account", id: namespaceId, namespaceId };
-  if (serviceAccountId && namespaceId)
+  }
+  if (serviceAccountId && namespaceId) {
     return { kind: "service_account", id: serviceAccountId, namespaceId };
-  if (operation.operationId === "createSecret" && namespaceId)
+  }
+  if (operation.operationId === "createSecret" && namespaceId) {
     return { kind: "secret", id: namespaceId, namespaceId };
-  if (secretId && namespaceId) return { kind: "secret", id: secretId, namespaceId };
-  if (operation.operationId === "createAgent" && namespaceId)
+  }
+  if (secretId && namespaceId) {
+    return { kind: "secret", id: secretId, namespaceId };
+  }
+  if (operation.operationId === "createAgent" && namespaceId) {
     return { kind: "agent", id: namespaceId, namespaceId };
-  if (operation.operationId === "getAgentRevision" && namespaceId && revisionId)
+  }
+  if (operation.operationId === "getAgentRevision" && namespaceId && revisionId) {
     return { kind: "agent_revision", id: revisionId, namespaceId };
-  if (agentId && namespaceId) return { kind: "agent", id: agentId, namespaceId };
-  if (namespaceId) return { kind: "namespace", id: namespaceId, namespaceId };
+  }
+  if (agentId && namespaceId) {
+    return { kind: "agent", id: agentId, namespaceId };
+  }
+  if (namespaceId) {
+    return { kind: "namespace", id: namespaceId, namespaceId };
+  }
   return { kind: "installation", id: installationId };
 }
 
@@ -421,15 +462,19 @@ function permissionDescription(
   const description = permissions
     .map(({ action, resourceKind, scope, condition }) => {
       const name = names[resourceKind];
-      if (condition === "associated_service_account")
+      if (condition === "associated_service_account") {
         return `Requires ${action} permission on each currently associated or newly associated ${name} when present.`;
-      if (condition === "existing_namespace")
+      }
+      if (condition === "existing_namespace") {
         return `Requires ${action} permission on the ${name} when selecting an existing Kubernetes namespace.`;
+      }
       if (condition === "bound_secret") {
-        if (operation?.operationId === "createConfiguration")
+        if (operation?.operationId === "createConfiguration") {
           return `Requires ${action} permission on each ${name} supplied in request body Secret bindings.`;
-        if (operation?.operationId === "updateConfiguration")
+        }
+        if (operation?.operationId === "updateConfiguration") {
           return `Requires ${action} permission on each ${name} bound by the resulting Configuration.`;
+        }
         return `Requires ${action} permission on each bound ${name} when Secret bindings are present or selected.`;
       }
       switch (scope) {
@@ -544,71 +589,93 @@ function validationCode(keyword: string): ErrorDetail["code"] {
 }
 
 function validationDetails(error: FastifyError): readonly ErrorDetail[] {
-  if (!Array.isArray(error.validation)) return [];
+  if (!Array.isArray(error.validation)) {
+    return [];
+  }
   return error.validation.slice(0, 32).map((detail): ErrorDetail => {
     const parameters = detail.params as Record<string, unknown>;
     let path = typeof detail.instancePath === "string" ? detail.instancePath : "";
-    if (detail.keyword === "required" && typeof parameters.missingProperty === "string")
+    if (detail.keyword === "required" && typeof parameters.missingProperty === "string") {
       path += `/${jsonPointer(parameters.missingProperty)}`;
+    }
     if (
       detail.keyword === "additionalProperties" &&
       typeof parameters.additionalProperty === "string"
-    )
+    ) {
       path += `/${jsonPointer(parameters.additionalProperty)}`;
+    }
     return { path, code: validationCode(detail.keyword) };
   });
 }
 
 function requestFailure(error: unknown): RequestFailure {
-  if (error instanceof RequestFailure) return error;
-  if (error instanceof ConfigurationValidationError)
+  if (error instanceof RequestFailure) {
+    return error;
+  }
+  if (error instanceof ConfigurationValidationError) {
     return failure(400, "INVALID_REQUEST", "The supplied configuration is invalid.");
-  if (error instanceof ConfigurationOwnershipError)
+  }
+  if (error instanceof ConfigurationOwnershipError) {
     return failure(503, "DEPENDENCY_UNAVAILABLE", "A required platform dependency is unavailable.");
-  if (error instanceof NamespaceNotReadyError)
+  }
+  if (error instanceof NamespaceNotReadyError) {
     return failure(
       409,
       "NAMESPACE_NOT_READY",
       "The requested Namespace is not ready for deployment.",
     );
-  if (error instanceof NamespaceNotEmptyError)
+  }
+  if (error instanceof NamespaceNotEmptyError) {
     return failure(409, "NAMESPACE_NOT_EMPTY", "The requested Namespace is not empty.");
-  if (error instanceof NotImplementedError) return failure(501, "NOT_IMPLEMENTED", error.message);
-  if (error instanceof DependencyUnavailableError)
+  }
+  if (error instanceof NotImplementedError) {
+    return failure(501, "NOT_IMPLEMENTED", error.message);
+  }
+  if (error instanceof DependencyUnavailableError) {
     return failure(503, "DEPENDENCY_UNAVAILABLE", "A required platform dependency is unavailable.");
-  if (error instanceof ResourceConflictError)
+  }
+  if (error instanceof ResourceConflictError) {
     return failure(409, "RESOURCE_CONFLICT", "The requested platform resource already exists.");
-  if (error instanceof ScopeViolationError)
+  }
+  if (error instanceof ScopeViolationError) {
     return failure(404, "NOT_FOUND", "The requested platform resource was not found.");
-  if (error instanceof AuthorizationDeniedError)
+  }
+  if (error instanceof AuthorizationDeniedError) {
     return failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
+  }
   if (error instanceof Error) {
     const candidate = error as FastifyError;
     if (error.name === "APIError") {
       const statusCode = (error as { readonly statusCode?: unknown }).statusCode;
       const status = typeof statusCode === "number" ? statusCode : 500;
-      if (status === 409)
+      if (status === 409) {
         return failure(409, "RESOURCE_CONFLICT", "The requested platform resource already exists.");
-      if (status === 400)
+      }
+      if (status === 400) {
         return failure(
           400,
           "INVALID_REQUEST",
           "The request does not match the operation contract.",
         );
-      if (status === 401)
+      }
+      if (status === 401) {
         return failure(401, "UNAUTHENTICATED", "The caller did not provide valid credentials.");
-      if (status === 403)
+      }
+      if (status === 403) {
         return failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
+      }
       return failure(
         503,
         "DEPENDENCY_UNAVAILABLE",
         "A required platform dependency is unavailable.",
       );
     }
-    if (candidate.code === "FST_ERR_CTP_BODY_TOO_LARGE")
+    if (candidate.code === "FST_ERR_CTP_BODY_TOO_LARGE") {
       return failure(413, "PAYLOAD_TOO_LARGE", "The request body exceeds the permitted size.");
-    if (candidate.code === "FST_ERR_CTP_INVALID_MEDIA_TYPE")
+    }
+    if (candidate.code === "FST_ERR_CTP_INVALID_MEDIA_TYPE") {
       return failure(415, "UNSUPPORTED_MEDIA_TYPE", "Requests must use application/json.");
+    }
     if (
       candidate.code === "FST_ERR_CTP_EMPTY_JSON_BODY" ||
       candidate.code === "FST_ERR_CTP_INVALID_CONTENT_LENGTH" ||
@@ -646,16 +713,19 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     options.controller &&
     development.installationId !== undefined &&
     development.installationId !== options.controller.installation.id
-  )
+  ) {
     throw new Error(
       "The configured Installation does not match the controller-owned Installation.",
     );
+  }
   const bodyLimit = options.maxBodyBytes ?? DEFAULT_BODY_LIMIT;
-  if (!Number.isSafeInteger(bodyLimit) || bodyLimit < 1)
+  if (!Number.isSafeInteger(bodyLimit) || bodyLimit < 1) {
     throw new Error("The controller request-body limit must be a positive integer.");
+  }
   const workspaceFileRequestTimeoutMs = options.workspaceFileRequestTimeoutMs ?? 30_000;
-  if (!Number.isSafeInteger(workspaceFileRequestTimeoutMs) || workspaceFileRequestTimeoutMs < 1)
+  if (!Number.isSafeInteger(workspaceFileRequestTimeoutMs) || workspaceFileRequestTimeoutMs < 1) {
     throw new Error("The workspace file request timeout must be a positive integer.");
+  }
   let publicOrigin: string | undefined;
   if (options.publicOrigin !== undefined) {
     try {
@@ -667,8 +737,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         parsed.pathname !== "/" ||
         parsed.search ||
         parsed.hash
-      )
+      ) {
         throw new Error("Invalid public origin.");
+      }
     } catch {
       throw new Error("The controller public origin must be an absolute origin URL.");
     }
@@ -848,7 +919,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     try {
       const selected =
         controller === undefined ? options.iamDriver : controller.selectedDriver("iam");
-      if (selected.capability !== "iam") throw new Error("Invalid authorization authority.");
+      if (selected.capability !== "iam") {
+        throw new Error("Invalid authorization authority.");
+      }
       return selected;
     } catch {
       throw dependencyUnavailable();
@@ -861,17 +934,25 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
   function requireWorkspaceFileCsrf(request: FastifyRequest, requireOrigin: boolean): void {
     const admitted = admissions.get(request);
-    if (admitted?.method === "api_key") return;
+    if (admitted?.method === "api_key") {
+      return;
+    }
     const fetchSite = request.headers["sec-fetch-site"];
     const fetchSites =
       fetchSite === undefined ? [] : Array.isArray(fetchSite) ? fetchSite : [fetchSite];
-    if (fetchSites.some((site) => site.toLowerCase() === "cross-site"))
+    if (fetchSites.some((site) => site.toLowerCase() === "cross-site")) {
       throw failure(403, "FORBIDDEN", "The request did not satisfy the configured CSRF boundary.");
-    if (!requireOrigin) return;
-    if (publicOrigin === undefined) throw dependencyUnavailable();
+    }
+    if (!requireOrigin) {
+      return;
+    }
+    if (publicOrigin === undefined) {
+      throw dependencyUnavailable();
+    }
     const origin = request.headers.origin;
-    if (typeof origin !== "string" || origin !== publicOrigin)
+    if (typeof origin !== "string" || origin !== publicOrigin) {
       throw failure(403, "FORBIDDEN", "The request did not satisfy the configured CSRF boundary.");
+    }
   }
 
   function workspaceFileRequestSignal(
@@ -881,7 +962,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   ): { readonly signal: AbortSignal; readonly dispose: () => void } {
     const controller = new AbortController();
     const abort = (message: string) => {
-      if (!controller.signal.aborted) controller.abort(new Error(message));
+      if (!controller.signal.aborted) {
+        controller.abort(new Error(message));
+      }
     };
     const timeout = setTimeout(
       () => abort(`The workspace file request exceeded its ${timeoutMs}ms deadline.`),
@@ -891,11 +974,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     const onRequestAborted = () =>
       abort("The HTTP client disconnected before the workspace file request completed.");
     const onReplyClosed = () => {
-      if (!reply.raw.writableEnded)
+      if (!reply.raw.writableEnded) {
         abort("The HTTP client disconnected before the workspace file request completed.");
+      }
     };
-    if (request.raw.aborted)
+    if (request.raw.aborted) {
       abort("The HTTP client disconnected before the workspace file request.");
+    }
     request.raw.once("aborted", onRequestAborted);
     reply.raw.once("close", onReplyClosed);
     return {
@@ -926,7 +1011,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     try {
       return await Promise.race([operation, aborted]);
     } finally {
-      if (abort !== undefined) signal.removeEventListener("abort", abort);
+      if (abort !== undefined) {
+        signal.removeEventListener("abort", abort);
+      }
     }
   }
 
@@ -950,20 +1037,23 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
   function validateWorkspaceFileBody(body: UpdateWorkspaceFileBody): void {
     const details: ErrorDetail[] = [];
-    if (Buffer.byteLength(body.content, "utf8") > WORKSPACE_FILE_CONTENT_LIMIT)
+    if (Buffer.byteLength(body.content, "utf8") > WORKSPACE_FILE_CONTENT_LIMIT) {
       details.push({ path: "/content", code: "TOO_LONG" });
+    }
     const isWellFormed = (
       String.prototype as unknown as { isWellFormed: (this: string) => boolean }
     ).isWellFormed;
-    if (body.content.includes("\u0000") || !isWellFormed.call(body.content))
+    if (body.content.includes("\u0000") || !isWellFormed.call(body.content)) {
       details.push({ path: "/content", code: "INVALID_VALUE" });
-    if (details.length > 0)
+    }
+    if (details.length > 0) {
       throw failure(
         400,
         "INVALID_REQUEST",
         "The request does not match the operation contract.",
         details,
       );
+    }
   }
 
   async function requireInstallationAdmin(
@@ -989,8 +1079,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       typeof decision.allowed !== "boolean" ||
       decision.driverId !== selected.id ||
       !validAuthorizationEvidence(decision.evidence)
-    )
+    ) {
       throw dependencyUnavailable();
+    }
     if (!decision.allowed) {
       await denial(operation, request, "authorization_denial", context, decision.evidence);
       throw failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
@@ -1059,8 +1150,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     requestStartedAt.set(request, process.hrtime.bigint());
     responseHeaders(reply, request.id);
     const contentLength = request.headers["content-length"];
-    if (typeof contentLength === "string" && Number(contentLength) > bodyLimit)
+    if (typeof contentLength === "string" && Number(contentLength) > bodyLimit) {
       throw failure(413, "PAYLOAD_TOO_LARGE", "The request body exceeds the permitted size.");
+    }
   });
 
   app.addHook("onResponse", async (request, reply) => {
@@ -1082,17 +1174,20 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       request.headers[OCC_SERVICE_KEY_HEADER] !== undefined &&
       (operation === createAuthAccountOperation ||
         operation.operationId === "bootstrapInstallation")
-    )
+    ) {
       throw failure(401, "UNAUTHENTICATED", "A human controller session is required.");
+    }
     const params = request.params as Record<string, unknown>;
-    if (Object.keys(request.query as Record<string, unknown>).length > 0)
+    if (Object.keys(request.query as Record<string, unknown>).length > 0) {
       throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
+    }
     for (const [parameter, pattern] of Object.entries(RESOURCE_ID)) {
       if (
         params[parameter] !== undefined &&
         (typeof params[parameter] !== "string" || !pattern.test(params[parameter] as string))
-      )
+      ) {
         throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
+      }
     }
 
     const host = request.headers.host;
@@ -1183,12 +1278,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
   async function resolveIdentity(request: FastifyRequest, operation: OccApiRoute): Promise<void> {
     const admitted = admissions.get(request);
-    if (!admitted)
+    if (!admitted) {
       throw failure(
         503,
         "DEPENDENCY_UNAVAILABLE",
         "A required platform dependency is unavailable.",
       );
+    }
     let selected: IAMDriver;
     let identity;
     try {
@@ -1253,19 +1349,23 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     operation: OccApiRoute,
   ): Promise<void> {
     const context = contexts.get(request);
-    if (!context)
+    if (!context) {
       throw failure(
         503,
         "DEPENDENCY_UNAVAILABLE",
         "A required platform dependency is unavailable.",
       );
+    }
     const params = request.params as Record<string, string>;
     const body = request.body as Record<string, unknown> | undefined;
-    if (body !== undefined) validateConfiguration(body);
+    if (body !== undefined) {
+      validateConfiguration(body);
+    }
 
     if (operation.operationId === "bootstrapInstallation") {
-      if (controller || bootstrapping)
+      if (controller || bootstrapping) {
         throw failure(409, "INSTALLATION_EXISTS", "The deployment already owns an Installation.");
+      }
       bootstrapping = true;
       try {
         const { selected, target, decision } = await requireInstallationAdmin(
@@ -1273,12 +1373,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           operation,
           context,
         );
-        if (!options.createController)
+        if (!options.createController) {
           throw failure(
             503,
             "DEPENDENCY_UNAVAILABLE",
             "A required platform dependency is unavailable.",
           );
+        }
         const installation: Installation = {
           id: installationId,
           name: body?.name as string,
@@ -1319,8 +1420,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       }
     }
 
-    if (!controller)
+    if (!controller) {
       throw failure(404, "NOT_FOUND", "The requested platform resource was not found.");
+    }
 
     if (operation.operationId === "getInstallation") {
       reply.send({
@@ -1333,7 +1435,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (operation.operationId === "listProviders") {
       await requireInstallationAdmin(request, operation, context);
       const providers = options.providerSummaries;
-      if (providers === undefined) throw dependencyUnavailable();
+      if (providers === undefined) {
+        throw dependencyUnavailable();
+      }
       reply.send({
         data: providers.map((provider) => ({ id: provider.id, type: provider.type })),
         meta: { requestId: request.id },
@@ -1370,8 +1474,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }
 
     const namespaceId = params.namespaceId;
-    if (!namespaceId)
+    if (!namespaceId) {
       throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
+    }
     if (operation.operationId === "getNamespace") {
       reply.send({
         data: await controller.getNamespace(context.actorId, namespaceId),
@@ -1696,8 +1801,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }
 
     const agentId = params.agentId;
-    if (!agentId)
+    if (!agentId) {
       throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
+    }
     if (operation.operationId === "getAgent") {
       reply.send({
         data: clientAgent(await controller.getAgent(context.actorId, namespaceId, agentId)),
@@ -1798,8 +1904,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         reply.status(202).send({ data: revision, meta: { requestId: request.id } });
         return;
       } catch (error) {
-        if (error instanceof NamespaceNotReadyError)
+        if (error instanceof NamespaceNotReadyError) {
           await rejectedMutation(operation, request, context, "NAMESPACE_NOT_READY");
+        }
         throw error;
       }
     }
@@ -1836,15 +1943,20 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       const deadline = new Date(Date.now() + deadlineMs);
       try {
         requireWorkspaceFileCsrf(request, operation.operationId === "putAgentWorkspaceFile");
-        if (options.workspaceFilesAccess === undefined) throw dependencyUnavailable();
+        if (options.workspaceFilesAccess === undefined) {
+          throw dependencyUnavailable();
+        }
         const filename = params.name;
-        if (filename === undefined || !isAllowedWorkspaceFileName(filename))
+        if (filename === undefined || !isAllowedWorkspaceFileName(filename)) {
           throw failure(
             400,
             "INVALID_REQUEST",
             "The request does not match the operation contract.",
           );
-        if (signal.aborted) throw dependencyUnavailable();
+        }
+        if (signal.aborted) {
+          throw dependencyUnavailable();
+        }
         const { agent, revision } = await withWorkspaceFileRequestSignal(
           signal,
           operation.operationId === "getAgentWorkspaceFile"
@@ -1852,12 +1964,16 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             : controller.getOperableActiveAgentRevision(context.actorId, namespaceId, agentId),
         );
         const target = { kind: "agent" as const, id: agent.id, namespaceId: agent.namespaceId };
-        if (signal.aborted) throw dependencyUnavailable();
+        if (signal.aborted) {
+          throw dependencyUnavailable();
+        }
 
         if (operation.operationId === "getAgentWorkspaceFile") {
           let result: ControllerWorkspaceFileReadResult;
           try {
-            if (signal.aborted) throw dependencyUnavailable();
+            if (signal.aborted) {
+              throw dependencyUnavailable();
+            }
             result = await withWorkspaceFileRequestSignal(
               signal,
               options.workspaceFilesAccess.read({
@@ -1883,8 +1999,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             Buffer.byteLength(result.file.content, "utf8") > WORKSPACE_FILE_CONTENT_LIMIT ||
             result.file.content.includes("\u0000") ||
             !isWellFormed.call(result.file.content)
-          )
+          ) {
             throw dependencyUnavailable();
+          }
           reply.send({
             data: { name: filename, content: result.file.content },
             meta: { requestId: request.id },
@@ -1896,7 +2013,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         validateWorkspaceFileBody(writeBody);
         let result: ControllerWorkspaceFileWriteResult;
         try {
-          if (signal.aborted) throw dependencyUnavailable();
+          if (signal.aborted) {
+            throw dependencyUnavailable();
+          }
           result = await withWorkspaceFileRequestSignal(
             signal,
             options.workspaceFilesAccess.write({
@@ -2162,15 +2281,19 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         preHandler: async (request) => resolveIdentity(request, operation),
         handler: async (request, reply) => {
           const context = contexts.get(request);
-          if (!context) throw dependencyUnavailable();
-          if (!controller)
+          if (!context) {
+            throw dependencyUnavailable();
+          }
+          if (!controller) {
             throw failure(409, "RESOURCE_CONFLICT", "Bootstrap the Installation first.");
-          if (!creating && request.body !== undefined)
+          }
+          if (!creating && request.body !== undefined) {
             throw failure(
               400,
               "INVALID_REQUEST",
               "The request does not match the operation contract.",
             );
+          }
           const { selected, target, decision } = await requireInstallationAdmin(
             request,
             operation,
@@ -2209,12 +2332,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               principal.agentId !== undefined ||
               principal.id !== body.servicePrincipalId ||
               principal.namespaceId !== body.namespaceId
-            )
+            ) {
               throw failure(
                 400,
                 "INVALID_REQUEST",
                 "An existing non-Agent ServicePrincipal in the exact scope is required.",
               );
+            }
             let key;
             try {
               key = await options.auth.createServiceKey({
@@ -2225,7 +2349,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               await options.auditSink.append(audit(key));
             } catch {
               // Never return an unaudited credential; remove it if audit persistence fails.
-              if (key) await options.auth.revokeServiceKey(key).catch(() => {});
+              if (key) {
+                await options.auth.revokeServiceKey(key).catch(() => {});
+              }
               throw dependencyUnavailable();
             }
             reply.status(201).send({ data: key, meta: { requestId: request.id } });
@@ -2237,7 +2363,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             } catch {
               throw dependencyUnavailable();
             }
-            if (!key) throw failure(404, "NOT_FOUND", "The service API key was not found.");
+            if (!key) {
+              throw failure(404, "NOT_FOUND", "The service API key was not found.");
+            }
             try {
               await options.auth.revokeServiceKey(key);
               await options.auditSink.append(audit(key));
@@ -2361,18 +2489,20 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       },
       async (request, reply) => {
         const context = contexts.get(request);
-        if (!context)
+        if (!context) {
           throw failure(
             503,
             "DEPENDENCY_UNAVAILABLE",
             "A required platform dependency is unavailable.",
           );
-        if (options.provisionAuthAccount === undefined)
+        }
+        if (options.provisionAuthAccount === undefined) {
           throw failure(
             503,
             "DEPENDENCY_UNAVAILABLE",
             "A required platform dependency is unavailable.",
           );
+        }
 
         const body = request.body as Record<string, unknown> | undefined;
         const email = body?.email;
@@ -2384,12 +2514,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           !isNonEmptyString(password) ||
           !isNonEmptyString(roleId) ||
           (name !== undefined && !isNonEmptyString(name))
-        )
+        ) {
           throw failure(
             400,
             "INVALID_REQUEST",
             "The request does not match the operation contract.",
           );
+        }
 
         const { target, decision } = await requireInstallationAdmin(
           request,
@@ -2474,12 +2605,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             request.body !== undefined ||
             Number(request.headers["content-length"] ?? 0) > 0 ||
             request.headers["transfer-encoding"] !== undefined;
-          if (!Object.hasOwn(operation.schema, "body") && hasRequestBody)
+          if (!Object.hasOwn(operation.schema, "body") && hasRequestBody) {
             throw failure(
               400,
               "INVALID_REQUEST",
               "The request does not match the operation contract.",
             );
+          }
         },
         preHandler: async (request) => resolveIdentity(request, operation),
         handler: async (request, reply) => perform(request, reply, operation),
@@ -2587,7 +2719,9 @@ export function createControllerApp(options: ControllerAppOptions): ControllerAp
       const convertedHeaders = new Headers();
       for (const [name, value] of Object.entries(result.headers)) {
         if (Array.isArray(value)) {
-          for (const entry of value) convertedHeaders.append(name, entry);
+          for (const entry of value) {
+            convertedHeaders.append(name, entry);
+          }
         } else if (value !== undefined) {
           convertedHeaders.set(name, String(value));
         }

@@ -109,10 +109,15 @@ test("the real pg client retains the Azure token callback and verified TLS after
       );
     }
   } finally {
-    if (pool) await pool.end();
+    if (pool) {
+      await pool.end();
+    }
     for (const [key, value] of Object.entries(previous)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
     }
   }
 });

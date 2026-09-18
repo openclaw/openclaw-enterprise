@@ -75,7 +75,9 @@ function validateCodexConfiguration(
       throw new PluginValidationError(`Codex Plugin Driver configuration.${key} is unsupported.`);
     }
   }
-  if (keys.length === 0) return undefined;
+  if (keys.length === 0) {
+    return undefined;
+  }
   const codexExecutable = requiredString(value.codexExecutable, "codexExecutable");
   const codexHome = requiredString(value.codexHome, "codexHome");
   const requestTimeoutMs = value.requestTimeoutMs;

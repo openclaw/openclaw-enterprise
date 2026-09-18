@@ -97,7 +97,9 @@ test("authorization denials are attributable and never record credentials or mes
   assert.equal(sink.events.length, 1);
 
   const serialized = JSON.stringify(event);
-  for (const secret of confidential) assert.ok(!serialized.includes(secret));
+  for (const secret of confidential) {
+    assert.ok(!serialized.includes(secret));
+  }
   assert.equal(Object.isFrozen(event.details), true);
 });
 

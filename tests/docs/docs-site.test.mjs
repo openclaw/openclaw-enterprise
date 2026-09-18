@@ -13,8 +13,11 @@ async function markdownFiles(directory) {
   const result = [];
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
-    if (entry.isDirectory()) result.push(...(await markdownFiles(path)));
-    else if (entry.name.endsWith(".md")) result.push(path);
+    if (entry.isDirectory()) {
+      result.push(...(await markdownFiles(path)));
+    } else if (entry.name.endsWith(".md")) {
+      result.push(path);
+    }
   }
   return result;
 }

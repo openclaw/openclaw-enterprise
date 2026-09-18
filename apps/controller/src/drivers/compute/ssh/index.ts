@@ -76,13 +76,17 @@ const ACCOUNT = new RegExp(ACCOUNT_PATTERN);
 const IDENTITY = /^[A-Za-z0-9][A-Za-z0-9_.:/-]*$/;
 
 function required(value: unknown, description: string): string {
-  if (!isNonEmptyString(value)) throw new ConfigurationFailure(`${description} is required.`);
+  if (!isNonEmptyString(value)) {
+    throw new ConfigurationFailure(`${description} is required.`);
+  }
   return value;
 }
 
 function identity(value: unknown, description: string): string {
   const result = required(value, description);
-  if (!IDENTITY.test(result)) throw new ConfigurationFailure(`${description} is invalid.`);
+  if (!IDENTITY.test(result)) {
+    throw new ConfigurationFailure(`${description} is invalid.`);
+  }
   return result;
 }
 
@@ -92,7 +96,9 @@ function closed(
   description: string,
 ): Record<string, unknown> {
   const result = asRecord(value);
-  if (result === undefined) throw new ConfigurationFailure(`${description} must be an object.`);
+  if (result === undefined) {
+    throw new ConfigurationFailure(`${description} must be an object.`);
+  }
   if (Object.keys(result).some((key) => !keys.includes(key))) {
     throw new ConfigurationFailure(`${description} contains an unsupported option.`);
   }
@@ -216,9 +222,12 @@ export class SshComputeDriver implements ComputeDriver {
       ["nodePath", "openclawPath", "user", "root", "systemdUnitDirectory"],
       "runtime",
     );
-    for (const key of ["nodePath", "openclawPath", "root"]) path(runtime[key], `runtime.${key}`);
-    if (runtime.systemdUnitDirectory !== undefined)
+    for (const key of ["nodePath", "openclawPath", "root"]) {
+      path(runtime[key], `runtime.${key}`);
+    }
+    if (runtime.systemdUnitDirectory !== undefined) {
       path(runtime.systemdUnitDirectory, "runtime.systemdUnitDirectory");
+    }
     if (!ACCOUNT.test(required(runtime.user, "runtime.user"))) {
       throw new ConfigurationFailure("runtime.user must be a non-root account-name prefix.");
     }
@@ -236,20 +245,27 @@ export class SshComputeDriver implements ComputeDriver {
       if (!ADDRESS.test(required(host.address, "Host address"))) {
         throw new ConfigurationFailure("Host address must be a hostname or IP address.");
       }
-      if (host.user !== "root")
+      if (host.user !== "root") {
         throw new ConfigurationFailure(
           "SSH hosts require user root; non-root SSH and sudo are unsupported.",
         );
-      if (host.port !== undefined) port(host.port, 1, "Host port");
-      for (const key of ["nodePath", "openclawPath"])
-        if (host[key] !== undefined) path(host[key], `Host ${key}`);
+      }
+      if (host.port !== undefined) {
+        port(host.port, 1, "Host port");
+      }
+      for (const key of ["nodePath", "openclawPath"]) {
+        if (host[key] !== undefined) {
+          path(host[key], `Host ${key}`);
+        }
+      }
     }
     const network = closed(options.network, ["gatewayPortRange"], "network");
     const range = closed(network.gatewayPortRange, ["start", "end"], "gatewayPortRange");
     const start = port(range.start, 1024, "Gateway port range start");
     const end = port(range.end, 1024, "Gateway port range end");
-    if (start > end)
+    if (start > end) {
       throw new ConfigurationFailure("Gateway port range start must not exceed end.");
+    }
   }
 
   readonly id: string;
@@ -275,8 +291,9 @@ export class SshComputeDriver implements ComputeDriver {
   }
 
   setLifecycleDrivers(drivers: readonly Driver[]): void {
-    if (this.lifecycleStarted)
+    if (this.lifecycleStarted) {
       throw new Error("Compute lifecycle Drivers cannot change after lifecycle operations begin.");
+    }
     this.lifecycle = new ComputeLifecycleDispatcher(drivers);
   }
 
@@ -301,8 +318,9 @@ export class SshComputeDriver implements ComputeDriver {
     this.host(namespace);
     identity(agent.id, "Agent ID");
     identity(agent.servicePrincipalId, "Agent ServicePrincipal ID");
-    if (agent.namespaceId !== namespace.id)
+    if (agent.namespaceId !== namespace.id) {
       throw new OwnershipFailure("Agent Namespace ownership differs.");
+    }
     const previous = this.agents.get(agent.id);
     if (
       previous !== undefined &&
@@ -336,8 +354,11 @@ export class SshComputeDriver implements ComputeDriver {
       await this.lifecycle.beforeNamespaceDelete(namespace);
       await this.execute(host, { operation: "delete-namespace", namespace });
       this.namespaces.delete(namespace.id);
-      for (const [id, binding] of this.agents)
-        if (binding.namespace.id === namespace.id) this.agents.delete(id);
+      for (const [id, binding] of this.agents) {
+        if (binding.namespace.id === namespace.id) {
+          this.agents.delete(id);
+        }
+      }
       return { ...result, namespaceDeleted: true };
     } catch (error) {
       return { ...result, failure: failure(error) };
@@ -345,12 +366,14 @@ export class SshComputeDriver implements ComputeDriver {
   }
 
   validateHarnessAuth(harness: RevisionHarnessDescriptor, auth: HarnessAuthSnapshot): void {
-    if (auth?.method !== "runtime" || Object.keys(auth).length !== 1)
+    if (auth?.method !== "runtime" || Object.keys(auth).length !== 1) {
       throw new ConfigurationFailure("SSH Compute requires operator-managed runtime credentials.");
-    if (harness.id !== "openclaw" || harness.mode !== "embedded")
+    }
+    if (harness.id !== "openclaw" || harness.mode !== "embedded") {
       throw new ConfigurationFailure(
         "SSH Compute supports only embedded OpenClaw; dedicated Codex is not implemented.",
       );
+    }
   }
 
   async prepareRevision(
@@ -373,8 +396,9 @@ export class SshComputeDriver implements ComputeDriver {
         "SSH OCC Secret delivery is not implemented; provision credentials in the operator-owned <agentDir>/env file.",
       );
     }
-    if (revision.sandboxDriverId !== undefined)
+    if (revision.sandboxDriverId !== undefined) {
       throw new ConfigurationFailure("SSH Compute does not support SandboxDriver composition.");
+    }
     if (hasPluginSelections(revision)) {
       throw new ConfigurationFailure("SSH Compute does not support PluginDriver installation.");
     }
@@ -404,8 +428,9 @@ export class SshComputeDriver implements ComputeDriver {
         "SSH OCC Secret delivery is not implemented; provision credentials in the operator-owned <agentDir>/env file.",
       );
     }
-    if (revision.sandboxDriverId !== undefined)
+    if (revision.sandboxDriverId !== undefined) {
       throw new ConfigurationFailure("SSH Compute does not support SandboxDriver composition.");
+    }
     if (hasPluginSelections(revision)) {
       throw new ConfigurationFailure("SSH Compute does not support PluginDriver installation.");
     }
@@ -416,7 +441,9 @@ export class SshComputeDriver implements ComputeDriver {
       launch = await this.lifecycle.beforeWorkloadStart(revision);
       await this.revisionOperation("activate-revision", revision, launch);
     } catch (error) {
-      if (launch === undefined) throw error;
+      if (launch === undefined) {
+        throw error;
+      }
       try {
         await this.lifecycle.beforeWorkloadStop(revision, { cleanup: true });
       } catch (cleanupError) {
@@ -450,20 +477,23 @@ export class SshComputeDriver implements ComputeDriver {
 
   private host(namespace: Namespace): SshComputeHost {
     identity(namespace.id, "Namespace ID");
-    if (namespace.existingNamespace !== undefined)
+    if (namespace.existingNamespace !== undefined) {
       throw new ConfigurationFailure("SSH Compute does not support existingNamespace adoption.");
+    }
     const host = Object.hasOwn(this.options.hosts, namespace.name)
       ? this.options.hosts[namespace.name]
       : undefined;
-    if (host === undefined)
+    if (host === undefined) {
       throw new ConfigurationFailure("SSH Namespace name is not mapped to a host.");
+    }
     return host;
   }
 
   private bindNamespace(namespace: Namespace): void {
     const previous = this.namespaces.get(namespace.id);
-    if (previous !== undefined && previous.name !== namespace.name)
+    if (previous !== undefined && previous.name !== namespace.name) {
       throw new OwnershipFailure("Namespace host binding differs.");
+    }
     this.namespaces.set(namespace.id, immutableCopy(namespace));
   }
 
@@ -471,8 +501,9 @@ export class SshComputeDriver implements ComputeDriver {
     this.validateHarnessAuth(revision.harness, revision.harnessAuth);
     const namespace = this.namespaces.get(revision.namespaceId);
     const binding = this.agents.get(revision.agentId);
-    if (namespace === undefined || binding === undefined)
+    if (namespace === undefined || binding === undefined) {
       throw new ConfigurationFailure("SSH revision requires a bound Namespace and Agent.");
+    }
     if (
       binding.namespace.id !== revision.namespaceId ||
       binding.agent.servicePrincipalId !== revision.servicePrincipalId ||
@@ -542,15 +573,19 @@ export class SshComputeDriver implements ComputeDriver {
     owner?.throwIfAborted();
     const value = helperResult(result.stdout);
     if (result.code !== 0) {
-      if (value?.failure === "ownership")
+      if (value?.failure === "ownership") {
         throw new OwnershipFailure(
           "SSH helper refused foreign ownership or an immutable snapshot mismatch.",
         );
-      if (value?.failure === "configuration")
+      }
+      if (value?.failure === "configuration") {
         throw new ConfigurationFailure("SSH helper rejected host or revision configuration.");
+      }
       throw new Error("SSH host operation failed or timed out.");
     }
-    if (value?.ok !== true) throw new Error("SSH helper returned an invalid result.");
+    if (value?.ok !== true) {
+      throw new Error("SSH helper returned an invalid result.");
+    }
     return value;
   }
 }

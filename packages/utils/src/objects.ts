@@ -6,10 +6,14 @@ export function asRecord(value: unknown): Record<string, unknown> | undefined {
 }
 
 export function deepFreeze<T>(value: T): Readonly<T> {
-  if (typeof value !== "object" || value === null || Object.isFrozen(value)) return value;
+  if (typeof value !== "object" || value === null || Object.isFrozen(value)) {
+    return value;
+  }
 
   Object.freeze(value);
-  for (const property of Object.values(value)) deepFreeze(property);
+  for (const property of Object.values(value)) {
+    deepFreeze(property);
+  }
 
   return value;
 }

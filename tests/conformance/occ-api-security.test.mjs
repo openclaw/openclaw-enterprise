@@ -207,12 +207,17 @@ async function request(app, pathname, options = {}) {
   );
 
   for (const [name, value] of Object.entries(options.headers ?? {})) {
-    if (value === null) headers.delete(name);
-    else headers.set(name, value);
+    if (value === null) {
+      headers.delete(name);
+    } else {
+      headers.set(name, value);
+    }
   }
 
   const hasBody = Object.hasOwn(options, "body");
-  if (hasBody && !headers.has("content-type")) headers.set("content-type", "application/json");
+  if (hasBody && !headers.has("content-type")) {
+    headers.set("content-type", "application/json");
+  }
   const body = hasBody
     ? typeof options.body === "string"
       ? options.body
@@ -233,8 +238,9 @@ async function request(app, pathname, options = {}) {
     /^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
   );
 
-  if (response.ok) assert.ok(Object.hasOwn(payload, "data"));
-  else {
+  if (response.ok) {
+    assert.ok(Object.hasOwn(payload, "data"));
+  } else {
     assert.equal(typeof payload.error?.code, "string");
     assert.equal(typeof payload.error?.message, "string");
   }

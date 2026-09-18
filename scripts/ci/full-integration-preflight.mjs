@@ -28,19 +28,25 @@ const laneEnvironments = Object.freeze({
 });
 
 export function selectLane({ eventName, inputLane }) {
-  if (eventName === "workflow_dispatch") return inputLane;
+  if (eventName === "workflow_dispatch") {
+    return inputLane;
+  }
   throw new Error(`Unsupported full integration event: ${eventName}`);
 }
 
 export function assertSourceRef(ref, lane) {
-  if (lane === "k3d-model" && /^refs\/heads\/.+/.test(ref ?? "")) return;
+  if (lane === "k3d-model" && /^refs\/heads\/.+/.test(ref ?? "")) {
+    return;
+  }
   if (ref !== "refs/heads/main") {
     throw new Error("Full integration must run from main at the approved github.sha.");
   }
 }
 
 export function requiredEnvironmentsForLane(selected) {
-  if (!lanes.has(selected)) throw new Error(`Unknown lane: ${selected}`);
+  if (!lanes.has(selected)) {
+    throw new Error(`Unknown lane: ${selected}`);
+  }
   return [
     ...new Set(
       Object.entries(laneEnvironments)
@@ -96,7 +102,9 @@ export function validateEnvironmentPolicy(environmentName, environment, policies
     throw new Error(`Protected environment ${environmentName} does not prevent self-review.`);
   }
   const policy = environment.deployment_branch_policy;
-  if (policy?.protected_branches === true) return;
+  if (policy?.protected_branches === true) {
+    return;
+  }
   if (policy?.custom_branch_policies !== true) {
     throw new Error(
       `Protected environment ${environmentName} is not restricted to protected branches or main.`,

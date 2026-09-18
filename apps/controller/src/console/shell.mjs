@@ -25,14 +25,24 @@ function menuItems(menu) {
 
 function enableMenuKeys(menu, close, openChild) {
   menu.addEventListener("keydown", (event) => {
-    if (event.target.closest('[role="menu"]') !== menu) return;
+    if (event.target.closest('[role="menu"]') !== menu) {
+      return;
+    }
     const items = menuItems(menu);
     const index = items.indexOf(document.activeElement);
     let next;
-    if (event.key === "ArrowDown") next = (index + 1) % items.length;
-    if (event.key === "ArrowUp") next = (index - 1 + items.length) % items.length;
-    if (event.key === "Home") next = 0;
-    if (event.key === "End") next = items.length - 1;
+    if (event.key === "ArrowDown") {
+      next = (index + 1) % items.length;
+    }
+    if (event.key === "ArrowUp") {
+      next = (index - 1 + items.length) % items.length;
+    }
+    if (event.key === "Home") {
+      next = 0;
+    }
+    if (event.key === "End") {
+      next = items.length - 1;
+    }
     if (next !== undefined && items.length) {
       event.preventDefault();
       items[next].focus();
@@ -48,7 +58,9 @@ function enableMenuKeys(menu, close, openChild) {
     }
   });
   menu.addEventListener("focusin", (event) => {
-    for (const item of menuItems(menu)) item.tabIndex = item === event.target ? 0 : -1;
+    for (const item of menuItems(menu)) {
+      item.tabIndex = item === event.target ? 0 : -1;
+    }
   });
 }
 
@@ -115,8 +127,9 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
         }),
       );
     }
-    if (!namespaces.length)
+    if (!namespaces.length) {
       submenu.append(element("p", { className: "muted" }, "No readable Namespaces"));
+    }
     const toggle = button(
       "OpenClaw Enterprise",
       () => (menu.hidden ? openAccount() : closeAccount()),
@@ -134,23 +147,31 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     function closeNamespace(focus = true) {
       submenu.hidden = true;
       namespaceButton.setAttribute("aria-expanded", "false");
-      if (focus) namespaceButton.focus();
+      if (focus) {
+        namespaceButton.focus();
+      }
     }
     function closeAccount(focus = true) {
       closeNamespace(false);
       menu.hidden = true;
       toggle.setAttribute("aria-expanded", "false");
-      if (focus) toggle.focus();
+      if (focus) {
+        toggle.focus();
+      }
     }
     function openAccount(focus = true) {
       menu.hidden = false;
       toggle.setAttribute("aria-expanded", "true");
-      if (focus) menuItems(menu)[0]?.focus();
+      if (focus) {
+        menuItems(menu)[0]?.focus();
+      }
     }
     function openNamespace(focus) {
       submenu.hidden = false;
       namespaceButton.setAttribute("aria-expanded", "true");
-      if (focus) menuItems(submenu)[0]?.focus();
+      if (focus) {
+        menuItems(submenu)[0]?.focus();
+      }
     }
     toggle.addEventListener("keydown", (event) => {
       if (["ArrowDown", "ArrowUp"].includes(event.key)) {
@@ -159,10 +180,14 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       }
     });
     namespaceButton.addEventListener("pointerenter", () => {
-      if (supportsDesktopHover()) openNamespace(false);
+      if (supportsDesktopHover()) {
+        openNamespace(false);
+      }
     });
     enableMenuKeys(menu, closeAccount, (target) => {
-      if (target === namespaceButton) openNamespace(true);
+      if (target === namespaceButton) {
+        openNamespace(true);
+      }
     });
     enableMenuKeys(submenu, closeNamespace);
     menu.append(
@@ -173,7 +198,9 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     );
     account.append(menu, toggle);
     account.addEventListener("focusout", (event) => {
-      if (event.relatedTarget && !account.contains(event.relatedTarget)) closeAccount(false);
+      if (event.relatedTarget && !account.contains(event.relatedTarget)) {
+        closeAccount(false);
+      }
     });
     menuControls = {
       account,
@@ -198,8 +225,15 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
         pages[name],
       );
       link.addEventListener("click", (event) => {
-        if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
+        if (
+          event.button !== 0 ||
+          event.metaKey ||
+          event.ctrlKey ||
+          event.shiftKey ||
+          event.altKey
+        ) {
           return;
+        }
         event.preventDefault();
         navigate(name);
       });
@@ -257,7 +291,9 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       shell.classList.remove("drawer-open");
       main.inert = false;
       mobileToggle.setAttribute("aria-expanded", "false");
-      if (focus) mobileToggle.focus();
+      if (focus) {
+        mobileToggle.focus();
+      }
     }
     function openDrawer() {
       shell.classList.add("drawer-open");
@@ -318,15 +354,21 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
   }
 
   function switchNamespace() {
-    if (window.matchMedia("(max-width: 760px)").matches) drawerControls?.open();
+    if (window.matchMedia("(max-width: 760px)").matches) {
+      drawerControls?.open();
+    }
     menuControls?.openNamespace();
   }
 
   document.addEventListener("pointerdown", (event) => {
-    if (menuControls && !menuControls.account.contains(event.target)) menuControls.close();
+    if (menuControls && !menuControls.account.contains(event.target)) {
+      menuControls.close();
+    }
   });
   document.addEventListener("keydown", (event) => {
-    if (!drawerControls?.shell.classList.contains("drawer-open")) return;
+    if (!drawerControls?.shell.classList.contains("drawer-open")) {
+      return;
+    }
     if (event.key === "Escape" && !event.defaultPrevented) {
       event.preventDefault();
       drawerControls.close();

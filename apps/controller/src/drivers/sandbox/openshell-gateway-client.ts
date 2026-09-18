@@ -105,7 +105,9 @@ function normalizeEndpoint(endpoint: string): {
   readonly secure: boolean;
 } {
   const value = nonempty(endpoint, "OpenShell gateway endpoint");
-  if (!value.includes("://")) return { target: value, secure: false };
+  if (!value.includes("://")) {
+    return { target: value, secure: false };
+  }
   let parsed: URL;
   try {
     parsed = new URL(value);
@@ -123,20 +125,31 @@ function normalizeEndpoint(endpoint: string): {
       "OpenShell gateway endpoint must not include credentials, path, query, or fragment.",
     );
   }
-  if (parsed.protocol === "http:") return { target: parsed.host, secure: false };
-  if (parsed.protocol === "https:") return { target: parsed.host, secure: true };
+  if (parsed.protocol === "http:") {
+    return { target: parsed.host, secure: false };
+  }
+  if (parsed.protocol === "https:") {
+    return { target: parsed.host, secure: true };
+  }
   throw new OpenShellGatewayFailure("OpenShell gateway endpoint must use http or https.");
 }
 
 function toStructValue(value: unknown): Record<string, unknown> {
-  if (value === null) return { nullValue: 0 };
-  if (typeof value === "string") return { stringValue: value };
+  if (value === null) {
+    return { nullValue: 0 };
+  }
+  if (typeof value === "string") {
+    return { stringValue: value };
+  }
   if (typeof value === "number") {
-    if (!Number.isFinite(value))
+    if (!Number.isFinite(value)) {
       throw new OpenShellGatewayFailure("Struct numbers must be finite.");
+    }
     return { numberValue: value };
   }
-  if (typeof value === "boolean") return { boolValue: value };
+  if (typeof value === "boolean") {
+    return { boolValue: value };
+  }
   if (Array.isArray(value)) {
     return { listValue: { values: value.map((entry) => toStructValue(entry)) } };
   }
@@ -172,7 +185,9 @@ async function metadata(
   auth: OpenShellGatewayClientOptions["auth"],
 ): Promise<Metadata> {
   const value = new grpc.Metadata();
-  if (auth === undefined || auth.mode === "unauthenticated") return value;
+  if (auth === undefined || auth.mode === "unauthenticated") {
+    return value;
+  }
   if (!isAbsolute(auth.path)) {
     throw new OpenShellGatewayFailure("OpenShell bearer token file path must be absolute.");
   }
@@ -282,7 +297,9 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       );
     } catch (error) {
       const { grpc } = await this.ensureClient();
-      if (statusCode(error) === grpc.status.NOT_FOUND) return;
+      if (statusCode(error) === grpc.status.NOT_FOUND) {
+        return;
+      }
       throw error;
     }
   }
@@ -336,7 +353,9 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     readonly grpc: typeof import("@grpc/grpc-js");
     readonly client: OpenShellGrpcClient;
   }> {
-    if (this.client !== undefined) return this.client;
+    if (this.client !== undefined) {
+      return this.client;
+    }
     this.client = this.createClient();
     return this.client;
   }

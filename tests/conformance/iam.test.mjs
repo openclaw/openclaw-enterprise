@@ -210,8 +210,9 @@ test("service identity lookup uses exact IAM scope and cannot resolve a human id
       issuer: "forged",
       subject: "forged",
     },
-  ])
+  ]) {
     assert.equal(await driver.lookupIdentity(lookup), undefined);
+  }
 });
 
 function agentResource(id, namespaceId = "namespace-a") {

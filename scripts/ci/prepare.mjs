@@ -54,7 +54,9 @@ function parseArgs(argv) {
   const args = {};
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
-    if (!arg.startsWith("--")) throw new Error(`Unexpected argument: ${arg}`);
+    if (!arg.startsWith("--")) {
+      throw new Error(`Unexpected argument: ${arg}`);
+    }
     const name = arg.slice(2);
     const value = argv[index + 1];
     if (value === undefined || value.startsWith("--")) {
@@ -97,20 +99,30 @@ function databaseName(kind, label) {
 }
 
 function laneName(lane) {
-  if (typeof lane === "string") return lane;
-  if (typeof lane?.name === "string") return lane.name;
+  if (typeof lane === "string") {
+    return lane;
+  }
+  if (typeof lane?.name === "string") {
+    return lane.name;
+  }
   throw new Error("CI lane must be a string or an object with a name.");
 }
 
 function filePath(file) {
-  if (typeof file === "string") return file;
-  if (typeof file?.path === "string") return file.path;
+  if (typeof file === "string") {
+    return file;
+  }
+  if (typeof file?.path === "string") {
+    return file.path;
+  }
   throw new Error("CI file must be a string or an object with a path.");
 }
 
 function assertLane(lane) {
   const name = laneName(lane);
-  if (!allowedLanes.has(name)) throw new Error(`Unknown CI lane: ${name}`);
+  if (!allowedLanes.has(name)) {
+    throw new Error(`Unknown CI lane: ${name}`);
+  }
   return name;
 }
 
@@ -127,7 +139,9 @@ function fileStem(file) {
 
 function normalizeStatePath(statePath) {
   const path = resolve(statePath ?? defaultStatePath);
-  if (!isAbsolute(path)) throw new Error("CI state path must be absolute after resolution.");
+  if (!isAbsolute(path)) {
+    throw new Error("CI state path must be absolute after resolution.");
+  }
   return path;
 }
 
@@ -162,17 +176,23 @@ function baseState(lane, statePath) {
 async function readState(path) {
   try {
     const state = JSON.parse(await readFile(path, "utf8"));
-    if (state.version !== 1) throw new Error(`Unsupported CI state version: ${state.version}`);
+    if (state.version !== 1) {
+      throw new Error(`Unsupported CI state version: ${state.version}`);
+    }
     if (state.repositoryRoot !== repositoryRoot) {
       throw new Error(`CI state belongs to another repository root: ${state.repositoryRoot}`);
     }
     if (!state.prefix?.startsWith("openclaw-ci-")) {
       throw new Error("CI state prefix is not an OpenClaw Enterprise CI prefix.");
     }
-    if (!Array.isArray(state.resources)) throw new Error("CI state resources must be an array.");
+    if (!Array.isArray(state.resources)) {
+      throw new Error("CI state resources must be an array.");
+    }
     return state;
   } catch (error) {
-    if (error.code !== "ENOENT") throw error;
+    if (error.code !== "ENOENT") {
+      throw error;
+    }
     return undefined;
   }
 }
@@ -187,9 +207,13 @@ async function writeState(path, state) {
 }
 
 async function appendGithubEnv(path, env) {
-  if (!path) return;
+  if (!path) {
+    return;
+  }
   const lines = Object.entries(env).map(([name, value]) => `${name}=${value}`);
-  if (lines.length === 0) return;
+  if (lines.length === 0) {
+    return;
+  }
   await writeFile(path, `${lines.join("\n")}\n`, { flag: "a", mode: 0o600 });
   await chmod(path, 0o600);
 }
@@ -249,10 +273,16 @@ function execFile(command, args, options = {}) {
       return error;
     }
     function finish(callback) {
-      if (settled) return;
+      if (settled) {
+        return;
+      }
       settled = true;
-      if (timeoutTimer) clearTimeout(timeoutTimer);
-      if (killTimer) clearTimeout(killTimer);
+      if (timeoutTimer) {
+        clearTimeout(timeoutTimer);
+      }
+      if (killTimer) {
+        clearTimeout(killTimer);
+      }
       callback();
     }
     child.on("error", (error) =>
@@ -295,7 +325,9 @@ async function commandAvailable(command, args = ["--version"]) {
   try {
     await execFile(command, args);
   } catch (error) {
-    if (error.code === "ENOENT") throw new Error(`Missing required command on PATH: ${command}`);
+    if (error.code === "ENOENT") {
+      throw new Error(`Missing required command on PATH: ${command}`);
+    }
     throw error;
   }
 }
@@ -310,8 +342,9 @@ async function reserveLoopbackPort() {
   await new Promise((resolvePromise, reject) => {
     server.close((error) => (error ? reject(error) : resolvePromise()));
   });
-  if (!address || typeof address === "string")
+  if (!address || typeof address === "string") {
     throw new Error("Failed to reserve a loopback port.");
+  }
   return address.port;
 }
 
@@ -324,7 +357,9 @@ function postgresUrl(role, password, port, database) {
 }
 
 function quoteIdentifier(value) {
-  if (!/^[a-z0-9_]+$/.test(value)) throw new Error(`Unsafe PostgreSQL identifier: ${value}`);
+  if (!/^[a-z0-9_]+$/.test(value)) {
+    throw new Error(`Unsafe PostgreSQL identifier: ${value}`);
+  }
   return `"${value.replaceAll('"', '""')}"`;
 }
 
@@ -334,14 +369,18 @@ function postgresResource(state) {
 
 async function ensurePostgresServer(statePath, state) {
   const existing = postgresResource(state);
-  if (existing) return existing;
+  if (existing) {
+    return existing;
+  }
   await commandAvailable(process.env.OCC_DOCKER_BIN ?? "docker", [
     "version",
     "--format",
     "{{.Server.Version}}",
   ]);
   const port = await reserveLoopbackPort();
-  if (port === 55432) throw new Error("Refusing to use the developer PostgreSQL port 55432.");
+  if (port === 55432) {
+    throw new Error("Refusing to use the developer PostgreSQL port 55432.");
+  }
   const project = ownedName("openclaw-ci-pg", state.prefix, { maxLength: 63, separator: "_" });
   const resource = addResource(state, "compose-postgres", {
     name: project,
@@ -425,7 +464,9 @@ async function createAndMigrateDatabase(
 
 async function requirePathMode0600(path, description) {
   const info = await stat(path);
-  if (!info.isFile()) throw new Error(`${description} must be a file: ${path}`);
+  if (!info.isFile()) {
+    throw new Error(`${description} must be a file: ${path}`);
+  }
   if ((info.mode & 0o777) !== 0o600) {
     throw new Error(`${description} must have mode 0600: ${path}`);
   }
@@ -452,7 +493,9 @@ function assertImmutableEnvImages(names, env = process.env) {
 
 function assertImmutableOptionalEnvImages(names, env = process.env) {
   for (const name of names) {
-    if (env[name]) assertImmutableImageReference(env[name], name);
+    if (env[name]) {
+      assertImmutableImageReference(env[name], name);
+    }
   }
 }
 
@@ -534,11 +577,14 @@ async function buildRuntimeImages(
 
 async function ensureK3dCluster(statePath, state) {
   const existing = state.resources.find((resource) => resource.kind === "k3d-cluster");
-  if (existing) return existing;
+  if (existing) {
+    return existing;
+  }
   await commandAvailable(process.env.OPENCLAW_CI_K3D_BIN ?? "k3d", ["version"]);
   const openShell = state.lane === "openshell";
-  if (!openShell)
+  if (!openShell) {
     await commandAvailable(process.env.OCC_KUBECTL_BIN ?? "kubectl", ["version", "--client=true"]);
+  }
   const cluster = ownedName("openclaw-k8s", state.prefix, { maxLength: 32 });
   const apiPort = await reserveLoopbackPort();
   const directory = await mkdtemp(join(process.env.RUNNER_TEMP ?? tmpdir(), `${cluster}-`));
@@ -643,12 +689,15 @@ async function validateLoopbackKubeconfig(
   ]);
   const configuration = JSON.parse(result.stdout);
   const endpoint = new URL(configuration.clusters?.[0]?.cluster?.server);
-  if (endpoint.protocol !== "https:") throw new Error("k3d API server must use HTTPS.");
+  if (endpoint.protocol !== "https:") {
+    throw new Error("k3d API server must use HTTPS.");
+  }
   if (!["127.0.0.1", "localhost", "[::1]"].includes(endpoint.hostname)) {
     throw new Error(`Refusing non-loopback Kubernetes API server: ${endpoint.hostname}`);
   }
-  if (!endpoint.port || Number(endpoint.port) === 0)
+  if (!endpoint.port || Number(endpoint.port) === 0) {
     throw new Error("k3d API server must expose an explicit loopback port.");
+  }
 }
 
 async function prepareFixtureImage(statePath, state, cluster) {
@@ -695,7 +744,9 @@ function localImportTag(cluster, envName) {
 
 async function dockerImageHasRepoDigest(image) {
   const expected = immutableDigest(image);
-  if (!expected) return false;
+  if (!expected) {
+    return false;
+  }
   const inspected = await execFile(process.env.OCC_DOCKER_BIN ?? "docker", [
     "image",
     "inspect",
@@ -704,7 +755,9 @@ async function dockerImageHasRepoDigest(image) {
     image,
   ]);
   const repoDigests = JSON.parse(inspected.stdout.trim() || "[]");
-  if (!Array.isArray(repoDigests)) return false;
+  if (!Array.isArray(repoDigests)) {
+    return false;
+  }
   return repoDigests.some((reference) => reference.toLowerCase().endsWith(`@sha256:${expected}`));
 }
 
@@ -751,7 +804,9 @@ async function assertK3dImageReference(cluster, reference, envName) {
     "list",
   ]);
   const found = listed.stdout.split(/\r?\n/).some((entry) => entry.split(/\s+/)[0] === reference);
-  if (!found) throw new Error(`Unable to find imported ${envName} reference ${reference}.`);
+  if (!found) {
+    throw new Error(`Unable to find imported ${envName} reference ${reference}.`);
+  }
   await execFile(process.env.OCC_DOCKER_BIN ?? "docker", [
     "exec",
     `k3d-${cluster.name}-server-0`,
@@ -805,7 +860,9 @@ async function registerImageInK3d(statePath, state, cluster, image, envName) {
     importReference,
   ]);
   const platform = inspected.stdout.trim();
-  if (!platform.startsWith("linux/")) throw new Error(`${envName} must contain a Linux image.`);
+  if (!platform.startsWith("linux/")) {
+    throw new Error(`${envName} must contain a Linux image.`);
+  }
   const archive = join(cluster.directory, `image-import-${randomSuffix()}.tar`);
   try {
     // k3d can exit successfully after containerd rejects missing index content.
@@ -845,8 +902,9 @@ async function registerImageInK3d(statePath, state, cluster, image, envName) {
     .split(/\r?\n/)
     .find((entry) => entry.split(/\s+/)[0] === importReference);
   const digest = line?.match(/sha256:[a-f0-9]{64}/i)?.[0];
-  if (!digest)
+  if (!digest) {
     throw new Error(`Unable to find imported OCI manifest digest for ${importReference}.`);
+  }
   // Workloads use the actual imported platform manifest, not a registry index digest.
   // The approved source image remains recorded and was verified before transport.
   const runtimeReference = `${importReference.slice(0, importReference.lastIndexOf(":"))}@${digest}`;
@@ -1120,16 +1178,24 @@ async function prepareK3dModelLane(statePath, state, env, options) {
   const cluster = await ensureK3dCluster(statePath, state);
   env.OCC_TEST_KUBERNETES_KUBECONFIG = cluster.kubeconfig;
   env.OCC_TEST_KUBERNETES_CONTEXT = cluster.context;
-  if (cluster.kubectl) env.OCC_KUBECTL_BIN = cluster.kubectl;
-  if (cluster.runtimeClass) env.OCC_TEST_OPENSHELL_RUNTIME_CLASS = cluster.runtimeClass;
-  if (cluster.runtimeHandler) env.OCC_TEST_OPENSHELL_RUNTIME_HANDLER = cluster.runtimeHandler;
+  if (cluster.kubectl) {
+    env.OCC_KUBECTL_BIN = cluster.kubectl;
+  }
+  if (cluster.runtimeClass) {
+    env.OCC_TEST_OPENSHELL_RUNTIME_CLASS = cluster.runtimeClass;
+  }
+  if (cluster.runtimeHandler) {
+    env.OCC_TEST_OPENSHELL_RUNTIME_HANDLER = cluster.runtimeHandler;
+  }
   await prepareK3dRuntimeImages(statePath, state, cluster, env, options);
   return cluster;
 }
 
 async function prepareFile({ lane, file, statePath }) {
   const name = assertLane(lane);
-  if (!file) throw new Error("prepareFile requires a file.");
+  if (!file) {
+    throw new Error("prepareFile requires a file.");
+  }
   await validateLaneInputsBeforeSideEffects(name);
   const relativeFile = toRepositoryRelative(filePath(file));
   const resolvedStatePath = normalizeStatePath(statePath);
@@ -1178,7 +1244,9 @@ async function prepareFile({ lane, file, statePath }) {
 
   applyLaneEnv(name, env);
 
-  if (state) await writeState(resolvedStatePath, effectiveState);
+  if (state) {
+    await writeState(resolvedStatePath, effectiveState);
+  }
   return {
     env,
     cleanup: async () => cleanupResourceIds(resolvedStatePath, resourceIds),
@@ -1187,7 +1255,9 @@ async function prepareFile({ lane, file, statePath }) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  if (!args.lane) throw new Error("--lane is required.");
+  if (!args.lane) {
+    throw new Error("--lane is required.");
+  }
   const result = args.file
     ? await prepareFile({ lane: args.lane, file: args.file, statePath: args.state })
     : await prepareLane({ lane: args.lane, statePath: args.state });

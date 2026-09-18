@@ -756,9 +756,12 @@ for (const scenario of [
       clusters: ["occ-dev-unrelated"],
       compose: false,
     });
-    if (scenario === "compose-up-failed") assert.match(result.stderr, /partial compose startup/);
-    if (scenario === "cluster-create-failed")
+    if (scenario === "compose-up-failed") {
+      assert.match(result.stderr, /partial compose startup/);
+    }
+    if (scenario === "cluster-create-failed") {
       assert.match(result.stderr, /partial cluster creation/);
+    }
     if (scenario.startsWith("api-")) {
       await assert.rejects(stat(keyOutput), { code: "ENOENT" });
       assert.match(
@@ -808,7 +811,9 @@ test("cancelling Kubernetes startup during readiness rolls back its owned resour
   });
   const exited = once(child, "close");
   t.after(async () => {
-    if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGTERM");
+    }
     await exited;
   });
   // Wait for the real client to reach readiness, after all owned resources

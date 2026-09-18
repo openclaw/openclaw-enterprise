@@ -69,7 +69,9 @@ export function pluginRuntimeSpecForRevision(
   revision: Readonly<AgentRevision>,
 ): PluginRuntimeSpec | undefined {
   const state = revision.plugins;
-  if (state === undefined) return pluginFreeRuntimeForRevision(revision);
+  if (state === undefined) {
+    return pluginFreeRuntimeForRevision(revision);
+  }
   if (!validPluginRevisionState(state)) {
     throw new Error("AgentRevision plugin selections are invalid.");
   }
@@ -82,7 +84,9 @@ export function pluginRuntimeSpecForRevision(
 }
 
 function codexConfigurationToml(runtime: PluginRuntimeSpec): string | undefined {
-  if (runtime.kind !== "codex") return undefined;
+  if (runtime.kind !== "codex") {
+    return undefined;
+  }
   return Object.keys(runtime.selections).length === 0
     ? CODEX_NO_PLUGIN_CONFIG_TOML
     : CODEX_SELECTED_PLUGIN_CONFIG_TOML;

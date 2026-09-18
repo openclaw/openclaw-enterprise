@@ -25,9 +25,12 @@ function supportTeams(values) {
     };
   }
   const config = providerConfig(values, "msteams");
-  if (config === undefined) return { supported: true, config: {} };
-  if (!isRecord(config))
+  if (config === undefined) {
+    return { supported: true, config: {} };
+  }
+  if (!isRecord(config)) {
     return { supported: false, reason: "Microsoft Teams configuration is not an object.", config };
+  }
   if (config.enabled !== undefined && typeof config.enabled !== "boolean") {
     return { supported: false, reason: "Microsoft Teams enabled state is not boolean.", config };
   }

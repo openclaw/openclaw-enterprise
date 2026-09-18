@@ -113,7 +113,9 @@ function agentSandboxManifestUrl() {
 }
 
 function download(url, destination, redirects = 0) {
-  if (redirects > 5) throw new Error(`Too many redirects while downloading ${url}.`);
+  if (redirects > 5) {
+    throw new Error(`Too many redirects while downloading ${url}.`);
+  }
   return new Promise((resolve, reject) => {
     const req = request(url, (res) => {
       if (
@@ -229,7 +231,9 @@ function chartDeployableImageReference(image, name) {
   const digest = image.slice(digestStart);
   const lastSlash = withoutDigest.lastIndexOf("/");
   const tagSeparator = withoutDigest.lastIndexOf(":");
-  if (tagSeparator > lastSlash) return image;
+  if (tagSeparator > lastSlash) {
+    return image;
+  }
   return `${withoutDigest}:local${digest}`;
 }
 
@@ -581,8 +585,9 @@ async function prepareOpenShellClusterBootstrap({
   if (typeof directory !== "string" || directory.length === 0) {
     throw new Error("OpenShell cluster bootstrap directory must be provided.");
   }
-  if (!isAbsolute(directory))
+  if (!isAbsolute(directory)) {
     throw new Error("OpenShell cluster bootstrap directory must be absolute.");
+  }
   const root = resolve(directory);
   await assertPrivateDirectory(await stat(root), root);
 
@@ -599,7 +604,9 @@ async function prepareOpenShellClusterBootstrap({
 
 async function prepareOpenShell({ cluster, execFile, registerImage, env = process.env }) {
   const selectedCluster = assertCluster(cluster);
-  if (typeof execFile !== "function") throw new Error("OpenShell bootstrap requires execFile.");
+  if (typeof execFile !== "function") {
+    throw new Error("OpenShell bootstrap requires execFile.");
+  }
   if (typeof registerImage !== "function") {
     throw new Error("OpenShell bootstrap requires a registerImage callback.");
   }

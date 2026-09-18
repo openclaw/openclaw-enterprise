@@ -59,13 +59,17 @@ class FakeCoreV1Api {
 
   async readNamespace({ name }) {
     const namespace = this.namespaces.get(name);
-    if (namespace === undefined) throw Object.assign(new Error("missing namespace"), { code: 404 });
+    if (namespace === undefined) {
+      throw Object.assign(new Error("missing namespace"), { code: 404 });
+    }
     return clone(namespace);
   }
 
   async createNamespacedSecret({ namespace, body }) {
     const key = `${namespace}/${body.metadata.name}`;
-    if (this.secrets.has(key)) throw Object.assign(new Error("conflict"), { code: 409 });
+    if (this.secrets.has(key)) {
+      throw Object.assign(new Error("conflict"), { code: 409 });
+    }
     const stored = {
       ...clone(body),
       metadata: {
@@ -98,14 +102,18 @@ class FakeCoreV1Api {
       );
     }
     const secret = this.secrets.get(`${namespace}/${name}`);
-    if (secret === undefined) throw Object.assign(new Error("missing secret"), { code: 404 });
+    if (secret === undefined) {
+      throw Object.assign(new Error("missing secret"), { code: 404 });
+    }
     return clone(secret);
   }
 
   async replaceNamespacedSecret({ namespace, name, body }) {
     const key = `${namespace}/${name}`;
     const existing = this.secrets.get(key);
-    if (existing === undefined) throw Object.assign(new Error("missing secret"), { code: 404 });
+    if (existing === undefined) {
+      throw Object.assign(new Error("missing secret"), { code: 404 });
+    }
     if (body.metadata.resourceVersion !== existing.metadata.resourceVersion) {
       throw Object.assign(new Error("resource version conflict"), { code: 409 });
     }
@@ -131,7 +139,9 @@ class FakeCoreV1Api {
   async deleteNamespacedSecret({ namespace, name, body }) {
     const key = `${namespace}/${name}`;
     const existing = this.secrets.get(key);
-    if (existing === undefined) throw Object.assign(new Error("missing secret"), { code: 404 });
+    if (existing === undefined) {
+      throw Object.assign(new Error("missing secret"), { code: 404 });
+    }
     const preconditions = body?.preconditions;
     this.deletes.push(clone(preconditions));
     if (

@@ -75,7 +75,9 @@ export class SystemSshCommandExecutor implements SshCommandExecutor {
         terminate();
       };
       signal.addEventListener("abort", abort, { once: true });
-      if (signal.aborted) abort();
+      if (signal.aborted) {
+        abort();
+      }
       child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
         stdout += chunk;
         if (stdout.length > 64 * 1024) {
@@ -96,8 +98,11 @@ export class SystemSshCommandExecutor implements SshCommandExecutor {
       child.once("close", (code) => {
         signal.removeEventListener("abort", abort);
         clearTimeout(termination);
-        if (failed !== undefined) reject(failed);
-        else resolve({ code: code ?? 1, stdout, stderr });
+        if (failed !== undefined) {
+          reject(failed);
+        } else {
+          resolve({ code: code ?? 1, stdout, stderr });
+        }
       });
       child.stdin.end(command.helper);
     });

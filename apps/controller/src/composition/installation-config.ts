@@ -93,7 +93,9 @@ async function startupConfiguration(
   const environment = options.environment ?? process.env;
   const path = environment.OCC_CONFIG_PATH;
   if (path === undefined) {
-    if (!required) return undefined;
+    if (!required) {
+      return undefined;
+    }
     throw new Error("OCC_CONFIG_PATH must identify the Installation startup YAML.");
   }
   if (typeof path !== "string" || path.trim().length === 0) {
@@ -205,7 +207,9 @@ function safe(value: unknown, path: string): void {
     value.forEach((entry, index) => safe(entry, `${path}[${index}]`));
     return;
   }
-  if (typeof value !== "object" || value === null) return;
+  if (typeof value !== "object" || value === null) {
+    return;
+  }
   for (const [key, entry] of Object.entries(value)) {
     if (key === "installationId" || key === "installation_id") {
       throw new Error("Installation startup configuration must not contain an Installation ID.");
@@ -261,15 +265,25 @@ export function providerSummariesFromDefinitions(
 }
 
 function importEntrypoint(value: unknown): string | undefined {
-  if (typeof value === "string") return value;
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return undefined;
+  }
 
   const conditions = value as Record<string, unknown>;
-  if (Object.hasOwn(conditions, ".")) return importEntrypoint(conditions["."]);
+  if (Object.hasOwn(conditions, ".")) {
+    return importEntrypoint(conditions["."]);
+  }
   for (const [condition, target] of Object.entries(conditions)) {
-    if (condition !== "import" && condition !== "node" && condition !== "default") continue;
+    if (condition !== "import" && condition !== "node" && condition !== "default") {
+      continue;
+    }
     const selected = importEntrypoint(target);
-    if (selected !== undefined) return selected;
+    if (selected !== undefined) {
+      return selected;
+    }
   }
   return undefined;
 }
@@ -280,7 +294,9 @@ async function loadDriverPackage(
   packageRoot: string,
   allowFixtureTarball: boolean,
 ): Promise<LoadedDriverPackage | undefined> {
-  if (!Object.hasOwn(selection, "package")) return undefined;
+  if (!Object.hasOwn(selection, "package")) {
+    return undefined;
+  }
 
   const path = `drivers.${capability}`;
   const packageName = nonempty(selection.package, `${path}.package`);
@@ -311,7 +327,9 @@ async function loadDriverPackage(
   try {
     const ownerUrl = pathToFileURL(ownerPath);
     const installed = findPackageJSON(packageName, ownerUrl);
-    if (installed === undefined) throw new Error("package metadata unavailable");
+    if (installed === undefined) {
+      throw new Error("package metadata unavailable");
+    }
     installedManifestPath = await realpath(installed);
   } catch {
     throw new Error(`${path}.package selects an unavailable installed Driver package.`);
@@ -438,7 +456,9 @@ export async function loadInstallationConfiguration(options: {
   if (configuration === undefined && options.mode === "production") {
     throw new Error("OCC_CONFIG_PATH must identify the Installation startup YAML.");
   }
-  if (configuration === undefined) return undefined;
+  if (configuration === undefined) {
+    return undefined;
+  }
   if (
     options.mode === "development" &&
     configuration.occ === undefined &&

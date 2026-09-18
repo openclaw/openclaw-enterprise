@@ -186,7 +186,9 @@ test(
             typeof candidate.text === "string" &&
             candidate.text.includes(nonce),
         );
-        if (response !== undefined) return response;
+        if (response !== undefined) {
+          return response;
+        }
         // Slack distributes shared-app events across connections, so an unrelated gateway can win.
         if (attempts < 3 && Date.now() >= nextAttemptAt) {
           await slackApi("chat.postMessage", slack.senderBotToken, message);

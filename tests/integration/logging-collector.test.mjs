@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { createRequire } from "node:module";
+
 const { loadYaml } = createRequire(new URL("../../apps/controller/package.json", import.meta.url))(
   "@kubernetes/client-node",
 );
@@ -24,7 +25,9 @@ async function docker(args) {
 async function waitFor(check) {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
-    if (await check()) return;
+    if (await check()) {
+      return;
+    }
     await delay(100);
   }
   assert.fail("Timed out waiting for the real Collector outcome.");
@@ -84,7 +87,9 @@ async function collectorFixture(t, prefix) {
     collector,
     async startCollector({ receiverPath, publish }) {
       const args = ["run", "--detach", "--name", collector, "--network", network, "--user", user];
-      for (const port of publish) args.push("--publish", port);
+      for (const port of publish) {
+        args.push("--publish", port);
+      }
       args.push(
         "--env",
         `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://${backend}:4318/v1/logs`,
@@ -114,7 +119,9 @@ async function exportedRecords(out, mapRecord) {
   try {
     text = await readFile(join(out, "logs.jsonl"), "utf8");
   } catch (error) {
-    if (error.code === "ENOENT") return [];
+    if (error.code === "ENOENT") {
+      return [];
+    }
     throw error;
   }
   return text
@@ -268,8 +275,9 @@ test(
     assert.equal(httpAttributes["http.request.method"], "GET");
     assert.equal(httpAttributes["http.response.status_code"], 200);
     const serialized = JSON.stringify(initial);
-    for (const value of [...canaries, "forged-service", "forged-agent"])
+    for (const value of [...canaries, "forged-service", "forged-agent"]) {
       assert.equal(serialized.includes(value), false);
+    }
     const metrics = await fetch(`http://${metricsAddress}/metrics`).then((r) => r.text());
     assert.match(
       metrics,

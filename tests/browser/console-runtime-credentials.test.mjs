@@ -52,7 +52,9 @@ async function newPage(t, fixture) {
         cleanupError ??= error;
       }
     }
-    if (cleanupError) throw cleanupError;
+    if (cleanupError) {
+      throw cleanupError;
+    }
   });
   context = await browser.newContext();
   return { page: await context.newPage(), artifacts };
@@ -403,7 +405,9 @@ test("operator-managed console binding saves and deploys without a managed crede
   await page.getByText(/Gateway readiness does not confirm model access/).waitFor();
   const credentialRequests = [];
   page.on("request", (request) => {
-    if (request.url().includes("/runtime-credentials")) credentialRequests.push(request.method());
+    if (request.url().includes("/runtime-credentials")) {
+      credentialRequests.push(request.method());
+    }
   });
   const deployed = page.waitForResponse(
     (r) => r.url().endsWith(`/agents/${agent.id}/deploy`) && r.request().method() === "POST",

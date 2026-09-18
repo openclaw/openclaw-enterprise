@@ -72,7 +72,9 @@ async function kubectl(...args) {
 }
 
 async function configuredDriverEnvironment(context, kubernetesDrivers) {
-  if (!kubernetesDrivers) return {};
+  if (!kubernetesDrivers) {
+    return {};
+  }
   assert.equal(
     useKubernetesDrivers,
     true,
@@ -85,7 +87,9 @@ async function createKubernetesStartupEnvironment(context) {
   // The API and worker share a scoped controller identity; the base kubeconfig is used only
   // to create that identity and grant per-tenant access after each Namespace exists.
   const cached = kubernetesStartupEnvironments.get(context);
-  if (cached !== undefined) return cached;
+  if (cached !== undefined) {
+    return cached;
+  }
 
   assert.ok(fixtureImage, "OCC_TEST_KUBERNETES_IMAGE is required.");
   await validateExplicitK3dLoopbackContext({ kubeconfigPath, kubernetesContext });
@@ -105,7 +109,9 @@ async function createKubernetesStartupEnvironment(context) {
       rm(directory, { recursive: true, force: true }),
     ]);
     const failures = cleanup.filter((result) => result.status === "rejected");
-    if (failures.length > 0) throw new AggregateError(failures.map(({ reason }) => reason));
+    if (failures.length > 0) {
+      throw new AggregateError(failures.map(({ reason }) => reason));
+    }
   });
 
   await kubectl("create", "namespace", platformNamespace);
@@ -223,7 +229,9 @@ async function waitForKubernetesNamespace(context, namespaceId) {
       await kubectl("get", "namespace", name, "-o", "json");
       return name;
     } catch (error) {
-      if (!/NotFound|not found/i.test(error.stderr ?? error.message)) throw error;
+      if (!/NotFound|not found/i.test(error.stderr ?? error.message)) {
+        throw error;
+      }
       await delay(100);
     }
   }
@@ -247,7 +255,9 @@ async function grantTenantAccess(context, namespaceId) {
       `--serviceaccount=${platformNamespace}:${account}`,
     );
   } catch (error) {
-    if (!/AlreadyExists|already exists/i.test(error.stderr ?? error.message)) throw error;
+    if (!/AlreadyExists|already exists/i.test(error.stderr ?? error.message)) {
+      throw error;
+    }
   }
 }
 
@@ -265,7 +275,9 @@ function cleanupKubernetesNamespaces(context, namespaceIds) {
       ),
     );
     const failures = cleanup.filter((result) => result.status === "rejected");
-    if (failures.length > 0) throw new AggregateError(failures.map(({ reason }) => reason));
+    if (failures.length > 0) {
+      throw new AggregateError(failures.map(({ reason }) => reason));
+    }
   });
 }
 
@@ -351,7 +363,9 @@ async function availablePort() {
 }
 
 async function stopController(child) {
-  if (child.exitCode !== null || child.signalCode !== null) return;
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return;
+  }
   const exited = once(child, "exit");
   child.kill("SIGTERM");
   const force = setTimeout(() => child.kill("SIGKILL"), 2_000);
@@ -459,7 +473,9 @@ async function startWorker(context, options) {
       null,
       `The separate OCC worker subprocess exited early:\n${worker.output()}`,
     );
-    if (/"event"\s*:\s*"worker\.started"/.test(worker.output())) return worker;
+    if (/"event"\s*:\s*"worker\.started"/.test(worker.output())) {
+      return worker;
+    }
     await delay(25);
   }
   assert.fail(`The separate OCC worker subprocess never became ready:\n${worker.output()}`);
@@ -484,7 +500,9 @@ async function pollUntil(description, operation, { worker, timeoutMs = 15_000 } 
       );
     }
     const result = await operation();
-    if (result !== undefined) return result;
+    if (result !== undefined) {
+      return result;
+    }
     await delay(35);
   }
   assert.fail(

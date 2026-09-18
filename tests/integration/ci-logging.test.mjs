@@ -77,8 +77,9 @@ test("prepareLogging installs k3d Collector from the canonical Helm template", a
   const registered = [];
   const execFile = async (command, args) => {
     calls.push([command, args]);
-    if (command === "docker" && args[0] === "inspect")
+    if (command === "docker" && args[0] === "inspect") {
       return { stdout: "172.18.0.23\n", stderr: "" };
+    }
     if (command === "kubectl" && args.includes("endpointslices")) {
       return {
         stdout: JSON.stringify({
@@ -217,7 +218,9 @@ test("cleanupLogging does not require Kubernetes when a k3d backend is cleaned",
   const calls = [];
   const execFile = async (command, args) => {
     calls.push([command, args]);
-    if (command === "kubectl") throw new Error("dead cluster");
+    if (command === "kubectl") {
+      throw new Error("dead cluster");
+    }
     return { stdout: "", stderr: "" };
   };
 

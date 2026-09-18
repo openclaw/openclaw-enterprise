@@ -1,4 +1,5 @@
 import js from "@eslint/js";
+import stylistic from "@stylistic/eslint-plugin";
 import { defineConfig, globalIgnores } from "eslint/config";
 import globals from "globals";
 import tseslint from "typescript-eslint";
@@ -20,7 +21,15 @@ export default defineConfig(
     files: ["{apps,packages,scripts,tests}/**/*.{js,mjs,cjs,ts}", "*.{js,mjs,cjs,ts}"],
     extends: [js.configs.recommended],
     languageOptions: { globals: globals.node },
+    plugins: { "@stylistic": stylistic },
     rules: {
+      curly: ["error", "all"],
+      "one-var": ["error", "never"],
+      "@stylistic/padding-line-between-statements": [
+        "error",
+        { blankLine: "always", prev: "import", next: "*" },
+        { blankLine: "any", prev: "import", next: "import" },
+      ],
       "no-unused-vars": [
         "error",
         {

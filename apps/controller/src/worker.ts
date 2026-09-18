@@ -88,15 +88,25 @@ interface AgentStopDispatchResult extends DispatchResult {
 }
 
 function positiveInteger(value: number, name: string): number {
-  if (!isPositiveSafeInteger(value)) throw new Error(`${name} must be a positive safe integer.`);
+  if (!isPositiveSafeInteger(value)) {
+    throw new Error(`${name} must be a positive safe integer.`);
+  }
   return value;
 }
 
 function workOperation(claim: ClaimedWork): string {
-  if (claim.revisionId !== undefined) return "agent_revision.reconcile";
-  if (claim.agentTarget === "stopped") return "agent.stop";
-  if (claim.namespaceTarget === "deleted") return "namespace.delete";
-  if (claim.namespaceTarget === "ready") return "namespace.ensure";
+  if (claim.revisionId !== undefined) {
+    return "agent_revision.reconcile";
+  }
+  if (claim.agentTarget === "stopped") {
+    return "agent.stop";
+  }
+  if (claim.namespaceTarget === "deleted") {
+    return "namespace.delete";
+  }
+  if (claim.namespaceTarget === "ready") {
+    return "namespace.ensure";
+  }
   return "work.reconcile";
 }
 
@@ -159,8 +169,12 @@ function validSecretDriver(driver: SecretDriver): boolean {
 
 function validLifecycleHooks(driver: Driver): boolean {
   const hooks = driver.computeLifecycleHooks;
-  if (hooks === undefined) return true;
-  if (typeof hooks !== "object" || hooks === null || Array.isArray(hooks)) return false;
+  if (hooks === undefined) {
+    return true;
+  }
+  if (typeof hooks !== "object" || hooks === null || Array.isArray(hooks)) {
+    return false;
+  }
   const phases = new Set([
     "afterNamespacePrepared",
     "beforeWorkloadStart",
@@ -177,24 +191,27 @@ function validLifecycleHooks(driver: Driver): boolean {
 }
 
 function validObservation(value: unknown, namespaceId: string, target: "ready" | "deleted") {
-  if (typeof value !== "object" || value === null || Object.hasOwn(value, "installationId"))
+  if (typeof value !== "object" || value === null || Object.hasOwn(value, "installationId")) {
     return false;
+  }
   const observation = value as Partial<NamespaceEnsureResult & NamespaceDeleteResult>;
   if (
     observation.namespaceId !== namespaceId ||
     (observation.failure !== undefined &&
       observation.failure !== "retryable" &&
       observation.failure !== "permanent")
-  )
+  ) {
     return false;
+  }
   return target === "ready"
     ? typeof observation.namespaceReady === "boolean"
     : typeof observation.namespaceDeleted === "boolean";
 }
 
 function validRevisionObservation(value: unknown, revision: Readonly<AgentRevision>): boolean {
-  if (typeof value !== "object" || value === null || Object.hasOwn(value, "installationId"))
+  if (typeof value !== "object" || value === null || Object.hasOwn(value, "installationId")) {
     return false;
+  }
   const observation = value as Record<string, unknown>;
   return (
     observation.namespaceId === revision.namespaceId &&
@@ -252,8 +269,9 @@ export class ControllerWorker {
 
   constructor(options: ControllerWorkerOptions) {
     this.mode = options.mode ?? "development";
-    if (this.mode !== "development" && this.mode !== "production")
+    if (this.mode !== "development" && this.mode !== "production") {
       throw new Error("The controller worker mode must be development or production.");
+    }
     this.pollIntervalMs = positiveInteger(options.pollIntervalMs ?? 250, "Worker poll interval");
     this.leaseDurationMs = positiveInteger(options.leaseDurationMs ?? 5_000, "Worker claim lease");
     this.maxAttempts = positiveInteger(options.maxAttempts ?? 5, "Maximum worker attempts");
@@ -282,10 +300,12 @@ export class ControllerWorker {
       throw new Error("The selected IAM Driver is unavailable.");
     }
     const computeDriver = drivers === undefined ? options.computeDriver : drivers.computeDriver;
-    if (computeDriver === undefined)
+    if (computeDriver === undefined) {
       throw new Error("The selected Compute Driver must be explicitly provided.");
-    if (drivers === undefined && !validDriver(computeDriver))
+    }
+    if (drivers === undefined && !validDriver(computeDriver)) {
       throw new Error("The selected Compute Driver is unavailable.");
+    }
     if (
       computeDriver.activationOrder === "beforeCommit" &&
       typeof computeDriver.activateRevision !== "function"
@@ -338,10 +358,13 @@ export class ControllerWorker {
   }
 
   async start(): Promise<void> {
-    if (this.loop !== undefined) throw new Error("The controller worker is already running.");
+    if (this.loop !== undefined) {
+      throw new Error("The controller worker is already running.");
+    }
     const installation = await this.state.loadInstallation();
-    if (installation === undefined)
+    if (installation === undefined) {
       throw new Error("The platform Installation must be bootstrapped before starting the worker.");
+    }
     this.installation = installation;
     validatePersistedNativeIAMState(await this.loadIAMState());
     this.attachLifecycleDrivers(this.iam);
@@ -371,7 +394,9 @@ export class ControllerWorker {
   }
 
   async stop(): Promise<void> {
-    if (this.stopping) return;
+    if (this.stopping) {
+      return;
+    }
     this.stopping = true;
     this.abort.abort();
     await this.loop;
@@ -399,15 +424,21 @@ export class ControllerWorker {
       try {
         await delay(this.pollIntervalMs, undefined, { signal: this.abort.signal });
       } catch (error) {
-        if (!this.stopping) throw error;
+        if (!this.stopping) {
+          throw error;
+        }
       }
     }
   }
 
   private async health(force: boolean): Promise<void> {
-    if (this.pendingHealth !== undefined) return this.pendingHealth;
+    if (this.pendingHealth !== undefined) {
+      return this.pendingHealth;
+    }
     const now = Date.now();
-    if (!force && now - this.lastHealthAt < Math.max(1_000, this.pollIntervalMs * 20)) return;
+    if (!force && now - this.lastHealthAt < Math.max(1_000, this.pollIntervalMs * 20)) {
+      return;
+    }
     this.lastHealthAt = now;
     this.pendingHealth = (async () => {
       const pending = await this.queue.pending();
@@ -424,7 +455,9 @@ export class ControllerWorker {
   }
 
   private async loadIAMState(): Promise<NativeIAMState> {
-    if (this.installation === undefined) throw new Error("The worker Installation is unavailable.");
+    if (this.installation === undefined) {
+      throw new Error("The worker Installation is unavailable.");
+    }
     return this.state.loadNativeIAMState();
   }
 
@@ -436,9 +469,15 @@ export class ControllerWorker {
     if (this.configuration?.computeLifecycleHooks !== undefined) {
       lifecycleDrivers.push(this.configuration);
     }
-    if (this.sandbox?.computeLifecycleHooks !== undefined) lifecycleDrivers.push(this.sandbox);
-    if (iam.computeLifecycleHooks !== undefined) lifecycleDrivers.push(iam);
-    if (lifecycleDrivers.length === 0) return;
+    if (this.sandbox?.computeLifecycleHooks !== undefined) {
+      lifecycleDrivers.push(this.sandbox);
+    }
+    if (iam.computeLifecycleHooks !== undefined) {
+      lifecycleDrivers.push(iam);
+    }
+    if (lifecycleDrivers.length === 0) {
+      return;
+    }
     if (typeof this.compute.setLifecycleDrivers !== "function") {
       throw new Error("The selected Compute Driver cannot accept selected lifecycle Drivers.");
     }
@@ -500,7 +539,9 @@ export class ControllerWorker {
     namespace: Readonly<Namespace>,
   ): Promise<DispatchResult | undefined> {
     const installation = this.installation;
-    if (installation === undefined) throw new Error("The worker Installation is unavailable.");
+    if (installation === undefined) {
+      throw new Error("The worker Installation is unavailable.");
+    }
     const state = await this.loadIAMState();
     const driver = this.iam;
     const exact: AuthorizationRequest = {
@@ -521,13 +562,14 @@ export class ControllerWorker {
       return { outcome: "permanent", code: "ACTOR_REVOKED", decision, authorization: request };
     }
     const decision = await this.iamDecision(driver, request);
-    if (!decision.allowed)
+    if (!decision.allowed) {
       return {
         outcome: "permanent",
         code: "AUTHORIZATION_DENIED",
         decision,
         authorization: request,
       };
+    }
     if (claim.namespaceTarget === "ready") {
       if (namespace.existingNamespace !== undefined) {
         const adminRequest: AuthorizationRequest = {
@@ -536,22 +578,24 @@ export class ControllerWorker {
           resource: { kind: "installation", id: installation.id },
         };
         const adminDecision = await this.iamDecision(driver, adminRequest);
-        if (!adminDecision.allowed)
+        if (!adminDecision.allowed) {
           return {
             outcome: "permanent",
             code: "AUTHORIZATION_DENIED",
             decision: adminDecision,
             authorization: adminRequest,
           };
+        }
       }
       const exactDecision = await this.iamDecision(driver, exact);
-      if (exactDecision.evidence.restrictionIds.length > 0)
+      if (exactDecision.evidence.restrictionIds.length > 0) {
         return {
           outcome: "permanent",
           code: "AUTHORIZATION_DENIED",
           decision: exactDecision,
           authorization: exact,
         };
+      }
     }
     return undefined;
   }
@@ -583,10 +627,14 @@ export class ControllerWorker {
         await this.finalize(claim, namespace, denied);
         return;
       }
-      if ((await this.queue.heartbeat(claim)) === undefined) throw new WorkClaimLostError();
+      if ((await this.queue.heartbeat(claim)) === undefined) {
+        throw new WorkClaimLostError();
+      }
       result = await this.observe(claim, namespace);
     } catch (error) {
-      if (error instanceof WorkClaimLostError) throw error;
+      if (error instanceof WorkClaimLostError) {
+        throw error;
+      }
       result = { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
     }
     await this.finalize(claim, namespace, result);
@@ -722,7 +770,9 @@ export class ControllerWorker {
         ...(active === undefined ? {} : { revision: active }),
       };
     } catch (error) {
-      if (error instanceof WorkClaimLostError) throw error;
+      if (error instanceof WorkClaimLostError) {
+        throw error;
+      }
       result = { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
     }
     await this.finalizeAgentStop(claim, result);
@@ -739,15 +789,17 @@ export class ControllerWorker {
     };
     const state = await this.loadIAMState();
     const decision = await this.iamDecision(this.iam, authorization);
-    if (!state.identities.some((identity) => identity.id === claim.actorId))
+    if (!state.identities.some((identity) => identity.id === claim.actorId)) {
       return { outcome: "permanent", code: "ACTOR_REVOKED", authorization, decision };
-    if (!decision.allowed)
+    }
+    if (!decision.allowed) {
       return {
         outcome: "permanent",
         code: "AUTHORIZATION_DENIED",
         authorization,
         decision,
       };
+    }
     return undefined;
   }
 
@@ -756,7 +808,9 @@ export class ControllerWorker {
     result: AgentStopDispatchResult,
   ): Promise<void> {
     await this.state.transactWithQueue(async (unit, queue) => {
-      if ((await queue.heartbeat(claim)) === undefined) throw new WorkClaimLostError();
+      if ((await queue.heartbeat(claim)) === undefined) {
+        throw new WorkClaimLostError();
+      }
       if (result.outcome === "success" && result.agent !== undefined) {
         const agent = await unit.agents.lockAgent(claim.namespaceId, claim.agentId!);
         if (agent === undefined || agent.servicePrincipalId !== result.agent.servicePrincipalId) {
@@ -776,13 +830,19 @@ export class ControllerWorker {
       const terminalFailure =
         result.outcome === "permanent" ||
         (result.outcome === "retry" && claim.attemptCount >= this.maxAttempts);
-      if (result.decision !== undefined) await this.appendAgentStopDenial(unit, claim, result);
-      else if (result.outcome === "success" || terminalFailure)
+      if (result.decision !== undefined) {
+        await this.appendAgentStopDenial(unit, claim, result);
+      } else if (result.outcome === "success" || terminalFailure) {
         await this.appendAgentStopOutcome(unit, claim, result);
+      }
 
-      if (result.outcome === "success") await queue.complete(claim);
-      else if (terminalFailure) await queue.fail(claim, { code: result.code });
-      else await queue.retry(claim, { code: result.code });
+      if (result.outcome === "success") {
+        await queue.complete(claim);
+      } else if (terminalFailure) {
+        await queue.fail(claim, { code: result.code });
+      } else {
+        await queue.retry(claim, { code: result.code });
+      }
     }, this.queueOptions);
     this.emit({
       event: "worker.completed",
@@ -801,8 +861,9 @@ export class ControllerWorker {
     claim: ClaimedWork,
     result: AgentStopDispatchResult,
   ): Promise<void> {
-    if (this.installation === undefined || claim.agentId === undefined)
+    if (this.installation === undefined || claim.agentId === undefined) {
       throw new Error("The worker Agent stop audit context is unavailable.");
+    }
     await unit.audit.append({
       id: `aud_${randomUUID()}`,
       installationId: this.installation.id,
@@ -828,8 +889,9 @@ export class ControllerWorker {
     claim: ClaimedWork,
     result: AgentStopDispatchResult,
   ): Promise<void> {
-    if (this.installation === undefined || claim.agentId === undefined)
+    if (this.installation === undefined || claim.agentId === undefined) {
       throw new Error("The worker Agent stop authorization context is unavailable.");
+    }
     await unit.audit.append({
       id: `aud_${randomUUID()}`,
       installationId: this.installation.id,
@@ -975,8 +1037,9 @@ export class ControllerWorker {
             await this.compute.bindAgent!({ namespace, agent });
           });
         } catch (error) {
-          if (error instanceof WorkClaimLostError || agent.activeRevisionId !== revision.id)
+          if (error instanceof WorkClaimLostError || agent.activeRevisionId !== revision.id) {
             throw error;
+          }
           await this.finalizeActiveRevision(claim, revision, "COMPUTE_BINDING_INCOMPLETE");
           return;
         }
@@ -1014,7 +1077,9 @@ export class ControllerWorker {
             await this.withClaimHeartbeat(claim, () => compute.retireRevision(previous));
           }
         } catch (error) {
-          if (error instanceof WorkClaimLostError) throw error;
+          if (error instanceof WorkClaimLostError) {
+            throw error;
+          }
           await this.finalizeActiveRevision(claim, revision, "REVISION_FINALIZATION_INCOMPLETE");
           return;
         }
@@ -1033,7 +1098,9 @@ export class ControllerWorker {
         });
         return;
       }
-      if ((await this.queue.heartbeat(claim)) === undefined) throw new WorkClaimLostError();
+      if ((await this.queue.heartbeat(claim)) === undefined) {
+        throw new WorkClaimLostError();
+      }
       result = await this.observeRevision(
         claim,
         revision,
@@ -1042,7 +1109,9 @@ export class ControllerWorker {
         secretContext.context,
       );
     } catch (error) {
-      if (error instanceof WorkClaimLostError) throw error;
+      if (error instanceof WorkClaimLostError) {
+        throw error;
+      }
       result = { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
     }
     await this.finalizeRevision(claim, result);
@@ -1072,15 +1141,18 @@ export class ControllerWorker {
         candidate.namespaceId === agent.namespaceId &&
         candidate.agentId === agent.id,
     );
-    if (identity === undefined) return { outcome: "permanent", code: "INVALID_AGENT_PRINCIPAL" };
+    if (identity === undefined) {
+      return { outcome: "permanent", code: "INVALID_AGENT_PRINCIPAL" };
+    }
     const decision = await this.iamDecision(driver, authorization);
-    if (!decision.allowed)
+    if (!decision.allowed) {
       return {
         outcome: "permanent",
         code: "AUTHORIZATION_DENIED",
         authorization,
         decision,
       };
+    }
 
     const configurationAuthorization: AuthorizationRequest = {
       principalId: claim.actorId,
@@ -1092,29 +1164,35 @@ export class ControllerWorker {
       },
     };
     const configurationDecision = await this.iamDecision(driver, configurationAuthorization);
-    if (!configurationDecision.allowed)
+    if (!configurationDecision.allowed) {
       return {
         outcome: "permanent",
         code: "AUTHORIZATION_DENIED",
         authorization: configurationAuthorization,
         decision: configurationDecision,
       };
+    }
 
-    if (revision.harnessAuth === undefined || revision.harnessAuth === null)
+    if (revision.harnessAuth === undefined || revision.harnessAuth === null) {
       return { outcome: "permanent", code: "HARNESS_AUTH_REQUIRED" };
+    }
     const secretBindings = revisionSecretBindings(revision);
-    if ("result" in secretBindings) return secretBindings.result;
+    if ("result" in secretBindings) {
+      return secretBindings.result;
+    }
     const refs = uniqueSecretRefs(secretBindings.bindings);
     const auth = revision.harnessAuth;
     if (auth.method === "api_key") {
-      if (auth.source?.kind !== "secret" || auth.source.namespaceId !== revision.namespaceId)
+      if (auth.source?.kind !== "secret" || auth.source.namespaceId !== revision.namespaceId) {
         return { outcome: "permanent", code: "INVALID_HARNESS_AUTH" };
+      }
       if (
         !refs.some(
           (ref) => ref.id === auth.source.id && ref.namespaceId === auth.source.namespaceId,
         )
-      )
+      ) {
         refs.push(auth.source);
+      }
     } else if (auth.method !== "chatgpt_service_account" && auth.method !== "runtime") {
       return { outcome: "permanent", code: "INVALID_HARNESS_AUTH" };
     }
@@ -1126,13 +1204,14 @@ export class ControllerWorker {
           resource: ref,
         };
         const secretDecision = await this.iamDecision(driver, secretAuthorization);
-        if (!secretDecision.allowed)
+        if (!secretDecision.allowed) {
           return {
             outcome: "permanent",
             code: "AUTHORIZATION_DENIED",
             authorization: secretAuthorization,
             decision: secretDecision,
           };
+        }
       }
     }
 
@@ -1147,13 +1226,14 @@ export class ControllerWorker {
         },
       };
       const accountDecision = await this.iamDecision(driver, accountAuthorization);
-      if (!accountDecision.allowed)
+      if (!accountDecision.allowed) {
         return {
           outcome: "permanent",
           code: "AUTHORIZATION_DENIED",
           authorization: accountAuthorization,
           decision: accountDecision,
         };
+      }
     }
     return undefined;
   }
@@ -1165,7 +1245,9 @@ export class ControllerWorker {
       return { outcome: "permanent", code: "PROVIDER_UNAVAILABLE" };
     }
     const auth = revision.harnessAuth;
-    if (auth.method !== "chatgpt_service_account") return undefined;
+    if (auth.method !== "chatgpt_service_account") {
+      return undefined;
+    }
     const { account, binding } = await this.state.read(async (view) => ({
       account: await view.serviceAccounts.findServiceAccount(
         revision.namespaceId,
@@ -1214,9 +1296,12 @@ export class ControllerWorker {
   ): Promise<RevisionDispatchResult> {
     return this.withClaimHeartbeat(claim, async () => {
       const observation = await this.compute.prepareRevision(revision, context);
-      if (!validRevisionObservation(observation, revision))
+      if (!validRevisionObservation(observation, revision)) {
         return { outcome: "permanent", code: "INVALID_DRIVER_OBSERVATION" };
-      if (!observation.ready) return { outcome: "pending", code: "REVISION_INCOMPLETE" };
+      }
+      if (!observation.ready) {
+        return { outcome: "pending", code: "REVISION_INCOMPLETE" };
+      }
       const agent = await this.state.read((view) =>
         view.agents.findAgent(revision.namespaceId, revision.agentId),
       );
@@ -1250,7 +1335,9 @@ export class ControllerWorker {
     { readonly context: ComputeRevisionContext } | { readonly result: RevisionDispatchResult }
   > {
     const bindings = revisionSecretBindings(revision);
-    if ("result" in bindings) return { result: bindings.result };
+    if ("result" in bindings) {
+      return { result: bindings.result };
+    }
     const secretDriverId = this.secretDriverId;
     if (
       Object.keys(bindings.bindings).length > 0 &&
@@ -1285,14 +1372,16 @@ export class ControllerWorker {
       return projections;
     });
 
-    if (resolved === undefined)
+    if (resolved === undefined) {
       return { result: { outcome: "permanent", code: "SECRET_BINDING_UNAVAILABLE" } };
+    }
 
     let harnessAuth: ResolvedHarnessAuth;
     if (revision.harnessAuth.method === "api_key") {
       const auth = revision.harnessAuth;
-      if (typeof secretDriverId !== "string" || auth.secretDriverId !== secretDriverId)
+      if (typeof secretDriverId !== "string" || auth.secretDriverId !== secretDriverId) {
         return { result: { outcome: "permanent", code: "SECRET_DRIVER_MISMATCH" } };
+      }
       const secret = await this.state.read((view) =>
         view.secrets.findSecret(auth.source.namespaceId, auth.source.id),
       );
@@ -1306,8 +1395,9 @@ export class ControllerWorker {
         secret.backendRef.name.trim().length === 0 ||
         secret.backendRef.key.trim().length === 0 ||
         secret.backendRef.uid.trim().length === 0
-      )
+      ) {
         return { result: { outcome: "permanent", code: "HARNESS_AUTH_SOURCE_UNAVAILABLE" } };
+      }
       // Admission verifies the physical source. Workers project authoritative
       // OCC metadata without requiring permission to read backend Secret values.
       harnessAuth = { ...auth, backendRef: secret.backendRef };
@@ -1320,7 +1410,9 @@ export class ControllerWorker {
   private async withClaimHeartbeat<T>(claim: ClaimedWork, effect: () => Promise<T>): Promise<T> {
     // Consecutive short effects can each finish before their timer fires while
     // the whole sequence outlives the lease. Renew before every external effect.
-    if ((await this.queue.heartbeat(claim)) === undefined) throw new WorkClaimLostError();
+    if ((await this.queue.heartbeat(claim)) === undefined) {
+      throw new WorkClaimLostError();
+    }
     let lost = false;
     let pending = Promise.resolve();
     const operation = new AbortController();
@@ -1332,8 +1424,11 @@ export class ControllerWorker {
     const heartbeat = setInterval(
       () => {
         pending = pending.then(async () => {
-          if ((await this.queue.heartbeat(claim)) === undefined) abandon();
-          else if (!lost) void this.health(false);
+          if ((await this.queue.heartbeat(claim)) === undefined) {
+            abandon();
+          } else if (!lost) {
+            void this.health(false);
+          }
         });
         pending.catch(() => {
           abandon();
@@ -1351,7 +1446,9 @@ export class ControllerWorker {
       clearInterval(heartbeat);
       this.abort.signal.removeEventListener("abort", abandon);
       await pending.catch(() => {});
-      if (lost) throw new WorkClaimLostError();
+      if (lost) {
+        throw new WorkClaimLostError();
+      }
     }
   }
 
@@ -1364,15 +1461,21 @@ export class ControllerWorker {
         claim.namespaceTarget === "ready"
           ? await this.compute.ensureNamespace(namespace)
           : await this.compute.deleteNamespace(namespace);
-      if (!validObservation(observation, namespace.id, claim.namespaceTarget ?? "ready"))
+      if (!validObservation(observation, namespace.id, claim.namespaceTarget ?? "ready")) {
         return { outcome: "permanent", code: "INVALID_DRIVER_OBSERVATION" };
+      }
       const complete =
         "namespaceReady" in observation ? observation.namespaceReady : observation.namespaceDeleted;
       let outcome: Outcome;
-      if (observation.failure === "permanent") outcome = "permanent";
-      else if (complete && observation.failure === undefined) outcome = "success";
-      else if (observation.failure === "retryable") outcome = "retry";
-      else outcome = "pending";
+      if (observation.failure === "permanent") {
+        outcome = "permanent";
+      } else if (complete && observation.failure === undefined) {
+        outcome = "success";
+      } else if (observation.failure === "retryable") {
+        outcome = "retry";
+      } else {
+        outcome = "pending";
+      }
       return {
         outcome,
         code: complete ? "NAMESPACE_RECONCILED" : "NAMESPACE_INCOMPLETE",
@@ -1394,7 +1497,9 @@ export class ControllerWorker {
     let activated: Readonly<AgentRevision> | undefined;
     let stoppedCandidate: Readonly<AgentRevision> | undefined;
     await this.state.transactWithQueue(async (unit, queue) => {
-      if ((await queue.heartbeat(claim)) === undefined) throw new WorkClaimLostError();
+      if ((await queue.heartbeat(claim)) === undefined) {
+        throw new WorkClaimLostError();
+      }
       if (resolved.supersededBy !== undefined && resolved.outcome === "success") {
         await this.appendRevisionSuperseded(unit, claim, resolved.supersededBy);
       } else if (resolved.revision !== undefined && resolved.outcome === "success") {
@@ -1427,11 +1532,15 @@ export class ControllerWorker {
         await this.appendRevisionDenial(unit, claim, resolved);
       }
 
-      if (resolved.outcome === "success") await queue.complete(claim);
-      else if (resolved.outcome === "pending") await queue.defer(claim, { code: resolved.code });
-      else if (resolved.outcome === "permanent" || claim.attemptCount >= this.maxAttempts)
+      if (resolved.outcome === "success") {
+        await queue.complete(claim);
+      } else if (resolved.outcome === "pending") {
+        await queue.defer(claim, { code: resolved.code });
+      } else if (resolved.outcome === "permanent" || claim.attemptCount >= this.maxAttempts) {
         await queue.fail(claim, { code: resolved.code });
-      else await queue.retry(claim, { code: resolved.code });
+      } else {
+        await queue.retry(claim, { code: resolved.code });
+      }
     }, this.queueOptions);
     if (stoppedCandidate !== undefined) {
       await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(stoppedCandidate!));
@@ -1457,7 +1566,9 @@ export class ControllerWorker {
         }
         await this.retireEarlierRevisions(claim, activated);
       } catch (error) {
-        if (error instanceof WorkClaimLostError) throw error;
+        if (error instanceof WorkClaimLostError) {
+          throw error;
+        }
         await this.finalizeRevision(claim, {
           outcome: "pending",
           code: "REVISION_FINALIZATION_INCOMPLETE",
@@ -1485,7 +1596,9 @@ export class ControllerWorker {
     code: string,
   ): Promise<void> {
     await this.state.transactWithQueue(async (_unit, queue) => {
-      if ((await queue.heartbeat(claim)) === undefined) throw new WorkClaimLostError();
+      if ((await queue.heartbeat(claim)) === undefined) {
+        throw new WorkClaimLostError();
+      }
       await queue.complete(claim);
     }, this.queueOptions);
     this.emit({
@@ -1519,10 +1632,14 @@ export class ControllerWorker {
     result: RevisionDispatchResult,
   ): Promise<void> {
     const revision = result.revision;
-    if (revision === undefined) throw new Error("The activated Agent revision is unavailable.");
+    if (revision === undefined) {
+      throw new Error("The activated Agent revision is unavailable.");
+    }
     let completed = false;
     await this.state.transactWithQueue(async (unit, queue) => {
-      if ((await queue.heartbeat(claim)) === undefined) throw new WorkClaimLostError();
+      if ((await queue.heartbeat(claim)) === undefined) {
+        throw new WorkClaimLostError();
+      }
       const agent = await unit.agents.lockAgent(claim.namespaceId, claim.agentId!);
       if (
         agent === undefined ||
@@ -1535,11 +1652,14 @@ export class ControllerWorker {
       }
       await this.appendRevisionObservation(unit, claim, result);
       await queue.complete(claim);
-      if (this.maintenanceIntervalMs !== undefined)
+      if (this.maintenanceIntervalMs !== undefined) {
         await this.enqueueMaintenance(queue, claim, revision);
+      }
       completed = true;
     }, this.queueOptions);
-    if (!completed) return;
+    if (!completed) {
+      return;
+    }
     this.emit({
       event: "worker.completed",
       ...workLogFields(claim),
@@ -1565,7 +1685,9 @@ export class ControllerWorker {
       return;
     }
     await this.state.transactWithQueue(async (unit, queue) => {
-      if ((await queue.heartbeat(claim)) === undefined) throw new WorkClaimLostError();
+      if ((await queue.heartbeat(claim)) === undefined) {
+        throw new WorkClaimLostError();
+      }
       const agent = await unit.agents.lockAgent(claim.namespaceId, claim.agentId!);
       if (
         agent === undefined ||
@@ -1617,8 +1739,9 @@ export class ControllerWorker {
   ): Promise<void> {
     const installation = this.installation;
     const revision = result.revision;
-    if (installation === undefined || revision === undefined)
+    if (installation === undefined || revision === undefined) {
       throw new Error("The worker revision activation is unavailable.");
+    }
     await unit.audit.append({
       id: `aud_${randomUUID()}`,
       installationId: installation.id,
@@ -1644,8 +1767,9 @@ export class ControllerWorker {
     active: Readonly<AgentRevision>,
   ): Promise<void> {
     const installation = this.installation;
-    if (installation === undefined || claim.revisionId === undefined)
+    if (installation === undefined || claim.revisionId === undefined) {
       throw new Error("The worker superseded revision is unavailable.");
+    }
     await unit.audit.append({
       id: `aud_${randomUUID()}`,
       installationId: installation.id,
@@ -1675,8 +1799,9 @@ export class ControllerWorker {
     result: RevisionDispatchResult,
   ): Promise<void> {
     const installation = this.installation;
-    if (installation === undefined || claim.agentId === undefined)
+    if (installation === undefined || claim.agentId === undefined) {
       throw new Error("The worker revision authorization is unavailable.");
+    }
     await unit.audit.append({
       id: `aud_${randomUUID()}`,
       installationId: installation.id,
@@ -1707,7 +1832,9 @@ export class ControllerWorker {
       ? { ...result, outcome: "permanent", code: "CONVERGENCE_DEADLINE_EXCEEDED" }
       : result;
     await this.state.transactWithQueue(async (unit, queue) => {
-      if ((await queue.heartbeat(claim)) === undefined) throw new WorkClaimLostError();
+      if ((await queue.heartbeat(claim)) === undefined) {
+        throw new WorkClaimLostError();
+      }
       const current =
         namespace === undefined
           ? undefined
@@ -1719,27 +1846,33 @@ export class ControllerWorker {
           (claim.namespaceTarget === "deleted" && current.status === "deleting"))
       ) {
         const exhausted = resolved.outcome === "retry" && claim.attemptCount >= this.maxAttempts;
-        if (claim.namespaceTarget === "ready" && resolved.outcome === "success")
+        if (claim.namespaceTarget === "ready" && resolved.outcome === "success") {
           await unit.namespaces.transitionNamespaceStatus(current.id, "provisioning", "ready");
-        else if (
+        } else if (
           claim.namespaceTarget === "ready" &&
           (resolved.outcome === "permanent" || exhausted)
-        )
+        ) {
           await unit.namespaces.transitionNamespaceStatus(current.id, "provisioning", "failed");
-        else if (claim.namespaceTarget === "deleted" && resolved.outcome === "success")
+        } else if (claim.namespaceTarget === "deleted" && resolved.outcome === "success") {
           await unit.namespaces.markNamespaceDeleted(current.id, new Date().toISOString());
+        }
 
-        if (resolved.decision !== undefined)
+        if (resolved.decision !== undefined) {
           await this.appendDenial(unit, claim, current, resolved);
-        else if (resolved.observation !== undefined)
+        } else if (resolved.observation !== undefined) {
           await this.appendObservation(unit, claim, current, resolved);
+        }
       }
 
-      if (resolved.outcome === "success") await queue.complete(claim);
-      else if (resolved.outcome === "pending") await queue.defer(claim, { code: resolved.code });
-      else if (resolved.outcome === "permanent" || claim.attemptCount >= this.maxAttempts)
+      if (resolved.outcome === "success") {
+        await queue.complete(claim);
+      } else if (resolved.outcome === "pending") {
+        await queue.defer(claim, { code: resolved.code });
+      } else if (resolved.outcome === "permanent" || claim.attemptCount >= this.maxAttempts) {
         await queue.fail(claim, { code: resolved.code });
-      else await queue.retry(claim, { code: resolved.code });
+      } else {
+        await queue.retry(claim, { code: resolved.code });
+      }
     }, this.queueOptions);
     this.emit({
       event: "worker.completed",
@@ -1758,9 +1891,13 @@ export class ControllerWorker {
     result: DispatchResult,
   ): Promise<void> {
     const installation = this.installation;
-    if (installation === undefined) throw new Error("The worker Installation is unavailable.");
+    if (installation === undefined) {
+      throw new Error("The worker Installation is unavailable.");
+    }
     const observation = result.observation;
-    if (observation === undefined) return;
+    if (observation === undefined) {
+      return;
+    }
     const details = {
       computeDriverId: this.compute.id,
       ...("namespaceReady" in observation
@@ -1796,7 +1933,9 @@ export class ControllerWorker {
     result: DispatchResult,
   ): Promise<void> {
     const installation = this.installation;
-    if (installation === undefined) throw new Error("The worker Installation is unavailable.");
+    if (installation === undefined) {
+      throw new Error("The worker Installation is unavailable.");
+    }
     const event: AuditEvent = {
       id: `aud_${randomUUID()}`,
       installationId: installation.id,

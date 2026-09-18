@@ -20,11 +20,15 @@ function protocol({ commit, release, removeListener } = {}) {
     },
     async query(statement) {
       calls.push(statement);
-      if (statement === "COMMIT")
+      if (statement === "COMMIT") {
         return commit ? commit() : { command: "COMMIT", rows: [], rowCount: 0 };
-      if (statement === "ROLLBACK") return { command: "ROLLBACK", rows: [], rowCount: 0 };
-      if (statement === "BEGIN" || statement.startsWith("BEGIN ISOLATION"))
+      }
+      if (statement === "ROLLBACK") {
+        return { command: "ROLLBACK", rows: [], rowCount: 0 };
+      }
+      if (statement === "BEGIN" || statement.startsWith("BEGIN ISOLATION")) {
         return { command: "", rows: [], rowCount: 0 };
+      }
       throw new Error("This fixture does not simulate persistence queries.");
     },
     release(destroy) {
