@@ -188,31 +188,39 @@ PersistentVolumeClaims and runtime credential Secrets. Retirement remains the
 destructive revision cleanup operation. Repeated stop observes exact ownership
 and converges when the runtime objects are already absent.
 
-### Plugin installation receipts
+### Plugin startup status
 
-For Compute-owned plugin startup in embedded OpenClaw and dedicated Codex,
-Kubernetes Compute creates an Agent-revision-owned receipt ConfigMap and mounts
-its `state.json` into the runtime alongside a writable emptyDir latch. The
-runtime receives `OCC_PLUGIN_RECEIPT_GATE`, `OCC_PLUGIN_RECEIPT_DIRECTORY`, and
-`OCC_PLUGIN_RECEIPT_POD_UID`. It writes only `diagnosis.json` and the bounded
-Kubernetes termination message `{pluginId, code}` when a selected native install
-operation fails with `PLUGIN_INSTALL_FAILED` or `PLUGIN_AUTH_REQUIRED`.
+Compute-owned embedded OpenClaw and dedicated Codex runtimes publish a private
+current-startup result after attempting requested plugins and verifying effective
+configuration. The result identifies the revision and runtime instance, with
+successful selection IDs and safe `PLUGIN_INSTALL_FAILED` or
+`PLUGIN_AUTH_REQUIRED` warnings for disabled selections.
 
-Compute binds the receipt to one live Pod UID and the expected runtime
-container. It adds its receipt finalizer to that exact Pod before publishing the
-Pod UID in the ConfigMap, then validates the ConfigMap identity, Pod UID,
-container name, admitted plugin ID, and closed diagnostic code before returning
-an attributed failure to OCC. A replacement Pod with the same labels but a
-different UID cannot satisfy the receipt. Malformed, truncated, foreign, or lost
-evidence is treated as an unattributed startup failure and keeps the candidate
-from serving.
+Kubernetes Compute reads the exact owned workload's status endpoint through the
+authenticated Kubernetes Pod proxy. Tenant-local controller RBAC permits this
+read; workload ServiceAccounts receive no Kubernetes write credentials. The
+endpoint is not part of the public gateway API. Compute validates workload
+ownership, startup identity, admitted selection keys, and closed warning codes.
+Missing, malformed, or foreign status cannot establish readiness.
 
-After OCC commits the original terminal deployment row, the worker asks Compute
-to acknowledge the exact receipt. A successful activation acknowledgment releases
-the receipt gate and finalizer; a terminal failure records a tombstone until
-revision retirement or namespace cleanup removes owned receipt resources. The
-receipt mechanism does not roll back `activeRevisionId`, uninstall remote native
-state, or guarantee predecessor availability after replacement has begun.
+For embedded OpenClaw, startup explicitly disables failed plugin entries and
+removes their managed tool allowances before starting the gateway. For dedicated
+Codex, the separate gateway applies the Agent's current result to its bridge
+configuration before serving and refreshes that configuration after a changed
+restart result. Failed-only Codex app bindings are disabled; successful selections
+retain their admitted policy, including shared app bindings they require.
+
+The Codex app-server credential is derived from the Agent's transport Secret,
+revision, and startup identity. A gateway configured for the previous startup
+cannot authenticate to a restarted Agent. Its supervisor obtains the new status,
+applies the matching exclusions, and starts the gateway with the new credential.
+This closes the interval before the supervisor's next status poll.
+
+The worker records warnings with successful deployment completion under its live
+claim. A runtime restart recomputes status instead of preserving the first
+failure. There are no plugin receipt ConfigMaps, Pod finalizers, failure latches,
+or post-commit acknowledgment steps. This behavior does not mutate requested
+revision selections, uninstall account-wide plugins, or promise rollback.
 
 See the [Harness execution topology flow](../../flows/harness-execution-topology.md)
 for additional execution details.
@@ -230,7 +238,7 @@ for additional execution details.
   volume by a previous container attempt cannot make a restarted runtime ready.
   Native plugin startup, authentication, transport, and installation failures
   remain generic workload startup failures unless the Compute-owned runtime
-  records a trusted typed receipt for an admitted selected plugin.
+  reports a verified current-startup warning for an admitted selected plugin.
 - **Gateway storage is pending or rejected:** Check the configured
   `runtime.gatewayStorageClassName`, available `10Gi` capacity, filesystem
   support, worker PVC permissions, and the PVC's exact ownership. Preserve

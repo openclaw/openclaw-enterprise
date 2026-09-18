@@ -788,6 +788,7 @@ test("Agent deployment status polls the admitted revision work with exact read a
     agentId: agent.id,
     status: "queued",
     error: null,
+    warnings: [],
   });
 
   const missing = await controller.request(

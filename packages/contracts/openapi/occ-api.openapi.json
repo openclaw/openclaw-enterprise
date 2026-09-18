@@ -3460,7 +3460,7 @@
                               "type": "object"
                             }
                           ],
-                          "description": "Null unless deployment failed. A failure contains code, a fixed safe message, and optional allowlisted data. PLUGIN_INSTALL_FAILED and PLUGIN_AUTH_REQUIRED include data.pluginId (the admitted selection key); CONVERGENCE_DEADLINE_EXCEEDED may include data.timeoutMs. Native error text is never returned."
+                          "description": "Null unless deployment failed. A failure contains code, a fixed safe message, and optional allowlisted data. CONVERGENCE_DEADLINE_EXCEEDED may include data.timeoutMs. Native error text is never returned."
                         },
                         "namespaceId": {
                           "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -3473,9 +3473,40 @@
                             { "const": "succeeded", "type": "string" },
                             { "const": "failed", "type": "string" }
                           ]
+                        },
+                        "warnings": {
+                          "description": "Warnings recorded from this deployment startup. Plugin install and connector-auth warnings mean the deployment succeeded after the runtime disabled the affected admitted plugin for that startup.",
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "code": {
+                                "anyOf": [
+                                  { "const": "PLUGIN_INSTALL_FAILED", "type": "string" },
+                                  { "const": "PLUGIN_AUTH_REQUIRED", "type": "string" }
+                                ]
+                              },
+                              "pluginId": {
+                                "description": "The admitted Agent plugin selection key.",
+                                "maxLength": 253,
+                                "minLength": 1,
+                                "pattern": "^[A-Za-z0-9._~:@-]{1,253}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["code", "pluginId"],
+                            "type": "object"
+                          },
+                          "type": "array"
                         }
                       },
-                      "required": ["deploymentId", "namespaceId", "agentId", "status", "error"],
+                      "required": [
+                        "deploymentId",
+                        "namespaceId",
+                        "agentId",
+                        "status",
+                        "error",
+                        "warnings"
+                      ],
                       "type": "object"
                     },
                     "meta": {

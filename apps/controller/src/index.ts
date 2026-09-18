@@ -559,6 +559,7 @@ function clientDeploymentStatus(status: Readonly<DeploymentStatusResult>): Recor
     agentId: status.agentId,
     status: status.status,
     error: status.error,
+    warnings: status.warnings,
   };
 }
 

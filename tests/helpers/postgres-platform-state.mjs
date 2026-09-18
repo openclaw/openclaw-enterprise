@@ -142,9 +142,19 @@ async function createKubernetesStartupEnvironment(context) {
         path: "/rules/-",
         value: {
           apiGroups: [""],
+          // Match the worker's production plugin-status Pod observation permissions.
           resources: ["pods"],
-          // Match the worker's production receipt observation and finalizer permissions.
-          verbs: ["get", "list", "watch", "patch"],
+          verbs: ["get", "list", "watch"],
+        },
+      },
+      {
+        op: "add",
+        path: "/rules/-",
+        value: {
+          apiGroups: [""],
+          // The worker reads the runtime-owned status endpoint through the Pod proxy.
+          resources: ["pods/proxy"],
+          verbs: ["get"],
         },
       },
       {

@@ -2,7 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { createServer } from "node:net";
+import { createServer, isIPv4 } from "node:net";
 import { chmod, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
@@ -582,6 +582,7 @@ async function ensureK3dCluster(statePath, state) {
   }
   await commandAvailable(process.env.OPENCLAW_CI_K3D_BIN ?? "k3d", ["version"]);
   const openShell = state.lane === "openshell";
+  const crossNodePluginStatus = state.lane === "k3d-fixture-configuration";
   if (!openShell) {
     await commandAvailable(process.env.OCC_KUBECTL_BIN ?? "kubectl", ["version", "--client=true"]);
   }
@@ -590,11 +591,19 @@ async function ensureK3dCluster(statePath, state) {
   const directory = await mkdtemp(join(process.env.RUNNER_TEMP ?? tmpdir(), `${cluster}-`));
   await chmod(directory, 0o700);
   const kubeconfig = join(directory, "kubeconfig");
+  const sharedStorage = crossNodePluginStatus ? join(directory, "storage") : undefined;
+  if (sharedStorage) {
+    await mkdir(sharedStorage, { mode: 0o700 });
+  }
   const resource = addResource(state, "k3d-cluster", {
     name: cluster,
     directory,
     kubeconfig,
     context: `k3d-${cluster}`,
+    nodes: [
+      `k3d-${cluster}-server-0`,
+      ...(crossNodePluginStatus ? [`k3d-${cluster}-agent-0`] : []),
+    ],
     ...(!openShell ? { nodeImage: "+v1.35" } : {}),
   });
   await writeState(statePath, state);
@@ -625,7 +634,8 @@ async function ensureK3dCluster(statePath, state) {
     "--servers",
     "1",
     "--agents",
-    "0",
+    crossNodePluginStatus ? "1" : "0",
+    ...(sharedStorage ? ["--volume", `${sharedStorage}:/var/lib/rancher/k3s/storage@all`] : []),
     "--api-port",
     `127.0.0.1:${apiPort}`,
     "--kubeconfig-update-default=false",
@@ -665,6 +675,46 @@ async function ensureK3dCluster(statePath, state) {
       throw new Error("The ordinary k3d test cluster must resolve to Kubernetes 1.35.x.");
     }
     resource.kubernetesVersion = gitVersion;
+  }
+  if (crossNodePluginStatus) {
+    const worker = await execFile(process.env.OCC_KUBECTL_BIN ?? "kubectl", [
+      "--kubeconfig",
+      kubeconfig,
+      "--context",
+      resource.context,
+      "get",
+      "node",
+      `k3d-${cluster}-agent-0`,
+      "-o",
+      "json",
+    ]);
+    const podCidr = JSON.parse(worker.stdout)?.spec?.podCIDR;
+    const destination = typeof podCidr === "string" ? podCidr.split("/")[0] : undefined;
+    if (!isIPv4(destination ?? "")) {
+      throw new Error("The plugin status worker must have an IPv4 Pod CIDR.");
+    }
+    // Cross-node API proxy traffic uses the server's overlay route source, which
+    // can differ from its InternalIP. Admit only that observed address in tests.
+    const route = await execFile(process.env.OCC_DOCKER_BIN ?? "docker", [
+      "exec",
+      `k3d-${cluster}-server-0`,
+      "ip",
+      "route",
+      "get",
+      destination,
+    ]);
+    const sources = [...route.stdout.matchAll(/\bsrc\s+(\S+)/g)].map((match) => match[1]);
+    if (
+      sources.length !== 1 ||
+      !isIPv4(sources[0]) ||
+      sources[0] === "0.0.0.0" ||
+      sources[0].startsWith("127.")
+    ) {
+      throw new Error(
+        "Unable to determine the cross-node plugin status proxy source IPv4 address.",
+      );
+    }
+    resource.pluginStatusProxyCidrs = `${sources[0]}/32`;
   }
   await markResourceReady(statePath, state, resource);
   return resource;
@@ -794,26 +844,28 @@ async function ensureDockerSourceImage(state, image, envName) {
 }
 
 async function assertK3dImageReference(cluster, reference, envName) {
-  const listed = await execFile(process.env.OCC_DOCKER_BIN ?? "docker", [
-    "exec",
-    `k3d-${cluster.name}-server-0`,
-    "ctr",
-    "-n",
-    "k8s.io",
-    "images",
-    "list",
-  ]);
-  const found = listed.stdout.split(/\r?\n/).some((entry) => entry.split(/\s+/)[0] === reference);
-  if (!found) {
-    throw new Error(`Unable to find imported ${envName} reference ${reference}.`);
+  for (const node of cluster.nodes) {
+    const listed = await execFile(process.env.OCC_DOCKER_BIN ?? "docker", [
+      "exec",
+      node,
+      "ctr",
+      "-n",
+      "k8s.io",
+      "images",
+      "list",
+    ]);
+    const found = listed.stdout.split(/\r?\n/).some((entry) => entry.split(/\s+/)[0] === reference);
+    if (!found) {
+      throw new Error(`Unable to find imported ${envName} reference ${reference}.`);
+    }
+    await execFile(process.env.OCC_DOCKER_BIN ?? "docker", [
+      "exec",
+      node,
+      "crictl",
+      "inspecti",
+      reference,
+    ]);
   }
-  await execFile(process.env.OCC_DOCKER_BIN ?? "docker", [
-    "exec",
-    `k3d-${cluster.name}-server-0`,
-    "crictl",
-    "inspecti",
-    reference,
-  ]);
 }
 
 async function registerImageInK3d(statePath, state, cluster, image, envName) {
@@ -908,17 +960,19 @@ async function registerImageInK3d(statePath, state, cluster, image, envName) {
   // Workloads use the actual imported platform manifest, not a registry index digest.
   // The approved source image remains recorded and was verified before transport.
   const runtimeReference = `${importReference.slice(0, importReference.lastIndexOf(":"))}@${digest}`;
-  await execFile(process.env.OCC_DOCKER_BIN ?? "docker", [
-    "exec",
-    `k3d-${cluster.name}-server-0`,
-    "ctr",
-    "-n",
-    "k8s.io",
-    "images",
-    "tag",
-    importReference,
-    runtimeReference,
-  ]);
+  for (const node of cluster.nodes) {
+    await execFile(process.env.OCC_DOCKER_BIN ?? "docker", [
+      "exec",
+      node,
+      "ctr",
+      "-n",
+      "k8s.io",
+      "images",
+      "tag",
+      importReference,
+      runtimeReference,
+    ]);
+  }
   await assertK3dImageReference(cluster, runtimeReference, envName);
   resource.reference = runtimeReference;
   await markResourceReady(statePath, state, resource);
@@ -1096,6 +1150,7 @@ async function prepareLane({ lane, statePath }) {
       env.OCC_TEST_KUBERNETES_KUBECONFIG = cluster.kubeconfig;
       env.OCC_TEST_KUBERNETES_CONTEXT = cluster.context;
       env.OCC_TEST_KUBERNETES_IMAGE = fixture.image;
+      env.OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS = cluster.pluginStatusProxyCidrs;
       break;
     }
     case "docker-model":

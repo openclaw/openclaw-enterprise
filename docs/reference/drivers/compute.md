@@ -63,24 +63,21 @@ Configuration bindings for gateway credentials. Drivers must preserve this
 separation and project model credentials only into the selected Harness workload;
 see the [credential delivery flow](../../flows/native-service-account-credential-delivery.md).
 
-### Durable startup observations
+### Plugin startup warnings
 
 Preparation returns readiness for the exact Namespace, Agent, and revision. A
-Driver can also return an opaque `receiptId` and, with `ready: false`, a failure
-containing only `code` and an admitted `pluginId`. The closed codes are
-`PLUGIN_INSTALL_FAILED` and `PLUGIN_AUTH_REQUIRED`. A failure requires a receipt
-that survives worker claim loss; missing or untrusted evidence cannot establish
-readiness or plugin attribution.
+Driver may return `warnings`, containing only an admitted `pluginId` and
+`PLUGIN_INSTALL_FAILED` or `PLUGIN_AUTH_REQUIRED`. Warnings describe the current
+startup attempt and may accompany `ready: true` only after failed selections
+are safely disabled and the remaining runtime passes its readiness checks.
 
-OCC commits the original deployment outcome before calling optional
-`acknowledgeRevisionReceipt(revision, {receiptId, outcome})`, where `outcome` is
-`succeeded` or `failed`. The immutable terminal work row authorizes this
-idempotent acknowledgment after its live claim has ended. Cleanup failures remain
-pending for the existing worker recovery loop. Acknowledging `outcome: "failed"`
-must keep the exact failed candidate nonserving and stop further automatic startup.
-Retirement owns final receipt cleanup.
-The [Kubernetes receipt implementation](kubernetes-compute.md#plugin-installation-receipts)
-defines its workload coverage and evidence-retention limits.
+OCC stores the observed warnings with the successful deployment result under the
+live worker claim. A later runtime restart recomputes plugin results; the saved
+deployment result is historical, not a live plugin-health query. No receipt or
+post-commit acknowledgment is required. Missing or untrusted startup status
+cannot establish safe effective configuration or readiness.
+The [Kubernetes startup implementation](kubernetes-compute.md#plugin-startup-status)
+defines its workload coverage and transport.
 
 ## Optional startup preflight
 

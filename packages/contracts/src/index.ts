@@ -677,17 +677,17 @@ export interface NamespaceDeleteResult extends Scope {
   readonly failure?: NamespaceLifecycleFailure;
 }
 
+export interface PluginDeploymentWarning {
+  readonly code: "PLUGIN_INSTALL_FAILED" | "PLUGIN_AUTH_REQUIRED";
+  readonly pluginId: string;
+}
+
 export interface ComputeReadiness extends Scope {
   readonly namespaceId: string;
   readonly agentId: string;
   readonly revisionId: string;
   readonly ready: boolean;
-  /** Opaque durable evidence identity. Failure requires this and ready:false. */
-  readonly receiptId?: string;
-  readonly failure?: {
-    readonly code: "PLUGIN_INSTALL_FAILED" | "PLUGIN_AUTH_REQUIRED";
-    readonly pluginId: string;
-  };
+  readonly warnings?: readonly PluginDeploymentWarning[];
 }
 
 /** Authorized, server-admitted resource identities for an Agent-owned runtime. */
@@ -747,11 +747,6 @@ export interface ComputeDriver extends Driver {
   ): Promise<ComputeReadiness>;
   activateRevision?(revision: AgentRevision, context?: ComputeRevisionContext): Promise<void>;
   deactivateRevision?(revision: AgentRevision): Promise<void>;
-  /** Only the immutable original deployment result authorizes post-commit cleanup. */
-  acknowledgeRevisionReceipt?(
-    revision: AgentRevision,
-    receipt: { readonly receiptId: string; readonly outcome: "succeeded" | "failed" },
-  ): Promise<void>;
   stopRevision(revision: AgentRevision): Promise<void>;
   retireRevision(revision: AgentRevision): Promise<void>;
 }

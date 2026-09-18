@@ -256,7 +256,7 @@ test(
 );
 
 test(
-  "a worker that loses its claim before committing a plugin receipt cannot write or acknowledge it",
+  "a worker that loses its claim before committing plugin warnings cannot write them",
   requiresPostgres,
   async (context) => {
     const [
@@ -369,7 +369,6 @@ test(
     });
 
     const prepareStarted = Promise.withResolvers();
-    const acknowledgements = [];
     worker = createControllerWorker({
       pool: workerPool,
       installationId: installation.id,
@@ -385,13 +384,9 @@ test(
             namespaceId: candidate.namespaceId,
             agentId: candidate.agentId,
             revisionId: candidate.id,
-            ready: false,
-            receiptId: `receipt-${candidate.id}`,
-            failure: { code: "PLUGIN_INSTALL_FAILED", pluginId },
+            ready: true,
+            warnings: [{ code: "PLUGIN_INSTALL_FAILED", pluginId }],
           };
-        },
-        async acknowledgeRevisionReceipt(candidate, receipt) {
-          acknowledgements.push({ revisionId: candidate.id, receipt });
         },
       },
     });
@@ -426,16 +421,15 @@ test(
     assert.notEqual(recovered.claimToken, original.rows[0].claim_token);
 
     releasePreparation.resolve();
-    await waitFor("stolen plugin receipt to remain uncommitted", async () => {
+    await waitFor("stolen plugin warnings to remain uncommitted", async () => {
       const rows = await observerPool.query(
-        `SELECT state, claim_token, reason_code, error_data, receipt_id, receipt_acknowledged_at
+        `SELECT state, claim_token, reason_code, error_data, plugin_warnings
          FROM occ.controller_work WHERE idempotency_key = $1`,
         [idempotencyKey],
       );
       const row = rows.rows[0];
       return row?.state === "claimed" && row.claim_token === recovered.claimToken ? row : undefined;
     });
-    assert.deepEqual(acknowledgements, []);
 
     await worker.stop();
     worker = undefined;
@@ -455,39 +449,27 @@ test(
             namespaceId: candidate.namespaceId,
             agentId: candidate.agentId,
             revisionId: candidate.id,
-            ready: false,
-            receiptId: `receipt-${candidate.id}`,
-            failure: { code: "PLUGIN_INSTALL_FAILED", pluginId },
+            ready: true,
+            warnings: [{ code: "PLUGIN_INSTALL_FAILED", pluginId }],
           };
-        },
-        async acknowledgeRevisionReceipt(candidate, receipt) {
-          acknowledgements.push({ revisionId: candidate.id, receipt });
         },
       },
     });
     await worker.start();
 
-    const terminal = await waitFor("recovered worker terminal plugin failure", async () => {
+    const terminal = await waitFor("recovered worker successful plugin warning", async () => {
       const rows = await observerPool.query(
-        `SELECT state, reason_code, error_data, receipt_id,
-                receipt_acknowledged_at IS NOT NULL AS acknowledged
+        `SELECT state, reason_code, error_data, plugin_warnings
          FROM occ.controller_work WHERE idempotency_key = $1`,
         [idempotencyKey],
       );
-      return rows.rows[0]?.acknowledged ? rows.rows[0] : undefined;
+      return rows.rows[0]?.state === "succeeded" ? rows.rows[0] : undefined;
     });
     assert.deepEqual(terminal, {
-      state: "failed_permanent",
-      reason_code: "PLUGIN_INSTALL_FAILED",
-      error_data: { pluginId },
-      receipt_id: `receipt-${revision.id}`,
-      acknowledged: true,
+      state: "succeeded",
+      reason_code: "REVISION_ACTIVATED",
+      error_data: null,
+      plugin_warnings: [{ code: "PLUGIN_INSTALL_FAILED", pluginId }],
     });
-    assert.deepEqual(acknowledgements, [
-      {
-        revisionId: revision.id,
-        receipt: { receiptId: `receipt-${revision.id}`, outcome: "failed" },
-      },
-    ]);
   },
 );

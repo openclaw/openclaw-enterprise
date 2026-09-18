@@ -879,8 +879,6 @@ export class PostgresPlatformState implements PlatformStateStore {
           "fail",
           "recoverStale",
           "findWork",
-          "pendingReceiptAcknowledgements",
-          "acknowledgeReceipt",
         ]),
       ),
     );

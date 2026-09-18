@@ -7,54 +7,51 @@ behavior; this page owns contributor setup, fixture inputs, and proof notes.
 
 ## Local and integration suites
 
-| Check                          | Command or file                                                                                                                                                     | Covers                                                                                                                                                           |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Contract and API behavior      | `pnpm test:conformance` and `node --test tests/integration/occ-api.test.mjs`                                                                                        | Plugin map schemas, exact-Agent authorization, omission/replacement/clear semantics, audit, deployment-status polling, and immutable requested-state snapshots.  |
-| Driver translation and startup | `node --test tests/conformance/plugin-driver.test.mjs tests/integration/plugin-driver-startup.test.mjs`                                                             | Curated catalog projection, selected-only Codex defaults, unsupported-policy startup failure, and native configuration rendering.                                |
-| Compute boundaries             | `node --test tests/conformance/plugin-compute.test.mjs tests/conformance/ssh-compute.test.mjs`                                                                      | Kubernetes preparation handoff, native install attribution, receipt latching, and SSH rejection before host effects for nonempty plugin maps.                    |
-| PostgreSQL persistence         | `node --test tests/integration/postgres-restart-recovery.test.mjs tests/integration/postgres-worker-agent-revision.test.mjs` with [PostgreSQL setup](postgresql.md) | Terminal deployment outcomes, plugin `data.pluginId`, receipt acknowledgment, claim fencing, stale recovery, and active-pointer recovery.                        |
-| Controlled receipt boundary    | `node --test tests/integration/kubernetes-plugin-receipt-real.test.mjs`                                                                                             | Real Kubernetes Compute, Pod finalizers, receipt ConfigMaps, runtime gate/latch behavior, and PostgreSQL claim fencing with controlled plugin-failure producers. |
-| Native runtime proof           | `node --test tests/integration/plugin-driver-real.test.mjs`                                                                                                         | Opt-in Kubernetes proof against real OpenClaw or Codex runtimes, including selected Codex install/auth failures.                                                 |
+| Check                          | Command or file                                                                                                                                                     | Covers                                                                                                                                                          |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Contract and API behavior      | `pnpm test:conformance` and `node --test tests/integration/occ-api.test.mjs`                                                                                        | Plugin map schemas, exact-Agent authorization, omission/replacement/clear semantics, audit, deployment-status polling, and immutable requested-state snapshots. |
+| Driver translation and startup | `node --test tests/conformance/plugin-driver.test.mjs tests/integration/plugin-driver-startup.test.mjs`                                                             | Curated catalog projection, selected-only Codex defaults, unsupported-policy startup failure, and native configuration rendering.                               |
+| Compute boundaries             | `node --test tests/conformance/plugin-compute.test.mjs tests/conformance/ssh-compute.test.mjs`                                                                      | Native install classification, verified failed-plugin exclusion, current startup status, and SSH rejection before host effects.                                 |
+| PostgreSQL persistence         | `node --test tests/integration/postgres-restart-recovery.test.mjs tests/integration/postgres-worker-agent-revision.test.mjs` with [PostgreSQL setup](postgresql.md) | Successful deployment warnings, exact status authorization, claim fencing, and recovery.                                                                        |
+| Controlled status boundary     | `node --test tests/integration/kubernetes-plugin-status-real.test.mjs`                                                                                              | Real Kubernetes Compute status transport, workload identity, safe readiness and runtime restart behavior with controlled producers.                             |
+| Native runtime proof           | `node --test tests/integration/plugin-driver-real.test.mjs`                                                                                                         | Opt-in Kubernetes proof against real OpenClaw or Codex, including continued operation after a selected Codex install/auth failure.                              |
 
 Skipped infrastructure or native-runtime cases are not evidence. Record the exact
 commit, selected suite, nonsecret image references, native runtime versions,
 model, pass/fail/skip counts, and relevant sanitized log path for every claimed
 proof.
 
-Plugin installation failure proof has three layers. Conformance checks prove
-native operation classification without transport or text matching. PostgreSQL
-worker checks prove one safe terminal deployment outcome and post-commit receipt
-acknowledgment. Real native proof must run through Kubernetes with real runtime
-images and existing authorized credentials; it must show a selected plugin
-failure or authentication requirement keeps the candidate nonserving while other
-Agent/workspace state remains intact.
+Plugin warning proof has three layers. Conformance verifies native operation
+classification and effective disabled configuration. PostgreSQL worker tests
+verify successful deployment warnings and live-claim fencing. Real native proof
+runs through the regular Agent workflow with pinned runtime images and existing
+authorized credentials: plugin A remains usable when B fails, B is disabled in
+both native app and gateway bridge configuration, and sibling Agent/workspace
+state is unchanged.
 
-Kubernetes receipt proof must also cover the durable handoff. The controlled
-receipt suite uses real Kubernetes Compute resources, real Pod finalizers, real
-receipt ConfigMaps, and PostgreSQL queue state, but its runtime process is a
-controlled native producer. It verifies that a receipt survives a failed runtime
-restart until OCC observes it, later readiness cannot erase the failure,
-malformed and truncated evidence stays generic, success acknowledgment releases
-the Pod finalizer, and a lost worker claim before terminal commit cannot
-acknowledge or erase the receipt. These receipt cases prove Kubernetes Compute
-and OCC persistence; they do not prove provider-owned Harness behavior or native
-Codex/OpenClaw install behavior.
+The controlled status suite verifies the private status handoff through real
+Kubernetes and restart behavior; its controlled native producer does not establish
+Codex/OpenClaw compatibility. Missing, malformed, or foreign reports must not make
+a workload ready. A changed Agent startup result must invalidate stale gateway
+configuration until it is refreshed. The suite no longer proves preservation of
+the first failure after a crash: that behavior is deliberately removed.
 
-Run the controlled receipt boundary suite against the same disposable Kubernetes
-cluster and imported fixture image used for Kubernetes fixture tests:
+Run against the disposable cluster and imported fixture image used for other
+Kubernetes fixture tests:
 
 ```sh
-node --test tests/integration/kubernetes-plugin-receipt-real.test.mjs
-node --test \
-  --test-name-pattern 'PostgreSQL queue rejects stale controlled receipt commits' \
-  tests/integration/kubernetes-plugin-receipt-real.test.mjs
+node --test tests/integration/kubernetes-plugin-status-real.test.mjs
 ```
 
 Set `OCC_TEST_KUBERNETES_KUBECONFIG`, `OCC_TEST_KUBERNETES_CONTEXT`,
-and `OCC_TEST_KUBERNETES_IMAGE` for the imported fixture image. The fixture image
-may be a local tag; native runtime proof still requires immutable image
-references. The PostgreSQL claim-fencing case also requires `OCC_TEST_DATABASE_URL`
-pointing at a dedicated migrated `openclaw_k8s_*` database.
+`OCC_TEST_KUBERNETES_IMAGE`, and
+`OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS` (comma-separated source CIDRs).
+Use the actual API-server proxy source described in the
+[networking reference](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking).
+The status suite requires a worker node and schedules its runtime there to prove
+cross-node access. Fixture images may use a local tag; native proof
+still requires immutable image references. PostgreSQL cases use a dedicated
+migrated `openclaw_k8s_*` database via `OCC_TEST_DATABASE_URL`.
 
 ## Native runtime prerequisites
 
@@ -72,7 +69,8 @@ pointing at a dedicated migrated `openclaw_k8s_*` database.
 
 All native scenarios use Kubernetes. Provide
 `OCC_TEST_KUBERNETES_KUBECONFIG`, `OCC_TEST_KUBERNETES_CONTEXT`,
-`OCC_TEST_KUBERNETES_GATEWAY_IMAGE`, and a scenario-specific database such as
+`OCC_TEST_KUBERNETES_GATEWAY_IMAGE`,
+`OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS`, and a scenario-specific database such as
 `OCC_TEST_PLUGIN_DRIVER_OPENCLAW_DATABASE_URL` or
 `OCC_TEST_PLUGIN_DRIVER_CODEX_CALENDAR_DATABASE_URL`. The Codex failure scenario
 requires its own distinct `OCC_TEST_PLUGIN_DRIVER_CODEX_FAILURE_DATABASE_URL`.
@@ -100,10 +98,15 @@ Microsoft SharePoint, Outlook Calendar, and Financial Charts candidates. B must
 produce a real native authentication or install failure; do not substitute a
 synthetic or controlled producer for this proof. The test proves the admitted
 A-before-B order, reports `PLUGIN_AUTH_REQUIRED` or `PLUGIN_INSTALL_FAILED` for
-B, keeps the failed candidate nonserving, preserves the sibling Agent Pod and
-workspace file, and exposes only the admitted plugin ID through deployment
-status. It is the native proof layer; it does not replace the controlled receipt
-boundary suite above.
+B as a warning on a successful deployment, verifies B's bridge entry and
+failed-only native app bindings are disabled, preserves the requested revision
+and sibling Agent Pod/workspace file, and proves A still works through a normal
+Agent tool turn. It also restarts only the Codex Agent Pod and checks refreshed
+effective configuration while preserving the gateway Pod. When exact Calendar
+tool/result selectors are omitted for this failure scenario, transcript evidence
+identifies the actual `list_calendars` call and requires its successful structured
+result without printing calendar contents. This native proof does not replace
+the controlled status boundary suite above.
 
 The Calendar fixture uses a narrow test-only ServiceAccount import that preserves
 the designated existing account token from a private service-account environment

@@ -435,7 +435,8 @@
       "requiredEnv": [
         "OCC_TEST_KUBERNETES_KUBECONFIG",
         "OCC_TEST_KUBERNETES_CONTEXT",
-        "OCC_TEST_KUBERNETES_IMAGE"
+        "OCC_TEST_KUBERNETES_IMAGE",
+        "OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS"
       ],
       "env": {
         "OCC_TEST_KUBERNETES_CONFIGURATION": "1"
@@ -464,11 +465,10 @@
           ]
         },
         {
-          "path": "tests/integration/kubernetes-plugin-receipt-real.test.mjs",
+          "path": "tests/integration/kubernetes-plugin-status-real.test.mjs",
           "expectedTests": [
-            "real Kubernetes Compute Driver retains controlled plugin receipt failure over later readiness",
-            "successful controlled plugin receipt acknowledgement releases the Pod finalizer",
-            "PostgreSQL queue rejects stale controlled receipt commits before a fresh claim rereads it"
+            "real Kubernetes Compute reads plugin runtime status from the exact gateway Pod",
+            "real Kubernetes Compute reports plugin install warnings and disables failed plugin config"
           ]
         }
       ]

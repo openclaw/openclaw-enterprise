@@ -14,6 +14,17 @@ DNS, approved gateway clients, and required communication between an Agent's
 gateway and dedicated Harness. Cross-tenant traffic, traffic between different
 Agents, Kubernetes API access, and cloud metadata access remain denied.
 
+For Compute-owned plugin startup reporting, set
+`network.pluginStatusProxySourceCidrs` to the precise source addresses used by the
+Kubernetes API server when proxying requests to workload Pods. The policy allows
+those sources only to the private status port, TCP/18791; worker RBAC separately
+requires `get` on `pods/proxy`. Prefer individual `/32` or `/128` addresses. On an
+overlay network, the observed source may be the control-plane node's overlay
+address rather than its node IP. Verify it across nodes with enforced policies.
+An omitted list adds no API-proxy ingress rule and leaves status unavailable
+where the cluster blocks that traffic. This setting does not expose the native
+gateway or grant workloads Kubernetes API access.
+
 When private Agent routing is enabled, Compute derives the only allowed peer
 from `gatewayRouting`: the Envoy namespace and the Gateway's exact owning name
 and namespace labels. Omit `network.gatewayClients`; startup rejects explicit

@@ -79,6 +79,7 @@ import {
 import {
   controllerWorkDeploymentStatus,
   deploymentErrorForWork,
+  deploymentWarningsForWork,
   type DeploymentStatusResult,
 } from "./state/controller-work.ts";
 import { PostgresCommitOutcomeUnknownError } from "./state/postgres-state.ts";
@@ -151,8 +152,7 @@ export {
   type DeploymentStatus,
   type DeploymentStatusError,
   type DeploymentStatusResult,
-  type ReceiptAcknowledgementIdentity,
-  type ReceiptAcknowledgementWork,
+  type PluginDeploymentWarning,
 } from "./state/controller-work.ts";
 
 export const BOOTSTRAP_DEFAULT_NAMESPACE_NAME = "default";
@@ -983,6 +983,7 @@ export class OpenClawController {
         agentId: revision.agentId,
         status: controllerWorkDeploymentStatus(work, this.clock()),
         error: deploymentErrorForWork(work),
+        warnings: deploymentWarningsForWork(work),
       });
     });
   }

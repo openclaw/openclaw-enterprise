@@ -61,16 +61,18 @@ GET /namespaces/:namespaceId/agents/:agentId/deployments/:deploymentId
 ```
 
 The caller needs read access to that exact AgentRevision. Responses include the
-original `deploymentId`, `namespaceId`, `agentId`, a `status`, and nullable
-`error`. `queued` means no live worker claim currently owns the original work,
+original `deploymentId`, `namespaceId`, `agentId`, a `status`, nullable
+`error`, and plugin `warnings`. `queued` means no live worker claim currently owns the original work,
 including after a claim lease expires. `running` means a worker claim is still
 live. `succeeded` means the original deployment work completed activation or
 was already active; it is historical completion evidence, not a live health
 probe. `failed` means the original work reached a terminal failed outcome or
 completed without activating the requested revision.
 
-Errors use fixed platform codes, messages, and allowlisted `error.data`. Plugin
-failures add only the admitted plugin ID; see [Agent plugins](agent-plugins.md#response-fields).
+Errors use fixed platform codes, messages, and allowlisted `error.data`.
+A successful deployment can include plugin warnings containing a closed code
+and admitted `pluginId`; see [Agent plugins](agent-plugins.md#lifecycle). These
+warnings record the observed startup result, not live plugin health.
 A later deployment admits a new revision with its own deployment status and does
 not rewrite the original result.
 

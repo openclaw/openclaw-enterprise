@@ -370,7 +370,7 @@ test(
     assert.equal(secondActivationAttempts, 2);
     assert.equal(await fixture.activeRevision(owner), second.id);
     // Recovery reobserves the published candidate before retrying activation so
-    // a plugin-install receipt cannot be skipped after the active pointer moves.
+    // current readiness is checked even after the active pointer moves.
     assert.deepEqual(effects, [
       { action: "prepare", revisionId: first.id, activeRevisionId: null },
       { action: "activate", revisionId: first.id, activeRevisionId: first.id },

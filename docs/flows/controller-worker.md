@@ -160,12 +160,11 @@ immutable snapshot. The worker validates the returned observation's owner and
 shape before treating it as ready. A pending observation defers convergence;
 an invalid observation fails permanently.
 
-For Kubernetes plugin startup, Compute may also return a bounded receipt ID and
-an attributed plugin failure. The worker accepts only the failure code and the
-admitted plugin ID that Compute validated against the immutable revision and
-exact workload. A plugin install failure or native authentication requirement
-becomes a permanent revision result; transport uncertainty, malformed evidence,
-or unrelated startup failure remains unattributed.
+Compute can also return safe plugin warnings for the current startup attempt.
+The worker validates each closed code and admitted selection key against the
+immutable revision. Warnings do not fail deployment; readiness means Compute
+has already verified that failed selections are disabled. Missing or malformed
+startup evidence cannot be interpreted as a safe successful installation.
 
 Agent-stop dispatch captures the Agent's revisions owned by the current Compute
 and validates their exact owner. It calls `stopRevision` for the active revision
@@ -251,13 +250,12 @@ the convergence deadline produce terminal failure instead. See the
 and the [settings reference](../reference/settings/operations.md#controller-worker-environment)
 for their timing controls.
 
-Terminal work rows store one fixed reason code, optional allowlisted metadata,
-and any Compute receipt ID under the live claim. Plugin failure metadata is
-bounded to `{pluginId}` and is persisted before receipt acknowledgment. Stale
-claims cannot write or acknowledge terminal evidence. After a terminal row
-commits, the worker's recovery loop asks Compute to acknowledge the exact
-receipt identity and then marks the row acknowledged; failed cleanup leaves the
-same terminal row pending for the next worker loop.
+Terminal work rows store a fixed outcome and optional allowlisted error metadata.
+Successful revision work also stores the observed plugin warnings under the live
+claim. Stale claims cannot publish outcomes or warnings. Completion needs no
+runtime receipt acknowledgment or post-commit cleanup protocol. The original
+deployment's warnings remain a historical startup result; later maintenance
+observations do not rewrite that completed deployment.
 
 If Compute declares a maintenance interval, successful activation schedules
 another exact-revision observation. An incomplete active-runtime observation or
@@ -310,6 +308,9 @@ aborts in-flight work, waits for the loop, closes PostgreSQL, and emits
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-17 20:28: Replaced terminal plugin receipts with verified optional-plugin exclusion, current startup status, and successful deployment warnings; runtime verification in progress. (codex/01a0b0fc-4a24-76c0-8fb7-f3a3a434d464 - 7771526d)
+- 2026-09-17 20:28: Removed the first-failure receipt and acknowledgment lifecycle under the approved best-effort plugin decision. (NOT_IN_SPEC)
 
 - 2026-09-17 12:09: Separate health reporting from claim renewal, preserve lease-loss fencing, and restore admitted Agent bindings before stop effects. (01a03526-12b3-7f50-b599-e8414052909d - 683d0e253ad827af7c6098650097fa6a8ad61f57)
 - 2026-09-17 01:22: Include failed candidates and interrupted retirement in exact Agent-stop cleanup, preserving later deployments and retained state. (01a0acbf-4d5a-7413-9411-dce911f3ad23 - 73c2ef49)

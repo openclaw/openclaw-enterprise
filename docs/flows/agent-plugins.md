@@ -32,29 +32,18 @@ approval internals remain the Harness's responsibility.
 
 ```mermaid
 graph TD
-  subgraph API["Agent configuration"]
-    A["Agent create/update with plugins"] --> B["Authorize exact Agent and validate structure"]
-    B --> C["Commit desired map and audit"]
-  end
-  subgraph OCC["Deployment admission"]
-    C -->|explicit deploy| D["Freeze requested map and Driver identity"]
-  end
-  subgraph Compute["Kubernetes revision workload"]
-    D -->|existing embedded gateway| R["Stage replacement; commit candidate pointer"]
-    R --> S["Stop old gateway; install and ready replacement"]
-    D -->|no embedded gateway to replace| F["Resolve catalog; install and ready runtime"]
-    F -->|typed install failure| X["Record receipt and report plugin failure"]
-    F -->|ready| G["Commit candidate pointer; finish activation"]
-    F -->|failure| H["Preparation failed; prior pointer unchanged"]
-    S -->|ready| I["Complete reconciliation"]
-    S -->|typed install failure| X
-    G -->|success| I
-    S -->|failure| J["Incomplete revision; candidate pointer retained"]
-    G -->|failure| J
-  end
-  subgraph OCCOutcome["Original deployment outcome"]
-    X --> Y["Commit failed deployment status before receipt acknowledgment"]
-  end
+  A["Save authorized plugin selections"] --> B["Snapshot requested revision"]
+  B --> C["Resolve native metadata and policy"]
+  C --> D["Attempt selected installs"]
+  D -->|install rejection or auth required| E["Disable failed selections; collect warnings"]
+  D -->|success| F["Verify native identity and effective policy"]
+  E --> F
+  F -->|invalid or unsafe| X["Keep runtime unready"]
+  F -->|verified| G["Publish current startup status"]
+  G --> H["Apply matching gateway configuration"]
+  H -->|ready| I["Compute returns readiness and warnings"]
+  I --> J["Worker completes deployment under live claim"]
+  G -->|runtime restart| C
 ```
 
 ## Execution Trace
@@ -120,7 +109,9 @@ writable configuration, installs the supported npm package version with `--pin`
 and `--force`, refreshes the registry, then reapplies and checks the policy overlay.
 Native inspection verifies plugin ID, package name, runtime/install version,
 recorded integrity, and the runtime source's containment in the install path.
-Failure stops startup before the replacement gateway becomes ready.
+Verification failure stops startup before the replacement gateway becomes ready.
+A confirmed install rejection instead disables that optional selection and
+removes its managed tool allowance before the gateway starts.
 
 Dedicated Codex uses one of two fixed bootstrap configurations in its isolated
 `CODEX_HOME`: empty selections disable the apps/plugins/remote-plugin features;
@@ -134,34 +125,43 @@ At startup, native `plugin/list` discovers the `openai-curated-remote` marketpla
 `plugin/read` resolves each selection using the summary's opaque remote identity.
 The shared translator validates the entire selection set before Compute writes
 native app configuration with `config/batchWrite`, including optional
-`approvals_reviewer`. Compute then calls `plugin/install`, rejects missing app
-authentication, rereads native metadata, and checks installed/enabled identity,
-release version, and app mapping against the resolved selection. Finally,
+`approvals_reviewer`. Compute then calls `plugin/install` for each selection, collecting confirmed
+install rejections and missing app authentication as warnings. It rereads native
+metadata for successful selections and checks installed/enabled identity, release
+version, and app mapping against the resolved selection. Failed-only app bindings
+are explicitly disabled; shared bindings needed by successful selections retain
+their admitted policy. Finally,
 `config/read` verifies the effective configuration overlay before readiness.
 Codex owns its private cache layout and integrity; Enterprise does not inspect
 private cache files. The Driver does not install packages in OCC. The normal
 Codex readiness path remains responsible for runtime health.
 
-For Kubernetes workloads that Compute owns, the native install helper checks the
-receipt gate before the first install attempt. A selected OpenClaw install
-command that exits normally with a nonzero status, a selected Codex
-`plugin/install` error response, or a successful Codex install response with
-apps that still need authentication writes a bounded `{pluginId, code}`
-diagnostic to the runtime latch and termination message. Transport loss,
-timeouts, signals, malformed responses, discovery failures, policy translation
-failures, and unrelated startup errors do not receive plugin attribution.
-Provider-owned Harnesses remain outside this receipt path.
+For Compute-owned Kubernetes workloads, a selected OpenClaw install command's
+normal nonzero exit, a matching Codex `plugin/install` error response, or a
+successful Codex install response with apps needing authentication contributes
+only an admitted `{pluginId, code}` warning. Transport loss, timeouts, signals,
+malformed responses, discovery failures, and policy failures retain their
+ordinary startup failure behavior. Provider-owned Harnesses retain their
+existing startup path.
 
-Kubernetes Compute creates an owned receipt ConfigMap for nonempty selections
-and mounts its `state.json` plus an emptyDir latch into the expected runtime
-container. The runtime waits up to three minutes for Kubernetes to project the
-receipt gate and for Compute to bind the gate to its Pod UID before native
-installation starts. Compute binds the receipt to one live Pod UID only after
-adding the receipt finalizer to that exact Pod. Observation accepts a diagnostic
-only when the receipt ConfigMap identity, Pod UID, container name, closed
-diagnostic code, and admitted plugin ID all match the immutable revision. A
-replacement Pod, foreign ConfigMap, malformed termination message, or lost Pod
-evidence leaves the candidate in the ordinary unattributed failure path.
+The runtime exposes a private current-startup status response after verifying
+effective configuration. Kubernetes Compute validates the exact workload,
+revision, startup instance, selection keys, and closed warning codes before
+returning readiness and warnings. The status is recomputed after restart; it is
+not a durable record of the first failure.
+
+Dedicated Codex runs separately from its gateway. The gateway blocks each failed
+bridge selection before serving, preventing native bridge activation from
+retrying that plugin during a turn. It must refresh its effective configuration
+when the Agent startup result changes. Missing or untrusted status cannot
+establish readiness. Requested revision selections remain unchanged.
+
+The Agent and gateway derive an app-server credential from the existing transport
+Secret, revision ID, and Agent startup ID. The gateway receives that credential
+only after reading the matching status and rendering its exclusions. After an
+Agent restart, the previous gateway process cannot authenticate with its old
+credential while its supervisor waits for the next status poll. The supervisor
+publishes non-ready status before stopping a gateway whose peer result changed.
 
 ### 5. Complete revision reconciliation
 
@@ -181,14 +181,11 @@ is not installation/readiness evidence. Normal Agent turns use native policy;
 old workload state follows ordinary retirement. The persistent Agent workspace
 and Kubernetes gateway state database retain their Agent-owned lifecycle.
 
-An attributed plugin receipt changes the original deployment work to a terminal
-failure before any receipt acknowledgment. The worker persists the fixed reason
-code and `{pluginId}` metadata under its live claim, then its recovery loop asks
-Compute to acknowledge the exact receipt identity. A lost claim cannot commit or
-acknowledge the receipt; a later worker re-observes before treating an
-already-active candidate as successful. Successful activation releases the
-receipt gate, while terminal failure leaves a tombstone until revision
-retirement or namespace cleanup.
+The worker stores current plugin warnings with successful completion under its
+live claim. Claim loss prevents a stale completion write; a later worker reads
+current readiness again. There is no receipt acknowledgment, failed-plugin
+shutdown, or permanent failure latch. Saved deployment warnings describe the
+completed deployment attempt rather than ongoing runtime health.
 
 ## Debugging and Verification
 
@@ -203,10 +200,10 @@ retirement or namespace cleanup.
 - With SSH Compute, any nonempty requested plugin map should fail before host
   effects. Clear the Agent's plugin map or deploy through a compatible
   Kubernetes runtime.
-- For attributed plugin failures, check deployment status for
-  `PLUGIN_INSTALL_FAILED` or `PLUGIN_AUTH_REQUIRED` and `error.data.pluginId`.
-  Absence of that code means the failure stayed generic; do not infer a plugin
-  identity from native logs.
+- For plugin warnings, check deployment status for `PLUGIN_INSTALL_FAILED` or
+  `PLUGIN_AUTH_REQUIRED` and the admitted `pluginId`. Confirm the corresponding
+  runtime and gateway entries are disabled. Do not infer plugin attribution
+  from arbitrary native logs.
 - Prove behavior with a model-chosen plugin call during a normal Agent turn,
   then disable/remove on a later deployment and verify another Agent is unchanged.
   Source or fixture tests alone do not establish native runtime compatibility.
@@ -228,6 +225,9 @@ retirement or namespace cleanup.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-17 20:28: Replaced terminal plugin receipts with verified optional-plugin exclusion, current startup status, and successful deployment warnings; runtime verification in progress. (codex/01a0b0fc-4a24-76c0-8fb7-f3a3a434d464 - 7771526d)
+- 2026-09-17 20:28: Removed the first-failure receipt and acknowledgment lifecycle under the approved best-effort plugin decision. (NOT_IN_SPEC)
 
 - 2026-09-17 15:02: Added the Kubernetes receipt and terminal plugin-failure path for Compute-owned plugin startup without claiming native proof completion. (codex/01a0b0fc-4a24-76c0-8fb7-f3a3a434d464 - 58ead994)
 

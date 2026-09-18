@@ -17,6 +17,12 @@ export interface DeploymentStatusResult {
   readonly agentId: string;
   readonly status: DeploymentStatus;
   readonly error: DeploymentStatusError | null;
+  readonly warnings: readonly PluginDeploymentWarning[];
+}
+
+export interface PluginDeploymentWarning {
+  readonly code: "PLUGIN_INSTALL_FAILED" | "PLUGIN_AUTH_REQUIRED";
+  readonly pluginId: string;
 }
 
 export interface ControllerWork {
@@ -35,8 +41,7 @@ export interface ControllerWork {
   readonly completedAt?: Date;
   readonly reasonCode?: string;
   readonly errorData?: Readonly<Record<string, unknown>>;
-  readonly receiptId?: string;
-  readonly receiptAcknowledgedAt?: Date;
+  readonly pluginWarnings?: readonly PluginDeploymentWarning[];
   readonly createdAt: Date;
   readonly updatedAt: Date;
 }
@@ -65,33 +70,18 @@ export interface WorkClaim {
 
 export interface WorkResult {
   readonly code?: string;
-  readonly receiptId?: string;
+  readonly pluginWarnings?: readonly PluginDeploymentWarning[];
 }
 
 export interface RetryableFailure {
   readonly code: string;
   readonly summary?: string;
-  readonly receiptId?: string;
 }
 
 export interface PermanentFailure {
   readonly code: string;
   readonly data?: unknown;
   readonly summary?: string;
-  readonly receiptId?: string;
-}
-
-export interface ReceiptAcknowledgementIdentity {
-  readonly idempotencyKey: string;
-  readonly state: "succeeded" | "failed_permanent";
-  readonly reasonCode: string;
-  readonly receiptId: string;
-}
-
-export interface ReceiptAcknowledgementWork extends ControllerWork {
-  readonly state: "succeeded" | "failed_permanent";
-  readonly reasonCode: string;
-  readonly receiptId: string;
 }
 
 export function safeFailureCode(value: string): string {
@@ -109,34 +99,11 @@ export function nonempty(value: string, name: string): string {
   return value;
 }
 
-export function safeReceiptId(value: string | undefined): string | undefined {
-  if (value === undefined) return undefined;
-  const receiptId = nonempty(value, "Controller work receipt ID");
-  if (receiptId.length > 512) {
-    throw new ScopeViolationError("The controller work receipt ID exceeds 512 characters.");
-  }
-  return receiptId;
-}
-
 export function validateFailureData(
   reasonCode: string,
   data: unknown,
 ): Readonly<Record<string, unknown>> | undefined {
   if (data === undefined) return undefined;
-  if (reasonCode === "PLUGIN_INSTALL_FAILED" || reasonCode === "PLUGIN_AUTH_REQUIRED") {
-    if (typeof data !== "object" || data === null || Array.isArray(data)) {
-      throw new ScopeViolationError("Plugin deployment failure data must be an object.");
-    }
-    const keys = Object.keys(data);
-    if (keys.length !== 1 || keys[0] !== "pluginId") {
-      throw new ScopeViolationError("Plugin deployment failure data has unsupported fields.");
-    }
-    const pluginId = (data as { readonly pluginId?: unknown }).pluginId;
-    if (!isNonEmptyString(pluginId) || pluginId.length > 253) {
-      throw new ScopeViolationError("Plugin deployment failure data requires a safe plugin ID.");
-    }
-    return Object.freeze({ pluginId });
-  }
   if (reasonCode === "CONVERGENCE_DEADLINE_EXCEEDED") {
     if (typeof data !== "object" || data === null || Array.isArray(data)) {
       throw new ScopeViolationError("Convergence deadline failure data must be an object.");
@@ -156,6 +123,44 @@ export function validateFailureData(
   throw new ScopeViolationError("Controller work failure data is not allowed for this code.");
 }
 
+function validatePluginWarning(value: unknown): PluginDeploymentWarning {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new ScopeViolationError("Plugin deployment warning must be an object.");
+  }
+  const warning = value as Partial<PluginDeploymentWarning>;
+  const keys = Object.keys(warning);
+  if (
+    keys.length !== 2 ||
+    !keys.includes("code") ||
+    !keys.includes("pluginId") ||
+    (warning.code !== "PLUGIN_INSTALL_FAILED" && warning.code !== "PLUGIN_AUTH_REQUIRED") ||
+    !isNonEmptyString(warning.pluginId) ||
+    warning.pluginId.length > 253
+  ) {
+    throw new ScopeViolationError("Plugin deployment warning is invalid.");
+  }
+  return Object.freeze({ code: warning.code, pluginId: warning.pluginId });
+}
+
+export function validatePluginWarnings(
+  warnings: unknown,
+): readonly PluginDeploymentWarning[] | undefined {
+  if (warnings === undefined) return undefined;
+  if (!Array.isArray(warnings)) {
+    throw new ScopeViolationError("Plugin deployment warnings must be an array.");
+  }
+  const seen = new Set<string>();
+  const normalized = warnings.map((value) => {
+    const warning = validatePluginWarning(value);
+    if (seen.has(warning.pluginId)) {
+      throw new ScopeViolationError("Plugin deployment warnings contain duplicates.");
+    }
+    seen.add(warning.pluginId);
+    return warning;
+  });
+  return Object.freeze(normalized);
+}
+
 export function deploymentErrorForWork(
   work: Readonly<ControllerWork>,
 ): DeploymentStatusError | null {
@@ -170,6 +175,13 @@ export function deploymentErrorForWork(
     message: deploymentErrorMessage(code),
     ...(data === undefined ? {} : { data }),
   });
+}
+
+export function deploymentWarningsForWork(
+  work: Readonly<ControllerWork>,
+): readonly PluginDeploymentWarning[] {
+  if (work.state !== "succeeded" || work.pluginWarnings === undefined) return Object.freeze([]);
+  return validatePluginWarnings(immutableCopy(work.pluginWarnings)) ?? Object.freeze([]);
 }
 
 export function controllerWorkDeploymentStatus(
@@ -197,10 +209,6 @@ function completedWithoutActivation(work: Readonly<ControllerWork>): boolean {
 
 function deploymentErrorMessage(code: string): string {
   switch (code) {
-    case "PLUGIN_INSTALL_FAILED":
-      return "Plugin installation failed.";
-    case "PLUGIN_AUTH_REQUIRED":
-      return "Plugin authentication is required.";
     case "CONVERGENCE_DEADLINE_EXCEEDED":
       return "Deployment convergence deadline exceeded.";
     case "REVISION_SUPERSEDED":

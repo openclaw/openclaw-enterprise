@@ -297,7 +297,28 @@ export const AgentDeploymentStatusSchema = Type.Object(
       ],
       {
         description:
-          "Null unless deployment failed. A failure contains code, a fixed safe message, and optional allowlisted data. PLUGIN_INSTALL_FAILED and PLUGIN_AUTH_REQUIRED include data.pluginId (the admitted selection key); CONVERGENCE_DEADLINE_EXCEEDED may include data.timeoutMs. Native error text is never returned.",
+          "Null unless deployment failed. A failure contains code, a fixed safe message, and optional allowlisted data. CONVERGENCE_DEADLINE_EXCEEDED may include data.timeoutMs. Native error text is never returned.",
+      },
+    ),
+    warnings: Type.Array(
+      Type.Object(
+        {
+          code: Type.Union([
+            Type.Literal("PLUGIN_INSTALL_FAILED"),
+            Type.Literal("PLUGIN_AUTH_REQUIRED"),
+          ]),
+          pluginId: Type.String({
+            minLength: 1,
+            maxLength: 253,
+            pattern: PluginIdPattern,
+            description: "The admitted Agent plugin selection key.",
+          }),
+        },
+        { additionalProperties: false },
+      ),
+      {
+        description:
+          "Warnings recorded from this deployment startup. Plugin install and connector-auth warnings mean the deployment succeeded after the runtime disabled the affected admitted plugin for that startup.",
       },
     ),
   },

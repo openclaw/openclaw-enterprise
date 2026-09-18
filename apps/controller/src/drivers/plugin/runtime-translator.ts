@@ -31,6 +31,8 @@ export type CodexRuntimeResolvedArtifacts = {
 export type PluginRuntimeResolvedArtifacts =
   OpenClawRuntimeResolvedArtifacts | CodexRuntimeResolvedArtifacts;
 
+type PluginRuntimeFailureInput = readonly { readonly pluginId: string }[];
+
 export type CodexPluginCatalogReader = {
   listCatalog(signal?: AbortSignal): Promise<readonly PluginCatalogEntry[]>;
 };
@@ -331,23 +333,50 @@ export function createPluginRuntimeTranslator() {
     });
   }
 
+  function failedPluginIdSet(failures: unknown): ReadonlySet<string> {
+    if (!Array.isArray(failures)) {
+      return new Set();
+    }
+    return new Set(
+      failures
+        .map((failure) => (isRecord(failure) ? failure.pluginId : undefined))
+        .filter(
+          (pluginId): pluginId is string => typeof pluginId === "string" && pluginId.length > 0,
+        ),
+    );
+  }
+
+  function selectionEnabledAfterFailures(
+    pluginId: string,
+    selection: Record<string, unknown>,
+    failures: ReadonlySet<string>,
+  ): boolean {
+    return enabledByPolicy(selection) && !failures.has(pluginId);
+  }
+
   function codexOpenClawPluginEntry(
+    pluginId: string,
     selection: Record<string, unknown>,
     slug: string,
+    failures: ReadonlySet<string>,
   ): Record<string, unknown> {
     return {
-      enabled: enabledByPolicy(selection),
+      enabled: selectionEnabledAfterFailures(pluginId, selection, failures),
       marketplaceName: CODEX_MARKETPLACE,
       pluginName: slug,
       allow_destructive_actions: pluginApprovalMode(selection) === "always" ? true : "auto",
     };
   }
 
-  function codexOpenClawConfiguration(selections: unknown): Record<string, unknown> | undefined {
+  function codexOpenClawConfiguration(
+    selections: unknown,
+    failures: unknown = [],
+  ): Record<string, unknown> | undefined {
     const selected = selectionEntries(selections);
     if (selected.length === 0) {
       return undefined;
     }
+    const failedPluginIds = failedPluginIdSet(failures);
     return {
       plugins: {
         entries: {
@@ -360,7 +389,10 @@ export function createPluginRuntimeTranslator() {
                 plugins: Object.fromEntries(
                   selected.map(([pluginId, selection]) => {
                     const slug = codexSlugFromNativeId(codexNativeIdFromPluginId(pluginId));
-                    return [slug, codexOpenClawPluginEntry(selection, slug)];
+                    return [
+                      slug,
+                      codexOpenClawPluginEntry(pluginId, selection, slug, failedPluginIds),
+                    ];
                   }),
                 ),
               },
@@ -374,13 +406,16 @@ export function createPluginRuntimeTranslator() {
   function codexRuntimeArtifact(
     selections: unknown,
     pluginReadResponses: readonly unknown[],
+    failures: unknown = [],
   ): Record<string, unknown> {
     const selected = selectionEntries(selections);
     if (selected.length === 0) {
       return { kind: "codex", configuration: CODEX_NO_PLUGIN_CONFIGURATION, installs: [] };
     }
     const byNativeId = detailsByNativeId(pluginReadResponses);
+    const failedPluginIds = failedPluginIdSet(failures);
     const appEntries = new Map<string, Record<string, unknown>>();
+    const disabledAppIds = new Set<string>();
     const installs: Record<string, unknown>[] = [];
     for (const [pluginId, selection] of selected) {
       const nativeId = codexNativeIdFromPluginId(pluginId);
@@ -391,7 +426,7 @@ export function createPluginRuntimeTranslator() {
       assertCodexDetailRepresentable(selection, detail);
       const pluginVersion = detailVersion(detail);
       const remotePluginId = detailRemotePluginId(detail);
-      if (enabledByPolicy(selection)) {
+      if (selectionEnabledAfterFailures(pluginId, selection, failedPluginIds)) {
         const reviewerValue = reviewer(selection);
         const defaultApprovalMode = pluginApprovalMode(selection) === "always" ? "approve" : "auto";
         for (const appId of appIds(detail)) {
@@ -411,6 +446,10 @@ export function createPluginRuntimeTranslator() {
           }
           appEntries.set(appId, requested);
         }
+      } else if (failedPluginIds.has(pluginId) && enabledByPolicy(selection)) {
+        for (const appId of appIds(detail)) {
+          disabledAppIds.add(appId);
+        }
       }
       installs.push({
         pluginId,
@@ -426,6 +465,11 @@ export function createPluginRuntimeTranslator() {
         ...CODEX_SELECTED_PLUGIN_BASE_CONFIGURATION,
         apps: {
           _default: { enabled: false },
+          ...Object.fromEntries(
+            [...disabledAppIds]
+              .filter((appId) => !appEntries.has(appId))
+              .map((appId) => [appId, { enabled: false }]),
+          ),
           ...Object.fromEntries(appEntries),
         },
       },
@@ -433,7 +477,11 @@ export function createPluginRuntimeTranslator() {
     };
   }
 
-  function openClawRuntimeArtifact(selections: unknown): Record<string, unknown> {
+  function openClawRuntimeArtifact(
+    selections: unknown,
+    failures: unknown = [],
+  ): Record<string, unknown> {
+    const failedPluginIds = failedPluginIdSet(failures);
     const entries: Record<string, unknown> = {};
     const installs: Record<string, unknown>[] = [];
     const alsoAllow: string[] = [];
@@ -457,7 +505,9 @@ export function createPluginRuntimeTranslator() {
       if (selection.tools !== undefined) {
         throw new Error("OpenClaw plugin tool policy is unavailable.");
       }
-      entries[nativeId] = { enabled: enabledByPolicy(selection) };
+      entries[nativeId] = {
+        enabled: selectionEnabledAfterFailures(pluginId, selection, failedPluginIds),
+      };
       installs.push({
         pluginId,
         nativeId,
@@ -465,7 +515,7 @@ export function createPluginRuntimeTranslator() {
         version: OCC_DIFFS_VERSION,
         integrity: OCC_DIFFS_INTEGRITY,
       });
-      if (enabledByPolicy(selection)) {
+      if (selectionEnabledAfterFailures(pluginId, selection, failedPluginIds)) {
         alsoAllow.push(nativeId);
       }
     }
@@ -510,25 +560,30 @@ export const pluginRuntimeTranslator: Translator = createPluginRuntimeTranslator
 export function codexRuntimeArtifact(
   selections: PluginDesiredState,
   pluginReadResponses: readonly unknown[],
+  failures: PluginRuntimeFailureInput = [],
 ): PluginRuntimeResolvedArtifacts {
   return pluginRuntimeTranslator.codexRuntimeArtifact(
     selections,
     pluginReadResponses,
+    failures,
   ) as PluginRuntimeResolvedArtifacts;
 }
 
 export function codexOpenClawConfiguration(
   selections: PluginDesiredState,
+  failures: PluginRuntimeFailureInput = [],
 ): OpenClawConfigurationDocument | undefined {
-  return pluginRuntimeTranslator.codexOpenClawConfiguration(selections) as
+  return pluginRuntimeTranslator.codexOpenClawConfiguration(selections, failures) as
     OpenClawConfigurationDocument | undefined;
 }
 
 export function openClawRuntimeArtifact(
   selections: PluginDesiredState,
+  failures: PluginRuntimeFailureInput = [],
 ): PluginRuntimeResolvedArtifacts {
   return pluginRuntimeTranslator.openClawRuntimeArtifact(
     selections,
+    failures,
   ) as PluginRuntimeResolvedArtifacts;
 }
 

@@ -238,7 +238,7 @@ test(
 );
 
 test(
-  "terminal revision work stores safe outcome data and acknowledges exact original receipts",
+  "terminal revision work stores safe outcome data and plugin warnings",
   requiresPostgres,
   async (context) => {
     const { pool, queue } = await dependencies(context);
@@ -248,61 +248,34 @@ test(
     await queue.enqueue(revisionWork(namespaceId, idempotencyKey, agents[0], revisionId));
 
     const claim = await claimExpected(queue, idempotencyKey);
-    await queue.fail(claim, {
-      code: "PLUGIN_INSTALL_FAILED",
-      data: { pluginId: "codex-plugin:calendar@openai-curated-remote" },
-      receiptId: "pod/uid/container/receipt",
+    await queue.complete(claim, {
+      code: "REVISION_ACTIVATED",
+      pluginWarnings: [
+        {
+          code: "PLUGIN_AUTH_REQUIRED",
+          pluginId: "codex-plugin:calendar@openai-curated-remote",
+        },
+      ],
     });
 
     const terminal = await queue.findWork(idempotencyKey);
-    assert.equal(terminal.state, "failed_permanent");
-    assert.equal(terminal.reasonCode, "PLUGIN_INSTALL_FAILED");
-    assert.deepEqual(terminal.errorData, {
-      pluginId: "codex-plugin:calendar@openai-curated-remote",
-    });
+    assert.equal(terminal.state, "succeeded");
+    assert.equal(terminal.reasonCode, "REVISION_ACTIVATED");
+    assert.deepEqual(terminal.pluginWarnings, [
+      {
+        code: "PLUGIN_AUTH_REQUIRED",
+        pluginId: "codex-plugin:calendar@openai-curated-remote",
+      },
+    ]);
     await assert.rejects(
       pool.query(
         `UPDATE occ.controller_work
-         SET error_data = '{}'::jsonb
+         SET plugin_warnings = '{}'::jsonb
          WHERE idempotency_key = $1`,
         [idempotencyKey],
       ),
       { code: "23514" },
     );
-    assert.equal(terminal.receiptId, "pod/uid/container/receipt");
-    assert.equal(terminal.receiptAcknowledgedAt, undefined);
-
-    const pending = await queue.pendingReceiptAcknowledgements();
-    assert.deepEqual(
-      pending.map(({ idempotencyKey: key, reasonCode, receiptId }) => ({
-        key,
-        reasonCode,
-        receiptId,
-      })),
-      [
-        {
-          key: idempotencyKey,
-          reasonCode: "PLUGIN_INSTALL_FAILED",
-          receiptId: "pod/uid/container/receipt",
-        },
-      ],
-    );
-
-    const acknowledged = await queue.acknowledgeReceipt({
-      idempotencyKey,
-      state: "failed_permanent",
-      reasonCode: "PLUGIN_INSTALL_FAILED",
-      receiptId: "pod/uid/container/receipt",
-    });
-    assert.ok(acknowledged.receiptAcknowledgedAt instanceof Date);
-    const acknowledgedAgain = await queue.acknowledgeReceipt({
-      idempotencyKey,
-      state: "failed_permanent",
-      reasonCode: "PLUGIN_INSTALL_FAILED",
-      receiptId: "pod/uid/container/receipt",
-    });
-    assert.deepEqual(acknowledgedAgain.receiptAcknowledgedAt, acknowledged.receiptAcknowledgedAt);
-    assert.deepEqual(await queue.pendingReceiptAcknowledgements(), []);
   },
 );
 
@@ -344,12 +317,10 @@ test(
     const exhaustedClaim = await claimExpected(queue, exhaustedKey);
     await queue.retry(exhaustedClaim, {
       code: "DEPENDENCY_UNAVAILABLE",
-      receiptId: "retry-exhausted-receipt",
     });
     const exhausted = await queue.findWork(exhaustedKey);
     assert.equal(exhausted.state, "failed_permanent");
     assert.equal(exhausted.reasonCode, "DEPENDENCY_UNAVAILABLE");
-    assert.equal(exhausted.receiptId, "retry-exhausted-receipt");
   },
 );
 

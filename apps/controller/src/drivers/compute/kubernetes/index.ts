@@ -39,6 +39,7 @@ import type {
   Driver,
   HarnessWorkloadRequirements,
   HarnessAuthSnapshot,
+  PluginDeploymentWarning,
   ResolvedHarnessAuth,
   RevisionHarnessDescriptor,
   OpenClawConfigurationDocument,
@@ -184,6 +185,7 @@ export interface KubernetesComputeDriverOptions {
     readonly dns: KubernetesWorkloadPeer;
     readonly gatewayPort: number;
     readonly gatewayClients?: readonly KubernetesWorkloadPeer[];
+    readonly pluginStatusProxySourceCidrs?: readonly string[];
   };
   readonly servicePrincipalCredentials:
     | { readonly mode: "disabled" }
@@ -244,32 +246,15 @@ interface PluginRuntimeSnapshot {
   readonly runtime: PluginRuntimeSpec;
 }
 
-interface PluginReceiptSnapshot {
-  readonly name: string;
+interface PluginRuntimeStatus {
+  readonly revisionId: string;
   readonly container: "agent" | "gateway";
+  readonly startupId: string;
+  readonly podUid: string;
+  readonly phase: "starting" | "ready";
+  readonly successfulPluginIds: readonly string[];
+  readonly failures: readonly PluginDeploymentWarning[];
 }
-
-interface PluginInstallFailure {
-  readonly code: "PLUGIN_INSTALL_FAILED" | "PLUGIN_AUTH_REQUIRED";
-  readonly pluginId: string;
-}
-
-interface PluginReceiptState {
-  readonly phase: "pending" | "succeeded" | "failed";
-  readonly podUid?: string;
-  readonly container: "agent" | "gateway";
-  readonly diagnostic?: PluginInstallFailure;
-}
-
-interface PluginReceiptPatchExpectation {
-  readonly phase: "pending";
-  readonly podUid?: string;
-}
-
-type PluginReceiptPodEvidence =
-  | { readonly kind: "pending" }
-  | { readonly kind: "failed"; readonly failure: PluginInstallFailure }
-  | { readonly kind: "rejected" };
 
 class OwnershipFailure extends Error {}
 class ConfigurationFailure extends Error {}
@@ -342,12 +327,8 @@ const CONFIGURATION_DIRECTORY = "/etc/openclaw";
 const CONFIGURATION_DOCUMENT = "openclaw.json";
 const CONFIGURATION_VOLUME = "openclaw-configuration";
 const PLUGIN_RUNTIME_VOLUME = "openclaw-plugin-runtime";
-const PLUGIN_RECEIPT_GATE_VOLUME = "openclaw-plugin-receipt-gate";
-const PLUGIN_RECEIPT_STATE_VOLUME = "openclaw-plugin-receipt-state";
-const PLUGIN_RECEIPT_DIRECTORY = "/tmp/openclaw-plugin-receipt";
-const PLUGIN_RECEIPT_STATE_KEY = "state.json";
-const PLUGIN_RECEIPT_FINALIZER = "compute.openclaw.dev/plugin-receipt";
-const PLUGIN_RECEIPT_STATE_VOLUME_SIZE = "1Mi";
+const PLUGIN_RUNTIME_STATUS_PORT = 18_791;
+const PLUGIN_RUNTIME_STATUS_PATH = "/openclaw/plugin-runtime/status";
 const AGENT_REVISION_ANNOTATION = "openclaw.dev/agent-revision";
 const AGENT_REVISION_ID_ANNOTATION = "openclaw.dev/agent-revision-id";
 const APPLY_CONTENT_TYPE = "application/apply-patch+yaml";
@@ -488,6 +469,24 @@ function validatePeer(value: KubernetesWorkloadPeer, description: string): void 
     if (typeof label !== "string") {
       throw new ConfigurationFailure(`${description} labels must be strings.`);
     }
+  }
+}
+
+function validateCidr(value: unknown, description: string): void {
+  if (typeof value !== "string") {
+    throw new ConfigurationFailure(`${description} must be a CIDR string.`);
+  }
+  const [address, prefix, extra] = value.split("/");
+  const family = isIP(address ?? "");
+  const prefixValue = Number(prefix);
+  if (
+    extra !== undefined ||
+    family === 0 ||
+    !Number.isInteger(prefixValue) ||
+    prefixValue < 0 ||
+    prefixValue > (family === 4 ? 32 : 128)
+  ) {
+    throw new ConfigurationFailure(`${description} must be a valid IPv4 or IPv6 CIDR.`);
   }
 }
 
@@ -746,6 +745,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           dns: WORKLOAD_PEER_SCHEMA,
           gatewayPort: { type: "integer" },
           gatewayClients: { type: "array", items: WORKLOAD_PEER_SCHEMA },
+          pluginStatusProxySourceCidrs: { type: "array", items: { type: "string" } },
         },
       },
       servicePrincipalCredentials: {
@@ -884,6 +884,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     validatePeer(options.network.dns, "DNS peer");
     validatePort(options.network.gatewayPort, "Gateway port");
+    if (options.network.pluginStatusProxySourceCidrs !== undefined) {
+      if (!Array.isArray(options.network.pluginStatusProxySourceCidrs)) {
+        throw new ConfigurationFailure("Plugin status proxy source CIDRs must be an array.");
+      }
+      options.network.pluginStatusProxySourceCidrs.forEach((cidr, index) =>
+        validateCidr(cidr, `Plugin status proxy CIDR ${index}`),
+      );
+    }
     const hasDirectGatewayClients = Object.hasOwn(options.network, "gatewayClients");
     if (options.gatewayRouting === undefined) {
       if (
@@ -1434,7 +1442,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (this.sandboxDriver !== undefined) {
         await this.sandboxDriver.cleanup(await this.sandboxNamespaceContext(namespace, name));
       }
-      await this.cleanupNamespacePluginReceiptFinalizers(namespace.id, name);
       if (external) {
         const deleted = await this.deleteOwnedNamespaceResources(name, ownership);
         if (!deleted) {
@@ -1547,44 +1554,46 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const revisionOwnership = { ...agentOwnership, revisionId: revision.id };
     const pluginRuntime = this.pluginRuntimeSnapshot(revision);
     const pluginOwnership = this.pluginRuntimeOwnership(revision);
-    const pluginReceipt =
-      sandboxDriver?.provisionHarness === undefined
-        ? this.pluginReceiptSnapshot(revision, pluginRuntime, embedded ? "gateway" : "agent")
+    const hasEnabledPluginSelections =
+      pluginRuntime !== undefined &&
+      Object.values(pluginRuntime.runtime.selections).some((selection) => selection.enabled);
+    const pluginStatusContainer =
+      sandboxDriver?.provisionHarness === undefined &&
+      pluginRuntime !== undefined &&
+      hasEnabledPluginSelections
+        ? embedded
+          ? "gateway"
+          : "agent"
         : undefined;
-    let pluginReceiptId = await this.existingPluginReceiptId(
-      pluginReceipt,
-      pluginOwnership,
-      namespace,
-    );
-    const withReceipt = (value: ComputeReadiness): ComputeReadiness =>
-      pluginReceiptId === undefined ? value : { ...value, receiptId: pluginReceiptId };
-    const observedFailure = async (): Promise<ComputeReadiness | undefined> => {
-      const failure = await this.observePluginReceipt(
+    const incomplete = async (): Promise<ComputeReadiness> => result;
+    const ready = async (
+      expectedWarnings?: readonly PluginDeploymentWarning[],
+    ): Promise<ComputeReadiness> => {
+      if (pluginStatusContainer === undefined) {
+        return {
+          ...result,
+          ready: true,
+          ...(expectedWarnings === undefined || expectedWarnings.length === 0
+            ? {}
+            : { warnings: expectedWarnings }),
+        };
+      }
+      const status = await this.pluginRuntimeStatus(
         revision,
         namespace,
-        pluginReceipt,
-        pluginOwnership,
-        pluginReceiptId,
+        pluginStatusContainer,
+        expectedWarnings,
       );
-      return failure === undefined ? undefined : withReceipt({ ...result, failure });
+      return status === undefined
+        ? result
+        : {
+            ...result,
+            ready: true,
+            ...(status.failures.length === 0 ? {} : { warnings: status.failures }),
+          };
     };
-    const incomplete = async (): Promise<ComputeReadiness> =>
-      (await observedFailure()) ?? withReceipt(result);
-    const ready = async (): Promise<ComputeReadiness> =>
-      (await observedFailure()) ??
-      ((await this.pluginReceiptReady(
-        revision,
-        namespace,
-        pluginReceipt,
-        pluginOwnership,
-        pluginReceiptId,
-      ))
-        ? withReceipt({ ...result, ready: true })
-        : withReceipt(result));
     const document = JSON.stringify(revision.configuration);
     const configuration = this.gatewayConfiguration(revision);
-    const retainedFailure = await observedFailure();
-    if (retainedFailure !== undefined) return retainedFailure;
     let existingGatewayRevisionId: string | undefined;
     const existingGateway = await this.getOwned(
       "Deployment",
@@ -1626,7 +1635,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
       ) {
         return incomplete();
       }
-      if (revision.revision < currentRevision) return incomplete();
+      if (revision.revision < currentRevision) {
+        return incomplete();
+      }
       if (revision.revision === currentRevision) {
         if (revision.id !== currentRevisionId || currentConfiguration !== configuration.name) {
           throw new ConfigurationFailure(
@@ -1634,17 +1645,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
           );
         }
       }
-    }
-    if (
-      pluginReceipt !== undefined &&
-      pluginReceiptId === undefined &&
-      ((embedded && existingGatewayRevisionId === revision.id) ||
-        (!embedded &&
-          (await this.getOwned("Deployment", revisionName, namespace, revisionOwnership)) !==
-            undefined) ||
-        (await this.revisionPods(revision, namespace, pluginReceipt.container)).length > 0)
-    ) {
-      return result;
     }
     const snapshot = this.manifest(
       "v1",
@@ -1673,9 +1673,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
         namespace,
       );
     }
-    pluginReceiptId ??= await this.ensurePluginReceipt(pluginReceipt, pluginOwnership, namespace);
-    const createdReceiptFailure = await observedFailure();
-    if (createdReceiptFailure !== undefined) return createdReceiptFailure;
     const gatewayAccountName = embedded ? agentName : gatewayName;
     const gatewayAccountOwnership = embedded ? agentOwnership : gatewayOwnership;
     await this.reconcile(
@@ -1705,7 +1702,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     ) {
       // The shared Recreate gateway validates auth in the replacement's startup.
       // An unready predecessor must not prevent repair through a new deployment.
-      return (await observedFailure()) ?? withReceipt({ ...result, ready: true });
+      return { ...result, ready: true };
     }
     if (!embedded) {
       await this.reconcile(
@@ -1752,19 +1749,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
             channels,
             secretEnvironment,
             pluginRuntime,
-            pluginReceipt?.container === "gateway" ? pluginReceipt : undefined,
+            [],
           ),
           gatewayOwnership,
           namespace,
         );
       }
-      await this.bindPluginReceiptPod(
-        revision,
-        namespace,
-        pluginReceipt?.container === "gateway" ? pluginReceipt : undefined,
-        pluginOwnership,
-        pluginReceiptId,
-      );
       const existingGatewayService = await this.getOwned(
         "Service",
         gatewayName,
@@ -1789,11 +1779,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
       await this.reconcileGatewayRoute(revision, gatewayOwnership, namespace);
       if (inactiveEmbeddedGateway) {
         const gateway = await this.getOwned("Deployment", gatewayName, namespace, gatewayOwnership);
-        if (gateway === undefined || !this.deploymentReady(gateway)) return incomplete();
-      } else if (!(await this.gatewayReady(gatewayOwnership, gatewayName, namespace))) {
+        if (gateway === undefined || !this.deploymentReady(gateway)) {
+          return incomplete();
+        }
+      } else if (embedded && !(await this.gatewayReady(gatewayOwnership, gatewayName, namespace))) {
         return incomplete();
       }
-      if (embedded) return ready();
+      if (embedded) {
+        return ready();
+      }
       await this.reconcile(
         {
           ...this.manifest("v1", "ServiceAccount", agentName, agentOwnership, namespace),
@@ -1837,7 +1831,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         [],
         [],
         pluginRuntime,
-        pluginReceipt?.container === "agent" ? pluginReceipt : undefined,
+        [],
       );
       if (sandboxDriver?.provisionHarness !== undefined) {
         const requirements = this.harnessRequirementsFromDeployment(
@@ -1858,13 +1852,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
           : incomplete();
       }
       await this.reconcile(agentDeployment, revisionOwnership, namespace);
-      await this.bindPluginReceiptPod(
-        revision,
-        namespace,
-        pluginReceipt?.container === "agent" ? pluginReceipt : undefined,
-        pluginOwnership,
-        pluginReceiptId,
-      );
       const deployment = await this.getOwned(
         "Deployment",
         revisionName,
@@ -1875,8 +1862,45 @@ export class KubernetesComputeDriver implements ComputeDriver {
         await this.lifecycle.beforeWorkloadStop(revision, { cleanup: true });
         return incomplete();
       }
-      if (!this.deploymentReady(deployment)) return incomplete();
-      return ready();
+      if (!this.deploymentReady(deployment)) {
+        return incomplete();
+      }
+      for (const policy of this.pluginStatusNetworkPolicies(revision, namespace)) {
+        await this.reconcile(policy, gatewayOwnership, namespace);
+      }
+      const agentReadiness = await ready();
+      if (!agentReadiness.ready) {
+        return agentReadiness;
+      }
+      if (existingGatewayRevisionId !== undefined && existingGatewayRevisionId !== revision.id) {
+        return agentReadiness;
+      }
+      const pluginWarnings = agentReadiness.warnings ?? [];
+      await this.reconcile(
+        this.service(agentName, agentOwnership, namespace, {
+          "openclaw.dev/agent": revision.agentId,
+          "openclaw.dev/revision": revision.id,
+          "openclaw.dev/workload-role": "agent",
+          "app.kubernetes.io/name": revisionName,
+        }),
+        agentOwnership,
+        namespace,
+      );
+      if (!(await this.gatewayReady(gatewayOwnership, gatewayName, namespace))) {
+        return incomplete();
+      }
+      if (pluginRuntime?.runtime.kind === "codex" && hasEnabledPluginSelections) {
+        const gatewayStatus = await this.pluginRuntimeStatus(
+          revision,
+          namespace,
+          "gateway",
+          pluginWarnings,
+        );
+        if (gatewayStatus === undefined) {
+          return incomplete();
+        }
+      }
+      return agentReadiness;
     } catch (error) {
       const failures = [error];
       if (launchPrepared) {
@@ -1913,43 +1937,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
       servicePrincipalId: revision.servicePrincipalId,
     };
     const sandboxDriver = this.sandboxDriverForRevision(revision);
-    const pluginOwnership = this.pluginRuntimeOwnership(revision);
-    const pluginReceipt =
-      sandboxDriver?.provisionHarness === undefined
-        ? this.pluginReceiptSnapshot(
-            revision,
-            pluginRuntime,
-            revision.harness.mode === "embedded" ? "gateway" : "agent",
-          )
-        : undefined;
-    const pluginReceiptId =
-      pluginReceipt === undefined
-        ? undefined
-        : (await this.getOwned("ConfigMap", pluginReceipt.name, namespace, pluginOwnership))
-            ?.metadata.uid;
-    const assertPluginReceiptReady = async (): Promise<void> => {
-      const failure = await this.observePluginReceipt(
-        revision,
-        namespace,
-        pluginReceipt,
-        pluginOwnership,
-        pluginReceiptId,
-      );
-      if (failure !== undefined) {
-        throw new Error(`Plugin installation failed for ${failure.pluginId}.`);
-      }
-      if (
-        !(await this.pluginReceiptReady(
-          revision,
-          namespace,
-          pluginReceipt,
-          pluginOwnership,
-          pluginReceiptId,
-        ))
-      ) {
-        throw new Error("The exact AgentRevision plugin receipt is not ready.");
-      }
-    };
     if (revision.harness.mode === "embedded") {
       if (sandboxDriver !== undefined) {
         throw new ConfigurationFailure("SandboxDriver support is limited to dedicated Harnesses.");
@@ -2001,25 +1988,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
               channels,
               secretEnvironment,
               pluginRuntime,
-              pluginReceipt?.container === "gateway" ? pluginReceipt : undefined,
+              [],
             ),
             gatewayOwnership,
             namespace,
           );
-          await this.bindPluginReceiptPod(
-            revision,
-            namespace,
-            pluginReceipt?.container === "gateway" ? pluginReceipt : undefined,
-            pluginOwnership,
-            pluginReceiptId,
-          );
-          await assertPluginReceiptReady();
         } catch (error) {
           await this.lifecycle.beforeWorkloadStop(revision, { cleanup: true });
           throw error;
         }
       }
-      await assertPluginReceiptReady();
       for (const policy of this.agentNetworkPolicies(revision, namespace)) {
         await this.reconcile(policy, gatewayOwnership, namespace);
       }
@@ -2034,7 +2012,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (!(await this.gatewayReady(gatewayOwnership, gatewayName, namespace))) {
         throw new Error("The exact AgentRevision gateway is not ready.");
       }
-      await assertPluginReceiptReady();
       return;
     }
     const revisionName = `${agentName}-rev-${sha256Hex(revision.id, 12)}`;
@@ -2055,7 +2032,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       [],
       [],
       pluginRuntime,
-      pluginReceipt?.container === "agent" ? pluginReceipt : undefined,
+      [],
     );
     if (sandboxDriver?.provisionHarness === undefined) {
       const deployment = await this.getOwned("Deployment", revisionName, namespace, {
@@ -2074,7 +2051,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
         throw new Error("The exact AgentRevision workload is not ready.");
       }
     }
-    await assertPluginReceiptReady();
     await this.reconcileChannelNetworkPolicy(revision, channels, namespace);
     await this.reconcile(
       this.sharedWorkspaceClaim(revision.agentId, gatewayOwnership, namespace),
@@ -2103,7 +2079,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         channels,
         secretEnvironment,
         pluginRuntime,
-        pluginReceipt?.container === "gateway" ? pluginReceipt : undefined,
+        [],
       ),
       gatewayOwnership,
       namespace,
@@ -2116,13 +2092,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
       namespace,
     );
     await this.reconcileGatewayRoute(revision, gatewayOwnership, namespace);
-    if (!(await this.gatewayReady(gatewayOwnership, gatewayName, namespace))) {
-      throw new Error("The exact AgentRevision gateway is not ready.");
-    }
-    await assertPluginReceiptReady();
-    for (const policy of this.agentNetworkPolicies(revision, namespace)) {
-      await this.reconcile(policy, gatewayOwnership, namespace);
-    }
     await this.reconcile(
       this.service(agentName, ownership, namespace, {
         "openclaw.dev/agent": revision.agentId,
@@ -2135,6 +2104,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
       ownership,
       namespace,
     );
+    for (const policy of this.agentNetworkPolicies(revision, namespace)) {
+      await this.reconcile(policy, gatewayOwnership, namespace);
+    }
+    if (!(await this.gatewayReady(gatewayOwnership, gatewayName, namespace))) {
+      throw new Error("The exact AgentRevision gateway is not ready.");
+    }
   }
 
   async deactivateRevision(revision: AgentRevision): Promise<void> {
@@ -2187,122 +2162,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
     );
   }
 
-  async acknowledgeRevisionReceipt(
-    revision: AgentRevision,
-    receipt: { readonly receiptId: string; readonly outcome: "succeeded" | "failed" },
-  ): Promise<void> {
-    const pluginRuntime = this.pluginRuntimeSnapshot(revision);
-    const snapshot = this.pluginReceiptSnapshot(
-      revision,
-      pluginRuntime,
-      revision.harness.mode === "embedded" ? "gateway" : "agent",
-    );
-    if (snapshot === undefined) return;
-    const { name: namespace } = await this.resolveNamespace(revision.namespaceId);
-    const ownership = this.pluginRuntimeOwnership(revision);
-    const configMap = await this.getOwned("ConfigMap", snapshot.name, namespace, ownership);
-    if (configMap === undefined || configMap.metadata.uid !== receipt.receiptId) return;
-    const state = this.pluginReceiptState(snapshot, configMap);
-    const podUid = state.podUid ?? "";
-    if (receipt.outcome === "succeeded") {
-      if (!isNonEmptyString(podUid)) return;
-      if (state.phase === "succeeded") {
-        await this.releasePluginReceiptFinalizer(revision, namespace, snapshot, podUid);
-        return;
-      }
-      if (state.phase !== "pending") return;
-      const patched = await this.patchPluginReceipt(
-        snapshot,
-        ownership,
-        namespace,
-        receipt.receiptId,
-        { phase: "succeeded", podUid, container: snapshot.container },
-        { phase: "pending", podUid },
-      );
-      if (!patched) {
-        const latest = await this.getOwned("ConfigMap", snapshot.name, namespace, ownership);
-        if (latest === undefined || latest.metadata.uid !== receipt.receiptId) return;
-        const latestState = this.pluginReceiptState(snapshot, latest);
-        if (latestState.phase !== "succeeded" || latestState.podUid !== podUid) return;
-      }
-      await this.releasePluginReceiptFinalizer(revision, namespace, snapshot, podUid);
-    } else if (receipt.outcome === "failed") {
-      if (state.phase === "succeeded") return;
-      if (state.phase === "pending") {
-        await this.patchPluginReceipt(
-          snapshot,
-          ownership,
-          namespace,
-          receipt.receiptId,
-          {
-            phase: "failed",
-            ...(isNonEmptyString(podUid) ? { podUid } : {}),
-            container: snapshot.container,
-            ...(state.diagnostic === undefined ? {} : { diagnostic: state.diagnostic }),
-          },
-          isNonEmptyString(podUid) ? { phase: "pending", podUid } : { phase: "pending" },
-        );
-      }
-      await this.stopPluginReceiptFailedRevision(
-        revision,
-        namespace,
-        snapshot,
-        isNonEmptyString(podUid) ? podUid : undefined,
-      );
-    }
-  }
-
-  private async stopPluginReceiptFailedRevision(
-    revision: AgentRevision,
-    namespace: string,
-    snapshot: PluginReceiptSnapshot,
-    podUid: string | undefined,
-  ): Promise<void> {
-    await this.lifecycle.beforeWorkloadStop(revision);
-    const gatewayName = `gateway-${sha256Hex(revision.agentId, 12)}`;
-    const gatewayOwnership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
-    await this.deleteGatewayRoute(gatewayName, gatewayOwnership, namespace, revision.id);
-    if (revision.harness.mode === "embedded") {
-      const gateway = await this.getOwned("Deployment", gatewayName, namespace, gatewayOwnership);
-      if (gateway?.metadata.annotations?.[AGENT_REVISION_ID_ANNOTATION] === revision.id) {
-        // Receipt cleanup runs after the terminal claim is released. A newer
-        // revision may already be updating the shared gateway, so fence this
-        // exact observation and retain its shared Service and ServiceAccount.
-        const uid = required(gateway.metadata.uid, "Failed gateway UID");
-        const resourceVersion = required(
-          gateway.metadata.resourceVersion,
-          "Failed gateway resource version",
-        );
-        const clients = await this.clients();
-        await this.request(
-          () =>
-            clients.apps.deleteNamespacedDeployment({
-              name: gatewayName,
-              namespace,
-              body: { preconditions: { uid, resourceVersion } },
-            }),
-          { mutating: true },
-        );
-      }
-      if (podUid !== undefined) {
-        await this.releasePluginReceiptFinalizer(revision, namespace, snapshot, podUid);
-      }
-      await this.waitForRevisionPodsToTerminate(revision, namespace, "gateway");
-      return;
-    }
-    await this.deleteRevisionAgentDeployment(revision, namespace);
-    if (podUid !== undefined) {
-      await this.releasePluginReceiptFinalizer(revision, namespace, snapshot, podUid);
-    }
-    await this.waitForRevisionPodsToTerminate(revision, namespace, "agent");
-  }
-
   private async deleteRevisionAgentDeployment(
     revision: AgentRevision,
     namespace: string,
   ): Promise<void> {
     const sandboxDriver = this.sandboxDriverForRevision(revision);
-    if (sandboxDriver?.provisionHarness !== undefined) return;
+    if (sandboxDriver?.provisionHarness !== undefined) {
+      return;
+    }
     const name = `agent-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`;
     const deployment = await this.getOwned("Deployment", name, namespace, {
       namespaceId: revision.namespaceId,
@@ -2310,7 +2177,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
       servicePrincipalId: revision.servicePrincipalId,
       revisionId: revision.id,
     });
-    if (deployment === undefined) return;
+    if (deployment === undefined) {
+      return;
+    }
     const clients = await this.clients();
     await this.request(
       () =>
@@ -2389,7 +2258,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
       throw new ConfigurationFailure("SandboxDriver support is limited to dedicated Harnesses.");
     }
     await this.lifecycle.beforeWorkloadStop(revision);
-    await this.cleanupPluginReceipt(revision, namespace);
     await this.shutdownRevisionRuntime(revision, namespace);
     await this.removeRetiredGateway(revision, namespace);
   }
@@ -3446,357 +3314,158 @@ export class KubernetesComputeDriver implements ComputeDriver {
     );
   }
 
-  private async bindPluginReceiptPod(
+  private normalizePluginWarnings(
     revision: AgentRevision,
-    namespace: string,
-    snapshot: PluginReceiptSnapshot | undefined,
-    ownership: Ownership,
-    receiptId: string | undefined,
-  ): Promise<void> {
-    if (snapshot === undefined || receiptId === undefined) return;
-    const receipt = await this.getOwned("ConfigMap", snapshot.name, namespace, ownership);
-    if (receipt === undefined || receipt.metadata.uid !== receiptId) return;
-    const state = this.pluginReceiptState(snapshot, receipt);
-    if (state.podUid !== undefined || state.phase !== "pending") return;
-    const pods = (await this.revisionPods(revision, namespace, snapshot.container)).filter(
-      (pod) => asRecord(pod.metadata)?.deletionTimestamp === undefined,
-    );
-    if (pods.length !== 1) return;
-    const pod = pods[0]!;
-    const metadata = asRecord(pod.metadata);
-    const podName = required(metadata?.name, "Plugin receipt Pod name");
-    const podUid = required(metadata?.uid, "Plugin receipt Pod UID");
-    const podResourceVersion = required(
-      metadata?.resourceVersion,
-      "Plugin receipt Pod resourceVersion",
-    );
-    const finalizers = Array.isArray(metadata?.finalizers)
-      ? metadata.finalizers.filter((value): value is string => typeof value === "string")
-      : [];
-    const nextFinalizers = finalizers.includes(PLUGIN_RECEIPT_FINALIZER)
-      ? finalizers
-      : [...finalizers, PLUGIN_RECEIPT_FINALIZER];
-    const clients = await this.clients();
-    if (nextFinalizers.length !== finalizers.length) {
-      await this.request(
-        () =>
-          clients.core.patchNamespacedPod(
-            {
-              name: podName,
-              namespace,
-              body: {
-                metadata: {
-                  resourceVersion: podResourceVersion,
-                  finalizers: nextFinalizers,
-                },
-              },
-            },
-            this.mergePatchOptions,
-          ),
-        { mutating: true },
-      );
+    warnings: readonly unknown[],
+  ): readonly PluginDeploymentWarning[] {
+    const admitted = revision.plugins?.plugins ?? {};
+    const byPlugin = new Map<string, PluginDeploymentWarning>();
+    for (const warning of warnings) {
+      const diagnostic = asRecord(warning);
+      if (
+        diagnostic === undefined ||
+        (diagnostic.code !== "PLUGIN_INSTALL_FAILED" &&
+          diagnostic.code !== "PLUGIN_AUTH_REQUIRED") ||
+        !isNonEmptyString(diagnostic.pluginId) ||
+        !Object.hasOwn(admitted, diagnostic.pluginId)
+      ) {
+        throw new DependencyUnavailableError("Plugin runtime status returned invalid warnings.");
+      }
+      if (byPlugin.has(diagnostic.pluginId)) {
+        throw new DependencyUnavailableError("Plugin runtime status returned invalid warnings.");
+      }
+      byPlugin.set(diagnostic.pluginId, {
+        code: diagnostic.code,
+        pluginId: diagnostic.pluginId,
+      });
     }
-    const guarded = await this.request(() =>
-      clients.core.readNamespacedPod({ name: podName, namespace }),
-    );
-    const guardedMetadata = asRecord(asRecord(guarded)?.metadata);
-    if (
-      guardedMetadata?.uid !== podUid ||
-      guardedMetadata?.deletionTimestamp !== undefined ||
-      !Array.isArray(guardedMetadata.finalizers) ||
-      !guardedMetadata.finalizers.includes(PLUGIN_RECEIPT_FINALIZER)
-    ) {
-      return;
-    }
-    await this.patchPluginReceipt(
-      snapshot,
-      ownership,
-      namespace,
-      receiptId,
-      {
-        phase: "pending",
-        podUid,
-        container: snapshot.container,
-      },
-      { phase: "pending" },
+    return Object.freeze(
+      [...byPlugin.values()].sort((a, b) => a.pluginId.localeCompare(b.pluginId)),
     );
   }
 
-  private pluginFailureFromTermination(
-    revision: AgentRevision,
-    terminated: KubernetesRecord,
-  ): PluginInstallFailure | undefined {
-    const message = typeof terminated.message === "string" ? terminated.message : "";
-    if (message.length === 0 || Buffer.byteLength(message, "utf8") >= 4096) return undefined;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(message);
-    } catch {
-      return undefined;
-    }
-    const diagnostic = asRecord(parsed);
-    if (
-      diagnostic === undefined ||
-      Object.keys(diagnostic).length !== 2 ||
-      (diagnostic.code !== "PLUGIN_INSTALL_FAILED" && diagnostic.code !== "PLUGIN_AUTH_REQUIRED") ||
-      !isNonEmptyString(diagnostic.pluginId) ||
-      !Object.hasOwn(revision.plugins?.plugins ?? {}, diagnostic.pluginId)
-    ) {
-      return undefined;
-    }
-    return { code: diagnostic.code, pluginId: diagnostic.pluginId };
+  private samePluginWarnings(
+    left: readonly PluginDeploymentWarning[],
+    right: readonly PluginDeploymentWarning[],
+  ): boolean {
+    return isDeepStrictEqual(
+      [...left].sort((a, b) => a.pluginId.localeCompare(b.pluginId)),
+      [...right].sort((a, b) => a.pluginId.localeCompare(b.pluginId)),
+    );
   }
 
-  private pluginReceiptEvidenceFromPod(
-    revision: AgentRevision,
-    pod: KubernetesRecord,
-    snapshot: PluginReceiptSnapshot,
-  ): PluginReceiptPodEvidence {
-    const status = asRecord(pod.status);
+  private podContainerId(pod: unknown, container: "agent" | "gateway"): string | undefined {
+    const status = asRecord(asRecord(pod)?.status);
     const containerStatuses = Array.isArray(status?.containerStatuses)
       ? status.containerStatuses
       : [];
-    const container = containerStatuses
-      .map(asRecord)
-      .find((candidate) => candidate?.name === snapshot.container);
-    const currentTerminated = asRecord(asRecord(container?.state)?.terminated);
-    const previousTerminated = asRecord(asRecord(container?.lastState)?.terminated);
-    // A later generic termination must not hide a retained native diagnosis.
-    for (const terminated of [previousTerminated, currentTerminated]) {
-      if (terminated === undefined) continue;
-      const failure = this.pluginFailureFromTermination(revision, terminated);
-      if (failure !== undefined) return { kind: "failed", failure };
-    }
-    if (previousTerminated !== undefined || currentTerminated !== undefined) {
-      return { kind: "rejected" };
-    }
-    const restartCount = Number(container?.restartCount ?? 0);
-    if (Number.isFinite(restartCount) && restartCount > 0) return { kind: "rejected" };
-    return { kind: "pending" };
+    const containerStatus = containerStatuses
+      .map((candidate) => asRecord(candidate))
+      .find((candidate) => candidate?.name === container);
+    return isNonEmptyString(containerStatus?.containerID) ? containerStatus.containerID : undefined;
   }
 
-  private async observePluginReceipt(
+  private async pluginRuntimeStatus(
     revision: AgentRevision,
     namespace: string,
-    snapshot: PluginReceiptSnapshot | undefined,
-    ownership: Ownership,
-    receiptId: string | undefined,
-  ): Promise<PluginInstallFailure | undefined> {
-    if (snapshot === undefined || receiptId === undefined) return undefined;
-    const receipt = await this.getOwned("ConfigMap", snapshot.name, namespace, ownership);
-    if (receipt === undefined || receipt.metadata.uid !== receiptId) return undefined;
-    const state = this.pluginReceiptState(snapshot, receipt);
-    if (state.phase === "succeeded") return undefined;
-    if (state.phase === "failed") {
-      const diagnostic = state.diagnostic;
+    container: "agent" | "gateway",
+    expectedWarnings?: readonly PluginDeploymentWarning[],
+  ): Promise<PluginRuntimeStatus | undefined> {
+    const pods = (await this.revisionPods(revision, namespace, container)).filter(
+      (pod) => asRecord(pod.metadata)?.deletionTimestamp === undefined,
+    );
+    if (pods.length !== 1) {
+      return undefined;
+    }
+    const pod = pods[0]!;
+    const metadata = asRecord(pod.metadata);
+    const podName = required(metadata?.name, "Plugin runtime Pod name");
+    const podUid = required(metadata?.uid, "Plugin runtime Pod UID");
+    const containerId = this.podContainerId(pod, container);
+    const clients = await this.clients();
+    let parsed: unknown;
+    try {
+      parsed = await this.request(() =>
+        clients.core.connectGetNamespacedPodProxyWithPath({
+          name: `${podName}:${PLUGIN_RUNTIME_STATUS_PORT}`,
+          namespace,
+          path: PLUGIN_RUNTIME_STATUS_PATH.slice(1),
+        }),
+      );
+    } catch (error) {
+      if (numericErrorStatus(error) === 404 || numericErrorStatus(error) === 503) {
+        return undefined;
+      }
+      throw error;
+    }
+    if (typeof clients.core.readNamespacedPod === "function") {
+      const latestPod = await this.request(() =>
+        clients.core.readNamespacedPod({ name: podName, namespace }),
+      );
+      const latestMetadata = asRecord(asRecord(latestPod)?.metadata);
+      const latestContainerId = this.podContainerId(latestPod, container);
       if (
-        diagnostic === undefined ||
-        !Object.hasOwn(revision.plugins?.plugins ?? {}, diagnostic.pluginId)
+        latestMetadata?.uid !== podUid ||
+        latestMetadata.deletionTimestamp !== undefined ||
+        ((containerId !== undefined || latestContainerId !== undefined) &&
+          latestContainerId !== containerId)
       ) {
         return undefined;
       }
-      return diagnostic;
     }
-    const admittedUid = state.podUid;
-    if (!isNonEmptyString(admittedUid)) return undefined;
-    const pod = (await this.revisionPods(revision, namespace, snapshot.container)).find(
-      (candidate) => asRecord(candidate.metadata)?.uid === admittedUid,
-    );
-    if (pod === undefined) return undefined;
-    const evidence = this.pluginReceiptEvidenceFromPod(revision, pod, snapshot);
-    if (evidence.kind === "failed") {
-      const patched = await this.patchPluginReceipt(
-        snapshot,
-        ownership,
-        namespace,
-        receiptId,
-        {
-          phase: "failed",
-          podUid: admittedUid,
-          container: snapshot.container,
-          diagnostic: evidence.failure,
-        },
-        { phase: "pending", podUid: admittedUid },
-      );
-      if (patched) return evidence.failure;
-      return this.observedDurablePluginFailure(revision, snapshot, ownership, namespace, receiptId);
+    const status = asRecord(parsed);
+    if (
+      status === undefined ||
+      status.revisionId !== revision.id ||
+      status.container !== container ||
+      status.podUid !== podUid ||
+      !isNonEmptyString(status.startupId) ||
+      (status.phase !== "starting" && status.phase !== "ready") ||
+      !Array.isArray(status.successfulPluginIds) ||
+      status.successfulPluginIds.some((pluginId) => !isNonEmptyString(pluginId)) ||
+      !Array.isArray(status.failures)
+    ) {
+      throw new DependencyUnavailableError("Plugin runtime status returned invalid data.");
     }
-    if (evidence.kind === "rejected") {
-      await this.patchPluginReceipt(
-        snapshot,
-        ownership,
-        namespace,
-        receiptId,
-        {
-          phase: "failed",
-          podUid: admittedUid,
-          container: snapshot.container,
-        },
-        { phase: "pending", podUid: admittedUid },
-      );
+    if (status.phase !== "ready") {
+      return undefined;
     }
-    return undefined;
-  }
-
-  private async observedDurablePluginFailure(
-    revision: AgentRevision,
-    snapshot: PluginReceiptSnapshot,
-    ownership: Ownership,
-    namespace: string,
-    receiptId: string,
-  ): Promise<PluginInstallFailure | undefined> {
-    const receipt = await this.getOwned("ConfigMap", snapshot.name, namespace, ownership);
-    if (receipt === undefined || receipt.metadata.uid !== receiptId) return undefined;
-    const state = this.pluginReceiptState(snapshot, receipt);
-    if (state.phase !== "failed" || state.diagnostic === undefined) return undefined;
-    return Object.hasOwn(revision.plugins?.plugins ?? {}, state.diagnostic.pluginId)
-      ? state.diagnostic
-      : undefined;
-  }
-
-  private async pluginReceiptReady(
-    revision: AgentRevision,
-    namespace: string,
-    snapshot: PluginReceiptSnapshot | undefined,
-    ownership: Ownership,
-    receiptId: string | undefined,
-  ): Promise<boolean> {
-    if (snapshot === undefined) return true;
-    if (receiptId === undefined) return false;
-    const receipt = await this.getOwned("ConfigMap", snapshot.name, namespace, ownership);
-    if (receipt === undefined || receipt.metadata.uid !== receiptId) return false;
-    const state = this.pluginReceiptState(snapshot, receipt);
-    if (state.phase === "succeeded") return true;
-    if (state.phase !== "pending" || !isNonEmptyString(state.podUid)) return false;
-    const pod = (await this.revisionPods(revision, namespace, snapshot.container)).find(
-      (candidate) => asRecord(candidate.metadata)?.uid === state.podUid,
+    const failures = this.normalizePluginWarnings(revision, status.failures);
+    const failurePluginIds = new Set(failures.map((failure) => failure.pluginId));
+    const admitted = revision.plugins?.plugins ?? {};
+    const reportedSuccessfulPluginIds = status.successfulPluginIds as readonly string[];
+    const successfulPluginIds = [...new Set(reportedSuccessfulPluginIds)];
+    const enabledPluginIds = new Set(
+      Object.entries(admitted)
+        .filter(([, selection]) => selection.enabled)
+        .map(([pluginId]) => pluginId),
     );
-    if (pod === undefined) return false;
-    return this.pluginReceiptEvidenceFromPod(revision, pod, snapshot).kind === "pending";
-  }
-
-  private async releasePluginReceiptFinalizer(
-    revision: AgentRevision,
-    namespace: string,
-    snapshot: PluginReceiptSnapshot,
-    podUid: string,
-  ): Promise<void> {
-    const clients = await this.clients();
-    for (const pod of await this.revisionPods(revision, namespace, snapshot.container)) {
-      const metadata = asRecord(pod.metadata);
-      if (podUid.length > 0 && metadata?.uid !== podUid) continue;
-      const podName = required(metadata?.name, "Plugin receipt Pod name");
-      const podResourceVersion = required(
-        metadata?.resourceVersion,
-        "Plugin receipt Pod resourceVersion",
-      );
-      const finalizers = Array.isArray(metadata?.finalizers)
-        ? metadata.finalizers.filter((value): value is string => typeof value === "string")
-        : [];
-      if (!finalizers.includes(PLUGIN_RECEIPT_FINALIZER)) continue;
-      await this.request(
-        () =>
-          clients.core.patchNamespacedPod(
-            {
-              name: podName,
-              namespace,
-              body: {
-                metadata: {
-                  resourceVersion: podResourceVersion,
-                  finalizers: finalizers.filter((value) => value !== PLUGIN_RECEIPT_FINALIZER),
-                },
-              },
-            },
-            this.mergePatchOptions,
-          ),
-        { mutating: true },
-      );
+    if (
+      successfulPluginIds.length !== reportedSuccessfulPluginIds.length ||
+      successfulPluginIds.some(
+        (pluginId) => !Object.hasOwn(admitted, pluginId) || failurePluginIds.has(pluginId),
+      ) ||
+      failures.some((failure) => !enabledPluginIds.has(failure.pluginId)) ||
+      successfulPluginIds.some((pluginId) => !enabledPluginIds.has(pluginId)) ||
+      successfulPluginIds.length + failures.length !== enabledPluginIds.size
+    ) {
+      throw new DependencyUnavailableError("Plugin runtime status returned invalid data.");
     }
-  }
-
-  private async cleanupPluginReceipt(revision: AgentRevision, namespace: string): Promise<void> {
-    const pluginRuntime = this.pluginRuntimeSnapshot(revision);
-    const snapshot = this.pluginReceiptSnapshot(
-      revision,
-      pluginRuntime,
-      revision.harness.mode === "embedded" ? "gateway" : "agent",
-    );
-    if (snapshot === undefined) return;
-    const ownership = this.pluginRuntimeOwnership(revision);
-    const receipt = await this.getOwned("ConfigMap", snapshot.name, namespace, ownership);
-    await this.releasePluginReceiptFinalizer(revision, namespace, snapshot, "");
-    if (receipt === undefined) return;
-    const clients = await this.clients();
-    await this.request(
-      () =>
-        clients.core.deleteNamespacedConfigMap({
-          name: snapshot.name,
-          namespace,
-          ...(receipt.metadata.uid === undefined
-            ? {}
-            : { body: { preconditions: { uid: receipt.metadata.uid } } }),
-        }),
-      { mutating: true },
-    );
-  }
-
-  private async cleanupNamespacePluginReceiptFinalizers(
-    namespaceId: string,
-    namespace: string,
-  ): Promise<void> {
-    const clients = await this.clients();
-    const observed = asRecord(
-      await this.request(() =>
-        clients.core.listNamespacedPod({
-          namespace,
-          labelSelector: labelsToSelector({
-            "app.kubernetes.io/managed-by": MANAGER,
-            "openclaw.dev/namespace": namespaceId,
-          }),
-          timeoutSeconds: Math.ceil(REQUEST_TIMEOUT_MS / 1000),
-        }),
-      ),
-    );
-    if (!Array.isArray(observed?.items)) {
-      throw new DependencyUnavailableError("The Kubernetes client returned an invalid Pod list.");
-    }
-    for (const item of observed.items) {
-      const pod = asRecord(item);
-      const metadata = asRecord(pod?.metadata);
-      if (
-        pod === undefined ||
-        metadata?.namespace !== namespace ||
-        !isNonEmptyString(metadata.name)
-      ) {
-        throw new DependencyUnavailableError("The Kubernetes client returned an invalid Pod.");
+    if (expectedWarnings !== undefined) {
+      const expected = this.normalizePluginWarnings(revision, expectedWarnings);
+      if (!this.samePluginWarnings(failures, expected)) {
+        return undefined;
       }
-      const podName = required(metadata.name, "Plugin receipt Pod name");
-      const finalizers = Array.isArray(metadata.finalizers)
-        ? metadata.finalizers.filter((value): value is string => typeof value === "string")
-        : [];
-      if (!finalizers.includes(PLUGIN_RECEIPT_FINALIZER)) continue;
-      const podResourceVersion = required(
-        metadata.resourceVersion,
-        "Plugin receipt Pod resourceVersion",
-      );
-      await this.request(
-        () =>
-          clients.core.patchNamespacedPod(
-            {
-              name: podName,
-              namespace,
-              body: {
-                metadata: {
-                  resourceVersion: podResourceVersion,
-                  finalizers: finalizers.filter((value) => value !== PLUGIN_RECEIPT_FINALIZER),
-                },
-              },
-            },
-            this.mergePatchOptions,
-          ),
-        { mutating: true },
-      );
     }
+    return {
+      revisionId: revision.id,
+      container,
+      startupId: status.startupId as string,
+      podUid,
+      phase: "ready",
+      successfulPluginIds,
+      failures,
+    };
   }
 
   private harnessRequirementsFromDeployment(
@@ -4448,180 +4117,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
     };
   }
 
-  private pluginReceiptSnapshot(
-    revision: AgentRevision,
-    runtime: PluginRuntimeSnapshot | undefined,
-    container: "agent" | "gateway",
-  ): PluginReceiptSnapshot | undefined {
-    if (runtime === undefined || Object.keys(runtime.runtime.selections).length === 0) {
-      return undefined;
-    }
-    return {
-      name: `plugin-receipt-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`,
-      container,
-    };
-  }
-
-  private pluginReceiptConfigMap(
-    snapshot: PluginReceiptSnapshot,
-    ownership: Ownership,
-    namespace: string,
-    state: PluginReceiptState,
-  ): ManagedKubernetesObject<"ConfigMap"> {
-    return {
-      ...this.manifest("v1", "ConfigMap", snapshot.name, ownership, namespace),
-      data: { [PLUGIN_RECEIPT_STATE_KEY]: JSON.stringify(state) },
-    };
-  }
-
-  private pluginReceiptState(
-    snapshot: PluginReceiptSnapshot,
-    configMap: ManagedKubernetesObject<"ConfigMap">,
-  ): PluginReceiptState {
-    const encoded = configMap.data?.[PLUGIN_RECEIPT_STATE_KEY];
-    if (!isNonEmptyString(encoded)) {
-      throw new OwnershipFailure(`Refusing invalid plugin receipt ${snapshot.name}.`);
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(encoded);
-    } catch {
-      throw new OwnershipFailure(`Refusing invalid plugin receipt ${snapshot.name}.`);
-    }
-    const state = asRecord(parsed);
-    const diagnostic = asRecord(state?.diagnostic);
-    const diagnosticCode = diagnostic?.code;
-    const diagnosticPluginId = diagnostic?.pluginId;
-    if (
-      state === undefined ||
-      (state.phase !== "pending" && state.phase !== "succeeded" && state.phase !== "failed") ||
-      state.container !== snapshot.container ||
-      (state.podUid !== undefined && !isNonEmptyString(state.podUid)) ||
-      ((state.phase === "succeeded" || diagnostic !== undefined) &&
-        !isNonEmptyString(state.podUid)) ||
-      (state.phase !== "failed" && diagnostic !== undefined) ||
-      (diagnostic !== undefined &&
-        (Object.keys(diagnostic).length !== 2 ||
-          (diagnosticCode !== "PLUGIN_INSTALL_FAILED" &&
-            diagnosticCode !== "PLUGIN_AUTH_REQUIRED") ||
-          !isNonEmptyString(diagnosticPluginId)))
-    ) {
-      throw new OwnershipFailure(`Refusing invalid plugin receipt ${snapshot.name}.`);
-    }
-    const receiptDiagnostic =
-      diagnostic === undefined
-        ? undefined
-        : {
-            code: diagnosticCode as PluginInstallFailure["code"],
-            pluginId: diagnosticPluginId as string,
-          };
-    return {
-      phase: state.phase,
-      container: snapshot.container,
-      ...(state.podUid === undefined ? {} : { podUid: state.podUid }),
-      ...(receiptDiagnostic === undefined ? {} : { diagnostic: receiptDiagnostic }),
-    };
-  }
-
-  private async existingPluginReceiptId(
-    snapshot: PluginReceiptSnapshot | undefined,
-    ownership: Ownership,
-    namespace: string,
-  ): Promise<string | undefined> {
-    if (snapshot === undefined) return undefined;
-    const existing = await this.getOwned("ConfigMap", snapshot.name, namespace, ownership);
-    if (existing === undefined) return undefined;
-    if (existing.immutable === true || Object.keys(existing.binaryData ?? {}).length !== 0) {
-      throw new OwnershipFailure(`Refusing invalid plugin receipt ${snapshot.name}.`);
-    }
-    this.pluginReceiptState(snapshot, existing);
-    return required(existing.metadata.uid, "Plugin receipt UID");
-  }
-
-  private async ensurePluginReceipt(
-    snapshot: PluginReceiptSnapshot | undefined,
-    ownership: Ownership,
-    namespace: string,
-  ): Promise<string | undefined> {
-    if (snapshot === undefined) return undefined;
-    const desired = this.pluginReceiptConfigMap(snapshot, ownership, namespace, {
-      phase: "pending",
-      container: snapshot.container,
-    });
-    const clients = await this.clients();
-    const existing = await this.getOwned("ConfigMap", snapshot.name, namespace, ownership);
-    if (existing !== undefined) {
-      const uid = required(existing.metadata.uid, "Plugin receipt UID");
-      if (existing.immutable === true || Object.keys(existing.binaryData ?? {}).length !== 0) {
-        throw new OwnershipFailure(`Refusing invalid plugin receipt ${snapshot.name}.`);
-      }
-      this.pluginReceiptState(snapshot, existing);
-      return uid;
-    }
-    try {
-      await this.request(
-        () =>
-          clients.core.createNamespacedConfigMap({
-            namespace,
-            body: desired,
-          }),
-        { mutating: true },
-      );
-    } catch (error) {
-      if (numericErrorStatus(error) !== 409) throw error;
-    }
-    const created = await this.getOwned("ConfigMap", snapshot.name, namespace, ownership);
-    if (created === undefined)
-      throw new DependencyUnavailableError("Plugin receipt was not created.");
-    if (created.immutable === true || Object.keys(created.binaryData ?? {}).length !== 0) {
-      throw new OwnershipFailure(`Refusing invalid plugin receipt ${snapshot.name}.`);
-    }
-    this.pluginReceiptState(snapshot, created);
-    return required(created.metadata.uid, "Plugin receipt UID");
-  }
-
-  private async patchPluginReceipt(
-    snapshot: PluginReceiptSnapshot,
-    ownership: Ownership,
-    namespace: string,
-    receiptId: string,
-    state: PluginReceiptState,
-    expected: PluginReceiptPatchExpectation,
-  ): Promise<boolean> {
-    const clients = await this.clients();
-    const existing = await this.getOwned("ConfigMap", snapshot.name, namespace, ownership);
-    if (existing === undefined || existing.metadata.uid !== receiptId) {
-      throw new DependencyUnavailableError("Plugin receipt identity changed.");
-    }
-    const current = this.pluginReceiptState(snapshot, existing);
-    if (current.phase !== expected.phase) return false;
-    if (expected.podUid === undefined) {
-      if (current.podUid !== undefined) return false;
-    } else if (current.podUid !== expected.podUid) {
-      return false;
-    }
-    const resourceVersion = required(
-      existing.metadata.resourceVersion,
-      "Plugin receipt resourceVersion",
-    );
-    await this.request(
-      () =>
-        clients.core.patchNamespacedConfigMap(
-          {
-            name: snapshot.name,
-            namespace,
-            body: {
-              metadata: { resourceVersion },
-              data: { [PLUGIN_RECEIPT_STATE_KEY]: JSON.stringify(state) },
-            },
-          },
-          this.mergePatchOptions,
-        ),
-      { mutating: true },
-    );
-    return true;
-  }
-
   private sharedWorkspaceClaimName(agentId: string): string {
     return `workspace-${sha256Hex(agentId, 12)}`;
   }
@@ -4961,14 +4456,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
     await this.reconcile(policy, ownership, namespace);
   }
 
-  private agentNetworkPolicies(
+  private pluginStatusNetworkPolicies(
     revision: AgentRevision,
     namespace: string,
   ): ManagedKubernetesObject[] {
-    const runtime = this.options.runtime;
-    if (runtime === undefined) {
-      return [];
-    }
     const suffix = sha256Hex(revision.agentId, 12);
     const ownership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
     const agent = {
@@ -4994,6 +4485,95 @@ export class KubernetesComputeDriver implements ComputeDriver {
       ),
       spec,
     });
+    const statusProxySourceCidrs = this.options.network.pluginStatusProxySourceCidrs ?? [];
+    const enabledPluginIds = Object.entries(revision.plugins?.plugins ?? {})
+      .filter(([, selection]) => selection.enabled)
+      .map(([pluginId]) => pluginId);
+    if (enabledPluginIds.length === 0) {
+      return [];
+    }
+    const policies =
+      statusProxySourceCidrs.length > 0
+        ? [
+            policy("allow-plugin-status-proxy", {
+              podSelector: {
+                matchLabels: {
+                  "openclaw.dev/agent": revision.agentId,
+                  "openclaw.dev/revision": revision.id,
+                },
+              },
+              policyTypes: ["Ingress"],
+              ingress: [
+                {
+                  from: statusProxySourceCidrs.map((cidr) => ({ ipBlock: { cidr } })),
+                  ports: [{ protocol: "TCP", port: PLUGIN_RUNTIME_STATUS_PORT }],
+                },
+              ],
+            }),
+          ]
+        : [];
+    if (revision.harness.mode === "embedded" || this.options.runtime === undefined) {
+      return policies;
+    }
+    return [
+      ...policies,
+      policy("allow-plugin-status-gateway", {
+        podSelector: gateway,
+        policyTypes: ["Egress"],
+        egress: [
+          {
+            to: [{ podSelector: agent }],
+            ports: [{ protocol: "TCP", port: PLUGIN_RUNTIME_STATUS_PORT }],
+          },
+        ],
+      }),
+      policy("allow-plugin-status-agent", {
+        podSelector: agent,
+        policyTypes: ["Ingress"],
+        ingress: [
+          {
+            from: [{ podSelector: gateway }],
+            ports: [{ protocol: "TCP", port: PLUGIN_RUNTIME_STATUS_PORT }],
+          },
+        ],
+      }),
+    ];
+  }
+
+  private agentNetworkPolicies(
+    revision: AgentRevision,
+    namespace: string,
+  ): ManagedKubernetesObject[] {
+    const suffix = sha256Hex(revision.agentId, 12);
+    const ownership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
+    const agent = {
+      matchLabels: {
+        "openclaw.dev/workload-role": "agent",
+        "openclaw.dev/agent": revision.agentId,
+        "openclaw.dev/revision": revision.id,
+      },
+    };
+    const gateway = {
+      matchLabels: {
+        "openclaw.dev/workload-role": "gateway",
+        "openclaw.dev/agent": revision.agentId,
+      },
+    };
+    const policy = (name: string, spec: KubernetesRecord): ManagedKubernetesObject => ({
+      ...this.manifest(
+        "networking.k8s.io/v1",
+        "NetworkPolicy",
+        `${name}-${suffix}`,
+        ownership,
+        namespace,
+      ),
+      spec,
+    });
+    const statusPolicies = this.pluginStatusNetworkPolicies(revision, namespace);
+    const runtime = this.options.runtime;
+    if (runtime === undefined) {
+      return statusPolicies;
+    }
     // TODO(model-egress-proxy): Replace public TCP/443 with the approved per-Agent model proxy.
     const modelEgress = [
       {
@@ -5015,9 +4595,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
           policyTypes: ["Egress"],
           egress: modelEgress,
         }),
+        ...statusPolicies,
       ];
     }
-    const transport = [{ protocol: "TCP", port: AGENT_TRANSPORT_PORT }];
+    const transport = [
+      { protocol: "TCP", port: AGENT_TRANSPORT_PORT },
+      { protocol: "TCP", port: PLUGIN_RUNTIME_STATUS_PORT },
+    ];
     return [
       policy("allow-gateway-agent", {
         podSelector: gateway,
@@ -5030,6 +4614,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         ingress: [{ from: [{ podSelector: gateway }], ports: transport }],
         egress: modelEgress,
       }),
+      ...statusPolicies,
     ];
   }
 
@@ -5155,7 +4740,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     enabledChannels: readonly ChannelRequirements[] = [],
     secretEnvironment: readonly SecretEnvironmentProjection[] = [],
     pluginRuntime?: PluginRuntimeSnapshot,
-    pluginReceipt?: PluginReceiptSnapshot,
+    pluginWarnings: readonly PluginDeploymentWarning[] = [],
   ): ManagedKubernetesObject {
     const metadata = this.ownershipMetadata(ownership);
     const workloadMetadata =
@@ -5217,7 +4802,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
           role === "gateway" &&
           !embedded &&
           Object.keys(pluginRuntime.runtime.selections).length > 0));
-    const mountsPluginReceipt = needsPluginRuntime && pluginReceipt !== undefined;
+    const hasEnabledPlugins =
+      pluginRuntime !== undefined &&
+      Object.values(pluginRuntime.runtime.selections).some((selection) => selection.enabled);
+    const needsPluginStatus = needsPluginRuntime && hasEnabledPlugins;
     if (needsPluginRuntime) {
       volumes.push({
         name: PLUGIN_RUNTIME_VOLUME,
@@ -5254,47 +4842,32 @@ export class KubernetesComputeDriver implements ComputeDriver {
         );
       }
     }
-    if (mountsPluginReceipt && pluginReceipt !== undefined) {
-      volumes.push(
-        {
-          name: PLUGIN_RECEIPT_GATE_VOLUME,
-          configMap: {
-            name: pluginReceipt.name,
-            items: [{ key: PLUGIN_RECEIPT_STATE_KEY, path: PLUGIN_RECEIPT_STATE_KEY }],
-            optional: false,
-          },
-        },
-        {
-          name: PLUGIN_RECEIPT_STATE_VOLUME,
-          emptyDir: { sizeLimit: PLUGIN_RECEIPT_STATE_VOLUME_SIZE },
-        },
-      );
-      volumeMounts.push(
-        {
-          name: PLUGIN_RECEIPT_GATE_VOLUME,
-          mountPath: `${PLUGIN_RECEIPT_DIRECTORY}/gate`,
-          readOnly: true,
-        },
-        {
-          name: PLUGIN_RECEIPT_STATE_VOLUME,
-          mountPath: `${PLUGIN_RECEIPT_DIRECTORY}/state`,
-          readOnly: false,
-        },
-      );
+    if (needsPluginStatus) {
+      const statusRevisionId = configuration?.revisionId ?? ownership.revisionId;
       variables.push(
         {
-          name: "OCC_PLUGIN_RECEIPT_GATE",
-          value: `${PLUGIN_RECEIPT_DIRECTORY}/gate/${PLUGIN_RECEIPT_STATE_KEY}`,
+          name: "OPENCLAW_AGENT_REVISION_ID",
+          value: required(statusRevisionId, "Plugin runtime revision ID"),
         },
         {
-          name: "OCC_PLUGIN_RECEIPT_DIRECTORY",
-          value: `${PLUGIN_RECEIPT_DIRECTORY}/state`,
+          name: "OPENCLAW_PLUGIN_STATUS_CONTAINER",
+          value: role,
         },
         {
-          name: "OCC_PLUGIN_RECEIPT_POD_UID",
+          name: "OPENCLAW_PLUGIN_STATUS_PORT",
+          value: String(PLUGIN_RUNTIME_STATUS_PORT),
+        },
+        {
+          name: "OPENCLAW_POD_UID",
           valueFrom: { fieldRef: { fieldPath: "metadata.uid" } },
         },
       );
+      if (pluginWarnings.length > 0) {
+        variables.push({
+          name: "OPENCLAW_PLUGIN_FAILURES_JSON",
+          value: JSON.stringify(pluginWarnings),
+        });
+      }
     }
     if (projected !== undefined) {
       volumes.push({
@@ -5499,7 +5072,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
               runAsNonRoot: true,
               runAsUser: 1000,
               runAsGroup: 1000,
-              ...(privateHome || mountsPluginReceipt ? { fsGroup: 1000 } : {}),
+              ...(privateHome ? { fsGroup: 1000 } : {}),
               seccompProfile: { type: "RuntimeDefault" },
             },
             containers: [
@@ -5510,6 +5083,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
                 ...(variables.length === 0 ? {} : { env: variables }),
                 ports: [
                   { containerPort: port, name: role === "agent" && runtime ? "websocket" : "http" },
+                  ...(needsPluginStatus
+                    ? [{ containerPort: PLUGIN_RUNTIME_STATUS_PORT, name: "plugin-status" }]
+                    : []),
                 ],
                 readinessProbe: {
                   ...(runtime !== undefined
@@ -5531,12 +5107,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
                   role === "gateway"
                     ? this.options.resources.gateway
                     : this.options.resources.agent,
-                ...(mountsPluginReceipt
-                  ? {
-                      terminationMessagePath: "/dev/termination-log",
-                      terminationMessagePolicy: "File",
-                    }
-                  : {}),
                 securityContext: {
                   allowPrivilegeEscalation: false,
                   readOnlyRootFilesystem: true,
@@ -5566,6 +5136,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
     namespace: string,
     selector: Record<string, string>,
   ): ManagedKubernetesObject {
+    const runtimeAgentService =
+      ownership.servicePrincipalId !== undefined && this.options.runtime !== undefined;
     return {
       ...this.manifest("v1", "Service", name, ownership, namespace),
       spec: {
@@ -5573,19 +5145,21 @@ export class KubernetesComputeDriver implements ComputeDriver {
         selector,
         ports: [
           {
-            name:
-              ownership.servicePrincipalId !== undefined && this.options.runtime !== undefined
-                ? "websocket"
-                : "http",
-            port:
-              ownership.servicePrincipalId !== undefined && this.options.runtime !== undefined
-                ? AGENT_TRANSPORT_PORT
-                : this.options.network.gatewayPort,
-            targetPort:
-              ownership.servicePrincipalId !== undefined && this.options.runtime !== undefined
-                ? AGENT_TRANSPORT_PORT
-                : this.options.network.gatewayPort,
+            name: runtimeAgentService ? "websocket" : "http",
+            port: runtimeAgentService ? AGENT_TRANSPORT_PORT : this.options.network.gatewayPort,
+            targetPort: runtimeAgentService
+              ? AGENT_TRANSPORT_PORT
+              : this.options.network.gatewayPort,
           },
+          ...(runtimeAgentService
+            ? [
+                {
+                  name: "plugin-status",
+                  port: PLUGIN_RUNTIME_STATUS_PORT,
+                  targetPort: PLUGIN_RUNTIME_STATUS_PORT,
+                },
+              ]
+            : []),
         ],
       },
     };

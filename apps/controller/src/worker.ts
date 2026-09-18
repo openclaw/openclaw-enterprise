@@ -9,7 +9,7 @@ import type {
   AuthorizationDecision,
   AuthorizationRequest,
   ComputeDriver,
-  ComputeReadiness,
+  PluginDeploymentWarning,
   ComputeRevisionContext,
   ConfigurationDriver,
   Driver,
@@ -76,8 +76,8 @@ interface DispatchResult {
 }
 
 interface RevisionDispatchResult extends DispatchResult {
-  readonly receiptId?: string;
   readonly data?: Readonly<Record<string, unknown>>;
+  readonly pluginWarnings?: readonly PluginDeploymentWarning[];
   readonly revision?: Readonly<AgentRevision>;
   readonly previous?: Readonly<AgentRevision>;
   readonly supersededBy?: Readonly<AgentRevision>;
@@ -217,26 +217,10 @@ function validRevisionObservation(value: unknown, revision: Readonly<AgentRevisi
   }
   const observation = value as Record<string, unknown>;
   if (
-    observation.receiptId !== undefined &&
-    (typeof observation.receiptId !== "string" ||
-      observation.receiptId.trim().length === 0 ||
-      observation.receiptId.length > 512)
-  )
+    observation.warnings !== undefined &&
+    computePluginWarnings(observation.warnings, revision) === undefined
+  ) {
     return false;
-  if (observation.failure !== undefined) {
-    const failure = observation.failure;
-    if (typeof failure !== "object" || failure === null || Array.isArray(failure)) return false;
-    const diagnostic = failure as Record<string, unknown>;
-    if (
-      Object.keys(diagnostic).length !== 2 ||
-      (diagnostic.code !== "PLUGIN_INSTALL_FAILED" && diagnostic.code !== "PLUGIN_AUTH_REQUIRED") ||
-      typeof diagnostic.pluginId !== "string" ||
-      revision.plugins === undefined ||
-      !Object.hasOwn(revision.plugins.plugins, diagnostic.pluginId) ||
-      observation.receiptId === undefined ||
-      observation.ready !== false
-    )
-      return false;
   }
   return (
     observation.namespaceId === revision.namespaceId &&
@@ -246,18 +230,44 @@ function validRevisionObservation(value: unknown, revision: Readonly<AgentRevisi
   );
 }
 
-function pluginFailure(
-  observation: ComputeReadiness,
+function computePluginWarnings(
+  warnings: unknown,
   revision: Readonly<AgentRevision>,
-): RevisionDispatchResult | undefined {
-  if (observation.failure === undefined) return undefined;
-  return {
-    outcome: "permanent",
-    code: observation.failure.code,
-    data: { pluginId: observation.failure.pluginId },
-    receiptId: observation.receiptId!,
-    revision,
-  };
+): readonly PluginDeploymentWarning[] | undefined {
+  if (warnings === undefined) {
+    return Object.freeze([]);
+  }
+  if (!Array.isArray(warnings)) {
+    return undefined;
+  }
+  const admitted = revision.plugins?.plugins;
+  if (admitted === undefined) {
+    return undefined;
+  }
+  const seen = new Set<string>();
+  const normalized: PluginDeploymentWarning[] = [];
+  for (const warning of warnings) {
+    if (typeof warning !== "object" || warning === null || Array.isArray(warning)) {
+      return undefined;
+    }
+    const candidate = warning as Record<string, unknown>;
+    const code = candidate.code;
+    const pluginId = candidate.pluginId;
+    if (
+      Object.keys(candidate).length !== 2 ||
+      (code !== "PLUGIN_INSTALL_FAILED" && code !== "PLUGIN_AUTH_REQUIRED") ||
+      typeof pluginId !== "string" ||
+      !Object.hasOwn(admitted, pluginId)
+    ) {
+      return undefined;
+    }
+    if (seen.has(pluginId)) {
+      return undefined;
+    }
+    seen.add(pluginId);
+    normalized.push({ code, pluginId });
+  }
+  return Object.freeze(normalized);
 }
 
 function revisionSecretBindings(
@@ -447,7 +457,6 @@ export class ControllerWorker {
     while (!this.stopping) {
       try {
         await this.queue.recoverStale();
-        await this.acknowledgeCommittedReceipts();
         const claim = await this.queue.claim();
         if (claim !== undefined) {
           await this.process(claim);
@@ -467,46 +476,6 @@ export class ControllerWorker {
         if (!this.stopping) {
           throw error;
         }
-      }
-    }
-  }
-
-  private async acknowledgeCommittedReceipts(): Promise<void> {
-    const acknowledge = this.compute.acknowledgeRevisionReceipt;
-    if (acknowledge === undefined) return;
-    for (const work of await this.queue.pendingReceiptAcknowledgements({ limit: 20 })) {
-      try {
-        // A terminal row is immutable. Its exact receipt identity authorizes cleanup
-        // after the committing worker has cleared its claim, including crash recovery.
-        const revision = await this.state.read((view) =>
-          view.revisions.findRevision(work.namespaceId, work.agentId!, work.revisionId!),
-        );
-        if (
-          revision === undefined ||
-          revision.compute.id !== this.compute.id ||
-          revision.compute.implementation !== this.compute.implementation
-        )
-          continue;
-        await withComputeAbortSignal(this.abort.signal, () =>
-          acknowledge.call(this.compute, revision, {
-            receiptId: work.receiptId,
-            outcome:
-              work.state === "succeeded" &&
-              ["REVISION_ACTIVATED", "REVISION_ALREADY_ACTIVE"].includes(work.reasonCode)
-                ? "succeeded"
-                : "failed",
-          }),
-        );
-        await this.queue.acknowledgeReceipt({
-          idempotencyKey: work.idempotencyKey,
-          state: work.state,
-          reasonCode: work.reasonCode,
-          receiptId: work.receiptId,
-        });
-      } catch {
-        // Keep the pending receipt for the existing recovery loop; do not turn
-        // cleanup uncertainty into another deployment outcome or leak native text.
-        this.emit({ event: "worker.receipt_cleanup_pending", code: "DEPENDENCY_UNAVAILABLE" });
       }
     }
   }
@@ -1140,7 +1109,7 @@ export class ControllerWorker {
         }
       }
       if (agent.activeRevisionId === revision.id) {
-        let receiptId: string | undefined;
+        let pluginWarnings: readonly PluginDeploymentWarning[] = Object.freeze([]);
         try {
           const compute = this.compute;
           // Publishing the active pointer precedes activation. Reobserve even when
@@ -1155,14 +1124,10 @@ export class ControllerWorker {
             });
             return;
           }
-          receiptId = observation.receiptId;
-          const failure = pluginFailure(observation, revision);
-          if (failure !== undefined) {
-            await this.finalizeRevision(claim, failure);
-            return;
-          }
+          pluginWarnings =
+            computePluginWarnings(observation.warnings, revision) ?? Object.freeze([]);
           if (!observation.ready) {
-            await this.finalizeActiveRevision(claim, revision, "REVISION_INCOMPLETE", receiptId);
+            await this.finalizeActiveRevision(claim, revision, "REVISION_INCOMPLETE");
             return;
           }
           if (this.shouldActivatePublishedRevision(compute)) {
@@ -1182,19 +1147,14 @@ export class ControllerWorker {
           if (error instanceof WorkClaimLostError) {
             throw error;
           }
-          await this.finalizeActiveRevision(
-            claim,
-            revision,
-            "REVISION_FINALIZATION_INCOMPLETE",
-            receiptId,
-          );
+          await this.finalizeActiveRevision(claim, revision, "REVISION_FINALIZATION_INCOMPLETE");
           return;
         }
         await this.completeActivatedRevision(claim, {
           outcome: "success",
           code: "REVISION_ALREADY_ACTIVE",
           revision,
-          ...(receiptId === undefined ? {} : { receiptId }),
+          pluginWarnings,
         });
         return;
       }
@@ -1407,16 +1367,10 @@ export class ControllerWorker {
       if (!validRevisionObservation(observation, revision)) {
         return { outcome: "permanent", code: "INVALID_DRIVER_OBSERVATION" };
       }
-      const failure = pluginFailure(observation, revision);
-      if (failure !== undefined) {
-        return failure;
-      }
+      const pluginWarnings =
+        computePluginWarnings(observation.warnings, revision) ?? Object.freeze([]);
       if (!observation.ready) {
-        return {
-          outcome: "pending",
-          code: "REVISION_INCOMPLETE",
-          ...(observation.receiptId === undefined ? {} : { receiptId: observation.receiptId }),
-        };
+        return { outcome: "pending", code: "REVISION_INCOMPLETE" };
       }
       const agent = await this.state.read((view) =>
         view.agents.findAgent(revision.namespaceId, revision.agentId),
@@ -1438,7 +1392,7 @@ export class ControllerWorker {
         outcome: "success",
         code: "REVISION_ACTIVATED",
         revision,
-        ...(observation.receiptId === undefined ? {} : { receiptId: observation.receiptId }),
+        pluginWarnings,
         context,
         ...(previous === undefined ? {} : { previous }),
         ...(expectedActiveRevisionId === undefined ? {} : { expectedActiveRevisionId }),
@@ -1657,7 +1611,9 @@ export class ControllerWorker {
       if (resolved.outcome === "success") {
         await queue.complete(claim, {
           code: resolved.code,
-          ...(resolved.receiptId === undefined ? {} : { receiptId: resolved.receiptId }),
+          ...(resolved.pluginWarnings === undefined
+            ? {}
+            : { pluginWarnings: resolved.pluginWarnings }),
         });
       } else if (resolved.outcome === "pending") {
         await queue.defer(claim, { code: resolved.code });
@@ -1665,12 +1621,10 @@ export class ControllerWorker {
         await queue.fail(claim, {
           code: resolved.code,
           ...(resolved.data === undefined ? {} : { data: resolved.data }),
-          ...(resolved.receiptId === undefined ? {} : { receiptId: resolved.receiptId }),
         });
       } else {
         await queue.retry(claim, {
           code: resolved.code,
-          ...(resolved.receiptId === undefined ? {} : { receiptId: resolved.receiptId }),
         });
       }
     }, this.queueOptions);
@@ -1704,7 +1658,6 @@ export class ControllerWorker {
         await this.finalizeRevision(claim, {
           outcome: "pending",
           code: "REVISION_FINALIZATION_INCOMPLETE",
-          ...(resolved.receiptId === undefined ? {} : { receiptId: resolved.receiptId }),
         });
         return;
       }
@@ -1786,7 +1739,7 @@ export class ControllerWorker {
       await this.appendRevisionObservation(unit, claim, result);
       await queue.complete(claim, {
         code: result.code,
-        ...(result.receiptId === undefined ? {} : { receiptId: result.receiptId }),
+        ...(result.pluginWarnings === undefined ? {} : { pluginWarnings: result.pluginWarnings }),
       });
       if (this.maintenanceIntervalMs !== undefined) {
         await this.enqueueMaintenance(queue, claim, revision);
@@ -1812,7 +1765,6 @@ export class ControllerWorker {
     claim: ClaimedWork,
     revision: Readonly<AgentRevision>,
     code: string,
-    receiptId?: string,
   ): Promise<void> {
     if (
       this.maintenanceIntervalMs === undefined ||
@@ -1821,7 +1773,6 @@ export class ControllerWorker {
       await this.finalizeRevision(claim, {
         outcome: "pending",
         code,
-        ...(receiptId === undefined ? {} : { receiptId }),
       });
       return;
     }

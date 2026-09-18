@@ -24,6 +24,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import type { PgTableExtraConfigValue } from "drizzle-orm/pg-core";
+import type { PluginDeploymentWarning } from "./controller-work.ts";
 
 export const occSchema = pgSchema("occ");
 
@@ -675,8 +676,7 @@ export const controllerWork = occSchema.table(
     completedAt: timestamp("completed_at", { withTimezone: true }),
     reasonCode: text("reason_code"),
     errorData: jsonb("error_data").$type<Record<string, unknown>>(),
-    receiptId: text("receipt_id"),
-    receiptAcknowledgedAt: timestamp("receipt_acknowledged_at", { withTimezone: true }),
+    pluginWarnings: jsonb("plugin_warnings").$type<PluginDeploymentWarning[]>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
   },
@@ -742,8 +742,7 @@ export const controllerWork = occSchema.table(
           AND ${table.completedAt} IS NULL
           AND ${table.reasonCode} IS NULL
           AND ${table.errorData} IS NULL
-          AND ${table.receiptId} IS NULL
-          AND ${table.receiptAcknowledgedAt} IS NULL)
+          AND ${table.pluginWarnings} IS NULL)
       )`,
     ),
     check(
@@ -757,31 +756,21 @@ export const controllerWork = occSchema.table(
         AND jsonb_typeof(${table.errorData}) = 'object'
         AND octet_length(${table.errorData}::text) <= 4096
         AND (
-          (
-            ${table.reasonCode} IN ('PLUGIN_INSTALL_FAILED', 'PLUGIN_AUTH_REQUIRED')
-            AND ${table.errorData} ? 'pluginId'
-            AND (${table.errorData} - 'pluginId') = '{}'::jsonb
-            AND jsonb_typeof(${table.errorData}->'pluginId') = 'string'
-            AND char_length(${table.errorData}->>'pluginId') BETWEEN 1 AND 253
-          )
-          OR (
-            ${table.reasonCode} = 'CONVERGENCE_DEADLINE_EXCEEDED'
-            AND ${table.errorData} ? 'timeoutMs'
-            AND (${table.errorData} - 'timeoutMs') = '{}'::jsonb
-            AND jsonb_typeof(${table.errorData}->'timeoutMs') = 'number'
-            AND (${table.errorData}->>'timeoutMs') ~ '^[1-9][0-9]{0,15}$'
-            AND (${table.errorData}->>'timeoutMs')::numeric <= 9007199254740991
-          )
+          ${table.reasonCode} = 'CONVERGENCE_DEADLINE_EXCEEDED'
+          AND ${table.errorData} ? 'timeoutMs'
+          AND (${table.errorData} - 'timeoutMs') = '{}'::jsonb
+          AND jsonb_typeof(${table.errorData}->'timeoutMs') = 'number'
+          AND (${table.errorData}->>'timeoutMs') ~ '^[1-9][0-9]{0,15}$'
+          AND (${table.errorData}->>'timeoutMs')::numeric <= 9007199254740991
         )
       )`,
     ),
     check(
-      "controller_work_receipt_id_length",
-      sql`${table.receiptId} IS NULL OR char_length(${table.receiptId}) BETWEEN 1 AND 512`,
-    ),
-    check(
-      "controller_work_receipt_ack_state",
-      sql`${table.receiptAcknowledgedAt} IS NULL OR (${table.state} IN ('succeeded', 'failed_permanent') AND ${table.receiptId} IS NOT NULL)`,
+      "controller_work_plugin_warnings_state",
+      sql`${table.pluginWarnings} IS NULL OR (
+        ${table.state} = 'succeeded'
+        AND jsonb_typeof(${table.pluginWarnings}) = 'array'
+      )`,
     ),
     index("controller_work_ready")
       .on(table.availableAt, table.createdAt, table.idempotencyKey)

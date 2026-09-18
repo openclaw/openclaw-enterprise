@@ -4,15 +4,13 @@ import { ResourceConflictError, ScopeViolationError } from "../errors.ts";
 import {
   nonempty,
   safeFailureCode,
-  safeReceiptId,
   validateFailureData,
+  validatePluginWarnings,
   type ClaimedWork,
   type ControllerWork,
   type ControllerWorkState,
   type EnqueueWork,
   type PermanentFailure,
-  type ReceiptAcknowledgementIdentity,
-  type ReceiptAcknowledgementWork,
   type RetryableFailure,
   type WorkClaim,
   type WorkResult,
@@ -24,8 +22,6 @@ export type {
   ControllerWorkState,
   EnqueueWork,
   PermanentFailure,
-  ReceiptAcknowledgementIdentity,
-  ReceiptAcknowledgementWork,
   RetryableFailure,
   WorkClaim,
   WorkResult,
@@ -77,8 +73,7 @@ interface WorkRow {
   readonly completed_at: Date | string | null;
   readonly reason_code: string | null;
   readonly error_data: Record<string, unknown> | null;
-  readonly receipt_id: string | null;
-  readonly receipt_acknowledged_at: Date | string | null;
+  readonly plugin_warnings: readonly unknown[] | null;
   readonly created_at: Date | string;
   readonly updated_at: Date | string;
 }
@@ -123,6 +118,8 @@ function asRow(value: unknown): WorkRow {
 
 function asWork(value: unknown): ControllerWork {
   const row = asRow(value);
+  const pluginWarnings =
+    row.plugin_warnings === null ? undefined : validatePluginWarnings(row.plugin_warnings);
   return Object.freeze({
     idempotencyKey: row.idempotency_key,
     namespaceId: row.namespace_id,
@@ -141,10 +138,7 @@ function asWork(value: unknown): ControllerWork {
     ...(row.completed_at === null ? {} : { completedAt: asDate(row.completed_at) }),
     ...(row.reason_code === null ? {} : { reasonCode: row.reason_code }),
     ...(row.error_data === null ? {} : { errorData: Object.freeze({ ...row.error_data }) }),
-    ...(row.receipt_id === null ? {} : { receiptId: row.receipt_id }),
-    ...(row.receipt_acknowledged_at === null
-      ? {}
-      : { receiptAcknowledgedAt: asDate(row.receipt_acknowledged_at) }),
+    ...(pluginWarnings === undefined ? {} : { pluginWarnings }),
     createdAt: asDate(row.created_at),
     updatedAt: asDate(row.updated_at),
   });
@@ -426,7 +420,7 @@ export class PostgresWorkQueue {
   async complete(claim: WorkClaim, result: WorkResult = {}): Promise<void> {
     validateClaim(claim);
     const reasonCode = safeFailureCode(result.code ?? "RECONCILE_SUCCEEDED");
-    const receiptId = safeReceiptId(result.receiptId) ?? null;
+    const warnings = validatePluginWarnings(result.pluginWarnings);
     const completed = await this.client.query(
       `WITH transitioned AS (
          UPDATE occ.controller_work
@@ -436,8 +430,7 @@ export class PostgresWorkQueue {
              completed_at = clock_timestamp(),
              reason_code = $5::text,
              error_data = NULL,
-             receipt_id = $6::text,
-             receipt_acknowledged_at = NULL,
+             plugin_warnings = $6::jsonb,
              updated_at = clock_timestamp()
          WHERE idempotency_key = $1
            AND state = 'claimed'
@@ -445,7 +438,14 @@ export class PostgresWorkQueue {
            AND lease_expires_at > clock_timestamp()
          RETURNING *
        ), ${INSERT_EVIDENCE_SQL}`,
-      [claim.idempotencyKey, claim.claimToken, "success", reasonCode, reasonCode, receiptId],
+      [
+        claim.idempotencyKey,
+        claim.claimToken,
+        "success",
+        reasonCode,
+        reasonCode,
+        warnings === undefined ? null : JSON.stringify(warnings),
+      ],
     );
     if (completed.rows.length === 0) {
       throw new WorkClaimLostError();
@@ -518,11 +518,7 @@ export class PostgresWorkQueue {
                ELSE NULL
              END,
              error_data = NULL,
-             receipt_id = CASE
-               WHEN attempt_count >= $5::integer THEN $9::text
-               ELSE NULL
-             END,
-             receipt_acknowledged_at = NULL,
+             plugin_warnings = NULL,
              updated_at = clock_timestamp()
          WHERE idempotency_key = $1
            AND state = 'claimed'
@@ -539,7 +535,6 @@ export class PostgresWorkQueue {
         MAX_BACKOFF_MS,
         INITIAL_BACKOFF_MS,
         jitter,
-        safeReceiptId(failure.receiptId) ?? null,
       ],
     );
     if (retried.rows.length === 0) {
@@ -551,7 +546,6 @@ export class PostgresWorkQueue {
     validateClaim(claim);
     const failureCode = safeFailureCode(failure.code);
     const data = validateFailureData(failureCode, failure.data);
-    const receiptId = safeReceiptId(failure.receiptId) ?? null;
     const failed = await this.client.query(
       `WITH transitioned AS (
          UPDATE occ.controller_work
@@ -561,8 +555,7 @@ export class PostgresWorkQueue {
              completed_at = clock_timestamp(),
              reason_code = $5::text,
              error_data = $6::jsonb,
-             receipt_id = $7::text,
-             receipt_acknowledged_at = NULL,
+             plugin_warnings = NULL,
              updated_at = clock_timestamp()
          WHERE idempotency_key = $1
            AND state = 'claimed'
@@ -577,7 +570,6 @@ export class PostgresWorkQueue {
         failureCode,
         failureCode,
         data === undefined ? null : JSON.stringify(data),
-        receiptId,
       ],
     );
     if (failed.rows.length === 0) {
@@ -625,8 +617,7 @@ export class PostgresWorkQueue {
                ELSE NULL
              END,
              error_data = NULL,
-             receipt_id = NULL,
-             receipt_acknowledged_at = NULL,
+             plugin_warnings = NULL,
              updated_at = clock_timestamp()
          FROM candidates
          WHERE work.idempotency_key = candidates.idempotency_key
@@ -659,8 +650,7 @@ export class PostgresWorkQueue {
              completed_at = clock_timestamp(),
              reason_code = $4::text,
              error_data = NULL,
-             receipt_id = NULL,
-             receipt_acknowledged_at = NULL,
+             plugin_warnings = NULL,
              updated_at = clock_timestamp()
          FROM candidates
          WHERE work.idempotency_key = candidates.idempotency_key
@@ -684,70 +674,6 @@ export class PostgresWorkQueue {
       failedPermanent,
       exhaustedQueued: exhausted.rows.length,
     });
-  }
-
-  async pendingReceiptAcknowledgements(
-    input: RecoveryRequest = {},
-  ): Promise<readonly ReceiptAcknowledgementWork[]> {
-    const requestedLimit = positiveInteger(input.limit ?? DEFAULT_RECOVERY_LIMIT, "Receipt limit");
-    if (requestedLimit > MAX_RECOVERY_LIMIT) {
-      throw new ScopeViolationError(`Receipt limit cannot exceed ${MAX_RECOVERY_LIMIT}.`);
-    }
-    const pending = await this.client.query(
-      `SELECT *
-       FROM occ.controller_work
-       WHERE state IN ('succeeded', 'failed_permanent')
-         AND revision_id IS NOT NULL
-         AND idempotency_key = 'agent_revision:' || revision_id || ':reconcile'
-         AND reason_code IS NOT NULL
-         AND receipt_id IS NOT NULL
-         AND receipt_acknowledged_at IS NULL
-         ${this.namespaceFilter()}
-       ORDER BY completed_at, idempotency_key
-       LIMIT $1::integer`,
-      [requestedLimit],
-    );
-    return Object.freeze(
-      pending.rows.map((row): ReceiptAcknowledgementWork => {
-        const work = asWork(row);
-        if (
-          (work.state !== "succeeded" && work.state !== "failed_permanent") ||
-          work.reasonCode === undefined ||
-          work.receiptId === undefined
-        ) {
-          throw new ScopeViolationError("PostgreSQL returned an invalid receipt work row.");
-        }
-        return Object.freeze({
-          ...work,
-          state: work.state,
-          reasonCode: work.reasonCode,
-          receiptId: work.receiptId,
-        });
-      }),
-    );
-  }
-
-  async acknowledgeReceipt(identity: ReceiptAcknowledgementIdentity): Promise<ControllerWork> {
-    const acknowledged = await this.client.query(
-      `UPDATE occ.controller_work
-       SET receipt_acknowledged_at = COALESCE(receipt_acknowledged_at, clock_timestamp()),
-           updated_at = clock_timestamp()
-       WHERE idempotency_key = $1
-         AND state = $2::text
-         AND state IN ('succeeded', 'failed_permanent')
-         AND reason_code = $3::text
-         AND receipt_id = $4::text
-       RETURNING *`,
-      [
-        nonempty(identity.idempotencyKey, "Controller work idempotency key"),
-        identity.state,
-        nonempty(identity.reasonCode, "Controller work reason code"),
-        nonempty(identity.receiptId, "Controller work receipt ID"),
-      ],
-    );
-    if (acknowledged.rows[0] === undefined)
-      throw new ResourceConflictError("The receipt does not match terminal controller work.");
-    return asWork(acknowledged.rows[0]);
   }
 
   private nextRandom(): number {
