@@ -37,6 +37,9 @@ const CODEX_LINEAR_NATIVE_ID = "linear@openai-curated-remote";
 const CODEX_LINEAR_REMOTE_ID = "plugin_asdk_app_69a089a326dc8191b32a3f2553f5be2c";
 const CODEX_LINEAR_APP_ID = "asdk_app_69a089a326dc8191b32a3f2553f5be2c";
 const CODEX_LINEAR_VERSION = "5.0.1";
+const CODEX_ASANA_NATIVE_ID = "asana@openai-curated-remote";
+const CODEX_ASANA_REMOTE_ID = "plugin_asdk_app_asana";
+const CODEX_ASANA_APP_ID = "asdk_app_asana";
 const PLUGIN_APP_SERVER_TOKEN_DOMAIN = "openclaw-plugin-runtime/app-server-token/v1";
 const nodeRequire = createRequire(import.meta.url);
 
@@ -309,27 +312,28 @@ result.value = installOpenClawPlugins(${JSON.stringify(runtime)}, ${JSON.stringi
 }
 
 function codexListResponse(options = {}) {
+  const plugins = options.plugins ?? [
+    {
+      id: options.nativeId ?? CODEX_LINEAR_NATIVE_ID,
+      remotePluginId: options.remotePluginId ?? CODEX_LINEAR_REMOTE_ID,
+      name: options.name ?? "linear",
+      source: { type: "remote" },
+      installed: false,
+      enabled: false,
+      installPolicy: "AVAILABLE",
+      authPolicy: "ON_USE",
+      availability: "AVAILABLE",
+      version: options.version ?? CODEX_LINEAR_VERSION,
+      interface: null,
+    },
+  ];
   return {
     marketplaces: [
       {
         name: "openai-curated-remote",
         path: null,
         interface: null,
-        plugins: [
-          {
-            id: options.nativeId ?? CODEX_LINEAR_NATIVE_ID,
-            remotePluginId: options.remotePluginId ?? CODEX_LINEAR_REMOTE_ID,
-            name: options.name ?? "linear",
-            source: { type: "remote" },
-            installed: false,
-            enabled: false,
-            installPolicy: "AVAILABLE",
-            authPolicy: "ON_USE",
-            availability: "AVAILABLE",
-            version: options.version ?? CODEX_LINEAR_VERSION,
-            interface: null,
-          },
-        ],
+        plugins,
       },
     ],
     marketplaceLoadErrors: [],
@@ -843,7 +847,7 @@ test("Codex runtime keeps disabled selected plugins default-denied while preserv
     };
     let readCount = 0;
     const installRequests = [];
-    const { requests } = await runCodexRuntimeHelper(runtime, (method, params) => {
+    const { requests, value } = await runCodexRuntimeHelper(runtime, (method, params) => {
       if (method === "initialize") {
         return { serverInfo: { name: "codex", version: "0.149.0" } };
       }
@@ -883,12 +887,22 @@ test("Codex runtime keeps disabled selected plugins default-denied while preserv
       throw new Error(`unexpected request ${method}`);
     });
 
-    assert.deepEqual(installRequests, [
-      {
-        remoteMarketplaceName: "openai-curated-remote",
-        pluginName: CODEX_LINEAR_REMOTE_ID,
-      },
-    ]);
+    assert.deepEqual(
+      installRequests,
+      selectionOverride.enabled === false
+        ? []
+        : [
+            {
+              remoteMarketplaceName: "openai-curated-remote",
+              pluginName: CODEX_LINEAR_REMOTE_ID,
+            },
+          ],
+    );
+    assert.deepEqual(plain(value), {
+      successfulPluginIds:
+        selectionOverride.enabled === false ? [] : ["codex-plugin:linear@openai-curated-remote"],
+      failures: [],
+    });
     assert.equal(
       requests.some(
         (request) =>
@@ -913,6 +927,116 @@ test("Codex runtime keeps disabled selected plugins default-denied while preserv
       allow_destructive_actions: "auto",
     });
   }
+});
+
+test("Codex runtime installs and reports only enabled selections in mixed plugin sets", async () => {
+  const state = {
+    driver: { id: "codex-plugin", implementation: "occ/codex-plugin" },
+    plugins: {
+      "codex-plugin:linear@openai-curated-remote": { enabled: true, approvalMode: "auto" },
+      "codex-plugin:asana@openai-curated-remote": { enabled: false, approvalMode: "auto" },
+    },
+  };
+  const runtime = {
+    manifest: pluginRuntimeSpecForRevision(revision({ plugins: state })),
+  };
+  const installRequests = [];
+  const { requests, value } = await runCodexRuntimeHelper(runtime, (method, params) => {
+    if (method === "initialize") {
+      return { serverInfo: { name: "codex", version: "0.149.0" } };
+    }
+    if (method === "plugin/list") {
+      return codexListResponse({
+        plugins: [
+          {
+            id: CODEX_LINEAR_NATIVE_ID,
+            remotePluginId: CODEX_LINEAR_REMOTE_ID,
+            name: "linear",
+            source: { type: "remote" },
+            installed: false,
+            enabled: false,
+            installPolicy: "AVAILABLE",
+            authPolicy: "ON_USE",
+            availability: "AVAILABLE",
+            version: CODEX_LINEAR_VERSION,
+            interface: null,
+          },
+          {
+            id: CODEX_ASANA_NATIVE_ID,
+            remotePluginId: CODEX_ASANA_REMOTE_ID,
+            name: "asana",
+            source: { type: "remote" },
+            installed: false,
+            enabled: false,
+            installPolicy: "AVAILABLE",
+            authPolicy: "ON_USE",
+            availability: "AVAILABLE",
+            version: "2.0.0",
+            interface: null,
+          },
+        ],
+      });
+    }
+    if (method === "plugin/read") {
+      if (params.pluginName === CODEX_LINEAR_REMOTE_ID) {
+        return codexReadResponse({
+          installed: installRequests.length > 0,
+          enabled: installRequests.length > 0,
+        });
+      }
+      if (params.pluginName === CODEX_ASANA_REMOTE_ID) {
+        return codexReadResponse({
+          nativeId: CODEX_ASANA_NATIVE_ID,
+          remotePluginId: CODEX_ASANA_REMOTE_ID,
+          name: "asana",
+          version: "2.0.0",
+          installed: false,
+          enabled: false,
+          apps: [{ id: CODEX_ASANA_APP_ID, name: "Asana", needsAuth: false }],
+        });
+      }
+    }
+    if (method === "plugin/install") {
+      installRequests.push(params);
+      assert.equal(params.pluginName, CODEX_LINEAR_REMOTE_ID);
+      return { authPolicy: "ON_USE", appsNeedingAuth: [] };
+    }
+    if (method === "config/batchWrite") {
+      assert.deepEqual(params, {
+        edits: [
+          { keyPath: "features.apps", mergeStrategy: "replace", value: true },
+          { keyPath: "features.plugins", mergeStrategy: "replace", value: true },
+          { keyPath: "features.remote_plugin", mergeStrategy: "replace", value: true },
+          { keyPath: 'apps."_default"', mergeStrategy: "replace", value: { enabled: false } },
+          {
+            keyPath: `apps.${CODEX_LINEAR_APP_ID}`,
+            mergeStrategy: "replace",
+            value: { enabled: true, default_tools_approval_mode: "auto" },
+          },
+        ],
+        reloadUserConfig: true,
+      });
+      return { status: "ok", version: "mixed-config-1" };
+    }
+    if (method === "config/read") {
+      return codexConfigReadResponse();
+    }
+    throw new Error(`unexpected request ${method}`);
+  });
+
+  assert.deepEqual(installRequests, [
+    { remoteMarketplaceName: "openai-curated-remote", pluginName: CODEX_LINEAR_REMOTE_ID },
+  ]);
+  assert.deepEqual(plain(value), {
+    successfulPluginIds: ["codex-plugin:linear@openai-curated-remote"],
+    failures: [],
+  });
+  assert.deepEqual(
+    requests
+      .filter((request) => request.method === "plugin/install")
+      .map((request) => request.params.pluginName),
+    [CODEX_LINEAR_REMOTE_ID],
+  );
 });
 
 test("Codex gateway bridge config writes through the runtime state directory without HOME", () => {

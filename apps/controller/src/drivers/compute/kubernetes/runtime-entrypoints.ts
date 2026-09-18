@@ -784,8 +784,17 @@ function verifyCodexPluginDetail(plugin, readParams, detail) {
   }
 }
 
+function enabledCodexSelectionIds(selections) {
+  return new Set(
+    Object.entries(selections ?? {})
+      .filter(([, selection]) => isPlainObject(selection) && selection.enabled === true)
+      .map(([pluginId]) => pluginId),
+  );
+}
+
 async function installCodexSelectionSet(selections, failures = []) {
   if (Object.keys(selections).length === 0) return { successfulPluginIds: [], failures: [] };
+  const enabledPluginIds = enabledCodexSelectionIds(selections);
   const listed = await codexAppServerRequest("plugin/list", {});
   const readParamsList = pluginRuntimeTranslator.codexReadParamsForSelections(selections, listed);
   if (readParamsList.length === 0) return { successfulPluginIds: [], failures: [] };
@@ -801,6 +810,7 @@ async function installCodexSelectionSet(selections, failures = []) {
     const selectedPlugin = resolvedArtifact.installs.find(
       (candidate) => candidate.remotePluginId === readParams.pluginName,
     );
+    if (selectedPlugin !== undefined && !enabledPluginIds.has(selectedPlugin.pluginId)) continue;
     if (selectedPlugin !== undefined && failedIds.has(selectedPlugin.pluginId)) continue;
     let install;
     try {
@@ -861,7 +871,10 @@ async function installCodexSelectionSet(selections, failures = []) {
     const selectedPlugin = resolvedArtifact.installs.find(
       (candidate) => candidate.remotePluginId === readParams.pluginName,
     );
-    if (selectedPlugin !== undefined && failedIds.has(selectedPlugin.pluginId)) {
+    if (
+      selectedPlugin !== undefined &&
+      (failedIds.has(selectedPlugin.pluginId) || !enabledPluginIds.has(selectedPlugin.pluginId))
+    ) {
       installedDetails.push(resolvedDetails[readParamsList.indexOf(readParams)]);
     } else {
       installedDetails.push(await codexAppServerRequest("plugin/read", readParams));
@@ -875,7 +888,7 @@ async function installCodexSelectionSet(selections, failures = []) {
     throw new Error("Codex plugin installed app mapping does not match startup resolution.");
   }
   for (const plugin of effectiveResolvedArtifact.installs) {
-    if (failedIds.has(plugin.pluginId)) continue;
+    if (failedIds.has(plugin.pluginId) || !enabledPluginIds.has(plugin.pluginId)) continue;
     const readParams = readParamsList.find((candidate) => candidate.pluginName === plugin.remotePluginId);
     if (readParams === undefined) {
       throw new Error("Codex plugin installed identity does not match the selected catalog entry.");

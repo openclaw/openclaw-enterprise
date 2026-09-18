@@ -125,12 +125,13 @@ At startup, native `plugin/list` discovers the `openai-curated-remote` marketpla
 `plugin/read` resolves each selection using the summary's opaque remote identity.
 The shared translator validates the entire selection set before Compute writes
 native app configuration with `config/batchWrite`, including optional
-`approvals_reviewer`. Compute then calls `plugin/install` for each selection, collecting confirmed
+`approvals_reviewer`. Compute then calls `plugin/install` for each enabled selection, collecting confirmed
 install rejections and missing app authentication as warnings. It rereads native
 metadata for successful selections and checks installed/enabled identity, release
 version, and app mapping against the resolved selection. Failed-only app bindings
 are explicitly disabled; shared bindings needed by successful selections retain
-their admitted policy. Finally,
+their admitted policy. Disabled selections remain denied in configuration and
+do not contribute install attempts or startup results. Finally,
 `config/read` verifies the effective configuration overlay before readiness.
 Codex owns its private cache layout and integrity; Enterprise does not inspect
 private cache files. The Driver does not install packages in OCC. The normal

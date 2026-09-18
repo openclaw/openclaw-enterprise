@@ -1113,7 +1113,7 @@ export class ControllerWorker {
         try {
           const compute = this.compute;
           // Publishing the active pointer precedes activation. Reobserve even when
-          // periodic maintenance is disabled so recovery cannot skip a failed install.
+          // periodic maintenance is disabled so recovery verifies current readiness.
           const observation = await this.withClaimHeartbeat(claim, () =>
             compute.prepareRevision(revision, secretContext.context),
           );
@@ -1812,8 +1812,21 @@ export class ControllerWorker {
     revision: Readonly<AgentRevision>,
   ): Promise<void> {
     const interval = this.maintenanceIntervalMs!;
-    const availableAt = new Date(Date.now() + interval);
-    const maintenanceBucket = Math.floor(availableAt.getTime() / interval);
+    const candidateAvailableAt = new Date(Date.now() + interval);
+    let maintenanceBucket = Math.floor(candidateAvailableAt.getTime() / interval);
+    const maintenancePrefix = `agent_revision:${revision.id}:maintenance:`;
+    const currentBucket = claim.idempotencyKey.startsWith(maintenancePrefix)
+      ? Number(claim.idempotencyKey.slice(maintenancePrefix.length))
+      : undefined;
+    // Clock skew must not deduplicate the successor against its completed claim.
+    const availableAt =
+      currentBucket !== undefined &&
+      Number.isSafeInteger(currentBucket) &&
+      currentBucket >= 0 &&
+      maintenanceBucket <= currentBucket
+        ? new Date((currentBucket + 1) * interval)
+        : candidateAvailableAt;
+    maintenanceBucket = Math.floor(availableAt.getTime() / interval);
     await queue.enqueue({
       idempotencyKey: `agent_revision:${revision.id}:maintenance:${maintenanceBucket}`,
       namespaceId: revision.namespaceId,

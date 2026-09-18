@@ -73,6 +73,11 @@ test(
     assert.equal(deployedPrimary.revision.plugins?.driver.id, "occ-plugin");
     assert.ok(Object.hasOwn(deployedPrimary.revision.plugins?.plugins ?? {}, pluginId));
     assert.equal(Object.hasOwn(deployedPrimary.revision.plugins, "artifacts"), false);
+    assert.deepEqual(
+      deployedPrimary.status.warnings,
+      [],
+      "the expected-success OpenClaw plugin proof requires a clean plugin install.",
+    );
     const deployedSibling = await fixture.deployAndWait(sibling);
     assert.equal(Object.keys(deployedSibling.revision.plugins?.plugins ?? {}).length, 0);
 
@@ -452,8 +457,8 @@ test(
           failureEntry,
         });
         if (
-          candidate.gatewayRuntime !== restarted.gatewayAfter.name ||
-          candidate.codexRuntime !== restarted.agentAfter.name ||
+          candidate.gatewayRuntime !== restarted.gatewayAfter.podName ||
+          candidate.codexRuntime !== restarted.agentAfter.podName ||
           candidate.successBridge?.enabled !== true ||
           candidate.failureBridge?.enabled !== false ||
           !Object.values(candidate.successApps).every((config) => config?.enabled === true) ||
@@ -466,12 +471,12 @@ test(
     );
     assert.equal(
       restartedEffective.gatewayRuntime,
-      restarted.gatewayAfter.name,
+      restarted.gatewayAfter.podName,
       "effective gateway configuration must be read from the gateway Pod that survived the Agent restart.",
     );
     assert.equal(
       restartedEffective.codexRuntime,
-      restarted.agentAfter.name,
+      restarted.agentAfter.podName,
       "effective Codex app configuration must be read from the fresh Agent Pod.",
     );
     assert.equal(restartedEffective.successBridge?.enabled, true);

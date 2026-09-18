@@ -261,7 +261,9 @@ If Compute declares a maintenance interval, successful activation schedules
 another exact-revision observation. An incomplete active-runtime observation or
 Compute binding closes the bounded item and schedules another so that a provider
 outage does not abandon reconciliation of an authorized active runtime.
-Each new claim reauthorizes its original actor.
+Each new claim reauthorizes its original actor. The next maintenance key uses a
+strictly later time bucket than the current claim, preventing clock skew from
+colliding with completed work and silently dropping its successor.
 
 `worker.completed` reports the target, outcome, and code; polling then continues.
 Lease loss is reported as `worker.error` with `CLAIM_LOST` rather than publishing
@@ -308,6 +310,8 @@ aborts in-flight work, waits for the loop, closes PostgreSQL, and emits
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-17 21:20: Keep maintenance successor buckets monotonic when database and worker clocks differ. (codex/01a0b0fc-4a24-76c0-8fb7-f3a3a434d464 - 7f968f39)
 
 - 2026-09-17 20:28: Replaced terminal plugin receipts with verified optional-plugin exclusion, current startup status, and successful deployment warnings; runtime verification in progress. (codex/01a0b0fc-4a24-76c0-8fb7-f3a3a434d464 - 7771526d)
 - 2026-09-17 20:28: Removed the first-failure receipt and acknowledgment lifecycle under the approved best-effort plugin decision. (NOT_IN_SPEC)

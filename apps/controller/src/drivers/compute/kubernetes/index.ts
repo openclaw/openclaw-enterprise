@@ -1872,6 +1872,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (!agentReadiness.ready) {
         return agentReadiness;
       }
+      if (this.options.runtime === undefined) {
+        return (await this.gatewayReady(gatewayOwnership, gatewayName, namespace))
+          ? agentReadiness
+          : incomplete();
+      }
       if (existingGatewayRevisionId !== undefined && existingGatewayRevisionId !== revision.id) {
         return agentReadiness;
       }

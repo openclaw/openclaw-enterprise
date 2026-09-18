@@ -1630,10 +1630,10 @@ export async function createPluginDriverRealFixture(
     return pod;
   }
 
-  async function podIdentity(pod) {
+  function podIdentity(pod) {
     return {
-      name: pod.metadata.name,
-      uid: pod.metadata.uid,
+      podName: pod.metadata.name,
+      podUid: pod.metadata.uid,
       revisionId: pod.metadata.labels?.["openclaw.dev/revision"],
       role: pod.metadata.labels?.["openclaw.dev/workload-role"] ?? "gateway",
     };
@@ -1675,7 +1675,7 @@ export async function createPluginDriverRealFixture(
     await kubectl(
       "delete",
       "pod",
-      agentBefore.name,
+      agentBefore.podName,
       "--namespace",
       tenantNamespace,
       "--wait=false",
@@ -1688,7 +1688,7 @@ export async function createPluginDriverRealFixture(
           return undefined;
         }
         const candidate = podIdentity(pods[0]);
-        return candidate.uid === agentBefore.uid ? undefined : candidate;
+        return candidate.podUid === agentBefore.podUid ? undefined : candidate;
       },
     );
     const gatewayAfter = await gatewayPodIdentity(agent);
