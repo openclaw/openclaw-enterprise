@@ -72,7 +72,7 @@ test(
     const modelProjection = topology.harnessPod.spec.containers[0].env.find(
       ({ name }) => name === "OPENAI_API_KEY",
     );
-    assert.equal(modelProjection.valueFrom.secretKeyRef.optional, false);
+    assert.equal(modelProjection.valueFrom.secretKeyRef.optional ?? false, false);
     assert.equal(modelProjection.valueFrom.secretKeyRef.name.startsWith(`${modelPrefix}-`), false);
     assert.deepEqual(topology.revision.harnessAuth, topology.agent.harnessAuth);
     assert.equal(topology.agent.harnessAuth.method, "api_key");
@@ -116,9 +116,19 @@ test(
       topology.harnessPod.metadata.name,
       target.status.podIP,
     );
+    process.stderr.write("k3d dedicated: topology ready; running a real model turn.\n");
     await assertActualModelTurn(topology);
+    process.stderr.write(
+      "k3d dedicated: model turn passed; testing invalid credential rejection and recovery.\n",
+    );
     await assertInvalidHarnessAuthStaysUnready(context, topology);
+    process.stderr.write(
+      "k3d dedicated: credential recovery passed; testing legacy binding rejection.\n",
+    );
     await assertLegacyModelSecretBindingDenied(topology);
+    process.stderr.write(
+      "k3d dedicated: legacy binding rejected; testing instructions and retained state.\n",
+    );
     await assertDedicatedAgentsInstructionsInFreshSession(topology);
     await assertGatewayPodContinuity(context, topology, privateClaim);
     await assertDedicatedSharedWorkspaceRuntime(
@@ -127,6 +137,7 @@ test(
       sharedWorkspaceClaim,
       privateClaim,
     );
+    process.stderr.write("k3d dedicated: retained state and Pod replacement passed.\n");
   },
 );
 
@@ -156,7 +167,7 @@ test(
     const modelProjection = topology.gatewayPod.spec.containers[0].env.find(
       ({ name }) => name === "OPENAI_API_KEY",
     );
-    assert.equal(modelProjection.valueFrom.secretKeyRef.optional, false);
+    assert.equal(modelProjection.valueFrom.secretKeyRef.optional ?? false, false);
     assert.equal(modelProjection.valueFrom.secretKeyRef.name.startsWith(`${modelPrefix}-`), false);
     assert.deepEqual(topology.revision.harnessAuth, topology.agent.harnessAuth);
     assert.equal(topology.agent.harnessAuth.method, "api_key");

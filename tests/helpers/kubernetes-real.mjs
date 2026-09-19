@@ -258,7 +258,13 @@ export async function createKubernetesFixtureHarnessAuth({ authentication, names
   };
 }
 
-export async function assertGatewayModelTurn({ gatewayUrl, gatewayToken, nonce, secrets = [] }) {
+export async function assertGatewayModelTurn({
+  gatewayUrl,
+  gatewayToken,
+  gatewayPassword,
+  nonce,
+  secrets = [],
+}) {
   const endpoint = `${gatewayUrl}/v1/chat/completions`;
   const denied = await fetch(endpoint, {
     method: "POST",
@@ -270,7 +276,7 @@ export async function assertGatewayModelTurn({ gatewayUrl, gatewayToken, nonce, 
   const response = await fetch(endpoint, {
     method: "POST",
     headers: {
-      authorization: `Bearer ${gatewayToken}`,
+      authorization: `Bearer ${gatewayPassword ?? gatewayToken}`,
       "content-type": "application/json",
     },
     body: JSON.stringify({
@@ -283,7 +289,7 @@ export async function assertGatewayModelTurn({ gatewayUrl, gatewayToken, nonce, 
     signal: AbortSignal.timeout(180_000),
   });
   const body = await response.text();
-  for (const secret of [gatewayToken, ...secrets]) {
+  for (const secret of [gatewayToken, gatewayPassword, ...secrets]) {
     if (secret) {
       assert.equal(
         body.includes(secret),
@@ -373,7 +379,12 @@ export function createRealKubernetesFixture({
     return configuration;
   }
 
-  async function provisionAgentTransportSecret(directory, namespace, agentId) {
+  async function provisionAgentTransportSecret(
+    directory,
+    namespace,
+    agentId,
+    { gatewayPassword } = {},
+  ) {
     const suffix = kubernetesHash(agentId);
     const tokenDirectory = join(directory, `tokens-${suffix}`);
     const transportToken = randomBytes(32).toString("hex");
@@ -383,6 +394,13 @@ export function createRealKubernetesFixture({
       await Promise.all([
         writeFile(join(tokenDirectory, "app-server-token"), transportToken, { mode: 0o600 }),
         writeFile(join(tokenDirectory, "gateway-token"), gatewayToken, { mode: 0o600 }),
+        ...(gatewayPassword === undefined
+          ? []
+          : [
+              writeFile(join(tokenDirectory, "gateway-password"), gatewayPassword, {
+                mode: 0o600,
+              }),
+            ]),
       ]);
       await kubectl(
         "create",
@@ -393,6 +411,9 @@ export function createRealKubernetesFixture({
         namespace,
         `--from-file=app-server-token=${join(tokenDirectory, "app-server-token")}`,
         `--from-file=gateway-token=${join(tokenDirectory, "gateway-token")}`,
+        ...(gatewayPassword === undefined
+          ? []
+          : [`--from-file=gateway-password=${join(tokenDirectory, "gateway-password")}`]),
       );
     } finally {
       await rm(tokenDirectory, { recursive: true, force: true });

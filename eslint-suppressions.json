@@ -175,7 +175,7 @@
   },
   "tests/helpers/harness-topology-k3d-real.mjs": {
     "no-unused-vars": {
-      "count": 6
+      "count": 2
     }
   },
   "tests/helpers/openshell-kubernetes-real.mjs": {

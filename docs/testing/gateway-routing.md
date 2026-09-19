@@ -1,6 +1,8 @@
 # Private gateway routing tests
 
-Prepare the [Kubernetes runtime environment](kubernetes.md#kubernetes-model-turns-and-secrets) and private `$TEST_ENV_FILE` first. This suite adds Envoy Gateway and cert-manager to that disposable cluster.
+Use the local k3d launcher or the CI `gateway-routing` lane to prepare this
+suite. Both paths add Envoy Gateway and cert-manager to an owned disposable
+cluster.
 
 ## Setup and execution
 
@@ -11,8 +13,9 @@ to the database, native gateway/Codex images, and authorized model credential.
 It must use the real Envoy data plane; a hand-built TLS proxy does not exercise
 the supported routing or authentication implementation.
 
-The focused proof creates an Agent through production OCC composition, waits
-for Compute's automatic HTTPRoute, writes and reads all four supported files,
+The focused proof runs the production OCC API as a Kubernetes Deployment,
+creates an Agent through production OCC composition, waits for Compute's
+automatic HTTPRoute, writes and reads all four supported files,
 and asks a fresh native session for the marker supplied only through
 `AGENTS.md`. It then replaces the gateway Pod and repeats file reads and fresh
 model consumption. Proxy authentication denials, key rotation, and cert-manager
@@ -32,45 +35,31 @@ node scripts/ci/run-tests.mjs run gateway-routing \
   --results "$RUNNER_TEMP/results/gateway-routing.json"
 ```
 
-For local manual setup, install the same controllers into the disposable
-cluster first. The fixture creates its own GatewayClass, CA Issuer, Gateway,
-and service-key Secret. The default controller namespaces are
-`envoy-gateway-system` and `cert-manager`; override them with
-`OCC_TEST_ENVOY_GATEWAY_NAMESPACE` and `OCC_TEST_CERT_MANAGER_NAMESPACE` when
-needed. Helm must be on `PATH` or selected by `OCC_HELM_BIN`.
-
-When preparing the CA manually, create a disposable test CA before starting Node
-so its ordinary TLS verifier trusts the cert-manager-issued leaf. Do not use a
-production CA signing key:
+For local execution, provide an authorized `OPENAI_API_KEY` in the environment
+and run:
 
 ```sh
-umask 077
-TEST_GATEWAY_CA_DIR=$(mktemp -d)
-openssl req -x509 -newkey rsa:2048 -sha256 -days 2 -nodes \
-  -subj '/CN=OCC disposable routing test CA' \
-  -addext 'basicConstraints=critical,CA:TRUE' \
-  -addext 'keyUsage=critical,keyCertSign,cRLSign' \
-  -keyout "$TEST_GATEWAY_CA_DIR/key.pem" \
-  -out "$TEST_GATEWAY_CA_DIR/cert.pem"
-export OCC_TEST_GATEWAY_CA_CERT_PATH="$TEST_GATEWAY_CA_DIR/cert.pem"
-export OCC_TEST_GATEWAY_CA_KEY_PATH="$TEST_GATEWAY_CA_DIR/key.pem"
-export NODE_EXTRA_CA_CERTS="$TEST_GATEWAY_CA_DIR/cert.pem"
-
-OCC_TEST_GATEWAY_ROUTING_REAL=1 OCC_TEST_SLACK_LIVE=0 \
-  node --env-file="$TEST_ENV_FILE" --test \
-  tests/integration/harness-topology-k3d-routing-real.test.mjs
+./scripts/k3d test
 ```
 
-The focused fixture currently requires Docker Desktop and free local port 443.
-Docker publishes that loopback port without running the test process as root.
-TCP forwarders carry unchanged TLS bytes through `host.docker.internal` and a
-Pod to the real Envoy listener, providing a genuine nonloopback downstream peer.
-They do not implement HTTP,
-authentication, header rewriting, or native RPC. OCC's production API and
-worker run in the Node test process; this is not a Helm-installed controller
-proof. The test applies the chart's Gateway policies, rotates the listener key
-and API-side key file, and verifies certificate renewal without restarting OCC.
-Remove only the newly created test CA directory after the run.
+The launcher prepares the current controller and runtime images, owned k3d
+cluster, isolated PostgreSQL database, controllers, and disposable CA before it
+runs the focused case. Run `./scripts/k3d down` to remove those resources.
+
+The k3d preparation keeps the Gateway API CRDs bundled with k3s and removes the
+duplicate `gateway.networking.k8s.io` CRDs from Envoy Gateway's installation
+manifest before applying its controller and Envoy-specific CRDs. This preserves
+k3s storage-version ownership instead of attempting an unsafe CRD downgrade.
+
+The focused fixture requires a supported local container engine. Preparation
+builds and imports the current controller image, then the fixture runs the
+production OCC API inside the disposable cluster. The API uses Compute's
+standard Envoy Service DNS URL and HTTPS port; no test-only endpoint port or
+host publisher is involved. A loopback port-forward exposes only the API to the
+local OCC console and test coordinator. The worker remains in the Node test
+process, so this is not a Helm-installed controller proof. The test applies the
+chart's Gateway policies, rotates the listener key and API-side projected key,
+and verifies certificate renewal without restarting OCC.
 
 The ordinary [native-runtime suite](kubernetes.md#kubernetes-model-turns-and-secrets) leaves this additional routing case unselected. The earlier Docker manual-proxy proof has been removed because
 Docker does not implement automatic private Agent routes.

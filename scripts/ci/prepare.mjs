@@ -108,6 +108,10 @@ function laneName(lane) {
   throw new Error("CI lane must be a string or an object with a name.");
 }
 
+function progress(lane, message) {
+  process.stderr.write(`[prepare:${laneName(lane)}] ${message}\n`);
+}
+
 function filePath(file) {
   if (typeof file === "string") {
     return file;
@@ -881,6 +885,75 @@ async function prepareFixtureImage(statePath, state, cluster) {
   return { image: registered.reference, resourceId: resource.id };
 }
 
+async function pinFixtureImageInK3d(cluster, image) {
+  const name = "openclaw-ci-fixture-image-pin";
+  const manifestPath = join(cluster.directory, `${name}.json`);
+  const manifest = {
+    apiVersion: "apps/v1",
+    kind: "DaemonSet",
+    metadata: { name, namespace: "kube-system" },
+    spec: {
+      selector: { matchLabels: { app: name } },
+      template: {
+        metadata: { labels: { app: name } },
+        spec: {
+          automountServiceAccountToken: false,
+          nodeSelector: { "kubernetes.io/os": "linux" },
+          tolerations: [{ operator: "Exists" }],
+          containers: [
+            {
+              name: "pin",
+              image,
+              imagePullPolicy: "Never",
+              command: ["node", "-e", "setInterval(() => {}, 2147483647)"],
+              resources: {
+                requests: { cpu: "1m", memory: "8Mi" },
+                limits: { cpu: "25m", memory: "128Mi" },
+              },
+              securityContext: {
+                allowPrivilegeEscalation: false,
+                capabilities: { drop: ["ALL"] },
+                readOnlyRootFilesystem: true,
+                runAsNonRoot: true,
+                runAsUser: 1000,
+                seccompProfile: { type: "RuntimeDefault" },
+              },
+            },
+          ],
+        },
+      },
+    },
+  };
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
+  await execFile(process.env.OCC_KUBECTL_BIN ?? "kubectl", [
+    "--kubeconfig",
+    cluster.kubeconfig,
+    "--context",
+    cluster.context,
+    "--namespace",
+    "kube-system",
+    "apply",
+    "-f",
+    manifestPath,
+  ]);
+  await execFile(
+    process.env.OCC_KUBECTL_BIN ?? "kubectl",
+    [
+      "--kubeconfig",
+      cluster.kubeconfig,
+      "--context",
+      cluster.context,
+      "--namespace",
+      "kube-system",
+      "rollout",
+      "status",
+      `daemonset/${name}`,
+      "--timeout=120s",
+    ],
+    { timeoutMs: 130_000 },
+  );
+}
+
 function immutableDigest(image) {
   return image.match(/@sha256:([a-f0-9]{64})$/i)?.[1]?.toLowerCase();
 }
@@ -923,7 +996,8 @@ async function dockerImageId(image) {
     "{{.Id}}",
     image,
   ]);
-  const id = inspected.stdout.trim();
+  const value = inspected.stdout.trim();
+  const id = /^[a-f0-9]{64}$/i.test(value) ? `sha256:${value}` : value;
   assertDockerImageId(id, `Docker image ${image}`);
   return id;
 }
@@ -1023,11 +1097,11 @@ async function registerImageInK3d(statePath, state, cluster, image, envName) {
   try {
     // k3d can exit successfully after containerd rejects missing index content.
     // Export only the platform pulled locally, then verify the imported reference.
-    await execFile(process.env.OCC_DOCKER_BIN ?? "docker", [
+    const containerEngine = process.env.OCC_DOCKER_BIN ?? "docker";
+    await execFile(containerEngine, [
       "image",
       "save",
-      "--platform",
-      platform,
+      ...(basename(containerEngine) === "podman" ? [] : ["--platform", platform]),
       "--output",
       archive,
       importReference,
@@ -1088,16 +1162,34 @@ async function prepareK3dRuntimeImages(
   state,
   cluster,
   env,
-  { buildRuntime = false } = {},
+  { buildController = false, buildRuntime = false } = {},
 ) {
-  if (
+  const needsController = buildController && !process.env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE;
+  const needsRuntime =
     buildRuntime &&
-    (!process.env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE || !process.env.OCC_TEST_KUBERNETES_AGENT_IMAGE)
-  ) {
-    const built = await buildRuntimeImages(statePath, state, { runtime: true });
+    (!process.env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE ||
+      !process.env.OCC_TEST_KUBERNETES_AGENT_IMAGE);
+  if (needsController || needsRuntime) {
+    const images = [
+      needsController ? "controller" : undefined,
+      needsRuntime ? "gateway and Codex runtime" : undefined,
+    ]
+      .filter(Boolean)
+      .join(", ");
+    progress(
+      state.lane,
+      `Building the current ${images} image${needsController && needsRuntime ? "s" : ""}.`,
+    );
+    const built = await buildRuntimeImages(statePath, state, {
+      controller: needsController,
+      runtime: needsRuntime,
+      nodeBaseImage: effectiveLaneEnv(state.lane, env).NODE_BASE_IMAGE,
+    });
     Object.assign(env, built.env);
-    env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE = built.env.OCC_TEST_KUBERNETES_RUNTIME_IMAGE;
-    env.OCC_TEST_KUBERNETES_AGENT_IMAGE = built.env.OCC_TEST_KUBERNETES_RUNTIME_IMAGE;
+    if (needsRuntime) {
+      env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE = built.env.OCC_TEST_KUBERNETES_RUNTIME_IMAGE;
+      env.OCC_TEST_KUBERNETES_AGENT_IMAGE = built.env.OCC_TEST_KUBERNETES_RUNTIME_IMAGE;
+    }
   }
   const inputs = {
     OCC_TEST_KUBERNETES_GATEWAY_IMAGE:
@@ -1106,16 +1198,25 @@ async function prepareK3dRuntimeImages(
       env.OCC_TEST_KUBERNETES_AGENT_IMAGE ?? process.env.OCC_TEST_KUBERNETES_AGENT_IMAGE,
   };
   requireEnv(Object.keys(inputs), inputs);
+  progress(state.lane, "Importing the gateway and Codex runtime images into k3d.");
   for (const [name, value] of Object.entries(inputs)) {
     const image = await registerImageInK3d(statePath, state, cluster, value, name);
     env[name] = image.reference;
-    if (name === "OCC_TEST_KUBERNETES_GATEWAY_IMAGE") {
-      env.OCC_TEST_KUBERNETES_GATEWAY_DOCKER_IMAGE = image.hostImageId;
-    }
+  }
+  if (buildController) {
+    const controller = await registerImageInK3d(
+      statePath,
+      state,
+      cluster,
+      env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE ?? process.env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE,
+      "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE",
+    );
+    env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE = controller.reference;
   }
   // Replace the build tag with its imported digest before publishing the next step's inputs.
   env.OCC_TEST_KUBERNETES_RUNTIME_IMAGE = env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE;
   if (lanePrepare(state.lane).codexSeccomp) {
+    progress(state.lane, "Deriving and installing the dedicated Codex seccomp profile.");
     const seccomp = await prepareCodexSeccompProfile({
       cluster,
       image: env.OCC_TEST_KUBERNETES_AGENT_IMAGE,
@@ -1251,6 +1352,9 @@ async function prepareLane({ lane, statePath }) {
       await ensurePostgresServer(resolvedStatePath, state);
       const cluster = await ensureK3dCluster(resolvedStatePath, state);
       const fixture = await prepareFixtureImage(resolvedStatePath, state, cluster);
+      // Both fixture tests use the same local-only image. Keep it active on
+      // every node so kubelet image garbage collection cannot remove it.
+      await pinFixtureImageInK3d(cluster, fixture.image);
       // The suites restart this controller when enabling shared storage. Verify
       // replacement scheduling after image imports consume the runner's disk.
       await execFile(
@@ -1283,13 +1387,16 @@ async function prepareLane({ lane, statePath }) {
       await prepareLaneLogging(resolvedStatePath, state, env);
       break;
     case "k3d-model":
+      progress(name, "Starting an isolated PostgreSQL service.");
       await ensurePostgresServer(resolvedStatePath, state);
+      progress(name, "Creating a disposable loopback k3d cluster.");
       await prepareK3dModelLane(resolvedStatePath, state, env, { buildRuntime: true });
       break;
     case "gateway-routing": {
       await commandAvailable(process.env.OCC_HELM_BIN ?? "helm", ["version", "--short"]);
       await ensurePostgresServer(resolvedStatePath, state);
       const cluster = await prepareK3dModelLane(resolvedStatePath, state, env, {
+        buildController: true,
         buildRuntime: true,
       });
       const routing = await prepareGatewayRouting({ cluster, execFile });

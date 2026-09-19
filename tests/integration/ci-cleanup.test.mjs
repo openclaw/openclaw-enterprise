@@ -8,6 +8,7 @@ import test from "node:test";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const cleanupPath = join(repositoryRoot, "scripts/ci/cleanup.mjs");
+const resetK3dModelPath = join(repositoryRoot, "scripts/ci/reset-k3d-model.mjs");
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), "ci-cleanup-test-"));
@@ -33,6 +34,72 @@ function runCleanup(statePath, env = {}) {
     env: { ...process.env, ...env },
   });
 }
+
+function runK3dModelReset(statePath, env = {}) {
+  return spawnSync(process.execPath, [resetK3dModelPath, "--state", statePath], {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+    env: { ...process.env, ...env },
+  });
+}
+
+test("k3d routing reset removes only the owned test database", async (t) => {
+  const root = await fixture(t);
+  const containerLog = join(root, "container.log");
+  await writeExecutable(
+    join(root, "bin/podman"),
+    ["#!/bin/sh", `printf '%s\\n' "$*" >> ${JSON.stringify(containerLog)}`, "exit 0", ""].join(
+      "\n",
+    ),
+  );
+  const prefix = "openclaw-ci-local-reset1234567890";
+  const statePath = join(root, "state.json");
+  await writeState(statePath, {
+    version: 1,
+    repositoryRoot,
+    lane: "gateway-routing",
+    prefix,
+    resources: [
+      {
+        id: "postgres-1",
+        kind: "compose-postgres",
+        owner: prefix,
+        name: "openclaw_ci_pg_reset_case",
+        composeFile: join(repositoryRoot, "compose.postgres.yaml"),
+        port: 55433,
+      },
+      {
+        id: "database-1",
+        kind: "postgres-database",
+        owner: prefix,
+        name: "openclaw_k8s_reset_case",
+        composeProject: "openclaw_ci_pg_reset_case",
+        port: 55433,
+      },
+      {
+        id: "cluster-1",
+        kind: "k3d-cluster",
+        owner: prefix,
+        name: "openclaw-k8s-reset-case",
+      },
+    ],
+  });
+
+  const result = runK3dModelReset(statePath, {
+    OCC_DOCKER_BIN: join(root, "bin/podman"),
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(
+    await readFile(containerLog, "utf8"),
+    /DROP DATABASE IF EXISTS "openclaw_k8s_reset_case"/,
+  );
+  const retained = JSON.parse(await readFile(statePath, "utf8"));
+  assert.deepEqual(
+    retained.resources.map(({ id }) => id),
+    ["postgres-1", "cluster-1"],
+  );
+});
 
 test("cleanup removes an owned k3d cluster resource through the CLI", async (t) => {
   const root = await fixture(t);

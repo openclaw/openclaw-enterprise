@@ -1,7 +1,7 @@
 ---
 created: 2026-08-31
-updated: 2026-09-01
-last_updated_session: 01a04ae1-7ba7-7372-88a4-488e01f690ae
+updated: 2026-09-18
+last_updated_session: authoring-run/245cc03e-4bd3-48b3-ba17-8d5e2768262d
 ---
 
 # Agent Workspace Files Flow
@@ -171,6 +171,8 @@ replays it. The native client closes in the operation's cleanup path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-18 00:02: Confirmed that Compute returns the standard private Service endpoint; local routing proof now runs OCC inside Kubernetes instead of adding a host-only port seam. (authoring-run/245cc03e-4bd3-48b3-ba17-8d5e2768262d - 782017d5405e156116bd31e78fa744ef20c540cc)
 
 - 2026-09-01 17:26: Replaced per-Agent endpoint maps with Compute-owned private Envoy routes, API-key authentication, and cert-manager certificate renewal. (01a04ae1-7ba7-7372-88a4-488e01f690ae - 3e26931d31ba03a7fa187c12009867c636a86041)
 

@@ -1,28 +1,13 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID, X509Certificate } from "node:crypto";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
-import { setTimeout as delay } from "node:timers/promises";
-import { connect as connectTls } from "node:tls";
+import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
 
-const controllerRequire = createRequire(
-  new URL("../../apps/controller/package.json", import.meta.url),
-);
-const { GatewayClient } = await import(
-  pathToFileURL(controllerRequire.resolve("@openclaw/gateway-client")).href
-);
-
 const executeFile = promisify(execFile);
-const gatewayHostname = "localhost";
 const gatewayReleaseName = "oce-workspace-files";
 const gatewayName = `${gatewayReleaseName}-agent-gateways`;
 const gatewayServiceKeyName = "occ";
-const gatewayServiceKeyHeader = "x-api-key";
 const gatewayIdentity = "occ-workspace-files";
 const gatewayIdentityHeader = "x-occ-identity";
 const envoyNamespace = process.env.OCC_TEST_ENVOY_GATEWAY_NAMESPACE ?? "envoy-gateway-system";
@@ -30,7 +15,6 @@ const certManagerNamespace = process.env.OCC_TEST_CERT_MANAGER_NAMESPACE ?? "cer
 const caSecretName = "oce-workspace-files-ca";
 const caIssuerName = "oce-workspace-files-ca";
 const tlsSecretName = `${gatewayName}-tls`;
-const tcpForwarderPort = 10443;
 const helmBin = process.env.OCC_HELM_BIN ?? "helm";
 const helmEnvironment = {
   ...process.env,
@@ -45,21 +29,12 @@ function nonempty(value, name) {
   return value;
 }
 
-export function resolveGatewayPublisherImage(topology) {
-  const image = nonempty(
-    topology.gatewayPublisherImage,
-    "Docker-local gateway publisher image; set OCC_TEST_KUBERNETES_GATEWAY_DOCKER_IMAGE",
-  );
-  assert.match(
-    image,
-    /^sha256:[a-f0-9]{64}$/i,
-    "Docker-local gateway publisher image must be an immutable Docker image ID.",
-  );
-  return image;
-}
-
 function hash(value) {
   return createHash("sha256").update(value).digest("hex").slice(0, 12);
+}
+
+function gatewayHostname(platformNamespace) {
+  return `occ-gateway-${hash(`${platformNamespace}/${gatewayName}`)}.${envoyNamespace}.svc`;
 }
 
 async function command(
@@ -106,8 +81,6 @@ async function renderGatewayRoutingManifests({
       "templates/gateway-routing.yaml",
       "--set",
       "gatewayRouting.enabled=true",
-      "--set",
-      `gatewayRouting.hostname=${gatewayHostname}`,
       "--set",
       `gatewayRouting.gatewayClassName=${gatewayClassName}`,
       "--set",
@@ -169,12 +142,7 @@ export async function ensureEnvoyGatewayControllers({ kubectl, waitFor }) {
 
 export async function createEnvoyWorkspaceGatewayPlan(context, { platformNamespace }, helpers) {
   let apiKey = randomBytes(32).toString("base64url");
-  const directory = await mkdtemp(join(tmpdir(), "occ-envoy-workspace-files-"));
-  const apiKeyPath = join(directory, "gateway-api-key");
   const apiKeySecretName = `oce-gateway-api-key-${hash(platformNamespace)}`;
-  await chmod(directory, 0o700);
-  await writeFile(apiKeyPath, apiKey, { mode: 0o600 });
-  context.after(async () => rm(directory, { recursive: true, force: true }));
 
   await applyGatewayApiKeySecret(helpers, platformNamespace, apiKeySecretName, apiKey);
   await ensureCertificateAuthority(platformNamespace, helpers);
@@ -199,10 +167,14 @@ export async function createEnvoyWorkspaceGatewayPlan(context, { platformNamespa
     get apiKey() {
       return apiKey;
     },
-    apiKeyPath,
     apiKeySecretName,
+    apiPodLabels: {
+      "app.kubernetes.io/name": "openclaw-enterprise",
+      "app.kubernetes.io/instance": gatewayReleaseName,
+      "app.kubernetes.io/component": "api",
+    },
+    caSecretName,
     routing: {
-      hostname: gatewayHostname,
       gatewayName,
       gatewayNamespace: platformNamespace,
       envoyNamespace,
@@ -221,20 +193,27 @@ export async function createEnvoyWorkspaceGatewayPlan(context, { platformNamespa
     async connect(topology) {
       await waitForComputeGatewayRoute(topology, helpers);
       const envoyService = await waitForEnvoyService(platformNamespace, helpers);
-      await startInClusterTcpForwarder(context, topology, helpers, envoyService);
       await waitForGatewayProgrammed(platformNamespace, helpers);
-      const gatewayUrl = `wss://${gatewayHostname}/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}`;
+      const gatewayUrl = `wss://${gatewayHostname(platformNamespace)}/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}`;
+      const probe = (input) => runControllerProbe(topology, input);
       return {
         url: gatewayUrl,
+        requestModelTurn: (expectedMarker) =>
+          probe({
+            action: "model-turn",
+            url: gatewayUrl,
+            apiKey,
+            expectedMarker,
+          }),
         async assertSecurity() {
-          await assertGatewayAuthenticationDenials({
-            url: `wss://${gatewayHostname}/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}`,
+          await assertGatewayAuthenticationDenials(probe, {
+            url: gatewayUrl,
             validApiKey: apiKey,
           });
           await assertDirectGatewayPeerDenied(context, topology, helpers, envoyService);
         },
         async renewCertificate() {
-          const previous = await gatewayServedCertificate(gatewayUrl);
+          const previous = await gatewayServedCertificate(probe, gatewayUrl);
           await helpers.kubectl(
             "delete",
             "secret",
@@ -260,7 +239,9 @@ export async function createEnvoyWorkspaceGatewayPlan(context, { platformNamespa
           const next = await helpers.waitFor(
             "Envoy data plane to serve the renewed workspace Gateway leaf certificate",
             async () => {
-              const candidate = await gatewayServedCertificate(gatewayUrl).catch(() => undefined);
+              const candidate = await gatewayServedCertificate(probe, gatewayUrl).catch(
+                () => undefined,
+              );
               return candidate?.serialNumber !== undefined &&
                 candidate.serialNumber !== previous.serialNumber
                 ? candidate
@@ -282,27 +263,31 @@ export async function createEnvoyWorkspaceGatewayPlan(context, { platformNamespa
             newApiKey,
           ]);
           await helpers.waitFor("Envoy Gateway to accept the staged new API key", async () =>
-            assertGatewayApiKeyAccepted({ url: gatewayUrl, apiKey: newApiKey })
+            assertGatewayApiKeyAccepted(probe, { url: gatewayUrl, apiKey: newApiKey })
               .then(() => true)
               .catch(() => undefined),
           );
-          await assertGatewayApiKeyAccepted({ url: gatewayUrl, apiKey: oldApiKey });
+          await assertGatewayApiKeyAccepted(probe, { url: gatewayUrl, apiKey: oldApiKey });
           // Switch the mounted entry while retaining the old credential during propagation.
           await applyGatewayApiKeySecret(helpers, platformNamespace, apiKeySecretName, [
             newApiKey,
             oldApiKey,
           ]);
           apiKey = newApiKey;
-          await writeFile(apiKeyPath, apiKey, { mode: 0o600 });
           await verifyOcc();
           await applyGatewayApiKeySecret(helpers, platformNamespace, apiKeySecretName, apiKey);
           await helpers.waitFor("Envoy Gateway to reject the retired old API key", async () =>
-            assertGatewayApiKeyDenied({ url: gatewayUrl, apiKey: oldApiKey })
+            assertGatewayApiKeyDenied(probe, { url: gatewayUrl, apiKey: oldApiKey })
               .then(() => true)
               .catch(() => undefined),
           );
           await helpers.waitFor("Envoy Gateway to keep accepting the rotated API key", async () =>
-            assertGatewayApiKeyAccepted({ url: gatewayUrl, apiKey })
+            assertGatewayApiKeyAccepted(probe, { url: gatewayUrl, apiKey })
+              .then(() => true)
+              .catch(() => undefined),
+          );
+          await helpers.waitFor("OCC API to observe the rotated projected API key", async () =>
+            verifyOcc()
               .then(() => true)
               .catch(() => undefined),
           );
@@ -496,103 +481,6 @@ async function waitForComputeGatewayRoute(topology, { resource, waitFor }) {
   );
 }
 
-async function startInClusterTcpForwarder(context, topology, helpers, envoyService) {
-  const name = `oce-envoy-forwarder-${hash(topology.agent.id)}`;
-  const targetHost = nonempty(
-    envoyService.spec?.clusterIP,
-    "Envoy data-plane Service clusterIP for test TCP transport",
-  );
-  await helpers.applyManifest(`apiVersion: v1
-kind: Pod
-metadata:
-  name: ${name}
-  namespace: ${topology.platformNamespace}
-  labels:
-    app.kubernetes.io/name: openclaw-enterprise
-    app.kubernetes.io/instance: ${gatewayReleaseName}
-    app.kubernetes.io/component: api
-spec:
-  restartPolicy: Never
-  containers:
-    - name: tcp-forwarder
-      image: ${yamlScalar(topology.gatewayImage)}
-      imagePullPolicy: IfNotPresent
-      command: ["node", "-e"]
-      args:
-        - |
-          const net = require("node:net");
-          const targetHost = ${yamlScalar(targetHost)};
-          const targetPort = 443;
-          net.createServer((client) => {
-            const upstream = net.connect(targetPort, targetHost);
-            client.on("error", () => upstream.destroy());
-            upstream.on("error", () => client.destroy());
-            client.pipe(upstream);
-            upstream.pipe(client);
-          }).listen(${tcpForwarderPort}, "0.0.0.0");
-      ports:
-        - containerPort: ${tcpForwarderPort}
-`);
-  context.after(async () => {
-    await helpers
-      .kubectl(
-        "delete",
-        "pod",
-        name,
-        "--namespace",
-        topology.platformNamespace,
-        "--ignore-not-found=true",
-      )
-      .catch(() => undefined);
-  });
-  await helpers.kubectl(
-    "wait",
-    "--namespace",
-    topology.platformNamespace,
-    "--for=condition=Ready",
-    `pod/${name}`,
-    "--timeout=180s",
-  );
-  const forwarding = await helpers.startPortForwardTarget(
-    topology.platformNamespace,
-    `pod/${name}`,
-    `0:${tcpForwarderPort}`,
-  );
-  context.after(() => forwarding.stop());
-  // Docker Desktop owns privileged host port publishing; the test process stays unprivileged.
-  // Both forwarders copy encrypted bytes only. Envoy remains the sole TLS/authentication proxy.
-  const publisherName = `oce-envoy-publisher-${hash(topology.agent.id)}`;
-  const localPort = Number(new URL(forwarding.url).port);
-  const publisherImage = resolveGatewayPublisherImage(topology);
-  await command("docker", [
-    "run",
-    "--detach",
-    "--rm",
-    "--pull=never",
-    "--name",
-    publisherName,
-    "--publish",
-    `127.0.0.1:443:${tcpForwarderPort}`,
-    "--read-only",
-    "--cap-drop=ALL",
-    "--security-opt=no-new-privileges",
-    "--user",
-    "1000:1000",
-    "--no-healthcheck",
-    "--entrypoint",
-    "node",
-    publisherImage,
-    "-e",
-    `const net=require("node:net");net.createServer(client=>{const upstream=net.connect(${localPort},"host.docker.internal");client.on("error",()=>upstream.destroy());upstream.on("error",()=>client.destroy());client.pipe(upstream);upstream.pipe(client)}).listen(${tcpForwarderPort},"0.0.0.0")`,
-  ]);
-  context.after(async () => {
-    await command("docker", ["rm", "--force", publisherName]);
-  });
-  await helpers.waitFor("private Gateway TLS through the test TCP transport", async () =>
-    gatewayServedCertificate(`wss://${gatewayHostname}`).catch(() => undefined),
-  );
-}
-
 async function waitForGatewayCertificate(platformNamespace, { resource, waitFor }) {
   return await waitFor("cert-manager workspace Gateway leaf certificate", async () => {
     try {
@@ -628,42 +516,66 @@ async function waitForGatewayProgrammed(platformNamespace, { resource, waitFor }
   });
 }
 
-async function gatewayServedCertificate(url) {
-  const endpoint = new URL(url);
+async function runControllerProbe(topology, input) {
+  const kubeconfig = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;
+  const context = process.env.OCC_TEST_KUBERNETES_CONTEXT;
+  const kubectl = process.env.OCC_KUBECTL_BIN ?? "kubectl";
+  assert.ok(topology.controllerApiPod?.metadata?.name, "in-cluster OCC API Pod is required");
   return await new Promise((resolve, reject) => {
-    const socket = connectTls({
-      host: endpoint.hostname,
-      port: Number(endpoint.port || "443"),
-      servername: endpoint.hostname,
-      rejectUnauthorized: true,
+    const child = spawn(
+      kubectl,
+      [
+        "--kubeconfig",
+        kubeconfig,
+        "--context",
+        context,
+        "exec",
+        "-i",
+        "--namespace",
+        topology.platformNamespace,
+        "--container",
+        "api",
+        topology.controllerApiPod.metadata.name,
+        "--",
+        "node",
+        "/app/apps/controller/gateway-probe.mjs",
+      ],
+      { stdio: ["pipe", "pipe", "pipe"] },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
     });
-    const fail = (error) => {
-      socket.destroy();
-      reject(error);
-    };
-    socket.setTimeout(15_000, () => fail(new Error("TLS certificate probe timed out")));
-    socket.once("error", fail);
-    socket.once("secureConnect", () => {
-      const certificate = socket.getPeerCertificate(true);
-      socket.end();
-      if (!(certificate.raw instanceof Buffer)) {
-        reject(new Error("TLS certificate probe did not return a raw peer certificate"));
-        return;
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.once("error", reject);
+    child.once("exit", (code) => {
+      if (code === 0) {
+        resolve(JSON.parse(stdout));
+      } else {
+        reject(new Error(`in-cluster gateway probe failed (${code}): ${stderr}`));
       }
-      resolve(new X509Certificate(certificate.raw));
     });
+    child.stdin.once("error", reject);
+    child.stdin.end(JSON.stringify(input));
   });
 }
 
-async function assertGatewayAuthenticationDenials({ url, validApiKey }) {
-  await assertGatewayApiKeyDenied({ url, apiKey: undefined });
-  await assertGatewayApiKeyDenied({ url, apiKey: `invalid-${randomUUID()}` });
-  await assertGatewayApiKeyDenied({
+async function gatewayServedCertificate(probe, url) {
+  return await probe({ action: "certificate", url });
+}
+
+async function assertGatewayAuthenticationDenials(probe, { url, validApiKey }) {
+  await assertGatewayApiKeyDenied(probe, { url, apiKey: undefined });
+  await assertGatewayApiKeyDenied(probe, { url, apiKey: `invalid-${randomUUID()}` });
+  await assertGatewayApiKeyDenied(probe, {
     url,
     apiKey: undefined,
     extraHeaders: { [gatewayIdentityHeader]: `spoofed-${randomUUID()}` },
   });
-  await assertGatewayApiKeyAccepted({
+  await assertGatewayApiKeyAccepted(probe, {
     url,
     apiKey: validApiKey,
     extraHeaders: {
@@ -676,50 +588,18 @@ async function assertGatewayAuthenticationDenials({ url, validApiKey }) {
   });
 }
 
-async function assertGatewayApiKeyAccepted({ url, apiKey, extraHeaders = {} }) {
-  const hello = await requestGatewayHello({ url, apiKey, extraHeaders });
+async function assertGatewayApiKeyAccepted(probe, { url, apiKey, extraHeaders = {} }) {
+  const hello = await probe({ action: "hello", url, apiKey, extraHeaders });
   assert.equal(hello.auth?.role, "operator");
   assert.ok(hello.auth.scopes.includes("operator.admin"));
   assert.equal(hello.auth.deviceToken, undefined, "trusted proxy must not issue a device token");
 }
 
-async function assertGatewayApiKeyDenied({ url, apiKey, extraHeaders = {} }) {
+async function assertGatewayApiKeyDenied(probe, { url, apiKey, extraHeaders = {} }) {
   await assert.rejects(
-    () => requestGatewayHello({ url, apiKey, extraHeaders }),
-    /\bHTTP (?:401|403)\b/i,
+    () => probe({ action: "hello", url, apiKey, extraHeaders }),
+    /\bHTTP (?:401|403)\b|unexpected server response: (?:401|403)/i,
   );
-}
-
-async function requestGatewayHello({ url, apiKey, extraHeaders = {} }) {
-  let resolveHello;
-  let rejectHello;
-  const connected = new Promise((resolve, reject) => {
-    resolveHello = resolve;
-    rejectHello = reject;
-  });
-  const client = new GatewayClient({
-    url,
-    clientName: "gateway-client",
-    mode: "backend",
-    role: "operator",
-    scopes: [],
-    deviceIdentity: null,
-    edgeAuthHeaders: {
-      ...(apiKey === undefined ? {} : { [gatewayServiceKeyHeader]: apiKey }),
-      ...extraHeaders,
-    },
-    onHelloOk: resolveHello,
-    onConnectError: rejectHello,
-  });
-  const timer = setTimeout(() => rejectHello(new Error("gateway hello timed out")), 15_000);
-  try {
-    client.start();
-    return await connected;
-  } finally {
-    clearTimeout(timer);
-    client.stop();
-    await client.stopAndWait?.({ timeoutMs: 1_000 }).catch(() => undefined);
-  }
 }
 
 async function assertDirectGatewayPeerDenied(context, topology, helpers, envoyService) {
@@ -782,93 +662,4 @@ spec:
       .catch(() => "");
     assert.fail(`unlabeled direct Envoy Gateway peer was not denied: ${logs}`);
   });
-}
-
-export async function requestNativeGatewayModelTurn({
-  url,
-  apiKey,
-  nativeAgentId = "main",
-  prompt = "What is the configured workspace marker? Reply with only that marker.",
-  expectedMarker,
-  timeoutMs = 240_000,
-}) {
-  nonempty(expectedMarker, "expected workspace marker");
-  assert.equal(
-    prompt.includes(expectedMarker),
-    false,
-    "the user message must not supply the marker",
-  );
-  const sessionKey = `agent:${nativeAgentId}:workspace-proof-${randomUUID()}`;
-  const signal = AbortSignal.timeout(timeoutMs);
-  let resolveHello;
-  let rejectHello;
-  const connected = new Promise((resolve, reject) => {
-    resolveHello = resolve;
-    rejectHello = reject;
-  });
-  const client = new GatewayClient({
-    url,
-    clientName: "gateway-client",
-    mode: "backend",
-    role: "operator",
-    scopes: [],
-    deviceIdentity: null,
-    edgeAuthHeaders: { [gatewayServiceKeyHeader]: apiKey },
-    onHelloOk: resolveHello,
-    onConnectError: rejectHello,
-  });
-  const connectTimer = setTimeout(
-    () => rejectHello(new Error("native model proof connection timed out")),
-    15_000,
-  );
-  try {
-    client.start();
-    const hello = await connected;
-    clearTimeout(connectTimer);
-    assert.equal(hello.auth?.role, "operator");
-    assert.ok(hello.auth.scopes.includes("operator.admin"));
-    assert.equal(hello.auth.deviceToken, undefined, "trusted proxy must not issue a device token");
-    await client.request(
-      "chat.send",
-      {
-        sessionKey,
-        idempotencyKey: randomUUID(),
-        message: prompt,
-      },
-      { signal, timeoutMs: 30_000 },
-    );
-    while (!signal.aborted) {
-      const history = await client.request(
-        "chat.history",
-        { sessionKey, limit: 20 },
-        { signal, timeoutMs: 10_000 },
-      );
-      for (const message of history.messages ?? []) {
-        if (message.role !== "assistant") {
-          continue;
-        }
-        assert.notEqual(
-          message.stopReason,
-          "error",
-          "the provider-backed native turn must succeed",
-        );
-        const content =
-          typeof message.content === "string"
-            ? message.content
-            : (message.content ?? [])
-                .filter((part) => part.type === "text")
-                .map((part) => part.text)
-                .join("\n");
-        if (content.includes(expectedMarker)) {
-          return { sessionKey, content, deviceTokenIssued: false };
-        }
-      }
-      await delay(300, undefined, { signal });
-    }
-    assert.fail("The fresh native session did not consume the workspace instruction.");
-  } finally {
-    clearTimeout(connectTimer);
-    client.stop();
-    await client.stopAndWait({ timeoutMs: 1_000 });
-  }
 }

@@ -157,6 +157,9 @@
           "path": "tests/integration/ci-prepare.test.mjs"
         },
         {
+          "path": "tests/integration/k3d-launcher.test.mjs"
+        },
+        {
           "path": "tests/integration/ci-openshell.test.mjs"
         },
         {
@@ -542,6 +545,7 @@
       "requiredEnv": [
         "OCC_TEST_KUBERNETES_KUBECONFIG",
         "OCC_TEST_KUBERNETES_CONTEXT",
+        "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE",
         "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
         "OCC_TEST_KUBERNETES_AGENT_IMAGE",
         "OPENAI_API_KEY",
@@ -558,7 +562,7 @@
         "k3d": true,
         "codexSeccomp": true,
         "requiresPreparedStateForFile": true,
-        "requireEnv": ["OPENAI_API_KEY", "OCC_TEST_OPENAI_MODEL"],
+        "requireEnv": ["OPENAI_API_KEY", "OCC_TEST_OPENAI_MODEL", "NODE_BASE_IMAGE"],
         "immutableOptionalEnvImages": [
           "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
           "OCC_TEST_KUBERNETES_AGENT_IMAGE"

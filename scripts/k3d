@@ -1,0 +1,615 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$script_dir/.." && pwd)"
+cd "$repo_root"
+
+usage() {
+  cat <<'EOF'
+usage: ./scripts/k3d [demo|test|info|reset|down|help]
+       ./scripts/k3d get <field>
+       ./scripts/k3d copy <field>
+
+Commands:
+  demo  Create a dedicated Codex Agent, verify a real model turn, and serve
+        its Control UI and the OCC console on loopback until interrupted. This
+        is the default command.
+  test  Prepare or reuse an owned k3d environment and run the dedicated Codex
+        gateway-routing integration case.
+  get   Print one non-sensitive prepared value. Fields: openclaw-control-ui,
+        occ-console, occ-username, namespace, namespace-id, agent-id,
+        kubeconfig, context.
+  copy  Copy one prepared value to the clipboard without printing it.
+        Fields: openclaw-password, occ-password.
+  info  Show the selected engine, local state, and available non-secret values
+        without printing passwords.
+  reset Remove test namespaces and replace the test database while preserving
+        the PostgreSQL service, k3d cluster, and imported images.
+  down  Remove only the cluster, images, and PostgreSQL resources recorded in
+        this helper's owned state.
+  help  Show this help.
+
+The helper detects a running Podman API socket or Docker daemon. Set
+OCC_K3D_CONTAINER_ENGINE=podman or docker to select one explicitly.
+demo prompts for OPENAI_API_KEY when it is not already set. test requires the
+variable explicitly; reset does not require it.
+OCC_TEST_OPENAI_MODEL defaults to gpt-5.1.
+EOF
+}
+
+fail() {
+  echo "k3d: $*" >&2
+  exit 1
+}
+
+info() {
+  printf '[k3d:%s] %s\n' "$engine" "$*"
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || fail "$1 is required on PATH"
+}
+
+prompt_openai_api_key() {
+  [ -n "${OPENAI_API_KEY:-}" ] && return
+  [ -t 0 ] || fail "OPENAI_API_KEY is required for non-interactive use"
+  printf 'OpenAI API key: ' >&2
+  if ! IFS= read -r -s OPENAI_API_KEY; then
+    printf '\n' >&2
+    fail "OPENAI_API_KEY input was cancelled"
+  fi
+  printf '\n' >&2
+  [ -n "$OPENAI_API_KEY" ] || fail "OPENAI_API_KEY cannot be empty"
+  export OPENAI_API_KEY
+}
+
+configure_podman() {
+  podman_bin="$(command -v podman)" || return 1
+  podman_compose_bin="$(command -v podman-compose)" || return 1
+  case "$(uname -s)" in
+    Darwin)
+      podman_socket="$($podman_bin machine inspect --format '{{.ConnectionInfo.PodmanSocket.Path}}' 2>/dev/null)" ||
+        return 1
+      ;;
+    Linux)
+      podman_socket="$($podman_bin info --format '{{.Host.RemoteSocket.Path}}' 2>/dev/null)" ||
+        return 1
+      ;;
+    *) return 1 ;;
+  esac
+  podman_socket="${podman_socket#unix://}"
+  [ -S "$podman_socket" ] || return 1
+
+  engine="podman"
+  engine_label="Podman"
+  container_bin="$podman_bin"
+  export DOCKER_HOST="unix://$podman_socket"
+  export PODMAN_COMPOSE_PROVIDER="$podman_compose_bin"
+}
+
+configure_docker() {
+  docker_bin="$(command -v docker)" || return 1
+  "$docker_bin" info >/dev/null 2>&1 || return 1
+  "$docker_bin" compose version >/dev/null 2>&1 || return 1
+
+  engine="docker"
+  engine_label="Docker"
+  container_bin="$docker_bin"
+  unset PODMAN_COMPOSE_PROVIDER
+}
+
+select_engine() {
+  case "${OCC_K3D_CONTAINER_ENGINE:-}" in
+    podman)
+      configure_podman ||
+        fail "a Podman API socket and podman-compose must be running and available"
+      ;;
+    docker)
+      configure_docker || fail "Docker and Docker Compose must be running and available"
+      ;;
+    "")
+      case "${DOCKER_HOST:-}" in
+        *podman*)
+          configure_podman ||
+            fail "DOCKER_HOST selects Podman, but its API socket is unavailable"
+          ;;
+        ?*)
+          configure_docker || fail "DOCKER_HOST is set, but Docker is unavailable"
+          ;;
+        *)
+          if configure_podman; then
+            return
+          fi
+          if configure_docker; then
+            return
+          fi
+          fail "no running Podman API socket or Docker daemon was detected"
+          ;;
+      esac
+      ;;
+    *) fail "OCC_K3D_CONTAINER_ENGINE must be podman or docker" ;;
+  esac
+}
+
+value_field=""
+case "${1:-demo}" in
+  demo) action="demo" ;;
+  test) action="test" ;;
+  get)
+    action="get"
+    value_field="${2:-}"
+    if [ -z "$value_field" ] || [ "$#" -ne 2 ]; then
+      usage
+      exit 2
+    fi
+    ;;
+  copy)
+    action="copy"
+    value_field="${2:-}"
+    if [ -z "$value_field" ] || [ "$#" -ne 2 ]; then
+      usage
+      exit 2
+    fi
+    ;;
+  info) action="info" ;;
+  reset) action="reset" ;;
+  down) action="down" ;;
+  help | -h | --help)
+    usage
+    exit 0
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac
+
+[ "$action" != demo ] || prompt_openai_api_key
+
+for command in node k3d kubectl; do
+  require_command "$command"
+done
+select_engine
+
+k3d_bin="$(command -v k3d)"
+kubectl_bin="$(command -v kubectl)"
+export OCC_DOCKER_BIN="$container_bin"
+export OPENCLAW_CI_K3D_BIN="$k3d_bin"
+export OCC_KUBECTL_BIN="$kubectl_bin"
+export OCC_TEST_OPENAI_MODEL="${OCC_TEST_OPENAI_MODEL:-gpt-5.1}"
+
+# This local workflow always builds the current checkout. Do not let selectors
+# exported by an earlier test turn its generated localhost references into
+# registry pull inputs.
+unset OCC_TEST_KUBERNETES_GATEWAY_IMAGE
+unset OCC_TEST_KUBERNETES_AGENT_IMAGE
+unset OCC_TEST_KUBERNETES_RUNTIME_IMAGE
+unset OCC_TEST_KUBERNETES_CODEX_IMAGE
+unset OCC_TEST_PRODUCTION_CONTROLLER_IMAGE
+
+state_base="${XDG_STATE_HOME:-${HOME}/.local/state}"
+state_dir="${OCC_K3D_STATE_DIR:-$state_base/openclaw-enterprise/k3d-$engine-codex}"
+case "$state_dir" in
+  /*) ;;
+  *) fail "OCC_K3D_STATE_DIR must be absolute" ;;
+esac
+mkdir -p "$state_dir"
+chmod 700 "$state_dir"
+
+state_file="$state_dir/state.json"
+env_file="$state_dir/env"
+ready_file="$state_dir/ready"
+reset_file="$state_dir/reset"
+demo_file="$state_dir/demo.json"
+lifecycle_lock="$state_dir/lifecycle.lock"
+export RUNNER_TEMP="$state_dir"
+
+load_environment() {
+  while IFS= read -r environment_record || [ -n "$environment_record" ]; do
+    [ -n "$environment_record" ] || continue
+    [[ "$environment_record" =~ ^[a-zA-Z_][a-zA-Z0-9_]*= ]] ||
+      fail "prepared environment contains an invalid assignment"
+    export "${environment_record?}"
+  done < "$env_file"
+}
+
+load_state_lane() {
+  node -e '
+    const { readFileSync } = require("node:fs");
+    process.stdout.write(JSON.parse(readFileSync(process.argv[1], "utf8")).lane ?? "");
+  ' "$state_file" 2>/dev/null || fail "prepared state is unreadable; run './scripts/k3d down'"
+}
+
+validate_prepared_environment() {
+  # The embedded JavaScript must not use shell interpolation.
+  # shellcheck disable=SC2016
+  node -e '
+    const { readFileSync } = require("node:fs");
+    const { resolve } = require("node:path");
+    const [statePath, environmentPath, repositoryRoot] = process.argv.slice(1);
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    const reject = (message) => {
+      console.error(`k3d: ${message}`);
+      process.exit(1);
+    };
+    if (state.version !== 1) reject(`unsupported prepared state version: ${state.version}`);
+    if (
+      typeof state.repositoryRoot !== "string" ||
+      state.repositoryRoot.length === 0 ||
+      resolve(state.repositoryRoot) !== resolve(repositoryRoot)
+    ) {
+      reject("prepared state belongs to another repository checkout");
+    }
+    if (state.lane !== "gateway-routing") reject("prepared state is not for gateway routing");
+    if (!state.prefix?.startsWith("openclaw-ci-") || !Array.isArray(state.resources)) {
+      reject("prepared state has invalid ownership metadata");
+    }
+    if (state.resources.some(({ owner }) => owner !== state.prefix)) {
+      reject("prepared state contains a resource owned by another prefix");
+    }
+    const requiredResource = (kind, namePattern) => {
+      const matches = state.resources.filter(
+        (resource) => resource.kind === kind && resource.status === "ready",
+      );
+      if (matches.length !== 1 || !namePattern.test(matches[0].name ?? "")) {
+        reject(`prepared state does not contain one owned ${kind}`);
+      }
+      return matches[0];
+    };
+    requiredResource("compose-postgres", /^openclaw_ci_pg_/);
+    const cluster = requiredResource("k3d-cluster", /^openclaw-k8s-/);
+    const environment = Object.fromEntries(
+      readFileSync(environmentPath, "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => {
+          const separator = line.indexOf("=");
+          return [line.slice(0, separator), line.slice(separator + 1)];
+        }),
+    );
+    if (
+      environment.OCC_TEST_KUBERNETES_KUBECONFIG !== cluster.kubeconfig ||
+      environment.OCC_TEST_KUBERNETES_CONTEXT !== cluster.context
+    ) {
+      reject("prepared environment does not select the owned k3d cluster");
+    }
+  ' "$state_file" "$env_file" "$repo_root"
+}
+
+release_lifecycle_lock() {
+  if [ "$(readlink "$lifecycle_lock" 2>/dev/null || true)" = "${lifecycle_owner:-}" ]; then
+    rm -f "$lifecycle_lock"
+  fi
+}
+
+acquire_lifecycle_lock() {
+  lifecycle_owner="$$:$action"
+  if ! ln -s "$lifecycle_owner" "$lifecycle_lock" 2>/dev/null; then
+    existing_owner="$(readlink "$lifecycle_lock" 2>/dev/null || true)"
+    existing_pid="${existing_owner%%:*}"
+    existing_action="${existing_owner#*:}"
+    case "$existing_pid" in
+      "" | *[!0-9]*) fail "lifecycle lock is unreadable; remove $lifecycle_lock if no k3d command is running" ;;
+    esac
+    if kill -0 "$existing_pid" 2>/dev/null; then
+      fail "a k3d $existing_action command is already running (PID $existing_pid)"
+    fi
+    rm -f "$lifecycle_lock"
+    ln -s "$lifecycle_owner" "$lifecycle_lock" 2>/dev/null ||
+      fail "another k3d command acquired the lifecycle lock"
+  fi
+  trap release_lifecycle_lock EXIT
+}
+
+read_demo_field() {
+  # The embedded JavaScript must not use shell interpolation.
+  # shellcheck disable=SC2016
+  node -e '
+    const { readFileSync } = require("node:fs");
+    const value = JSON.parse(readFileSync(process.argv[1], "utf8"))[process.argv[2]];
+    if (typeof value !== "string" || value.length === 0) process.exit(1);
+    process.stdout.write(`${value}\n`);
+  ' "$demo_file" "$1"
+}
+
+demo_is_running() {
+  [ -s "$demo_file" ] || return 1
+  demo_pid="$(read_demo_field processId 2>/dev/null)" || return 1
+  case "$demo_pid" in
+    "" | *[!0-9]*) return 1 ;;
+  esac
+  kill -0 "$demo_pid" 2>/dev/null
+}
+
+remove_stale_demo_state() {
+  [ -f "$demo_file" ] || return 0
+  if demo_is_running; then
+    fail "a demo is running; stop it with Ctrl-C before $1"
+  fi
+  rm -f "$demo_file"
+}
+
+read_state_resource_name() {
+  node -e '
+    const { readFileSync } = require("node:fs");
+    const state = JSON.parse(readFileSync(process.argv[1], "utf8"));
+    const resource = state.resources?.find(({ kind, status }) =>
+      kind === process.argv[2] && status === "ready");
+    if (typeof resource?.name !== "string" || resource.name.length === 0) process.exit(1);
+    process.stdout.write(resource.name);
+  ' "$state_file" "$1"
+}
+
+container_status() {
+  local pattern="$1"
+  local line
+  local result=""
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    if [ -n "$result" ]; then
+      result="$result; $line"
+    else
+      result="$line"
+    fi
+  done < <("$container_bin" ps --filter "name=$pattern" --format '{{.Names}} ({{.Status}})' 2>/dev/null || true)
+  printf '%s' "${result:-not running}"
+}
+
+case "$action" in
+  demo | test | reset | down) acquire_lifecycle_lock ;;
+esac
+
+if [ "$action" = "info" ]; then
+  if [ -f "$state_file" ] && [ -f "$env_file" ] && [ -f "$ready_file" ]; then
+    prepared_status="ready"
+  elif [ -f "$state_file" ] || [ -f "$env_file" ] || [ -f "$ready_file" ]; then
+    prepared_status="incomplete"
+  else
+    prepared_status="not prepared"
+  fi
+  if [ -s "$demo_file" ] && read_demo_field controlUiUrl >/dev/null 2>&1; then
+    demo_status="ready"
+  elif [ -f "$demo_file" ]; then
+    demo_status="starting"
+  else
+    demo_status="not running"
+  fi
+  control_ui_url="not available"
+  console_url="not available"
+  console_username="not available"
+  namespace="not available"
+  namespace_id="not available"
+  agent_id="not available"
+  if [ "$demo_status" = "ready" ]; then
+    control_ui_url="$(read_demo_field controlUiUrl)" || fail "demo details are unreadable"
+    console_url="$(read_demo_field consoleUrl)" || fail "demo details are unreadable"
+    console_username="$(read_demo_field consoleUsername)" || fail "demo details are unreadable"
+    namespace="$(read_demo_field namespace)" || fail "demo details are unreadable"
+    namespace_id="$(read_demo_field namespaceId)" || fail "demo details are unreadable"
+    agent_id="$(read_demo_field agentId)" || fail "demo details are unreadable"
+  fi
+  demo_process="not running"
+  if [ -s "$demo_file" ]; then
+    if demo_is_running; then
+      demo_process="running (PID $demo_pid)"
+    else
+      demo_process="status unavailable; restart the demo"
+    fi
+  fi
+  postgres_status="not prepared"
+  cluster_containers_status="not prepared"
+  if [ -f "$state_file" ]; then
+    if postgres_project="$(read_state_resource_name compose-postgres)"; then
+      postgres_status="$(container_status "$postgres_project")"
+    fi
+    if cluster_name="$(read_state_resource_name k3d-cluster)"; then
+      cluster_containers_status="$(container_status "k3d-$cluster_name")"
+    fi
+  fi
+  kubeconfig="not available"
+  context="not available"
+  if [ -f "$env_file" ]; then
+    validate_prepared_environment
+    load_environment
+    kubeconfig="${OCC_TEST_KUBERNETES_KUBECONFIG:-not available}"
+    context="${OCC_TEST_KUBERNETES_CONTEXT:-not available}"
+  fi
+  cat <<EOF
+k3d
+  Engine:           $engine_label
+  State directory:  $state_dir
+  Prepared state:   $prepared_status
+  Demo:             $demo_status
+
+OpenClaw
+  Control UI:  $control_ui_url
+  Password:    ./scripts/k3d copy openclaw-password
+
+OpenClaw Control Plane (OCC)
+  Console:   $console_url
+  Username:  $console_username
+  Password:  ./scripts/k3d copy occ-password
+
+Kubernetes
+  Namespace:     $namespace
+  Namespace ID:  $namespace_id
+  Agent ID:      $agent_id
+  Kubeconfig:    $kubeconfig
+  Context:       $context
+
+Outside Kubernetes
+  Demo coordinator, worker, and port-forwards:  $demo_process
+  PostgreSQL container:                         $postgres_status
+  k3d containers:                               $cluster_containers_status
+EOF
+  exit 0
+fi
+
+if [ "$action" = "get" ]; then
+  case "$value_field" in
+    kubeconfig | context)
+      [ -f "$env_file" ] || fail "prepared environment is unavailable; run './scripts/k3d' first"
+      validate_prepared_environment
+      load_environment
+      case "$value_field" in
+        kubeconfig) printf '%s\n' "$OCC_TEST_KUBERNETES_KUBECONFIG" ;;
+        context) printf '%s\n' "$OCC_TEST_KUBERNETES_CONTEXT" ;;
+      esac
+      ;;
+    openclaw-control-ui) demo_key="controlUiUrl" ;;
+    occ-console) demo_key="consoleUrl" ;;
+    occ-username) demo_key="consoleUsername" ;;
+    namespace) demo_key="namespace" ;;
+    namespace-id) demo_key="namespaceId" ;;
+    agent-id) demo_key="agentId" ;;
+    *) fail "unknown field '$value_field'; run './scripts/k3d help' for available fields" ;;
+  esac
+  if [ "$value_field" != kubeconfig ] && [ "$value_field" != context ]; then
+    [ -s "$demo_file" ] || fail "demo details are unavailable; wait for './scripts/k3d' to report readiness"
+    read_demo_field "$demo_key" || fail "demo field '$value_field' is unavailable"
+  fi
+  exit 0
+fi
+
+if [ "$action" = "copy" ]; then
+  case "$value_field" in
+    openclaw-password) demo_key="gatewayPassword" ;;
+    occ-password) demo_key="consolePassword" ;;
+    *) fail "unknown field '$value_field'; run './scripts/k3d help' for available fields" ;;
+  esac
+  if command -v pbcopy >/dev/null 2>&1; then
+    clipboard_command=(pbcopy)
+  elif command -v wl-copy >/dev/null 2>&1; then
+    clipboard_command=(wl-copy)
+  elif command -v xclip >/dev/null 2>&1; then
+    clipboard_command=(xclip -selection clipboard)
+  else
+    fail "pbcopy, wl-copy, or xclip is required to copy values"
+  fi
+  [ -s "$demo_file" ] || fail "demo details are unavailable; wait for './scripts/k3d' to report readiness"
+  node -e '
+    const { readFileSync } = require("node:fs");
+    const value = JSON.parse(readFileSync(process.argv[1], "utf8"))[process.argv[2]];
+    if (typeof value !== "string" || value.length === 0) process.exit(1);
+    process.stdout.write(value);
+  ' "$demo_file" "$demo_key" | "${clipboard_command[@]}" ||
+    fail "demo field '$value_field' could not be copied"
+  echo "Copied $value_field to the clipboard."
+  exit 0
+fi
+
+if [ "$action" = "down" ]; then
+  remove_stale_demo_state cleanup
+  if [ ! -f "$state_file" ]; then
+    echo "$engine_label-backed k3d environment is already down."
+    exit 0
+  fi
+  info "Removing the owned cluster, images, and PostgreSQL resources."
+  node scripts/ci/cleanup.mjs --state "$state_file"
+  rm -f "$env_file" "$ready_file" "$reset_file"
+  echo "$engine_label-backed k3d environment removed."
+  exit 0
+fi
+
+if [ "$action" = "reset" ]; then
+  remove_stale_demo_state reset
+  if [ ! -f "$state_file" ] || [ ! -f "$env_file" ] || [ ! -f "$ready_file" ]; then
+    fail "prepared state is unavailable; run './scripts/k3d' first"
+  fi
+  [ "$(load_state_lane)" = gateway-routing ] ||
+    fail "prepared state predates workspace routing; run './scripts/k3d down' before retrying"
+  validate_prepared_environment
+  load_environment
+  rm -f "$ready_file"
+  info "Removing test namespaces from the owned k3d cluster."
+  while IFS= read -r namespace; do
+    case "$namespace" in
+      oce-production-* | oce-ns-* | openclaw-ci-seccomp-*)
+        "$kubectl_bin" \
+          --kubeconfig "$OCC_TEST_KUBERNETES_KUBECONFIG" \
+          --context "$OCC_TEST_KUBERNETES_CONTEXT" \
+          delete namespace "$namespace" \
+          --ignore-not-found=true \
+          --wait=true \
+          --timeout=120s
+        ;;
+    esac
+  done < <(
+    "$kubectl_bin" \
+      --kubeconfig "$OCC_TEST_KUBERNETES_KUBECONFIG" \
+      --context "$OCC_TEST_KUBERNETES_CONTEXT" \
+      get namespaces \
+      -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'
+  )
+  info "Replacing the isolated Kubernetes test database."
+  node scripts/ci/reset-k3d-model.mjs --state "$state_file"
+  rm -f "$env_file" "$ready_file"
+  touch "$reset_file"
+  echo "$engine_label-backed k3d test state reset; cluster and images preserved."
+  exit 0
+fi
+
+[ -n "${OPENAI_API_KEY:-}" ] || fail "OPENAI_API_KEY is required for the real model turn"
+
+NODE_BASE_IMAGE="$(sed -n 's/^ARG NODE_BASE_IMAGE=//p' deploy/runtime/Dockerfile | head -1)"
+export NODE_BASE_IMAGE
+[ -n "$NODE_BASE_IMAGE" ] || fail "deploy/runtime/Dockerfile does not declare NODE_BASE_IMAGE"
+
+if [ ! -f "$state_file" ]; then
+  info "Preparing a disposable k3d cluster, PostgreSQL database, and runtime images."
+  if ! "$container_bin" image inspect "$NODE_BASE_IMAGE" >/dev/null 2>&1; then
+    "$container_bin" pull "$NODE_BASE_IMAGE"
+  fi
+  node scripts/ci/prepare.mjs \
+    --lane gateway-routing \
+    --state "$state_file" \
+    --github-env "$env_file"
+  info "Creating and migrating the isolated Kubernetes test database."
+  node scripts/ci/prepare.mjs \
+    --lane gateway-routing \
+    --file tests/integration/harness-topology-k3d-routing-real.test.mjs \
+    --state "$state_file" \
+    --github-env "$env_file"
+  touch "$ready_file"
+elif [ -f "$reset_file" ] && [ ! -f "$ready_file" ]; then
+  info "Creating and migrating a fresh isolated Kubernetes test database."
+  : > "$env_file"
+  node scripts/ci/prepare.mjs \
+    --lane gateway-routing \
+    --file tests/integration/harness-topology-k3d-routing-real.test.mjs \
+    --state "$state_file" \
+    --github-env "$env_file"
+  touch "$ready_file"
+  rm -f "$reset_file"
+elif [ ! -f "$env_file" ] || [ ! -f "$ready_file" ]; then
+  fail "preparation state is incomplete; run './scripts/k3d down' before retrying"
+else
+  [ "$(load_state_lane)" = gateway-routing ] ||
+    fail "prepared state predates workspace routing; run './scripts/k3d down' before retrying"
+  info "Reusing the prepared cluster, PostgreSQL database, and runtime images."
+fi
+
+validate_prepared_environment
+load_environment
+
+[ -n "${OCC_TEST_PRODUCTION_CONTROLLER_IMAGE:-}" ] ||
+  fail "prepared state predates the in-cluster OCC API; run './scripts/k3d down' before retrying"
+
+if [ "$action" = "demo" ]; then
+  remove_stale_demo_state restart
+  printf '{"processId":"%s"}\n' "$$" > "$demo_file"
+  export OCC_K3D_DEMO_STATE="$demo_file"
+  node scripts/k3d-demo.mjs
+  exit 0
+fi
+
+info "Running the dedicated Codex gateway-routing integration case."
+node \
+  --test \
+  --test-name-pattern='production dedicated Codex consumes Envoy-routed workspace files through OCC' \
+  tests/integration/harness-topology-k3d-routing-real.test.mjs
+
+echo "Dedicated Codex gateway-routing integration passed."
+echo "Clean the prepared environment with: ./scripts/k3d down"

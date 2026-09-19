@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   arrangeProductionTopology,
+  assertActualModelTurn,
   assertRoutedWorkspaceFileReads,
   assertRoutedWorkspaceFilesThroughOcc,
   assertRoutedWorkspaceModelTurn,
@@ -17,9 +18,12 @@ test(
   async (context) => {
     try {
       const topology = await arrangeProductionTopology(context, "dedicated", undefined, {
+        gatewayPassword: true,
         workspaceGateway: true,
       });
       const connection = await topology.workspaceGateway.connect(topology);
+      // Trusted-proxy routing must retain password-authenticated direct loopback access.
+      await assertActualModelTurn(topology);
       const routeBefore = await resource(
         "httproute",
         topology.gatewayServiceName,
