@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-09-17
-last_updated_session: codex/01a03526-12b3-7f50-b599-e8414052909d
+updated: 2026-09-18
+last_updated_session: codex/01a0b0fc-4a24-76c0-8fb7-f3a3a434d464
 ---
 
 # Controller Worker Flow
@@ -250,9 +250,12 @@ the convergence deadline produce terminal failure instead. See the
 and the [settings reference](../reference/settings/operations.md#controller-worker-environment)
 for their timing controls.
 
-Terminal work rows store a fixed outcome and optional allowlisted error metadata.
-Successful revision work also stores the observed plugin warnings under the live
-claim. Stale claims cannot publish outcomes or warnings. Completion needs no
+Terminal work rows store the overall `reason_code` and one optional `result_data`
+object for success or failure details. Successful revision work stores
+`{ warnings: [...] }`; a convergence deadline failure stores `{ timeoutMs }`.
+`PostgresWorkQueue.complete` and `PostgresWorkQueue.fail` publish that data under
+the live claim. The deployment status projection derives its separate `error`
+and `warnings` fields from the saved result. Stale claims cannot publish outcomes or warnings. Completion needs no
 runtime receipt acknowledgment or post-commit cleanup protocol. The original
 deployment's warnings remain a historical startup result; later maintenance
 observations do not rewrite that completed deployment.
@@ -310,6 +313,8 @@ aborts in-flight work, waits for the loop, closes PostgreSQL, and emits
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-18 17:17: Generalized terminal details to result_data for success warnings and failure metadata, retaining live-claim fencing and the deployment API projection. (codex/01a0b0fc-4a24-76c0-8fb7-f3a3a434d464 - 6a582ce9)
 
 - 2026-09-17 21:20: Keep maintenance successor buckets monotonic when database and worker clocks differ. (codex/01a0b0fc-4a24-76c0-8fb7-f3a3a434d464 - 7f968f39)
 

@@ -24,7 +24,6 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import type { PgTableExtraConfigValue } from "drizzle-orm/pg-core";
-import type { PluginDeploymentWarning } from "./controller-work.ts";
 
 export const occSchema = pgSchema("occ");
 
@@ -675,8 +674,7 @@ export const controllerWork = occSchema.table(
     leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     reasonCode: text("reason_code"),
-    errorData: jsonb("error_data").$type<Record<string, unknown>>(),
-    pluginWarnings: jsonb("plugin_warnings").$type<PluginDeploymentWarning[]>(),
+    resultData: jsonb("result_data").$type<Record<string, unknown>>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
   },
@@ -741,8 +739,7 @@ export const controllerWork = occSchema.table(
         OR (${table.state} NOT IN ('succeeded', 'failed_permanent')
           AND ${table.completedAt} IS NULL
           AND ${table.reasonCode} IS NULL
-          AND ${table.errorData} IS NULL
-          AND ${table.pluginWarnings} IS NULL)
+          AND ${table.resultData} IS NULL)
       )`,
     ),
     check(
@@ -750,26 +747,35 @@ export const controllerWork = occSchema.table(
       sql`${table.reasonCode} IS NULL OR char_length(${table.reasonCode}) BETWEEN 1 AND 64`,
     ),
     check(
-      "controller_work_error_data_state",
-      sql`${table.errorData} IS NULL OR (
-        ${table.state} = 'failed_permanent'
-        AND jsonb_typeof(${table.errorData}) = 'object'
-        AND octet_length(${table.errorData}::text) <= 4096
+      "controller_work_result_data_state",
+      sql`${table.resultData} IS NULL OR (
+        jsonb_typeof(${table.resultData}) = 'object'
         AND (
-          ${table.reasonCode} = 'CONVERGENCE_DEADLINE_EXCEEDED'
-          AND ${table.errorData} ? 'timeoutMs'
-          AND (${table.errorData} - 'timeoutMs') = '{}'::jsonb
-          AND jsonb_typeof(${table.errorData}->'timeoutMs') = 'number'
-          AND (${table.errorData}->>'timeoutMs') ~ '^[1-9][0-9]{0,15}$'
-          AND (${table.errorData}->>'timeoutMs')::numeric <= 9007199254740991
+          (
+            ${table.state} = 'failed_permanent'
+            AND ${table.reasonCode} = 'CONVERGENCE_DEADLINE_EXCEEDED'
+            AND ${table.resultData} ? 'timeoutMs'
+            AND (${table.resultData} - 'timeoutMs') = '{}'::jsonb
+            AND jsonb_typeof(${table.resultData}->'timeoutMs') = 'number'
+            AND (${table.resultData}->>'timeoutMs') ~ '^[1-9][0-9]{0,15}$'
+            AND (${table.resultData}->>'timeoutMs')::numeric <= 9007199254740991
+          )
+          OR (
+            ${table.state} = 'succeeded'
+            AND ${table.reasonCode} IN ('REVISION_ACTIVATED', 'REVISION_ALREADY_ACTIVE')
+            AND ${table.resultData} ? 'warnings'
+            AND (${table.resultData} - 'warnings') = '{}'::jsonb
+            AND jsonb_typeof(${table.resultData}->'warnings') = 'array'
+            AND NOT jsonb_path_exists(
+              ${table.resultData},
+              '$.warnings[*] ? (@.type() != "object" || !(exists(@.code)) || !(exists(@.pluginId)) || @.code.type() != "string" || @.pluginId.type() != "string" || !(@.code == "PLUGIN_INSTALL_FAILED" || @.code == "PLUGIN_AUTH_REQUIRED") || !(@.pluginId like_regex "^[A-Za-z0-9._~:@-]{1,253}$"))'
+            )
+            AND NOT jsonb_path_exists(
+              ${table.resultData},
+              '$.warnings[*].keyvalue() ? (@.key != "code" && @.key != "pluginId")'
+            )
+          )
         )
-      )`,
-    ),
-    check(
-      "controller_work_plugin_warnings_state",
-      sql`${table.pluginWarnings} IS NULL OR (
-        ${table.state} = 'succeeded'
-        AND jsonb_typeof(${table.pluginWarnings}) = 'array'
       )`,
     ),
     index("controller_work_ready")

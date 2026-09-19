@@ -40,8 +40,7 @@ export interface ControllerWork {
   readonly leaseExpiresAt?: Date;
   readonly completedAt?: Date;
   readonly reasonCode?: string;
-  readonly errorData?: Readonly<Record<string, unknown>>;
-  readonly pluginWarnings?: readonly PluginDeploymentWarning[];
+  readonly resultData?: Readonly<Record<string, unknown>>;
   readonly createdAt: Date;
   readonly updatedAt: Date;
 }
@@ -70,7 +69,7 @@ export interface WorkClaim {
 
 export interface WorkResult {
   readonly code?: string;
-  readonly pluginWarnings?: readonly PluginDeploymentWarning[];
+  readonly resultData?: Readonly<Record<string, unknown>>;
 }
 
 export interface RetryableFailure {
@@ -125,6 +124,8 @@ export function validateFailureData(
   throw new ScopeViolationError("Controller work failure data is not allowed for this code.");
 }
 
+const PLUGIN_ID_PATTERN = /^[A-Za-z0-9._~:@-]{1,253}$/u;
+
 function validatePluginWarning(value: unknown): PluginDeploymentWarning {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new ScopeViolationError("Plugin deployment warning must be an object.");
@@ -137,7 +138,7 @@ function validatePluginWarning(value: unknown): PluginDeploymentWarning {
     !keys.includes("pluginId") ||
     (warning.code !== "PLUGIN_INSTALL_FAILED" && warning.code !== "PLUGIN_AUTH_REQUIRED") ||
     !isNonEmptyString(warning.pluginId) ||
-    warning.pluginId.length > 253
+    !PLUGIN_ID_PATTERN.test(warning.pluginId)
   ) {
     throw new ScopeViolationError("Plugin deployment warning is invalid.");
   }
@@ -165,6 +166,28 @@ export function validatePluginWarnings(
   return Object.freeze(normalized);
 }
 
+interface SuccessResultData {
+  readonly warnings: readonly PluginDeploymentWarning[];
+}
+
+export function validateSuccessResultData(data: unknown): SuccessResultData | undefined {
+  if (data === undefined) {
+    return undefined;
+  }
+  if (typeof data !== "object" || data === null || Array.isArray(data)) {
+    throw new ScopeViolationError("Successful controller work result data must be an object.");
+  }
+  const keys = Object.keys(data);
+  if (keys.length !== 1 || keys[0] !== "warnings") {
+    throw new ScopeViolationError("Successful controller work result data has unsupported fields.");
+  }
+  const warnings = validatePluginWarnings((data as { readonly warnings?: unknown }).warnings);
+  if (warnings === undefined) {
+    throw new ScopeViolationError("Successful controller work result data requires warnings.");
+  }
+  return Object.freeze({ warnings });
+}
+
 export function deploymentErrorForWork(
   work: Readonly<ControllerWork>,
 ): DeploymentStatusError | null {
@@ -173,9 +196,9 @@ export function deploymentErrorForWork(
   }
   const code = work.reasonCode ?? "UNKNOWN_FAILURE";
   const data =
-    work.errorData === undefined
+    work.resultData === undefined
       ? undefined
-      : validateFailureData(code, immutableCopy(work.errorData));
+      : validateFailureData(code, immutableCopy(work.resultData));
   return Object.freeze({
     code,
     message: deploymentErrorMessage(code),
@@ -186,10 +209,10 @@ export function deploymentErrorForWork(
 export function deploymentWarningsForWork(
   work: Readonly<ControllerWork>,
 ): readonly PluginDeploymentWarning[] {
-  if (work.state !== "succeeded" || work.pluginWarnings === undefined) {
+  if (work.state !== "succeeded" || work.resultData === undefined) {
     return Object.freeze([]);
   }
-  return validatePluginWarnings(immutableCopy(work.pluginWarnings)) ?? Object.freeze([]);
+  return validateSuccessResultData(immutableCopy(work.resultData))?.warnings ?? Object.freeze([]);
 }
 
 export function controllerWorkDeploymentStatus(

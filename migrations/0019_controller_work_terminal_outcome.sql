@@ -1,7 +1,6 @@
 ALTER TABLE occ.controller_work
 ADD COLUMN reason_code text,
-ADD COLUMN error_data jsonb,
-ADD COLUMN plugin_warnings jsonb;
+ADD COLUMN result_data jsonb;
 --> statement-breakpoint
 ALTER TABLE occ.controller_work
 DROP CONSTRAINT controller_work_completion_state,
@@ -15,39 +14,46 @@ ADD CONSTRAINT controller_work_completion_state CHECK (
     state NOT IN ('succeeded', 'failed_permanent')
     AND completed_at IS NULL
     AND reason_code IS NULL
-    AND error_data IS NULL
-    AND plugin_warnings IS NULL
+    AND result_data IS NULL
   )
 ),
 ADD CONSTRAINT controller_work_reason_code_length CHECK (
   reason_code IS NULL OR char_length(reason_code) BETWEEN 1 AND 64
 ),
-ADD CONSTRAINT controller_work_error_data_state CHECK (
-  error_data IS NULL
+ADD CONSTRAINT controller_work_result_data_state CHECK (
+  result_data IS NULL
   OR (
-    state = 'failed_permanent'
-    AND jsonb_typeof(error_data) = 'object'
-    AND octet_length(error_data::text) <= 4096
+    jsonb_typeof(result_data) = 'object'
     AND (
-      reason_code = 'CONVERGENCE_DEADLINE_EXCEEDED'
-      AND error_data ? 'timeoutMs'
-      AND (error_data - 'timeoutMs') = '{}'::jsonb
-      AND jsonb_typeof(error_data->'timeoutMs') = 'number'
-      AND (error_data->>'timeoutMs') ~ '^[1-9][0-9]{0,15}$'
-      AND (error_data->>'timeoutMs')::numeric <= 9007199254740991
+      (
+        state = 'failed_permanent'
+        AND reason_code = 'CONVERGENCE_DEADLINE_EXCEEDED'
+        AND result_data ? 'timeoutMs'
+        AND (result_data - 'timeoutMs') = '{}'::jsonb
+        AND jsonb_typeof(result_data->'timeoutMs') = 'number'
+        AND (result_data->>'timeoutMs') ~ '^[1-9][0-9]{0,15}$'
+        AND (result_data->>'timeoutMs')::numeric <= 9007199254740991
+      )
+      OR (
+        state = 'succeeded'
+        AND reason_code IN ('REVISION_ACTIVATED', 'REVISION_ALREADY_ACTIVE')
+        AND result_data ? 'warnings'
+        AND (result_data - 'warnings') = '{}'::jsonb
+        AND jsonb_typeof(result_data->'warnings') = 'array'
+        AND NOT jsonb_path_exists(
+          result_data,
+          '$.warnings[*] ? (@.type() != "object" || !(exists(@.code)) || !(exists(@.pluginId)) || @.code.type() != "string" || @.pluginId.type() != "string" || !(@.code == "PLUGIN_INSTALL_FAILED" || @.code == "PLUGIN_AUTH_REQUIRED") || !(@.pluginId like_regex "^[A-Za-z0-9._~:@-]{1,253}$"))'
+        )
+        AND NOT jsonb_path_exists(
+          result_data,
+          '$.warnings[*].keyvalue() ? (@.key != "code" && @.key != "pluginId")'
+        )
+      )
     )
-  )
-),
-ADD CONSTRAINT controller_work_plugin_warnings_state CHECK (
-  plugin_warnings IS NULL
-  OR (
-    state = 'succeeded'
-    AND jsonb_typeof(plugin_warnings) = 'array'
   )
 );
 --> statement-breakpoint
 GRANT UPDATE (
   reason_code,
-  error_data,
-  plugin_warnings
+  result_data
 ) ON occ.controller_work TO occ_app;

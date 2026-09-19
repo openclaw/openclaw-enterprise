@@ -5,7 +5,7 @@ import {
   nonempty,
   safeFailureCode,
   validateFailureData,
-  validatePluginWarnings,
+  validateSuccessResultData,
   type ClaimedWork,
   type ControllerWork,
   type ControllerWorkState,
@@ -72,8 +72,7 @@ interface WorkRow {
   readonly lease_expires_at: Date | string | null;
   readonly completed_at: Date | string | null;
   readonly reason_code: string | null;
-  readonly error_data: Record<string, unknown> | null;
-  readonly plugin_warnings: readonly unknown[] | null;
+  readonly result_data: Record<string, unknown> | null;
   readonly created_at: Date | string;
   readonly updated_at: Date | string;
 }
@@ -118,8 +117,6 @@ function asRow(value: unknown): WorkRow {
 
 function asWork(value: unknown): ControllerWork {
   const row = asRow(value);
-  const pluginWarnings =
-    row.plugin_warnings === null ? undefined : validatePluginWarnings(row.plugin_warnings);
   return Object.freeze({
     idempotencyKey: row.idempotency_key,
     namespaceId: row.namespace_id,
@@ -137,8 +134,7 @@ function asWork(value: unknown): ControllerWork {
     ...(row.lease_expires_at === null ? {} : { leaseExpiresAt: asDate(row.lease_expires_at) }),
     ...(row.completed_at === null ? {} : { completedAt: asDate(row.completed_at) }),
     ...(row.reason_code === null ? {} : { reasonCode: row.reason_code }),
-    ...(row.error_data === null ? {} : { errorData: Object.freeze({ ...row.error_data }) }),
-    ...(pluginWarnings === undefined ? {} : { pluginWarnings }),
+    ...(row.result_data === null ? {} : { resultData: Object.freeze({ ...row.result_data }) }),
     createdAt: asDate(row.created_at),
     updatedAt: asDate(row.updated_at),
   });
@@ -420,7 +416,7 @@ export class PostgresWorkQueue {
   async complete(claim: WorkClaim, result: WorkResult = {}): Promise<void> {
     validateClaim(claim);
     const reasonCode = safeFailureCode(result.code ?? "RECONCILE_SUCCEEDED");
-    const warnings = validatePluginWarnings(result.pluginWarnings);
+    const resultData = validateSuccessResultData(result.resultData);
     const completed = await this.client.query(
       `WITH transitioned AS (
          UPDATE occ.controller_work
@@ -429,8 +425,7 @@ export class PostgresWorkQueue {
              lease_expires_at = NULL,
              completed_at = clock_timestamp(),
              reason_code = $5::text,
-             error_data = NULL,
-             plugin_warnings = $6::jsonb,
+             result_data = $6::jsonb,
              updated_at = clock_timestamp()
          WHERE idempotency_key = $1
            AND state = 'claimed'
@@ -444,7 +439,7 @@ export class PostgresWorkQueue {
         "success",
         reasonCode,
         reasonCode,
-        warnings === undefined ? null : JSON.stringify(warnings),
+        resultData === undefined ? null : JSON.stringify(resultData),
       ],
     );
     if (completed.rows.length === 0) {
@@ -517,8 +512,7 @@ export class PostgresWorkQueue {
                WHEN attempt_count >= $5::integer THEN $4::text
                ELSE NULL
              END,
-             error_data = NULL,
-             plugin_warnings = NULL,
+             result_data = NULL,
              updated_at = clock_timestamp()
          WHERE idempotency_key = $1
            AND state = 'claimed'
@@ -554,8 +548,7 @@ export class PostgresWorkQueue {
              lease_expires_at = NULL,
              completed_at = clock_timestamp(),
              reason_code = $5::text,
-             error_data = $6::jsonb,
-             plugin_warnings = NULL,
+             result_data = $6::jsonb,
              updated_at = clock_timestamp()
          WHERE idempotency_key = $1
            AND state = 'claimed'
@@ -616,8 +609,7 @@ export class PostgresWorkQueue {
                WHEN work.attempt_count >= $2::integer THEN $4::text
                ELSE NULL
              END,
-             error_data = NULL,
-             plugin_warnings = NULL,
+             result_data = NULL,
              updated_at = clock_timestamp()
          FROM candidates
          WHERE work.idempotency_key = candidates.idempotency_key
@@ -649,8 +641,7 @@ export class PostgresWorkQueue {
          SET state = 'failed_permanent',
              completed_at = clock_timestamp(),
              reason_code = $4::text,
-             error_data = NULL,
-             plugin_warnings = NULL,
+             result_data = NULL,
              updated_at = clock_timestamp()
          FROM candidates
          WHERE work.idempotency_key = candidates.idempotency_key

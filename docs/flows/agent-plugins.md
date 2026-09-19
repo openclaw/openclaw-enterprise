@@ -1,6 +1,6 @@
 ---
 created: 2026-09-08
-updated: 2026-09-17
+updated: 2026-09-18
 last_updated_session: codex/01a0b0fc-4a24-76c0-8fb7-f3a3a434d464
 ---
 
@@ -188,8 +188,9 @@ is not installation/readiness evidence. Normal Agent turns use native policy;
 old workload state follows ordinary retirement. The persistent Agent workspace
 and Kubernetes gateway state database retain their Agent-owned lifecycle.
 
-The worker stores current plugin warnings with successful completion under its
-live claim. Claim loss prevents a stale completion write; a later worker reads
+The worker stores current plugin warnings in the successful work result under its
+live claim; the [worker flow](controller-worker.md#7-defer-retry-or-stop-and-hand-off-the-next-iteration)
+explains persistence and the deployment status projection. Claim loss prevents a stale completion write; a later worker reads
 current readiness again. There is no receipt acknowledgment, failed-plugin
 shutdown, or permanent failure latch. Saved deployment warnings describe the
 completed deployment attempt rather than ongoing runtime health.
@@ -232,6 +233,8 @@ completed deployment attempt rather than ongoing runtime health.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-18 17:17: Linked plugin warning persistence to the generalized controller work result. (codex/01a0b0fc-4a24-76c0-8fb7-f3a3a434d464 - 6a582ce9)
 
 - 2026-09-17 20:28: Replaced terminal plugin receipts with verified optional-plugin exclusion, current startup status, and successful deployment warnings; runtime verification in progress. (codex/01a0b0fc-4a24-76c0-8fb7-f3a3a434d464 - 7771526d)
 - 2026-09-17: Verified native OpenClaw and Codex plugin turns, successful warning persistence, failed selection exclusion, and Agent-only restart recovery. Ordered initial dedicated gateway startup after its Agent status dependency. (codex/01a0b0fc-4a24-76c0-8fb7-f3a3a434d464 - a5a11ad1)

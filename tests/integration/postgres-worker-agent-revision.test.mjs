@@ -256,6 +256,7 @@ async function setup(context, { leaseDurationMs = 30_000, onHealthy } = {}) {
 
   return {
     installation,
+    controller,
     actor,
     namespace,
     observerPool,
@@ -1701,6 +1702,19 @@ test(
       [candidate.id],
     );
     assert.deepEqual(evidence.rows, [{ reason: "CONVERGENCE_DEADLINE_EXCEEDED" }]);
+    const status = await fixture.controller.getDeploymentStatus(
+      fixture.actor.id,
+      fixture.namespace.id,
+      owner.id,
+      candidate.id,
+    );
+    assert.equal(status.status, "failed");
+    assert.deepEqual(status.error, {
+      code: "CONVERGENCE_DEADLINE_EXCEEDED",
+      message: "Deployment convergence deadline exceeded.",
+      data: { timeoutMs: 1 },
+    });
+    assert.deepEqual(status.warnings, []);
   },
 );
 
@@ -1710,13 +1724,15 @@ test(
   async (context) => {
     const fixture = await setup(context);
     const pluginId = "codex-plugin:linear@openai-curated-remote";
+    const otherPluginId = "codex-plugin:calendar@openai-curated-remote";
+    const warnings = [
+      { code: "PLUGIN_AUTH_REQUIRED", pluginId },
+      { code: "PLUGIN_INSTALL_FAILED", pluginId: otherPluginId },
+    ];
+    const pluginState = codexPluginRevisionState(pluginId);
+    pluginState.plugins[otherPluginId] = { enabled: true, approvalMode: "auto" };
     const owner = await fixture.agent("plugin-warning", "dedicated");
-    const candidate = await fixture.revision(
-      owner,
-      1,
-      undefined,
-      codexPluginRevisionState(pluginId),
-    );
+    const candidate = await fixture.revision(owner, 1, undefined, pluginState);
     const prepared = [];
 
     await fixture.start({
@@ -1731,14 +1747,14 @@ test(
           agentId: revision.agentId,
           revisionId: revision.id,
           ready: true,
-          warnings: [{ code: "PLUGIN_AUTH_REQUIRED", pluginId }],
+          warnings,
         };
       },
     });
 
     await fixture.work(candidate, "succeeded");
     const terminal = await fixture.observerPool.query(
-      `SELECT state, reason_code, error_data, plugin_warnings
+      `SELECT state, reason_code, result_data
        FROM occ.controller_work WHERE idempotency_key = $1`,
       [candidate.idempotencyKey],
     );
@@ -1746,8 +1762,7 @@ test(
       {
         state: "succeeded",
         reason_code: "REVISION_ACTIVATED",
-        error_data: null,
-        plugin_warnings: [{ code: "PLUGIN_AUTH_REQUIRED", pluginId }],
+        result_data: { warnings },
       },
     ]);
     const active = await fixture.state.read((view) =>
@@ -1755,6 +1770,24 @@ test(
     );
     assert.equal(active.activeRevisionId, candidate.id);
     assert.deepEqual(prepared, [candidate.id]);
+    // The public status projection reads the persisted result through OCC;
+    // individual plugin failures must not turn a successful deployment into an error.
+    assert.deepEqual(
+      await fixture.controller.getDeploymentStatus(
+        fixture.actor.id,
+        fixture.namespace.id,
+        owner.id,
+        candidate.id,
+      ),
+      {
+        deploymentId: candidate.id,
+        namespaceId: fixture.namespace.id,
+        agentId: owner.id,
+        status: "succeeded",
+        error: null,
+        warnings,
+      },
+    );
   },
 );
 
@@ -1804,7 +1837,7 @@ test(
     assert.equal(prepareCount, 1);
     assert.deepEqual(activations, [candidate.id]);
     const terminal = await fixture.observerPool.query(
-      `SELECT state, reason_code, error_data, plugin_warnings
+      `SELECT state, reason_code, result_data
        FROM occ.controller_work WHERE idempotency_key = $1`,
       [candidate.idempotencyKey],
     );
@@ -1812,8 +1845,7 @@ test(
       {
         state: "succeeded",
         reason_code: "REVISION_ALREADY_ACTIVE",
-        error_data: null,
-        plugin_warnings: [{ code: "PLUGIN_INSTALL_FAILED", pluginId }],
+        result_data: { warnings: [{ code: "PLUGIN_INSTALL_FAILED", pluginId }] },
       },
     ]);
   },
@@ -1852,7 +1884,7 @@ test(
 
     await fixture.work(candidate, "failed_permanent");
     const generic = await fixture.observerPool.query(
-      `SELECT state, reason_code, error_data, plugin_warnings
+      `SELECT state, reason_code, result_data
        FROM occ.controller_work WHERE idempotency_key = $1`,
       [candidate.idempotencyKey],
     );
@@ -1860,8 +1892,7 @@ test(
       {
         state: "failed_permanent",
         reason_code: "INVALID_DRIVER_OBSERVATION",
-        error_data: null,
-        plugin_warnings: null,
+        result_data: null,
       },
     ]);
     const inactive = await fixture.state.read((view) =>

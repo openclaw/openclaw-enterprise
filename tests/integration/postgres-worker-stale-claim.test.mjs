@@ -423,15 +423,17 @@ test(
     assert.notEqual(recovered.claimToken, original.rows[0].claim_token);
 
     releasePreparation.resolve();
-    await waitFor("stolen plugin warnings to remain uncommitted", async () => {
+    const stolen = await waitFor("stolen plugin warnings to remain uncommitted", async () => {
       const rows = await observerPool.query(
-        `SELECT state, claim_token, reason_code, error_data, plugin_warnings
+        `SELECT state, claim_token, reason_code, result_data
          FROM occ.controller_work WHERE idempotency_key = $1`,
         [idempotencyKey],
       );
       const row = rows.rows[0];
       return row?.state === "claimed" && row.claim_token === recovered.claimToken ? row : undefined;
     });
+    assert.equal(stolen.reason_code, null);
+    assert.equal(stolen.result_data, null);
 
     await worker.stop();
     worker = undefined;
@@ -461,7 +463,7 @@ test(
 
     const terminal = await waitFor("recovered worker successful plugin warning", async () => {
       const rows = await observerPool.query(
-        `SELECT state, reason_code, error_data, plugin_warnings
+        `SELECT state, reason_code, result_data
          FROM occ.controller_work WHERE idempotency_key = $1`,
         [idempotencyKey],
       );
@@ -470,8 +472,7 @@ test(
     assert.deepEqual(terminal, {
       state: "succeeded",
       reason_code: "REVISION_ACTIVATED",
-      error_data: null,
-      plugin_warnings: [{ code: "PLUGIN_INSTALL_FAILED", pluginId }],
+      result_data: { warnings: [{ code: "PLUGIN_INSTALL_FAILED", pluginId }] },
     });
   },
 );

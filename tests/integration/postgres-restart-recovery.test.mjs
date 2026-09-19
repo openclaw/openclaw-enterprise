@@ -248,34 +248,67 @@ test(
     await queue.enqueue(revisionWork(namespaceId, idempotencyKey, agents[0], revisionId));
 
     const claim = await claimExpected(queue, idempotencyKey);
-    await queue.complete(claim, {
-      code: "REVISION_ACTIVATED",
-      pluginWarnings: [
-        {
-          code: "PLUGIN_AUTH_REQUIRED",
-          pluginId: "codex-plugin:calendar@openai-curated-remote",
-        },
-      ],
-    });
-
-    const terminal = await queue.findWork(idempotencyKey);
-    assert.equal(terminal.state, "succeeded");
-    assert.equal(terminal.reasonCode, "REVISION_ACTIVATED");
-    assert.deepEqual(terminal.pluginWarnings, [
+    // Result payloads remain allowlisted even though success and failure now
+    // share one column. Reject malformed warnings before completing the claim.
+    for (const resultData of [
+      { warnings: [{ code: "UNKNOWN_WARNING", pluginId: "occ-plugin:diffs" }] },
+      { warnings: [{ code: "PLUGIN_INSTALL_FAILED", pluginId: "invalid plugin id" }] },
+      {
+        warnings: [{ code: "PLUGIN_INSTALL_FAILED", pluginId: "occ-plugin:diffs", raw: "unsafe" }],
+      },
+      {
+        warnings: [
+          { code: "PLUGIN_INSTALL_FAILED", pluginId: "occ-plugin:diffs" },
+          { code: "PLUGIN_AUTH_REQUIRED", pluginId: "occ-plugin:diffs" },
+        ],
+      },
+      { warnings: [], raw: "unsafe" },
+      { timeoutMs: 1 },
+    ]) {
+      await assert.rejects(queue.complete(claim, { code: "REVISION_ACTIVATED", resultData }), {
+        name: "ScopeViolationError",
+      });
+    }
+    const warnings = [
       {
         code: "PLUGIN_AUTH_REQUIRED",
         pluginId: "codex-plugin:calendar@openai-curated-remote",
       },
-    ]);
-    await assert.rejects(
-      pool.query(
-        `UPDATE occ.controller_work
-         SET plugin_warnings = '{}'::jsonb
-         WHERE idempotency_key = $1`,
-        [idempotencyKey],
-      ),
-      { code: "23514" },
-    );
+      { code: "PLUGIN_INSTALL_FAILED", pluginId: "occ-plugin:diffs" },
+    ];
+    await queue.complete(claim, {
+      code: "REVISION_ACTIVATED",
+      resultData: { warnings },
+    });
+
+    // Reload through a fresh queue: mixed plugin outcomes must survive completion
+    // without replacing the overall successful deployment reason.
+    const { PostgresWorkQueue } =
+      await import("../../packages/occ/src/state/postgres-work-queue.ts");
+    const terminal = await new PostgresWorkQueue(pool).findWork(idempotencyKey);
+    assert.equal(terminal.state, "succeeded");
+    assert.equal(terminal.reasonCode, "REVISION_ACTIVATED");
+    assert.deepEqual(terminal.resultData, { warnings });
+    // PostgreSQL independently rejects unsafe persisted shapes, even when a
+    // writer bypasses the queue's result validation.
+    for (const resultData of [
+      { warnings: {} },
+      { warnings: [null] },
+      { warnings: [{ code: "UNKNOWN_WARNING", pluginId: "occ-plugin:diffs" }] },
+      { warnings: [{ code: "PLUGIN_INSTALL_FAILED", pluginId: "invalid plugin id" }] },
+      {
+        warnings: [{ code: "PLUGIN_INSTALL_FAILED", pluginId: "occ-plugin:diffs", raw: "unsafe" }],
+      },
+      { warnings: [], raw: "unsafe" },
+    ]) {
+      await assert.rejects(
+        pool.query(
+          `UPDATE occ.controller_work SET result_data = $2::jsonb WHERE idempotency_key = $1`,
+          [idempotencyKey, JSON.stringify(resultData)],
+        ),
+        { code: "23514" },
+      );
+    }
   },
 );
 
@@ -312,7 +345,7 @@ test(
     });
     const deadline = await queue.findWork(invalidKey);
     assert.equal(deadline.state, "failed_permanent");
-    assert.deepEqual(deadline.errorData, { timeoutMs: 900_000 });
+    assert.deepEqual(deadline.resultData, { timeoutMs: 900_000 });
 
     const exhaustedClaim = await claimExpected(queue, exhaustedKey);
     await queue.retry(exhaustedClaim, {

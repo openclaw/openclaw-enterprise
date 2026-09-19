@@ -133,6 +133,20 @@ stateDiagram-v2
   unrecoverable error occurred, or the retry limit was exhausted. The failure
   is audited, and the terminal operation is never retried automatically.
 
+### Terminal results
+
+Terminal work stores its overall outcome in `reasonCode` and optional structured
+success or failure details in `resultData` (the PostgreSQL `result_data` column).
+Successful activation keeps `REVISION_ACTIVATED` or `REVISION_ALREADY_ACTIVE`
+even when `resultData.warnings` contains different plugin failure codes.
+Convergence deadline failures store their allowed `timeoutMs` in the same field.
+Queued and claimed work have no result data.
+
+Warnings contain only an allowed code and an admitted plugin ID. The
+[deployment status API](../agents.md#deployment-status) derives `error` and
+`warnings` from this saved outcome; a successful deployment with plugin warnings
+still returns `error: null`. Only the current live claim can publish the result.
+
 ### Deferred Namespace and Agent convergence
 
 The worker defers a Namespace or AgentRevision operation when its Compute Driver

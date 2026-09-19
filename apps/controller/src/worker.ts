@@ -77,7 +77,7 @@ interface DispatchResult {
 
 interface RevisionDispatchResult extends DispatchResult {
   readonly data?: Readonly<Record<string, unknown>>;
-  readonly pluginWarnings?: readonly PluginDeploymentWarning[];
+  readonly resultData?: Readonly<Record<string, unknown>>;
   readonly revision?: Readonly<AgentRevision>;
   readonly previous?: Readonly<AgentRevision>;
   readonly supersededBy?: Readonly<AgentRevision>;
@@ -268,6 +268,15 @@ function computePluginWarnings(
     normalized.push({ code, pluginId });
   }
   return Object.freeze(normalized);
+}
+
+function pluginWarningsResultData(
+  warnings: readonly PluginDeploymentWarning[],
+): Readonly<Record<string, unknown>> | undefined {
+  if (warnings.length === 0) {
+    return undefined;
+  }
+  return Object.freeze({ warnings });
 }
 
 function revisionSecretBindings(
@@ -1109,7 +1118,7 @@ export class ControllerWorker {
         }
       }
       if (agent.activeRevisionId === revision.id) {
-        let pluginWarnings: readonly PluginDeploymentWarning[] = Object.freeze([]);
+        let resultData: Readonly<Record<string, unknown>> | undefined;
         try {
           const compute = this.compute;
           // Publishing the active pointer precedes activation. Reobserve even when
@@ -1124,8 +1133,9 @@ export class ControllerWorker {
             });
             return;
           }
-          pluginWarnings =
-            computePluginWarnings(observation.warnings, revision) ?? Object.freeze([]);
+          resultData = pluginWarningsResultData(
+            computePluginWarnings(observation.warnings, revision) ?? Object.freeze([]),
+          );
           if (!observation.ready) {
             await this.finalizeActiveRevision(claim, revision, "REVISION_INCOMPLETE");
             return;
@@ -1154,7 +1164,7 @@ export class ControllerWorker {
           outcome: "success",
           code: "REVISION_ALREADY_ACTIVE",
           revision,
-          pluginWarnings,
+          ...(resultData === undefined ? {} : { resultData }),
         });
         return;
       }
@@ -1367,8 +1377,9 @@ export class ControllerWorker {
       if (!validRevisionObservation(observation, revision)) {
         return { outcome: "permanent", code: "INVALID_DRIVER_OBSERVATION" };
       }
-      const pluginWarnings =
-        computePluginWarnings(observation.warnings, revision) ?? Object.freeze([]);
+      const resultData = pluginWarningsResultData(
+        computePluginWarnings(observation.warnings, revision) ?? Object.freeze([]),
+      );
       if (!observation.ready) {
         return { outcome: "pending", code: "REVISION_INCOMPLETE" };
       }
@@ -1392,7 +1403,7 @@ export class ControllerWorker {
         outcome: "success",
         code: "REVISION_ACTIVATED",
         revision,
-        pluginWarnings,
+        ...(resultData === undefined ? {} : { resultData }),
         context,
         ...(previous === undefined ? {} : { previous }),
         ...(expectedActiveRevisionId === undefined ? {} : { expectedActiveRevisionId }),
@@ -1611,9 +1622,7 @@ export class ControllerWorker {
       if (resolved.outcome === "success") {
         await queue.complete(claim, {
           code: resolved.code,
-          ...(resolved.pluginWarnings === undefined
-            ? {}
-            : { pluginWarnings: resolved.pluginWarnings }),
+          ...(resolved.resultData === undefined ? {} : { resultData: resolved.resultData }),
         });
       } else if (resolved.outcome === "pending") {
         await queue.defer(claim, { code: resolved.code });
@@ -1739,7 +1748,7 @@ export class ControllerWorker {
       await this.appendRevisionObservation(unit, claim, result);
       await queue.complete(claim, {
         code: result.code,
-        ...(result.pluginWarnings === undefined ? {} : { pluginWarnings: result.pluginWarnings }),
+        ...(result.resultData === undefined ? {} : { resultData: result.resultData }),
       });
       if (this.maintenanceIntervalMs !== undefined) {
         await this.enqueueMaintenance(queue, claim, revision);

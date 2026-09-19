@@ -1671,7 +1671,7 @@ export async function createPluginDriverRealFixture(
       }),
       controllerWork: await safeDiagnostic(async () => {
         const { rows } = await pool.query(
-          `SELECT state, reason_code, plugin_warnings, attempt_count, available_at, created_at, updated_at, completed_at
+          `SELECT state, reason_code, result_data, attempt_count, available_at, created_at, updated_at, completed_at
              FROM occ.controller_work
             WHERE revision_id = $1
             ORDER BY created_at DESC
@@ -1685,7 +1685,7 @@ export async function createPluginDriverRealFixture(
         return {
           state: row.state,
           reasonCode: row.reason_code,
-          pluginWarnings: row.plugin_warnings,
+          warnings: row.result_data?.warnings ?? [],
           attemptCount: row.attempt_count,
           availableAt: row.available_at,
           createdAt: row.created_at,
