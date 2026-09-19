@@ -407,8 +407,17 @@ async function pluginRuntimeStatus(namespaceName, podName) {
   const rawPath = `/api/v1/namespaces/${namespaceName}/pods/${podName}:${pluginStatusPort}/proxy${pluginStatusPath}`;
   const { stdout } = await execute(
     "kubectl",
-    ["--kubeconfig", kubeconfigPath, "--context", kubernetesContext, "get", "--raw", rawPath],
-    { maxBuffer: 4 * 1024 * 1024 },
+    [
+      "--kubeconfig",
+      kubeconfigPath,
+      "--context",
+      kubernetesContext,
+      "get",
+      "--request-timeout=10s",
+      "--raw",
+      rawPath,
+    ],
+    { timeout: 15_000, maxBuffer: 4 * 1024 * 1024 },
   );
   return JSON.parse(stdout);
 }
