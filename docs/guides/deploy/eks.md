@@ -9,8 +9,7 @@ One EKS cluster is sufficient for OCC and Agent workloads. Use separate control
 and runtime node groups in that cluster, with namespace, RBAC, and network
 isolation. The EKS-managed Kubernetes control plane is distinct from OCC, which
 runs as application Pods on your nodes. Agent model authentication follows the
-normal [production Agent guide](production-agents.md); hosting on EKS does not
-require Amazon Bedrock.
+normal [production Agent guide](production-agents.md).
 
 ## Prepare AWS infrastructure
 

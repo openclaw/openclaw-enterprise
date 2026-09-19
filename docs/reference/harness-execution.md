@@ -78,12 +78,11 @@ queue guarantees.
 The Agent's [harnessAuth binding](agents.md#harness-authentication) is the sole
 model-auth selector. Kubernetes supports these combinations:
 
-| Binding                       | Topology          | Credential consumer                                             |
-| ----------------------------- | ----------------- | --------------------------------------------------------------- |
-| `api_key` with an OCC Secret  | Embedded OpenClaw | Combined gateway/Harness receives `OPENAI_API_KEY`.             |
-| `api_key` with an OCC Secret  | Dedicated Codex   | Only Codex receives `OPENAI_API_KEY` and logs in through stdin. |
-| `chatgpt_service_account`     | Dedicated Codex   | Only Codex receives the account token and forced workspace.     |
-| `runtime` with Amazon Bedrock | Embedded OpenClaw | Combined gateway/Harness uses AWS workload credentials.         |
+| Binding                      | Topology          | Credential consumer                                             |
+| ---------------------------- | ----------------- | --------------------------------------------------------------- |
+| `api_key` with an OCC Secret | Embedded OpenClaw | Combined gateway/Harness receives `OPENAI_API_KEY`.             |
+| `api_key` with an OCC Secret | Dedicated Codex   | Only Codex receives `OPENAI_API_KEY` and logs in through stdin. |
+| `chatgpt_service_account`    | Dedicated Codex   | Only Codex receives the account token and forced workspace.     |
 
 Kubernetes workload rendering prepares one explicit login mode and exact Secret
 projections. The selected Sandbox consumes the same already-rendered workload
@@ -92,12 +91,7 @@ implementations reject bindings they do not support. SSH embedded OpenClaw accep
 only `{ "method": "runtime" }`: systemd loads operator-provided host credentials,
 and OCC checks gateway readiness without validating model authentication. Host
 credential changes are outside revision immutability; see [SSH Compute](drivers/ssh-compute.md).
-Kubernetes accepts `runtime` only for embedded OpenClaw with Amazon Bedrock
-models and canonical regional Bedrock transport using AWS SDK authentication.
-It rejects Configuration-supplied credentials and transport overrides, disables
-EC2 instance metadata credentials, and requires a successful bounded startup
-model turn. EKS Pod Identity also uses the driver's
-[credential-endpoint network allowance](drivers/kubernetes-compute/networking-and-isolation.md#networking).
+Kubernetes rejects `runtime`; its managed validation remains unchanged.
 
 Codex rejects missing or conflicting runtime inputs before starting its app
 server. After login, a bounded native model turn must succeed before the server

@@ -64,37 +64,6 @@ function preparedAuth(driver, namespace, embedded = false, harnessAuth = apiKeyA
   return driver.harnessAuthForRevision(revision, authContext(revision, namespace), namespace);
 }
 
-const bedrockRuntimeAuth = { method: "runtime" };
-const bedrockModel = "amazon-bedrock/us.amazon.nova-micro-v1:0";
-
-function bedrockRuntimeConfiguration(overrides = {}) {
-  return {
-    agents: {
-      defaults: {
-        model: bedrockModel,
-        models: {
-          [bedrockModel]: {
-            alias: "Nova Micro",
-            params: { temperature: 0.1 },
-            agentRuntime: { id: "openclaw" },
-          },
-        },
-      },
-    },
-    models: {
-      providers: {
-        "amazon-bedrock": {
-          baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com",
-          api: "bedrock-converse-stream",
-          auth: "aws-sdk",
-          models: [{ id: "us.amazon.nova-micro-v1:0", name: "Nova Micro" }],
-        },
-      },
-    },
-    ...overrides,
-  };
-}
-
 function options(overrides = {}) {
   const resources = {
     requests: { cpu: "100m", memory: "64Mi" },
@@ -1527,17 +1496,6 @@ test("embedded replacement cuts over an unready shared gateway and waits for act
   for (const policy of driver.networkPolicies(tenantOwnership, namespace)) {
     save(policy);
   }
-  // The shared allow-agent-runtime policy name survives revision changes, so a
-  // Bedrock runtime-auth allowance must be removed by the next API-key revision.
-  const staleRuntimePolicy = driver.agentNetworkPolicies(
-    {
-      ...replacement,
-      harnessAuth: bedrockRuntimeAuth,
-      configuration: bedrockRuntimeConfiguration(),
-    },
-    namespace,
-  )[0];
-  save(staleRuntimePolicy);
   save({
     ...driver.manifest("v1", "ServiceAccount", agentName, agentOwnership, namespace),
     automountServiceAccountToken: false,
@@ -1790,11 +1748,6 @@ test("embedded replacement cuts over an unready shared gateway and waits for act
     ({ kind, name }) => kind === "Deployment" && name === gatewayName,
   );
   assert.ok(egressWrite >= 0 && egressWrite < gatewayWrite);
-  assert.deepEqual(
-    objects.get(key("NetworkPolicy", `allow-agent-runtime-${suffix}`)).spec.egress,
-    driver.agentNetworkPolicies(replacement, namespace)[0].spec.egress,
-    "reconciling back to managed API-key auth must remove stale Pod Identity egress",
-  );
 
   // Reconciliation observes readiness without replacing the Pod or retrying the
   // native model call; explicit deployment/restart owns recovery from bad auth.
@@ -3180,189 +3133,6 @@ test("real gateways require an explicit SQLite-compatible storage class", () => 
           }),
         ),
       /SQLite-compatible gateway storage class must be explicitly configured/,
-    );
-  }
-});
-
-test("embedded OpenClaw runtime auth admits only canonical Bedrock Pod Identity transport", () => {
-  const driver = createKubernetesComputeDriver(
-    options({
-      runtime: {
-        transportSecretPrefix: "transport",
-        gatewayStorageClassName: "local-path",
-      },
-    }),
-  );
-  const namespace = kubernetesNamespaceName(tenant.id);
-  const agentId = "agent-bedrock-runtime";
-  const revision = {
-    id: "revision-bedrock-runtime",
-    namespaceId: tenant.id,
-    agentId,
-    harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
-    harnessAuth: bedrockRuntimeAuth,
-    configuration: bedrockRuntimeConfiguration(),
-  };
-
-  assert.doesNotThrow(() =>
-    driver.validateHarnessAuth(revision.harness, bedrockRuntimeAuth, revision.configuration),
-  );
-  const prepared = driver.harnessAuthForRevision(
-    revision,
-    authContext(revision, namespace),
-    namespace,
-  );
-  const preparedEnv = Object.fromEntries(prepared.environment.map((entry) => [entry.name, entry]));
-  assert.equal(preparedEnv.OPENCLAW_HARNESS_MODEL.value, bedrockModel);
-  assert.equal(preparedEnv.OPENCLAW_HARNESS_PROVIDER_REGION.value, "us-east-1");
-  assert.equal(preparedEnv.OPENAI_API_KEY, undefined);
-  assert.equal(preparedEnv.CODEX_ACCESS_TOKEN, undefined);
-  const probeConfiguration = JSON.parse(preparedEnv.OPENCLAW_HARNESS_PROBE_CONFIG.value);
-  assert.equal(probeConfiguration.agents.defaults.model, bedrockModel);
-  assert.deepEqual(probeConfiguration.models.providers["amazon-bedrock"], {
-    baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com",
-    api: "bedrock-converse-stream",
-    auth: "aws-sdk",
-    models: [{ id: "us.amazon.nova-micro-v1:0", name: "Nova Micro" }],
-  });
-  assert.equal(probeConfiguration.models.providers["amazon-bedrock"].apiKey, undefined);
-  assert.equal(probeConfiguration.models.providers["amazon-bedrock"].headers, undefined);
-
-  const agentHash = createHash("sha256").update(agentId).digest("hex");
-  const deployment = driver.deployment(
-    `gateway-${agentHash.slice(0, 12)}`,
-    { namespaceId: tenant.id, agentId },
-    namespace,
-    "openclaw-enterprise/gateway-fixture:local",
-    `agent-${agentHash.slice(0, 12)}`,
-    "gateway",
-    {},
-    "info",
-    undefined,
-    true,
-    undefined,
-    prepared,
-  );
-  const environment = Object.fromEntries(
-    deployment.spec.template.spec.containers[0].env.map((entry) => [entry.name, entry]),
-  );
-  assert.equal(environment.OPENCLAW_HARNESS_PROVIDER_REGION.value, "us-east-1");
-  for (const forbidden of [
-    "OPENAI_API_KEY",
-    "CODEX_ACCESS_TOKEN",
-    "AWS_ACCESS_KEY_ID",
-    "AWS_SECRET_ACCESS_KEY",
-    "AWS_SESSION_TOKEN",
-    "AWS_PROFILE",
-    "AWS_BEARER_TOKEN_BEDROCK",
-  ]) {
-    assert.equal(environment[forbidden], undefined);
-  }
-
-  const runtimePolicy = driver.agentNetworkPolicies(revision, namespace)[0];
-  assert.equal(runtimePolicy.metadata.name, `allow-agent-runtime-${digest(agentId, 12)}`);
-  assert.deepEqual(runtimePolicy.spec.podSelector.matchLabels, {
-    "openclaw.dev/workload-role": "gateway",
-    "openclaw.dev/agent": agentId,
-  });
-  assert.deepEqual(runtimePolicy.spec.egress, [
-    {
-      to: [
-        {
-          ipBlock: {
-            cidr: "0.0.0.0/0",
-            except: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16"],
-          },
-        },
-      ],
-      ports: [{ protocol: "TCP", port: 443 }],
-    },
-    {
-      to: [{ ipBlock: { cidr: "169.254.170.23/32" } }],
-      ports: [{ protocol: "TCP", port: 80 }],
-    },
-  ]);
-  const apiKeyPolicy = driver.agentNetworkPolicies(
-    {
-      ...revision,
-      harnessAuth: apiKeyAuth,
-      configuration: { agents: { defaults: { model: "openai/gpt-5" } } },
-    },
-    namespace,
-  )[0];
-  assert.equal(apiKeyPolicy.metadata.name, runtimePolicy.metadata.name);
-  assert.deepEqual(
-    apiKeyPolicy.spec.egress.flatMap((rule) => rule.to ?? []),
-    [
-      {
-        ipBlock: {
-          cidr: "0.0.0.0/0",
-          except: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16"],
-        },
-      },
-    ],
-  );
-
-  assert.throws(
-    () =>
-      driver.deployment(
-        `gateway-${agentHash.slice(0, 12)}-aws-secret`,
-        { namespaceId: tenant.id, agentId },
-        namespace,
-        "openclaw-enterprise/gateway-fixture:local",
-        `agent-${agentHash.slice(0, 12)}`,
-        "gateway",
-        {},
-        "info",
-        undefined,
-        true,
-        undefined,
-        prepared,
-        [],
-        [{ name: "AWS_ACCESS_KEY_ID", backendRef: { name: "aws", key: "access-key" } }],
-      ),
-    /AWS runtime credentials cannot be delivered/i,
-  );
-
-  for (const [name, configuration] of [
-    ["dedicated runtime", bedrockRuntimeConfiguration()],
-    [
-      "static provider key",
-      bedrockRuntimeConfiguration({
-        models: {
-          providers: {
-            "amazon-bedrock": {
-              ...bedrockRuntimeConfiguration().models.providers["amazon-bedrock"],
-              apiKey: "static",
-            },
-          },
-        },
-      }),
-    ],
-    [
-      "model profile override",
-      bedrockRuntimeConfiguration({
-        agents: {
-          defaults: {
-            model: bedrockModel,
-            models: { [bedrockModel]: { profile: "default", agentRuntime: { id: "openclaw" } } },
-          },
-        },
-      }),
-    ],
-    ["AWS env", bedrockRuntimeConfiguration({ env: { vars: { AWS_PROFILE: "default" } } })],
-  ]) {
-    assert.throws(
-      () =>
-        driver.validateHarnessAuth(
-          name === "dedicated runtime"
-            ? { id: "codex", version: "1.0.0", mode: "dedicated" }
-            : revision.harness,
-          bedrockRuntimeAuth,
-          configuration,
-        ),
-      /incompatible|transport|credentials|Bedrock/i,
-      name,
     );
   }
 });

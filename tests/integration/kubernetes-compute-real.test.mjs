@@ -23,7 +23,6 @@ const execute = promisify(execFile);
 const kubeconfigPath = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;
 const kubernetesContext = process.env.OCC_TEST_KUBERNETES_CONTEXT;
 const fixtureImage = process.env.OCC_TEST_KUBERNETES_IMAGE;
-const fixtureDockerImage = process.env.OCC_TEST_KUBERNETES_DOCKER_IMAGE;
 const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const requested = [kubeconfigPath, kubernetesContext, fixtureImage].some(Boolean);
 const requiresKubernetes = {
@@ -42,8 +41,6 @@ const driverPath = "../../apps/controller/src/drivers/compute/kubernetes/index.t
 const configurationIds = new Map();
 const harnessAuthentication = new Map();
 const sharedWorkspaceSize = "40Gi";
-const bedrockModel = "amazon-bedrock/us.amazon.nova-micro-v1:0";
-const runtimeTransportSecretPrefix = "transport";
 
 function hash(value, length = 12) {
   return sha256Hex(value, length);
@@ -94,174 +91,9 @@ async function waitFor(description, operation, timeoutMs = 120_000) {
   assert.fail(`Timed out waiting for ${description}.`);
 }
 
-async function docker(description, ...args) {
-  try {
-    const { stdout } = await execute("docker", args, { maxBuffer: 4 * 1024 * 1024 });
-    return stdout;
-  } catch (cause) {
-    const error = new Error(`Docker ${description} failed.`, { cause });
-    Error.captureStackTrace(error, docker);
-    throw error;
-  }
-}
-
-async function dockerJson(description, ...args) {
-  return JSON.parse(await docker(description, ...args));
-}
-
 async function assertKubernetesFixtureAvailable() {
   assert.ok(fixtureImage, "OCC_TEST_KUBERNETES_IMAGE is required.");
   await validateExplicitK3dLoopbackContext({ kubeconfigPath, kubernetesContext });
-}
-
-async function k3dNodeContainers() {
-  const match = kubernetesContext?.match(/^k3d-(.+)$/);
-  assert.ok(match, "a dedicated k3d-* context is required");
-  const clusterName = match[1];
-  const names = (
-    await docker(
-      "list k3d node containers",
-      "ps",
-      "--filter",
-      "label=app=k3d",
-      "--filter",
-      `label=k3d.cluster=${clusterName}`,
-      "--format",
-      "{{.Names}}",
-    )
-  )
-    .split("\n")
-    .map((name) => name.trim())
-    .filter(
-      (name) =>
-        name.startsWith(`k3d-${clusterName}-server-`) ||
-        name.startsWith(`k3d-${clusterName}-agent-`),
-    );
-  assert.ok(names.length > 0, `No k3d node containers found for ${kubernetesContext}.`);
-  return names;
-}
-
-function endpointDockerImage() {
-  if (fixtureDockerImage !== undefined && fixtureDockerImage.trim().length > 0) {
-    return fixtureDockerImage;
-  }
-  assert.ok(
-    fixtureImage !== undefined && !fixtureImage.includes("@"),
-    "OCC_TEST_KUBERNETES_DOCKER_IMAGE is required when OCC_TEST_KUBERNETES_IMAGE is an imported cluster digest reference.",
-  );
-  return fixtureImage;
-}
-
-async function createLinkLocalEndpointFixture(context, owner) {
-  const suffix = hash(owner);
-  const network = `openclaw-podid-${suffix}`;
-  const podIdentityContainer = `openclaw-podid-${suffix}`;
-  const imdsContainer = `openclaw-imds-${suffix}`;
-  const podIdentityIp = "169.254.170.23";
-  const imdsIp = "169.254.169.254";
-  const connectedNodes = [];
-  const endpointContainers = [];
-  let networkCreated = false;
-
-  context.after(async () => {
-    await Promise.all(
-      connectedNodes.map((name) =>
-        docker(
-          "disconnect link-local fixture network",
-          "network",
-          "disconnect",
-          network,
-          name,
-        ).catch(() => {}),
-      ),
-    );
-    await Promise.all(
-      endpointContainers.map((name) =>
-        docker("remove link-local endpoint container", "rm", "--force", name).catch(() => {}),
-      ),
-    );
-    if (networkCreated) {
-      await docker("remove link-local fixture network", "network", "rm", network).catch(() => {});
-    }
-  });
-
-  let existingNetwork;
-  try {
-    await docker("inspect link-local fixture network", "network", "inspect", network);
-    existingNetwork = true;
-  } catch {
-    existingNetwork = false;
-  }
-  assert.equal(existingNetwork, false, `Docker network ${network} already exists.`);
-  await docker(
-    "create link-local fixture network",
-    "network",
-    "create",
-    "--internal",
-    "--subnet",
-    "169.254.0.0/16",
-    network,
-  );
-  networkCreated = true;
-
-  for (const name of await k3dNodeContainers()) {
-    await docker(
-      "connect k3d node to link-local fixture network",
-      "network",
-      "connect",
-      network,
-      name,
-    );
-    connectedNodes.push(name);
-  }
-
-  const image = endpointDockerImage();
-  const endpointScript = `
-    import { createServer } from "node:http";
-    for (const port of process.env.OPENCLAW_FIXTURE_PORTS.split(",")) {
-      createServer((_request, response) => {
-        response.writeHead(200, { "content-type": "application/json" });
-        response.end(JSON.stringify({ ready: true, port: Number(port) }));
-      }).listen(Number(port), "0.0.0.0");
-    }
-  `;
-  for (const [name, ip, ports] of [
-    [podIdentityContainer, podIdentityIp, "80,81"],
-    [imdsContainer, imdsIp, "80"],
-  ]) {
-    await docker(
-      "start link-local endpoint container",
-      "run",
-      "--detach",
-      "--name",
-      name,
-      "--pull=never",
-      "--network",
-      network,
-      "--ip",
-      ip,
-      "--user",
-      "0:0",
-      "--env",
-      `OPENCLAW_FIXTURE_PORTS=${ports}`,
-      image,
-      "node",
-      "--input-type=module",
-      "--eval",
-      endpointScript,
-    );
-    endpointContainers.push(name);
-    await waitFor(`Docker endpoint ${name} to keep running`, async () => {
-      const [container] = await dockerJson(
-        "inspect link-local endpoint container",
-        "inspect",
-        name,
-      );
-      return container?.State?.Running === true;
-    });
-  }
-
-  return { podIdentityIp, imdsIp };
 }
 
 function namespace(label) {
@@ -320,74 +152,12 @@ function revision(driver, owner, agentId, number) {
   };
 }
 
-function bedrockRuntimeConfiguration() {
-  return {
-    gateway: { controlUi: { enabled: false } },
-    agents: {
-      defaults: {
-        model: bedrockModel,
-        models: {
-          [bedrockModel]: {
-            alias: "Nova Micro",
-            params: { temperature: 0.1 },
-            agentRuntime: { id: "openclaw" },
-          },
-        },
-      },
-    },
-    models: {
-      providers: {
-        "amazon-bedrock": {
-          baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com",
-          api: "bedrock-converse-stream",
-          auth: "aws-sdk",
-          models: [{ id: "us.amazon.nova-micro-v1:0", name: "Nova Micro" }],
-        },
-      },
-    },
-    logging: {
-      level: "info",
-      consoleLevel: "info",
-      consoleStyle: "json",
-    },
-    diagnostics: { otel: { logs: false } },
-  };
-}
-
 function agentName(agentId) {
   return `agent-${hash(agentId)}`;
 }
 
 function gatewayName(agentId) {
   return `gateway-${hash(agentId)}`;
-}
-
-async function provisionAgentTransportSecret(namespaceName, agentId) {
-  const suffix = hash(agentId);
-  const directory = await mkdtemp(join(tmpdir(), `openclaw-kubernetes-transport-${suffix}-`));
-
-  try {
-    await Promise.all(
-      Object.entries({
-        "app-server-token": randomUUID(),
-        "gateway-token": randomUUID(),
-        "gateway-password": randomUUID(),
-      }).map(([key, value]) => writeFile(join(directory, key), value, { mode: 0o600 })),
-    );
-    await kubectl(
-      "create",
-      "secret",
-      "generic",
-      `${runtimeTransportSecretPrefix}-${suffix}`,
-      "--namespace",
-      namespaceName,
-      `--from-file=app-server-token=${join(directory, "app-server-token")}`,
-      `--from-file=gateway-token=${join(directory, "gateway-token")}`,
-      `--from-file=gateway-password=${join(directory, "gateway-password")}`,
-    );
-  } finally {
-    await rm(directory, { force: true, recursive: true });
-  }
 }
 
 function sharedWorkspaceClaimName(agentId) {
@@ -828,23 +598,15 @@ test(
       "pod/platform-probe",
       "--timeout=120s",
     );
-    // The link-local endpoints run outside Kubernetes on a test-owned Docker
-    // bridge attached to the disposable k3d nodes. This proves CNI egress to the
-    // real destination IPs, not AWS credential issuance or Bedrock execution.
-    const linkLocalEndpoints = await createLinkLocalEndpointFixture(context, installationId);
-    await probe(platformNamespace, "platform-probe", "tcp", linkLocalEndpoints.podIdentityIp, 80);
-    await probe(platformNamespace, "platform-probe", "tcp", linkLocalEndpoints.podIdentityIp, 81);
-    await probe(platformNamespace, "platform-probe", "tcp", linkLocalEndpoints.imdsIp, 80);
 
-    const driverOptions = {
+    const { driver, kubernetesNamespaceName } = await createDriver({
       authentication: controller.authentication,
       network: {
         dns: { namespace: "kube-system", podLabels: { "k8s-app": "kube-dns" } },
         gatewayPort: 8080,
         gatewayClients: [platformPeer],
       },
-    };
-    const { driver, kubernetesNamespaceName } = await createDriver(driverOptions);
+    });
     assert.equal(driver.id, "compute-kubernetes-local");
     assert.equal(driver.implementation, "kubernetes-local");
     // The production preflight must observe the real API server through the same scoped identity
@@ -1232,7 +994,7 @@ test(
       owned[0],
       firstPod.metadata.name,
       "tcp",
-      linkLocalEndpoints.imdsIp,
+      "169.254.169.254",
       80,
     );
     const projectedIdentity = JSON.parse(
@@ -1400,138 +1162,6 @@ test(
       await missing("persistentvolumeclaim", sharedWorkspaceClaimName(embeddedAgent), owned[0]),
       true,
       "embedded Agents must remain unchanged and create no shared workspace claim",
-    );
-
-    const { driver: runtimeDriver } = await createDriver({
-      ...driverOptions,
-      runtime: {
-        transportSecretPrefix: runtimeTransportSecretPrefix,
-        gatewayStorageClassName: "local-path",
-      },
-    });
-    const bedrockAgent = `agt_${randomUUID()}`;
-    await provisionAgentTransportSecret(owned[0], bedrockAgent);
-    const bedrockRuntimeRevision = {
-      ...revision(runtimeDriver, first, bedrockAgent, 1),
-      harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
-      harnessAuth: { method: "runtime" },
-      configuration: bedrockRuntimeConfiguration(),
-    };
-    const runtimeContext = { harnessAuth: { method: "runtime" } };
-    const bedrockPrepare = await runtimeDriver.prepareRevision(
-      bedrockRuntimeRevision,
-      runtimeContext,
-    );
-    assert.equal(
-      Object.hasOwn(bedrockPrepare, "failure"),
-      false,
-      "Bedrock runtime prepare must not fail before the network policy proof",
-    );
-    const bedrockGatewayPod = await waitFor(
-      `Bedrock runtime AgentRevision ${bedrockRuntimeRevision.id} gateway Pod to run`,
-      () =>
-        workloadPod(
-          owned[0],
-          `app.kubernetes.io/name=${gatewayName(bedrockAgent)},openclaw.dev/revision=${bedrockRuntimeRevision.id}`,
-        ),
-    );
-    // Runtime startup owns AWS credential and model readiness. This test only
-    // proves the generated runtime NetworkPolicy against the real Pod selector.
-    await waitFor(
-      "embedded Bedrock runtime gateway to reach the exact EKS Pod Identity endpoint",
-      async () => {
-        try {
-          await probe(
-            owned[0],
-            bedrockGatewayPod.metadata.name,
-            "tcp",
-            linkLocalEndpoints.podIdentityIp,
-            80,
-          );
-          return true;
-        } catch {
-          return false;
-        }
-      },
-      60_000,
-    );
-    await assertDeniedTraffic(
-      "Bedrock runtime gateway Pod Identity wrong-port traffic",
-      owned[0],
-      bedrockGatewayPod.metadata.name,
-      "tcp",
-      linkLocalEndpoints.podIdentityIp,
-      81,
-    );
-    await assertDeniedTraffic(
-      "Bedrock runtime gateway IMDS endpoint traffic",
-      owned[0],
-      bedrockGatewayPod.metadata.name,
-      "tcp",
-      linkLocalEndpoints.imdsIp,
-      80,
-    );
-    const bedrockPolicy = await resource(
-      "networkpolicy",
-      `allow-agent-runtime-${hash(bedrockAgent)}`,
-      owned[0],
-    );
-    assert.deepEqual(
-      bedrockPolicy.spec.egress.find((rule) =>
-        (rule.to ?? []).some(({ ipBlock }) => ipBlock?.cidr === "169.254.170.23/32"),
-      )?.ports,
-      [{ protocol: "TCP", port: 80 }],
-      "Bedrock runtime auth must render only the EKS Pod Identity endpoint allowance",
-    );
-
-    const managedAuthRevision = {
-      ...revision(runtimeDriver, first, bedrockAgent, 2),
-      harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
-    };
-    managedAuthRevision.configuration.agents.defaults.model = "openai/gpt-5";
-    // Reusing the same Agent exercises policy replacement while the old runtime
-    // gateway remains unready: prepare must still reconcile the shared policy.
-    const managedAuthPrepare = await runtimeDriver.prepareRevision(
-      managedAuthRevision,
-      revisionContext(managedAuthRevision),
-    );
-    assert.equal(
-      Object.hasOwn(managedAuthPrepare, "failure"),
-      false,
-      "managed-auth successor prepare must not fail before the policy replacement proof",
-    );
-    // The API update precedes CNI convergence; wait for enforced denial rather
-    // than treating a transient use of the previous allow rule as a failure.
-    await waitFor(
-      "managed-auth embedded gateway Pod Identity endpoint traffic to be denied",
-      async () => {
-        try {
-          await probe(
-            owned[0],
-            bedrockGatewayPod.metadata.name,
-            "tcp",
-            linkLocalEndpoints.podIdentityIp,
-            80,
-          );
-          return false;
-        } catch (error) {
-          assert.equal(error.code, 1, "Pod Identity traffic must be denied by NetworkPolicy");
-          return true;
-        }
-      },
-      60_000,
-    );
-    const managedAuthPolicy = await resource(
-      "networkpolicy",
-      `allow-agent-runtime-${hash(bedrockAgent)}`,
-      owned[0],
-    );
-    assert.equal(
-      managedAuthPolicy.spec.egress.some((rule) =>
-        (rule.to ?? []).some(({ ipBlock }) => ipBlock?.cidr === "169.254.170.23/32"),
-      ),
-      false,
-      "reconciling away from Bedrock runtime auth must remove Pod Identity egress",
     );
 
     await driver.retireRevision(secondRevision);

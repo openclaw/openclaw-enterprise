@@ -960,129 +960,40 @@ function holdFailedAuthentication() {
 // Its JSON status, not its process exit status alone, establishes provider acceptance.
 const OPENCLAW_AUTH_PROBE_HELPERS = String.raw`
 ${AUTH_PROBE_FAILURE_HELPER}
-function writeProbeConfiguration(fs, directory, configuration, options = {}) {
-  configuration.agents.defaults.workspace = directory + "/workspace";
-  if (options.denyTools === true) {
-    configuration.tools = { deny: ["*"] };
-  }
-  fs.mkdirSync(directory + "/workspace", { mode: 0o700 });
-  const configPath = directory + "/openclaw.json";
-  fs.writeFileSync(configPath, JSON.stringify(configuration), { mode: 0o600 });
-  return configPath;
-}
-
-function bedrockCredentialEnvironment(directory, configPath, region) {
-  if (typeof region !== "string" || !/^[a-z0-9-]+$/.test(region)) return undefined;
-  for (const name of ["AWS_REGION", "AWS_DEFAULT_REGION"]) {
-    if (process.env[name]?.trim() && process.env[name] !== region) return undefined;
-  }
-  const credentialsUri = process.env.AWS_CONTAINER_CREDENTIALS_FULL_URI;
-  const tokenFile = process.env.AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE;
-  if (typeof credentialsUri !== "string" || typeof tokenFile !== "string") return undefined;
-  try {
-    const parsed = new URL(credentialsUri);
-    if (parsed.protocol !== "http:" || parsed.hostname !== "169.254.170.23") return undefined;
-    if (parsed.port !== "" && parsed.port !== "80") return undefined;
-  } catch {
-    return undefined;
-  }
-  return {
-    PATH: process.env.PATH,
-    HOME: directory,
-    OPENCLAW_STATE_DIR: directory + "/state",
-    OPENCLAW_CONFIG_PATH: configPath,
-    AWS_REGION: region,
-    AWS_DEFAULT_REGION: region,
-    AWS_CONTAINER_CREDENTIALS_FULL_URI: credentialsUri,
-    AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE: tokenFile,
-  };
-}
-
-function runModelsStatusProbe(spawnSync, directory, configPath, environment, provider) {
-  return spawnSync("node", [
-    "/app/openclaw.mjs", "models", "status", "--json", "--probe",
-    "--probe-provider", provider, "--probe-concurrency", "1",
-    "--probe-timeout", "15000", "--probe-max-tokens", "16",
-  ], {
-    cwd: directory,
-    env: environment,
-    encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
-    timeout: 30000, killSignal: "SIGKILL", maxBuffer: 262144,
-  });
-}
-
-function runBedrockAgentProbe(spawnSync, directory, configPath, environment, model) {
-  return spawnSync("node", [
-    "/app/openclaw.mjs", "agent", "exec", "Reply with READY.",
-    "--config", configPath,
-    "--cwd", directory + "/workspace",
-    "--model", model,
-    "--timeout", "15",
-    "--json",
-  ], {
-    cwd: directory,
-    env: environment,
-    encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
-    timeout: 30000, killSignal: "SIGKILL", maxBuffer: 262144,
-  });
-}
-
-function bedrockAgentProbeSucceeded(stdout, model) {
-  const payload = JSON.parse(stdout);
-  const expectedModel = model.slice("amazon-bedrock/".length);
-  const payloads = Array.isArray(payload.payloads) ? payload.payloads : [];
-  const toolSummary = payload.toolSummary;
-  const toolSummaryText = toolSummary === undefined ? "" : JSON.stringify(toolSummary).toLowerCase();
-  return payload.ok === true &&
-    payload.status === "ok" &&
-    payload.provider === "amazon-bedrock" &&
-    payload.model === expectedModel &&
-    typeof payload.final === "string" &&
-    payload.final.trim().length > 0 &&
-    payload.error === undefined &&
-    payloads.every((entry) => entry?.isError !== true) &&
-    (toolSummary === undefined ||
-      (toolSummary?.calls === 0 &&
-        !toolSummaryText.includes("bridge") &&
-        !toolSummaryText.includes("code")));
-}
-
 function probeOpenClawAuthentication() {
   const fs = require("node:fs");
   const { spawnSync } = require("node:child_process");
   const directory = fs.mkdtempSync("/tmp/openclaw-auth-probe-");
   try {
     const model = process.env.OPENCLAW_HARNESS_MODEL;
+    if (typeof model !== "string" || !model.startsWith("openai/") || !process.env.OPENAI_API_KEY?.trim()) return false;
     const configuration = JSON.parse(process.env.OPENCLAW_HARNESS_PROBE_CONFIG);
     if (configuration.agents?.defaults?.model !== model) return false;
-    if (typeof model !== "string") return false;
-    const provider = model.startsWith("openai/") ? "openai" : model.startsWith("amazon-bedrock/") ? "amazon-bedrock" : undefined;
-    if (provider === undefined) return false;
-    const configPath = writeProbeConfiguration(fs, directory, configuration, { denyTools: provider === "amazon-bedrock" });
-    const environment = provider === "openai"
-      ? (
-          process.env.OPENAI_API_KEY?.trim()
-            ? {
-                PATH: process.env.PATH,
-                HOME: directory,
-                OPENCLAW_STATE_DIR: directory + "/state",
-                OPENCLAW_CONFIG_PATH: configPath,
-                OPENAI_API_KEY: process.env.OPENAI_API_KEY,
-              }
-            : undefined
-        )
-      : bedrockCredentialEnvironment(directory, configPath, process.env.OPENCLAW_HARNESS_PROVIDER_REGION);
-    if (environment === undefined) return false;
-    const result = provider === "openai"
-      ? runModelsStatusProbe(spawnSync, directory, configPath, environment, provider)
-      : runBedrockAgentProbe(spawnSync, directory, configPath, environment, model);
+    configuration.agents.defaults.workspace = directory + "/workspace";
+    fs.mkdirSync(directory + "/workspace", { mode: 0o700 });
+    const configPath = directory + "/openclaw.json";
+    fs.writeFileSync(configPath, JSON.stringify(configuration), { mode: 0o600 });
+    const result = spawnSync("node", [
+      "/app/openclaw.mjs", "models", "status", "--json", "--probe",
+      "--probe-provider", "openai", "--probe-concurrency", "1",
+      "--probe-timeout", "15000", "--probe-max-tokens", "16",
+    ], {
+      cwd: directory,
+      env: {
+        PATH: process.env.PATH,
+        HOME: directory,
+        OPENCLAW_STATE_DIR: directory + "/state",
+        OPENCLAW_CONFIG_PATH: configPath,
+        OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+      },
+      encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+      timeout: 30000, killSignal: "SIGKILL", maxBuffer: 262144,
+    });
     if (result.status !== 0 || result.error) return false;
-    if (provider === "amazon-bedrock") return bedrockAgentProbeSucceeded(result.stdout, model);
     const results = JSON.parse(result.stdout).auth?.probes?.results;
     return Array.isArray(results) && results.length === 1 &&
-      results[0].provider === provider && results[0].model === model &&
-      (provider !== "openai" || results[0].source === "env") &&
-      results[0].status === "ok";
+      results[0].provider === "openai" && results[0].model === model &&
+      results[0].source === "env" && results[0].status === "ok";
   } catch {
     return false;
   } finally {

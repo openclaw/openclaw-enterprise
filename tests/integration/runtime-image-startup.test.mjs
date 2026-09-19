@@ -23,32 +23,6 @@ const imageTestOptions =
       }
     : {};
 
-test("Kubernetes runtime auth probe preserves the bounded Bedrock Pod Identity contract", () => {
-  assert.match(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT, /"models", "status"/);
-  assert.match(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT, /"agent", "exec", "Reply with READY\."/);
-  assert.match(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT, /"--config", configPath/);
-  assert.match(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT, /"--cwd", directory \+ "\/workspace"/);
-  assert.match(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT, /"--timeout", "15"/);
-  assert.match(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT, /amazon-bedrock/);
-  assert.match(
-    KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
-    /configuration\.tools = \{ deny: \["\*"\] \}/,
-  );
-  assert.doesNotMatch(
-    KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
-    /configuration\.agents\.defaults\.tools/,
-  );
-  assert.match(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT, /169\.254\.170\.23/);
-  assert.match(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT, /AWS_CONTAINER_CREDENTIALS_FULL_URI/);
-  assert.match(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT, /AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE/);
-  assert.doesNotMatch(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT, /--isolated/);
-  assert.doesNotMatch(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT, /--auth-env-only/);
-  assert.doesNotMatch(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT, /AWS_ACCESS_KEY_ID/);
-  assert.doesNotMatch(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT, /AWS_SECRET_ACCESS_KEY/);
-  assert.doesNotMatch(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT, /AWS_SESSION_TOKEN/);
-  assert.doesNotMatch(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT, /AWS_PROFILE/);
-});
-
 async function runDocker(args, options = {}) {
   return execute(docker, args, {
     timeout: 60_000,
@@ -234,16 +208,6 @@ function assertBundledSlackPluginLoaded(pluginList) {
   );
   assert.equal(slackPlugin.dependencyStatus?.requiredInstalled, true);
   assert.deepEqual(slackPlugin.dependencyStatus?.missing, []);
-}
-
-function assertBundledBedrockPluginLoaded(pluginList) {
-  const bedrockPlugin = assertBundledPluginLoaded(pluginList, "amazon-bedrock");
-  assert.match(
-    bedrockPlugin.source,
-    /\/app\/node_modules\/openclaw\/dist\/extensions\/amazon-bedrock\/dist\/index\.js$/,
-  );
-  assert.equal(bedrockPlugin.dependencyStatus?.requiredInstalled, true);
-  assert.deepEqual(bedrockPlugin.dependencyStatus?.missing, []);
 }
 
 function assertBundledPluginLoaded(pluginList, pluginId) {
@@ -484,7 +448,6 @@ test(
     assertGatewayReadyLog(entries);
     assertGatewayModelLog(entries, `openai/${runtimeImageModel}`);
     assertBundledSlackPluginLoaded(pluginList);
-    assertBundledBedrockPluginLoaded(pluginList);
     assertNoPackagingFailure(logs);
   },
 );

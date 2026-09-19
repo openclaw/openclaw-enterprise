@@ -4,7 +4,6 @@ FROM ${NODE_BASE_IMAGE}
 ARG OPENCLAW_VERSION=2026.9.1
 ARG OPENCLAW_CODEX_PLUGIN_VERSION=2026.9.1
 ARG OPENCLAW_SLACK_PLUGIN_VERSION=2026.9.1
-ARG OPENCLAW_BEDROCK_PLUGIN_VERSION=2026.9.1
 ARG OPENAI_CODEX_VERSION=0.152.1
 
 ENV NODE_ENV=production
@@ -19,7 +18,6 @@ RUN npm init -y >/dev/null \
     "openclaw@${OPENCLAW_VERSION}" \
     "@openclaw/codex@${OPENCLAW_CODEX_PLUGIN_VERSION}" \
     "@openclaw/slack@${OPENCLAW_SLACK_PLUGIN_VERSION}" \
-    "@openclaw/amazon-bedrock-provider@${OPENCLAW_BEDROCK_PLUGIN_VERSION}" \
     "@openai/codex@${OPENAI_CODEX_VERSION}" \
   && npm cache clean --force
 
@@ -28,7 +26,6 @@ RUN mkdir -p node_modules/openclaw/dist/extensions ./plugin-skills /etc/openclaw
   && chmod 700 /home/node/.codex /home/node/.codex/generated_images \
   && cp -R node_modules/@openclaw/codex node_modules/openclaw/dist/extensions/codex \
   && cp -R node_modules/@openclaw/slack node_modules/openclaw/dist/extensions/slack \
-  && cp -R node_modules/@openclaw/amazon-bedrock-provider node_modules/openclaw/dist/extensions/amazon-bedrock \
   && cp -R node_modules/@openclaw/slack/skills/slack ./plugin-skills/slack \
   && ln -s node_modules/openclaw/openclaw.mjs ./openclaw.mjs \
   && ln -s node_modules/openclaw/dist ./dist \
@@ -43,7 +40,6 @@ RUN mkdir -p node_modules/openclaw/dist/extensions ./plugin-skills /etc/openclaw
   && node /app/openclaw.mjs --version \
   && codex --version \
   && test -f /app/dist/extensions/codex/openclaw.plugin.json \
-  && test -f /app/dist/extensions/slack/openclaw.plugin.json \
-  && test -f /app/dist/extensions/amazon-bedrock/openclaw.plugin.json
+  && test -f /app/dist/extensions/slack/openclaw.plugin.json
 
 USER node

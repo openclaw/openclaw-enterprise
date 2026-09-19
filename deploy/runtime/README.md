@@ -9,14 +9,13 @@ entrypoints:
 
 The Dockerfile installs only public npm packages:
 
-| Input                             | Default                                                                                                      |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `NODE_BASE_IMAGE`                 | `docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584` |
-| `OPENCLAW_VERSION`                | `2026.9.1`                                                                                                   |
-| `OPENCLAW_CODEX_PLUGIN_VERSION`   | `2026.9.1`                                                                                                   |
-| `OPENCLAW_SLACK_PLUGIN_VERSION`   | `2026.9.1`                                                                                                   |
-| `OPENCLAW_BEDROCK_PLUGIN_VERSION` | `2026.9.1`                                                                                                   |
-| `OPENAI_CODEX_VERSION`            | `0.152.1`                                                                                                    |
+| Input                           | Default                                                                                                      |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `NODE_BASE_IMAGE`               | `docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584` |
+| `OPENCLAW_VERSION`              | `2026.9.1`                                                                                                   |
+| `OPENCLAW_CODEX_PLUGIN_VERSION` | `2026.9.1`                                                                                                   |
+| `OPENCLAW_SLACK_PLUGIN_VERSION` | `2026.9.1`                                                                                                   |
+| `OPENAI_CODEX_VERSION`          | `0.152.1`                                                                                                    |
 
 Build it from the repository root:
 
@@ -37,12 +36,10 @@ Kubernetes gateway entrypoint can publish it into the shared runtime-assets
 volume for dedicated Codex Pods. Do not flatten `/app/dist`; OpenClaw resolves
 package-local runtime dependencies from its installed package root.
 
-Codex, Slack, and Amazon Bedrock are packaged under `/app/dist/extensions/`
-with their runtime dependencies. They must load from a fresh runtime home
-without downloading or installing packages at gateway startup. Slack credentials
-remain operator-owned runtime Secrets; do not put them in the image. Bedrock
-uses the AWS SDK credential chain at runtime, so do not bake AWS credentials
-into the image.
+Codex and Slack are packaged under `/app/dist/extensions/` with their runtime
+dependencies. They must load from a fresh runtime home without downloading or
+installing packages at gateway startup. Slack credentials remain operator-owned
+runtime Secrets; do not put them in the image.
 
 When overriding package versions, choose plugins compatible with the selected
 OpenClaw release and a Codex CLI accepted by the installed Codex plugin's runtime
@@ -91,13 +88,12 @@ The smoke starts task-owned containers with the Docker Compute Driver gateway
 entrypoint and the Kubernetes Compute Driver gateway entrypoint, UID
 `1000:1000`, a read-only root filesystem, and tmpfs-backed runtime directories.
 Passing means an embedded OpenClaw gateway reaches `/readyz` from a fresh home,
-the bundled Codex, Slack, and Bedrock plugins load without missing package
-dependencies, the installed Codex plugin successfully initializes the image's
-real Codex app-server, and the Kubernetes dedicated-gateway startup path
-publishes the bundled skills directory into
-`/home/node/openclaw-runtime-assets`. These checks run without external network
-access or provider credentials. They do not make a model call or establish a
-Slack connection.
+the bundled Codex and Slack plugins load without missing package dependencies,
+the installed Codex plugin successfully initializes the image's real Codex
+app-server, and the Kubernetes dedicated-gateway startup path publishes the
+bundled skills directory into `/home/node/openclaw-runtime-assets`. These checks
+run without external network access or provider credentials. They do not make a
+model call or establish a Slack connection.
 
 Before enabling Slack in an Installation, run the
 [live Slack test](../../docs/testing/slack.md#slack) with the verified image, projected

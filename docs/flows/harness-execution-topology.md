@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-09-19
-last_updated_session: codex/01a0b6db-aa20-7650-9ecb-202fe63b6b12
+updated: 2026-09-17
+last_updated_session: codex/01a0acbf-4d5a-7413-9411-dce911f3ad23
 ---
 
 # Harness Execution Topology Flow
@@ -89,20 +89,9 @@ for admission, immutable source snapshots, and worker reauthorization.
 Production dedicated workloads keep separate Agent-owned gateway/Codex
 ServiceAccounts, authenticated same-Agent transport, and default-deny network
 policies with auth-method-specific provider login egress. Embedded OpenClaw uses
-one combined workload with its exact Agent identity and selected model credentials. The worker
+one combined workload with its exact Agent identity and model key. The worker
 has no direct Secret API permissions, although its trusted workload-writing
 authority can indirectly project tenant Secrets.
-
-`apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.agentNetworkPolicies`
-
-For embedded Bedrock runtime authentication, the generated Agent runtime policy
-adds the narrow EKS Pod Identity credential-endpoint allowance defined in
-[Kubernetes networking](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking).
-The worker applies the policy during revision preparation before starting the
-workload. The embedded startup probe obtains workload credentials and executes
-a bounded Bedrock model turn; credential or model failure keeps the gateway
-unready. EC2 instance metadata stays blocked, and the allowance is absent for
-managed API-key and dedicated workloads.
 
 The selected Sandbox consumes the same rendered projections and explicit login
 mode in `HarnessWorkloadRequirements`. Unsupported upstream projection fails
@@ -206,8 +195,6 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
-
-- 2026-09-19 07:47: Trace driver-owned EKS Pod Identity egress for embedded Bedrock runtime authentication. (01a0b6db-aa20-7650-9ecb-202fe63b6b12 - 372d70e12934d06649a0e8a6d9c15fdb481b4d8a)
 
 - 2026-09-17 19:14: Distinguish SSH operator credentials from Kubernetes managed authentication. (01a0acbf-4d5a-7413-9411-dce911f3ad23 - b8cabaf9a49e069a7668ccf88b9e71a7484227b7)
 

@@ -45,8 +45,7 @@ Choose the guide for your cluster:
   VPC networking, EBS/EFS storage, and optional RDS PostgreSQL.
 
 Both paths use the same Helm chart and shared installation procedure. Cluster
-hosting does not select the Agent model provider; EKS requires no Bedrock setup
-or special Helm deployment flag.
+hosting does not select the Agent model provider.
 
 ### Production prerequisites
 
