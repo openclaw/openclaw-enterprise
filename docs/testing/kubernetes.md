@@ -40,6 +40,16 @@ NetworkPolicies. They create scoped RBAC and resources, and configure the
 selected cluster's local-path provisioner for shared filesystem tests. Because
 that changes cluster-wide storage configuration, use a disposable cluster.
 
+The lifecycle case also starts TCP endpoint containers on a temporary Docker
+link-local network connected to that cluster's nodes. It verifies the exact
+Pod Identity endpoint allowance, wrong-port and IMDS denial, and removal of the
+allowance when the same Agent switches to API-key authentication. This proves
+network enforcement, not AWS credential issuance or a Bedrock model turn.
+When `OCC_TEST_KUBERNETES_IMAGE` is an alias registered only inside k3s, set
+`OCC_TEST_KUBERNETES_DOCKER_IMAGE` to the corresponding local Docker image ID.
+CI supplies that ID from its image-import preparation. Manual runs using a
+local tag such as `oce-fixture:local` can use that tag for both runtimes.
+
 ### Fixture images and security controls
 
 The disposable `tests/fixtures/kubernetes` image runs as nonroot and uses the

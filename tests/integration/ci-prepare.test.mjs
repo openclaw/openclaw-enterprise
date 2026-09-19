@@ -301,12 +301,11 @@ for (const { scenario, error } of [
       const expected = `localhost/${cluster.name}/fixture@sha256:${"c".repeat(64)}`;
       assert.equal(importedImage.reference, expected);
       assert.equal(state.env.OCC_TEST_KUBERNETES_IMAGE, expected);
+      assert.equal(state.env.OCC_TEST_KUBERNETES_DOCKER_IMAGE, `sha256:${"b".repeat(64)}`);
       assert.equal(state.env.OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS, "10.42.3.0/32");
-      assert.ok(
-        (await readFile(commands.githubEnv, "utf8"))
-          .split("\n")
-          .includes(`OCC_TEST_KUBERNETES_IMAGE=${expected}`),
-      );
+      const published = (await readFile(commands.githubEnv, "utf8")).split("\n");
+      assert.ok(published.includes(`OCC_TEST_KUBERNETES_IMAGE=${expected}`));
+      assert.ok(published.includes(`OCC_TEST_KUBERNETES_DOCKER_IMAGE=sha256:${"b".repeat(64)}`));
       for (const suffix of ["server-0", "agent-0"]) {
         assert.ok(
           preparation.some(

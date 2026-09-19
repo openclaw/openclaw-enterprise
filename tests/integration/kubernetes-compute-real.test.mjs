@@ -23,6 +23,7 @@ const execute = promisify(execFile);
 const kubeconfigPath = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;
 const kubernetesContext = process.env.OCC_TEST_KUBERNETES_CONTEXT;
 const fixtureImage = process.env.OCC_TEST_KUBERNETES_IMAGE;
+const fixtureDockerImage = process.env.OCC_TEST_KUBERNETES_DOCKER_IMAGE;
 const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const requested = [kubeconfigPath, kubernetesContext, fixtureImage].some(Boolean);
 const requiresKubernetes = {
@@ -92,13 +93,19 @@ async function waitFor(description, operation, timeoutMs = 120_000) {
   assert.fail(`Timed out waiting for ${description}.`);
 }
 
-async function docker(...args) {
-  const { stdout } = await execute("docker", args, { maxBuffer: 4 * 1024 * 1024 });
-  return stdout;
+async function docker(description, ...args) {
+  try {
+    const { stdout } = await execute("docker", args, { maxBuffer: 4 * 1024 * 1024 });
+    return stdout;
+  } catch (cause) {
+    const error = new Error(`Docker ${description} failed.`, { cause });
+    Error.captureStackTrace(error, docker);
+    throw error;
+  }
 }
 
-async function dockerJson(...args) {
-  return JSON.parse(await docker(...args));
+async function dockerJson(description, ...args) {
+  return JSON.parse(await docker(description, ...args));
 }
 
 async function assertKubernetesFixtureAvailable() {
@@ -112,6 +119,7 @@ async function k3dNodeContainers() {
   const clusterName = match[1];
   const names = (
     await docker(
+      "list k3d node containers",
       "ps",
       "--filter",
       "label=app=k3d",
@@ -132,6 +140,17 @@ async function k3dNodeContainers() {
   return names;
 }
 
+function endpointDockerImage() {
+  if (fixtureDockerImage !== undefined && fixtureDockerImage.trim().length > 0) {
+    return fixtureDockerImage;
+  }
+  assert.ok(
+    fixtureImage !== undefined && !fixtureImage.includes("@"),
+    "OCC_TEST_KUBERNETES_DOCKER_IMAGE is required when OCC_TEST_KUBERNETES_IMAGE is an imported cluster digest reference.",
+  );
+  return fixtureImage;
+}
+
 async function createLinkLocalEndpointFixture(context, owner) {
   const suffix = hash(owner);
   const network = `openclaw-podid-${suffix}`;
@@ -145,32 +164,57 @@ async function createLinkLocalEndpointFixture(context, owner) {
 
   context.after(async () => {
     await Promise.all(
-      connectedNodes.map((name) => docker("network", "disconnect", network, name).catch(() => {})),
+      connectedNodes.map((name) =>
+        docker(
+          "disconnect link-local fixture network",
+          "network",
+          "disconnect",
+          network,
+          name,
+        ).catch(() => {}),
+      ),
     );
     await Promise.all(
-      endpointContainers.map((name) => docker("rm", "--force", name).catch(() => {})),
+      endpointContainers.map((name) =>
+        docker("remove link-local endpoint container", "rm", "--force", name).catch(() => {}),
+      ),
     );
     if (networkCreated) {
-      await docker("network", "rm", network).catch(() => {});
+      await docker("remove link-local fixture network", "network", "rm", network).catch(() => {});
     }
   });
 
   let existingNetwork;
   try {
-    await docker("network", "inspect", network);
+    await docker("inspect link-local fixture network", "network", "inspect", network);
     existingNetwork = true;
   } catch {
     existingNetwork = false;
   }
   assert.equal(existingNetwork, false, `Docker network ${network} already exists.`);
-  await docker("network", "create", "--internal", "--subnet", "169.254.0.0/16", network);
+  await docker(
+    "create link-local fixture network",
+    "network",
+    "create",
+    "--internal",
+    "--subnet",
+    "169.254.0.0/16",
+    network,
+  );
   networkCreated = true;
 
   for (const name of await k3dNodeContainers()) {
-    await docker("network", "connect", network, name);
+    await docker(
+      "connect k3d node to link-local fixture network",
+      "network",
+      "connect",
+      network,
+      name,
+    );
     connectedNodes.push(name);
   }
 
+  const image = endpointDockerImage();
   const endpointScript = `
     import { createServer } from "node:http";
     for (const port of process.env.OPENCLAW_FIXTURE_PORTS.split(",")) {
@@ -185,10 +229,12 @@ async function createLinkLocalEndpointFixture(context, owner) {
     [imdsContainer, imdsIp, "80"],
   ]) {
     await docker(
+      "start link-local endpoint container",
       "run",
       "--detach",
       "--name",
       name,
+      "--pull=never",
       "--network",
       network,
       "--ip",
@@ -197,7 +243,7 @@ async function createLinkLocalEndpointFixture(context, owner) {
       "0:0",
       "--env",
       `OPENCLAW_FIXTURE_PORTS=${ports}`,
-      fixtureImage,
+      image,
       "node",
       "--input-type=module",
       "--eval",
@@ -205,7 +251,11 @@ async function createLinkLocalEndpointFixture(context, owner) {
     );
     endpointContainers.push(name);
     await waitFor(`Docker endpoint ${name} to keep running`, async () => {
-      const [container] = await dockerJson("inspect", name);
+      const [container] = await dockerJson(
+        "inspect link-local endpoint container",
+        "inspect",
+        name,
+      );
       return container?.State?.Running === true;
     });
   }
@@ -1413,13 +1463,26 @@ test(
       `app.kubernetes.io/name=${gatewayName(bedrockAgent)}`,
     );
     assert.ok(managedAuthGatewayPod);
-    await assertDeniedTraffic(
-      "managed-auth embedded gateway Pod Identity endpoint traffic",
-      owned[0],
-      managedAuthGatewayPod.metadata.name,
-      "tcp",
-      linkLocalEndpoints.podIdentityIp,
-      80,
+    // The API update precedes CNI convergence; wait for enforced denial rather
+    // than treating a transient use of the previous allow rule as a failure.
+    await waitFor(
+      "managed-auth embedded gateway Pod Identity endpoint traffic to be denied",
+      async () => {
+        try {
+          await probe(
+            owned[0],
+            managedAuthGatewayPod.metadata.name,
+            "tcp",
+            linkLocalEndpoints.podIdentityIp,
+            80,
+          );
+          return false;
+        } catch (error) {
+          assert.equal(error.code, 1, "Pod Identity traffic must be denied by NetworkPolicy");
+          return true;
+        }
+      },
+      60_000,
     );
     const managedAuthPolicy = await resource(
       "networkpolicy",
