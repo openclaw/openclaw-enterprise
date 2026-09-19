@@ -99,7 +99,8 @@ then resume the production installation sequence with the generated YAML copies.
 Inventory tenant workloads before uninstalling the control plane:
 
 ```bash
-helm uninstall oce --namespace openclaw-system
+helm uninstall oce --namespace openclaw-system \
+  --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CONTEXT"
 ```
 
 Helm does not own external PostgreSQL, operator-created Secrets, bootstrap PVCs,

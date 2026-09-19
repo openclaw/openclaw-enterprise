@@ -6,7 +6,8 @@ Kubernetes, use the [Amazon EKS guide](eks.md).
 
 ## Prepare the cluster
 
-Use Kubernetes 1.35 or later with enforcing NetworkPolicies and the tools in
+Use Kubernetes 1.35 or later with IPv4 connectivity for the chart's explicit
+`/32` database and API egress rules, enforcing NetworkPolicies, and the tools in
 [production prerequisites](../deploy.md#production-prerequisites). One cluster
 can host OCC and Agent workloads: OCC runs in `openclaw-system`, and Compute
 creates isolated tenant namespaces. Separate control and runtime node pools
@@ -49,7 +50,8 @@ Provide these cluster services before installing OCC:
 Follow the [storage contract](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
 when choosing disks. A NetworkPolicy object alone is not proof of enforcement:
 verify allowed and denied traffic with your CNI before placing tenant workloads.
-Record the DNS Pod selectors, exact database destinations, and Kubernetes API
+Record the DNS Pod selectors for both Helm `dns` and Installation Compute
+`network.dns`, exact database destinations, and Kubernetes API
 addresses and ports as observed from controller Pods. These become the shared
 installation's network settings; do not substitute whole cluster or VPC ranges.
 See [networking and isolation](../../reference/drivers/kubernetes-compute/networking-and-isolation.md).

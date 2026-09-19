@@ -2,7 +2,8 @@
 
 Build and install OCC on Kubernetes, then verify authenticated API access.
 Prepare [standard Kubernetes](kubernetes.md) or [Amazon EKS](eks.md) and
-complete the [production prerequisites](../deploy.md#production-prerequisites) first. Run commands from the repository root in one operator shell; retain its
+complete the [production prerequisites](../deploy.md#production-prerequisites)
+first. Run commands from the repository root in one operator shell; retain its
 exports and protected files for [Agent deployment](production-agents.md).
 
 ## Build and publish production images
@@ -23,6 +24,11 @@ registry and repository, and select the platform matching your Kubernetes
 nodes. The base image below matches the [runtime recipe](../../../deploy/runtime/README.md),
 which also documents package-version overrides.
 
+Authenticate the builder before running the build block. For a standard registry,
+run `docker login <registry-host>` using your approved credentials; for private
+ECR, follow [ECR authentication](eks.md#authenticate-the-image-builder-to-ecr).
+Keep any registry and platform exports from that step.
+
 The runtime must include the channel plugins its Agents enable, with their
 runtime dependencies available from a fresh home directory. The standard recipe
 packages Slack and Codex. Verify plugin loading and the gateway's supported
@@ -33,11 +39,11 @@ verified the gateway/Codex image pair. Runtime package installation at gateway
 startup is not part of this deployment procedure.
 
 ```bash
-export OCC_IMAGE_REPOSITORY='registry.example.com/your-team/openclaw-enterprise'
+export OCC_IMAGE_REGISTRY="${OCC_IMAGE_REGISTRY:-registry.example.com}"
+export OCC_IMAGE_REPOSITORY="${OCC_IMAGE_REPOSITORY:-$OCC_IMAGE_REGISTRY/your-team/openclaw-enterprise}"
 export OCC_IMAGE_TAG="$(git rev-parse HEAD)"
-export OCC_IMAGE_PLATFORM='linux/amd64'
+export OCC_IMAGE_PLATFORM="${OCC_IMAGE_PLATFORM:-linux/amd64}"
 export NODE_BASE_IMAGE='docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584'
-docker login registry.example.com
 
 docker buildx build --push --platform "$OCC_IMAGE_PLATFORM" --target runtime \
   --build-arg NODE_BASE_IMAGE="$NODE_BASE_IMAGE" \
@@ -121,8 +127,10 @@ Edit the protected YAML copies before provisioning anything:
 
 - `$OCC_INPUT_DIRECTORY/values.yaml`: set `images.controller`,
   `auth.baseUrl`, `bootstrap.adminEmail`, `database.cidrs`, `cluster.cidrs`,
-  `controlPlane.nodeSelector`, `database.caSecretName`, `api.clients`, and
-  `bootstrap.password.claimName` with reviewed site values.
+  `controlPlane.nodeSelector`, `database.caSecretName`, `dns`, `api.clients`, and
+  `bootstrap.password.claimName` with reviewed site values. Keep the example
+  startup, database, and auth Secret names and keys for the commands below;
+  if you customize them, update the corresponding Secret creation commands.
 - `$OCC_INPUT_DIRECTORY/installation.yaml`: set `occ.cluster`, `logging.level`,
   `drivers.compute.configuration.images` digests, DNS and gateway-client
   selectors, service-principal token settings, runtime selector, Secret
@@ -181,8 +189,10 @@ or a variable name such as `OCC_DATABASE_URL=`.
 Save the two complete database URLs using your secret manager or a protected
 editor, replacing the example placeholders and preserving provider-required TLS
 options. For managed PostgreSQL roots supplied through `database.caSecretName`,
-append `sslmode=verify-full&sslrootcert=/etc/openclaw/database-ca/ca.pem` to
-both URLs. Generate the auth secret for a new Installation; this command refuses
+set `sslmode=verify-full` and `sslrootcert` to the mounted CA file in both URLs.
+With the example mount settings, the path is `/etc/openclaw/database-ca/ca.pem`;
+if you change them, use `<database.caMountPath>/<database.caKey>`. Introduce URL
+query parameters with `?`, or join them to existing parameters with `&`. Generate the auth secret for a new Installation; this command refuses
 to overwrite an existing file:
 
 ```bash
