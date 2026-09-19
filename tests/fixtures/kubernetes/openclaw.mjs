@@ -17,7 +17,9 @@ function fail(message) {
 function parsePort(args) {
   const index = args.indexOf("--port");
   const value = index === -1 ? undefined : args[index + 1];
-  if (value === undefined || !/^[0-9]+$/.test(value)) fail("gateway port is missing");
+  if (value === undefined || !/^[0-9]+$/.test(value)) {
+    fail("gateway port is missing");
+  }
   return Number(value);
 }
 
@@ -104,7 +106,12 @@ function handleModels(args) {
 }
 
 const [command, ...args] = process.argv.slice(2);
-if (command === "gateway") startGateway(args);
-else if (command === "plugins") handlePlugins(args);
-else if (command === "models") handleModels(args);
-else fail(`unsupported fixture command: ${command ?? "missing"}`);
+if (command === "gateway") {
+  startGateway(args);
+} else if (command === "plugins") {
+  handlePlugins(args);
+} else if (command === "models") {
+  handleModels(args);
+} else {
+  fail(`unsupported fixture command: ${command ?? "missing"}`);
+}

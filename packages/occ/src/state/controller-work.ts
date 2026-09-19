@@ -103,7 +103,9 @@ export function validateFailureData(
   reasonCode: string,
   data: unknown,
 ): Readonly<Record<string, unknown>> | undefined {
-  if (data === undefined) return undefined;
+  if (data === undefined) {
+    return undefined;
+  }
   if (reasonCode === "CONVERGENCE_DEADLINE_EXCEEDED") {
     if (typeof data !== "object" || data === null || Array.isArray(data)) {
       throw new ScopeViolationError("Convergence deadline failure data must be an object.");
@@ -145,7 +147,9 @@ function validatePluginWarning(value: unknown): PluginDeploymentWarning {
 export function validatePluginWarnings(
   warnings: unknown,
 ): readonly PluginDeploymentWarning[] | undefined {
-  if (warnings === undefined) return undefined;
+  if (warnings === undefined) {
+    return undefined;
+  }
   if (!Array.isArray(warnings)) {
     throw new ScopeViolationError("Plugin deployment warnings must be an array.");
   }
@@ -164,7 +168,9 @@ export function validatePluginWarnings(
 export function deploymentErrorForWork(
   work: Readonly<ControllerWork>,
 ): DeploymentStatusError | null {
-  if (work.state !== "failed_permanent" && !completedWithoutActivation(work)) return null;
+  if (work.state !== "failed_permanent" && !completedWithoutActivation(work)) {
+    return null;
+  }
   const code = work.reasonCode ?? "UNKNOWN_FAILURE";
   const data =
     work.errorData === undefined
@@ -180,7 +186,9 @@ export function deploymentErrorForWork(
 export function deploymentWarningsForWork(
   work: Readonly<ControllerWork>,
 ): readonly PluginDeploymentWarning[] {
-  if (work.state !== "succeeded" || work.pluginWarnings === undefined) return Object.freeze([]);
+  if (work.state !== "succeeded" || work.pluginWarnings === undefined) {
+    return Object.freeze([]);
+  }
   return validatePluginWarnings(immutableCopy(work.pluginWarnings)) ?? Object.freeze([]);
 }
 
@@ -188,8 +196,12 @@ export function controllerWorkDeploymentStatus(
   work: Readonly<ControllerWork>,
   now: Date = new Date(),
 ): DeploymentStatus {
-  if (work.state === "succeeded") return completedWithoutActivation(work) ? "failed" : "succeeded";
-  if (work.state === "failed_permanent") return "failed";
+  if (work.state === "succeeded") {
+    return completedWithoutActivation(work) ? "failed" : "succeeded";
+  }
+  if (work.state === "failed_permanent") {
+    return "failed";
+  }
   if (work.state === "claimed") {
     if (work.leaseExpiresAt !== undefined && work.leaseExpiresAt.getTime() > now.getTime()) {
       return "running";

@@ -1723,7 +1723,9 @@ test(
       ...fixture.compute,
       async prepareRevision(revision) {
         prepared.push(revision.id);
-        if (revision.id !== candidate.id) return fixture.compute.prepareRevision(revision);
+        if (revision.id !== candidate.id) {
+          return fixture.compute.prepareRevision(revision);
+        }
         return {
           namespaceId: revision.namespaceId,
           agentId: revision.agentId,

@@ -69,7 +69,9 @@ async function waitForCondition(description, condition) {
   const deadline = Date.now() + 1_000;
   while (Date.now() < deadline) {
     const result = await condition();
-    if (result !== undefined && result !== false) return result;
+    if (result !== undefined && result !== false) {
+      return result;
+    }
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   assert.fail(`Timed out waiting for ${description}.`);
@@ -307,7 +309,9 @@ result.value = installOpenClawPlugins(${JSON.stringify(runtime)}, ${JSON.stringi
       sandbox,
     );
   } catch (error) {
-    if (options.captureError === true) return { calls, files, error };
+    if (options.captureError === true) {
+      return { calls, files, error };
+    }
     throw error;
   }
   return { calls, files, value: sandbox.result.value };
@@ -502,14 +506,18 @@ installCodexPlugins(
       sandbox,
     );
   } catch (error) {
-    if (options.captureError === true) return { requests, sockets, files, error };
+    if (options.captureError === true) {
+      return { requests, sockets, files, error };
+    }
     throw error;
   }
   try {
     const value = await completion;
     return { requests, sockets, files, value };
   } catch (error) {
-    if (options.captureError === true) return { requests, sockets, files, error };
+    if (options.captureError === true) {
+      return { requests, sockets, files, error };
+    }
     throw error;
   }
 }
@@ -678,15 +686,25 @@ test("Codex runtime helper reports plugin install warnings without retrying", as
   const result = await runCodexRuntimeHelper(
     runtime,
     (method) => {
-      if (method === "initialize") return { serverInfo: { name: "codex", version: "0.149.0" } };
-      if (method === "plugin/list") return codexListResponse();
+      if (method === "initialize") {
+        return { serverInfo: { name: "codex", version: "0.149.0" } };
+      }
+      if (method === "plugin/list") {
+        return codexListResponse();
+      }
       if (method === "plugin/read") {
         readCount += 1;
         return codexReadResponse({ installed: readCount > 1, enabled: readCount > 1 });
       }
-      if (method === "config/batchWrite") return { status: "ok", version: "test-config-1" };
-      if (method === "plugin/install") throw new Error("native install rejected");
-      if (method === "config/read") return codexConfigReadResponse({ enabled: false });
+      if (method === "config/batchWrite") {
+        return { status: "ok", version: "test-config-1" };
+      }
+      if (method === "plugin/install") {
+        throw new Error("native install rejected");
+      }
+      if (method === "config/read") {
+        return codexConfigReadResponse({ enabled: false });
+      }
       throw new Error(`unexpected request ${method}`);
     },
     {
@@ -729,10 +747,18 @@ test("Codex runtime helper reports connector-auth warnings with the admitted key
   const result = await runCodexRuntimeHelper(
     runtime,
     (method) => {
-      if (method === "initialize") return { serverInfo: { name: "codex", version: "0.149.0" } };
-      if (method === "plugin/list") return codexListResponse();
-      if (method === "plugin/read") return codexReadResponse();
-      if (method === "config/batchWrite") return { status: "ok", version: "test-config-1" };
+      if (method === "initialize") {
+        return { serverInfo: { name: "codex", version: "0.149.0" } };
+      }
+      if (method === "plugin/list") {
+        return codexListResponse();
+      }
+      if (method === "plugin/read") {
+        return codexReadResponse();
+      }
+      if (method === "config/batchWrite") {
+        return { status: "ok", version: "test-config-1" };
+      }
       if (method === "plugin/install") {
         return {
           authPolicy: "ON_USE",
@@ -745,7 +771,9 @@ test("Codex runtime helper reports connector-auth warnings with the admitted key
           ],
         };
       }
-      if (method === "config/read") return codexConfigReadResponse({ enabled: false });
+      if (method === "config/read") {
+        return codexConfigReadResponse({ enabled: false });
+      }
       throw new Error(`unexpected request ${method}`);
     },
     {
@@ -791,10 +819,18 @@ test("Codex runtime helper keeps malformed matching install responses generic", 
       const result = await runCodexRuntimeHelper(
         runtime,
         (method, _params, requestId) => {
-          if (method === "initialize") return { serverInfo: { name: "codex", version: "0.149.0" } };
-          if (method === "plugin/list") return codexListResponse();
-          if (method === "plugin/read") return codexReadResponse();
-          if (method === "config/batchWrite") return { status: "ok", version: "test-config-1" };
+          if (method === "initialize") {
+            return { serverInfo: { name: "codex", version: "0.149.0" } };
+          }
+          if (method === "plugin/list") {
+            return codexListResponse();
+          }
+          if (method === "plugin/read") {
+            return codexReadResponse();
+          }
+          if (method === "config/batchWrite") {
+            return { status: "ok", version: "test-config-1" };
+          }
           if (method === "plugin/install") {
             return { __rawMessage: response(requestId) };
           }
@@ -821,9 +857,15 @@ test("Codex runtime helper keeps pre-install native uncertainty generic", async 
   const result = await runCodexRuntimeHelper(
     runtime,
     (method) => {
-      if (method === "initialize") return { serverInfo: { name: "codex", version: "0.149.0" } };
-      if (method === "plugin/list") return codexListResponse();
-      if (method === "plugin/read") throw new Error("catalog read unavailable");
+      if (method === "initialize") {
+        return { serverInfo: { name: "codex", version: "0.149.0" } };
+      }
+      if (method === "plugin/list") {
+        return codexListResponse();
+      }
+      if (method === "plugin/read") {
+        throw new Error("catalog read unavailable");
+      }
       throw new Error(`unexpected request ${method}`);
     },
     {
@@ -1523,8 +1565,12 @@ test("embedded plugin preparation applies runtime egress before gateway readines
         }
       : undefined;
   driver.getOwned = async (kind, name) => {
-    if (kind === "NetworkPolicy") return defaultPolicies.get(name);
-    if (kind === "ConfigMap") return configMaps.get(name);
+    if (kind === "NetworkPolicy") {
+      return defaultPolicies.get(name);
+    }
+    if (kind === "ConfigMap") {
+      return configMaps.get(name);
+    }
     return undefined;
   };
   driver.reconcile = async (object) => {
@@ -1697,7 +1743,9 @@ test("Kubernetes plugin runtime status requires the exact ready Pod report", asy
         core: {
           listNamespacedPod: async () => ({ apiVersion: "v1", kind: "PodList", items: [pod] }),
           connectGetNamespacedPodProxyWithPath: async () => {
-            if (response instanceof Error) throw response;
+            if (response instanceof Error) {
+              throw response;
+            }
             return response;
           },
         },
@@ -1908,7 +1956,9 @@ test("Codex agent app-server uses a per-startup plugin status token", () => {
             mkdirSync() {},
             mkdtempSync,
             readFileSync(path) {
-              if (!files.has(path)) throw new Error(`Missing mocked file: ${path}`);
+              if (!files.has(path)) {
+                throw new Error(`Missing mocked file: ${path}`);
+              }
               return files.get(path);
             },
             rmSync(path) {
@@ -2058,7 +2108,9 @@ test("Codex gateway supervisor exits when the peer Agent plugin failure set chan
             },
             mkdirSync() {},
             readFileSync(path) {
-              if (!files.has(path)) throw new Error(`Missing mocked file: ${path}`);
+              if (!files.has(path)) {
+                throw new Error(`Missing mocked file: ${path}`);
+              }
               return files.get(path);
             },
             writeFileSync(path, data) {
@@ -2225,7 +2277,9 @@ test("Kubernetes dedicated successor readiness preserves the stable Agent Servic
         }
       : undefined;
   driver.getOwned = async (kind, name) => {
-    if (kind === "NetworkPolicy") return defaultPolicies.get(name);
+    if (kind === "NetworkPolicy") {
+      return defaultPolicies.get(name);
+    }
     if (kind === "Deployment" && name.startsWith("gateway-")) {
       return {
         ...driver.manifest(

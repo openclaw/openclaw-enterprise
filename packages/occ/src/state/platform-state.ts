@@ -506,8 +506,9 @@ function agentKey(namespaceId: string, agentId: string): string {
 }
 
 function operationIdempotencyKey(operation: Readonly<PlatformOperation>): string {
-  if (operation.kind === "agent")
+  if (operation.kind === "agent") {
     return `agent:${operation.resourceId}:${operation.action}:${operation.target}:${operation.operationId}`;
+  }
   return `${operation.kind}:${operation.resourceId}:${operation.action}${
     operation.kind === "namespace" ? `:${operation.target}` : ""
   }`;
@@ -1425,7 +1426,9 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
         const operation = snapshot.operations.find(
           (candidate) => operationIdempotencyKey(candidate) === idempotencyKey,
         );
-        if (operation === undefined) return undefined;
+        if (operation === undefined) {
+          return undefined;
+        }
         const now = new Date(0);
         const revisionOwner =
           operation.kind === "agent_revision"

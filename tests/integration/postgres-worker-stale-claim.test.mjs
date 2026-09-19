@@ -296,7 +296,9 @@ test(
     let worker;
     context.after(async () => {
       releasePreparation.resolve();
-      if (worker !== undefined) await worker.stop();
+      if (worker !== undefined) {
+        await worker.stop();
+      }
       await observerPool.end();
       await recoveryPool.end();
     });
