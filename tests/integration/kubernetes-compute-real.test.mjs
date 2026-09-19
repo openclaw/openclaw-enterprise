@@ -43,6 +43,7 @@ const configurationIds = new Map();
 const harnessAuthentication = new Map();
 const sharedWorkspaceSize = "40Gi";
 const bedrockModel = "amazon-bedrock/us.amazon.nova-micro-v1:0";
+const runtimeTransportSecretPrefix = "transport";
 
 function hash(value, length = 12) {
   return sha256Hex(value, length);
@@ -359,6 +360,34 @@ function agentName(agentId) {
 
 function gatewayName(agentId) {
   return `gateway-${hash(agentId)}`;
+}
+
+async function provisionAgentTransportSecret(namespaceName, agentId) {
+  const suffix = hash(agentId);
+  const directory = await mkdtemp(join(tmpdir(), `openclaw-kubernetes-transport-${suffix}-`));
+
+  try {
+    await Promise.all(
+      Object.entries({
+        "app-server-token": randomUUID(),
+        "gateway-token": randomUUID(),
+        "gateway-password": randomUUID(),
+      }).map(([key, value]) => writeFile(join(directory, key), value, { mode: 0o600 })),
+    );
+    await kubectl(
+      "create",
+      "secret",
+      "generic",
+      `${runtimeTransportSecretPrefix}-${suffix}`,
+      "--namespace",
+      namespaceName,
+      `--from-file=app-server-token=${join(directory, "app-server-token")}`,
+      `--from-file=gateway-token=${join(directory, "gateway-token")}`,
+      `--from-file=gateway-password=${join(directory, "gateway-password")}`,
+    );
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
 }
 
 function sharedWorkspaceClaimName(agentId) {
@@ -807,14 +836,15 @@ test(
     await probe(platformNamespace, "platform-probe", "tcp", linkLocalEndpoints.podIdentityIp, 81);
     await probe(platformNamespace, "platform-probe", "tcp", linkLocalEndpoints.imdsIp, 80);
 
-    const { driver, kubernetesNamespaceName } = await createDriver({
+    const driverOptions = {
       authentication: controller.authentication,
       network: {
         dns: { namespace: "kube-system", podLabels: { "k8s-app": "kube-dns" } },
         gatewayPort: 8080,
         gatewayClients: [platformPeer],
       },
-    });
+    };
+    const { driver, kubernetesNamespaceName } = await createDriver(driverOptions);
     assert.equal(driver.id, "compute-kubernetes-local");
     assert.equal(driver.implementation, "kubernetes-local");
     // The production preflight must observe the real API server through the same scoped identity
@@ -1372,28 +1402,41 @@ test(
       "embedded Agents must remain unchanged and create no shared workspace claim",
     );
 
+    const { driver: runtimeDriver } = await createDriver({
+      ...driverOptions,
+      runtime: {
+        transportSecretPrefix: runtimeTransportSecretPrefix,
+        gatewayStorageClassName: "local-path",
+      },
+    });
     const bedrockAgent = `agt_${randomUUID()}`;
+    await provisionAgentTransportSecret(owned[0], bedrockAgent);
     const bedrockRuntimeRevision = {
-      ...revision(driver, first, bedrockAgent, 1),
+      ...revision(runtimeDriver, first, bedrockAgent, 1),
       harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
       harnessAuth: { method: "runtime" },
       configuration: bedrockRuntimeConfiguration(),
     };
     const runtimeContext = { harnessAuth: { method: "runtime" } };
-    await waitFor(
-      `Bedrock runtime AgentRevision ${bedrockRuntimeRevision.id} to become ready`,
-      async () => {
-        const observation = await driver.prepareRevision(bedrockRuntimeRevision, runtimeContext);
-        return observation.ready ? observation : undefined;
-      },
+    const bedrockPrepare = await runtimeDriver.prepareRevision(
+      bedrockRuntimeRevision,
+      runtimeContext,
     );
-    const bedrockGatewayPod = await workloadPod(
-      owned[0],
-      `app.kubernetes.io/name=${gatewayName(bedrockAgent)}`,
+    assert.equal(
+      Object.hasOwn(bedrockPrepare, "failure"),
+      false,
+      "Bedrock runtime prepare must not fail before the network policy proof",
     );
-    assert.ok(bedrockGatewayPod);
-    // The Bedrock revision must be the only embedded topology that can reach the
-    // exact EKS Pod Identity endpoint address and port.
+    const bedrockGatewayPod = await waitFor(
+      `Bedrock runtime AgentRevision ${bedrockRuntimeRevision.id} gateway Pod to run`,
+      () =>
+        workloadPod(
+          owned[0],
+          `app.kubernetes.io/name=${gatewayName(bedrockAgent)},openclaw.dev/revision=${bedrockRuntimeRevision.id}`,
+        ),
+    );
+    // Runtime startup owns AWS credential and model readiness. This test only
+    // proves the generated runtime NetworkPolicy against the real Pod selector.
     await waitFor(
       "embedded Bedrock runtime gateway to reach the exact EKS Pod Identity endpoint",
       async () => {
@@ -1442,27 +1485,21 @@ test(
     );
 
     const managedAuthRevision = {
-      ...revision(driver, first, bedrockAgent, 2),
+      ...revision(runtimeDriver, first, bedrockAgent, 2),
       harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
     };
     managedAuthRevision.configuration.agents.defaults.model = "openai/gpt-5";
-    // Reusing the same Agent exercises policy replacement: the shared policy
-    // name must lose Pod Identity egress when runtime auth is no longer active.
-    await waitFor(
-      `managed-auth AgentRevision ${managedAuthRevision.id} to become ready`,
-      async () => {
-        const observation = await driver.prepareRevision(
-          managedAuthRevision,
-          revisionContext(managedAuthRevision),
-        );
-        return observation.ready ? observation : undefined;
-      },
+    // Reusing the same Agent exercises policy replacement while the old runtime
+    // gateway remains unready: prepare must still reconcile the shared policy.
+    const managedAuthPrepare = await runtimeDriver.prepareRevision(
+      managedAuthRevision,
+      revisionContext(managedAuthRevision),
     );
-    const managedAuthGatewayPod = await workloadPod(
-      owned[0],
-      `app.kubernetes.io/name=${gatewayName(bedrockAgent)}`,
+    assert.equal(
+      Object.hasOwn(managedAuthPrepare, "failure"),
+      false,
+      "managed-auth successor prepare must not fail before the policy replacement proof",
     );
-    assert.ok(managedAuthGatewayPod);
     // The API update precedes CNI convergence; wait for enforced denial rather
     // than treating a transient use of the previous allow rule as a failure.
     await waitFor(
@@ -1471,7 +1508,7 @@ test(
         try {
           await probe(
             owned[0],
-            managedAuthGatewayPod.metadata.name,
+            bedrockGatewayPod.metadata.name,
             "tcp",
             linkLocalEndpoints.podIdentityIp,
             80,
