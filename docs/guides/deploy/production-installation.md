@@ -1,8 +1,8 @@
 # Install the production control plane
 
 Build and install OCC on Kubernetes, then verify authenticated API access.
-Complete the [production prerequisites](../deploy.md#production-prerequisites)
-first. Run commands from the repository root in one operator shell; retain its
+Prepare [standard Kubernetes](kubernetes.md) or [Amazon EKS](eks.md) and
+complete the [production prerequisites](../deploy.md#production-prerequisites) first. Run commands from the repository root in one operator shell; retain its
 exports and protected files for [Agent deployment](production-agents.md).
 
 ## Build and publish production images
@@ -74,7 +74,7 @@ For production, use the registry digests from the build-and-publish step above.
 umask 077
 export OCC_INPUT_DIRECTORY="${OCC_INPUT_DIRECTORY:-/secure/occ}"
 export KUBECONFIG_FILE="$OCC_INPUT_DIRECTORY/kubeconfig"
-export CONTEXT='<production-context>'
+: "${CONTEXT:?Set the reviewed Kubernetes context from your cluster guide}"
 install -d -m 700 "$OCC_INPUT_DIRECTORY"
 install -d -m 700 /secure/occ
 test -e "$OCC_INPUT_DIRECTORY/values.yaml" || \
@@ -146,7 +146,7 @@ yq e -e '.images.controller | test("@sha256:[a-f0-9]{64}$")' \
   "$OCC_INPUT_DIRECTORY/values.yaml" >/dev/null
 yq e -e '.auth.baseUrl != "" and .bootstrap.adminEmail != "" and
   (.database.cidrs | length > 0) and (.cluster.cidrs | length > 0) and
-  .database.caSecretName != "" and (.controlPlane.nodeSelector | length > 0) and
+  (.controlPlane.nodeSelector | length > 0) and
   (.api.clients | length > 0)' \
   "$OCC_INPUT_DIRECTORY/values.yaml" >/dev/null
 yq e -e '.drivers.compute.configuration.images.requireImmutableDigest == true and
@@ -175,7 +175,7 @@ or a variable name such as `OCC_DATABASE_URL=`.
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `occ-application-url` | PostgreSQL connection URL for the limited application role, used by bootstrap, the API, and the worker. Obtain it from your database administrator or provider. Example shape: `postgresql://occ_app:<url-encoded-password>@<postgres-host>:5432/<database>`.                   |
 | `occ-migration-url`   | Connection URL for a separate role allowed to apply schema migrations. It targets the same database. Example shape: `postgresql://occ_migrator:<url-encoded-password>@<postgres-host>:5432/<database>`. Obtain this credential separately; do not give it to the API or worker. |
-| `occ-rds-ca.pem`      | Optional PostgreSQL root CA bundle when the database root is not in the base image trust store. The production example mounts it from `occ-rds-ca` at `/etc/openclaw/database-ca/ca.pem`.                                                                                       |
+| `occ-database-ca.pem` | Optional PostgreSQL root CA bundle when the database root is not in the base image trust store. Required only when `database.caSecretName` is set; the example mount path is `/etc/openclaw/database-ca/ca.pem`.                                                                |
 | `occ-auth-secret`     | A random secret used to sign and verify user sessions. Generate it once for this Installation with the command below, then retain it across redeployments. It is separate from the administrator password, service API key, and model-provider key.                             |
 
 Save the two complete database URLs using your secret manager or a protected
@@ -192,10 +192,15 @@ to overwrite an existing file:
   openssl rand -hex 32 > /secure/occ/occ-auth-secret
 )
 chmod 600 /secure/occ/occ-application-url /secure/occ/occ-migration-url \
-  /secure/occ/occ-rds-ca.pem /secure/occ/occ-auth-secret
+  /secure/occ/occ-auth-secret
 test -s /secure/occ/occ-application-url
 test -s /secure/occ/occ-migration-url
-test -s /secure/occ/occ-rds-ca.pem
+export DATABASE_CA_SECRET="$(yq e -r '.database.caSecretName // ""' "$OCC_INPUT_DIRECTORY/values.yaml")"
+export DATABASE_CA_KEY="$(yq e -r '.database.caKey // "ca.pem"' "$OCC_INPUT_DIRECTORY/values.yaml")"
+if [ -n "$DATABASE_CA_SECRET" ]; then
+  chmod 600 /secure/occ/occ-database-ca.pem
+  test -s /secure/occ/occ-database-ca.pem
+fi
 ```
 
 Keep these values out of Helm values, Installation YAML, Configurations, shell
@@ -215,8 +220,11 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system 
   create secret generic occ-installation-startup --from-file=installation.yaml="$OCC_INPUT_DIRECTORY/installation.yaml"
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
   create secret generic occ-database --from-file=application-url=/secure/occ/occ-application-url --from-file=migration-url=/secure/occ/occ-migration-url
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
-  create secret generic occ-rds-ca --from-file=ca.pem=/secure/occ/occ-rds-ca.pem
+if [ -n "$DATABASE_CA_SECRET" ]; then
+  kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+    create secret generic "$DATABASE_CA_SECRET" \
+    --from-file="$DATABASE_CA_KEY=/secure/occ/occ-database-ca.pem"
+fi
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
   create secret generic occ-auth --from-file=secret=/secure/occ/occ-auth-secret
 ```
@@ -261,8 +269,12 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
 
 scripts/prepare-bootstrap-volume --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
   --namespace openclaw-system --claim "$BOOTSTRAP_CLAIM" --image "$CONTROLLER_IMAGE" \
-  --node-selector pool=control
+  --node-selector oce-role=control
 ```
+
+Replace `--node-selector oce-role=control` with the same labels selected by
+`controlPlane.nodeSelector`; repeat the option for multiple labels so preparation
+and initialization can use the same volume topology.
 
 The helper refuses any nonfresh mounted root except filesystem-owned
 `lost+found`, schedules the preparation Pod with any supplied `--node-selector`

@@ -37,6 +37,17 @@ human administrator session path, not service keys. The
 
 ## Production
 
+Choose the guide for your cluster:
+
+- [Standard Kubernetes](deploy/kubernetes.md): prepare an existing Kubernetes
+  cluster, storage, networking, and PostgreSQL.
+- [Amazon EKS](deploy/eks.md): prepare AWS managed Kubernetes, node groups,
+  VPC networking, EBS/EFS storage, and optional RDS PostgreSQL.
+
+Both paths use the same Helm chart and shared installation procedure. Cluster
+hosting does not select the Agent model provider; EKS requires no Bedrock setup
+or special Helm deployment flag.
+
 ### Production prerequisites
 
 - Kubernetes 1.35 or later, an explicit context, enforcing NetworkPolicies,
@@ -45,8 +56,8 @@ human administrator session path, not service keys. The
   the supported boundary.
 - Controller and runtime image digests (build them in the first step).
 - External PostgreSQL with separate migrator and application roles.
-- A Kubernetes node pool labeled for OCC control-plane Pods. The default Helm
-  values select nodes with `oce-role: control`; set
+- A Kubernetes node pool labeled for OCC control-plane Pods. The production example
+  selects nodes with `oce-role: control`; the chart default is `{}`. Set
   `controlPlane.nodeSelector` to the reviewed labels for your cluster.
 - A Kubernetes node pool labeled for Agent runtime Pods. The production
   Installation example selects nodes with `oce-role: agents`; set
