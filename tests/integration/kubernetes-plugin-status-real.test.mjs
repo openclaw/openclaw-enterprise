@@ -99,7 +99,7 @@ async function assertPrerequisites() {
   await validateExplicitK3dLoopbackContext({ kubeconfigPath, kubernetesContext });
 }
 
-function computeConfiguration() {
+function computeConfiguration({ nodeSelector } = {}) {
   const resources = {
     requests: { cpu: "100m", memory: "128Mi" },
     limits: { cpu: "1", memory: "512Mi" },
@@ -137,12 +137,13 @@ function computeConfiguration() {
     runtime: {
       transportSecretPrefix,
       gatewayStorageClassName: "local-path",
+      ...(nodeSelector === undefined ? {} : { nodeSelector }),
     },
   };
 }
 
-function createDriver() {
-  return new KubernetesComputeDriver(computeConfiguration(), {
+function createDriver(options) {
+  return new KubernetesComputeDriver(computeConfiguration(options), {
     id: "compute-kubernetes-plugin-status-real",
     implementation: "kubernetes-plugin-status-real",
   });
@@ -318,27 +319,9 @@ async function nonServerNodeName() {
 
 async function scheduleGatewayOnNonServerNode(fixture) {
   const nodeName = await nonServerNodeName();
-  await prepareRevisionEventually(fixture);
-  await kubectl(
-    "patch",
-    "deployment",
-    gatewayName(fixture.agentId),
-    "--namespace",
-    fixture.namespaceName,
-    "--type",
-    "strategic",
-    "--patch",
-    JSON.stringify({
-      spec: {
-        template: {
-          spec: {
-            nodeSelector: { "kubernetes.io/hostname": nodeName },
-          },
-        },
-      },
-    }),
-  );
+  fixture.driver = createDriver({ nodeSelector: { "kubernetes.io/hostname": nodeName } });
   fixture.targetNodeName = nodeName;
+  await prepareRevisionEventually(fixture);
   await waitForGatewayRollout(fixture, "initial-rollout");
 }
 
@@ -357,50 +340,54 @@ async function waitForGatewayRollout(fixture, stage) {
     try {
       // Retain only bounded Pod lifecycle fields. The CI reporter independently
       // allowlists these values; raw Pod data and exception text stay private.
-      const { stdout } = await execute(
-        "kubectl",
-        kubectlArguments([
-          "get",
-          "pods",
-          "--namespace",
-          fixture.namespaceName,
-          "--selector",
-          `openclaw.dev/agent=${fixture.agentId},openclaw.dev/revision=${fixture.candidate.id},openclaw.dev/workload-role=gateway`,
-          "--request-timeout=10s",
-          "-o",
-          "json",
-        ]),
-        { timeout: 15_000, maxBuffer: 4 * 1024 * 1024 },
-      );
-      error.openclawCiDiagnostic.pods = JSON.parse(stdout)
-        .items.slice(0, 3)
-        .map((pod) => ({
-          phase: pod.status?.phase,
-          ready: isReadyPod(pod),
-          scheduled: pod.status?.conditions?.some(
-            ({ type, status }) => type === "PodScheduled" && status === "True",
-          ),
-          containers: [
-            ...(pod.status?.initContainerStatuses ?? []),
-            ...(pod.status?.containerStatuses ?? []),
-          ]
-            .filter(({ name }) => ["gateway", "prepare-private-state"].includes(name))
-            .slice(0, 2)
-            .map((container) => ({
-              name: container.name,
-              restartCount: container.restartCount,
-              exitCode:
-                container.state?.terminated?.exitCode ?? container.lastState?.terminated?.exitCode,
-              waitingReason: container.state?.waiting?.reason,
-              terminatedReason:
-                container.state?.terminated?.reason ?? container.lastState?.terminated?.reason,
-            })),
-        }));
+      error.openclawCiDiagnostic.pods = await gatewayPodDiagnostics(fixture);
     } catch {
       // Failed diagnostics must preserve the original rollout failure.
     }
     throw error;
   }
+}
+
+async function gatewayPodDiagnostics(fixture) {
+  const { stdout } = await execute(
+    "kubectl",
+    kubectlArguments([
+      "get",
+      "pods",
+      "--namespace",
+      fixture.namespaceName,
+      "--selector",
+      `openclaw.dev/agent=${fixture.agentId},openclaw.dev/revision=${fixture.candidate.id},openclaw.dev/workload-role=gateway`,
+      "--request-timeout=10s",
+      "-o",
+      "json",
+    ]),
+    { timeout: 15_000, maxBuffer: 4 * 1024 * 1024 },
+  );
+  return JSON.parse(stdout)
+    .items.slice(0, 3)
+    .map((pod) => ({
+      phase: pod.status?.phase,
+      ready: isReadyPod(pod),
+      scheduled: pod.status?.conditions?.some(
+        ({ type, status }) => type === "PodScheduled" && status === "True",
+      ),
+      containers: [
+        ...(pod.status?.initContainerStatuses ?? []),
+        ...(pod.status?.containerStatuses ?? []),
+      ]
+        .filter(({ name }) => ["gateway", "prepare-private-state"].includes(name))
+        .slice(0, 2)
+        .map((container) => ({
+          name: container.name,
+          restartCount: container.restartCount,
+          exitCode:
+            container.state?.terminated?.exitCode ?? container.lastState?.terminated?.exitCode,
+          waitingReason: container.state?.waiting?.reason,
+          terminatedReason:
+            container.state?.terminated?.reason ?? container.lastState?.terminated?.reason,
+        })),
+    }));
 }
 
 function isReadyPod(pod) {
@@ -446,8 +433,9 @@ async function waitForReadyPluginStatus(fixture) {
       return undefined;
     }
     return { observation, pod, status };
-  }).catch((error) => {
+  }).catch(async (error) => {
     error.openclawCiDiagnostic = { kind: "kubernetes-plugin-status", stage: "ready-status" };
+    error.openclawCiDiagnostic.pods = await gatewayPodDiagnostics(fixture).catch(() => undefined);
     throw error;
   });
 }
@@ -475,8 +463,9 @@ async function waitForReadyPluginWarning(fixture, warning) {
       return undefined;
     }
     return { observation, pod, status };
-  }).catch((error) => {
+  }).catch(async (error) => {
     error.openclawCiDiagnostic = { kind: "kubernetes-plugin-status", stage: "warning-status" };
+    error.openclawCiDiagnostic.pods = await gatewayPodDiagnostics(fixture).catch(() => undefined);
     throw error;
   });
 }
