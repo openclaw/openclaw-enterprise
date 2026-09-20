@@ -26,7 +26,7 @@ runtime image for local deployment.
 | [Agents](agents.md)                               | Agent identity, mutable selection, immutable revisions, and workspace file routes.   |
 | [Gateway routing with Envoy](gateway-routing.md)  | Private Agent endpoints, service keys, TLS, and network enforcement.                 |
 | [Configuration](configuration.md)                 | Native documents, generations, references, and snapshots.                            |
-| [Secrets](drivers/kubernetes-secret.md)           | Namespace-owned Secret storage, metadata-only responses, env bindings, and redeploy. |
+| [Secrets](drivers/secret.md)                      | Namespace-owned Secret storage, metadata-only responses, env bindings, and redeploy. |
 | [Authentication](authentication.md)               | Supported caller credentials, sessions, bootstrap, and account provisioning.         |
 | [Authorization](authorization.md)                 | Principals, Groups, Roles, Bindings, Restrictions, and exact-resource decisions.     |
 | [Providers](providers.md)                         | Provider configuration, related Drivers, client ownership, and Agent references.     |
@@ -59,13 +59,15 @@ must satisfy. It is part of the reference, not another document lifecycle.
   capability selection, and compatibility boundaries.
 - [ComputeDriver](drivers/compute.md), [SandboxDriver](drivers/sandbox.md),
   [ConfigurationDriver](drivers/configuration.md), [IAMDriver](drivers/iam.md),
-  [SecretDriver](drivers/kubernetes-secret.md), and
+  [SecretDriver](drivers/secret.md),
   [ServiceAccountDriver](drivers/service-account.md), and
   [PluginDriver](drivers/plugin.md): capability contracts.
 - [Docker Compute](drivers/docker-compute.md),
   [Kubernetes Compute](drivers/kubernetes-compute.md),
-  [SSH Compute](drivers/ssh-compute.md), and
-  [OpenShell Sandbox](drivers/openshell-sandbox.md): implementation settings,
+  [SSH Compute](drivers/ssh-compute.md),
+  [OpenShell Sandbox](drivers/openshell-sandbox.md),
+  [Kubernetes Secret](drivers/kubernetes-secret.md), and
+  [bundled Plugin Drivers](drivers/plugin-bundled.md): implementation settings,
   supported behavior, and limitations.
 
 Change a reference in the same PR that changes its supported behavior. Keep

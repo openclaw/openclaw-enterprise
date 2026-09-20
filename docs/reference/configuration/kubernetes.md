@@ -29,11 +29,18 @@ extra data entries, excessive size, or incorrect ownership fail closed. It
 cannot select another tenant namespace, share tenant objects,
 read Kubernetes Secrets, create Pods, or store Installation settings. ConfigMap
 updates are not watched or automatically reloaded into admitted AgentRevisions.
+The serialized values must be smaller than 1 MiB; Kubernetes may also reject an
+object that exceeds its total object limit. Reads reject invalid kind or
+generation and binary ConfigMap data. Updates require a resource version and a
+generation difference of exactly one; the reverse direction is reserved for OCC
+rollback. Deletion checks ownership and uses the observed UID as a precondition
+when available. Missing objects, conflicts, or unavailable access fail without
+adopting another object.
 
 PostgreSQL stores only server-owned Configuration metadata: its identifier,
 owning Namespace, immutable kind, current generation, and creation time. The
-tenant-owned ConfigMap carries matching kind and generation annotations and
-stores only the live native configuration document in `openclaw.json`; values
+ConfigMap in the tenant namespace carries matching kind and generation
+annotations and stores only the live native configuration document in `openclaw.json`; values
 are not duplicated in Configuration metadata. Deployment separately persists
 its immutable revision snapshot.
 

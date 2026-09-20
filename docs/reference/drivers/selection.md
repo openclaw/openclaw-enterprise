@@ -24,7 +24,7 @@ Sandbox packages in trusted YAML in either mode.
 | `configuration`   | [ConfigurationDriver](configuration.md)    | Required in Installation YAML; bundled Kubernetes or installed package.                              |
 | `iam`             | [IAMDriver](iam.md)                        | Required in Installation YAML; bundled native IAM or installed package.                              |
 | `compute`         | [ComputeDriver](compute.md)                | Required in Installation YAML; bundled Kubernetes, bundled SSH, or installed package.                |
-| `secret`          | [SecretDriver](kubernetes-secret.md)       | Required in trusted Installation YAML, including SSH; bundled Kubernetes only.                       |
+| `secret`          | [SecretDriver](secret.md)                  | Required in trusted Installation YAML, including SSH; bundled Kubernetes only.                       |
 | `sandbox`         | [SandboxDriver](sandbox.md)                | Optional; bundled OpenShell or installed package, and currently requires bundled Kubernetes Compute. |
 | `service_account` | [ServiceAccountDriver](service-account.md) | Optional bundled ChatGPT Provider member; no installed-package selector.                             |
 | `plugin`          | [PluginDriver](plugin.md)                  | Optional bundled `occ-plugin` or `codex-plugin`; no installed-package selector.                      |

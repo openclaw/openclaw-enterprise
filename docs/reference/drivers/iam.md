@@ -1,53 +1,96 @@
 # IAMDriver contract
 
-`IAMDriver` resolves provisioned identities and decides whether an identity may
-perform an exact resource operation. Authentication establishes an issuer and
-subject; IAM resolves that identity and evaluates its authority. OCC owns
-request admission, resource scope, state mutation, and audit emission.
+## Overview
 
-The [authorization reference](../authorization.md) owns policy semantics. The
-exported interface is in [shared contracts](../../../packages/contracts/src/index.ts).
+`IAMDriver` resolves provisioned identities and decides whether they may act on a
+specific platform resource. Authentication establishes the caller's issuer and
+subject; the Driver resolves the corresponding identity and evaluates authority.
+OpenClaw Control Plane (OCC) owns request admission, resource scope, mutations,
+and audit records.
 
-## Identity and authorization operations
+Trusted Installation YAML requires one IAM Driver and defaults to native IAM;
+operators can select an installed package. See [Driver selection](selection.md)
+and the [authorization reference](../authorization.md).
 
-| Operation               | Input and result                                                                                                              |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `lookupIdentity(input)` | Receives an authenticated `issuer`, `subject`, and optional Namespace scope; returns one provisioned Identity or `undefined`. |
-| `authorize(request)`    | Receives `principalId`, an exact action, and a server-owned resource reference; returns an allow or deny decision.            |
+## Interface
 
-An authorization decision includes `allowed`, `reason`, `driverId`, and evidence
-identifying the contributing identity, Groups, AccessBindings, Roles, and
-Restrictions. These identifiers let OCC attribute audit evidence to the selected
-Driver and the policy it evaluated. Identity lookup does not provision an
-account or grant a Role.
+### Identity and authorization operations
 
-## Native IAM behavior
+The [shared interface](../../../packages/contracts/src/index.ts) requires two
+methods and has no optional IAM-specific operations.
 
-The [bundled native IAM Driver](../../../packages/iam/src/index.ts) loads
-controller-owned IAM state for every lookup and authorization decision.
-It accepts only an empty startup configuration object. Policy is persisted
-platform state, not operator YAML or cached startup configuration.
+| Method                  | Contract                                                                                                                                                                                                       |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lookupIdentity(input)` | Takes an authenticated `issuer`, `subject`, and optional Namespace scope. Returns one provisioned Identity, or `undefined` when no identity can be established. It does not create an account or grant a Role. |
+| `authorize(request)`    | Takes a `principalId`, exact action, and server-owned resource reference. Returns an allow or deny decision with a reason, selected `driverId`, and evidence.                                                  |
 
-Identity lookup returns no identity for an absent or ambiguous match, an invalid
-scope, or invalid policy. Authorization denies invalid requests or policy,
-unknown identities, cross-Namespace identity use, and operations without an
-explicit applicable binding. Applicable Restrictions override grants. A
-storage failure propagates as an error rather than becoming permission.
+Evidence identifies the contributing identity, Groups, AccessBindings, Roles,
+and Restrictions. OCC uses it to attribute audit records. The worker rejects
+malformed decisions, including a mismatched Driver identity; an invalid result
+cannot grant permission.
 
-Principal Group membership can contribute a grant. ServicePrincipals use their
-own scoped identity bindings; they do not acquire a human Principal's Group
-membership. Changing persisted policy affects the next decision, including a
-worker's reauthorization of queued work.
+## IAM
 
-## Installed Driver boundary
+The authentication system verifies credentials; the IAM Driver resolves the
+provisioned Principal or ServicePrincipal and decides access. OCC supplies the
+resource scope. A backend credential or installed package identity does not
+replace the caller's authority. An explicit applicable binding can grant access;
+Restrictions override grants. ServicePrincipals use their own scoped bindings
+and do not inherit a human Principal's Group membership.
 
-Installed IAM factories receive the controller-owned `platformState` object.
-They must read current policy through `loadNativeIAMState()` for lookup and
-authorization. Tenants and Installation YAML cannot supply that object.
+When the worker picks up queued operations, it rechecks the original actor's
+authority against current policy. Revocation therefore affects later decisions;
+a denied request or unavailable authority cannot become an allow. See
+[authentication](../authentication.md) for sessions and password handling.
 
-Installed code executes with control-plane authority. Startup can validate its
-interface and identity, but cannot prove that arbitrary code honors persisted
-policy. Operator review of the package remains necessary; see
-[Driver selection and package trust](selection.md).
+## Lifecycle
 
-For session and password behavior, see [authentication](../authentication.md).
+Startup creates the selected IAM Driver. The API and worker use it for later
+lookups and decisions; policy remains persisted platform state and is not frozen
+in Installation YAML or a deployment. The shared interface has no startup,
+disposal, identity-provisioning, or policy-mutation method.
+
+### Native IAM behavior
+
+The native Driver reads controller-owned IAM state on every lookup and decision
+and accepts only an empty startup configuration. Lookup returns no identity for
+an absent or ambiguous match, invalid scope, or invalid policy. Authorization
+denies invalid requests or policy, unknown identities, cross-Namespace identity
+use, and requests without an applicable grant. A storage error propagates instead
+of becoming permission. Principal Group membership may contribute a grant.
+
+## Limits
+
+### Installed Driver boundary
+
+Installed factories receive the controller-owned `platformState` and must read
+current policy through `loadNativeIAMState()` for both methods. Tenants and
+Installation YAML cannot supply this object. Installed code runs with
+control-plane authority: startup can validate its identity and interface but
+cannot prove it honors persisted policy. The Installation operator must review
+the package; see [package trust](selection.md).
+
+IAM does not own sign-in, passwords, token issuance, or automatic account
+provisioning. Existing authorization policy remains the canonical source for
+supported resource actions and Restrictions.
+
+## Troubleshooting
+
+| Symptom                                      | What to check                                                                                                                                    |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Valid credentials do not resolve an identity | Check the issuer and subject, Namespace scope, and that exactly one matching identity was provisioned. Signing in does not provision a Role.     |
+| A known identity is denied                   | Check the exact action and resource, applicable bindings and Roles, and overriding Restrictions. For a ServicePrincipal, check its own bindings. |
+| Previously queued work is denied             | Check whether the original caller or its grant was revoked. Restore only the intended permission or start a newly authorized operation.          |
+| IAM or policy storage is unavailable         | Restore the dependency and retry; never turn an error or malformed decision into an allow.                                                       |
+
+## Implementations
+
+- [Native IAM Driver](../../../packages/iam/src/index.ts): bundled implementation
+  using OCC's stored IAM state.
+- Operator-installed IAM packages use the same shared methods and controller-owned
+  state; see [selection and package requirements](selection.md).
+
+## Related
+
+- [Authorization policy](../authorization.md) and [authentication](../authentication.md)
+- [OCC resource operations](../../../packages/occ/src/index.ts) and [worker authorization](../../../apps/controller/src/worker.ts)

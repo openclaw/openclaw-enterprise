@@ -2,25 +2,26 @@
 
 Use this inventory to locate each base Driver contract and plan consistent
 coverage with the [base Driver documentation template](base-driver-docs-template.md).
-It inventories the Enterprise tree at `06c23b9c`, before adding these contributor
-pages. Coverage notes identify documentation work, not proposed runtime changes.
+The original inventory used Enterprise commit `06c23b9c`; this page reflects the
+base-contract rewrite and links to the current owners. It does not propose runtime
+changes.
 
 ## Base contracts
 
 The [shared interfaces](../packages/contracts/src/index.ts) export seven
-capability interfaces extending `Driver`. Six have dedicated base pages; Secret
-currently points to an implementation page. The common `Driver` identity and
-optional compute lifecycle hooks span these capabilities.
+capability interfaces extending `Driver`. Each now has a dedicated base page.
+The common `Driver` identity and optional compute lifecycle hooks span these
+capabilities.
 
-| Contract             | Current reference and coverage                                                                                                                                     | Template follow-up                                                                                                                                               |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ComputeDriver        | [compute.md](reference/drivers/compute.md): core lifecycle, preflight, Sandbox coordination, revision stages, logging, endpoints, maintenance, hooks, credentials. | Make required versus optional operations easy to scan together; retain the detailed lifecycle sections and link backend behavior out.                            |
-| SandboxDriver        | [sandbox.md](reference/drivers/sandbox.md): interface, facets, admission, lifecycle, provisioning inputs, resource identity.                                       | Use its ownership and cleanup explanations as a model; make failure and optional-hook behavior discoverable together.                                            |
-| ConfigurationDriver  | [configuration.md](reference/drivers/configuration.md): five operations, resource ownership, immutable snapshots, bundled storage behavior.                        | Separate Kubernetes/filesystem details from the shared storage contract when applying the template.                                                              |
-| IAMDriver            | [iam.md](reference/drivers/iam.md): lookup, authorization evidence, native policy behavior, installed-package boundary.                                            | Distinguish universal obligations from native implementation behavior while preserving installed-Driver policy requirements.                                     |
-| ServiceAccountDriver | [service-account.md](reference/drivers/service-account.md): creation, credential issuance, deletion, unsupported operations, bundled ChatGPT behavior.             | Separate shared credential/account boundaries from provider-specific behavior.                                                                                   |
-| PluginDriver         | [plugin.md](reference/drivers/plugin.md): catalogs, selection, native mappings, preparation, security, source evidence.                                            | Separate the exported catalog contract from bundled OpenClaw/Codex mappings and preparation behavior; do not imply those helpers are exported interface methods. |
-| SecretDriver         | [kubernetes-secret.md](reference/drivers/kubernetes-secret.md): backend setup, secret CRUD, env delivery, redeploy, troubleshooting.                               | Add a dedicated base contract in a later pass covering exported create/update/delete/resolve operations; keep Kubernetes procedures in their current owner.      |
+| Contract             | Current base reference                                                                                                           | Implementation or adjacent owner                                                                                       |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| ComputeDriver        | [Compute](reference/drivers/compute.md): Namespace and revision operations, IAM, startup, activation, logging, and maintenance.  | [Compute feature matrix](reference/drivers/compute-matrix.md)                                                          |
+| SandboxDriver        | [Sandbox](reference/drivers/sandbox.md): facets, optional provisioning, identity, cleanup, and Compute coordination.             | [OpenShell](reference/drivers/openshell-sandbox.md)                                                                    |
+| ConfigurationDriver  | [Configuration](reference/drivers/configuration.md): five storage methods, IAM, generations, and immutable revision snapshots.   | [Kubernetes Configuration storage](reference/configuration/kubernetes.md)                                              |
+| IAMDriver            | [IAM](reference/drivers/iam.md): identity lookup, decisions, policy freshness, revocation, and installed-Driver requirements.    | [Authorization](reference/authorization.md)                                                                            |
+| ServiceAccountDriver | [ServiceAccount](reference/drivers/service-account.md): provider accounts, separate credential issuance, deletion, and recovery. | [Service accounts](reference/service-accounts.md) and [Providers](reference/providers.md)                              |
+| PluginDriver         | [Plugin](reference/drivers/plugin.md): catalog interface, IAM, revision selection, and Compute ownership.                        | [Bundled Plugin Drivers](reference/drivers/plugin-bundled.md) and [feature matrix](reference/drivers/plugin-matrix.md) |
+| SecretDriver         | [Secret](reference/drivers/secret.md): create, update, delete, resolve, safe delivery references, and permissions.               | [Kubernetes Secret](reference/drivers/kubernetes-secret.md)                                                            |
 
 The [target Driver design](design/drivers.md) also names `InferenceDriver` and
 `ChannelDriver`. Neither has an exported capability interface or base reference
@@ -30,7 +31,7 @@ current-contract pages from the design prose. See the
 
 ## Complete Driver reference directory
 
-The directory contains 16 Markdown pages: six base pages listed above, seven
+The directory contains 18 Markdown pages: seven base pages listed above, eight
 implementation pages (including two Kubernetes child pages), and three shared
 selection/comparison pages.
 
@@ -39,7 +40,8 @@ selection/comparison pages.
 | Compute implementations | [Docker](reference/drivers/docker-compute.md), [Kubernetes](reference/drivers/kubernetes-compute.md), [SSH](reference/drivers/ssh-compute.md)                                            | Link from the base contract; retain backend setup, limits, and troubleshooting here.                                                                                           |
 | Kubernetes detail       | [Networking and isolation](reference/drivers/kubernetes-compute/networking-and-isolation.md), [Storage and credentials](reference/drivers/kubernetes-compute/storage-and-credentials.md) | Implementation-specific contract detail.                                                                                                                                       |
 | Sandbox implementation  | [OpenShell](reference/drivers/openshell-sandbox.md)                                                                                                                                      | Backend ownership, configuration, prerequisites, and troubleshooting.                                                                                                          |
-| Secret implementation   | [Kubernetes Secret](reference/drivers/kubernetes-secret.md)                                                                                                                              | Currently serves both base and implementation readers. Counted once as an implementation page.                                                                                 |
+| Secret implementation   | [Kubernetes Secret](reference/drivers/kubernetes-secret.md)                                                                                                                              | Owns Kubernetes setup and operator procedures; the base Secret contract has its own page.                                                                                      |
+| Plugin implementations  | [Bundled OpenClaw and Codex](reference/drivers/plugin-bundled.md)                                                                                                                        | Owns native selection, mappings, preparation, and implementation proof.                                                                                                        |
 | Shared selection        | [Selection and package contracts](reference/drivers/selection.md)                                                                                                                        | Canonical selection, factories, package trust, loading, and startup failures; link instead of copying.                                                                         |
 | Comparisons             | [Compute matrix](reference/drivers/compute-matrix.md), [Plugin matrix](reference/drivers/plugin-matrix.md)                                                                               | Compare implementation support, not define the base contract. Backed by [Compute data](assets/compute-driver-matrix.json) and [Plugin data](assets/plugin-driver-matrix.json). |
 
@@ -53,16 +55,15 @@ selection/comparison pages.
 | Verification           | [Testing index](testing/README.md), [Docker](testing/docker.md), [SSH](testing/ssh.md), [Kubernetes](testing/kubernetes.md), [OpenShell](testing/openshell.md), [service accounts](testing/service-accounts.md), [plugins](testing/plugins.md)                                                                                                                                                                          | Own test prerequisites, fixtures, proof, and coverage limitations.                     |
 | Implementation records | [Plugin spec](../specs/16-plugin-driver.md), [Provider/Driver abstraction](../specs/17-provider-driver-abstraction.md) and its [contract](../specs/17-provider-driver-abstraction/contract.md), [SSH spec](../specs/21-ssh-compute-driver.md) and its [contract](../specs/21-ssh-compute-driver/contract.md), [Compute matrix report](../specs/reports/compute-driver-matrix.md)                                        | Preserve proposal and delivery history; do not treat these as current base references. |
 
-## Suggested application order
+## Maintaining the contracts
 
-1. Apply the template to Compute and Sandbox as representative lifecycle and
-   coordination contracts, verifying optional hooks and their callers.
-2. Give SecretDriver a base page and correct the feature index and selection
-   table to distinguish it from Kubernetes Secret setup.
-3. Apply the same coverage to Configuration, IAM, ServiceAccount, and Plugin;
-   move backend details only where an implementation owner has been established.
+All seven exported capabilities now use the [eight-section template](base-driver-docs-template.md),
+including dedicated IAM and Troubleshooting sections. Keep shared guarantees in
+the base pages. Put backend setup and native policy details with their linked
+implementation owners; add new current contracts only when their interfaces
+and callers exist.
 
-The [ComputeDriver contract](reference/drivers/compute.md) now applies the
-eight-section template, including a dedicated IAM section. The table above
-records the baseline inventory; the other contract and implementation pages
-remain unchanged.
+### Suggested application order
+
+For a future Driver change, update its base contract first, then the affected
+implementation pages, selection references, and feature navigation.

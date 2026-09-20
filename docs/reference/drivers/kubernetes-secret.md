@@ -6,6 +6,9 @@ Namespace, returns metadata only through OCC, and can be delivered as an
 environment variable through an Agent `harnessAuth` API-key binding or a
 Configuration `secretBindings` entry for gateway-only credentials.
 
+The [SecretDriver base contract](secret.md) defines the shared interface, IAM, and
+lifecycle. This page owns Kubernetes setup and operator procedures.
+
 This driver is storage and env delivery only. It does not issue credentials,
 share Secrets across Namespaces, keep value history, restart workloads after an
 update, roll values back, or broker per-access secret reads. Native OpenClaw

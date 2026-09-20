@@ -1,132 +1,118 @@
 # SandboxDriver contract
 
-`SandboxDriver` is an optional Installation-selected Driver that confines Agent
-Harnesses across one or more containment facets: networking, filesystem, or
-process. OCC owns driver selection, authorization, and immutable revision
-admission; the selected
-[ComputeDriver](compute.md) owns workload orchestration. A SandboxDriver
-can provision a dedicated Harness without becoming a ComputeDriver.
+## Overview
 
-Current startup supports Sandbox selection only with the bundled Kubernetes
-Compute Driver. A selected Sandbox package does not make Docker or
-an installed Compute package a supported Sandbox composition. See
-[Driver selection](selection.md) for the package boundary.
+`SandboxDriver` confines an Agent Harness's network, filesystem, or processes.
+OpenClaw Control Plane (OCC) selects the Driver, authorizes deployment, and
+freezes the revision. [ComputeDriver](compute.md) owns the gateway, workload
+identity, baseline isolation, routing, and activation. Sandbox can create a
+dedicated Harness while Compute keeps those responsibilities.
 
-## Driver interface
+Selection is optional and currently works only with bundled Kubernetes Compute
+and dedicated execution. Choosing an installed Sandbox does not enable Docker,
+SSH, or installed Compute combinations. See [Driver selection](selection.md).
 
-The exported interface is in
-[shared contracts](../../../packages/contracts/src/index.ts).
+## Interface
 
-```ts
-type SandboxFacet = "networking" | "filesystem" | "process";
+### Driver interface
 
-interface SandboxDriver extends Driver {
-  readonly capability: "sandbox";
-  readonly facets: readonly SandboxFacet[];
+The [shared interface](../../../packages/contracts/src/index.ts) exposes the
+required `facets` property and `cleanup` method, plus three optional methods.
 
-  configureAgent?(
-    configuration: Readonly<OpenClawConfigurationDocument>,
-  ): OpenClawConfigurationDocument;
+| Member                          | Contract                                                                                                                                                                         |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `facets`                        | Declare at least one distinct facet. Unknown, duplicate, or empty declarations are rejected.                                                                                     |
+| `configureAgent(configuration)` | Optional synchronous transform. OCC passes a read-only native configuration and validates and freezes the returned configuration. If absent, the original configuration is used. |
+| `ensureNamespace(context)`      | Optional backend preparation after Compute has prepared baseline Namespace isolation. If absent, Compute continues without a Sandbox setup call.                                 |
+| `provisionHarness(context)`     | Optional creation of the dedicated Harness; returns a stable Sandbox resource reference. If absent, Compute creates the ordinary Harness workload.                               |
+| `cleanup(context)`              | Required for revision stop/retirement and Namespace deletion, even when Compute owns or has already removed the workload. No revision means cleanup of Namespace resources.      |
 
-  ensureNamespace?(context: SandboxNamespaceContext): Promise<void>;
+### Containment facets
 
-  provisionHarness?(context: SandboxHarnessContext): Promise<SandboxResourceRef>;
+| Facet        | What the Driver enforces                                                           |
+| ------------ | ---------------------------------------------------------------------------------- |
+| `networking` | Connections only to approved destinations and peers.                               |
+| `filesystem` | Approved image paths and Agent-owned workspace paths, with their read/write modes. |
+| `process`    | Approved process identity, capabilities, and operating-system limits.              |
 
-  cleanup(
-    context: SandboxNamespaceContext & {
-      readonly revision?: Readonly<AgentRevision>;
-    },
-  ): Promise<void>;
-}
-```
+### Provisioning inputs
 
-The selected provider must implement and declare at least one containment facet.
-Each facet is optional; any nonempty subset is supported. Empty, unknown, or
-duplicate facet declarations fail closed. There is no `exec` facet; command
-authorization and per-tool Sandbox creation remain deferred.
+`SandboxNamespaceContext` carries the Namespace, Compute's Kubernetes client,
+and a cancellation signal. `SandboxHarnessContext` adds the immutable revision
+and `HarnessWorkloadRequirements`: image and startup command, Agent ServiceAccount,
+projected token audience/expiration/mount/path/read-only setting, approved PVC
+subpaths and mount modes, literal environment or Kubernetes `secretKeyRef`,
+explicit Harness login mode, and Agent/revision labels. Sandbox must use these
+prepared values rather than guessing login mode or resolving another credential.
 
-## Containment facets
+### Sandbox resource identity
 
-| Facet        | Provider responsibility                                                              |
-| ------------ | ------------------------------------------------------------------------------------ |
-| `networking` | Restrict Harness connections to explicitly approved destinations and peers.          |
-| `filesystem` | Preserve approved image paths and Agent-owned read-only or writable workspace paths. |
-| `process`    | Enforce the approved process identity, capabilities, and operating-system limits.    |
+`SandboxResourceRef` contains `namespaceName`, `resourceName`, `agentId`, and
+`revisionId`. It stays stable when a controller replaces the underlying Pod;
+retirement must find the provider resource even if that Pod is already gone.
 
-Compute retains tenant isolation, NetworkPolicies, workload identity, approved
-workspace ownership, and routing. Provider policies cannot relax those existing
-boundaries.
+## IAM
 
-## Admission and lifecycle
+OCC authorizes the deployment and the applicable credential sources. The Driver
+receives the approved Namespace, Agent revision, and workload identity; it cannot
+choose another one or grant access. Compute retains tenant isolation,
+NetworkPolicies, workspace ownership, identity, and routing. Sandbox policies
+cannot relax those controls. If the Driver cannot use the exact identity or
+credential references, it must fail. Never expose Secret values in
+configuration, revision metadata, logs, or provider requests. See
+[authorization](../authorization.md) and [Harness execution](../harness-execution.md).
 
-1. OCC invokes optional `configureAgent` before validating and freezing the
-   effective Agent configuration.
-2. The immutable revision stores only the selected `sandboxDriverId`; it does
-   not duplicate the driver's implementation or declared facets.
-3. Compute prepares the exact Namespace and baseline isolation before invoking
-   optional `ensureNamespace`.
-4. Compute prepares the Agent gateway, ServiceAccount, workspace, Services,
-   routing resources, and exact Harness requirements.
-5. If `provisionHarness` exists, the provider creates the dedicated Harness
-   workload and returns its stable Sandbox identity. Otherwise, Compute creates
-   the ordinary Harness workload.
-6. Compute waits for normal exact-revision readiness before activating routing.
-7. Revision stop and retirement always invoke `cleanup` for the selected
-   provider. If Compute owns the ordinary Harness workload, it stops that
-   workload first; an already-absent workload does not skip provider cleanup.
-   If the provider owns the Harness, `cleanup` removes that Sandbox. Namespace
-   deletion invokes `cleanup` without a revision to remove provider bootstrap
-   resources.
+## Lifecycle
 
-Namespace setup, provisioning, and cleanup must be idempotent. Unsupported
-topologies, missing prerequisites, ambiguous resources, failed identity checks,
-and unavailable containment fail closed. A revision cleanup failure keeps the
-operation retryable; it cannot be treated as completed merely because the
-Compute-owned workload is already absent.
+### Admission and lifecycle
 
-## Provisioning inputs
+Startup validates the selected Sandbox and its declared facets. The shared
+interface has no initializer or destructor; workload and Namespace removal use
+`cleanup` explicitly.
 
-`SandboxNamespaceContext` contains the exact admitted Namespace, the
-Compute-provided Kubernetes client, and an operation cancellation signal.
-`SandboxHarnessContext` also includes the immutable `AgentRevision` and its
-approved `HarnessWorkloadRequirements`:
+1. Before deployment, OCC calls optional `configureAgent`, then validates and
+   freezes the resulting Configuration. The revision records the selected
+   `sandboxDriverId`, not the implementation or facet list.
+2. Compute prepares Namespace isolation and calls optional `ensureNamespace`.
+   It prepares the Agent gateway, identity, workspace, Services, and routing.
+3. The Sandbox provisions the dedicated Harness if it implements
+   `provisionHarness`; otherwise Compute creates it. Compute waits for the exact
+   revision workload before activating traffic.
+4. Stop and retirement call Sandbox `cleanup`. If Compute owns the workload,
+   it stops that workload first; its absence does not skip Sandbox cleanup. If
+   Sandbox owns it, `cleanup` removes it. Namespace deletion calls `cleanup`
+   without a revision to remove backend bootstrap resources.
 
-- Harness image and explicit startup command.
-- Exact Agent ServiceAccount name.
-- Projected ServiceAccount token audience, bounded expiration, mount path,
-  token filename, and read-only mount requirement.
-- Approved Agent-owned PVC subpaths and read-only or writable mount modes.
-- Literal environment values or exact Kubernetes `secretKeyRef` references.
-- Explicit harness login mode prepared from the admitted `harnessAuth` binding.
-- Immutable Agent and revision workload labels.
+Namespace setup, provisioning, and cleanup must be safe to repeat. Failed
+revision cleanup remains retryable. Unsupported topology, missing prerequisites,
+ambiguous resources, failed identity checks, or unavailable containment must
+prevent progress rather than weakening isolation.
 
-Kubernetes prepares auth once during workload rendering. The Sandbox consumes
-these already-rendered requirements; it does not resolve another source or
-infer login mode from whichever credential variables happen to exist.
+## Limits
 
-Providers must preserve these requirements without exposing Secret values in
-configuration, revision metadata, logs, or provider requests. A provider that
-cannot realize the exact workload identity or credential references must fail
-closed.
+- Supported facets are `networking`, `filesystem`, and `process`; there is no
+  `exec` facet, per-tool Sandbox creation, or Sandbox-owned command authorization.
+- Sandbox selection currently requires bundled Kubernetes Compute and dedicated
+  Harness execution. An installed Sandbox package does not broaden that support.
+- The shared interface does not offer a separate readiness or activation method;
+  Compute owns both and retains its baseline isolation rules.
 
-## Sandbox resource identity
+## Troubleshooting
 
-`SandboxResourceRef` identifies the exact provider-owned resource:
-
-```ts
-interface SandboxResourceRef {
-  readonly namespaceName: string;
-  readonly resourceName: string;
-  readonly agentId: string;
-  readonly revisionId: string;
-}
-```
-
-The reference remains stable when a controller replaces the underlying Pod.
-Retirement must locate and remove the exact provider resource even when its
-Pod is absent.
+| Symptom                                              | What to check                                                                                                                           |
+| ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Startup rejects the Sandbox                          | Check the Compute selection and that `facets` is nonempty, unique, and uses supported values.                                           |
+| Deployment rejects the Harness                       | Confirm dedicated execution and that the provider can preserve the approved identity, token, mounts, login mode, and Secret references. |
+| Cleanup keeps retrying after the Pod disappears      | Check the stable Sandbox resource reference and provider bootstrap resources. Pod absence alone does not prove cleanup completed.       |
+| Containment is unavailable or ownership is ambiguous | Restore the provider or correct ownership. Never activate a workload without the required containment.                                  |
 
 ## Implementations
 
-- [OpenShell SandboxDriver](openshell-sandbox.md)
-- [Kubernetes ComputeDriver](kubernetes-compute.md)
+- [OpenShell SandboxDriver](openshell-sandbox.md): bundled implementation. Trusted
+  YAML can also select an operator-installed Sandbox package.
+
+## Related
+
+- [Kubernetes ComputeDriver](kubernetes-compute.md) and [Compute Sandbox coordination](compute.md#sandboxdriver-coordination)
+- [OCC deployment admission](../../../packages/occ/src/index.ts) and [Kubernetes Compute caller](../../../apps/controller/src/drivers/compute/kubernetes/index.ts)
+- [OpenShell verification guide](../../testing/openshell.md)
