@@ -38,11 +38,9 @@ button,
   padding: 10px 16px;
 }
 a.primary {
-  display: inline-block;
   text-decoration: none;
 }
-button:hover,
-a.primary:hover {
+button:hover {
   background: #f0f4f1;
 }
 button:disabled {
