@@ -110,9 +110,6 @@ databases, or unrelated clusters.
 
 ## Related
 
-- [Driver documentation inventory](driver-docs-inventory.md)
-- [Base Driver documentation template](base-driver-docs-template.md)
-
 - [Deployment guide](../guides/deploy.md)
 - [Runtime image recipe](../../deploy/runtime/README.md)
 - [Contributor integration boundaries](../../AGENTS.md#running-integration-tests)

@@ -109,6 +109,10 @@ behavior changes; shipped specifications remain historical records. Keep Manual
 Notes unchanged. Put detailed contracts in their owning reference rather than
 expanding architecture pages for every feature.
 
+Keep documentation authoring guides and inventories alongside this guide under
+`docs/`; `docs/testing/` owns code verification and test setup. Reusable writing
+templates belong to the local technical-writing skill.
+
 Add new reader-facing pages to [docs/docs.json](docs.json) and link them from the
 [documentation map](README.md) or their owning overview. Use relative Markdown
 links and sentence-case headings, following neighboring pages. Follow the

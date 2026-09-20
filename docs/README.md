@@ -45,6 +45,9 @@ revision startup and runtime configuration.
 
 ## Contribute
 
+- [Driver documentation inventory](driver-docs-inventory.md): find base contracts and their documentation owners.
+- [Base Driver template](base-driver-docs-template.md): write driver contracts using the local technical-writing skill.
+
 - [Repository layout and conventions](layout.md): find code owners and choose where changes belong.
 - [Testing](testing/README.md): select a suite and prepare its environment.
 - [Local preview](local-preview.md): render and validate documentation.

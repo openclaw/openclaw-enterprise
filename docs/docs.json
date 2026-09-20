@@ -52,7 +52,12 @@
               },
               {
                 "group": "Contributing",
-                "pages": ["layout", "local-preview"]
+                "pages": [
+                  "layout",
+                  "local-preview",
+                  "driver-docs-inventory",
+                  "base-driver-docs-template"
+                ]
               }
             ]
           },
@@ -161,8 +166,6 @@
                 "pages": [
                   "testing/README",
                   "testing/local",
-                  "testing/driver-docs-inventory",
-                  "testing/base-driver-docs-template",
                   "testing/developer-skills",
                   "testing/autoreview",
                   "testing/ci"

@@ -1,7 +1,7 @@
 # Base Driver documentation template
 
 When writing or rewriting a base Driver contract, use the repository-owned
-[technical-writing template](../../.agents/skills/technical-writing/references/driver-contracts.md).
+[technical-writing template](../.agents/skills/technical-writing/references/driver-contracts.md).
 It is the canonical template used by the local technical-writing skill.
 
 The required sections are **Overview**, **Interface**, **IAM**, **Lifecycle**,
@@ -14,5 +14,5 @@ Start with the [Driver documentation inventory](driver-docs-inventory.md) to fin
 the existing owner. Base contracts belong in
 `docs/reference/drivers/<capability>.md`; backend configuration, setup commands,
 and backend-specific troubleshooting remain in implementation references.
-See the [ComputeDriver contract](../reference/drivers/compute.md) for an applied
+See the [ComputeDriver contract](reference/drivers/compute.md) for an applied
 example.
