@@ -24,6 +24,21 @@ See [current architecture](ARCHITECTURE.md) and
 for implemented behavior, and verify current code and tests before relying on a
 target-design capability. Update this note as these gaps close.
 
+## Native admin pilot exception
+
+The [approved native admin UI pilot](../specs/31-agent-native-admin-ui.md) permits
+trusted human operators with exact-Agent `administer` permission to enter the
+stock OpenClaw admin UI through OCC. OCC checks admission and session retention;
+it does not authorize each native command. This opt-in pilot deliberately grants
+full native administration and shared access to the selected gateway's exposed
+conversations and credentials. It does not extend to another Agent or platform IAM.
+
+OCE Configuration and immutable AgentRevision records remain authoritative for
+managed deployments. Native edits can diverge from those records; OCC neither
+imports them nor promises to reset persistent gateway state on redeployment.
+This is a bounded exception to per-operation mediation and audit, not a claim
+that the pilot implements all target-design guarantees.
+
 ## Summary
 
 OpenClaw Enterprise provides a multi-tenant control plane for configuring,

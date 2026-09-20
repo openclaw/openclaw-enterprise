@@ -1,5 +1,7 @@
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
-import { randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
+import type { Socket } from "node:net";
 import Fastify, {
   LogController,
   type FastifyError,
@@ -84,6 +86,25 @@ import {
   type ControllerWorkspaceFileReadResult,
   type ControllerWorkspaceFileWriteResult,
 } from "./gateway/contracts.ts";
+import {
+  nativeAdminConfigurationSupported,
+  nativeAdminGatewayHttpBase,
+  nativeAdminTarget,
+  normalizeNativeAdminDomain,
+  type NativeAdminAccessConfig,
+  type NativeAdminTarget,
+} from "./gateway/native-admin.ts";
+import {
+  proxyNativeAdminHttp as streamNativeAdminHttp,
+  proxyNativeAdminWebSocket,
+  type NativeAdminProxyContext,
+} from "./gateway/native-admin-proxy.ts";
+import {
+  NATIVE_ADMIN_EXCHANGE_CODE_TTL_MS,
+  NativeAdminExchangeLimitExceededError,
+  type NativeAdminExchangeStore,
+  NativeAdminExchangeValidationError,
+} from "./auth/native-admin-exchange.ts";
 
 export interface DevelopmentAdmission {
   readonly enabled: boolean;
@@ -107,6 +128,10 @@ export interface ControllerAppOptions {
   readonly auth: ControllerAuth;
   readonly workspaceFilesAccess?: ControllerWorkspaceFilesAccess;
   readonly workspaceFileRequestTimeoutMs?: number;
+  readonly nativeAdmin?: NativeAdminAccessConfig;
+  readonly nativeAdminExchangeStore?: NativeAdminExchangeStore;
+  readonly nativeAdminCookieSecret?: string;
+  readonly nativeAdminGatewayApiKey?: () => Promise<string>;
   readonly publicOrigin?: string;
   readonly provisionAuthAccount?: (
     seed: AuthPrincipalSeed,
@@ -126,6 +151,18 @@ interface RequestContext {
   readonly subject: string;
   readonly admissionDecisionId: string;
   readonly operation: OccApiRoute;
+}
+
+interface NativeAdminProxyResolution {
+  readonly parentSessionId: string;
+  readonly actorId: string;
+  readonly actorIssuer: string;
+  readonly actorSubject: string;
+  readonly namespaceId: string;
+  readonly agentId: string;
+  readonly revisionId: string;
+  readonly target: NativeAdminTarget;
+  readonly gatewayBase: string;
 }
 
 interface ErrorDetail {
@@ -170,6 +207,9 @@ class RequestFailure extends Error {
 const DEFAULT_BODY_LIMIT = 64 * 1024;
 const WORKSPACE_FILE_BODY_LIMIT = 48 * 1024;
 const WORKSPACE_FILE_CONTENT_LIMIT = 16 * 1024;
+const NATIVE_ADMIN_PROXY_ADMISSION_TIMEOUT_MS = 5_000;
+const NATIVE_ADMIN_CLOSE_AUDIT_DRAIN_MS = 5_000;
+const NATIVE_ADMIN_COOKIE = "__Host-occ_native_admin";
 const LOOPBACK_ADDRESSES = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
 const RESOURCE_ID = {
@@ -192,6 +232,24 @@ function failure(
   details?: readonly ErrorDetail[],
 ): RequestFailure {
   return new RequestFailure(status, code, message, details);
+}
+
+function urlSafe(value: Buffer): string {
+  return value.toString("base64url");
+}
+
+function nativeAdminChallenge(verifier: string): string {
+  return urlSafe(createHash("sha256").update(verifier).digest());
+}
+
+function scriptJson(value: string): string {
+  return JSON.stringify(value).replaceAll("<", "\\u003c");
+}
+
+function readRecordBody(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 function ipv4(value: string): number | undefined {
@@ -756,6 +814,30 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       throw new Error("The controller public origin must be an absolute origin URL.");
     }
   }
+  const nativeAdminDomain = normalizeNativeAdminDomain(options.nativeAdmin?.domain);
+  if (options.nativeAdmin?.enabled === true) {
+    if (publicOrigin === undefined) {
+      throw new Error("Native admin UI access requires OCC public origin configuration.");
+    }
+    if (new URL(publicOrigin).protocol !== "https:") {
+      throw new Error("Native admin UI access requires an HTTPS public origin.");
+    }
+    if (nativeAdminDomain === undefined) {
+      throw new Error("Native admin UI access requires an Agent domain.");
+    }
+    if (options.nativeAdminExchangeStore === undefined) {
+      throw new Error("Native admin UI access requires an auth exchange store.");
+    }
+    if (
+      !isNonEmptyString(options.nativeAdminCookieSecret) ||
+      options.nativeAdminCookieSecret.length < 32
+    ) {
+      throw new Error("Native admin UI access requires a cookie signing secret.");
+    }
+    if (options.nativeAdminGatewayApiKey === undefined) {
+      throw new Error("Native admin UI access requires a private gateway API key.");
+    }
+  }
   validateTrustedDevelopmentCidrs(development);
 
   const app = Fastify({
@@ -811,6 +893,15 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   const contexts = new WeakMap<FastifyRequest, RequestContext>();
   const requestStartedAt = new WeakMap<FastifyRequest, bigint>();
   const factory = options.auditEventFactory ?? new AuditEventFactory();
+  const nativeAdminCookieKey =
+    options.nativeAdminCookieSecret === undefined
+      ? undefined
+      : createHash("sha256")
+          .update("openclaw-enterprise:native-admin-cookie\0")
+          .update(options.nativeAdminCookieSecret)
+          .digest();
+  const nativeAdminSockets = new Set<Socket>();
+  const nativeAdminCloseAudits = new Set<Promise<void>>();
   const createAuthAccountOperation = {
     operationId: "createAuthAccount",
     method: "POST",
@@ -858,6 +949,131 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     tags: ["Authentication"],
     schema: {},
   })) as unknown as readonly OccApiRoute[];
+  const nativeAdminStatusOperation = {
+    operationId: "getAgentNativeAdmin",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/native-admin",
+    action: "openclaw.agents.native_admin.read",
+    iamAction: "administer",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Resolve native admin UI launch availability for one Agent",
+    tags: ["Agents"],
+    schema: {},
+  } as unknown as OccApiRoute;
+  const nativeAdminLaunchOperation = {
+    operationId: "launchAgentNativeAdmin",
+    method: "POST",
+    path: "/namespaces/:namespaceId/agents/:agentId/native-admin/launch",
+    action: "openclaw.agents.native_admin.launch",
+    iamAction: "administer",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Issue one native admin UI browser exchange code",
+    tags: ["Agents"],
+    schema: {},
+  } as unknown as OccApiRoute;
+  const nativeAdminParamsSchema = {
+    type: "object",
+    additionalProperties: false,
+    required: ["namespaceId", "agentId"],
+    properties: {
+      namespaceId: { type: "string", minLength: 1, maxLength: 200 },
+      agentId: { type: "string", minLength: 1, maxLength: 200 },
+    },
+  };
+  const nativeAdminMetaSchema = {
+    type: "object",
+    additionalProperties: false,
+    required: ["requestId"],
+    properties: { requestId: { type: "string" } },
+  };
+  const nativeAdminErrorSchema = { $ref: "ErrorResponse#" };
+  const nativeAdminStatusDataSchema = {
+    type: "object",
+    additionalProperties: false,
+    required: ["status"],
+    properties: {
+      status: {
+        type: "string",
+        enum: ["available", "disabled", "stopped", "unavailable", "unsupported"],
+      },
+      host: { type: "string" },
+      origin: { type: "string", format: "uri" },
+      activeRevisionId: { type: "string" },
+      bootstrapUrl: { type: "string", format: "uri" },
+    },
+  };
+  const nativeAdminStatusSchema = {
+    operationId: nativeAdminStatusOperation.operationId,
+    summary: nativeAdminStatusOperation.summary,
+    description:
+      "Requires a human session with administer permission on the exact Agent. Service API keys cannot launch or inspect native admin UI access.",
+    tags: [...nativeAdminStatusOperation.tags],
+    security: [{ sessionCookie: [] }],
+    "x-openclaw-permissions": [{ action: "administer", resourceKind: "agent", scope: "requested" }],
+    params: nativeAdminParamsSchema,
+    response: {
+      200: {
+        description: "OK",
+        type: "object",
+        additionalProperties: false,
+        required: ["data", "meta"],
+        properties: { data: nativeAdminStatusDataSchema, meta: nativeAdminMetaSchema },
+      },
+      401: { description: "Unauthorized", ...nativeAdminErrorSchema },
+      403: { description: "Forbidden", ...nativeAdminErrorSchema },
+      404: { description: "Not Found", ...nativeAdminErrorSchema },
+      503: { description: "Service Unavailable", ...nativeAdminErrorSchema },
+    },
+  } as DocumentedFastifySchema;
+  const nativeAdminLaunchSchema = {
+    operationId: nativeAdminLaunchOperation.operationId,
+    summary: nativeAdminLaunchOperation.summary,
+    description:
+      "Requires a human session with administer permission on the exact Agent. Issues a short-lived browser-bound native admin exchange code; service API keys cannot launch native admin UI access.",
+    tags: [...nativeAdminLaunchOperation.tags],
+    security: [{ sessionCookie: [] }],
+    "x-openclaw-permissions": [{ action: "administer", resourceKind: "agent", scope: "requested" }],
+    params: nativeAdminParamsSchema,
+    body: {
+      type: "object",
+      additionalProperties: false,
+      required: ["state", "challenge", "host", "revisionId"],
+      properties: {
+        state: { type: "string", minLength: 1, maxLength: 512 },
+        challenge: { type: "string", minLength: 1, maxLength: 512 },
+        host: { type: "string", minLength: 1, maxLength: 253 },
+        revisionId: { type: "string", minLength: 1, maxLength: 200 },
+      },
+    },
+    response: {
+      200: {
+        description: "OK",
+        type: "object",
+        additionalProperties: false,
+        required: ["data", "meta"],
+        properties: {
+          data: {
+            type: "object",
+            additionalProperties: false,
+            required: ["url", "expiresAt"],
+            properties: {
+              url: { type: "string", format: "uri" },
+              expiresAt: { type: "string", format: "date-time" },
+            },
+          },
+          meta: nativeAdminMetaSchema,
+        },
+      },
+      400: { description: "Bad Request", ...nativeAdminErrorSchema },
+      401: { description: "Unauthorized", ...nativeAdminErrorSchema },
+      403: { description: "Forbidden", ...nativeAdminErrorSchema },
+      409: { description: "Conflict", ...nativeAdminErrorSchema },
+      429: { description: "Too Many Requests", ...nativeAdminErrorSchema },
+      503: { description: "Service Unavailable", ...nativeAdminErrorSchema },
+    },
+  } as DocumentedFastifySchema;
 
   function event(
     operation: OccApiRoute,
@@ -942,6 +1158,224 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
   function dependencyUnavailable(): RequestFailure {
     return failure(503, "DEPENDENCY_UNAVAILABLE", "A required platform dependency is unavailable.");
+  }
+
+  function nativeAdminExchangeFailure(error: unknown): RequestFailure {
+    if (error instanceof NativeAdminExchangeValidationError) {
+      return failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
+    }
+    if (error instanceof NativeAdminExchangeLimitExceededError) {
+      return failure(
+        429,
+        "TOO_MANY_REQUESTS",
+        "Too many native admin launch exchanges are pending.",
+      );
+    }
+    return dependencyUnavailable();
+  }
+
+  async function requireNativeAdminHumanSession(request: FastifyRequest, context: RequestContext) {
+    const admitted = admissions.get(request);
+    if (admitted?.method !== "session") {
+      throw failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
+    }
+    const session = await options.auth.resolveSession(request);
+    if (
+      session === undefined ||
+      session.userId !== context.subject ||
+      Date.parse(session.expiresAt) <= Date.now()
+    ) {
+      throw failure(401, "UNAUTHENTICATED", "The caller did not provide valid credentials.");
+    }
+    return session;
+  }
+
+  async function appendNativeAdminSocketAudit(
+    eventName: "connect" | "close",
+    resolution: NativeAdminProxyResolution,
+  ): Promise<void> {
+    await options.auditSink.append(
+      factory.create({
+        installationId,
+        namespaceId: resolution.namespaceId,
+        kind: "mutation",
+        source: "occ",
+        actor: {
+          principalId: resolution.actorId,
+          issuer: resolution.actorIssuer,
+          subject: resolution.actorSubject,
+        },
+        iamDriverId: selectedIAMDriver().id,
+        authorization: {
+          principalId: resolution.actorId,
+          action: "administer",
+          resource: {
+            kind: "agent",
+            id: resolution.agentId,
+            namespaceId: resolution.namespaceId,
+          },
+        },
+        action: `openclaw.agents.native_admin.websocket.${eventName}`,
+        resource: {
+          kind: "agent",
+          id: resolution.agentId,
+          namespaceId: resolution.namespaceId,
+        },
+        outcome: "success",
+        details: {
+          nativeAdmin: {
+            event: eventName,
+            parentSessionId: resolution.parentSessionId,
+            revisionId: resolution.revisionId,
+            host: resolution.target.host,
+          },
+        },
+      }),
+    );
+  }
+
+  function nativeAdminAuthority(
+    hostHeader: string | readonly string[] | undefined,
+  ): string | undefined {
+    if (Array.isArray(hostHeader) || !isNonEmptyString(hostHeader)) {
+      return undefined;
+    }
+    const raw = hostHeader.trim();
+    if (raw !== hostHeader) {
+      return undefined;
+    }
+    const trimmed = raw.toLowerCase();
+    if (
+      trimmed.includes("/") ||
+      trimmed.includes("\\") ||
+      trimmed.includes("@") ||
+      trimmed.includes("?") ||
+      trimmed.includes("#")
+    ) {
+      return undefined;
+    }
+    try {
+      const parsed = new URL(`https://${trimmed}`);
+      if (parsed.username.length > 0 || parsed.password.length > 0 || parsed.pathname !== "/") {
+        return undefined;
+      }
+      return parsed.host;
+    } catch {
+      return undefined;
+    }
+  }
+
+  function nativeAdminHostname(
+    hostHeader: string | readonly string[] | undefined,
+  ): string | undefined {
+    const authority = nativeAdminAuthority(hostHeader);
+    if (authority === undefined) {
+      return undefined;
+    }
+    return new URL(`https://${authority}`).hostname.toLowerCase();
+  }
+
+  function publicOriginHostname(): string | undefined {
+    if (publicOrigin === undefined) {
+      return undefined;
+    }
+    try {
+      return new URL(publicOrigin).hostname.toLowerCase();
+    } catch {
+      return undefined;
+    }
+  }
+
+  function isNativeAdminDomainHost(hostname: string | undefined): hostname is string {
+    if (hostname === undefined || nativeAdminDomain === undefined) {
+      return false;
+    }
+    return hostname !== publicOriginHostname() && hostname.endsWith(`.${nativeAdminDomain}`);
+  }
+
+  function isNativeAdminAgentHost(hostname: string | undefined): hostname is string {
+    return isNativeAdminDomainHost(hostname) && hostname.startsWith("agent-");
+  }
+
+  function nativeAdminPathname(url: string | undefined): string {
+    return url?.split("?", 1)[0] || "/";
+  }
+
+  function nativeAdminReservedEndpoint(url: string | undefined): string | undefined {
+    const pathname = nativeAdminPathname(url);
+    return pathname === "/__occ/native-admin/bootstrap" ||
+      pathname === "/__occ/native-admin/callback"
+      ? pathname
+      : undefined;
+  }
+
+  function isNativeAdminReservedPrefix(url: string | undefined): boolean {
+    return nativeAdminPathname(url).startsWith("/__occ/native-admin/");
+  }
+
+  async function boundedNativeAdminAdmission<T>(operation: Promise<T>): Promise<T | undefined> {
+    let timeout: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        operation,
+        new Promise<undefined>((resolve) => {
+          const timer = setTimeout(
+            () => resolve(undefined),
+            NATIVE_ADMIN_PROXY_ADMISSION_TIMEOUT_MS,
+          );
+          timeout = timer;
+          timer.unref();
+        }),
+      ]);
+    } catch {
+      return undefined;
+    } finally {
+      if (timeout !== undefined) {
+        clearTimeout(timeout);
+      }
+    }
+  }
+
+  async function drainNativeAdminCloseAudits(): Promise<void> {
+    if (nativeAdminCloseAudits.size === 0) {
+      return;
+    }
+    let timeout: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        Promise.allSettled([...nativeAdminCloseAudits]),
+        new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, NATIVE_ADMIN_CLOSE_AUDIT_DRAIN_MS);
+          timeout = timer;
+          timer.unref();
+        }),
+      ]);
+    } finally {
+      if (timeout !== undefined) {
+        clearTimeout(timeout);
+      }
+    }
+  }
+
+  async function nativeAdminProxyTransportContext(
+    resolution: NativeAdminProxyResolution | undefined,
+  ): Promise<NativeAdminProxyContext | undefined> {
+    if (resolution === undefined || options.nativeAdminGatewayApiKey === undefined) {
+      return undefined;
+    }
+    try {
+      const apiKey = await options.nativeAdminGatewayApiKey();
+      if (!isNonEmptyString(apiKey)) {
+        return undefined;
+      }
+      return {
+        gatewayBase: resolution.gatewayBase,
+        agentOrigin: resolution.target.origin,
+        apiKey,
+      };
+    } catch {
+      return undefined;
+    }
   }
 
   function requireWorkspaceFileCsrf(request: FastifyRequest, requireOrigin: boolean): void {
@@ -1161,6 +1595,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   app.addHook("onRequest", async (request, reply) => {
     requestStartedAt.set(request, process.hrtime.bigint());
     responseHeaders(reply, request.id);
+    if (await interceptNativeAdminHttp(request, reply)) {
+      return;
+    }
     const contentLength = request.headers["content-length"];
     if (typeof contentLength === "string" && Number(contentLength) > bodyLimit) {
       throw failure(413, "PAYLOAD_TOO_LARGE", "The request body exceeds the permitted size.");
@@ -2174,6 +2611,312 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     throw failure(404, "NOT_FOUND", "The requested platform resource was not found.");
   }
 
+  type NativeAdminTargetStatus = {
+    readonly agent: Agent;
+    readonly revision: AgentRevision;
+    readonly target: NativeAdminTarget;
+  };
+  type NativeAdminAvailability =
+    | { readonly status: "disabled" | "unavailable" }
+    | ({ readonly status: "stopped" | "unsupported" } & NativeAdminTargetStatus)
+    | ({ readonly status: "available"; readonly gatewayBase: string } & NativeAdminTargetStatus);
+
+  async function resolveNativeAdminAvailability(input: {
+    readonly actorId: string;
+    readonly namespaceId: string;
+    readonly agentId: string;
+  }): Promise<NativeAdminAvailability> {
+    if (options.nativeAdmin?.enabled !== true) {
+      return { status: "disabled" };
+    }
+    if (!controller) {
+      throw failure(404, "NOT_FOUND", "The requested platform resource was not found.");
+    }
+    if (publicOrigin === undefined || nativeAdminDomain === undefined) {
+      throw dependencyUnavailable();
+    }
+    let selection;
+    try {
+      selection = await controller.getAdministerableActiveAgentRevision(
+        input.actorId,
+        input.namespaceId,
+        input.agentId,
+      );
+    } catch (error) {
+      const errorName = error instanceof Error ? error.name : undefined;
+      if (
+        error instanceof DependencyUnavailableError ||
+        errorName === "DependencyUnavailableError"
+      ) {
+        return { status: "unavailable" };
+      }
+      if (error instanceof AuthorizationDeniedError || errorName === "AuthorizationDeniedError") {
+        throw failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
+      }
+      throw error;
+    }
+    const { agent, revision } = selection;
+    const target = nativeAdminTarget({
+      publicOrigin,
+      installationId,
+      agent,
+      revision,
+      domain: nativeAdminDomain,
+    });
+    if (agent.desiredRuntimeState !== "running") {
+      return { status: "stopped", agent, revision, target };
+    }
+    if (!nativeAdminConfigurationSupported(revision, target.origin)) {
+      return { status: "unsupported", agent, revision, target };
+    }
+    let compute: ComputeDriver;
+    try {
+      compute = controller.selectedDriver("compute");
+    } catch {
+      throw dependencyUnavailable();
+    }
+    const gatewayBase = nativeAdminGatewayHttpBase(compute.getGatewayEndpoint?.(revision) ?? "");
+    if (gatewayBase === undefined) {
+      return { status: "unsupported", agent, revision, target };
+    }
+    return { status: "available", agent, revision, target, gatewayBase };
+  }
+
+  function nativeAdminAvailabilityData(availability: NativeAdminAvailability) {
+    if (!("target" in availability)) {
+      return { status: availability.status };
+    }
+    return {
+      status: availability.status,
+      host: availability.target.host,
+      origin: availability.target.origin,
+      activeRevisionId: availability.revision.id,
+      bootstrapUrl: availability.target.bootstrapUrl,
+    };
+  }
+
+  async function requireAvailableNativeAdminTarget(input: {
+    readonly actorId: string;
+    readonly namespaceId: string;
+    readonly agentId: string;
+    readonly expectedHost?: string;
+    readonly expectedRevisionId?: string;
+  }) {
+    if (!controller) {
+      throw failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
+    }
+    const availability = await resolveNativeAdminAvailability(input);
+    if (availability.status === "disabled") {
+      throw failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
+    }
+    if (
+      availability.status === "unsupported" &&
+      input.expectedRevisionId !== undefined &&
+      availability.revision.id !== input.expectedRevisionId
+    ) {
+      throw failure(409, "RESOURCE_CONFLICT", "The active AgentRevision changed.");
+    }
+    if (availability.status !== "available") {
+      throw dependencyUnavailable();
+    }
+    if (
+      input.expectedRevisionId !== undefined &&
+      availability.revision.id !== input.expectedRevisionId
+    ) {
+      throw failure(409, "RESOURCE_CONFLICT", "The active AgentRevision changed.");
+    }
+    if (input.expectedHost !== undefined && availability.target.host !== input.expectedHost) {
+      throw failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
+    }
+    return availability;
+  }
+
+  async function getNativeAdminStatus(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+    const context = contexts.get(request);
+    if (!context) {
+      throw dependencyUnavailable();
+    }
+    const params = request.params as Record<string, string | undefined>;
+    const namespaceId = params.namespaceId;
+    const agentId = params.agentId;
+    if (!isNonEmptyString(namespaceId) || !isNonEmptyString(agentId)) {
+      throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
+    }
+    await requireNativeAdminHumanSession(request, context);
+    const availability = await resolveNativeAdminAvailability({
+      actorId: context.actorId,
+      namespaceId,
+      agentId,
+    });
+    reply.send({
+      data: nativeAdminAvailabilityData(availability),
+      meta: { requestId: request.id },
+    });
+  }
+
+  function signNativeAdminCookie(payload: Record<string, unknown>): string {
+    if (nativeAdminCookieKey === undefined) {
+      throw dependencyUnavailable();
+    }
+    const encoded = urlSafe(Buffer.from(JSON.stringify(payload), "utf8"));
+    const signature = urlSafe(createHmac("sha256", nativeAdminCookieKey).update(encoded).digest());
+    return `${encoded}.${signature}`;
+  }
+
+  async function launchNativeAdmin(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+    requireWorkspaceFileCsrf(request, true);
+    const context = contexts.get(request);
+    if (!context) {
+      throw dependencyUnavailable();
+    }
+    if (options.nativeAdminExchangeStore === undefined) {
+      throw dependencyUnavailable();
+    }
+    const params = request.params as Record<string, string | undefined>;
+    const namespaceId = params.namespaceId;
+    const agentId = params.agentId;
+    if (!isNonEmptyString(namespaceId) || !isNonEmptyString(agentId)) {
+      throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
+    }
+    const body = readRecordBody(request.body);
+    const allowed = new Set(["state", "challenge", "host", "revisionId"]);
+    if (
+      Object.keys(body).some((key) => !allowed.has(key)) ||
+      !isNonEmptyString(body.state) ||
+      !isNonEmptyString(body.challenge) ||
+      !isNonEmptyString(body.host) ||
+      !isNonEmptyString(body.revisionId)
+    ) {
+      throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
+    }
+    const session = await requireNativeAdminHumanSession(request, context);
+    const { target } = await requireAvailableNativeAdminTarget({
+      actorId: context.actorId,
+      namespaceId,
+      agentId,
+      expectedHost: body.host,
+      expectedRevisionId: body.revisionId,
+    });
+    const codeExpiresAt = new Date(
+      Math.min(Date.now() + NATIVE_ADMIN_EXCHANGE_CODE_TTL_MS, Date.parse(session.expiresAt)),
+    );
+    let code: string;
+    try {
+      code = await options.nativeAdminExchangeStore.issue({
+        parentSessionId: session.id,
+        parentUserId: session.userId,
+        actorId: context.actorId,
+        actorIssuer: context.issuer,
+        actorSubject: context.subject,
+        parentExpiresAt: session.expiresAt,
+        namespaceId,
+        agentId,
+        revisionId: body.revisionId,
+        host: target.host,
+        state: body.state,
+        challenge: body.challenge,
+        expiresAt: codeExpiresAt.toISOString(),
+      });
+    } catch (error) {
+      throw nativeAdminExchangeFailure(error);
+    }
+    const callback = new URL("/__occ/native-admin/callback", target.origin);
+    callback.searchParams.set("code", code);
+    callback.searchParams.set("state", body.state);
+    await options.auditSink.append(
+      event(
+        nativeAdminLaunchOperation,
+        request,
+        { kind: "agent", id: agentId, namespaceId },
+        "mutation",
+        context,
+      ),
+    );
+    reply.send({
+      data: { url: callback.toString(), expiresAt: codeExpiresAt.toISOString() },
+      meta: { requestId: request.id },
+    });
+  }
+
+  async function redeemNativeAdmin(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+    if (options.nativeAdminExchangeStore === undefined) {
+      throw dependencyUnavailable();
+    }
+    const body = readRecordBody(request.body);
+    const allowed = new Set(["code", "state", "verifier"]);
+    if (
+      Object.keys(body).some((key) => !allowed.has(key)) ||
+      !isNonEmptyString(body.code) ||
+      !isNonEmptyString(body.state) ||
+      !isNonEmptyString(body.verifier)
+    ) {
+      throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
+    }
+    let record;
+    try {
+      record = await options.nativeAdminExchangeStore.consume(body.code);
+    } catch (error) {
+      throw nativeAdminExchangeFailure(error);
+    }
+    if (
+      record === undefined ||
+      record.state !== body.state ||
+      record.challenge !== nativeAdminChallenge(body.verifier)
+    ) {
+      throw failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
+    }
+    const session = await options.auth.resolveSessionById(record.parentSessionId);
+    if (
+      session === undefined ||
+      session.userId !== record.parentUserId ||
+      Date.parse(session.expiresAt) <= Date.now()
+    ) {
+      throw failure(401, "UNAUTHENTICATED", "The caller did not provide valid credentials.");
+    }
+    const currentActor = await resolveNativeAdminActor({
+      actorId: record.actorId,
+      actorIssuer: record.actorIssuer,
+      actorSubject: record.actorSubject,
+    });
+    if (currentActor === undefined) {
+      throw failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
+    }
+    const resolved = await requireAvailableNativeAdminTarget({
+      actorId: currentActor,
+      namespaceId: record.namespaceId,
+      agentId: record.agentId,
+      expectedHost: record.host,
+      expectedRevisionId: record.revisionId,
+    });
+    const requestAuthority = nativeAdminAuthority(request.headers.host);
+    const requestOrigin = request.headers.origin;
+    if (
+      requestAuthority !== new URL(resolved.target.origin).host.toLowerCase() ||
+      requestOrigin !== resolved.target.origin
+    ) {
+      throw failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
+    }
+    const expiresAt = new Date(Date.parse(session.expiresAt));
+    const maxAge = Math.max(0, Math.floor((expiresAt.getTime() - Date.now()) / 1000));
+    const cookie = signNativeAdminCookie({
+      parentSessionId: record.parentSessionId,
+      parentUserId: record.parentUserId,
+      actorId: record.actorId,
+      actorIssuer: record.actorIssuer,
+      actorSubject: record.actorSubject,
+      namespaceId: record.namespaceId,
+      agentId: record.agentId,
+      revisionId: record.revisionId,
+      host: record.host,
+      expiresAt: expiresAt.toISOString(),
+    });
+    reply.header(
+      "set-cookie",
+      `${NATIVE_ADMIN_COOKIE}=${cookie}; Path=/; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Lax`,
+    );
+    reply.send({ data: { url: "/" }, meta: { requestId: request.id } });
+  }
+
   void app.register(async (routes) => {
     const meta = {
       type: "object",
@@ -2602,6 +3345,22 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     routes.addSchema(ErrorResponse);
     routes.addSchema(AgentRuntimeCredentialResponse);
     routes.addSchema(SecretResponse);
+    routes.route({
+      method: "GET",
+      url: nativeAdminStatusOperation.path,
+      schema: nativeAdminStatusSchema,
+      onRequest: async (request) => admit(request, nativeAdminStatusOperation),
+      preHandler: async (request) => resolveIdentity(request, nativeAdminStatusOperation),
+      handler: getNativeAdminStatus,
+    });
+    routes.route({
+      method: "POST",
+      url: nativeAdminLaunchOperation.path,
+      schema: nativeAdminLaunchSchema,
+      onRequest: async (request) => admit(request, nativeAdminLaunchOperation),
+      preHandler: async (request) => resolveIdentity(request, nativeAdminLaunchOperation),
+      handler: launchNativeAdmin,
+    });
     for (const operation of occApiRoutes) {
       const permissions = requiredPermissions(operation);
       const schema: DocumentedFastifySchema = {
@@ -2649,9 +3408,416 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   });
   app.route({
     method: ["GET", "HEAD"],
+    url: "/console/native-admin-launch",
+    schema: { hide: true } as FastifySchema,
+    handler: async (request, reply) => serveNativeAdminLaunchPage(request, reply),
+  });
+  app.route({
+    method: ["GET", "HEAD"],
     url: "/console/*",
     handler: async (request, reply) => serveConsole(request, reply),
   });
+  app.route({
+    method: ["GET", "HEAD"],
+    url: "/__occ/native-admin/bootstrap",
+    schema: { hide: true } as FastifySchema,
+    handler: async (request, reply) => serveNativeAdminBootstrap(request, reply),
+  });
+  app.route({
+    method: ["GET", "HEAD"],
+    url: "/__occ/native-admin/callback",
+    schema: { hide: true } as FastifySchema,
+    handler: async (request, reply) => serveNativeAdminCallback(request, reply),
+  });
+  app.post(
+    "/__occ/native-admin/callback",
+    { schema: { hide: true } as FastifySchema },
+    async (request, reply) => redeemNativeAdmin(request, reply),
+  );
+
+  app.server.on("upgrade", (request, socket, head) => {
+    void handleNativeAdminUpgrade(request, socket as Socket, head);
+  });
+
+  app.addHook("preClose", async () => {
+    await Promise.all(
+      [...nativeAdminSockets].map(
+        (socket) =>
+          new Promise<void>((resolve) => {
+            socket.once("close", () => resolve());
+            socket.destroy();
+          }),
+      ),
+    );
+    nativeAdminSockets.clear();
+    await drainNativeAdminCloseAudits();
+  });
+
+  function nativeAdminPage(reply: FastifyReply, body: string, nonce: string): void {
+    reply.header(
+      "content-security-policy",
+      [
+        "default-src 'self'",
+        "base-uri 'none'",
+        "connect-src 'self'",
+        "form-action 'none'",
+        "frame-ancestors 'none'",
+        "object-src 'none'",
+        `script-src 'nonce-${nonce}'`,
+        "style-src 'self'",
+      ].join("; "),
+    );
+    reply.header("content-type", "text/html; charset=utf-8");
+    reply.header("referrer-policy", "no-referrer");
+    reply.send(body);
+  }
+
+  async function serveNativeAdminLaunchPage(
+    _request: FastifyRequest,
+    reply: FastifyReply,
+  ): Promise<void> {
+    const body = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Opening native admin UI</title>
+    <link rel="stylesheet" href="/console/console.css" />
+    <script type="module" src="/console/native-admin-launch.mjs"></script>
+  </head>
+  <body>
+    <div id="app"><main class="auth"><p class="brand">OpenClaw Enterprise</p><h1>Opening native admin UI</h1><p class="muted" role="status">Checking your session and Agent access.</p></main></div>
+  </body>
+</html>`;
+    reply.header("content-security-policy", CONSOLE_CONTENT_SECURITY_POLICY);
+    reply.header("content-type", "text/html; charset=utf-8");
+    reply.header("referrer-policy", "no-referrer");
+    reply.send(body);
+  }
+
+  async function serveNativeAdminBootstrap(
+    request: FastifyRequest,
+    reply: FastifyReply,
+  ): Promise<void> {
+    if (publicOrigin === undefined) {
+      throw dependencyUnavailable();
+    }
+    const query = request.query as Record<string, unknown>;
+    const namespaceId = query.namespace;
+    const agentId = query.agent;
+    const revisionId = query.revision;
+    if (
+      Object.keys(query).some((key) => !["namespace", "agent", "revision"].includes(key)) ||
+      !isNonEmptyString(namespaceId) ||
+      !isNonEmptyString(agentId) ||
+      !isNonEmptyString(revisionId)
+    ) {
+      throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
+    }
+    const nonce = urlSafe(randomBytes(16));
+    const consoleLaunch = new URL("/console/native-admin-launch", publicOrigin);
+    const body = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8" /><meta name="referrer" content="no-referrer" /><title>Opening native admin UI</title></head>
+<body><p role="status">Opening native admin UI…</p><script type="module" nonce="${nonce}">
+const namespaceId = ${scriptJson(namespaceId)};
+const agentId = ${scriptJson(agentId)};
+const revisionId = ${scriptJson(revisionId)};
+const consoleLaunch = ${scriptJson(consoleLaunch.toString())};
+function randomUrlSafe(bytes) {
+  const data = new Uint8Array(bytes);
+  crypto.getRandomValues(data);
+  return btoa(String.fromCharCode(...data)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
+const state = randomUrlSafe(24);
+const verifier = randomUrlSafe(32);
+const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+const challenge = btoa(String.fromCharCode(...new Uint8Array(digest))).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+sessionStorage.setItem("occ-native-admin:" + state, verifier);
+const next = new URL(consoleLaunch);
+next.searchParams.set("namespace", namespaceId);
+next.searchParams.set("agent", agentId);
+next.searchParams.set("revision", revisionId);
+next.searchParams.set("host", location.hostname);
+next.searchParams.set("state", state);
+next.searchParams.set("challenge", challenge);
+location.replace(next);
+</script></body></html>`;
+    nativeAdminPage(reply, body, nonce);
+  }
+
+  async function serveNativeAdminCallback(
+    request: FastifyRequest,
+    reply: FastifyReply,
+  ): Promise<void> {
+    const query = request.query as Record<string, unknown>;
+    const code = query.code;
+    const state = query.state;
+    if (
+      Object.keys(query).some((key) => !["code", "state"].includes(key)) ||
+      !isNonEmptyString(code) ||
+      !isNonEmptyString(state)
+    ) {
+      throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
+    }
+    const nonce = urlSafe(randomBytes(16));
+    const body = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8" /><meta name="referrer" content="no-referrer" /><title>Opening native admin UI</title></head>
+<body><p role="status">Completing native admin sign-in…</p><script type="module" nonce="${nonce}">
+const code = ${scriptJson(code)};
+const state = ${scriptJson(state)};
+const verifier = sessionStorage.getItem("occ-native-admin:" + state);
+sessionStorage.removeItem("occ-native-admin:" + state);
+if (!verifier) {
+  document.body.textContent = "Native admin sign-in expired. Reopen the native admin UI from OCE.";
+} else {
+  const response = await fetch("/__occ/native-admin/callback", {
+    method: "POST",
+    credentials: "same-origin",
+    cache: "no-store",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ code, state, verifier }),
+  });
+  if (!response.ok) {
+    document.body.textContent = "Native admin sign-in was denied. Reopen the native admin UI from OCE.";
+  } else {
+    history.replaceState(null, "", "/");
+    location.replace("/");
+  }
+}
+</script></body></html>`;
+    nativeAdminPage(reply, body, nonce);
+  }
+
+  function nativeAdminCookieValue(headers: IncomingHttpHeaders): string | undefined {
+    const header = headers.cookie;
+    if (typeof header !== "string") {
+      return undefined;
+    }
+    for (const cookie of header.split(";")) {
+      const [name, ...value] = cookie.trim().split("=");
+      if (name === NATIVE_ADMIN_COOKIE) {
+        return value.join("=");
+      }
+    }
+    return undefined;
+  }
+
+  function verifyNativeAdminCookie(
+    headers: IncomingHttpHeaders,
+  ): Record<string, unknown> | undefined {
+    if (nativeAdminCookieKey === undefined) {
+      return undefined;
+    }
+    const value = nativeAdminCookieValue(headers);
+    const [encoded, signature, extra] = value?.split(".") ?? [];
+    if (
+      extra !== undefined ||
+      !isNonEmptyString(encoded) ||
+      !isNonEmptyString(signature) ||
+      !/^[A-Za-z0-9_-]+$/.test(encoded) ||
+      !/^[A-Za-z0-9_-]+$/.test(signature)
+    ) {
+      return undefined;
+    }
+    const expected = urlSafe(createHmac("sha256", nativeAdminCookieKey).update(encoded).digest());
+    const left = Buffer.from(signature);
+    const right = Buffer.from(expected);
+    if (left.length !== right.length || !timingSafeEqual(left, right)) {
+      return undefined;
+    }
+    let payload: unknown;
+    try {
+      payload = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+    } catch {
+      return undefined;
+    }
+    if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+      return undefined;
+    }
+    return payload as Record<string, unknown>;
+  }
+
+  async function resolveNativeAdminActor(input: {
+    readonly actorId: string;
+    readonly actorIssuer: string;
+    readonly actorSubject: string;
+  }): Promise<string | undefined> {
+    try {
+      const identity = await selectedIAMDriver().lookupIdentity({
+        issuer: input.actorIssuer,
+        subject: input.actorSubject,
+      });
+      if (
+        identity?.kind !== "principal" ||
+        identity.id !== input.actorId ||
+        identity.issuer !== input.actorIssuer ||
+        identity.subject !== input.actorSubject
+      ) {
+        return undefined;
+      }
+      return identity.id;
+    } catch {
+      return undefined;
+    }
+  }
+
+  async function nativeAdminProxyContext(
+    headers: IncomingHttpHeaders,
+    hostname: string,
+  ): Promise<NativeAdminProxyResolution | undefined> {
+    const payload = verifyNativeAdminCookie(headers);
+    if (payload === undefined) {
+      return undefined;
+    }
+    const {
+      parentSessionId,
+      parentUserId,
+      actorId,
+      actorIssuer,
+      actorSubject,
+      namespaceId,
+      agentId,
+      revisionId,
+      host,
+      expiresAt,
+    } = payload;
+    if (
+      !isNonEmptyString(parentSessionId) ||
+      !isNonEmptyString(parentUserId) ||
+      !isNonEmptyString(actorId) ||
+      !isNonEmptyString(actorIssuer) ||
+      !isNonEmptyString(actorSubject) ||
+      !isNonEmptyString(namespaceId) ||
+      !isNonEmptyString(agentId) ||
+      !isNonEmptyString(revisionId) ||
+      !isNonEmptyString(host) ||
+      !isNonEmptyString(expiresAt) ||
+      Date.parse(expiresAt) <= Date.now() ||
+      host !== hostname
+    ) {
+      return undefined;
+    }
+    const session = await options.auth.resolveSessionById(parentSessionId);
+    if (session === undefined || session.userId !== parentUserId) {
+      return undefined;
+    }
+    const currentActor = await resolveNativeAdminActor({ actorId, actorIssuer, actorSubject });
+    if (currentActor === undefined) {
+      return undefined;
+    }
+    const resolved = await requireAvailableNativeAdminTarget({
+      actorId: currentActor,
+      namespaceId,
+      agentId,
+      expectedHost: host,
+      expectedRevisionId: revisionId,
+    });
+    const requestAuthority = nativeAdminAuthority(headers.host);
+    if (requestAuthority !== new URL(resolved.target.origin).host.toLowerCase()) {
+      return undefined;
+    }
+    return {
+      parentSessionId,
+      actorId: currentActor,
+      actorIssuer,
+      actorSubject,
+      namespaceId,
+      agentId,
+      revisionId,
+      target: resolved.target,
+      gatewayBase: resolved.gatewayBase,
+    };
+  }
+
+  async function interceptNativeAdminHttp(
+    request: FastifyRequest,
+    reply: FastifyReply,
+  ): Promise<boolean> {
+    const hostname = nativeAdminHostname(request.headers.host);
+    if (!isNativeAdminDomainHost(hostname)) {
+      return false;
+    }
+    if (nativeAdminReservedEndpoint(request.url) !== undefined) {
+      return false;
+    }
+    if (isNativeAdminReservedPrefix(request.url) || !isNativeAdminAgentHost(hostname)) {
+      canonicalFailure(
+        reply,
+        failure(403, "FORBIDDEN", "The exact platform operation was not authorized."),
+      );
+      return true;
+    }
+    const resolution = await boundedNativeAdminAdmission(
+      nativeAdminProxyContext(request.headers, hostname),
+    );
+    const context = await boundedNativeAdminAdmission(nativeAdminProxyTransportContext(resolution));
+    if (context === undefined) {
+      canonicalFailure(
+        reply,
+        failure(403, "FORBIDDEN", "The exact platform operation was not authorized."),
+      );
+      return true;
+    }
+    await streamNativeAdminHttp({ request, reply, context });
+    return true;
+  }
+
+  async function handleNativeAdminUpgrade(
+    request: IncomingMessage,
+    socket: Socket,
+    head: Buffer,
+  ): Promise<void> {
+    const hostname = nativeAdminHostname(request.headers.host);
+    if (
+      !isNativeAdminAgentHost(hostname) ||
+      nativeAdminReservedEndpoint(request.url) !== undefined ||
+      isNativeAdminReservedPrefix(request.url)
+    ) {
+      socket.destroy();
+      return;
+    }
+    nativeAdminSockets.add(socket);
+    socket.once("close", () => nativeAdminSockets.delete(socket));
+    const resolution = await boundedNativeAdminAdmission(
+      nativeAdminProxyContext(request.headers, hostname),
+    );
+    const context = await boundedNativeAdminAdmission(nativeAdminProxyTransportContext(resolution));
+    if (resolution === undefined || context === undefined) {
+      socket.destroy();
+      return;
+    }
+    let connected = false;
+    proxyNativeAdminWebSocket({
+      request,
+      socket,
+      head,
+      context,
+      lease: async () =>
+        (await boundedNativeAdminAdmission(nativeAdminProxyContext(request.headers, hostname))) !==
+        undefined,
+      onConnect: async () => {
+        await appendNativeAdminSocketAudit("connect", resolution);
+        connected = true;
+      },
+      onClose: () => {
+        if (!connected) {
+          return;
+        }
+        const closeAudit = appendNativeAdminSocketAudit("close", resolution).catch((error) => {
+          app.log.warn({
+            event: "native_admin.websocket_audit_failed",
+            error,
+            namespaceId: resolution.namespaceId,
+            agentId: resolution.agentId,
+            revisionId: resolution.revisionId,
+          });
+        });
+        nativeAdminCloseAudits.add(closeAudit);
+        closeAudit.finally(() => nativeAdminCloseAudits.delete(closeAudit));
+      },
+    });
+  }
 
   async function serveConsole(request: FastifyRequest, reply: FastifyReply): Promise<void> {
     const pathname = request.url.split("?", 1)[0] ?? "";

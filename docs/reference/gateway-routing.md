@@ -172,6 +172,27 @@ it returns no endpoint when routing is unconfigured. The Docker Driver does
 not implement this method. Its localhost gateway port publication does not
 enable workspace-file access through the standard OCC composition.
 
+## Native admin UI routing
+
+Agent native admin UI access reuses the same private Envoy routing primitive as
+workspace files. The public browser origin is an operator-owned wildcard host
+served by the OCC API process, using `agentNativeAdmin.domain`; Envoy and Agent
+gateway Services remain private ClusterIP resources.
+
+The private Compute endpoint remains:
+
+```text
+wss://<private-host>/namespaces/<namespaceId>/agents/<agentId>
+```
+
+OCC converts that endpoint to `https:` for native UI HTTP traffic while keeping
+the same private authority and exact Agent base path. Workspace-file traffic
+continues to use the original WSS endpoint. The current source confirms
+availability, one-use launch, host-bound cookie redemption, HTTP proxying, and
+WebSocket upgrade proxying through the API process. Native-host requests are
+intercepted before the normal API not-found path; reserved OCC native-admin
+endpoints remain handled by OCC and cannot be proxied upstream.
+
 ## Source and verification
 
 - [Helm values](../../deploy/helm/openclaw-enterprise/values.yaml),

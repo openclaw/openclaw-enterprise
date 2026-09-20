@@ -198,6 +198,19 @@ access, the [HTTP API](api.md#get-namespacesnamespaceidagentsagentidworkspacefil
 for request and response schemas, and the [execution flow](../flows/workspace-files.md)
 for implementation details.
 
+## Native admin UI
+
+Trusted operators can open the selected Agent gateway's stock native admin UI
+when the Installation enables [Agent native admin UI access](agent-native-admin.md).
+The availability route requires exact Agent `administer`; `read` and `operate`
+are insufficient. The Agent must be desired running, have an active revision,
+and expose a private gateway endpoint through the selected Compute Driver.
+
+The native UI uses the Agent's derived browser host and the existing private
+gateway route. OCE does not turn native edits into Configuration changes or
+AgentRevision snapshots. Redeploy applies the managed revision again but does
+not erase all gateway-local state.
+
 ## Namespace ownership
 
 An Agent belongs to the Namespace in its creation URL. The controller assigns

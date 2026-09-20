@@ -33,6 +33,10 @@ auth:
   secretName: occ-auth
   secretKey: secret
 
+agentNativeAdmin:
+  enabled: false
+  domain: ""
+
 bootstrap:
   adminEmail: ""
   password:

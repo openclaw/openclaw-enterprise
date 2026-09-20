@@ -32,6 +32,7 @@
                   "guides/deploy/production-agents",
                   "guides/deploy/production-handoff",
                   "guides/deploy/credential-lifecycle",
+                  "guides/deploy/native-admin",
                   "guides/deploy/workspace-routing",
                   "guides/deploy/local-operations",
                   "guides/deploy/service-keys",
@@ -69,6 +70,7 @@
                 "pages": [
                   "reference/README",
                   "reference/agent-plugins",
+                  "reference/agent-native-admin",
                   "reference/agents",
                   "reference/agents/deployment",
                   "reference/api",
@@ -130,6 +132,7 @@
                 "pages": [
                   "flows/common-logging",
                   "flows/agent-plugins",
+                  "flows/agent-native-admin",
                   "flows/compute-driver-lifecycle-hooks",
                   "flows/configuration-driver",
                   "flows/configuration-driver/persistence-and-revisions",

@@ -44,6 +44,11 @@ const externalGatewayRoutingValues = {
   "gatewayRouting.hostname": "agents.example.internal",
   "gatewayRouting.issuerRef.name": "occ-private-issuer",
 };
+const agentNativeAdminValues = {
+  ...gatewayRoutingValues,
+  "agentNativeAdmin.enabled": "true",
+  "agentNativeAdmin.domain": "agents.example.invalid",
+};
 const databaseCaValues = {
   "database.caSecretName": "occ-rds-ca",
   "database.caKey": "ca.pem",
@@ -195,6 +200,46 @@ test("control-plane node selectors are optional unless configured", tooling, asy
     assert.equal(selected("Deployment", component).spec.template.spec.nodeSelector, undefined);
   }
 });
+
+test(
+  "Agent native admin pilot renders public host settings with private gateway routing",
+  tooling,
+  async () => {
+    const { stdout } = await render(agentNativeAdminValues);
+    const objects = await resources(stdout);
+    const deployment = (component) =>
+      objects.find(
+        ({ kind, metadata }) =>
+          kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === component,
+      );
+
+    const apiEnvironment = deployment("api").spec.template.spec.containers[0].env;
+    const workerEnvironment = deployment("worker").spec.template.spec.containers[0].env;
+    assert.deepEqual(
+      apiEnvironment.filter(({ name }) => name.startsWith("OCC_AGENT_NATIVE_ADMIN_")),
+      [
+        { name: "OCC_AGENT_NATIVE_ADMIN_ENABLED", value: "true" },
+        { name: "OCC_AGENT_NATIVE_ADMIN_DOMAIN", value: "agents.example.invalid" },
+      ],
+    );
+    assert.ok(!workerEnvironment.some(({ name }) => name.startsWith("OCC_AGENT_NATIVE_ADMIN_")));
+    assert.ok(apiEnvironment.some(({ name }) => name === "OCC_GATEWAY_API_KEY_PATH"));
+    assert.ok(objects.some(({ kind }) => kind === "Gateway"));
+    assert.ok(objects.some(({ kind }) => kind === "EnvoyProxy"));
+
+    const disabledObjects = await resources((await render()).stdout);
+    const disabledDeployment = (component) =>
+      disabledObjects.find(
+        ({ kind, metadata }) =>
+          kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === component,
+      );
+    const disabledApiEnvironment = disabledDeployment("api").spec.template.spec.containers[0].env;
+    assert.deepEqual(
+      disabledApiEnvironment.filter(({ name }) => name.startsWith("OCC_AGENT_NATIVE_ADMIN_")),
+      [{ name: "OCC_AGENT_NATIVE_ADMIN_ENABLED", value: "false" }],
+    );
+  },
+);
 
 test(
   "the production Helm chart renders private least-privilege runtime and ordered bootstrap",
@@ -603,6 +648,25 @@ test(
       [
         "ChatGPT Provider without an admin Secret key",
         { ...chatgptValues, "provider.chatgpt.key": "" },
+      ],
+      [
+        "Agent native admin enabled without a public DNS suffix",
+        { "agentNativeAdmin.enabled": "true" },
+      ],
+      [
+        "Agent native admin configured with a wildcard DNS suffix",
+        { ...agentNativeAdminValues, "agentNativeAdmin.domain": "*.example.invalid" },
+      ],
+      [
+        "Agent native admin configured with a URL",
+        { ...agentNativeAdminValues, "agentNativeAdmin.domain": "https://agents.example.invalid" },
+      ],
+      [
+        "Agent native admin enabled without private Gateway routing",
+        {
+          "agentNativeAdmin.enabled": "true",
+          "agentNativeAdmin.domain": "agents.example.invalid",
+        },
       ],
       [
         "retired workspace-files endpoint ConfigMap",

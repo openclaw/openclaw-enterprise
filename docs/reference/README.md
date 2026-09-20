@@ -24,6 +24,7 @@ runtime image for local deployment.
 | [Platform console](console.md)                    | Login, Agent creation, draft channels, revision inspection, and Namespace selection. |
 | [Namespaces](namespaces.md)                       | Tenant identity, placement, readiness, and deletion.                                 |
 | [Agents](agents.md)                               | Agent identity, mutable selection, immutable revisions, and workspace file routes.   |
+| [Agent native admin UI](agent-native-admin.md)    | Trusted-operator native UI launch, exact Agent authorization, and routing limits.    |
 | [Gateway routing with Envoy](gateway-routing.md)  | Private Agent endpoints, service keys, TLS, and network enforcement.                 |
 | [Configuration](configuration.md)                 | Native documents, generations, references, and snapshots.                            |
 | [Secrets](drivers/secret.md)                      | Namespace-owned Secret storage, metadata-only responses, env bindings, and redeploy. |

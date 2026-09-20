@@ -10,6 +10,7 @@ import {
   PostgresPlatformState,
 } from "@openclaw-enterprise/occ";
 import { createPostgresControllerAuth } from "../auth/index.ts";
+import { PostgresNativeAdminExchangeStore } from "../auth/native-admin-exchange.ts";
 import { createFastifyApp } from "../index.ts";
 import type {
   InstallationRuntimeDrivers,
@@ -19,7 +20,12 @@ import { providerSummariesFromDefinitions } from "./installation-config.ts";
 import { emitOccLogEvent, type OccLogger } from "../logging.ts";
 import { resolveApprovedProductionHarness } from "./production-harness.ts";
 import type { ControllerWorkspaceFilesAccess } from "../gateway/contracts.ts";
-import { createWorkspaceFilesAccess, validateWorkspaceFilesApiKeyPath } from "./workspace-files.ts";
+import type { NativeAdminAccessConfig } from "../gateway/native-admin.ts";
+import {
+  createWorkspaceFilesAccess,
+  readWorkspaceFilesApiKey,
+  validateWorkspaceFilesApiKeyPath,
+} from "./workspace-files.ts";
 
 export interface ProductionConfig {
   readonly mode: "production";
@@ -33,6 +39,7 @@ export interface ProductionConfig {
   readonly serviceAccountDriverFactory?: ServiceAccountDriverFactory;
   readonly workspaceFilesAccess?: ControllerWorkspaceFilesAccess;
   readonly gatewayApiKeyPath?: string;
+  readonly nativeAdmin?: NativeAdminAccessConfig;
 }
 
 export async function composeProduction(config: ProductionConfig) {
@@ -169,6 +176,9 @@ export async function composeProduction(config: ProductionConfig) {
       await validateWorkspaceFilesApiKeyPath(gatewayApiKeyPath);
       workspaceFilesAccess = createWorkspaceFilesAccess(computeDriver, gatewayApiKeyPath);
     }
+    if (config.nativeAdmin?.enabled === true && config.gatewayApiKeyPath === undefined) {
+      throw new Error("Native admin UI access requires OCC_GATEWAY_API_KEY_PATH.");
+    }
 
     const app = createFastifyApp({
       controller,
@@ -177,6 +187,14 @@ export async function composeProduction(config: ProductionConfig) {
       configurationDriver,
       secretDriver,
       publicOrigin: config.authBaseURL,
+      ...(config.nativeAdmin === undefined ? {} : { nativeAdmin: config.nativeAdmin }),
+      ...(config.nativeAdmin?.enabled === true
+        ? { nativeAdminExchangeStore: new PostgresNativeAdminExchangeStore(pool) }
+        : {}),
+      nativeAdminCookieSecret: config.authSecret,
+      ...(config.nativeAdmin?.enabled === true && config.gatewayApiKeyPath !== undefined
+        ? { nativeAdminGatewayApiKey: () => readWorkspaceFilesApiKey(config.gatewayApiKeyPath!) }
+        : {}),
       ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
       resolveHarness: resolveApprovedProductionHarness,
       auditSink: state.auditSink,

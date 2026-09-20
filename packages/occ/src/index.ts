@@ -1004,6 +1004,14 @@ export class OpenClawController {
     return this.getAuthorizedActiveAgentRevision(principalId, namespaceId, agentId, "operate");
   }
 
+  async getAdministerableActiveAgentRevision(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+  ): Promise<ActiveAgentRevisionSelection> {
+    return this.getAuthorizedActiveAgentRevision(principalId, namespaceId, agentId, "administer");
+  }
+
   private async getAuthorizedActiveAgentRevision(
     principalId: string,
     namespaceId: string,

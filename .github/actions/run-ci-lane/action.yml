@@ -42,7 +42,7 @@ runs:
         path: ${{ steps.pnpm-store.outputs.store-path }}
         key: ${{ steps.pnpm-store.outputs.store-cache-primary-key }}
     - name: Install browser dependencies
-      if: inputs.lane == 'checks-baseline'
+      if: inputs.lane == 'checks-baseline' || inputs.lane == 'gateway-routing'
       shell: bash
       run: bash scripts/ci/setup-tools.sh browser
     - name: Set up Go toolchain

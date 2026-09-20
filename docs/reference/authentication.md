@@ -125,6 +125,27 @@ Protected requests resolve the current stored session with cookie caching
 disabled. A missing, expired, revoked, or forged session is rejected. Supplying
 an `Authorization` header is rejected even if a session cookie is also present.
 
+## Native admin launch sessions
+
+Agent native admin UI access starts from an ordinary controller browser session.
+The availability API resolves the current stored session with cookie caching
+disabled, authorizes exact Agent `administer`, and returns a per-Agent bootstrap
+URL. Service API keys do not create browser launch sessions.
+
+The Agent-host bootstrap page creates a `state` and verifier in browser session
+storage, then redirects to the console launch page. The launch POST uses the
+ordinary session cookie, the workspace-file CSRF boundary, the expected Agent
+host, the expected active revision, and a verifier challenge. OCC issues a
+one-use code only after rechecking the current session and exact Agent
+administrator authorization.
+
+The Agent-host callback consumes that code with the verifier and sets
+`__Host-occ_native_admin` as an `HttpOnly`, `Secure`, `SameSite=Lax` cookie. The
+cookie is signed by OCC, bound to the parent session, Agent, revision, and host,
+and expires at the parent session lifetime. Proxied native UI requests revalidate
+the parent session, selected IAM identity, exact Agent/revision, exact host, and
+exact Agent origin before OCC forwards them.
+
 ## Account provisioning
 
 `POST /api/auth/accounts` requires a human session and `administer` on the singleton Installation.

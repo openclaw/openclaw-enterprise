@@ -27,6 +27,9 @@ function startupFailureCode(error) {
   if (/OCC_GATEWAY_API_KEY_PATH|gateway API key file/i.test(message)) {
     return "GATEWAY_API_KEY_UNAVAILABLE";
   }
+  if (/OCC_AGENT_NATIVE_ADMIN|Native admin UI access|Native admin Agent domain/.test(message)) {
+    return "AGENT_NATIVE_ADMIN_INVALID";
+  }
   if (/ChatGPT admin-key Secret/.test(message)) {
     return "CHATGPT_ADMIN_KEY_UNAVAILABLE";
   }
@@ -61,6 +64,20 @@ function optionalEnvironment(name, fallback) {
     throw new Error(`${name} must be explicitly configured.`);
   }
   return value;
+}
+
+function optionalBooleanEnvironment(name) {
+  const value = process.env[name];
+  if (value === undefined || value.trim().length === 0) {
+    return false;
+  }
+  if (value === "true") {
+    return true;
+  }
+  if (value === "false") {
+    return false;
+  }
+  throw new Error(`${name} must be true or false.`);
 }
 
 function configuration() {
@@ -148,6 +165,16 @@ function configuration() {
     }
   }
 
+  const nativeAdminEnabled = optionalBooleanEnvironment("OCC_AGENT_NATIVE_ADMIN_ENABLED");
+  const nativeAdminDomain = process.env.OCC_AGENT_NATIVE_ADMIN_DOMAIN;
+  const nativeAdmin =
+    nativeAdminEnabled || (nativeAdminDomain !== undefined && nativeAdminDomain.trim().length > 0)
+      ? {
+          enabled: nativeAdminEnabled,
+          ...(nativeAdminDomain === undefined ? {} : { domain: nativeAdminDomain }),
+        }
+      : undefined;
+
   const configuredAuthBaseURL =
     mode === "production"
       ? requiredEnvironment("OCC_AUTH_BASE_URL")
@@ -168,6 +195,7 @@ function configuration() {
       authSecret: requiredEnvironment("OCC_AUTH_SECRET"),
       authBaseURL,
       ...(gatewayApiKeyPath === undefined ? {} : { gatewayApiKeyPath }),
+      ...(nativeAdmin === undefined ? {} : { nativeAdmin }),
     });
   }
 
@@ -183,6 +211,7 @@ function configuration() {
     authSecret,
     authBaseURL,
     ...(gatewayApiKeyPath === undefined ? {} : { gatewayApiKeyPath }),
+    ...(nativeAdmin === undefined ? {} : { nativeAdmin }),
     ...(trustedDevelopmentBridgeCidr === undefined ? {} : { trustedDevelopmentBridgeCidr }),
     ...(trustedDevelopmentForwarderCidr === undefined || trustedDevelopmentForwarderCidr === ""
       ? {}

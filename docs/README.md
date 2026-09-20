@@ -21,6 +21,8 @@ Start locally, install a production control plane, or look up supported behavior
 Use the [feature and Driver index](reference/README.md) for supported behavior,
 configuration, and limits. The [HTTP API](reference/api.md) describes request and
 response schemas. The [console guide](reference/console.md) covers browser tasks.
+The [Agent native admin UI](reference/agent-native-admin.md) reference covers
+the trusted-operator pilot for opening the stock native UI through OCC.
 Compare bundled implementations in the [ComputeDriver feature matrix](reference/drivers/compute-matrix.md).
 Use the [PluginDriver feature matrix](reference/drivers/plugin-matrix.md) to
 compare plugin discovery and approval-policy support.
@@ -44,6 +46,8 @@ Start with [Docker or Podman Compose development](flows/docker-compose-developme
 lists runtime traces for authentication, configuration, Drivers, and Agent execution.
 The [Agent plugin flow](flows/agent-plugins.md) traces desired state through
 revision startup and runtime configuration.
+The [Agent native admin UI flow](flows/agent-native-admin.md) traces console
+availability through private gateway endpoint selection.
 
 ## Contribute
 

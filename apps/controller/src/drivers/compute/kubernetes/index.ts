@@ -238,6 +238,7 @@ interface GatewayConfigurationSnapshot {
   readonly revisionId: string;
   readonly usesTrustedProxyAuth: boolean;
   readonly usesGatewayPasswordEnv: boolean;
+  readonly usesWritableNativeAdminConfig: boolean;
   readonly annotations: Readonly<Record<string, string>>;
   readonly loggingLevel: LoggingLevel;
 }
@@ -325,6 +326,8 @@ const MANAGER = "openclaw-enterprise";
 const FIELD_MANAGER = "openclaw-enterprise-compute";
 const TOKEN_PATH = "/var/run/secrets/openclaw/service-principal";
 const CONFIGURATION_DIRECTORY = "/etc/openclaw";
+const MANAGED_CONFIGURATION_DIRECTORY = "/etc/openclaw-managed";
+const WRITABLE_CONFIGURATION_PATH = "/home/node/.openclaw/openclaw.json";
 const CONFIGURATION_DOCUMENT = "openclaw.json";
 const CONFIGURATION_VOLUME = "openclaw-configuration";
 const PLUGIN_RUNTIME_VOLUME = "openclaw-plugin-runtime";
@@ -3902,6 +3905,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       revisionId: revision.id,
       usesTrustedProxyAuth: auth?.mode === "trusted-proxy",
       usesGatewayPasswordEnv,
+      usesWritableNativeAdminConfig: this.usesWritableNativeAdminConfig(revision.configuration),
       annotations: {
         "openclaw.dev/configuration-id": revision.configurationId,
         "openclaw.dev/configuration-kind": revision.configurationKind,
@@ -3909,6 +3913,33 @@ export class KubernetesComputeDriver implements ComputeDriver {
       },
       loggingLevel: admittedLoggingLevel(revision.configuration),
     };
+  }
+
+  private usesWritableNativeAdminConfig(configuration: OpenClawConfigurationDocument): boolean {
+    const gateway = asRecord(configuration.gateway);
+    const auth = asRecord(gateway?.auth);
+    const trustedProxy = asRecord(auth?.trustedProxy);
+    const identityScopes = asRecord(auth?.identityScopes)?.["occ-workspace-files"];
+    const deviceAutoApprove = asRecord(trustedProxy?.deviceAutoApprove);
+    const controlUi = asRecord(gateway?.controlUi);
+    return (
+      auth?.mode === "trusted-proxy" &&
+      trustedProxy?.userHeader === "x-occ-identity" &&
+      Array.isArray(trustedProxy.allowUsers) &&
+      trustedProxy.allowUsers.includes("occ-workspace-files") &&
+      Array.isArray(identityScopes) &&
+      identityScopes.includes("operator.admin") &&
+      deviceAutoApprove?.enabled === true &&
+      Array.isArray(deviceAutoApprove.scopes) &&
+      deviceAutoApprove.scopes.includes("operator.admin") &&
+      controlUi?.enabled === true &&
+      Array.isArray(controlUi.allowedOrigins) &&
+      controlUi.allowedOrigins.some(
+        (origin) => typeof origin === "string" && origin.trim().length > 0,
+      ) &&
+      controlUi.dangerouslyDisableDeviceAuth !== true &&
+      controlUi.dangerouslyAllowHostHeaderOriginFallback !== true
+    );
   }
 
   private gatewayMembershipLabels(): Record<string, string> {
@@ -3933,6 +3964,31 @@ export class KubernetesComputeDriver implements ComputeDriver {
       revision.agentId,
       "Agent ID",
     )}`;
+  }
+
+  private gatewayRouteHeaderFilter(): KubernetesRecord {
+    return {
+      type: "RequestHeaderModifier",
+      requestHeaderModifier: {
+        set: [
+          { name: "x-occ-identity", value: "occ-workspace-files" },
+          {
+            name: "x-real-ip",
+            value: "%DOWNSTREAM_DIRECT_REMOTE_ADDRESS_WITHOUT_PORT%",
+          },
+        ],
+        remove: ["authorization", "cookie", "forwarded", "x-forwarded-for", "x-openclaw-scopes"],
+      },
+    };
+  }
+
+  private gatewayRouteBackendRef(service: ManagedKubernetesObject<"Service">): KubernetesRecord {
+    return {
+      group: "",
+      kind: "Service",
+      name: service.metadata.name,
+      port: this.options.network.gatewayPort,
+    };
   }
 
   private gatewayRoutingHostname(routing: KubernetesGatewayRoutingOptions): string {
@@ -4051,28 +4107,24 @@ export class KubernetesComputeDriver implements ComputeDriver {
                 type: "URLRewrite",
                 urlRewrite: { path: { type: "ReplaceFullPath", replaceFullPath: "/" } },
               },
+              this.gatewayRouteHeaderFilter(),
+            ],
+            backendRefs: [this.gatewayRouteBackendRef(service)],
+          },
+          {
+            matches: [
+              { path: { type: "PathPrefix", value: `${this.gatewayRoutePath(revision)}/` } },
+            ],
+            filters: [
               {
-                type: "RequestHeaderModifier",
-                requestHeaderModifier: {
-                  set: [
-                    { name: "x-occ-identity", value: "occ-workspace-files" },
-                    {
-                      name: "x-real-ip",
-                      value: "%DOWNSTREAM_DIRECT_REMOTE_ADDRESS_WITHOUT_PORT%",
-                    },
-                  ],
-                  remove: ["x-forwarded-for", "forwarded", "x-openclaw-scopes"],
+                type: "URLRewrite",
+                urlRewrite: {
+                  path: { type: "ReplacePrefixMatch", replacePrefixMatch: "/" },
                 },
               },
+              this.gatewayRouteHeaderFilter(),
             ],
-            backendRefs: [
-              {
-                group: "",
-                kind: "Service",
-                name: service.metadata.name,
-                port: this.options.network.gatewayPort,
-              },
-            ],
+            backendRefs: [this.gatewayRouteBackendRef(service)],
           },
         ],
       },
@@ -4263,9 +4315,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
     role: SharedWorkspaceRole,
     image: string,
     embedded: boolean,
+    writableConfiguration = false,
   ): KubernetesRecord {
     const directories = this.privateStateDirectories(role);
     const volumeMounts: V1VolumeMount[] = [{ name: "runtime-state", mountPath: "/home/node" }];
+    if (writableConfiguration) {
+      volumeMounts.push({
+        name: CONFIGURATION_VOLUME,
+        mountPath: MANAGED_CONFIGURATION_DIRECTORY,
+        readOnly: true,
+      });
+    }
     if (role === "gateway" && this.options.runtime !== undefined) {
       // Initialize whole directories as uid 1000 before mounting SQLite and its WAL files.
       volumeMounts.push({ name: GATEWAY_PRIVATE_STATE_VOLUME, mountPath: "/gateway-state" });
@@ -4278,10 +4338,20 @@ export class KubernetesComputeDriver implements ComputeDriver {
       }
     }
     const script = [
-      'const { mkdirSync } = require("node:fs");',
+      writableConfiguration
+        ? 'const { chmodSync, copyFileSync, mkdirSync } = require("node:fs");'
+        : 'const { mkdirSync } = require("node:fs");',
       `for (const path of ${JSON.stringify(directories)}) {`,
       "  mkdirSync(path, { recursive: true });",
       "}",
+      ...(writableConfiguration
+        ? [
+            `copyFileSync(${JSON.stringify(
+              `${MANAGED_CONFIGURATION_DIRECTORY}/${CONFIGURATION_DOCUMENT}`,
+            )}, ${JSON.stringify(WRITABLE_CONFIGURATION_PATH)});`,
+            `chmodSync(${JSON.stringify(WRITABLE_CONFIGURATION_PATH)}, 0o600);`,
+          ]
+        : []),
     ].join("\n");
     return {
       name: "prepare-private-state",
@@ -4791,11 +4861,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const runtime = this.options.runtime;
     const dedicated = !embedded;
     const privateHome = runtime !== undefined || dedicated;
+    const writableConfiguration =
+      role === "gateway" &&
+      configuration !== undefined &&
+      runtime !== undefined &&
+      this.options.gatewayRouting !== undefined &&
+      configuration.usesWritableNativeAdminConfig;
     const volumes: V1Volume[] = [];
     const volumeMounts: V1VolumeMount[] = [];
     const variables: V1EnvVar[] = [];
     const initContainers = privateHome
-      ? [this.privateStateInitContainer(role, image, embedded)]
+      ? [this.privateStateInitContainer(role, image, embedded, writableConfiguration)]
       : [];
     if (configuration !== undefined) {
       volumes.push({
@@ -4808,12 +4884,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
       });
       volumeMounts.push({
         name: CONFIGURATION_VOLUME,
-        mountPath: CONFIGURATION_DIRECTORY,
+        mountPath: writableConfiguration
+          ? MANAGED_CONFIGURATION_DIRECTORY
+          : CONFIGURATION_DIRECTORY,
         readOnly: true,
       });
       variables.push({
         name: "OPENCLAW_CONFIG_PATH",
-        value: `${CONFIGURATION_DIRECTORY}/${CONFIGURATION_DOCUMENT}`,
+        value: writableConfiguration
+          ? WRITABLE_CONFIGURATION_PATH
+          : `${CONFIGURATION_DIRECTORY}/${CONFIGURATION_DOCUMENT}`,
       });
     }
     const needsPluginRuntime =

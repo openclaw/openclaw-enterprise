@@ -55,6 +55,12 @@ export interface AuthenticatedAccount {
   readonly name: string;
 }
 
+export interface AuthenticatedSession {
+  readonly id: string;
+  readonly userId: string;
+  readonly expiresAt: string;
+}
+
 export interface ProvisionAuthAccountInput {
   readonly email: string;
   readonly password: string;
@@ -80,6 +86,8 @@ export interface ControllerAuth {
   signInEmail(request: FastifyRequest, reply: FastifyReply): Promise<void>;
   signOut(request: FastifyRequest, reply: FastifyReply): Promise<void>;
   session(request: FastifyRequest, reply: FastifyReply): Promise<void>;
+  resolveSession(request: FastifyRequest): Promise<AuthenticatedSession | undefined>;
+  resolveSessionById(id: string): Promise<AuthenticatedSession | undefined>;
   createServiceKey(input: {
     readonly principal: ServicePrincipal;
     readonly name: string;
@@ -228,6 +236,36 @@ function safeSessionResponse(response: unknown): {
     authenticated: true,
     user: { id, email, name },
   };
+}
+
+function safeAuthenticatedSession(response: unknown): AuthenticatedSession | undefined {
+  if (typeof response !== "object" || response === null) {
+    return undefined;
+  }
+  const { session, user } = response as { readonly session?: unknown; readonly user?: unknown };
+  if (
+    typeof session !== "object" ||
+    session === null ||
+    typeof user !== "object" ||
+    user === null
+  ) {
+    return undefined;
+  }
+  const { id, expiresAt } = session as Record<string, unknown>;
+  const { id: userId } = user as Record<string, unknown>;
+  if (!isNonEmptyString(id) || !isNonEmptyString(userId)) {
+    return undefined;
+  }
+  const expiry =
+    expiresAt instanceof Date
+      ? expiresAt
+      : typeof expiresAt === "string"
+        ? new Date(expiresAt)
+        : undefined;
+  if (expiry === undefined || Number.isNaN(expiry.getTime())) {
+    return undefined;
+  }
+  return { id, userId, expiresAt: expiry.toISOString() };
 }
 
 async function sendAuthEndpoint(
@@ -571,6 +609,45 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     );
   }
 
+  async function resolveSession(
+    request: FastifyRequest,
+  ): Promise<AuthenticatedSession | undefined> {
+    const result = await api.getSession({
+      headers: authHeaders(request.headers),
+      query: { disableCookieCache: true, disableRefresh: true },
+      asResponse: false,
+      returnHeaders: false,
+      returnStatus: false,
+    });
+    return safeAuthenticatedSession(result);
+  }
+
+  async function resolveSessionById(id: string): Promise<AuthenticatedSession | undefined> {
+    const context = await auth.$context;
+    const session = await context.adapter.findOne<Record<string, unknown>>({
+      model: "session",
+      where: [{ field: "id", value: id }],
+    });
+    if (session === null || session === undefined) {
+      return undefined;
+    }
+    const expiresAt = session.expiresAt;
+    const expiry =
+      expiresAt instanceof Date
+        ? expiresAt
+        : typeof expiresAt === "string"
+          ? new Date(expiresAt)
+          : undefined;
+    if (expiry === undefined || Number.isNaN(expiry.getTime()) || expiry <= new Date()) {
+      return undefined;
+    }
+    const userId = session.userId;
+    if (!isNonEmptyString(userId)) {
+      return undefined;
+    }
+    return { id, userId, expiresAt: expiry.toISOString() };
+  }
+
   return {
     auth,
     issuer,
@@ -590,6 +667,8 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     signInEmail,
     signOut,
     session,
+    resolveSession,
+    resolveSessionById,
     async createServiceKey({ principal, name, expiresIn }) {
       // The server-only userId parameter is the plugin's referenceId; no human
       // account or session is created for this existing IAM automation identity.

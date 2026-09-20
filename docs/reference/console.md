@@ -3,9 +3,10 @@
 The controller serves a browser console at `/console/` on its existing origin.
 Use it to sign in, choose a Namespace, inspect accessible Agents, Providers, and
 Namespaces, create and deploy Agents, edit supported Slack or Microsoft Teams
-draft settings, provision supported initial runtime credentials, and read or
-replace supported live workspace files. Rollback, live runtime health, browser
-chat, and Agent deletion are unavailable in the console.
+draft settings, provision supported initial runtime credentials, read or replace
+supported live workspace files, and, when the pilot is enabled, open a trusted
+operator native admin UI. Rollback, live runtime health, browser chat through
+OCE, and Agent deletion are unavailable in the console.
 The [deployment guide](../guides/deploy.md) owns runtime checks and operator
 procedures; the [generated API reference](api.md) owns supported management API
 shapes.
@@ -145,6 +146,21 @@ replayed automatically. Review loaded contents before writing again. Files load
 and save independently; success for one file says nothing about another file's
 result. For unavailable gateways, follow the
 [workspace access setup](../guides/deploy/workspace-routing.md#agent-workspace-files).
+
+## Open the native admin UI
+
+When [Agent native admin UI access](agent-native-admin.md) is enabled, the
+Workspace files tab includes a **Native admin UI** panel for callers with exact
+Agent `administer` permission. The panel is hidden when the Installation disables
+the feature or when the caller lacks that grant. It reports stopped,
+unsupported, or unavailable gateway states without granting broader access.
+
+**Open native admin UI** opens the returned per-Agent bootstrap URL in a new tab.
+The visible warning is part of the operator contract: the native UI can change
+the gateway outside OCE, and those changes are not recorded in AgentRevisions.
+Use OCE for durable configuration. The new tab redirects back to the console
+origin for an explicit launch confirmation, then returns to the Agent origin
+with a short-lived native admin cookie.
 
 ## Routes
 

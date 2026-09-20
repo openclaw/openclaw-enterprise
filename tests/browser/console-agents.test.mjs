@@ -7,6 +7,8 @@ import test from "node:test";
 
 import { chromium } from "playwright";
 
+import { MemoryNativeAdminExchangeStore } from "../../apps/controller/src/auth/native-admin-exchange.ts";
+import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture, providerFixtures } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -95,6 +97,11 @@ async function expectNoText(page, pattern) {
   );
 }
 
+async function expectNativeAdminHidden(page) {
+  assert.equal(await page.getByRole("heading", { name: "Native admin UI" }).isVisible(), false);
+  assert.equal(await page.getByRole("button", { name: "Open native admin UI" }).isVisible(), false);
+}
+
 async function revealNativeConfiguration(page, label) {
   await page.getByText(label).click();
 }
@@ -148,6 +155,33 @@ async function seedServiceAccount(state, namespaceId, name, issued = true) {
   );
 }
 
+function nativeAdminComputeDriver(endpoint) {
+  return {
+    id: "console-native-admin-compute",
+    capability: "compute",
+    implementation: "test-native-admin-endpoint",
+    validateHarnessAuth: KubernetesComputeDriver.prototype.validateHarnessAuth,
+    async ensureNamespace(namespace) {
+      return { namespaceId: namespace.id, namespaceReady: true };
+    },
+    async deleteNamespace(namespace) {
+      return { namespaceId: namespace.id, namespaceDeleted: true };
+    },
+    async prepareRevision(revision) {
+      return {
+        namespaceId: revision.namespaceId,
+        agentId: revision.agentId,
+        revisionId: revision.id,
+        ready: true,
+      };
+    },
+    async retireRevision() {},
+    getGatewayEndpoint() {
+      return endpoint;
+    },
+  };
+}
+
 function nativeValues(marker, options = {}) {
   const harnessId = options.harnessId ?? "openclaw";
   const providerModel = options.providerModel ?? (harnessId === "codex" ? "gpt-5.1" : "gpt-4.1");
@@ -164,6 +198,32 @@ function nativeValues(marker, options = {}) {
         knowledge: {
           enabled: true,
           config: { marker, thresholds: [1, 2, 3] },
+        },
+      },
+    },
+  };
+}
+
+function nativeAdminValues(marker, origin) {
+  const values = nativeValues(marker);
+  return {
+    ...values,
+    gateway: {
+      ...(values.gateway ?? {}),
+      controlUi: {
+        ...(values.gateway?.controlUi ?? {}),
+        enabled: true,
+        allowedOrigins: [origin],
+      },
+      auth: {
+        mode: "trusted-proxy",
+        trustedProxy: {
+          userHeader: "x-occ-identity",
+          allowUsers: ["occ-workspace-files"],
+          deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
+        },
+        identityScopes: {
+          "occ-workspace-files": ["operator.admin"],
         },
       },
     },
@@ -608,6 +668,136 @@ test("Agent detail preserves admitted revision history while draft edits change 
   await page
     .getByText(`OpenAI API key · ${agent.harnessAuth.source.id}`, { exact: true })
     .waitFor();
+});
+
+test("Agent detail opens native admin UI only after real API access checks pass", async (t) => {
+  const disabledFixture = await createConsoleAppFixture(t);
+  await disabledFixture.bootstrap();
+  const disabledNamespace = await disabledFixture.createNamespace("Native admin disabled", {
+    ready: true,
+  });
+  const disabledAgent = await disabledFixture.createAgent(
+    disabledNamespace.id,
+    "Disabled native admin Agent",
+    nativeValues("disabled-ui"),
+  );
+  const disabledRevision = await disabledFixture.seedActiveAgentRevision(
+    disabledNamespace.id,
+    disabledAgent.id,
+  );
+  const disabledPage = (await newPage(t, disabledFixture)).page;
+  const disabledDetail = detailUrl(
+    disabledFixture,
+    disabledNamespace.id,
+    disabledAgent.id,
+    disabledRevision.revision.id,
+    "configuration",
+  );
+
+  await login(disabledPage, disabledFixture, `${disabledDetail.pathname}${disabledDetail.search}`);
+  await disabledPage.getByRole("heading", { name: "Disabled native admin Agent" }).waitFor();
+  await expectNativeAdminHidden(disabledPage);
+
+  const publicOrigin = "https://console.example.invalid";
+  const nativeDomain = "agents.example.invalid";
+  const gatewayEndpoint =
+    "wss://private-gateway.example.invalid/namespaces/native-admin/agents/agent";
+  const fixture = await createConsoleAppFixture(t, {
+    publicOrigin,
+    nativeAdmin: { enabled: true, domain: nativeDomain },
+    nativeAdminExchangeStore: new MemoryNativeAdminExchangeStore(),
+    nativeAdminCookieSecret: `native-admin-cookie-secret-${randomUUID()}-${randomUUID()}`,
+    nativeAdminGatewayApiKey: async () => "native-admin-gateway-api-key",
+    computeDriver: nativeAdminComputeDriver(gatewayEndpoint),
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Native admin access", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Native admin Agent",
+    nativeValues("unsupported-ui"),
+  );
+  let active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const initialNativeAccess = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`,
+  );
+  assert.equal(initialNativeAccess.status, 200);
+  assert.equal(initialNativeAccess.data.status, "unsupported");
+  assert.equal(new URL(initialNativeAccess.data.origin).protocol, "https:");
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const detail = () =>
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration");
+
+  await login(page, fixture, `${detail().pathname}${detail().search}`);
+  await page.getByRole("heading", { name: "Native admin Agent" }).waitFor();
+  await page.getByRole("heading", { name: "Native admin UI" }).waitFor();
+  await page
+    .getByText("This Agent does not expose a supported native admin UI endpoint.")
+    .waitFor();
+  assert.equal(await page.getByRole("button", { name: "Open native admin UI" }).isVisible(), false);
+
+  fixture.policy.restrictions.push({
+    id: "deny-native-administer",
+    namespaceId: namespace.id,
+    resourceKind: "agent",
+    resourceId: agent.id,
+    action: "administer",
+    effect: "deny",
+  });
+  await page.reload();
+  await page.getByRole("heading", { name: "Native admin Agent" }).waitFor();
+  await expectNativeAdminHidden(page);
+  fixture.policy.restrictions.length = 0;
+
+  const stopped = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/agents/${agent.id}/stop`,
+  );
+  assert.equal(stopped.status, 202);
+  await page.reload();
+  await page.getByRole("heading", { name: "Native admin Agent" }).waitFor();
+  await page.getByRole("heading", { name: "Native admin UI" }).waitFor();
+  await page.getByText("Start this Agent before opening its native admin UI.").waitFor();
+  assert.equal(await page.getByRole("button", { name: "Open native admin UI" }).isVisible(), false);
+
+  await fixture.updateConfiguration(
+    namespace.id,
+    agent.configurationId,
+    nativeAdminValues("supported-ui", initialNativeAccess.data.origin),
+  );
+  active = await fixture.seedActiveAgentRevision(namespace.id, agent.id, active.revision.id);
+  await page.goto(`${fixture.origin}${detail().pathname}${detail().search}`);
+  await page.getByRole("heading", { name: "Native admin Agent" }).waitFor();
+  await page.getByText("Native admin UI is available for the selected AgentRevision.").waitFor();
+  const expectedBootstrap = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`,
+  );
+  assert.equal(expectedBootstrap.status, 200);
+  assert.equal(expectedBootstrap.data.status, "available");
+  assert.equal(new URL(expectedBootstrap.data.bootstrapUrl).protocol, "https:");
+  assert.match(
+    new URL(expectedBootstrap.data.bootstrapUrl).pathname,
+    /^\/__occ\/native-admin\/bootstrap$/,
+  );
+  await page.context().route(expectedBootstrap.data.bootstrapUrl, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "text/html; charset=utf-8",
+      body: "<!doctype html><title>Native admin bootstrap</title>",
+    }),
+  );
+
+  const popupPromise = page.waitForEvent("popup");
+  await page.getByRole("button", { name: "Open native admin UI" }).click();
+  const popup = await popupPromise;
+  assert.equal(popup.url(), expectedBootstrap.data.bootstrapUrl);
+  assert.equal(await popup.evaluate(() => globalThis.opener === null), true);
+  await page.getByText("Native admin UI opened in a new tab.").waitFor();
+
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
 });
 
 test("Channel drawer saves channel edits without exposing Secret values or dropping unrelated draft state", async (t) => {

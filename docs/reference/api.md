@@ -44,7 +44,7 @@ Each operation lists its supported status codes.
 | [Authentication](#authentication) | 6 operations |
 | [Installation](#installation) | 2 operations |
 | [Namespaces](#namespaces) | 4 operations |
-| [Agents](#agents) | 10 operations |
+| [Agents](#agents) | 12 operations |
 | [Agent deployments](#agent-deployments) | 1 operation |
 | [Agent revisions](#agent-revisions) | 2 operations |
 | [Configurations](#configurations) | 4 operations |
@@ -602,6 +602,8 @@ Get an exact Installation-owned Namespace
 | [`GET /namespaces/{namespaceId}/agents/{agentId}`](#get-namespacesnamespaceidagentsagentid) | Get an exact Namespace-owned Agent |
 | [`PATCH /namespaces/{namespaceId}/agents/{agentId}`](#patch-namespacesnamespaceidagentsagentid) | Replace an exact Namespace-owned Agent's editable draft |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/deploy`](#post-namespacesnamespaceidagentsagentiddeploy) | Admit an immutable revision from the Agent's saved draft |
+| [`GET /namespaces/{namespaceId}/agents/{agentId}/native-admin`](#get-namespacesnamespaceidagentsagentidnativeadmin) | Resolve native admin UI launch availability for one Agent |
+| [`POST /namespaces/{namespaceId}/agents/{agentId}/native-admin/launch`](#post-namespacesnamespaceidagentsagentidnativeadminlaunch) | Issue one native admin UI browser exchange code |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/runtime-credentials`](#get-namespacesnamespaceidagentsagentidruntimecredentials) | Get metadata for one Agent's provisioned runtime credentials |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/runtime-credentials`](#post-namespacesnamespaceidagentsagentidruntimecredentials) | Provision initial runtime credentials for one undeployed Agent |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/stop`](#post-namespacesnamespaceidagentsagentidstop) | Stop one Agent while retaining its revision and persistent state |
@@ -925,6 +927,106 @@ Admit an immutable revision from the Agent's saved draft
 | `data.secretDriverId` | `string` | No | min length: 1 |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+#### `GET /namespaces/{namespaceId}/agents/{agentId}/native-admin`
+
+<span id="get-namespacesnamespaceidagentsagentidnativeadmin"></span>
+
+Resolve native admin UI launch availability for one Agent
+
+**Operation ID:** `getAgentNativeAdmin`
+
+**Permissions:** Requires a human session with administer permission on the exact Agent. Service API keys cannot launch or inspect native admin UI access.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints |
+| --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | min length: 1; max length: 200 |
+| `agentId` | path | `string` | Yes | min length: 1; max length: 200 |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.activeRevisionId` | `string` | No | — |
+| `data.bootstrapUrl` | `string (uri)` | No | — |
+| `data.host` | `string` | No | — |
+| `data.origin` | `string (uri)` | No | — |
+| `data.status` | `"available" or "disabled" or "stopped" or "unavailable" or "unsupported"` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | — |
+
+#### `POST /namespaces/{namespaceId}/agents/{agentId}/native-admin/launch`
+
+<span id="post-namespacesnamespaceidagentsagentidnativeadminlaunch"></span>
+
+Issue one native admin UI browser exchange code
+
+**Operation ID:** `launchAgentNativeAdmin`
+
+**Permissions:** Requires a human session with administer permission on the exact Agent. Issues a short-lived browser-bound native admin exchange code; service API keys cannot launch native admin UI access.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints |
+| --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | min length: 1; max length: 200 |
+| `agentId` | path | `string` | Yes | min length: 1; max length: 200 |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `challenge` | `string` | Yes | min length: 1; max length: 512 |
+| `host` | `string` | Yes | min length: 1; max length: 253 |
+| `revisionId` | `string` | Yes | min length: 1; max length: 200 |
+| `state` | `string` | Yes | min length: 1; max length: 512 |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `409` | Conflict |
+| `429` | Too Many Requests |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.expiresAt` | `string (date-time)` | Yes | — |
+| `data.url` | `string (uri)` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | — |
 
 #### `GET /namespaces/{namespaceId}/agents/{agentId}/runtime-credentials`
 

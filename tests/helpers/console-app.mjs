@@ -120,6 +120,17 @@ export async function createConsoleAppFixture(t, options = {}) {
     computeDriver: options.computeDriver ?? computeDriver(),
     configurationDriver: createTestConfigurationDriver({ id: "console-configuration" }),
     ...(secretDriver === undefined || secretDriver === null ? {} : { secretDriver }),
+    ...(options.publicOrigin === undefined ? {} : { publicOrigin: options.publicOrigin }),
+    ...(options.nativeAdmin === undefined ? {} : { nativeAdmin: options.nativeAdmin }),
+    ...(options.nativeAdminExchangeStore === undefined
+      ? {}
+      : { nativeAdminExchangeStore: options.nativeAdminExchangeStore }),
+    ...(options.nativeAdminCookieSecret === undefined
+      ? {}
+      : { nativeAdminCookieSecret: options.nativeAdminCookieSecret }),
+    ...(options.nativeAdminGatewayApiKey === undefined
+      ? {}
+      : { nativeAdminGatewayApiKey: options.nativeAdminGatewayApiKey }),
     resolveHarness: resolveApprovedHarness,
     createController(installation) {
       controller = new OpenClawController(installation, {
@@ -408,5 +419,9 @@ export async function createConsoleAppFixture(t, options = {}) {
     createSecret,
     createAccountWithPolicy,
     registerCleanupBeforeAppClose,
+    app,
+    get controller() {
+      return controller;
+    },
   };
 }
