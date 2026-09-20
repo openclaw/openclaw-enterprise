@@ -65,7 +65,15 @@ The Agent-host callback redeems the code with the verifier and sets `__Host-occ_
 
 The native admin UI runs with the same shared native trusted-proxy identity used by workspace files: `occ-workspace-files` with `operator.admin`. OCC attributes launch and availability checks to the human session and exact Agent IAM decision. The native gateway sees the shared service identity, not a per-human native account.
 
-Native admin changes can modify gateway-local state that is outside OCE Configurations and AgentRevisions. For Kubernetes runtime gateways whose saved configuration explicitly satisfies the native-admin support contract, the managed ConfigMap stays read-only at `/etc/openclaw-managed/openclaw.json`; an init container copies it into the pod-local emptyDir at `/home/node/.openclaw/openclaw.json`, and `OPENCLAW_CONFIG_PATH` points at that writable copy. The predicate requires trusted-proxy auth for `occ-workspace-files`, `operator.admin` identity scopes, trusted-proxy admin device auto-approval, `controlUi.enabled`, at least one `controlUi.allowedOrigins` value, and disabled dangerous control UI fallbacks. Ordinary runtime gateways, including routed gateways that do not opt into that native-admin-compatible shape, keep the read-only managed config path. Native admin configuration edits affect only the pod-local copy, then reset from the managed snapshot when the pod is recreated or the Agent is redeployed. Operators should manage durable configuration through OCE. Redeploying an Agent re-applies the managed OCE revision but does not imply a factory reset of native files, conversations, device state, plugins, or other gateway-local data.
+Native admin changes affect gateway-local state outside OCE Configurations and
+immutable AgentRevisions. Manage durable configuration through OCE. In the
+Kubernetes pilot, native configuration edits affect a Pod-local copy that resets
+from the managed snapshot when the Pod is recreated or the Agent is redeployed.
+See [Kubernetes managed native configuration](drivers/kubernetes-compute/storage-and-credentials.md#managed-native-configuration)
+for the opt-in predicate, mounts, and copy lifecycle.
+
+Redeployment does not imply a factory reset of native files, conversations,
+device state, plugins, or other persistent gateway data.
 
 ## Failure behavior
 
@@ -91,6 +99,7 @@ Native admin changes can modify gateway-local state that is outside OCE Configur
 
 ## Changelog
 
+- 2026-09-20 08:21: Linked Kubernetes configuration-copy details to the implementation reference after the Driver documentation refactor. (01a0b7fd-13fa-7dc2-8653-5c5814b59305 - f4e22e48)
 - 2026-09-19 22:27: Documented exact-Agent disabled-status gating, IAM denial audit preservation, and WebSocket `connectionId`/`closeReason` audit fields. (01a0b7fd-13fa-7dc2-8653-5c5814b59305 - 9621ce4e)
 - 2026-09-19 21:14: Documented gateway-routing Helm validation, service-worker domain setup, and the explicit native-admin writable-config predicate. (01a0b7fd-13fa-7dc2-8653-5c5814b59305 - 06c23b9c)
 - 2026-09-19 21:07: Documented the `unavailable` availability success state and separated it from protected-route error envelopes. (01a0b7fd-13fa-7dc2-8653-5c5814b59305 - 06c23b9c)

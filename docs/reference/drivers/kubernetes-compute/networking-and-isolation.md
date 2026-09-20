@@ -79,8 +79,16 @@ native Configuration or an AgentRevision.
 `wss://<hostname>/namespaces/<namespaceId>/agents/<agentId>` without Kubernetes
 API access. During preparation and activation, Compute reconciles an owned
 `HTTPRoute` in the tenant namespace, attached to the configured Gateway's
-`https` listener. It matches the exact Agent path and hostname, rewrites the
-path to `/`, and targets the existing same-namespace gateway Service.
+`https` listener. Both rules match the configured private hostname and target
+the existing same-namespace gateway Service:
+
+- The exact Agent path rewrites to `/`, preserving workspace-file WSS access.
+- A prefix rule below that Agent path rewrites the prefix to `/` and retains
+  the suffix for native UI assets, deep links, and WebSocket paths.
+
+OCC bounds proxy requests to the selected Agent base. Public native UI browser
+traffic enters through OCC; Envoy and gateway Services remain private. See
+[Agent native admin UI](../../agent-native-admin.md#agent-host-identity).
 Namespaces receive the Gateway membership label used by `allowedRoutes`.
 
 The Service and route remain stable across revision cutover. Retiring an old

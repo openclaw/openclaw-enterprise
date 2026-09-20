@@ -62,7 +62,15 @@ Driver settings and approved resource IDs, or `undefined` if gateway access is
 unsupported. OCC calls it after authorizing access to the Agent and selecting
 its active revision. The method does not check readiness, authorize the caller,
 grant backend route permissions, or save a URL in Agent Configuration. Connection
-errors are dependency failures. See [Kubernetes private routes](kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes).
+errors are dependency failures.
+
+Workspace-file access uses the returned WSS endpoint. The opt-in
+[Agent native admin UI](../agent-native-admin.md#agent-host-identity) derives
+an HTTPS base with the same authority and Agent path for native HTTP and
+WebSocket proxying; the Driver method's WSS return contract stays unchanged.
+A missing method or unsupported endpoint prevents native admin launch.
+See [Kubernetes private routes](kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes)
+for the bundled route implementation.
 
 ### Optional initial runtime credential provisioning
 

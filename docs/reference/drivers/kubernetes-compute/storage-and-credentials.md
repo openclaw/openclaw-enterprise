@@ -70,6 +70,31 @@ its owned claims using their exact Kubernetes UIDs before deleting the
 gateway; PVC protection completes deletion after Pods unmount. Agent deletion
 is not currently a supported API operation.
 
+## Managed native configuration
+
+Ordinary runtime gateways read the managed ConfigMap at
+`/etc/openclaw/openclaw.json`. Native admin editing uses a writable copy only
+when runtime gateway images and private `gatewayRouting` are configured and
+the saved native Configuration explicitly enables the pilot shape:
+
+- Trusted-proxy authentication accepts `x-occ-identity: occ-workspace-files`
+  with `operator.admin` identity scopes.
+- Trusted-proxy device auto-approval is enabled with `operator.admin` scope.
+- `controlUi.enabled` is true and `controlUi.allowedOrigins` is nonempty.
+- Dangerous device-auth disabling and host-header origin fallback are disabled.
+
+For those gateways, the managed ConfigMap remains read-only at
+`/etc/openclaw-managed/openclaw.json`. The nonroot init container copies it to
+`/home/node/.openclaw/openclaw.json` on the Pod-local `emptyDir`, and
+`OPENCLAW_CONFIG_PATH` points to that writable copy. Gateways without the full
+opt-in shape, including ordinary routed gateways, keep the read-only path.
+
+Native edits change only the copy; Pod replacement or Agent redeployment
+restores the managed snapshot. The persistent gateway and workspace claims
+retain their data. This behavior does not import edits into OCE Configuration
+or immutable AgentRevisions. See the [native admin feature boundary](../../agent-native-admin.md#native-authority-and-drift)
+and [deployment procedure](../../../guides/deploy/native-admin.md).
+
 ## Runtime credentials
 
 Before the first AgentRevision, the [console credential workflow](../../console/create-and-deploy.md#initial-runtime-credentials)

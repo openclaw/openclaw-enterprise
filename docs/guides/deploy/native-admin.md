@@ -125,7 +125,11 @@ gateway:
 
 Do not set `gateway.auth.token`, `controlUi.dangerouslyDisableDeviceAuth`, or `controlUi.dangerouslyAllowHostHeaderOriginFallback`. Deploy the updated Agent revision, then call the status route again and expect `data.status: "available"` with the same `data.origin`. If the first status response is `data.status: "unavailable"`, fix active revision selection before saving the native configuration; OCC cannot derive the Agent origin until it can select the active revision.
 
-For Kubernetes runtime gateways that use the native-admin-compatible configuration above, the deployment mounts the managed ConfigMap read-only, copies it to `/home/node/.openclaw/openclaw.json` on the pod-local runtime-state volume, and points `OPENCLAW_CONFIG_PATH` at the writable copy. The writable copy is limited to that explicit pilot shape; ordinary runtime gateways, including routed gateways without the trusted-proxy admin device-auto-approval and `controlUi.allowedOrigins` settings, keep `OPENCLAW_CONFIG_PATH` on the read-only managed ConfigMap. Native admin edits can change the pod-local copy during the pilot. Recreating the pod or redeploying the Agent resets the copy from the managed OCE Configuration, so keep durable configuration changes in OCE.
+Keep durable configuration changes in OCE. For compatible Kubernetes gateways,
+native edits affect a Pod-local copy and are discarded when the Pod is replaced
+or the Agent is redeployed; persistent workspace and gateway data remain.
+See [Kubernetes managed native configuration](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#managed-native-configuration)
+for the exact opt-in conditions and storage lifecycle.
 
 ## Tests
 
@@ -159,6 +163,7 @@ Full runtime proof still requires a real browser test that loads native assets t
 
 ## Changelog
 
+- 2026-09-20 08:21: Linked Kubernetes configuration-copy details to the implementation reference after the Driver documentation refactor. (01a0b7fd-13fa-7dc2-8653-5c5814b59305 - f4e22e48)
 - 2026-09-19 21:14: Replaced manual cookie copying with authenticated-browser status discovery and documented Helm, service-worker domain setup, and the explicit writable-config predicate. (01a0b7fd-13fa-7dc2-8653-5c5814b59305 - 06c23b9c)
 - 2026-09-19 21:07: Added the status API discovery path for the derived Agent origin and troubleshooting for `unavailable`. (01a0b7fd-13fa-7dc2-8653-5c5814b59305 - 06c23b9c)
 - 2026-09-19 20:19: Added the operator deployment guide for native admin UI enablement, public API ingress, and remaining runtime proof. (01a0b7fd-13fa-7dc2-8653-5c5814b59305 - 06c23b9c)
