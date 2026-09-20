@@ -46,6 +46,10 @@ effects. Contributors updating routes or schemas should follow the
 
 ## Drivers
 
+For contributors, the [Driver documentation inventory](../testing/driver-docs-inventory.md)
+and [base Driver template](../testing/base-driver-docs-template.md) describe page
+ownership and required contract coverage.
+
 The term **contract** names obligations that callers and Driver implementations
 must satisfy. It is part of the reference, not another document lifecycle.
 

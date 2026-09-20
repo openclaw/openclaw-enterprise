@@ -161,6 +161,8 @@
                 "pages": [
                   "testing/README",
                   "testing/local",
+                  "testing/driver-docs-inventory",
+                  "testing/base-driver-docs-template",
                   "testing/developer-skills",
                   "testing/autoreview",
                   "testing/ci"
