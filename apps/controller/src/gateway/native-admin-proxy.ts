@@ -525,8 +525,6 @@ export function proxyNativeAdminWebSocket(options: {
         upgradedSocket.write(options.head);
       }
 
-      options.socket.once("error", () => close("client_disconnect"));
-      options.socket.once("close", () => close("client_disconnect"));
       upgradedSocket.pipe(options.socket);
       options.socket.pipe(upgradedSocket);
     })().catch(() => close("dependency_failure"));

@@ -28,7 +28,8 @@ button,
 a {
   touch-action: manipulation;
 }
-button {
+button,
+.primary {
   color: inherit;
   cursor: pointer;
   background: #fff;
@@ -36,7 +37,12 @@ button {
   border-radius: 8px;
   padding: 10px 16px;
 }
-button:hover {
+a.primary {
+  display: inline-block;
+  text-decoration: none;
+}
+button:hover,
+a.primary:hover {
   background: #f0f4f1;
 }
 button:disabled {

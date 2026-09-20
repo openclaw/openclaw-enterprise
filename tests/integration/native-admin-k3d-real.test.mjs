@@ -771,7 +771,7 @@ test(
     await page.getByRole("heading", { name: topology.agent.name }).waitFor();
     await page.getByText("Native admin access can change this gateway outside OCE.").waitFor();
     const popupPromise = page.waitForEvent("popup");
-    await page.getByRole("button", { name: "Open native admin UI" }).click();
+    await page.getByRole("link", { name: "Open native admin UI" }).click();
     const nativePage = await popupPromise;
     await completeNativeLaunch(nativePage, { nativeOrigin: status.origin });
 

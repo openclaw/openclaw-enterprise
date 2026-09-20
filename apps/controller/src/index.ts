@@ -1108,17 +1108,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     return failure(503, "DEPENDENCY_UNAVAILABLE", "A required platform dependency is unavailable.");
   }
 
-  async function requireNativeAdminHumanSession(request: FastifyRequest, context: RequestContext) {
+  function requireNativeAdminHumanSession(request: FastifyRequest, context: RequestContext) {
     const admitted = admissions.get(request);
     if (admitted?.method !== "session") {
       throw failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
     }
-    const session = await options.auth.resolveSession(request);
-    if (
-      session === undefined ||
-      session.userId !== context.subject ||
-      Date.parse(session.expiresAt) <= Date.now()
-    ) {
+    const session = admitted.session;
+    if (session.userId !== context.subject || Date.parse(session.expiresAt) <= Date.now()) {
       throw failure(401, "UNAUTHENTICATED", "The caller did not provide valid credentials.");
     }
     return session;
@@ -2746,7 +2742,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (!isNonEmptyString(namespaceId) || !isNonEmptyString(agentId)) {
       throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
     }
-    await requireNativeAdminHumanSession(request, context);
+    requireNativeAdminHumanSession(request, context);
     const availability = await resolveNativeAdminAvailability({
       actorId: context.actorId,
       namespaceId,
@@ -3348,9 +3344,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     ) {
       return nativeAdminProxyDenial("session_invalid");
     }
-    const session = await options.auth.resolveSessionFromHeaders(request.headers);
+    const session = admitted.session;
     if (
-      session === undefined ||
       session.userId !== admitted.externalIdentity.subject ||
       Date.parse(session.expiresAt) <= Date.now()
     ) {
@@ -3478,7 +3473,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
     const connectionId = `naws_${randomUUID()}`;
-    let connected = false;
     proxyNativeAdminWebSocket({
       request,
       socket,
@@ -3504,12 +3498,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       },
       onConnect: async () => {
         await appendNativeAdminSocketAudit("connect", admission, { connectionId });
-        connected = true;
       },
       onClose: (cause: NativeAdminWebSocketCloseCause) => {
-        if (!connected) {
-          return;
-        }
         const closeReason = nativeAdminShuttingDown ? "shutdown" : cause.reason;
         const closeAudit = appendNativeAdminSocketAudit("close", admission, {
           connectionId: cause.connectionId,

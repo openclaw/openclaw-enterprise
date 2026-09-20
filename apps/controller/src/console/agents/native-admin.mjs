@@ -20,11 +20,11 @@ function unavailableText(status) {
 export function renderNativeAdminAccess(context, path) {
   const status = element("p", { className: "hint", role: "status" }, "Checking access…");
   const error = element("p", { className: "error", role: "alert" });
-  const launch = button("Open native admin UI", () => void startLaunch(), {
-    className: "primary",
-    disabled: true,
-    hidden: true,
-  });
+  const launch = element(
+    "a",
+    { className: "primary", target: "_blank", rel: "noopener noreferrer", hidden: true },
+    "Open native admin UI",
+  );
   const reload = button("Refresh access", () => void load());
   const section = element(
     "section",
@@ -41,8 +41,12 @@ export function renderNativeAdminAccess(context, path) {
 
   function updateControls() {
     reload.disabled = pending;
-    launch.hidden = current?.status !== "available";
-    launch.disabled = pending || launch.hidden;
+    launch.hidden = pending || current?.status !== "available";
+    if (launch.hidden) {
+      launch.removeAttribute("href");
+    } else {
+      launch.href = current.url;
+    }
     section.hidden =
       current === undefined || current.status === "disabled" || current.status === "denied";
   }
@@ -78,36 +82,6 @@ export function renderNativeAdminAccess(context, path) {
       current = undefined;
       status.textContent = "";
       error.textContent = message(cause);
-    } finally {
-      if (context.isCurrent()) {
-        pending = false;
-        updateControls();
-      }
-    }
-  }
-
-  async function startLaunch() {
-    if (pending || current?.status !== "available") {
-      return;
-    }
-    pending = true;
-    status.textContent = "Opening native admin UI…";
-    error.textContent = "";
-    updateControls();
-    try {
-      const url = new URL(current.url, location.href);
-      window.open(url.href, "_blank", "noopener,noreferrer");
-      status.textContent = "Native admin UI opened in a new tab.";
-    } catch (cause) {
-      if (!context.isCurrent()) {
-        return;
-      }
-      if (cause.status === 401) {
-        context.onExpired();
-        return;
-      }
-      status.textContent = "";
-      error.textContent = message(cause, true);
     } finally {
       if (context.isCurrent()) {
         pending = false;

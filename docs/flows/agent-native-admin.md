@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
 updated: "2026-09-20"
-last_updated_session: "cody/01a0b7fd-13fa-7dc2-8653-5c5814b59305"
+last_updated_session: "01a0b7fd-13fa-7dc2-8653-5c5814b59305"
 ---
 
 # Agent Native Admin UI Flow
@@ -56,7 +56,7 @@ graph TD
 
 `apps/controller/src/console/agents/native-admin.mjs:renderNativeAdminAccess`
 
-The Agent detail page inserts the native admin panel on the Workspace files tab. The panel starts hidden while it requests `${path}/native-admin`. The UI hides disabled and denied states, reports stopped or unsupported states, and enables **Open native admin UI** only when the API returns `status: "available"` with an Agent URL.
+The Agent detail page inserts the native admin panel on the Workspace files tab. The panel starts hidden while it requests `${path}/native-admin`. The UI hides disabled and denied states, reports stopped or unsupported states, and shows the **Open native admin UI** link only when the API returns `status: "available"` with an Agent URL. The link opens that URL in a new tab with `noopener noreferrer`; opening it makes no additional availability or launch request.
 
 The warning text tells operators that native admin access can change gateway state outside OCE and that durable configuration should remain in OCE.
 
@@ -116,6 +116,11 @@ validates native configuration support before proxying. Attributable IAM denials
 during proxy admission preserve an IAM denial audit for the human session and
 exact Agent instead of becoming unaudited dependency failures.
 
+Admission reads Better Auth once and returns the verified session metadata with
+the caller identity. The status and proxy paths reuse that result to check
+expiry and attribute access, without a second session lookup. Each WebSocket
+lease runs admission again against current session state.
+
 `apps/controller/src/gateway/native-admin-proxy.ts:proxyNativeAdminHttp`
 
 The HTTP proxy canonicalizes a bounded path suffix, rejects missing or nonmatching `Origin` on non-GET/HEAD requests, strips browser cookies, service keys, forwarding headers, native identity, native scopes, and upstream `Set-Cookie`, rejects service-worker script requests, rewrites same-upstream `Location` values to the Agent origin, appends `worker-src 'none'` to proxied Content Security Policy, and forwards to the private `https:` gateway base. The native gateway never receives the OCE session cookie.
@@ -160,6 +165,7 @@ The WebSocket proxy requires a non-null exact Agent `Origin`, forwards a sanitiz
 
 ## Changelog
 
+- 2026-09-20 09:45: Reused session metadata from admission and replaced launch bookkeeping with a direct browser link; socket lifecycle state remains owned by the proxy. (01a0b7fd-13fa-7dc2-8653-5c5814b59305 - bbb864aadc709dcc4f7b95d4b42b74823c18363a)
 - 2026-09-20 08:53: Replaced the native-admin exchange flow with shared OCE session cookie admission, host-to-Agent resolution, credential stripping, and current-revision reconnect behavior. (cody/01a0b7fd-13fa-7dc2-8653-5c5814b59305 - 5e5f12f37842ae7239d73432e00609547627ded8)
 - 2026-09-19 22:27: Documented exact-Agent disabled-status gating, IAM denial audit preservation, and WebSocket `connectionId`/`closeReason` audit fields. (01a0b7fd-13fa-7dc2-8653-5c5814b59305 - 9621ce4e)
 - 2026-09-19 21:14: Updated the flow for the shared availability resolver names and service-worker blocking behavior. (01a0b7fd-13fa-7dc2-8653-5c5814b59305 - 06c23b9c)

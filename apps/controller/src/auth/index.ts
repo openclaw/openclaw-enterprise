@@ -17,6 +17,7 @@ import type {
   AdmissionRequest,
   AdmissionVerifier,
   AdmittedCaller,
+  AdmittedSession,
 } from "../admission/admission-verifier.ts";
 import { AdmissionFailure } from "../admission/admission-verifier.ts";
 
@@ -61,11 +62,7 @@ export interface AuthenticatedAccount {
   readonly name: string;
 }
 
-export interface AuthenticatedSession {
-  readonly id: string;
-  readonly userId: string;
-  readonly expiresAt: string;
-}
+export type AuthenticatedSession = AdmittedSession;
 
 export interface ProvisionAuthAccountInput {
   readonly email: string;
@@ -95,9 +92,6 @@ export interface ControllerAuth {
   signOut(request: FastifyRequest, reply: FastifyReply): Promise<void>;
   session(request: FastifyRequest, reply: FastifyReply): Promise<void>;
   resolveSession(request: FastifyRequest): Promise<AuthenticatedSession | undefined>;
-  resolveSessionFromHeaders(
-    headers: AdmissionHeaders | FastifyRequest["headers"],
-  ): Promise<AuthenticatedSession | undefined>;
   createServiceKey(input: {
     readonly principal: ServicePrincipal;
     readonly name: string;
@@ -457,12 +451,13 @@ export class ControllerAdmissionVerifier implements AdmissionVerifier {
       returnHeaders: true,
     });
     const response = session && "response" in session ? session.response : session;
-    if (!response?.session || !isNonEmptyString(response.user?.id)) {
+    const authenticatedSession = safeAuthenticatedSession(response);
+    if (authenticatedSession === undefined) {
       throw new AdmissionFailure(401, "UNAUTHENTICATED", "A valid controller session is required.");
     }
 
     return {
-      externalIdentity: { issuer: this.#issuer, subject: response.user.id },
+      externalIdentity: { issuer: this.#issuer, subject: authenticatedSession.userId },
       admittedScope: {
         installationId: this.#installationId,
         ...(request.requestedScope.namespaceId === undefined
@@ -471,6 +466,7 @@ export class ControllerAdmissionVerifier implements AdmissionVerifier {
       },
       decisionId: `adm_${randomUUID()}`,
       method: "session" as const,
+      session: authenticatedSession,
     };
   }
 }
@@ -716,14 +712,8 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
   async function resolveSession(
     request: FastifyRequest,
   ): Promise<AuthenticatedSession | undefined> {
-    return resolveSessionFromHeaders(request.headers);
-  }
-
-  async function resolveSessionFromHeaders(
-    headers: AdmissionHeaders | FastifyRequest["headers"],
-  ): Promise<AuthenticatedSession | undefined> {
     const result = await api.getSession({
-      headers: sessionHeaders(headers, sessionCookieName),
+      headers: sessionHeaders(request.headers, sessionCookieName),
       query: { disableCookieCache: true, disableRefresh: true },
       asResponse: false,
       returnHeaders: false,
@@ -758,7 +748,6 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     signOut,
     session,
     resolveSession,
-    resolveSessionFromHeaders,
     async createServiceKey({ principal, name, expiresIn }) {
       // The server-only userId parameter is the plugin's referenceId; no human
       // account or session is created for this existing IAM automation identity.

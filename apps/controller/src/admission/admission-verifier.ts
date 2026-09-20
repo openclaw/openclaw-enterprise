@@ -24,15 +24,29 @@ export interface AdmissionRequest {
   readonly futureAdmissionEvidence?: unknown;
 }
 
-export interface AdmittedCaller {
+interface AdmittedCallerBase {
   readonly externalIdentity: {
     readonly issuer: string;
     readonly subject: string;
   };
   readonly admittedScope: AdmissionScope;
   readonly decisionId: string;
-  readonly method: "session" | "api_key" | "oag";
 }
+
+export interface AdmittedSession {
+  readonly id: string;
+  readonly userId: string;
+  readonly expiresAt: string;
+}
+
+export type AdmittedCaller =
+  | (AdmittedCallerBase & {
+      readonly method: "session";
+      readonly session: AdmittedSession;
+    })
+  | (AdmittedCallerBase & {
+      readonly method: "api_key" | "oag";
+    });
 
 export interface AdmissionVerifier {
   verify(request: AdmissionRequest): Promise<AdmittedCaller>;

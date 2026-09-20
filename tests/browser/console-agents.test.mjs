@@ -99,7 +99,7 @@ async function expectNoText(page, pattern) {
 
 async function expectNativeAdminHidden(page) {
   assert.equal(await page.getByRole("heading", { name: "Native admin UI" }).isVisible(), false);
-  assert.equal(await page.getByRole("button", { name: "Open native admin UI" }).isVisible(), false);
+  assert.equal(await page.getByRole("link", { name: "Open native admin UI" }).isVisible(), false);
 }
 
 async function revealNativeConfiguration(page, label) {
@@ -764,7 +764,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   await page
     .getByText("This Agent does not expose a supported native admin UI endpoint.")
     .waitFor();
-  assert.equal(await page.getByRole("button", { name: "Open native admin UI" }).isVisible(), false);
+  assert.equal(await page.getByRole("link", { name: "Open native admin UI" }).isVisible(), false);
 
   fixture.policy.restrictions.push({
     id: "deny-native-administer",
@@ -788,7 +788,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   await page.getByRole("heading", { name: "Native admin Agent" }).waitFor();
   await page.getByRole("heading", { name: "Native admin UI" }).waitFor();
   await page.getByText("Start this Agent before opening its native admin UI.").waitFor();
-  assert.equal(await page.getByRole("button", { name: "Open native admin UI" }).isVisible(), false);
+  assert.equal(await page.getByRole("link", { name: "Open native admin UI" }).isVisible(), false);
 
   await fixture.updateConfiguration(
     namespace.id,
@@ -853,14 +853,13 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   );
 
   const popupPromise = page.waitForEvent("popup");
-  await page.getByRole("button", { name: "Open native admin UI" }).click();
+  await page.getByRole("link", { name: "Open native admin UI" }).click();
   const popup = await popupPromise;
   await popup.waitForLoadState("domcontentloaded");
   assert.equal(popup.url(), expectedAccess.data.url);
   assert.equal(await popup.evaluate(() => globalThis.opener === null), true);
   assert.match(nativeRequestCookie, /(?:__Secure-)?openclaw_occ_shared\.session_token=/);
   assert.doesNotMatch(nativeRequestCookie, /legacy-host-only/);
-  await page.getByText("Native admin UI opened in a new tab.").waitFor();
 
   assert.deepEqual(nonAuthWriteRequests(requests), []);
 });
