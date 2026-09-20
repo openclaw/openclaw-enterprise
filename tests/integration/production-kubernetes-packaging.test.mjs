@@ -48,6 +48,7 @@ const agentNativeAdminValues = {
   ...gatewayRoutingValues,
   "agentNativeAdmin.enabled": "true",
   "agentNativeAdmin.domain": "agents.example.invalid",
+  "agentNativeAdmin.sharedCookieDomain": "example.invalid",
 };
 const databaseCaValues = {
   "database.caSecretName": "occ-rds-ca",
@@ -222,7 +223,12 @@ test(
         { name: "OCC_AGENT_NATIVE_ADMIN_DOMAIN", value: "agents.example.invalid" },
       ],
     );
+    assert.deepEqual(
+      apiEnvironment.filter(({ name }) => name === "OCC_AUTH_COOKIE_DOMAIN"),
+      [{ name: "OCC_AUTH_COOKIE_DOMAIN", value: "example.invalid" }],
+    );
     assert.ok(!workerEnvironment.some(({ name }) => name.startsWith("OCC_AGENT_NATIVE_ADMIN_")));
+    assert.ok(!workerEnvironment.some(({ name }) => name === "OCC_AUTH_COOKIE_DOMAIN"));
     assert.ok(apiEnvironment.some(({ name }) => name === "OCC_GATEWAY_API_KEY_PATH"));
     assert.ok(objects.some(({ kind }) => kind === "Gateway"));
     assert.ok(objects.some(({ kind }) => kind === "EnvoyProxy"));
@@ -238,6 +244,7 @@ test(
       disabledApiEnvironment.filter(({ name }) => name.startsWith("OCC_AGENT_NATIVE_ADMIN_")),
       [{ name: "OCC_AGENT_NATIVE_ADMIN_ENABLED", value: "false" }],
     );
+    assert.ok(!disabledApiEnvironment.some(({ name }) => name === "OCC_AUTH_COOKIE_DOMAIN"));
   },
 );
 

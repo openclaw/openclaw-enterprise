@@ -116,6 +116,8 @@ spec:
             {{- if $.Values.agentNativeAdmin.enabled }}
             - name: OCC_AGENT_NATIVE_ADMIN_DOMAIN
               value: {{ $.Values.agentNativeAdmin.domain | quote }}
+            - name: OCC_AUTH_COOKIE_DOMAIN
+              value: {{ $.Values.agentNativeAdmin.sharedCookieDomain | quote }}
             {{- end }}
             {{- else }}
             - name: OCC_WORKER_READINESS_PATH

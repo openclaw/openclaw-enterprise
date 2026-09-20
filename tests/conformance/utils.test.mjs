@@ -86,6 +86,7 @@ test("Cookie headers retain name-value pairs and discard Set-Cookie attributes",
   assert.equal(
     cookieHeaderFromSetCookie([
       "a=one; Expires=Wed, 21 Oct 2030 07:28:00 GMT; Path=/",
+      "openclaw_occ.session_token=; Max-Age=0; Path=/; HttpOnly",
       "b=two; Secure; SameSite=Strict",
       "  ",
     ]),

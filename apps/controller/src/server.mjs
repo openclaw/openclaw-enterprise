@@ -18,7 +18,9 @@ function startupFailureCode(error) {
   if (/OCC_AUTH_SECRET/.test(message)) {
     return "AUTH_SECRET_INVALID";
   }
-  if (/OCC_AUTH_BASE_URL|loopback host|loopback HTTP\(S\) URL/.test(message)) {
+  if (
+    /OCC_AUTH_BASE_URL|OCC_AUTH_COOKIE_DOMAIN|loopback host|loopback HTTP\(S\) URL/.test(message)
+  ) {
     return "AUTH_BASE_URL_INVALID";
   }
   if (/OCC_WORKSPACE_FILES_CONFIG_PATH.*removed/.test(message)) {
@@ -167,11 +169,13 @@ function configuration() {
 
   const nativeAdminEnabled = optionalBooleanEnvironment("OCC_AGENT_NATIVE_ADMIN_ENABLED");
   const nativeAdminDomain = process.env.OCC_AGENT_NATIVE_ADMIN_DOMAIN;
+  const authCookieDomain = process.env.OCC_AUTH_COOKIE_DOMAIN;
   const nativeAdmin =
     nativeAdminEnabled || (nativeAdminDomain !== undefined && nativeAdminDomain.trim().length > 0)
       ? {
           enabled: nativeAdminEnabled,
           ...(nativeAdminDomain === undefined ? {} : { domain: nativeAdminDomain }),
+          ...(authCookieDomain === undefined ? {} : { sharedCookieDomain: authCookieDomain }),
         }
       : undefined;
 

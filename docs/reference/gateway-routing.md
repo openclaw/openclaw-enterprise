@@ -176,9 +176,13 @@ enable workspace-file access through the standard OCC composition.
 ## Native admin UI routing
 
 Agent native admin UI access reuses the same private Envoy routing primitive as
-workspace files. The public browser origin is an operator-owned wildcard host
+workspace files. The public browser hosts are operator-owned wildcard names
 served by the OCC API process, using `agentNativeAdmin.domain`; Envoy and Agent
-gateway Services remain private ClusterIP resources.
+gateway Services remain private ClusterIP resources. The Agent hosts share the
+ordinary OCE session cookie through the configured `agentNativeAdmin.sharedCookieDomain`,
+so every matching console and Agent subdomain must be a trusted OCE ingress
+endpoint. OCC authenticates and authorizes the human session before proxying,
+then strips browser cookies and credentials before forwarding to Envoy.
 
 The private Compute endpoint remains:
 
@@ -188,11 +192,10 @@ wss://<private-host>/namespaces/<namespaceId>/agents/<agentId>
 
 OCC converts that endpoint to `https:` for native UI HTTP traffic while keeping
 the same private authority and exact Agent base path. Workspace-file traffic
-continues to use the original WSS endpoint. The current source confirms
-availability, one-use launch, host-bound cookie redemption, HTTP proxying, and
-WebSocket upgrade proxying through the API process. Native-host requests are
-intercepted before the normal API not-found path; reserved OCC native-admin
-endpoints remain handled by OCC and cannot be proxied upstream.
+continues to use the original WSS endpoint. Native-host requests are
+intercepted before the normal API not-found path, resolved to the exact Agent
+represented by the host, and checked against the current active revision before
+the API proxies HTTP or WebSocket traffic through the private route.
 
 ## Source and verification
 

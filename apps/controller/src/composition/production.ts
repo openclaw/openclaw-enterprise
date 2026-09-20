@@ -10,7 +10,6 @@ import {
   PostgresPlatformState,
 } from "@openclaw-enterprise/occ";
 import { createPostgresControllerAuth } from "../auth/index.ts";
-import { PostgresNativeAdminExchangeStore } from "../auth/native-admin-exchange.ts";
 import { createFastifyApp } from "../index.ts";
 import type {
   InstallationRuntimeDrivers,
@@ -80,6 +79,9 @@ export async function composeProduction(config: ProductionConfig) {
       installationId: persistedInstallation.id,
       secret: config.authSecret,
       baseURL: config.authBaseURL,
+      ...(config.nativeAdmin?.enabled === true
+        ? { sharedCookieDomain: config.nativeAdmin.sharedCookieDomain }
+        : {}),
       pool,
     });
 
@@ -188,10 +190,6 @@ export async function composeProduction(config: ProductionConfig) {
       secretDriver,
       publicOrigin: config.authBaseURL,
       ...(config.nativeAdmin === undefined ? {} : { nativeAdmin: config.nativeAdmin }),
-      ...(config.nativeAdmin?.enabled === true
-        ? { nativeAdminExchangeStore: new PostgresNativeAdminExchangeStore(pool) }
-        : {}),
-      nativeAdminCookieSecret: config.authSecret,
       ...(config.nativeAdmin?.enabled === true && config.gatewayApiKeyPath !== undefined
         ? { nativeAdminGatewayApiKey: () => readWorkspaceFilesApiKey(config.gatewayApiKeyPath!) }
         : {}),

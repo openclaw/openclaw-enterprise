@@ -5,12 +5,17 @@ This reference owns production controller settings. Start with the
 
 ## Required production controller environment
 
-The production API is internal-only. Operators must provision an internal
-Kubernetes `ClusterIP` Service and a default-deny ingress `NetworkPolicy` that
-allows only explicitly approved internal namespace and Pod selectors. The
-cluster must enforce NetworkPolicies. Do not expose the listener through an
-Ingress, Gateway API route, `NodePort`, `LoadBalancer`, `hostNetwork`, or public
-endpoint.
+The production API is internal-only by default. Operators must provision an
+internal Kubernetes `ClusterIP` Service and a default-deny ingress
+`NetworkPolicy` that allows only explicitly approved namespace and Pod
+selectors. The cluster must enforce NetworkPolicies. Do not expose the listener
+through a `NodePort`, `LoadBalancer`, `hostNetwork`, or public endpoint.
+
+The trusted-operator native admin pilot is the only documented public-ingress
+exception: the console host and Agent wildcard hosts route to OCC through the
+procedure in [Deploy native admin UI access](../../guides/deploy/native-admin.md).
+Envoy and Agent gateway Services remain private, and OCC strips the shared OCE
+session cookie before forwarding to the native gateway.
 
 | Variable                   | Required value or format                                        | Behavior                                                                                                                |
 | -------------------------- | --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
@@ -23,6 +28,14 @@ endpoint.
 | `OCC_AUTH_BASE_URL`        | Absolute controller base URL.                                   | Defines the production Better Auth base URL and cookie origin.                                                          |
 | `OCC_GATEWAY_API_KEY_PATH` | Optional absolute path to the private gateway service-key file. | API only; validates at startup and reads each operation for rotation. Requires Compute endpoint resolution.             |
 | `NODE_EXTRA_CA_CERTS`      | Optional PEM bundle for a private gateway CA.                   | Node reads it at process startup. Normal leaf renewal under that CA does not require a restart; root-bundle changes do. |
+
+When the native admin pilot is enabled, the API also requires:
+
+| Variable                         | Required value or format                                                                                                                                     | Behavior                                                                                                    |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| `OCC_AGENT_NATIVE_ADMIN_ENABLED` | `true`.                                                                                                                                                      | Enables the trusted-operator Agent native admin UI path.                                                    |
+| `OCC_AGENT_NATIVE_ADMIN_DOMAIN`  | Agent host suffix, such as `agents.oce.example.com`, without scheme, wildcard, port, or path.                                                                | Derives stable per-Agent browser hosts.                                                                     |
+| `OCC_AUTH_COOKIE_DOMAIN`         | Shared OCE session cookie parent, such as `oce.example.com`; not a public suffix and must contain the console host and Agent suffix on DNS-label boundaries. | Scopes the ordinary Better Auth session cookie to the console and Agent hosts when native admin is enabled. |
 
 For changes to startup `logging.level`, follow the
 [log-level procedure](../../guides/observability.md#1-choose-the-log-level).

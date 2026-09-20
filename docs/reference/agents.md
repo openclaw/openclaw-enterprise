@@ -207,9 +207,11 @@ are insufficient. The Agent must be desired running, have an active revision,
 and expose a private gateway endpoint through the selected Compute Driver.
 
 The native UI uses the Agent's derived browser host and the existing private
-gateway route. OCE does not turn native edits into Configuration changes or
-AgentRevision snapshots. Redeploy applies the managed revision again but does
-not erase all gateway-local state.
+gateway route. The derived host authenticates with the ordinary OCE browser
+session cookie under the configured shared cookie parent domain; OCC still
+resolves and authorizes the exact Agent before proxying. OCE does not turn
+native edits into Configuration changes or AgentRevision snapshots. Redeploy
+applies the managed revision again but does not erase all gateway-local state.
 
 ## Namespace ownership
 

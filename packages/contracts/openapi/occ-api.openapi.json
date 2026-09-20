@@ -3602,7 +3602,6 @@
                       "additionalProperties": false,
                       "properties": {
                         "activeRevisionId": { "type": "string" },
-                        "bootstrapUrl": { "format": "uri", "type": "string" },
                         "host": { "type": "string" },
                         "origin": { "format": "uri", "type": "string" },
                         "status": {
@@ -3614,7 +3613,8 @@
                             "unsupported"
                           ],
                           "type": "string"
-                        }
+                        },
+                        "url": { "format": "uri", "type": "string" }
                       },
                       "required": ["status"],
                       "type": "object"
@@ -3660,118 +3660,6 @@
         },
         "security": [{ "sessionCookie": [] }],
         "summary": "Resolve native admin UI launch availability for one Agent",
-        "tags": ["Agents"],
-        "x-openclaw-permissions": [
-          { "action": "administer", "resourceKind": "agent", "scope": "requested" }
-        ]
-      }
-    },
-    "/namespaces/{namespaceId}/agents/{agentId}/native-admin/launch": {
-      "post": {
-        "description": "Requires a human session with administer permission on the exact Agent. Issues a short-lived browser-bound native admin exchange code; service API keys cannot launch native admin UI access.",
-        "operationId": "launchAgentNativeAdmin",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "namespaceId",
-            "required": true,
-            "schema": { "maxLength": 200, "minLength": 1, "type": "string" }
-          },
-          {
-            "in": "path",
-            "name": "agentId",
-            "required": true,
-            "schema": { "maxLength": 200, "minLength": 1, "type": "string" }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "additionalProperties": false,
-                "properties": {
-                  "challenge": { "maxLength": 512, "minLength": 1, "type": "string" },
-                  "host": { "maxLength": 253, "minLength": 1, "type": "string" },
-                  "revisionId": { "maxLength": 200, "minLength": 1, "type": "string" },
-                  "state": { "maxLength": 512, "minLength": 1, "type": "string" }
-                },
-                "required": ["state", "challenge", "host", "revisionId"],
-                "type": "object"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": false,
-                  "description": "OK",
-                  "properties": {
-                    "data": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "expiresAt": { "format": "date-time", "type": "string" },
-                        "url": { "format": "uri", "type": "string" }
-                      },
-                      "required": ["url", "expiresAt"],
-                      "type": "object"
-                    },
-                    "meta": {
-                      "additionalProperties": false,
-                      "properties": { "requestId": { "type": "string" } },
-                      "required": ["requestId"],
-                      "type": "object"
-                    }
-                  },
-                  "required": ["data", "meta"],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "400": {
-            "content": {
-              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
-            },
-            "description": "Bad Request"
-          },
-          "401": {
-            "content": {
-              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
-            },
-            "description": "Unauthorized"
-          },
-          "403": {
-            "content": {
-              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
-            },
-            "description": "Forbidden"
-          },
-          "409": {
-            "content": {
-              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
-            },
-            "description": "Conflict"
-          },
-          "429": {
-            "content": {
-              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
-            },
-            "description": "Too Many Requests"
-          },
-          "503": {
-            "content": {
-              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
-            },
-            "description": "Service Unavailable"
-          }
-        },
-        "security": [{ "sessionCookie": [] }],
-        "summary": "Issue one native admin UI browser exchange code",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "agent", "scope": "requested" }

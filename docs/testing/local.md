@@ -134,6 +134,12 @@ history; that fixture does not prove runtime dispatch, worker leases, Compute
 Driver effects, PostgreSQL persistence, live Provider health, or deployed Agent
 runtime behavior.
 
+Native admin UI coverage in this suite should prove panel visibility, warning
+copy, shared-cookie Agent-host admission, denied service API keys, wrong or
+unknown Agent hosts, and revision-change reconnect behavior. It does not prove
+a real gateway, private Envoy routing, or that the OCE session cookie is stripped
+before the native gateway; cover those in the native admin integration proof.
+
 Run the API/static boundary checks without a browser:
 
 ```sh

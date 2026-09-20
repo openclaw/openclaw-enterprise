@@ -47,7 +47,7 @@ lists runtime traces for authentication, configuration, Drivers, and Agent execu
 The [Agent plugin flow](flows/agent-plugins.md) traces desired state through
 revision startup and runtime configuration.
 The [Agent native admin UI flow](flows/agent-native-admin.md) traces console
-availability through private gateway endpoint selection.
+availability, shared-session Agent-host admission, and private gateway proxying.
 
 ## Contribute
 

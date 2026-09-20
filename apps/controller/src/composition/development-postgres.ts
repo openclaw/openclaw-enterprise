@@ -16,7 +16,6 @@ import {
   PostgresPlatformState,
 } from "@openclaw-enterprise/occ";
 import { createPostgresControllerAuth } from "../auth/index.ts";
-import { PostgresNativeAdminExchangeStore } from "../auth/native-admin-exchange.ts";
 import { createDockerDevelopmentComputeDriverFromEnv } from "../drivers/compute/docker/index.ts";
 import { createFilesystemDevelopmentConfigurationDriverFromEnv } from "../drivers/configuration/filesystem/index.ts";
 import { createFastifyApp } from "../index.ts";
@@ -98,7 +97,10 @@ export async function composePostgresDevelopment(
       secret: config.authSecret,
       baseURL: config.authBaseURL,
       pool,
-      secureCookies: false,
+      secureCookies: config.nativeAdmin?.enabled === true,
+      ...(config.nativeAdmin?.enabled === true
+        ? { sharedCookieDomain: config.nativeAdmin.sharedCookieDomain }
+        : {}),
     });
     const computeDriver = options.computeDriver ?? createDevelopmentDockerComputeDriver();
     const sandboxDriver = drivers?.sandboxDriver;
@@ -193,10 +195,6 @@ export async function composePostgresDevelopment(
       computeDriver,
       publicOrigin: config.authBaseURL,
       ...(config.nativeAdmin === undefined ? {} : { nativeAdmin: config.nativeAdmin }),
-      ...(config.nativeAdmin?.enabled === true
-        ? { nativeAdminExchangeStore: new PostgresNativeAdminExchangeStore(pool) }
-        : {}),
-      nativeAdminCookieSecret: config.authSecret,
       ...(config.nativeAdmin?.enabled === true && config.gatewayApiKeyPath !== undefined
         ? { nativeAdminGatewayApiKey: () => readWorkspaceFilesApiKey(config.gatewayApiKeyPath!) }
         : {}),

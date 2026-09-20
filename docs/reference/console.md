@@ -155,12 +155,12 @@ Agent `administer` permission. The panel is hidden when the Installation disable
 the feature or when the caller lacks that grant. It reports stopped,
 unsupported, or unavailable gateway states without granting broader access.
 
-**Open native admin UI** opens the returned per-Agent bootstrap URL in a new tab.
-The visible warning is part of the operator contract: the native UI can change
-the gateway outside OCE, and those changes are not recorded in AgentRevisions.
-Use OCE for durable configuration. The new tab redirects back to the console
-origin for an explicit launch confirmation, then returns to the Agent origin
-with a short-lived native admin cookie.
+**Open native admin UI** opens the returned per-Agent URL in a new tab. The
+visible warning is part of the operator contract: the native UI can change the
+gateway outside OCE, and those changes are not recorded in AgentRevisions. Use
+OCE for durable configuration. The Agent tab uses the same OCE session cookie as
+the console through the configured shared cookie parent domain; native chat or
+other Agent-host activity does not extend that console session.
 
 ## Routes
 

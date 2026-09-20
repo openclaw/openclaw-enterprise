@@ -209,7 +209,7 @@
           "expectedTests": [
             "native admin status requires exact Agent administer and reports lifecycle availability",
             "native admin disabled status still requires exact Agent administer",
-            "native admin launch uses the real session, CSRF boundary, and one-use callback",
+            "native admin shared session configuration validates cookie scope and rejects keys",
             "native admin proxy strips browser credentials and preserves the Agent gateway base path"
           ]
         }
@@ -367,18 +367,9 @@
           ]
         },
         {
-          "path": "tests/integration/native-admin-exchange-postgres.test.mjs",
-          "expectedTests": [
-            "memory native admin exchange mirrors one-use, expiry, and issuance bounds",
-            "PostgreSQL native admin exchange consumes one-use codes across store instances",
-            "PostgreSQL native admin exchange expires and rejects malformed exchanges",
-            "PostgreSQL native admin exchange bounds concurrent issuance per parent session"
-          ]
-        },
-        {
           "path": "tests/integration/native-admin-session-postgres.test.mjs",
           "expectedTests": [
-            "PostgreSQL native admin launch, callback, and HTTP proxy work across two OCC API replicas",
+            "PostgreSQL native admin shared session and HTTP proxy work across two OCC API replicas",
             "PostgreSQL native admin WebSocket lease closes within thirty seconds after parent logout",
             "PostgreSQL native admin WebSocket lease closes within thirty seconds after parent session expiry",
             "PostgreSQL native admin WebSocket lease closes within thirty seconds after IAM administer restriction",

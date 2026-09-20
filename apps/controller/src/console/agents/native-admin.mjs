@@ -95,7 +95,7 @@ export function renderNativeAdminAccess(context, path) {
     error.textContent = "";
     updateControls();
     try {
-      const url = new URL(current.bootstrapUrl, location.href);
+      const url = new URL(current.url, location.href);
       window.open(url.href, "_blank", "noopener,noreferrer");
       status.textContent = "Native admin UI opened in a new tab.";
     } catch (cause) {

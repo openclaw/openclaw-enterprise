@@ -36,6 +36,7 @@ auth:
 agentNativeAdmin:
   enabled: false
   domain: ""
+  sharedCookieDomain: ""
 
 bootstrap:
   adminEmail: ""

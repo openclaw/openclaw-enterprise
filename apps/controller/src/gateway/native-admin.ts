@@ -5,12 +5,13 @@ import type { Agent, AgentRevision } from "@openclaw-enterprise/contracts";
 export interface NativeAdminAccessConfig {
   readonly enabled: boolean;
   readonly domain?: string;
+  readonly sharedCookieDomain?: string;
 }
 
 export interface NativeAdminTarget {
   readonly host: string;
   readonly origin: string;
-  readonly bootstrapUrl: string;
+  readonly url: string;
 }
 
 const SAFE_DOMAIN =
@@ -70,15 +71,12 @@ export function nativeAdminTarget(input: {
   const host = deriveNativeAdminHost(input.installationId, input.agent, input.domain);
   const publicUrl = new URL(input.publicOrigin);
   publicUrl.hostname = host;
-  publicUrl.pathname = "/__occ/native-admin/bootstrap";
+  publicUrl.pathname = "/";
   publicUrl.search = "";
-  publicUrl.searchParams.set("namespace", input.agent.namespaceId);
-  publicUrl.searchParams.set("agent", input.agent.id);
-  publicUrl.searchParams.set("revision", input.revision.id);
   return {
     host,
     origin: `${publicUrl.protocol}//${publicUrl.host}`,
-    bootstrapUrl: publicUrl.toString(),
+    url: publicUrl.toString(),
   };
 }
 

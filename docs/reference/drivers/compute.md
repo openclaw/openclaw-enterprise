@@ -68,7 +68,7 @@ Workspace-file access uses the returned WSS endpoint. The opt-in
 [Agent native admin UI](../agent-native-admin.md#agent-host-identity) derives
 an HTTPS base with the same authority and Agent path for native HTTP and
 WebSocket proxying; the Driver method's WSS return contract stays unchanged.
-A missing method or unsupported endpoint prevents native admin launch.
+A missing method or unsupported endpoint prevents native admin access.
 See [Kubernetes private routes](kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes)
 for the bundled route implementation.
 

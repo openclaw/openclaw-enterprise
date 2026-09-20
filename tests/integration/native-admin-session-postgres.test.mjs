@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:https";
 import { createConnection } from "node:net";
 import { once } from "node:events";
@@ -13,7 +13,6 @@ import test from "node:test";
 import pg from "pg";
 
 import { createPostgresControllerAuth } from "../../apps/controller/src/auth/index.ts";
-import { PostgresNativeAdminExchangeStore } from "../../apps/controller/src/auth/native-admin-exchange.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
@@ -33,23 +32,16 @@ const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const adminEmail = "postgres-admin@openclaw.local";
 const adminPassword = "postgres-development-password";
 const authSecret = "native-admin-postgres-auth-secret-minimum-32-bytes";
-const authBaseURL = "http://127.0.0.1";
-const publicOrigin = "https://127.0.0.1:9443";
-const nativeDomain = "native-pg.example.test";
+const authBaseURL = "https://console.example.test";
+const publicOrigin = "https://console.example.test:9443";
+const cookieDomain = "example.test";
+const nativeDomain = `native-pg.${cookieDomain}`;
 const nativeGatewayApiKey = `native-postgres-gateway-key-${randomUUID()}`;
 const requiresPostgres = {
   skip: databaseUrl
     ? false
     : "Set OCC_TEST_DATABASE_URL to a migrated disposable PostgreSQL database.",
 };
-
-function urlSafe(value) {
-  return value.toString("base64url");
-}
-
-function challenge(verifier) {
-  return urlSafe(createHash("sha256").update(verifier).digest());
-}
 
 function nativeOriginForAgent(installationId, namespaceId, agentId) {
   const publicUrl = new URL(publicOrigin);
@@ -138,6 +130,7 @@ async function startNativeHttpsUpstream(t) {
 
   const requests = [];
   const upgrades = [];
+  const upgradedSockets = new Set();
   const cert = await readFile(certPath, "utf8");
   const server = createServer({ key: await readFile(keyPath), cert }, async (request, response) => {
     requests.push({
@@ -153,6 +146,8 @@ async function startNativeHttpsUpstream(t) {
     response.end("native postgres upstream\n");
   });
   server.on("upgrade", (request, socket) => {
+    upgradedSockets.add(socket);
+    socket.once("close", () => upgradedSockets.delete(socket));
     upgrades.push({ url: request.url, headers: { ...request.headers } });
     socket.write(
       [
@@ -166,12 +161,15 @@ async function startNativeHttpsUpstream(t) {
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
-  t.after(
-    () =>
-      new Promise((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
-      ),
-  );
+  t.after(async () => {
+    // Successful reconnects may still be open; close owned upgrades before the server.
+    for (const socket of upgradedSockets) {
+      socket.destroy();
+    }
+    await new Promise((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  });
   const address = server.address();
   assert.equal(typeof address, "object");
   assert.notEqual(address, null);
@@ -192,7 +190,7 @@ async function ensureBootstrap(t) {
     email: adminEmail,
     password: adminPassword,
     authSecret,
-    authBaseURL,
+    authBaseURL: "http://127.0.0.1",
     installationName: "Native admin PostgreSQL session test",
   });
 }
@@ -215,7 +213,8 @@ async function createApi(t, label, upstreamPort, options = {}) {
     baseURL: authBaseURL,
     secret: authSecret,
     pool,
-    secureCookies: false,
+    secureCookies: true,
+    sharedCookieDomain: cookieDomain,
   });
   const iamDriver = new NativeIAMDriver(state, {
     id: `native-admin-iam-${label}`,
@@ -249,9 +248,8 @@ async function createApi(t, label, upstreamPort, options = {}) {
     nativeAdmin: {
       enabled: options.nativeAdminEnabled ?? true,
       domain: nativeDomain,
+      sharedCookieDomain: cookieDomain,
     },
-    nativeAdminExchangeStore: new PostgresNativeAdminExchangeStore(pool),
-    nativeAdminCookieSecret: authSecret,
     nativeAdminGatewayApiKey: async () => nativeGatewayApiKey,
   });
   app.addHook("onClose", async () => {
@@ -288,7 +286,7 @@ async function signIn(app, credentials = { email: adminEmail, password: adminPas
       Array.isArray(setCookie) ? setCookie : setCookie === undefined ? [] : [String(setCookie)],
     ),
   };
-  assert.match(session.cookie, /openclaw_occ\.session_token=/);
+  assert.match(session.cookie, /(?:__Secure-)?openclaw_occ_shared\.session_token=/);
   return session;
 }
 
@@ -379,46 +377,6 @@ async function createNativeAgent(api, session, upstream) {
   assert.match(status.json().data.host, new RegExp(`\\.${nativeDomain.replaceAll(".", "\\.")}$`));
   assert.equal(upstream.requests.length, 0);
   return { namespace, agent, revision, native: status.json().data, principal };
-}
-
-async function launchNativeAdmin(api, session, native, namespaceId, agentId, revisionId) {
-  const verifier = `verifier-${randomUUID()}`;
-  const state = `state-${randomUUID()}`;
-  const response = await inject(
-    api.app,
-    "POST",
-    `/namespaces/${namespaceId}/agents/${agentId}/native-admin/launch`,
-    {
-      session,
-      headers: { origin: publicOrigin },
-      body: {
-        state,
-        challenge: challenge(verifier),
-        host: native.host,
-        revisionId,
-      },
-    },
-  );
-  assert.equal(response.statusCode, 200, response.body);
-  return { callback: new URL(response.json().data.url), verifier, state };
-}
-
-async function redeemNativeAdmin(api, native, launch) {
-  const response = await inject(api.app, "POST", "/__occ/native-admin/callback", {
-    headers: { host: new URL(native.origin).host, origin: native.origin },
-    body: {
-      code: launch.callback.searchParams.get("code"),
-      state: launch.state,
-      verifier: launch.verifier,
-    },
-  });
-  assert.equal(response.statusCode, 200, response.body);
-  const setCookie = response.headers["set-cookie"];
-  const cookie = cookieHeaderFromSetCookie(
-    Array.isArray(setCookie) ? setCookie : setCookie === undefined ? [] : [String(setCookie)],
-  );
-  assert.match(cookie, /__Host-occ_native_admin=/);
-  return cookie;
 }
 
 async function nativeGet(api, native, cookie, path = "/settings/profile?tab=devices") {
@@ -569,6 +527,18 @@ async function assertSocketClosesAfterMutation(socket, mutate, timeoutMs = 31_00
   return closedAfterMs;
 }
 
+async function waitFor(description, read, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const result = await read();
+    if (result !== undefined) {
+      return result;
+    }
+    await delay(50);
+  }
+  assert.fail(`${description} did not complete within ${timeoutMs}ms`);
+}
+
 async function waitForAuditActions(pool, namespaceId, agentId, actions) {
   const remaining = new Set(actions);
   const deadline = Date.now() + 5_000;
@@ -712,15 +682,7 @@ async function openNativeAdminSocketScenario(t, label) {
     session,
     upstream,
   );
-  const launch = await launchNativeAdmin(
-    apiA,
-    session,
-    native,
-    namespace.id,
-    agent.id,
-    revision.id,
-  );
-  const nativeCookie = await redeemNativeAdmin(apiB, native, launch);
+  const nativeCookie = session.cookie;
   const port = await listen(apiB.app);
   const socket = await openNativeWebSocket(port, native, nativeCookie);
   t.after(() => socket.destroy());
@@ -732,7 +694,6 @@ async function openNativeAdminSocketScenario(t, label) {
   assert.equal(upstream.upgrades[0].headers.origin, native.origin);
   assert.equal(upstream.upgrades[0].headers["x-api-key"], nativeGatewayApiKey);
   await waitForAuditActions(apiA.pool, namespace.id, agent.id, [
-    "openclaw.agents.native_admin.launch",
     "openclaw.agents.native_admin.websocket.connect",
   ]);
   return {
@@ -747,6 +708,7 @@ async function openNativeAdminSocketScenario(t, label) {
     native,
     nativeCookie,
     principal,
+    port,
     socket,
   };
 }
@@ -758,7 +720,7 @@ async function assertRevokedHttp(api, native, nativeCookie) {
 }
 
 test(
-  "PostgreSQL native admin launch, callback, and HTTP proxy work across two OCC API replicas",
+  "PostgreSQL native admin shared session and HTTP proxy work across two OCC API replicas",
   { ...requiresPostgres, timeout: 30_000 },
   async (t) => {
     await ensureBootstrap(t);
@@ -771,15 +733,10 @@ test(
     t.after(() => Promise.allSettled([apiA.app.close(), apiB.app.close()]));
     const session = await signIn(apiA.app);
     const { namespace, agent, revision, native } = await createNativeAgent(apiA, session, upstream);
-    const launch = await launchNativeAdmin(
-      apiA,
-      session,
-      native,
-      namespace.id,
-      agent.id,
-      revision.id,
-    );
-    const nativeCookie = await redeemNativeAdmin(apiB, native, launch);
+    assert.equal(native.activeRevisionId, revision.id);
+    assert.equal(new URL(native.url).origin, native.origin);
+    assert.equal(native.bootstrapUrl, undefined);
+    const nativeCookie = session.cookie;
     const proxied = await nativeGet(apiB, native, nativeCookie);
     assert.equal(proxied.statusCode, 200, proxied.body);
     assert.equal(proxied.headers["x-native-upstream"], "reached");
@@ -792,6 +749,15 @@ test(
     assert.equal(upstream.requests[0].headers.origin, native.origin);
     assert.equal(upstream.requests[0].headers["x-api-key"], nativeGatewayApiKey);
     assert.equal(upstream.requests[0].headers.cookie, undefined);
+
+    const keyOnly = await inject(apiB.app, "GET", "/", {
+      headers: {
+        host: new URL(native.origin).host,
+        origin: native.origin,
+        "x-api-key": "occ_not-a-human-session",
+      },
+    });
+    assert.equal(keyOnly.statusCode, 403, keyOnly.body);
 
     const port = await listen(apiB.app);
     const upgradesBeforeOriginChecks = upstream.upgrades.length;
@@ -820,33 +786,6 @@ test(
       "openclaw.agents.native_admin.read",
       limited.principal.id,
     );
-    const deniedLaunch = await inject(
-      apiA.app,
-      "POST",
-      `/namespaces/${namespace.id}/agents/${agent.id}/native-admin/launch`,
-      {
-        session: limited.session,
-        headers: { origin: publicOrigin },
-        body: {
-          state: `state-${randomUUID()}`,
-          challenge: challenge(`verifier-${randomUUID()}`),
-          host: native.host,
-          revisionId: revision.id,
-        },
-      },
-    );
-    assert.equal(deniedLaunch.statusCode, 403, deniedLaunch.body);
-    await waitForAuthorizationDenialAudit(
-      apiA.pool,
-      namespace.id,
-      agent.id,
-      "openclaw.agents.native_admin.launch",
-      limited.principal.id,
-    );
-
-    await waitForAuditActions(apiA.pool, namespace.id, agent.id, [
-      "openclaw.agents.native_admin.launch",
-    ]);
   },
 );
 
@@ -948,8 +887,9 @@ test(
   { ...requiresPostgres, timeout: 45_000 },
   async (t) => {
     const scenario = await openNativeAdminSocketScenario(t, "revision");
+    let nextRevision;
     const closedAfterMs = await assertSocketClosesAfterMutation(scenario.socket, async () => {
-      const nextRevision = await scenario.apiA.controller.deployAgent(
+      nextRevision = await scenario.apiA.controller.deployAgent(
         scenario.principal.id,
         { namespaceId: scenario.namespace.id, agentId: scenario.agent.id },
         resolveApprovedHarness,
@@ -966,7 +906,45 @@ test(
     });
     t.diagnostic(`active revision replacement closed native admin WebSocket in ${closedAfterMs}ms`);
     await assertSocketAuditCloseReason(scenario, "revision_changed");
-    await assertRevokedHttp(scenario.apiB, scenario.native, scenario.nativeCookie);
+    assert.ok(nextRevision, "revision replacement must create a successor revision");
+
+    const reconnectedHttp = await nativeGet(
+      scenario.apiB,
+      scenario.native,
+      scenario.nativeCookie,
+      "/after-revision",
+    );
+    assert.equal(reconnectedHttp.statusCode, 200, reconnectedHttp.body);
+    const reopened = await openNativeWebSocket(
+      scenario.port,
+      scenario.native,
+      scenario.nativeCookie,
+      "/session/reconnected",
+    );
+    t.after(() => reopened.destroy());
+    const latestConnect = await waitFor(
+      "reconnected WebSocket audit on replacement revision",
+      async () => {
+        const result = await scenario.apiA.pool.query(
+          `SELECT details
+           FROM occ.audit_events
+          WHERE namespace_id = $1
+            AND resource_kind = 'agent'
+            AND resource_id = $2
+            AND action = 'openclaw.agents.native_admin.websocket.connect'
+            AND details->'nativeAdmin'->>'revisionId' = $3
+          ORDER BY occurred_at DESC, id DESC
+          LIMIT 1`,
+          [scenario.namespace.id, scenario.agent.id, nextRevision.id],
+        );
+        return result.rows[0];
+      },
+    );
+    assert.equal(
+      latestConnect.details.nativeAdmin.revisionId,
+      nextRevision.id,
+      "shared session reconnect must bind the current active revision",
+    );
   },
 );
 

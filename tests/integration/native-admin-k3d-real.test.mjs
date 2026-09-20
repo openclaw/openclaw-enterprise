@@ -433,14 +433,9 @@ async function assertServiceWorkerRegistrationBlockedByCsp(page) {
   assert.deepEqual(result.registrations, [], "native admin must not install a ServiceWorker");
 }
 
-async function completeNativeLaunch(nativePage, { consoleOrigin, nativeOrigin }) {
+async function completeNativeLaunch(nativePage, { nativeOrigin }) {
   await nativePage.waitForLoadState("domcontentloaded");
   assert.equal(await nativePage.evaluate(() => globalThis.window.opener === null), true);
-  await nativePage.waitForURL(
-    (url) => url.origin === consoleOrigin && url.pathname === "/console/native-admin-launch",
-    { timeout: 120_000 },
-  );
-  await nativePage.getByRole("button", { name: "Open native admin UI" }).click();
   await nativePage.waitForURL((url) => url.origin === nativeOrigin && url.pathname === "/", {
     timeout: 120_000,
   });
@@ -660,7 +655,6 @@ async function assertStopRedeployPreservesWorkspaceFile(
 
 async function assertNativeAdminAudit(topology) {
   const expectedActions = [
-    "openclaw.agents.native_admin.launch",
     "openclaw.agents.native_admin.websocket.connect",
     "openclaw.agents.native_admin.websocket.close",
   ];
@@ -691,12 +685,14 @@ test(
   async (context) => {
     const artifacts = await mkdtemp(join(tmpdir(), "openclaw-native-admin-browser-"));
     context.diagnostic(`native admin browser artifacts: ${artifacts}`);
-    const nativeDomain = process.env.OCC_TEST_NATIVE_ADMIN_DOMAIN ?? "native.localhost";
+    const nativeDomain = process.env.OCC_TEST_NATIVE_ADMIN_DOMAIN ?? "native.example.test";
+    const sharedCookieDomain =
+      process.env.OCC_TEST_NATIVE_ADMIN_SHARED_COOKIE_DOMAIN ?? nativeDomain;
     const ingress = await createNativeIngress(context, { artifacts, nativeDomain });
     const topology = await arrangeProductionTopology(context, "dedicated", undefined, {
       publicOrigin: ingress.origin,
       gatewayPassword: true,
-      nativeAdmin: { domain: nativeDomain },
+      nativeAdmin: { domain: nativeDomain, sharedCookieDomain },
       nativeOptions: {
         controlUi: { enabled: true },
       },
@@ -727,7 +723,8 @@ test(
       expectedTarget.origin,
       "Agent native origin must use HTTPS ingress",
     );
-    assert.equal(status.bootstrapUrl, expectedTarget.bootstrapUrl);
+    assert.equal(status.bootstrapUrl, undefined);
+    assert.equal(status.url, expectedTarget.origin + "/");
     assert.equal(status.activeRevisionId, topology.revision.id);
 
     const route = await resource("httproute", topology.gatewayServiceName, topology.placement);
@@ -776,15 +773,18 @@ test(
     const popupPromise = page.waitForEvent("popup");
     await page.getByRole("button", { name: "Open native admin UI" }).click();
     const nativePage = await popupPromise;
-    await completeNativeLaunch(nativePage, {
-      consoleOrigin: ingress.origin,
-      nativeOrigin: status.origin,
-    });
+    await completeNativeLaunch(nativePage, { nativeOrigin: status.origin });
 
     const deepLink = new URL("/settings/advanced", status.origin);
     const deepLinkResponse = await nativePage.goto(deepLink.href);
     assert.ok(deepLinkResponse?.status() < 400, "stock UI deep link must be served");
     await waitForStockUi(nativePage);
+    await nativePage.locator(".page-title").getByText("Advanced", { exact: true }).waitFor();
+    await nativePage.getByRole("button", { name: "Raw", exact: true }).waitFor();
+    await nativePage.screenshot({
+      path: join(artifacts, "stock-ui-authorized.png"),
+      fullPage: true,
+    });
     await assertServiceWorkerRegistrationBlockedByCsp(nativePage);
 
     const beforeNativeEdit = await readOceControlState(topology);
@@ -798,6 +798,7 @@ test(
 
     const marker = `native-admin-browser-${randomUUID()}`;
     await submitChatTurnWithAssistantProof(nativePage, marker, nativeSocketFrames);
+    await nativePage.screenshot({ path: join(artifacts, "stock-ui-chat.png"), fullPage: true });
     await assertNoNativeCredentialLeak(nativePage, [
       topology.gatewayToken,
       topology.workspaceGateway.apiKey,
@@ -825,6 +826,12 @@ test(
         waitUntil: "domcontentloaded",
       })
       .catch((error) => error);
+    if (!(sibling instanceof Error)) {
+      await siblingPage.screenshot({
+        path: join(artifacts, "wrong-agent-host-denied.png"),
+        fullPage: true,
+      });
+    }
     assert.ok(
       sibling instanceof Error || [401, 403, 404].includes(sibling.status()),
       "another Agent host must not borrow the native admin session",
@@ -858,16 +865,21 @@ test(
       expectedManagedAccent,
       forbiddenRuntimeAccent: driftAccent,
     });
-    const staleSessionPage = await browserContext.newPage();
-    const staleSession = await staleSessionPage.goto(status.origin);
-    assert.equal(
-      staleSession.status(),
-      403,
-      "the old revision session must not access the redeployed gateway",
+    const currentStatus = await nativeAdminStatus(topology);
+    assert.equal(currentStatus.status, "available");
+    assert.equal(currentStatus.activeRevisionId, topology.revision.id);
+    assert.equal(currentStatus.origin, status.origin);
+    const currentSessionPage = await browserContext.newPage();
+    context.after(() => currentSessionPage.close().catch(() => {}));
+    const currentSession = await currentSessionPage.goto(currentStatus.url);
+    assert.ok(
+      currentSession?.status() < 400,
+      "the shared native admin session must reconnect to the current redeployed revision",
     );
-    await staleSessionPage.close();
+    await waitForStockUi(currentSessionPage);
+    await currentSessionPage.close();
     context.diagnostic(
-      "Native admin browser proof loaded stock assets, opened a deep link, established a WebSocket, sent a real chat turn, made/reverted a native config edit, proved OCE redeploy restores managed config after native drift, denied a sibling host, preserved a workspace file across OCE stop/redeploy, wrote human launch/connect/close audit evidence, and reloaded after gateway Pod replacement.",
+      "Native admin browser proof loaded stock assets, opened a deep link, established a WebSocket, sent a real chat turn, made/reverted a native config edit, proved OCE redeploy restores managed config after native drift, denied a sibling host, preserved a workspace file across OCE stop/redeploy, wrote human connect/close audit evidence, reconnected to the current redeployed revision, and reloaded after gateway Pod replacement.",
     );
   },
 );

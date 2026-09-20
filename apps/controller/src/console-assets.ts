@@ -90,10 +90,6 @@ const CONSOLE_ASSETS = new Map(
       path: new URL("console.mjs", CONSOLE_ROOT),
       contentType: "text/javascript; charset=utf-8",
     },
-    "/console/native-admin-launch.mjs": {
-      path: new URL("native-admin-launch.mjs", CONSOLE_ROOT),
-      contentType: "text/javascript; charset=utf-8",
-    },
   }),
 );
 const CONSOLE_SHELL_ROUTES = new Set([

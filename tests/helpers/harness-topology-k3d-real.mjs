@@ -404,6 +404,7 @@ async function startInClusterControllerApi(
     controller,
     controllerPort,
     nativeAdminDomain,
+    nativeAdminSharedCookieDomain,
     platformNamespace,
     workspaceGateway,
   },
@@ -528,7 +529,17 @@ async function startInClusterControllerApi(
                     },
                     ...(nativeAdminDomain === undefined
                       ? []
-                      : [{ name: "OCC_AGENT_NATIVE_ADMIN_DOMAIN", value: nativeAdminDomain }]),
+                      : [
+                          { name: "OCC_AGENT_NATIVE_ADMIN_DOMAIN", value: nativeAdminDomain },
+                          ...(nativeAdminSharedCookieDomain === undefined
+                            ? []
+                            : [
+                                {
+                                  name: "OCC_AUTH_COOKIE_DOMAIN",
+                                  value: nativeAdminSharedCookieDomain,
+                                },
+                              ]),
+                        ]),
                     {
                       name: "OCC_HOST",
                       valueFrom: { fieldRef: { fieldPath: "status.podIP" } },
@@ -1384,6 +1395,7 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
       controller,
       controllerPort: options.controllerPort,
       nativeAdminDomain: options.nativeAdmin?.domain,
+      nativeAdminSharedCookieDomain: options.nativeAdmin?.sharedCookieDomain,
       platformNamespace,
       workspaceGateway,
     });

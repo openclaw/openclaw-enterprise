@@ -7,7 +7,6 @@ import test from "node:test";
 
 import { chromium } from "playwright";
 
-import { MemoryNativeAdminExchangeStore } from "../../apps/controller/src/auth/native-admin-exchange.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture, providerFixtures } from "../helpers/console-app.mjs";
@@ -23,7 +22,7 @@ async function artifactDirectory(t) {
   return directory;
 }
 
-async function launchBrowser() {
+async function launchBrowser(options = {}) {
   const browserExecutable =
     process.env.OCC_TEST_BROWSER_EXECUTABLE === undefined ||
     process.env.OCC_TEST_BROWSER_EXECUTABLE.length === 0
@@ -32,13 +31,14 @@ async function launchBrowser() {
   const browser = await chromium.launch({
     ...(browserExecutable === undefined ? {} : { executablePath: browserExecutable }),
     headless: true,
+    ...(options.args === undefined ? {} : { args: options.args }),
   });
   return browser;
 }
 
-async function newPage(t, fixture) {
+async function newPage(t, fixture, options = {}) {
   const artifacts = await artifactDirectory(t);
-  const browser = await launchBrowser();
+  const browser = await launchBrowser(options);
   let context;
   fixture.registerCleanupBeforeAppClose(async () => {
     let cleanupError;
@@ -698,15 +698,19 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   await disabledPage.getByRole("heading", { name: "Disabled native admin Agent" }).waitFor();
   await expectNativeAdminHidden(disabledPage);
 
-  const publicOrigin = "https://console.example.invalid";
-  const nativeDomain = "agents.example.invalid";
+  const cookieDomain = "oce.example.test";
+  const consoleHost = `console.${cookieDomain}`;
+  const nativeDomain = `agents.${cookieDomain}`;
   const gatewayEndpoint =
     "wss://private-gateway.example.invalid/namespaces/native-admin/agents/agent";
   const fixture = await createConsoleAppFixture(t, {
-    publicOrigin,
-    nativeAdmin: { enabled: true, domain: nativeDomain },
-    nativeAdminExchangeStore: new MemoryNativeAdminExchangeStore(),
-    nativeAdminCookieSecret: `native-admin-cookie-secret-${randomUUID()}-${randomUUID()}`,
+    originHost: consoleHost,
+    publicOrigin: true,
+    authCookieDomain: cookieDomain,
+    development: { enabled: false },
+    https: true,
+    authSecureCookies: true,
+    nativeAdmin: { enabled: true, domain: nativeDomain, sharedCookieDomain: cookieDomain },
     nativeAdminGatewayApiKey: async () => "native-admin-gateway-api-key",
     computeDriver: nativeAdminComputeDriver(gatewayEndpoint),
   });
@@ -725,12 +729,36 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   assert.equal(initialNativeAccess.status, 200);
   assert.equal(initialNativeAccess.data.status, "unsupported");
   assert.equal(new URL(initialNativeAccess.data.origin).protocol, "https:");
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, {
+    args: [
+      ...fixture.browserArgs,
+      `--host-resolver-rules=MAP ${consoleHost} 127.0.0.1,MAP *.${nativeDomain} 127.0.0.1`,
+    ],
+  });
   const requests = apiRequests(page, fixture.origin);
   const detail = () =>
     detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration");
 
+  // A fresh shared-cookie login clears legacy host-only cookies from the Console.
+  await page.context().addCookies([
+    {
+      name: "__Secure-openclaw_occ.session_token",
+      value: "old-host-only",
+      domain: consoleHost,
+      path: "/",
+      secure: true,
+      httpOnly: true,
+      sameSite: "Lax",
+    },
+  ]);
   await login(page, fixture, `${detail().pathname}${detail().search}`);
+  assert.equal(
+    (await page.context().cookies(fixture.origin)).some(
+      (cookie) => cookie.value === "old-host-only",
+    ),
+    false,
+  );
+
   await page.getByRole("heading", { name: "Native admin Agent" }).waitFor();
   await page.getByRole("heading", { name: "Native admin UI" }).waitFor();
   await page
@@ -771,30 +799,67 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   await page.goto(`${fixture.origin}${detail().pathname}${detail().search}`);
   await page.getByRole("heading", { name: "Native admin Agent" }).waitFor();
   await page.getByText("Native admin UI is available for the selected AgentRevision.").waitFor();
-  const expectedBootstrap = await fixture.request(
+  const expectedAccess = await fixture.request(
     "GET",
     `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`,
   );
-  assert.equal(expectedBootstrap.status, 200);
-  assert.equal(expectedBootstrap.data.status, "available");
-  assert.equal(new URL(expectedBootstrap.data.bootstrapUrl).protocol, "https:");
-  assert.match(
-    new URL(expectedBootstrap.data.bootstrapUrl).pathname,
-    /^\/__occ\/native-admin\/bootstrap$/,
+  assert.equal(expectedAccess.status, 200);
+  assert.equal(expectedAccess.data.status, "available");
+  assert.equal(expectedAccess.data.bootstrapUrl, undefined);
+  assert.equal(new URL(expectedAccess.data.url).origin, expectedAccess.data.origin);
+  assert.match(new URL(expectedAccess.data.url).hostname, new RegExp(`\\.${nativeDomain}$`));
+  const sharedCookies = await page.context().cookies(expectedAccess.data.origin);
+  const sessionCookies = sharedCookies.filter((cookie) =>
+    cookie.name.endsWith("openclaw_occ_shared.session_token"),
   );
-  await page.context().route(expectedBootstrap.data.bootstrapUrl, (route) =>
-    route.fulfill({
+  assert.equal(sessionCookies.length, 1);
+  assert.equal(sessionCookies[0].domain, `.${cookieDomain}`);
+  assert.equal(sessionCookies[0].httpOnly, true);
+  assert.equal(sessionCookies[0].sameSite, "Lax");
+
+  let nativeRequestCookie = "";
+  await page.context().route(`${expectedAccess.data.origin}/**`, async (route) => {
+    nativeRequestCookie = (await route.request().allHeaders()).cookie ?? "";
+    return route.fulfill({
       status: 200,
       contentType: "text/html; charset=utf-8",
-      body: "<!doctype html><title>Native admin bootstrap</title>",
-    }),
+      body: "<!doctype html><title>Native admin UI</title>",
+    });
+  });
+
+  await page.context().addCookies([
+    {
+      name: "openclaw_occ.session_token",
+      value: "legacy-host-only",
+      domain: consoleHost,
+      path: "/",
+      httpOnly: true,
+      sameSite: "Lax",
+    },
+  ]);
+  const consoleCookies = await page.context().cookies(fixture.origin);
+  assert.ok(
+    consoleCookies.some(
+      (cookie) =>
+        cookie.name === "openclaw_occ.session_token" && cookie.value === "legacy-host-only",
+    ),
+    "the migration fixture must contain the legacy host-only console cookie",
+  );
+  const agentCookies = await page.context().cookies(expectedAccess.data.origin);
+  assert.equal(
+    agentCookies.some((cookie) => cookie.value === "legacy-host-only"),
+    false,
+    "a legacy host-only console cookie must not authenticate the Agent host",
   );
 
   const popupPromise = page.waitForEvent("popup");
   await page.getByRole("button", { name: "Open native admin UI" }).click();
   const popup = await popupPromise;
-  assert.equal(popup.url(), expectedBootstrap.data.bootstrapUrl);
+  await popup.waitForLoadState("domcontentloaded");
+  assert.equal(popup.url(), expectedAccess.data.url);
   assert.equal(await popup.evaluate(() => globalThis.opener === null), true);
+  assert.match(nativeRequestCookie, /(?:__Secure-)?openclaw_occ_shared\.session_token=/);
+  assert.doesNotMatch(nativeRequestCookie, /legacy-host-only/);
   await page.getByText("Native admin UI opened in a new tab.").waitFor();
 
   assert.deepEqual(nonAuthWriteRequests(requests), []);
