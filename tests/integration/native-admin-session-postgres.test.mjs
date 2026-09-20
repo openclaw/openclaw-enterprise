@@ -293,10 +293,17 @@ async function signIn(app, credentials = { email: adminEmail, password: adminPas
 }
 
 async function createNativeAgent(api, session, upstream) {
+  const adminAccount = await api.pool.query(`SELECT id FROM occ."user" WHERE email = $1 LIMIT 1`, [
+    adminEmail,
+  ]);
+  assert.equal(adminAccount.rowCount, 1, "bootstrap administrator account must exist");
   const principal = (await api.state.loadNativeIAMState()).identities.find(
-    (identity) => identity.kind === "principal",
+    (identity) =>
+      identity.kind === "principal" &&
+      identity.issuer === api.auth.issuer &&
+      identity.subject === adminAccount.rows[0].id,
   );
-  assert.ok(principal);
+  assert.ok(principal, "bootstrap administrator principal must exist");
   const namespaceResponse = await inject(api.app, "POST", "/namespaces", {
     session,
     body: { name: `Native admin PG ${randomUUID()}` },
