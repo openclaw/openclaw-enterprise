@@ -9,6 +9,26 @@ export interface NativeAdminProxyContext {
   readonly apiKey: string;
 }
 
+export type NativeAdminWebSocketCloseReason =
+  | "session_invalid"
+  | "session_expired"
+  | "authorization_denied"
+  | "agent_unavailable"
+  | "revision_changed"
+  | "disabled"
+  | "dependency_timeout"
+  | "dependency_failure"
+  | "client_disconnect"
+  | "upstream_disconnect"
+  | "upstream_rejected"
+  | "handshake_timeout"
+  | "shutdown";
+
+export interface NativeAdminWebSocketCloseCause {
+  readonly connectionId: string;
+  readonly reason: NativeAdminWebSocketCloseReason;
+}
+
 const HTTP_PROXY_TIMEOUT_MS = 30_000;
 const WS_UPGRADE_TIMEOUT_MS = 30_000;
 const WS_LEASE_INTERVAL_MS = 25_000;
@@ -366,18 +386,20 @@ function appendDefinedHeader(
   }
 }
 
-async function boundedLease(lease: () => Promise<boolean>): Promise<boolean> {
+async function boundedLease(
+  lease: () => Promise<NativeAdminWebSocketCloseReason | undefined>,
+): Promise<NativeAdminWebSocketCloseReason | undefined> {
   let timeout: NodeJS.Timeout | undefined;
   try {
     return await Promise.race([
       lease(),
-      new Promise<boolean>((resolve) => {
-        timeout = setTimeout(() => resolve(false), WS_LEASE_TIMEOUT_MS);
+      new Promise<NativeAdminWebSocketCloseReason>((resolve) => {
+        timeout = setTimeout(() => resolve("dependency_timeout"), WS_LEASE_TIMEOUT_MS);
         timeout.unref();
       }),
     ]);
   } catch {
-    return false;
+    return "dependency_failure";
   } finally {
     if (timeout !== undefined) {
       clearTimeout(timeout);
@@ -390,9 +412,10 @@ export function proxyNativeAdminWebSocket(options: {
   readonly socket: Socket;
   readonly head: Buffer;
   readonly context: NativeAdminProxyContext;
-  readonly lease: () => Promise<boolean>;
+  readonly connectionId: string;
+  readonly lease: () => Promise<NativeAdminWebSocketCloseReason | undefined>;
   readonly onConnect: () => Promise<void>;
-  readonly onClose: () => void;
+  readonly onClose: (cause: NativeAdminWebSocketCloseCause) => void;
 }): void {
   const upstream = nativeAdminUpstreamUrl(options.context.gatewayBase, options.request.url ?? "/");
   const headers = requestHeaders(options.request, options.context);
@@ -427,8 +450,12 @@ export function proxyNativeAdminWebSocket(options: {
   let upstreamSocket: Socket | undefined;
   let closed = false;
   let connected = false;
+  let closeReason: NativeAdminWebSocketCloseReason | undefined;
   const upstreamRequest = https.request(upstream, { method: "GET", headers });
-  const close = () => {
+  const close = (reason: NativeAdminWebSocketCloseReason) => {
+    if (closeReason === undefined) {
+      closeReason = reason;
+    }
     if (closed) {
       return;
     }
@@ -439,16 +466,16 @@ export function proxyNativeAdminWebSocket(options: {
     upstreamSocket?.destroy();
     options.socket.destroy();
     if (connected) {
-      options.onClose();
+      options.onClose({ connectionId: options.connectionId, reason: closeReason });
     }
   };
-  const upgradeTimer = setTimeout(close, WS_UPGRADE_TIMEOUT_MS);
+  const upgradeTimer = setTimeout(() => close("handshake_timeout"), WS_UPGRADE_TIMEOUT_MS);
   upgradeTimer.unref();
 
   const leaseTimer = setInterval(() => {
-    void boundedLease(options.lease).then((ok) => {
-      if (!ok) {
-        close();
+    void boundedLease(options.lease).then((reason) => {
+      if (reason !== undefined) {
+        close(reason);
       }
     });
   }, WS_LEASE_INTERVAL_MS);
@@ -456,20 +483,23 @@ export function proxyNativeAdminWebSocket(options: {
 
   upstreamRequest.once("upgrade", (response, upgradedSocket, upstreamHead) => {
     upstreamSocket = upgradedSocket;
-    upgradedSocket.once("error", close);
-    upgradedSocket.once("close", close);
+    upgradedSocket.once("error", () => close("upstream_disconnect"));
+    upgradedSocket.once("close", () => close("upstream_disconnect"));
     const headers = responseHeaders(response.headers, options.context, {
       enforceServiceWorkerCsp: false,
     });
     if (headers === undefined || response.statusCode !== 101) {
-      close();
+      close("upstream_rejected");
       return;
     }
     void (async () => {
       await options.onConnect();
       connected = true;
       if (closed) {
-        options.onClose();
+        options.onClose({
+          connectionId: options.connectionId,
+          reason: closeReason ?? "dependency_failure",
+        });
         return;
       }
       clearTimeout(upgradeTimer);
@@ -495,18 +525,18 @@ export function proxyNativeAdminWebSocket(options: {
         upgradedSocket.write(options.head);
       }
 
-      options.socket.once("error", close);
-      options.socket.once("close", close);
+      options.socket.once("error", () => close("client_disconnect"));
+      options.socket.once("close", () => close("client_disconnect"));
       upgradedSocket.pipe(options.socket);
       options.socket.pipe(upgradedSocket);
-    })().catch(close);
+    })().catch(() => close("dependency_failure"));
   });
   upstreamRequest.once("response", (response) => {
     response.resume();
-    close();
+    close("upstream_rejected");
   });
-  upstreamRequest.once("error", close);
-  options.socket.once("error", close);
-  options.socket.once("close", close);
+  upstreamRequest.once("error", () => close("upstream_disconnect"));
+  options.socket.once("error", () => close("client_disconnect"));
+  options.socket.once("close", () => close("client_disconnect"));
   upstreamRequest.end();
 }

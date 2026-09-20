@@ -17,7 +17,7 @@ The feature is disabled by default. When enabled, the console shows **Native adm
 
 ## Authorization and availability
 
-`GET /namespaces/:namespaceId/agents/:agentId/native-admin` is the console-facing availability check. It is a protected OCC API route with exact Agent `administer` authorization. Agent `read`, Agent `operate`, native device credentials, native tokens, service keys for unrelated principals, and possession of a derived Agent host do not grant this API route.
+`GET /namespaces/:namespaceId/agents/:agentId/native-admin` is the console-facing availability check. It is a protected OCC API route with a human session, exact Agent `administer` authorization, and exact Agent existence. OCC verifies that authorization boundary before returning any feature status, including `disabled`; Agent `read`, Agent `operate`, native device credentials, native tokens, service keys for unrelated principals, and possession of a derived Agent host do not grant this API route.
 
 The response reports:
 
@@ -73,7 +73,8 @@ Native admin changes can modify gateway-local state that is outside OCE Configur
 - Startup fails with `AGENT_NATIVE_ADMIN_INVALID` when enablement, domain, exchange store, public origin, or cookie-secret requirements are invalid.
 - Availability returns `unavailable` when OCC cannot resolve the active Agent revision. Gateway routing, unsupported native configuration, or a selected Compute Driver without a clean endpoint returns `unsupported` after OCC has an active revision and derived Agent origin.
 - The console hides the panel for disabled and denied states, shows operator-readable stopped, unsupported, or unavailable messages, and opens the returned `bootstrapUrl` in a new tab when available.
-- Proxied HTTP and WebSocket requests strip browser credentials, service keys, forwarded headers, native identity/scope headers, and native `Set-Cookie` before responding through OCC. WebSocket upgrades require a non-null exact Agent `Origin`; accepted `101` connections audit `connect` and `close`, refresh authorization every 25 seconds, close when a lease check fails or takes more than 5 seconds, and are destroyed during API `preClose`.
+- Attributable IAM denials remain audit events for status checks, launch, native-host proxy admission, and recurring WebSocket lease renewal. Those denial paths preserve the human IAM principal and exact Agent target instead of collapsing into unaudited dependency failures.
+- Proxied HTTP and WebSocket requests strip browser credentials, service keys, forwarded headers, native identity/scope headers, and native `Set-Cookie` before responding through OCC. WebSocket upgrades require a non-null exact Agent `Origin`; accepted `101` connections audit `websocket.connect` with `connectionId` and `websocket.close` with the same `connectionId` plus `closeReason`, refresh authorization every 25 seconds, close when a lease check fails or takes more than 5 seconds, set `closeReason` to distinguish lifecycle, revocation, dependency, client, upstream, and shutdown paths, and are destroyed during API `preClose`.
 
 ## Related
 
@@ -90,6 +91,7 @@ Native admin changes can modify gateway-local state that is outside OCE Configur
 
 ## Changelog
 
+- 2026-09-19 22:27: Documented exact-Agent disabled-status gating, IAM denial audit preservation, and WebSocket `connectionId`/`closeReason` audit fields. (01a0b7fd-13fa-7dc2-8653-5c5814b59305 - 9621ce4e)
 - 2026-09-19 21:14: Documented gateway-routing Helm validation, service-worker domain setup, and the explicit native-admin writable-config predicate. (01a0b7fd-13fa-7dc2-8653-5c5814b59305 - 06c23b9c)
 - 2026-09-19 21:07: Documented the `unavailable` availability success state and separated it from protected-route error envelopes. (01a0b7fd-13fa-7dc2-8653-5c5814b59305 - 06c23b9c)
 - 2026-09-19 20:19: Added the current native admin UI reference for enablement, authorization, routing reuse, and source-confirmed launch status behavior. (01a0b7fd-13fa-7dc2-8653-5c5814b59305 - 06c23b9c)

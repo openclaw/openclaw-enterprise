@@ -277,9 +277,9 @@ async function inject(app, method, url, { session, headers = {}, body } = {}) {
   });
 }
 
-async function signIn(app) {
+async function signIn(app, credentials = { email: adminEmail, password: adminPassword }) {
   const response = await inject(app, "POST", "/api/auth/sign-in/email", {
-    body: { email: adminEmail, password: adminPassword },
+    body: { email: credentials.email, password: credentials.password },
   });
   assert.equal(response.statusCode, 200, response.body);
   const setCookie = response.headers["set-cookie"];
@@ -424,6 +424,54 @@ async function nativeGet(api, native, cookie, path = "/settings/profile?tab=devi
   });
 }
 
+async function createReadOperateSession(api, namespaceId, agentId, label) {
+  const suffix = randomUUID();
+  const credentials = {
+    email: `${label}-${suffix}@openclaw.local`,
+    password: `native-admin-denial-${suffix}`,
+    name: `Native admin ${label}`,
+  };
+  const account = await api.auth.createAccount(credentials);
+  const roleId = `role-${label}-${suffix}`;
+  const bindingId = `binding-${label}-${suffix}`;
+  const seed = api.auth.principalSeed(account, { roleId });
+  const client = await api.pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      `INSERT INTO occ.iam_roles (id, namespace_id, name, permissions)
+       VALUES ($1, $2, $3, $4::jsonb)`,
+      [
+        roleId,
+        namespaceId,
+        `Native admin ${label}`,
+        JSON.stringify([
+          { action: "read", resourceKind: "agent" },
+          { action: "operate", resourceKind: "agent" },
+        ]),
+      ],
+    );
+    await client.query(
+      `INSERT INTO occ.iam_identities (id, namespace_id, agent_id, kind, issuer, subject)
+       VALUES ($1, NULL, NULL, 'principal', $2, $3)`,
+      [seed.principal.id, seed.principal.issuer, seed.principal.subject],
+    );
+    await client.query(
+      `INSERT INTO occ.iam_access_bindings
+       (id, namespace_id, identity_subject_id, group_subject_id, role_id, resource_kind, resource_id)
+       VALUES ($1, $2, $3, NULL, $4, 'agent', $5)`,
+      [bindingId, namespaceId, seed.principal.id, roleId, agentId],
+    );
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+  return { session: await signIn(api.app, credentials), principal: seed.principal };
+}
+
 function trustLocalUpstreamCertificate(t, cert) {
   const previous = getCACertificates("default");
   setDefaultCACertificates([...previous, cert]);
@@ -545,6 +593,86 @@ async function waitForAuditActions(pool, namespaceId, agentId, actions) {
     assert.equal(row.outcome, "success", `${action} audit outcome`);
     assert.ok(row.actor_id, `${action} audit must retain the human actor id`);
   }
+  return rows;
+}
+
+async function waitForAuthorizationDenialAudit(
+  pool,
+  namespaceId,
+  agentId,
+  action,
+  actorId,
+  options = {},
+) {
+  const deadline = Date.now() + 5_000;
+  let row;
+  while (Date.now() < deadline) {
+    const result = await pool.query(
+      `SELECT id, kind, action, actor_id, outcome, details
+         FROM occ.audit_events
+        WHERE namespace_id = $1
+          AND resource_kind = 'agent'
+          AND resource_id = $2
+          AND kind = 'authorization_denial'
+          AND action = $3
+          AND ($4::text IS NULL OR actor_id = $4)
+          AND ($5::text IS NULL OR id <> $5)
+        ORDER BY occurred_at DESC, id DESC
+        LIMIT 1`,
+      [namespaceId, agentId, action, actorId ?? null, options.excludeId ?? null],
+    );
+    row = result.rows[0];
+    if (row !== undefined) {
+      break;
+    }
+    await delay(50);
+  }
+  assert.ok(row, `${action} authorization-denial audit row must exist`);
+  assert.equal(row.kind, "authorization_denial");
+  assert.equal(row.outcome, "denied");
+  assert.equal(row.details?.__occAuditMetadata?.reasonCode, "AUTHORIZATION_DENIED");
+  if (actorId !== undefined) {
+    assert.equal(row.actor_id, actorId);
+  } else {
+    assert.ok(row.actor_id, `${action} denial audit must retain the human actor id`);
+  }
+  return row;
+}
+
+function nativeAdminAuditDetails(row, action) {
+  const details = row.details?.nativeAdmin;
+  assert.equal(typeof details, "object", `${action} audit must include nativeAdmin details`);
+  assert.notEqual(details, null, `${action} audit must include nativeAdmin details`);
+  return details;
+}
+
+async function assertSocketAuditCloseReason(scenario, closureReason) {
+  const rows = await waitForAuditActions(
+    scenario.apiA.pool,
+    scenario.namespace.id,
+    scenario.agent.id,
+    [
+      "openclaw.agents.native_admin.websocket.connect",
+      "openclaw.agents.native_admin.websocket.close",
+    ],
+  );
+  const connect = rows.find(
+    (row) => row.action === "openclaw.agents.native_admin.websocket.connect",
+  );
+  const close = rows.find((row) => row.action === "openclaw.agents.native_admin.websocket.close");
+  assert.ok(connect, "native admin WebSocket connect audit row must exist");
+  assert.ok(close, "native admin WebSocket close audit row must exist");
+  const connectDetails = nativeAdminAuditDetails(connect, connect.action);
+  const closeDetails = nativeAdminAuditDetails(close, close.action);
+  assert.equal(typeof connectDetails.connectionId, "string");
+  assert.ok(connectDetails.connectionId.length > 0);
+  assert.equal(closeDetails.connectionId, connectDetails.connectionId);
+  assert.equal(closeDetails.closeReason, closureReason);
+  for (const details of [connectDetails, closeDetails]) {
+    assert.equal(details.parentSessionId, scenario.parentSession.id);
+    assert.equal(details.revisionId, scenario.revision.id);
+    assert.equal(details.host, scenario.native.host);
+  }
 }
 
 async function parentSessionRow(api) {
@@ -619,6 +747,7 @@ async function openNativeAdminSocketScenario(t, label) {
 async function assertRevokedHttp(api, native, nativeCookie) {
   const denied = await nativeGet(api, native, nativeCookie, "/after-revocation");
   assert.notEqual(denied.statusCode, 200);
+  return denied;
 }
 
 test(
@@ -664,6 +793,50 @@ test(
     await assertNativeWebSocketRejected(port, native, nativeCookie, { origin: publicOrigin });
     assert.equal(upstream.upgrades.length, upgradesBeforeOriginChecks);
 
+    const limited = await createReadOperateSession(
+      apiA,
+      namespace.id,
+      agent.id,
+      "native-admin-read-operate",
+    );
+    const deniedStatus = await inject(
+      apiA.app,
+      "GET",
+      `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`,
+      { session: limited.session },
+    );
+    assert.equal(deniedStatus.statusCode, 403, deniedStatus.body);
+    await waitForAuthorizationDenialAudit(
+      apiA.pool,
+      namespace.id,
+      agent.id,
+      "openclaw.agents.native_admin.read",
+      limited.principal.id,
+    );
+    const deniedLaunch = await inject(
+      apiA.app,
+      "POST",
+      `/namespaces/${namespace.id}/agents/${agent.id}/native-admin/launch`,
+      {
+        session: limited.session,
+        headers: { origin: publicOrigin },
+        body: {
+          state: `state-${randomUUID()}`,
+          challenge: challenge(`verifier-${randomUUID()}`),
+          host: native.host,
+          revisionId: revision.id,
+        },
+      },
+    );
+    assert.equal(deniedLaunch.statusCode, 403, deniedLaunch.body);
+    await waitForAuthorizationDenialAudit(
+      apiA.pool,
+      namespace.id,
+      agent.id,
+      "openclaw.agents.native_admin.launch",
+      limited.principal.id,
+    );
+
     await waitForAuditActions(apiA.pool, namespace.id, agent.id, [
       "openclaw.agents.native_admin.launch",
     ]);
@@ -682,9 +855,7 @@ test(
       assert.equal(signOut.statusCode, 200, signOut.body);
     });
     t.diagnostic(`parent logout closed native admin WebSocket in ${closedAfterMs}ms`);
-    await waitForAuditActions(scenario.apiA.pool, scenario.namespace.id, scenario.agent.id, [
-      "openclaw.agents.native_admin.websocket.close",
-    ]);
+    await assertSocketAuditCloseReason(scenario, "session_invalid");
     await assertRevokedHttp(scenario.apiB, scenario.native, scenario.nativeCookie);
   },
 );
@@ -705,9 +876,7 @@ test(
       assert.equal(expired.rowCount, 1);
     });
     t.diagnostic(`parent session expiry closed native admin WebSocket in ${closedAfterMs}ms`);
-    await waitForAuditActions(scenario.apiA.pool, scenario.namespace.id, scenario.agent.id, [
-      "openclaw.agents.native_admin.websocket.close",
-    ]);
+    await assertSocketAuditCloseReason(scenario, "session_invalid");
     await assertRevokedHttp(scenario.apiB, scenario.native, scenario.nativeCookie);
   },
 );
@@ -727,10 +896,23 @@ test(
       assert.equal(restricted.rowCount, 1);
     });
     t.diagnostic(`IAM administer restriction closed native admin WebSocket in ${closedAfterMs}ms`);
-    await waitForAuditActions(scenario.apiA.pool, scenario.namespace.id, scenario.agent.id, [
-      "openclaw.agents.native_admin.websocket.close",
-    ]);
+    await assertSocketAuditCloseReason(scenario, "authorization_denied");
+    const leaseDenial = await waitForAuthorizationDenialAudit(
+      scenario.apiA.pool,
+      scenario.namespace.id,
+      scenario.agent.id,
+      "openclaw.agents.native_admin.proxy.authorize",
+      scenario.principal.id,
+    );
     await assertRevokedHttp(scenario.apiB, scenario.native, scenario.nativeCookie);
+    await waitForAuthorizationDenialAudit(
+      scenario.apiA.pool,
+      scenario.namespace.id,
+      scenario.agent.id,
+      "openclaw.agents.native_admin.proxy.authorize",
+      scenario.principal.id,
+      { excludeId: leaseDenial.id },
+    );
   },
 );
 
@@ -749,9 +931,7 @@ test(
       assert.equal(stopped.statusCode, 202, stopped.body);
     });
     t.diagnostic(`Agent stop closed native admin WebSocket in ${closedAfterMs}ms`);
-    await waitForAuditActions(scenario.apiA.pool, scenario.namespace.id, scenario.agent.id, [
-      "openclaw.agents.native_admin.websocket.close",
-    ]);
+    await assertSocketAuditCloseReason(scenario, "agent_unavailable");
     await assertRevokedHttp(scenario.apiB, scenario.native, scenario.nativeCookie);
   },
 );
@@ -778,9 +958,7 @@ test(
       );
     });
     t.diagnostic(`active revision replacement closed native admin WebSocket in ${closedAfterMs}ms`);
-    await waitForAuditActions(scenario.apiA.pool, scenario.namespace.id, scenario.agent.id, [
-      "openclaw.agents.native_admin.websocket.close",
-    ]);
+    await assertSocketAuditCloseReason(scenario, "revision_changed");
     await assertRevokedHttp(scenario.apiB, scenario.native, scenario.nativeCookie);
   },
 );
@@ -794,9 +972,7 @@ test(
       await scenario.apiB.app.close();
     });
     t.diagnostic(`API shutdown closed native admin WebSocket in ${closedAfterMs}ms`);
-    await waitForAuditActions(scenario.apiA.pool, scenario.namespace.id, scenario.agent.id, [
-      "openclaw.agents.native_admin.websocket.close",
-    ]);
+    await assertSocketAuditCloseReason(scenario, "shutdown");
 
     const disabledApi = await createApi(t, "shutdown-disabled-off", scenario.upstream.port, {
       nativeAdminEnabled: false,

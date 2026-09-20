@@ -98,6 +98,8 @@ import {
   proxyNativeAdminHttp as streamNativeAdminHttp,
   proxyNativeAdminWebSocket,
   type NativeAdminProxyContext,
+  type NativeAdminWebSocketCloseCause,
+  type NativeAdminWebSocketCloseReason,
 } from "./gateway/native-admin-proxy.ts";
 import {
   NATIVE_ADMIN_EXCHANGE_CODE_TTL_MS,
@@ -164,6 +166,23 @@ interface NativeAdminProxyResolution {
   readonly target: NativeAdminTarget;
   readonly gatewayBase: string;
 }
+
+interface NativeAdminProxyDenial {
+  readonly denied: true;
+  readonly reason: NativeAdminWebSocketCloseReason;
+  readonly actorId?: string;
+  readonly actorIssuer?: string;
+  readonly actorSubject?: string;
+  readonly namespaceId?: string;
+  readonly agentId?: string;
+  readonly revisionId?: string;
+  readonly host?: string;
+  readonly actualAuthorizationDenied?: true;
+  readonly evidence?: AuthorizationEvidence;
+  readonly authorization?: NonNullable<AuthorizationDeniedError["authorization"]>;
+}
+
+type NativeAdminProxyAdmission = NativeAdminProxyResolution | NativeAdminProxyDenial;
 
 interface ErrorDetail {
   readonly path: string;
@@ -678,6 +697,22 @@ function validationDetails(error: FastifyError): readonly ErrorDetail[] {
   });
 }
 
+function errorName(error: unknown): string | undefined {
+  return error instanceof Error ? error.name : undefined;
+}
+
+function isAuthorizationDenied(error: unknown): error is AuthorizationDeniedError {
+  return (
+    error instanceof AuthorizationDeniedError || errorName(error) === "AuthorizationDeniedError"
+  );
+}
+
+function isDependencyUnavailable(error: unknown): boolean {
+  return (
+    error instanceof DependencyUnavailableError || errorName(error) === "DependencyUnavailableError"
+  );
+}
+
 function requestFailure(error: unknown): RequestFailure {
   if (error instanceof RequestFailure) {
     return error;
@@ -701,7 +736,7 @@ function requestFailure(error: unknown): RequestFailure {
   if (error instanceof NotImplementedError) {
     return failure(501, "NOT_IMPLEMENTED", error.message);
   }
-  if (error instanceof DependencyUnavailableError) {
+  if (isDependencyUnavailable(error)) {
     return failure(503, "DEPENDENCY_UNAVAILABLE", "A required platform dependency is unavailable.");
   }
   if (error instanceof ResourceConflictError) {
@@ -710,7 +745,7 @@ function requestFailure(error: unknown): RequestFailure {
   if (error instanceof ScopeViolationError) {
     return failure(404, "NOT_FOUND", "The requested platform resource was not found.");
   }
-  if (error instanceof AuthorizationDeniedError) {
+  if (isAuthorizationDenied(error)) {
     return failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
   }
   if (error instanceof Error) {
@@ -902,6 +937,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           .digest();
   const nativeAdminSockets = new Set<Socket>();
   const nativeAdminCloseAudits = new Set<Promise<void>>();
+  let nativeAdminShuttingDown = false;
   const createAuthAccountOperation = {
     operationId: "createAuthAccount",
     method: "POST",
@@ -1193,6 +1229,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   async function appendNativeAdminSocketAudit(
     eventName: "connect" | "close",
     resolution: NativeAdminProxyResolution,
+    socketEvent: {
+      readonly connectionId: string;
+      readonly closeReason?: NativeAdminWebSocketCloseReason;
+    },
   ): Promise<void> {
     await options.auditSink.append(
       factory.create({
@@ -1225,10 +1265,78 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         details: {
           nativeAdmin: {
             event: eventName,
+            connectionId: socketEvent.connectionId,
+            ...(socketEvent.closeReason === undefined
+              ? {}
+              : { closeReason: socketEvent.closeReason }),
             parentSessionId: resolution.parentSessionId,
             revisionId: resolution.revisionId,
             host: resolution.target.host,
           },
+        },
+      }),
+    );
+  }
+
+  async function appendNativeAdminProxyDenialAudit(
+    admission: NativeAdminProxyAdmission | undefined,
+  ): Promise<void> {
+    if (
+      admission === undefined ||
+      !("denied" in admission) ||
+      admission.actualAuthorizationDenied !== true ||
+      admission.authorization === undefined ||
+      !isNonEmptyString(admission.actorId) ||
+      !isNonEmptyString(admission.actorIssuer) ||
+      !isNonEmptyString(admission.actorSubject) ||
+      !isNonEmptyString(admission.namespaceId) ||
+      !isNonEmptyString(admission.agentId)
+    ) {
+      return;
+    }
+    await options.auditSink.append(
+      factory.create({
+        installationId,
+        namespaceId: admission.namespaceId,
+        kind: "authorization_denial",
+        source: "occ",
+        actor: {
+          principalId: admission.actorId,
+          issuer: admission.actorIssuer,
+          subject: admission.actorSubject,
+        },
+        iamDriverId: selectedIAMDriver().id,
+        authorization: { principalId: admission.actorId, ...admission.authorization },
+        action: "openclaw.agents.native_admin.proxy.authorize",
+        resource: {
+          kind: "agent",
+          id: admission.agentId,
+          namespaceId: admission.namespaceId,
+        },
+        outcome: "denied",
+        reasonCode: admission.reason.toUpperCase(),
+        ...(admission.evidence?.restrictionIds.length
+          ? { decisionReason: "A matching Restriction denied the operation." }
+          : {}),
+        details: {
+          nativeAdmin: {
+            reason: admission.reason,
+            ...(isNonEmptyString(admission.revisionId) ? { revisionId: admission.revisionId } : {}),
+            ...(isNonEmptyString(admission.host) ? { host: admission.host } : {}),
+          },
+          ...(admission.evidence === undefined
+            ? {}
+            : {
+                iamEvidence: {
+                  ...(admission.evidence.identityId === undefined
+                    ? {}
+                    : { identityId: admission.evidence.identityId }),
+                  groupIds: admission.evidence.groupIds,
+                  bindingIds: admission.evidence.bindingIds,
+                  roleIds: admission.evidence.roleIds,
+                  restrictionIds: admission.evidence.restrictionIds,
+                },
+              }),
         },
       }),
     );
@@ -2626,11 +2734,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     readonly namespaceId: string;
     readonly agentId: string;
   }): Promise<NativeAdminAvailability> {
-    if (options.nativeAdmin?.enabled !== true) {
-      return { status: "disabled" };
-    }
     if (!controller) {
       throw failure(404, "NOT_FOUND", "The requested platform resource was not found.");
+    }
+    if (options.nativeAdmin?.enabled !== true) {
+      await controller.getAdministerableAgent(input.actorId, input.namespaceId, input.agentId);
+      return { status: "disabled" };
     }
     if (publicOrigin === undefined || nativeAdminDomain === undefined) {
       throw dependencyUnavailable();
@@ -2643,15 +2752,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         input.agentId,
       );
     } catch (error) {
-      const errorName = error instanceof Error ? error.name : undefined;
-      if (
-        error instanceof DependencyUnavailableError ||
-        errorName === "DependencyUnavailableError"
-      ) {
+      if (isDependencyUnavailable(error)) {
         return { status: "unavailable" };
-      }
-      if (error instanceof AuthorizationDeniedError || errorName === "AuthorizationDeniedError") {
-        throw failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
       }
       throw error;
     }
@@ -3440,6 +3542,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   });
 
   app.addHook("preClose", async () => {
+    nativeAdminShuttingDown = true;
     await Promise.all(
       [...nativeAdminSockets].map(
         (socket) =>
@@ -3662,13 +3765,40 @@ if (!verifier) {
     }
   }
 
+  function nativeAdminProxyDenial(
+    reason: NativeAdminWebSocketCloseReason,
+    input: Omit<NativeAdminProxyDenial, "denied" | "reason"> = {},
+  ): NativeAdminProxyDenial {
+    return { denied: true, reason, ...input };
+  }
+
+  function isNativeAdminProxyResolution(
+    admission: NativeAdminProxyAdmission | undefined,
+  ): admission is NativeAdminProxyResolution {
+    return admission !== undefined && !("denied" in admission);
+  }
+
+  function nativeAdminFailureReason(error: unknown): NativeAdminWebSocketCloseReason {
+    const mapped = requestFailure(error);
+    if (mapped.code === "RESOURCE_CONFLICT") {
+      return "revision_changed";
+    }
+    if (mapped.code === "DEPENDENCY_UNAVAILABLE") {
+      return "agent_unavailable";
+    }
+    if (mapped.code === "FORBIDDEN") {
+      return options.nativeAdmin?.enabled === true ? "authorization_denied" : "disabled";
+    }
+    return "dependency_failure";
+  }
+
   async function nativeAdminProxyContext(
     headers: IncomingHttpHeaders,
     hostname: string,
-  ): Promise<NativeAdminProxyResolution | undefined> {
+  ): Promise<NativeAdminProxyAdmission> {
     const payload = verifyNativeAdminCookie(headers);
     if (payload === undefined) {
-      return undefined;
+      return nativeAdminProxyDenial("session_invalid");
     }
     const {
       parentSessionId,
@@ -3693,41 +3823,65 @@ if (!verifier) {
       !isNonEmptyString(revisionId) ||
       !isNonEmptyString(host) ||
       !isNonEmptyString(expiresAt) ||
-      Date.parse(expiresAt) <= Date.now() ||
       host !== hostname
     ) {
-      return undefined;
+      return nativeAdminProxyDenial("session_invalid");
+    }
+    const expiresAtMs = Date.parse(expiresAt);
+    if (!Number.isFinite(expiresAtMs)) {
+      return nativeAdminProxyDenial("session_invalid");
+    }
+    if (expiresAtMs <= Date.now()) {
+      return nativeAdminProxyDenial("session_expired");
     }
     const session = await options.auth.resolveSessionById(parentSessionId);
     if (session === undefined || session.userId !== parentUserId) {
-      return undefined;
+      return nativeAdminProxyDenial("session_invalid");
     }
     const currentActor = await resolveNativeAdminActor({ actorId, actorIssuer, actorSubject });
     if (currentActor === undefined) {
-      return undefined;
+      return nativeAdminProxyDenial("authorization_denied");
     }
-    const resolved = await requireAvailableNativeAdminTarget({
-      actorId: currentActor,
-      namespaceId,
-      agentId,
-      expectedHost: host,
-      expectedRevisionId: revisionId,
-    });
-    const requestAuthority = nativeAdminAuthority(headers.host);
-    if (requestAuthority !== new URL(resolved.target.origin).host.toLowerCase()) {
-      return undefined;
+    try {
+      const resolved = await requireAvailableNativeAdminTarget({
+        actorId: currentActor,
+        namespaceId,
+        agentId,
+        expectedHost: host,
+        expectedRevisionId: revisionId,
+      });
+      const requestAuthority = nativeAdminAuthority(headers.host);
+      if (requestAuthority !== new URL(resolved.target.origin).host.toLowerCase()) {
+        return nativeAdminProxyDenial("session_invalid");
+      }
+      return {
+        parentSessionId,
+        actorId: currentActor,
+        actorIssuer,
+        actorSubject,
+        namespaceId,
+        agentId,
+        revisionId,
+        target: resolved.target,
+        gatewayBase: resolved.gatewayBase,
+      };
+    } catch (error) {
+      if (isAuthorizationDenied(error)) {
+        return nativeAdminProxyDenial("authorization_denied", {
+          actorId: currentActor,
+          actorIssuer,
+          actorSubject,
+          namespaceId,
+          agentId,
+          revisionId,
+          host,
+          actualAuthorizationDenied: true,
+          ...(error.evidence === undefined ? {} : { evidence: error.evidence }),
+          ...(error.authorization === undefined ? {} : { authorization: error.authorization }),
+        });
+      }
+      return nativeAdminProxyDenial(nativeAdminFailureReason(error));
     }
-    return {
-      parentSessionId,
-      actorId: currentActor,
-      actorIssuer,
-      actorSubject,
-      namespaceId,
-      agentId,
-      revisionId,
-      target: resolved.target,
-      gatewayBase: resolved.gatewayBase,
-    };
   }
 
   async function interceptNativeAdminHttp(
@@ -3748,15 +3902,27 @@ if (!verifier) {
       );
       return true;
     }
-    const resolution = await boundedNativeAdminAdmission(
+    const admission = await boundedNativeAdminAdmission(
       nativeAdminProxyContext(request.headers, hostname),
     );
-    const context = await boundedNativeAdminAdmission(nativeAdminProxyTransportContext(resolution));
-    if (context === undefined) {
+    if (!isNativeAdminProxyResolution(admission)) {
+      try {
+        await appendNativeAdminProxyDenialAudit(admission);
+      } catch {
+        canonicalFailure(reply, dependencyUnavailable());
+        return true;
+      }
       canonicalFailure(
         reply,
-        failure(403, "FORBIDDEN", "The exact platform operation was not authorized."),
+        admission === undefined
+          ? dependencyUnavailable()
+          : failure(403, "FORBIDDEN", "The exact platform operation was not authorized."),
       );
+      return true;
+    }
+    const context = await boundedNativeAdminAdmission(nativeAdminProxyTransportContext(admission));
+    if (context === undefined) {
+      canonicalFailure(reply, dependencyUnavailable());
       return true;
     }
     await streamNativeAdminHttp({ request, reply, context });
@@ -3779,38 +3945,67 @@ if (!verifier) {
     }
     nativeAdminSockets.add(socket);
     socket.once("close", () => nativeAdminSockets.delete(socket));
-    const resolution = await boundedNativeAdminAdmission(
+    const admission = await boundedNativeAdminAdmission(
       nativeAdminProxyContext(request.headers, hostname),
     );
-    const context = await boundedNativeAdminAdmission(nativeAdminProxyTransportContext(resolution));
-    if (resolution === undefined || context === undefined) {
+    if (!isNativeAdminProxyResolution(admission)) {
+      try {
+        await appendNativeAdminProxyDenialAudit(admission);
+      } catch {
+        app.log.warn({ event: "native_admin.websocket_denial_audit_failed" });
+      }
       socket.destroy();
       return;
     }
+    const context = await boundedNativeAdminAdmission(nativeAdminProxyTransportContext(admission));
+    if (context === undefined) {
+      socket.destroy();
+      return;
+    }
+    const connectionId = `naws_${randomUUID()}`;
     let connected = false;
     proxyNativeAdminWebSocket({
       request,
       socket,
       head,
       context,
-      lease: async () =>
-        (await boundedNativeAdminAdmission(nativeAdminProxyContext(request.headers, hostname))) !==
-        undefined,
+      connectionId,
+      lease: async () => {
+        const renewed = await boundedNativeAdminAdmission(
+          nativeAdminProxyContext(request.headers, hostname),
+        );
+        if (renewed === undefined) {
+          return "dependency_timeout";
+        }
+        if (!isNativeAdminProxyResolution(renewed)) {
+          try {
+            await appendNativeAdminProxyDenialAudit(renewed);
+          } catch {
+            return "dependency_failure";
+          }
+          return renewed.reason;
+        }
+        return undefined;
+      },
       onConnect: async () => {
-        await appendNativeAdminSocketAudit("connect", resolution);
+        await appendNativeAdminSocketAudit("connect", admission, { connectionId });
         connected = true;
       },
-      onClose: () => {
+      onClose: (cause: NativeAdminWebSocketCloseCause) => {
         if (!connected) {
           return;
         }
-        const closeAudit = appendNativeAdminSocketAudit("close", resolution).catch((error) => {
+        const closeReason = nativeAdminShuttingDown ? "shutdown" : cause.reason;
+        const closeAudit = appendNativeAdminSocketAudit("close", admission, {
+          connectionId: cause.connectionId,
+          closeReason,
+        }).catch((error) => {
           app.log.warn({
             event: "native_admin.websocket_audit_failed",
             error,
-            namespaceId: resolution.namespaceId,
-            agentId: resolution.agentId,
-            revisionId: resolution.revisionId,
+            namespaceId: admission.namespaceId,
+            agentId: admission.agentId,
+            revisionId: admission.revisionId,
           });
         });
         nativeAdminCloseAudits.add(closeAudit);
@@ -3851,10 +4046,7 @@ if (!verifier) {
 
   app.setErrorHandler(async (error, request, reply) => {
     let mapped = requestFailure(error);
-    if (
-      error instanceof AuthorizationDeniedError &&
-      !(error instanceof DependencyUnavailableError)
-    ) {
+    if (isAuthorizationDenied(error) && !isDependencyUnavailable(error)) {
       const context = contexts.get(request);
       if (context) {
         try {

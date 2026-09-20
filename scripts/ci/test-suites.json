@@ -205,7 +205,13 @@
           "path": "tests/conformance/postgres-transaction-commit.test.mjs"
         },
         {
-          "path": "tests/integration/native-admin-access.test.mjs"
+          "path": "tests/integration/native-admin-access.test.mjs",
+          "expectedTests": [
+            "native admin status requires exact Agent administer and reports lifecycle availability",
+            "native admin disabled status still requires exact Agent administer",
+            "native admin launch uses the real session, CSRF boundary, and one-use callback",
+            "native admin proxy strips browser credentials and preserves the Agent gateway base path"
+          ]
         }
       ]
     },

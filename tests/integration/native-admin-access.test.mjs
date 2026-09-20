@@ -171,12 +171,12 @@ async function startNativeHttpsUpstream(t) {
   return { port: address.port, requests, cert };
 }
 
-async function createNativeAdminFixture(t) {
+async function createNativeAdminFixture(t, options = {}) {
   const upstream = await startNativeHttpsUpstream(t);
   const exchangeStore = new MemoryNativeAdminExchangeStore();
   const fixture = await createConsoleAppFixture(t, {
     publicOrigin,
-    nativeAdmin: { enabled: true, domain: nativeDomain },
+    nativeAdmin: { enabled: options.nativeAdminEnabled ?? true, domain: nativeDomain },
     nativeAdminExchangeStore: exchangeStore,
     nativeAdminCookieSecret: nativeCookieSecret,
     nativeAdminGatewayApiKey: async () => nativeGatewayApiKey,
@@ -256,6 +256,38 @@ function nativeAuthority(native) {
   return new URL(native.origin).host;
 }
 
+async function createAgentPermissionSession(context, label, permissions) {
+  const limited = await context.fixture.createAccountWithPolicy(label, (principal) => {
+    const roleId = `role-${label}-${randomUUID()}`;
+    context.fixture.policy.roles.push({
+      id: roleId,
+      namespaceId: context.namespace.id,
+      permissions,
+    });
+    context.fixture.policy.bindings.push({
+      id: `binding-${label}-${randomUUID()}`,
+      namespaceId: context.namespace.id,
+      subjectKind: "identity",
+      subjectId: principal.id,
+      roleId,
+    });
+  });
+  return context.fixture.signIn(limited.credentials);
+}
+
+async function createReadOperateSession(context, label = "native-admin-read-operate") {
+  return createAgentPermissionSession(context, label, [
+    { action: "read", resourceKind: "agent" },
+    { action: "operate", resourceKind: "agent" },
+  ]);
+}
+
+async function createAdministerSession(context, label = "native-admin-administer") {
+  return createAgentPermissionSession(context, label, [
+    { action: "administer", resourceKind: "agent" },
+  ]);
+}
+
 function trustLocalUpstreamCertificate(t, cert) {
   const previous = getCACertificates("default");
   setDefaultCACertificates([...previous, cert]);
@@ -272,30 +304,17 @@ test("native admin status requires exact Agent administer and reports lifecycle 
   assert.match(available.data.host, new RegExp(`\\.${nativeDomain.replaceAll(".", "\\.")}$`));
   assert.equal(new URL(available.data.bootstrapUrl).hostname, available.data.host);
 
-  const limited = await context.fixture.createAccountWithPolicy(
-    "native-admin-reader",
-    (principal) => {
-      context.fixture.policy.roles.push({
-        id: `role-native-admin-read-operate-${randomUUID()}`,
-        namespaceId: context.namespace.id,
-        permissions: [
-          { action: "read", resourceKind: "agent" },
-          { action: "operate", resourceKind: "agent" },
-        ],
-      });
-      context.fixture.policy.bindings.push({
-        id: `binding-native-admin-read-operate-${randomUUID()}`,
-        namespaceId: context.namespace.id,
-        subjectKind: "identity",
-        subjectId: principal.id,
-        roleId: context.fixture.policy.roles.at(-1).id,
-      });
-    },
-  );
-  const limitedSession = await context.fixture.signIn(limited.credentials);
+  const limitedSession = await createReadOperateSession(context, "native-admin-reader");
   const denied = await nativeStatus(context, { session: limitedSession });
   assert.equal(denied.status, 403);
   assert.equal(denied.body.error.code, "FORBIDDEN");
+
+  const missingStatus = await context.fixture.request(
+    "GET",
+    `/namespaces/${context.namespace.id}/agents/agt_${randomUUID()}/native-admin`,
+  );
+  assert.equal(missingStatus.status, 404);
+  assert.equal(missingStatus.body.error.code, "NOT_FOUND");
 
   const stopped = await context.fixture.request(
     "POST",
@@ -306,6 +325,34 @@ test("native admin status requires exact Agent administer and reports lifecycle 
   assert.equal(stoppedStatus.status, 200);
   assert.equal(stoppedStatus.data.status, "stopped");
   assert.equal(stoppedStatus.data.host, available.data.host);
+});
+
+test("native admin disabled status still requires exact Agent administer", async (t) => {
+  const context = await createNativeAdminFixture(t, { nativeAdminEnabled: false });
+
+  const disabled = await nativeStatus(context);
+  assert.equal(disabled.status, 200);
+  assert.equal(disabled.data.status, "disabled");
+
+  const administerOnlySession = await createAdministerSession(
+    context,
+    "native-admin-disabled-administer",
+  );
+  const administerOnlyDisabled = await nativeStatus(context, { session: administerOnlySession });
+  assert.equal(administerOnlyDisabled.status, 200);
+  assert.equal(administerOnlyDisabled.data.status, "disabled");
+
+  const limitedSession = await createReadOperateSession(context, "native-admin-disabled-reader");
+  const denied = await nativeStatus(context, { session: limitedSession });
+  assert.equal(denied.status, 403);
+  assert.equal(denied.body.error.code, "FORBIDDEN");
+
+  const missingStatus = await context.fixture.request(
+    "GET",
+    `/namespaces/${context.namespace.id}/agents/agt_${randomUUID()}/native-admin`,
+  );
+  assert.equal(missingStatus.status, 404);
+  assert.equal(missingStatus.body.error.code, "NOT_FOUND");
 });
 
 test("native admin launch uses the real session, CSRF boundary, and one-use callback", async (t) => {
@@ -319,6 +366,15 @@ test("native admin launch uses the real session, CSRF boundary, and one-use call
     revisionId: context.revision.id,
   };
   const launchPath = `/namespaces/${context.namespace.id}/agents/${context.agent.id}/native-admin/launch`;
+
+  const limitedSession = await createReadOperateSession(context, "native-admin-launch-reader");
+  const deniedLaunch = await context.fixture.request("POST", launchPath, {
+    session: limitedSession,
+    headers: { origin: publicOrigin },
+    body: launchBody,
+  });
+  assert.equal(deniedLaunch.status, 403);
+  assert.equal(deniedLaunch.body.error.code, "FORBIDDEN");
 
   const crossSite = await context.fixture.request("POST", launchPath, {
     headers: { origin: publicOrigin, "sec-fetch-site": "cross-site" },
@@ -543,4 +599,23 @@ test("native admin proxy strips browser credentials and preserves the Agent gate
   assert.equal(reservedRedirect.statusCode, 502, reservedRedirect.body);
   assert.equal(reservedRedirect.headers.location, undefined);
   assert.equal(context.upstream.requests.length, 5);
+
+  context.fixture.policy.restrictions.push({
+    id: `restriction-native-admin-proxy-${randomUUID()}`,
+    namespaceId: context.namespace.id,
+    action: "administer",
+    resourceKind: "agent",
+    resourceId: context.agent.id,
+    effect: "deny",
+  });
+  const iamDenied = await injectJson(context.fixture, "GET", "/settings/profile?after=iam", {
+    headers: nativeHeaders,
+  });
+  assert.equal(iamDenied.statusCode, 403, iamDenied.body);
+  assert.equal(iamDenied.headers["set-cookie"], undefined);
+  assert.equal(
+    context.upstream.requests.length,
+    5,
+    "authorization-denied proxy requests must not reach native gateway",
+  );
 });
