@@ -3,6 +3,7 @@
 Enable private Kubernetes routing so operators can read and replace Agent
 workspace files through OCC. Start with the [production installation](production-installation.md)
 and keep its protected Helm values, Installation YAML, and Kubernetes context.
+For EKS, also prepare the [strict-mode routing prerequisites](eks.md#enable-console-workspace-files).
 
 ## Agent workspace files
 
@@ -35,8 +36,18 @@ hostname. TLS verification remains enabled.
 
 ### Configure private routing
 
+Use the dedicated kubeconfig and reviewed context from production installation
+for every command below:
+
+```sh
+export KUBECONFIG="$KUBECONFIG_FILE"
+kubectl config use-context "$CONTEXT"
+```
+
 Create a dedicated high-entropy service key with no trailing newline, then
-create its Secret in the controller namespace. Keep key files outside Git:
+create its Secret in the controller namespace. Keep key files outside Git.
+For an existing installation, reuse its Secret; use the
+[rotation procedure](#rotate-the-service-key-and-certificates) to change a live key:
 
 ```sh
 umask 077
@@ -123,8 +134,10 @@ gateway:
 ```
 
 Compute validates the fixed identity header, allowed identity, administrative
-grant, real-IP fallback, and configured proxy sources before preparing a routed
-revision. Omit `gateway.auth.token`; native OpenClaw rejects a simultaneous token
+grant, and real-IP fallback, and requires a nonempty `trustedProxies` entry. It
+does not verify that those addresses belong to Envoy. Operators must validate
+the actual proxy source CIDRs and exclude untrusted sources.
+Omit `gateway.auth.token`; native OpenClaw rejects a simultaneous token
 in this mode, and Compute omits automatic gateway-token projection. Do not require an
 `x-forwarded-for` header in native `requiredHeaders`: the route removes it.
 Envoy authenticates the service key, strips it, overwrites the fixed native
@@ -150,6 +163,102 @@ Agent, or gateway. The key is an Installation-wide native administrative
 credential; do not reuse a Better Auth signing key or model-provider token.
 OCC still checks the human caller's exact Agent `read` or `operate` permission.
 
+### Enable routing for existing Namespaces and Agents
+
+Plan a maintenance window for the gateway restart and Namespace-wide ingress
+change. Preserve Agent IDs, Configuration IDs, PVC/PV identities, workspace
+contents, session IDs, and model/channel credentials. Back up the current native
+Configuration, active revision, protected Helm/Installation inputs, and the
+namespace resources before changing them. Check whether other Agents share the
+Configuration before replacing its values.
+
+1. Apply the matching Helm values and updated Installation startup Secret using
+   the [production installation procedure](production-installation.md). Preserve
+   the existing auth/database and routing-key Secrets, generated CA Secrets, and
+   prepared bootstrap volume; do not rerun fresh-volume preparation. Restart both
+   API and worker to load the new startup configuration. Wait for the private Gateway, certificates, and policy.
+2. For each existing Agent being routed, update its existing native
+   Configuration with the authentication fragment above, preserving other
+   values and omitting token/password fields. PATCH the full preserved `values`
+   through the [Configuration API](../../reference/configuration.md#create-read-update-and-delete), then
+   `POST /namespaces/:namespaceId/agents/:agentId/deploy` for the same Agent.
+   Retain and poll the returned deployment ID. Do not recreate the Agent or
+   retire its current revision before successful cutover: its PVCs belong to
+   that Agent and must survive the gateway replacement.
+3. Reconcile existing ready Namespaces as described below. Agent activation
+   alone is not proof that its HTTPRoute is accepted or files are accessible.
+
+Namespace provisioning creates the routing attachment label and
+`allow-gateway-ingress` policy. A ready Namespace is skipped by Namespace
+lifecycle reconciliation; deploying another Agent revision does not rewrite
+those resources. There is no public Namespace repair endpoint. A cluster
+operator must reconcile these two fields for existing ready Namespaces.
+This changes ingress for **every gateway in that Namespace**; coordinate the
+cutover with its other Agents and preserve unrelated policies and labels.
+
+Select the existing tenant Kubernetes namespace, distinct from its OCC
+Namespace ID. The following uses the same Gateway name/namespace as the examples
+above, `jq`, and the protected directory from production installation:
+
+```sh
+set -e
+export TENANT_NAMESPACE='<existing-tenant-kubernetes-namespace>'
+export NAMESPACE_ID='<existing-occ-namespace-id>'
+ROUTING_BACKUP="$(mktemp -d "$OCC_INPUT_DIRECTORY/workspace-routing.XXXXXX")"
+export ROUTING_BACKUP
+kubectl get namespace "$TENANT_NAMESPACE" -o json > "$ROUTING_BACKUP/namespace.json"
+kubectl -n "$TENANT_NAMESPACE" get networkpolicy allow-gateway-ingress -o json \
+  > "$ROUTING_BACKUP/ingress.json"
+kubectl -n openclaw-system get gateway oce-agent-gateways -o json \
+  > "$ROUTING_BACKUP/gateway.json"
+jq -e --arg id "$NAMESPACE_ID" \
+  '.metadata.labels["openclaw.dev/namespace"] == $id and
+   .metadata.annotations["openclaw.dev/namespace-id"] == $id' \
+  "$ROUTING_BACKUP/namespace.json"
+jq -e --arg id "$NAMESPACE_ID" \
+  '.metadata.labels["openclaw.dev/namespace"] == $id and
+   .metadata.annotations["openclaw.dev/namespace-id"] == $id and
+   .metadata.labels["app.kubernetes.io/managed-by"] == "openclaw-enterprise" and
+   .spec.podSelector.matchLabels["openclaw.dev/workload-role"] == "gateway"' \
+  "$ROUTING_BACKUP/ingress.json"
+ROUTING_LABEL="$(jq -er '.spec.listeners[] | select(.name == "https") |
+  .allowedRoutes.namespaces.selector.matchLabels["openclaw-enterprise.io/gateway"]' \
+  "$ROUTING_BACKUP/gateway.json")"
+export ROUTING_LABEL
+```
+
+Continue only if the ownership and gateway selector checks succeed. Inspect
+all additive NetworkPolicies; stop if another policy would still admit untrusted callers.
+Generate patches that preserve other fields and reject concurrent resource
+changes. Match the port to Compute `network.gatewayPort` if it differs from
+`8080`, and adjust the Gateway names/namespaces together if customized:
+
+```sh
+jq '{metadata: {resourceVersion: .metadata.resourceVersion}, spec: {ingress: [{
+  from: [{namespaceSelector: {matchLabels: {
+    "kubernetes.io/metadata.name": "envoy-gateway-system"
+  }}, podSelector: {matchLabels: {
+    "gateway.envoyproxy.io/owning-gateway-namespace": "openclaw-system",
+    "gateway.envoyproxy.io/owning-gateway-name": "oce-agent-gateways"
+  }}}], ports: [{protocol: "TCP", port: 8080}]
+}]}}' "$ROUTING_BACKUP/ingress.json" > "$ROUTING_BACKUP/ingress-patch.json"
+jq --arg label "$ROUTING_LABEL" '{metadata: {
+  resourceVersion: .metadata.resourceVersion,
+  labels: {"openclaw-enterprise.io/gateway": $label}
+}}' "$ROUTING_BACKUP/namespace.json" > "$ROUTING_BACKUP/namespace-patch.json"
+kubectl -n "$TENANT_NAMESPACE" patch networkpolicy allow-gateway-ingress \
+  --type=merge --patch-file="$ROUTING_BACKUP/ingress-patch.json"
+kubectl patch namespace "$TENANT_NAMESPACE" \
+  --type=merge --patch-file="$ROUTING_BACKUP/namespace-patch.json"
+```
+
+The policy replaces the old direct OCC API peer with the driver's Envoy peer;
+it does not add a second ingress path. Require the target selector to remain
+`openclaw.dev/workload-role: gateway`. If either patch conflicts, reread and
+review both live resources before regenerating it. Keep the backup for recovery;
+restore native authentication, Installation routing, and Namespace policy as a
+coordinated change rather than mixing old and new authentication paths.
+
 ### Verify routing and file access
 
 After applying the Helm and Installation changes, verify the actual resources:
@@ -164,7 +273,13 @@ Require accepted/programmed routing, a ready certificate, and accepted security
 policy before testing native access. Verify missing/invalid service keys and
 spoofed identity headers cannot reach native administration. Then use OCC's
 four-file GET/PUT routes and a fresh native session to prove consumption; a
-ready proxy alone is insufficient.
+ready proxy alone is insufficient. In the Console, save a harmless temporary
+change, discard an unsaved editor change, and reload to confirm persisted
+contents. Restore the exact original file and compare its hash. If the file
+was absent, remove only your newly created proof file after checking its exact
+contents, then verify `NOT_FOUND` again. Read after an uncertain write outcome
+before deciding whether to retry. Verify existing PVC identities, sessions,
+and configured channel health after cutover.
 
 ### Rotate the service key and certificates
 
@@ -194,7 +309,13 @@ native client does not expose mTLS client-certificate options.
 
 Without routing/key configuration, with an unsupported Driver, or when the
 proxy/native gateway is unavailable, file requests return
-`503 DEPENDENCY_UNAVAILABLE`. Docker does not implement this automatic routing
-path. The [Agents reference](../../reference/agents.md#workspace-files) owns file
+`503 DEPENDENCY_UNAVAILABLE`. For `HTTPRoute Accepted=False` with `NotAllowedByListeners`, compare the
+Gateway listener's namespace selector with the tenant Namespace labels and
+follow [existing Namespace reconciliation](#enable-routing-for-existing-namespaces-and-agents).
+An accepted route with unreachable backends requires checking the Envoy and
+tenant policies together, including their selectors and translated ports.
+A genuine missing native file returns `404 NOT_FOUND`; it does not establish
+that gateway access failed. Do not overwrite a file merely to clear a Console
+missing-file notice. Docker does not implement this automatic routing path. The [Agents reference](../../reference/agents.md#workspace-files) owns file
 limits and authorization behavior; [testing](../../testing/README.md) distinguishes live
 integration evidence from rendering and conformance checks.

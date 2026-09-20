@@ -9,7 +9,8 @@ One EKS cluster is sufficient for OCC and Agent workloads. Use separate control
 and runtime node groups in that cluster, with namespace, RBAC, and network
 isolation. The EKS-managed Kubernetes control plane is distinct from OCC, which
 runs as application Pods on your nodes. Agent model authentication follows the
-normal [production Agent guide](production-agents.md).
+normal [production Agent guide](production-agents.md). Console workspace files
+also require the [private gateway routing setup](#enable-console-workspace-files).
 
 ## Prepare AWS infrastructure
 
@@ -109,20 +110,67 @@ from OCE's nonroot UID/GID 1000 workloads. Review the driver's
 [access-point identity and directory parameters](https://github.com/kubernetes-sigs/aws-efs-csi-driver/blob/master/docs/parameters.md)
 instead of assuming filesystem permissions from a successful PVC bind.
 
+## Enable Console workspace files
+
+EFS provides workspace storage. For Console access, the browser sends HTTPS
+requests to OCC API, which opens service-key-authenticated WSS connections
+through private Envoy to the Agent gateway.
+
+OCC checks the caller's Agent permission. Envoy authenticates the separate
+Installation service key and forwards a fixed native identity. Keep Envoy's
+Service as `ClusterIP`; the browser uses OCC's HTTPS origin, not a public Agent
+listener or a port-forward to the native gateway.
+
+Complete [private workspace routing](workspace-routing.md#configure-private-routing)
+before provisioning Namespaces and Agents:
+
+1. Install the guide's Envoy Gateway, Gateway API CRDs, cert-manager, and an
+   accepted GatewayClass. These are operator-owned prerequisites; the OCE chart
+   does not install their controllers. Place the controllers on your control
+   node group and verify capacity for the Envoy data plane.
+2. Under VPC CNI strict mode, prepare policies for the prerequisite controllers
+   and certificate-generation Jobs before starting them. Permit DNS and the
+   actual Kubernetes API destinations; permit API-server admission traffic to
+   the controllers' webhook ports and Envoy data-plane traffic to the
+   controller's xDS port. Match the installed manifests' labels and ports,
+   including both sides' policies. OCE's chart owns the separate API-to-Envoy
+   and Envoy-to-Agent rules; those rules do not provide controller bootstrap
+   access. Require ready controllers before applying OCE's routing resources.
+3. Create the dedicated service-key Secret and set matching `gatewayRouting`
+   values in Helm and `drivers.compute.configuration` in the Installation YAML.
+   Remove Compute `network.gatewayClients` when routing is enabled. Keep the
+   default derived private Service hostname unless you operate custom DNS.
+4. Configure each Agent's [native trusted-proxy authentication](workspace-routing.md#configure-native-gateway-authentication).
+   Use the actual Envoy source CIDRs from your Pod network; account for custom
+   networking or source translation rather than assuming a node subnet. Keep
+   `allowRealIpFallback: true` and the fixed identity's `operator.admin` grant.
+   Do not use an unrestricted CIDR or retain native token/password fields.
+
+The shared guide owns YAML and Secret commands. Keep model,
+Harness, and channel credentials separate from the routing key. Automatic CA
+setup projects only the public root certificate into OCC API; retain certificate
+and hostname verification. A rebuilt runtime is needed only if the installed
+native version lacks the required authentication fields.
+
+For an existing installation, follow the
+[existing Namespace and Agent procedure](workspace-routing.md#enable-routing-for-existing-namespaces-and-agents).
+Restarting OCC and deploying an Agent alone do not update a ready Namespace's
+route-attachment label or old direct-API ingress rule.
+
 ## Configure the protected copies and install
 
 Follow [production installation](production-installation.md) in the same shell.
 At **Configure the Installation**, apply these choices to the copied examples:
 
-| Input                                                                     | EKS setting                                                                                                       |
-| ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `values.yaml`: `controlPlane.nodeSelector`                                | Labels on the OCC managed node group.                                                                             |
-| `installation.yaml`: `drivers.compute.configuration.runtime.nodeSelector` | Labels on the Agent managed node group.                                                                           |
-| `runtime.gatewayStorageClassName`                                         | The EBS-backed gateway class.                                                                                     |
-| `bootstrap-pvc.yaml`: `spec.storageClassName`                             | The protected EBS-backed bootstrap class.                                                                         |
-| `values.yaml`: `database.cidrs`, `cluster.cidrs`                          | Exact database and API destination addresses observed from Pods, with reviewed ports in the corresponding values. |
-| `installation.yaml`: Compute `network`                                    | Actual DNS selectors, gateway clients, and API proxy sources when plugin status reporting is used.                |
-| Controller and runtime image references                                   | Published registry digests matching the node architecture.                                                        |
+| Input                                                                     | EKS setting                                                                                                                   |
+| ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `values.yaml`: `controlPlane.nodeSelector`                                | Labels on the OCC managed node group.                                                                                         |
+| `installation.yaml`: `drivers.compute.configuration.runtime.nodeSelector` | Labels on the Agent managed node group.                                                                                       |
+| `runtime.gatewayStorageClassName`                                         | The EBS-backed gateway class.                                                                                                 |
+| `bootstrap-pvc.yaml`: `spec.storageClassName`                             | The protected EBS-backed bootstrap class.                                                                                     |
+| `values.yaml`: `database.cidrs`, `cluster.cidrs`                          | Exact database and API destination addresses observed from Pods, with reviewed ports in the corresponding values.             |
+| `installation.yaml`: Compute `network`                                    | Actual DNS selectors; omit gateway clients with routing enabled. Keep API proxy sources when plugin status reporting is used. |
+| Controller and runtime image references                                   | Published registry digests matching the node architecture.                                                                    |
 
 EKS endpoint and RDS addresses can change. Maintain these exact egress rules
 through infrastructure updates and failover; VPC security groups do not replace
@@ -150,3 +198,19 @@ exact-Agent model credentials, and a real model turn. Check PVC binding and
 persistent gateway state across Pod replacement. Use
 [production handoff](production-handoff.md) to record AWS resource owners,
 backups, credential renewal, and recovery responsibilities.
+
+## Verify workspace routing
+
+Follow the [routing and file checks](workspace-routing.md#verify-routing-and-file-access)
+after Agent activation. Require accepted/programmed Gateway and HTTPRoute
+status, ready certificates, and an accepted API-key SecurityPolicy. Verify
+missing/invalid keys are rejected, and ordinary Agent workloads cannot connect
+to Envoy or the native gateway directly, even when Service DNS resolves.
+
+Open the Agent's **Workspace files** tab in the signed-in Console. Read all four
+paths, save and reload a harmless temporary change, then restore the original
+state. Files absent before deployment should report `NOT_FOUND` with editable
+fields, not `DEPENDENCY_UNAVAILABLE`. Compare PVC identities and existing session
+IDs after cutover; a bound EFS claim or healthy OCC API alone does not prove
+workspace routing. Check configured channel health without sending messages
+unless message delivery is part of your approved verification.
