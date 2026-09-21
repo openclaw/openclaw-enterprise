@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
   ghcrPackageName,
   github,
+  readArchivePlatforms,
   repository,
   publishWorkflow,
   validateCi,
@@ -361,13 +367,103 @@ test("prepared OCI metadata cannot cross source, image, attempt, CI or base-imag
     nodeBaseImage: `docker.io/library/node:24-bookworm@${digest}`,
     image: "controller",
   };
-  const metadata = { ...expected, platform: "linux/amd64", digest, archiveSha256: "c".repeat(64) };
+  const metadata = {
+    ...expected,
+    platforms: ["linux/amd64", "linux/arm64"],
+    digest,
+    archiveSha256: "c".repeat(64),
+  };
   validatePreparedImage(metadata, expected);
   for (const key of Object.keys(expected)) {
     assert.throws(() => validatePreparedImage({ ...metadata, [key]: "different" }, expected));
   }
   assert.throws(() => validatePreparedImage({ ...metadata, digest: "latest" }, expected));
-  assert.throws(() => validatePreparedImage({ ...metadata, platform: "linux/arm64" }, expected));
+  assert.throws(() => validatePreparedImage({ ...metadata, platforms: ["linux/amd64"] }, expected));
+  assert.throws(() => validatePreparedImage({ ...metadata, platforms: ["linux/arm64"] }, expected));
+  assert.throws(() =>
+    validatePreparedImage({ ...metadata, platforms: ["linux/amd64", "linux/amd64"] }, expected),
+  );
+});
+
+test("OCI archive validation binds both platforms to their real manifest and config blobs", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "enterprise-oci-platforms-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await mkdir(join(directory, "blobs/sha256"), { recursive: true });
+  async function blob(value) {
+    const bytes = JSON.stringify(value);
+    const hash = createHash("sha256").update(bytes).digest("hex");
+    await writeFile(join(directory, "blobs/sha256", hash), bytes);
+    return { digest: `sha256:${hash}`, size: Buffer.byteLength(bytes) };
+  }
+  const manifests = [];
+  const configs = [];
+  // These are actual OCI scratch-image configs/manifests in a tar archive.
+  // No replacement tar, Docker, or registry implementation decides the outcome.
+  for (const architecture of ["amd64", "arm64"]) {
+    const config = await blob({
+      architecture,
+      os: "linux",
+      config: {},
+      rootfs: { type: "layers", diff_ids: [] },
+    });
+    configs.push(config);
+    const manifest = await blob({
+      schemaVersion: 2,
+      mediaType: "application/vnd.oci.image.manifest.v1+json",
+      config: { mediaType: "application/vnd.oci.image.config.v1+json", ...config },
+      layers: [],
+    });
+    manifests.push({
+      mediaType: "application/vnd.oci.image.manifest.v1+json",
+      ...manifest,
+      platform: { os: "linux", architecture },
+    });
+  }
+  async function archive(entries) {
+    const index = {
+      schemaVersion: 2,
+      mediaType: "application/vnd.oci.image.index.v1+json",
+      manifests: entries,
+    };
+    const descriptor = await blob(index);
+    await writeFile(
+      join(directory, "index.json"),
+      JSON.stringify({
+        ...index,
+        manifests: [{ mediaType: index.mediaType, ...descriptor }],
+      }),
+    );
+    await writeFile(join(directory, "oci-layout"), '{"imageLayoutVersion":"1.0.0"}');
+    const path = join(directory, "image.tar");
+    execFileSync("tar", ["-cf", path, "-C", directory, "blobs", "index.json", "oci-layout"]);
+    return [path, descriptor.digest];
+  }
+  assert.deepEqual(
+    readArchivePlatforms(...(await archive([...manifests].reverse()))),
+    manifests.map((manifest, index) => ({
+      platform: `linux/${manifest.platform.architecture}`,
+      digest: manifest.digest,
+      configDigest: configs[index].digest,
+    })),
+  );
+  for (const invalid of [
+    [manifests[0]],
+    [manifests[1]],
+    [manifests[0], manifests[0]],
+    [manifests[0], { ...manifests[1], platform: { os: "linux", architecture: "s390x" } }],
+    [manifests[0], { ...manifests[1], platform: { os: "linux", architecture: "amd64" } }],
+    [
+      manifests[0],
+      { ...manifests[1], platform: { os: "linux", architecture: "arm64", variant: "v9" } },
+    ],
+  ]) {
+    const input = await archive(invalid);
+    assert.throws(() => readArchivePlatforms(...input));
+  }
+  // Replacing an architecture's blob without updating its digest must fail.
+  await writeFile(join(directory, "blobs/sha256", configs[1].digest.slice(7)), "{}");
+  const corrupt = await archive(manifests);
+  assert.throws(() => readArchivePlatforms(...corrupt));
 });
 
 test("metadata GET transport retries are bounded, diagnostic and do not retry denials", async (t) => {

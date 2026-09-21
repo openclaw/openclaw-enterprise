@@ -2,8 +2,9 @@
 
 [`container-publish.yml`](workflows/container-publish.yml) prepares the existing
 controller (`Dockerfile`, target `runtime`) and combined gateway/Agent runtime
-(`deploy/runtime/Dockerfile`) as OCI archives. It supports `linux/amd64`, matching
-the current CI image lane and deployment example. It does not change recipes,
+(`deploy/runtime/Dockerfile`) as OCI archives containing both `linux/amd64` and
+`linux/arm64`. Each image has one multi-platform index digest; Docker selects
+the matching architecture when pulling it. It does not change recipes,
 package versions, Kubernetes deployment, or the existing CI test matrix.
 
 ## Source visibility
@@ -132,15 +133,23 @@ grant a workstation credential additional scopes.
    preparation. If main moved, select the new SHA and its own completed CI run.
 3. Only under an explicit publication request, dispatch with `publish` true and
    approve the protected environment after reviewing the SHA, CI run, and OCI
-   artifacts and [package linkage](#confirm-package-linkage). Preparation builds once, loads that archive into Docker, verifies
-   its config ID, and runs the existing controller or runtime startup smoke
-   against that ID before sealing/uploading. The publisher copies those exact
-   archive digests with Skopeo and verifies the remote digests. Source, CI attempt,
+   artifacts and [package linkage](#confirm-package-linkage). Preparation builds
+   both platforms in one OCI archive, checks the index and child manifest/config
+   digests, and loads each platform into Docker separately. Its config ID must
+   match that index entry. Both platforms run the existing controller or runtime
+   startup smoke before sealing/uploading. ARM64 builds and smoke tests use QEMU
+   on the amd64 runner; this is not native ARM64 performance proof. The publisher copies those exact
+   archive and all child manifests with Skopeo and verifies the remote index digests. Source, CI attempt,
    environment protections, and package visibility are checked again after approval.
 4. Use the `image@sha256:...` references in the job summary and
    `container-publication-<run-id>-<attempt>` receipt for deployment. No Git tag,
    release, `latest` alias, or deployment is created. Existing `sha-<source-sha>`
    image tags cannot be replaced by different bytes.
+
+The multi-platform publisher requires both architectures in every seal. Earlier
+amd64-only tags retain their original bytes and digests; building this workflow
+requires a new source SHA. Old single-platform archives are not accepted by the
+current recovery or promotion validator. See the [publication execution flow](../docs/flows/container-publication.md).
 
 OCI archives are retained for seven days and publication receipts for 30 days.
 Uploaded archives follow the repository's
@@ -207,8 +216,8 @@ repositories, use [Docker Hub promotion](container-promotion.md).
 The existing CI Images and Packaging lane gates the selected source. Preparation
 reuses its controller/runtime startup tests against the newly prepared bytes:
 source CI alone cannot prove a subsequent build with newly resolved npm
-transitives. Loading does not rebuild; the loaded config ID and unchanged
-archive hash bind smoke to the prepared image. Skopeo preserves manifest
+transitives. Loading does not rebuild; each loaded config ID, its index entry, and the
+unchanged archive hash bind both platform smokes to the prepared image. Skopeo preserves manifest
 digests during publication. These are not provider, cluster, or registry
 end-to-end tests.
 

@@ -697,6 +697,7 @@
               "flows/pr-24-ssh-compute",
               "flows/github-actions-testing",
               "flows/container-package-bootstrap",
+              "flows/container-publication",
               "flows/github-actions-testing/preparation",
               "testing/postgresql",
               "testing/images",

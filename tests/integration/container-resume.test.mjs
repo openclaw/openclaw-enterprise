@@ -64,7 +64,7 @@ test("recovery preserves producer bytes and identity across a partial publicatio
       ciAttempt: "1",
       nodeBaseImage: env.NODE_BASE_IMAGE,
       image,
-      platform: "linux/amd64",
+      platforms: ["linux/amd64", "linux/arm64"],
       digest: `sha256:${hash(bytes)}`,
       archiveSha256: hash(bytes),
     };

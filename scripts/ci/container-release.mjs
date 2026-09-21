@@ -10,6 +10,7 @@ import { pathToFileURL } from "node:url";
 export const repository = "openclaw/openclaw-enterprise";
 export const publishWorkflow = ".github/workflows/container-publish.yml";
 const images = ["controller", "runtime"];
+const platforms = ["linux/amd64", "linux/arm64"];
 const shaPattern = /^[a-f0-9]{40}$/;
 const digestPattern = /^sha256:[a-f0-9]{64}$/;
 const integerPattern = /^[1-9][0-9]*$/;
@@ -109,7 +110,7 @@ export function validatePreparedImage(metadata, expected) {
   ]) {
     assert.equal(metadata[key], expected[key], `Prepared image ${key} does not match this run.`);
   }
-  assert.equal(metadata.platform, "linux/amd64");
+  assert.deepEqual(metadata.platforms, platforms);
   assert.match(metadata.digest ?? "", digestPattern);
   assert.match(metadata.archiveSha256 ?? "", /^[a-f0-9]{64}$/);
 }
@@ -239,7 +240,7 @@ function identity(env, image) {
     ciAttempt: env.CI_ATTEMPT,
     nodeBaseImage: env.NODE_BASE_IMAGE,
     image,
-    platform: "linux/amd64",
+    platforms,
   };
 }
 
@@ -265,38 +266,95 @@ export function inspectDigest(reference, authfile) {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
+// Read the exact blobs named by the OCI index, never an extracted checkout path.
+// Hash verification binds platform/config claims to the index's immutable digest.
+export function readArchivePlatforms(archive, indexDigest) {
+  function blob(digest) {
+    assert.match(digest ?? "", digestPattern);
+    const bytes = execFileSync("tar", ["-xOf", archive, `blobs/sha256/${digest.slice(7)}`], {
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    assert.equal(`sha256:${createHash("sha256").update(bytes).digest("hex")}`, digest);
+    return JSON.parse(bytes);
+  }
+  const index = blob(indexDigest);
+  assert.equal(index.schemaVersion, 2);
+  assert.equal(index.mediaType, "application/vnd.oci.image.index.v1+json");
+  assert.ok(Array.isArray(index.manifests));
+  const selected = index.manifests
+    .map((descriptor) => {
+      assert.equal(descriptor.mediaType, "application/vnd.oci.image.manifest.v1+json");
+      const platform = `${descriptor.platform?.os}/${descriptor.platform?.architecture}`;
+      assert.ok(platforms.includes(platform), `Unexpected image platform: ${platform}`);
+      assert.ok(
+        descriptor.platform.variant === undefined ||
+          (platform === "linux/arm64" && descriptor.platform.variant === "v8"),
+        "Unsupported platform variant.",
+      );
+      const manifest = blob(descriptor.digest);
+      assert.equal(manifest.schemaVersion, 2);
+      assert.equal(manifest.mediaType, descriptor.mediaType);
+      const config = blob(manifest.config?.digest);
+      assert.equal(`${config.os}/${config.architecture}`, platform, "Config platform mismatch.");
+      return { platform, digest: descriptor.digest, configDigest: manifest.config.digest };
+    })
+    .sort((left, right) => left.platform.localeCompare(right.platform));
+  assert.deepEqual(
+    selected.map((image) => image.platform),
+    platforms,
+  );
+  return selected;
+}
+
 async function smoke(directory, env) {
   assert.ok(images.includes(env.IMAGE));
   const archive = join(directory, "image.tar");
   const archiveSha256 = await fileDigest(archive);
   assert.equal(inspectDigest(`oci-archive:${archive}`), env.IMAGE_DIGEST);
-  const manifest = JSON.parse(skopeo(["inspect", "--raw", `oci-archive:${archive}`]));
-  assert.match(manifest.config?.digest ?? "", digestPattern);
-  const tag = `localhost/enterprise-${env.IMAGE}:prepared`;
-  skopeo(["copy", `oci-archive:${archive}`, `docker-daemon:${tag}`], { stdio: "inherit" });
-  const [loaded] = JSON.parse(execFileSync("docker", ["image", "inspect", tag]));
-  // Docker may translate the manifest media type; the immutable config ID binds
-  // the loaded image to the prepared config and its ordered filesystem diff IDs.
-  assert.equal(loaded.Id, manifest.config.digest);
-  assert.equal(loaded.Os, "linux");
-  assert.equal(loaded.Architecture, "amd64");
-  const controller = env.IMAGE === "controller";
-  execFileSync(
-    process.execPath,
-    ["--test", `tests/integration/${controller ? "production" : "runtime"}-image-startup.test.mjs`],
-    {
-      env: {
-        ...env,
-        [controller ? "OCC_TEST_PRODUCTION_IMAGE" : "OCC_TEST_RUNTIME_IMAGE"]: loaded.Id,
+  for (const image of readArchivePlatforms(archive, env.IMAGE_DIGEST)) {
+    const [, arch] = image.platform.split("/");
+    const tag = `localhost/enterprise-${env.IMAGE}:prepared-${arch}`;
+    skopeo(
+      [
+        "--override-os",
+        "linux",
+        "--override-arch",
+        arch,
+        "copy",
+        `oci-archive:${archive}`,
+        `docker-daemon:${tag}`,
+      ],
+      { stdio: "inherit" },
+    );
+    const [loaded] = JSON.parse(execFileSync("docker", ["image", "inspect", tag]));
+    // Docker may translate the manifest media type; the config ID binds the
+    // loaded image to this index entry and its ordered filesystem diff IDs.
+    assert.equal(loaded.Id, image.configDigest);
+    assert.equal(loaded.Os, "linux");
+    assert.equal(loaded.Architecture, arch);
+    const controller = env.IMAGE === "controller";
+    console.log(`Smoke ${env.IMAGE} ${image.platform} @ ${image.digest}`);
+    execFileSync(
+      process.execPath,
+      [
+        "--test",
+        `tests/integration/${controller ? "production" : "runtime"}-image-startup.test.mjs`,
+      ],
+      {
+        env: {
+          ...env,
+          [controller ? "OCC_TEST_PRODUCTION_IMAGE" : "OCC_TEST_RUNTIME_IMAGE"]: loaded.Id,
+        },
+        stdio: "inherit",
       },
-      stdio: "inherit",
-    },
-  );
+    );
+  }
   assert.equal(await fileDigest(archive), archiveSha256, "OCI archive changed during smoke.");
 }
 
 async function seal(directory, env) {
   assert.match(env.IMAGE_DIGEST ?? "", digestPattern);
+  readArchivePlatforms(join(directory, "image.tar"), env.IMAGE_DIGEST);
   const metadata = {
     ...identity(env, env.IMAGE),
     digest: env.IMAGE_DIGEST,
