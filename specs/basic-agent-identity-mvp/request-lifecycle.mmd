@@ -1,0 +1,103 @@
+---
+title: "Proposed identity lifecycle: prepare, invoke, withdraw"
+config:
+  theme: base
+  htmlLabels: true
+  themeVariables:
+    fontFamily: "Arial, sans-serif"
+    fontSize: "16px"
+    actorBkg: "#EDF2F7"
+    actorBorder: "#879AB0"
+    actorTextColor: "#25364A"
+    noteBkgColor: "#F7F1E5"
+    noteBorderColor: "#B3A078"
+    noteTextColor: "#344054"
+    signalColor: "#748798"
+    signalTextColor: "#25364A"
+  sequence:
+    useMaxWidth: false
+    actorMargin: 25
+    width: 120
+    height: 64
+    diagramMarginX: 18
+    diagramMarginY: 18
+    messageMargin: 27
+    noteMargin: 12
+    mirrorActors: true
+    wrap: true
+---
+sequenceDiagram
+  actor U as Requester
+  participant G as Trusted Agent<br/>Gateway
+  participant O as OCC API<br/>State / IAM
+  participant C as Worker<br/>Compute
+  participant A as Constrained<br/>registrar
+  participant S as Operator SPIRE
+  participant H as Codex<br/>Harness
+  participant E as Egress relay
+  participant R as Repository<br/>service
+  participant P as GitHub
+
+  Note over U,P: 1 · Prepare an execution independently of ordinary requests
+  O->>O: Admit immutable revision and pending assignment<br/>in original State custody
+  O-->>C: Committed assignment and original lifetime
+  C->>H: Prepare with protected traffic disabled
+  C->>E: Prepare private ingress and protected key custody
+  C->>C: Independently observe exact incarnation
+  C->>O: Bind observed assignment using exact versions
+  O-->>C: Acknowledged commit or exact retained readback
+  C->>A: Assigned identity and trusted observation
+  A->>S: Register exact identity using own authentication
+  S-->>A: Registration outcome or exact readback
+  A-->>C: Exact owned registration observation
+  E->>S: Selected Workload API identity request
+  S-->>E: Rotating assigned X.509-SVID
+
+  Note over U,P: 2 · Deliver immutable material, probe, then select serving
+  C->>C: Persist execution-bound session attempt<br/>through original State
+  C->>R: Open original admitted attempt
+  R-->>C: Session outcome and new material if created
+  C->>H: Deliver through existing runtime binding
+  C->>C: Verify unchanged incarnation and material<br/>Run protected probe under separate bootstrap purpose
+  Note over C,R: Bootstrap mechanism remains an owner decision.<br/>A ready or bound candidate is not yet serving.
+  C->>O: Select serving with predecessor withdrawal
+  O-->>C: Authoritative serving selection
+  C->>H: Enable ordinary protected use
+
+  Note over U,P: 3 · Admit the authentic personal request or team mention
+  U->>G: Request a contribution through admitted connection
+  G->>O: Admit original requester, scope, and complete audience
+  O-->>G: Original invocation, authority, and deadline
+  G->>H: Hand off the authentic invocation to its turn
+
+  Note over U,P: 4 · Verify the actual request before repository effects and output
+  H->>E: Managed Git request through private ingress
+  E->>R: Actual live connection and bound request
+  R->>R: Verify X.509 peer, recipient, registration,<br/>assignment, and original connection custody
+  R->>O: Resolve serving and exact current repository authority
+  O-->>R: Current observation or refusal / unavailable
+  alt Same proof and original authority remain current
+    R->>R: Acquire through credential owner<br/>Reinspect same proof after waits
+    R->>R: Final synchronous currentness and session fence
+    R->>P: Credential owner dispatches admitted operation
+    P-->>R: Provider result or uncertain outcome
+    R->>R: Fresh check and fence before protected delivery
+    R-->>E: Authorized operation output
+    E-->>H: Bound reply
+    H-->>G: Result for original invocation
+    G->>O: Check current complete audience and reply fence
+    O-->>G: Release allowed or denied
+    G-->>U: Authorized reply when release is allowed
+  else Stale, ambiguous, withdrawn, or unavailable
+    R->>R: Refuse dispatch and buffered delivery<br/>Retain owned cleanup and uncertainty
+  end
+
+  Note over U,P: 5 · Withdraw authority before awaited cleanup
+  O->>O: Commit durable withdrawal in original State order
+  R->>R: Independent expiry / currentness invalidates stream<br/>Synchronously refuse new work and protected bytes
+  R->>P: Settle owned provider cleanup
+  P-->>R: Observed settlement or unresolved outcome
+  C->>A: Retire exact owned registration
+  A->>S: Delete with exact readback if uncertain
+  C->>H: Request stop and observe exact incarnation
+  Note over C,P: Requested stop, observed stop, local closure, and provider settlement differ.<br/>Timeout retains unsettled custody. Already accepted effects may complete.<br/>Measure both receiving withdrawal endpoints within the original 30-second budget.
