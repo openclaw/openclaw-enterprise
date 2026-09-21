@@ -21,6 +21,6 @@
     "@openclaw-enterprise/utils": "workspace:*",
     "drizzle-orm": "0.45.2",
     "pg": "8.23.0",
-    "pg-connection-string": "2.12.0"
+    "pg-connection-string": "2.14.0"
   }
 }

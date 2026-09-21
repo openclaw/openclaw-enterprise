@@ -27,14 +27,14 @@
     "@openclaw-enterprise/iam": "workspace:*",
     "@openclaw-enterprise/occ": "workspace:*",
     "@openclaw-enterprise/utils": "workspace:*",
-    "@openclaw/gateway-client": "2026.9.3",
+    "@openclaw/gateway-client": "2026.9.4",
     "@prometheus-io/client": "0.16.1",
     "ajv-formats": "3.0.1",
     "better-auth": "1.7.3",
     "fastify": "5.12.3",
     "pg": "8.23.0",
     "pino": "10.3.1",
-    "tldts": "7.0.18",
+    "tldts": "7.4.13",
     "typebox": "1.3.29"
   }
 }
