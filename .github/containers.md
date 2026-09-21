@@ -38,9 +38,10 @@ these prerequisites. Adding the workflow does not authorize publication.
   Dockerfile. All three must agree. This is an explicit approval, not a default.
 - Independently bootstrap two **private**, pre-existing GHCR container packages,
   link each to `openclaw/openclaw-enterprise`, and grant this repository Actions
-  access. GHCR packages are first created by pushing an image; this workflow
-  deliberately cannot perform that initial push. Use a separately authorized,
-  non-sensitive bootstrap image and confirm private visibility and linkage.
+  access. GHCR packages are first created by pushing an image; the Enterprise
+  publisher deliberately cannot perform that initial push. Use the separately
+  approved [marker bootstrap](#bootstrap-private-packages), then confirm private
+  visibility and linkage.
 - Set environment variables `GHCR_CONTROLLER_IMAGE` and `GHCR_RUNTIME_IMAGE`
   to their full `ghcr.io/openclaw/...` names without tags or digests. They must be
   different packages. There is no public destination fallback.
@@ -53,6 +54,36 @@ private-package setup above to a public source repository.
 Missing settings, inaccessible metadata, wrong package linkage, or nonprivate
 visibility stop publication. Repository-level secrets/variables alone do not
 describe effective organization/environment credentials.
+
+## Bootstrap private packages
+
+After configuring the environment and both destination variables, merge the
+reviewed [bootstrap workflow](workflows/container-bootstrap.yml) and wait for
+its exact main-push CI run to succeed. An operator must first confirm that the
+organization permits creation of private container packages under those names.
+Dispatch **Bootstrap Enterprise Container Packages** on `main` with that
+`ci_run_id`; an independent reviewer approves `container-publish`.
+
+The workflow uses its short-lived `GITHUB_TOKEN` to build and push a scratch
+image containing only a fixed marker. Its temporary context contains no checkout
+files or credentials. Existing packages must be private and linked to Enterprise
+and are left unchanged. An authenticated metadata 404 permits only this harmless
+push; it is not proof that a package is absent rather than inaccessible. Other
+metadata errors stop the run. After each push, private visibility, repository
+linkage, and the remote digest must verify before bootstrap succeeds.
+
+The job summary records package coordinates and marker digests. The unique
+`bootstrap-<run-id>-<attempt>` tags are not runnable Enterprise images. Bootstrap
+does not change visibility or access grants; if verification fails, inspect the
+package settings and fix access before retrying. A partial result is retained,
+and a subsequent dispatch leaves valid existing packages untouched. The ordinary
+publisher still requires verified private packages before copying any source.
+See the [bootstrap execution flow](../docs/flows/container-package-bootstrap.md).
+
+An authenticated local pull of private images separately requires a credential
+with package read access. Repository administration or an OAuth token with only
+`repo` scope does not establish that access. Workflow package permissions do not
+grant a workstation credential additional scopes.
 
 ## Prepare and publish
 

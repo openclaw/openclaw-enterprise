@@ -107,7 +107,7 @@ export function validatePreparedImage(metadata, expected) {
   assert.match(metadata.archiveSha256 ?? "", /^[a-f0-9]{64}$/);
 }
 
-export async function github(path) {
+export async function github(path, { allowNotFound = false } = {}) {
   assert.ok(process.env.GH_TOKEN, "A GitHub workflow token is required.");
   const response = await fetch(`https://api.github.com/${path}`, {
     headers: {
@@ -118,6 +118,9 @@ export async function github(path) {
     redirect: "error",
     signal: AbortSignal.timeout(30_000),
   });
+  if (allowNotFound && response.status === 404) {
+    return null;
+  }
   assert.equal(response.status, 200, `GitHub metadata preflight failed (${response.status}).`);
   return response.json();
 }

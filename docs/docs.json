@@ -663,6 +663,7 @@
               "flows/workspace-files",
               "flows/pr-24-ssh-compute",
               "flows/github-actions-testing",
+              "flows/container-package-bootstrap",
               "flows/github-actions-testing/preparation",
               "testing/postgresql",
               "testing/images",

@@ -1,5 +1,8 @@
 # Implementation specifications
 
+[First Enterprise container release](32-first-container-release.md) — Implementing;
+protected marker bootstrap and first private SHA-addressed controller/runtime publication.
+
 This directory records individual proposals, implementation plans, milestones,
 and delivery decisions. The documents describe work at a point in time. Their
 existing filenames and historical content remain intact in [`.archive/`](.archive/).

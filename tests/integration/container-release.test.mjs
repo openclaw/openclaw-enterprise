@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   ghcrPackageName,
+  github,
   repository,
   publishWorkflow,
   validateCi,
@@ -59,20 +60,52 @@ test("public container preparation requires the exact false string", () => {
   }
 });
 
-test("container promotion retains private source and workflow identity even with PUBLISH false", () => {
-  const workflow = ".github/workflows/container-promote.yml";
-  const promotion = {
-    ...env,
-    GITHUB_WORKFLOW_REF: `${repository}/${workflow}@refs/heads/main`,
-  };
-  for (const PUBLISH of [undefined, "true", "false"]) {
-    validateContext({ ...promotion, PUBLISH }, repo, workflow);
-    assert.throws(
-      () => validateContext({ ...promotion, PUBLISH }, { ...repo, private: false }, workflow),
-      /Publication requires the private Enterprise repository/,
+for (const workflow of [
+  ".github/workflows/container-promote.yml",
+  ".github/workflows/container-bootstrap.yml",
+]) {
+  test(`${workflow} retains private source and workflow identity even with PUBLISH false`, () => {
+    const promotion = {
+      ...env,
+      GITHUB_WORKFLOW_REF: `${repository}/${workflow}@refs/heads/main`,
+    };
+    for (const PUBLISH of [undefined, "true", "false"]) {
+      validateContext({ ...promotion, PUBLISH }, repo, workflow);
+      assert.throws(
+        () => validateContext({ ...promotion, PUBLISH }, { ...repo, private: false }, workflow),
+        /Publication requires the private Enterprise repository/,
+      );
+    }
+    assert.throws(() => validateContext({ ...env, PUBLISH: "false" }, repo, workflow));
+  });
+}
+
+test("only explicit bootstrap lookups tolerate missing package metadata", async (t) => {
+  // The external API supplies status codes; the real client must distinguish
+  // absence from authorization failures before harmless bootstrap is permitted.
+  const token = process.env.GH_TOKEN;
+  process.env.GH_TOKEN = "test-token";
+  t.after(() => {
+    if (token === undefined) delete process.env.GH_TOKEN;
+    else process.env.GH_TOKEN = token;
+  });
+  for (const status of [401, 403, 404, 429, 500]) {
+    t.mock.method(globalThis, "fetch", async () => new Response(null, { status }));
+    await assert.rejects(
+      github("orgs/openclaw/packages/container/example"),
+      new RegExp(`\\(${status}\\)`),
     );
+    const lookup = github("orgs/openclaw/packages/container/example", { allowNotFound: true });
+    if (status === 404) assert.equal(await lookup, null);
+    else await assert.rejects(lookup, new RegExp(`\\(${status}\\)`));
+    t.mock.restoreAll();
   }
-  assert.throws(() => validateContext({ ...env, PUBLISH: "false" }, repo, workflow));
+  const pkg = { name: "example", visibility: "private" };
+  t.mock.method(globalThis, "fetch", async () => Response.json(pkg));
+  assert.deepEqual(
+    await github("orgs/openclaw/packages/container/example", { allowNotFound: true }),
+    pkg,
+  );
 });
 
 test("container context rejects malformed repository privacy in preparation and publication", () => {
