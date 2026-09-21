@@ -81,7 +81,7 @@ Codex scenarios additionally need a Codex runtime image via
 injected `CODEX_ACCESS_TOKEN` for the existing designated test account, and a
 runtime image that supports `OPENCLAW_STATE_DIR` for OpenClaw state writes when
 the test starts without a useful `HOME`. Set `OCC_TEST_OPENAI_MODEL` to a model
-supported by that Codex path; the existing acceptance fixture uses `gpt-5.6-sol`.
+supported by that Codex path; the current source default is `gpt-6-astra`.
 The Calendar proof also needs `OCC_TEST_CODEX_CALENDAR_TOOL_NAME` and
 `OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT`, and must show a model-chosen
 `list_calendars(max_results:1)` read during a normal Agent turn.

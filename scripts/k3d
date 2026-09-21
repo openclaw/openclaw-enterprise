@@ -35,7 +35,7 @@ The helper detects a running Podman API socket or Docker daemon. Set
 OCC_K3D_CONTAINER_ENGINE=podman or docker to select one explicitly.
 demo prompts for OPENAI_API_KEY when it is not already set. test requires the
 variable explicitly; reset does not require it.
-OCC_TEST_OPENAI_MODEL defaults to gpt-5.1.
+OCC_TEST_OPENAI_MODEL defaults to gpt-6-astra.
 EOF
 }
 
@@ -178,7 +178,7 @@ kubectl_bin="$(command -v kubectl)"
 export OCC_DOCKER_BIN="$container_bin"
 export OPENCLAW_CI_K3D_BIN="$k3d_bin"
 export OCC_KUBECTL_BIN="$kubectl_bin"
-export OCC_TEST_OPENAI_MODEL="${OCC_TEST_OPENAI_MODEL:-gpt-5.1}"
+export OCC_TEST_OPENAI_MODEL="${OCC_TEST_OPENAI_MODEL:-gpt-6-astra}"
 
 # This local workflow always builds the current checkout. Do not let selectors
 # exported by an earlier test turn its generated localhost references into

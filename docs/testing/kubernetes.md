@@ -80,7 +80,7 @@ database, and the current gateway and Codex runtime images. Start Docker or a
 Podman API socket. On macOS, start Podman Machine. Then start the helper:
 
 ```sh
-export OCC_TEST_OPENAI_MODEL=gpt-5.1
+export OCC_TEST_OPENAI_MODEL=gpt-6-astra
 ./scripts/k3d
 ```
 
@@ -205,7 +205,7 @@ OCC_TEST_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/opencla
 OCC_TEST_KUBERNETES_GATEWAY_IMAGE=<gateway-image>@sha256:<digest>
 OCC_TEST_KUBERNETES_AGENT_IMAGE=<codex-image>@sha256:<digest>
 OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS=<api-server-proxy-source>/32
-OCC_TEST_OPENAI_MODEL=gpt-5.1
+OCC_TEST_OPENAI_MODEL=gpt-6-astra
 ```
 
 The startup failure cases use dedicated Codex with plugins enabled and disabled.
@@ -307,9 +307,9 @@ OpenClaw with a persisted provider credential, and embedded OpenClaw with the
 Secret API through real Enterprise gateways on an explicitly selected disposable
 k3d cluster. It does not prove Agent workspace-file private routing until
 Compute HTTPRoutes, real Envoy Gateway, cert-manager, OCC, and the native Agent
-runtime are tested together. For dedicated Codex coverage, set `OCC_TEST_OPENAI_MODEL` to an
-authorized model that supports Codex custom tools, such as `gpt-5.1`; the source
-default remains `gpt-4.1`.
+runtime are tested together. The default is `gpt-6-astra`; for dedicated Codex
+coverage, any `OCC_TEST_OPENAI_MODEL` override must be authorized and support
+Codex custom tools.
 
 | Variable                                    | Requirement or default                                                                                                                                                                                     |
 | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -327,7 +327,7 @@ default remains `gpt-4.1`.
 | `OCC_TEST_KUBERNETES_CODEX_VERSION`         | Optional Codex image version expectation; defaults to `0.152.1`.                                                                                                                                           |
 | `OCC_TEST_DATABASE_URL`                     | Migrated disposable loopback database named `openclaw_k8s_*`; the ordinary development database fails.                                                                                                     |
 | `OPENAI_API_KEY`                            | Existing authorized provider credential for real embedded and dedicated model turns.                                                                                                                       |
-| `OCC_TEST_OPENAI_MODEL`                     | Authorized provider model; defaults to `gpt-4.1`.                                                                                                                                                          |
+| `OCC_TEST_OPENAI_MODEL`                     | Authorized provider model; defaults to `gpt-6-astra`.                                                                                                                                                      |
 
 The separate [`harness-topology-k3d-routing-real.test.mjs`](../../tests/integration/harness-topology-k3d-routing-real.test.mjs) requires
 `OCC_TEST_GATEWAY_ROUTING_REAL=1` and the same runtime prerequisites. It also

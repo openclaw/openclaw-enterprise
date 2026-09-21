@@ -27,7 +27,7 @@ prerequisites fail the selected test instead of skipping.
 | `OCC_TEST_PRODUCTION_POSTGRES_IMAGE`   | Imported immutable PostgreSQL image reference for the task-owned database Pod.                                          |
 | `OCC_TEST_PRODUCTION_NODE_IMAGE`       | Imported immutable Node image reference for the operator HTTPS proxy and network probes.                                |
 | `OPENAI_API_KEY`                       | Existing authorized provider credential used only by the Agent-owned embedded gateway path.                             |
-| `OCC_TEST_OPENAI_MODEL`                | Authorized provider model; defaults to `gpt-5.1`.                                                                       |
+| `OCC_TEST_OPENAI_MODEL`                | Authorized provider model; defaults to `gpt-6-astra`.                                                                   |
 | `OCC_TEST_PRODUCTION_TUI_KEEP`         | Optional `1` retains the owned Helm release, namespaces, final gateway, `attach.sh`, and `proof.json` rehearsal output. |
 
 Use the production TUI suite only with image references that already exist in

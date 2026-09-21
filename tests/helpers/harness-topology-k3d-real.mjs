@@ -1,3 +1,4 @@
+import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -42,7 +43,7 @@ const codexImage =
   runtimeImage;
 const codexSeccompProfile = process.env.OCC_TEST_KUBERNETES_CODEX_SECCOMP_PROFILE;
 const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
-const providerModel = (process.env.OCC_TEST_OPENAI_MODEL ?? "gpt-4.1").replace(
+const providerModel = (process.env.OCC_TEST_OPENAI_MODEL ?? defaultAgentModel).replace(
   /^(?:openai|codex)\//,
   "",
 );

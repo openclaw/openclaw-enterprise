@@ -7,6 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import { selectFirstAgentModel } from "../../scripts/first-agent-model.mjs";
 import { localFirstAgentStack } from "../helpers/local-first-agent-stack.mjs";
 
 const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
@@ -121,12 +122,14 @@ function readResult({ stdout, stderr }, expectedReply) {
   const diagnostic = `First-Agent command output:\n${stdout}\n${stderr}`;
   const agent = /^Agent ID: (agt_[A-Za-z0-9_-]+)\r?$/m.exec(stdout);
   const revision = /^Revision: (rev_[A-Za-z0-9_-]+)\r?$/m.exec(stdout);
+  const model = /^Model: (openai\/[A-Za-z0-9._-]+)\r?$/m.exec(stdout);
   const proof = /^Model response verified: (FIRST_AGENT_[A-Fa-f0-9-]+)\r?$/m.exec(stdout);
   const consoleLine = /^Console: ([^\r\n]+)\r?$/m.exec(stdout);
   const replyHeading = /(?:^|\n)Agent response:\r?\n/.exec(stdout);
 
   assert.ok(agent, `Missing Agent ID.\n${diagnostic}`);
   assert.ok(revision, `Missing revision.\n${diagnostic}`);
+  assert.ok(model, `Missing selected model.\n${diagnostic}`);
   assert.ok(proof, `Missing generated model verification nonce.\n${diagnostic}`);
   assert.ok(consoleLine, `Missing Console URL.\n${diagnostic}`);
   assert.ok(replyHeading, `Missing custom model reply.\n${diagnostic}`);
@@ -159,6 +162,7 @@ function readResult({ stdout, stderr }, expectedReply) {
   return {
     identity: { agentId: agent[1], revisionId: revision[1] },
     proofNonce: proof[1],
+    model: model[1],
     origin: consoleUrl.origin,
     namespaceId: namespaces[0],
   };
@@ -256,6 +260,25 @@ async function requestLocalApi(origin, serviceKey, method, path, values) {
   return envelope.data;
 }
 
+test("the first-Agent command advertises its default and preserves explicit or recorded model selections", async () => {
+  const { stdout } = await execFileAsync(process.execPath, [firstAgentScript, "--help"], {
+    cwd: repoRoot,
+  });
+  assert.match(stdout, /OPENCLAW_FIRST_AGENT_MODEL defaults to gpt-6-astra for a new Agent/);
+  assert.equal(selectFirstAgentModel(undefined, undefined), "gpt-6-astra");
+  assert.equal(selectFirstAgentModel("gpt-4.1", undefined), "gpt-4.1");
+  assert.equal(selectFirstAgentModel(undefined, { model: "gpt-5.1" }), "gpt-5.1");
+  assert.equal(selectFirstAgentModel("gpt-4.1", { model: "gpt-4.1" }), "gpt-4.1");
+  assert.throws(
+    () => selectFirstAgentModel("gpt-6-astra", { model: "gpt-4.1" }),
+    /recorded Namespace or model differs/,
+  );
+  assert.throws(
+    () => selectFirstAgentModel("openai/gpt-6-astra", undefined),
+    /plain OpenAI model ID/,
+  );
+});
+
 test(
   "a local Kubernetes installer can deploy and reuse an Agent but cannot replace its key after external changes",
   {
@@ -314,7 +337,10 @@ test(
       firstReply,
     );
 
+    const expectedModel = env.OPENCLAW_FIRST_AGENT_MODEL || "gpt-6-astra";
+    assert.equal(first.model, `openai/${expectedModel}`);
     const reuseEnv = { ...env };
+    delete reuseEnv.OPENCLAW_FIRST_AGENT_MODEL;
     delete reuseEnv.OPENAI_API_KEY;
     delete reuseEnv.OPENAI_API_KEY_FILE;
     const second = readResult(
@@ -331,6 +357,23 @@ test(
       second.identity,
       first.identity,
       "Reusing the name must preserve the Agent ID and active revision",
+    );
+    assert.equal(
+      second.model,
+      first.model,
+      "A repeat without an override must reuse the recorded model",
+    );
+    const refusedModel = await runFirstAgent({
+      name,
+      env: { ...reuseEnv, OPENCLAW_FIRST_AGENT_MODEL: "gpt-test-conflicting-selection" },
+      allowFailure: true,
+      signal: context.signal,
+      timeout: refusalTimeout,
+    });
+    assert.notEqual(refusedModel.exitCode, 0);
+    assert.match(
+      `${refusedModel.stdout}\n${refusedModel.stderr}`,
+      /recorded Namespace or model differs/,
     );
     assert.notEqual(
       second.proofNonce,
@@ -367,6 +410,10 @@ test(
     const originalSecretVersion = await readSecretResourceVersion(secretLookup);
     const configurationPath = `${base}/configurations/${agent.configurationId}`;
     const original = await requestLocalApi(first.origin, serviceKey, "GET", configurationPath);
+    assert.equal(original.values.agents.defaults.model, first.model);
+    assert.deepEqual(original.values.models.providers.openai.models, [
+      { id: expectedModel, name: expectedModel },
+    ]);
     assert.ok(
       Number.isInteger(original.generation),
       "The public Configuration must expose its generation",

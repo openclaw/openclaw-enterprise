@@ -568,12 +568,18 @@ test("Agent creation preserves edited JSON across mode changes and resets to the
   const mode = page.getByLabel("Execution mode");
   const configuration = page.getByLabel("Configuration JSON");
   const dedicatedTemplate = JSON.parse(await configuration.inputValue());
-  assert.equal(dedicatedTemplate.agents.defaults.model, "codex/gpt-5.1");
+  assert.equal(dedicatedTemplate.agents.defaults.model, "codex/gpt-6-astra");
+  assert.deepEqual(dedicatedTemplate.models.providers.codex.models, [
+    { id: "gpt-6-astra", name: "gpt-6-astra" },
+  ]);
   assert.ok(dedicatedTemplate.plugins.entries.codex);
 
   await mode.selectOption("embedded");
   const embeddedTemplate = JSON.parse(await configuration.inputValue());
-  assert.equal(embeddedTemplate.agents.defaults.model, "openai/gpt-5.1");
+  assert.equal(embeddedTemplate.agents.defaults.model, "openai/gpt-6-astra");
+  assert.deepEqual(embeddedTemplate.models.providers.openai.models, [
+    { id: "gpt-6-astra", name: "gpt-6-astra" },
+  ]);
   assert.equal(Object.hasOwn(embeddedTemplate, "plugins"), false);
 
   const edited = JSON.stringify(nativeValues("manual-edit"), null, 2);
@@ -583,8 +589,53 @@ test("Agent creation preserves edited JSON across mode changes and resets to the
 
   await page.getByRole("button", { name: "Reset template" }).click();
   const resetTemplate = JSON.parse(await configuration.inputValue());
-  assert.equal(resetTemplate.agents.defaults.model, "codex/gpt-5.1");
+  assert.equal(resetTemplate.agents.defaults.model, "codex/gpt-6-astra");
   assert.ok(resetTemplate.plugins.entries.codex);
+});
+
+test("Agent creation saves the default model for both harnesses without changing an explicit selection", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Starter model", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+
+  for (const [mode, provider, harness, selectedModel] of [
+    ["dedicated", "codex", "codex", "gpt-6-astra"],
+    ["embedded", "openai", "openclaw", "gpt-6-astra"],
+    ["embedded", "openai", "openclaw", "gpt-4.1"],
+  ]) {
+    await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
+    await page.getByRole("heading", { name: "Create Agent" }).waitFor();
+    await page.getByLabel("Agent name").fill(`${mode}-${selectedModel}`);
+    await page.getByLabel("Execution mode").selectOption(mode);
+    if (selectedModel !== "gpt-6-astra") {
+      const input = page.getByLabel("Configuration JSON");
+      const edited = (await input.inputValue()).replaceAll("gpt-6-astra", selectedModel);
+      await input.fill(edited);
+    }
+    const saved = page.waitForResponse(
+      (response) =>
+        response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
+        response.request().method() === "POST",
+    );
+    await page.getByRole("button", { name: "Create Agent" }).click();
+    const response = await saved;
+    assert.equal(response.status(), 201);
+    const agent = (await response.json()).data;
+    const configuration = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+    );
+    const modelReference = `${provider}/${selectedModel}`;
+    assert.equal(configuration.data.values.agents.defaults.model, modelReference);
+    assert.deepEqual(configuration.data.values.agents.defaults.models, {
+      [modelReference]: { agentRuntime: { id: harness } },
+    });
+    assert.deepEqual(configuration.data.values.models.providers[provider].models, [
+      { id: selectedModel, name: selectedModel },
+    ]);
+  }
 });
 
 test("Agent detail preserves admitted revision history while draft edits change current configuration", async (t) => {

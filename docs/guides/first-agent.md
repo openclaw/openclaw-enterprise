@@ -10,7 +10,7 @@ after the command exits.
 - Complete [Local setup](quickstart.md) and leave the installation running.
 - Use the same checkout and development state directory. If you set
   `OCC_DEVELOPMENT_STATE_DIRECTORY` during setup, use the same value here.
-- Have an OpenAI API key that can use `gpt-5.1`, the default model. To use a
+- Have an OpenAI API key that can use [`gpt-6-astra`](https://developers.openai.com/api/docs/models/gpt-6-astra), the default model. To use a
   different model available to your project, set `OPENCLAW_FIRST_AGENT_MODEL`
   to its plain ID, without `openai/`.
 - Keep the key out of commands, Configuration JSON, and chat. The interactive

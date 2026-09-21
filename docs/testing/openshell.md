@@ -76,7 +76,7 @@ scoped environment file for this suite.
 | `OCC_TEST_OPENSHELL_K3D_REAL`          | Set to `1` to explicitly opt into the real OpenShell integration.                                                                                   |
 | `OCC_TEST_OPENSHELL_SECRET_PROJECTION` | Set to `1` only when upstream supports genuine Secret and workload-identity projections; selects positive model/lifecycle proof.                    |
 | `OPENAI_API_KEY`                       | Existing authorized provider credential for the required real model turn.                                                                           |
-| `OCC_TEST_OPENAI_MODEL`                | Authorized provider model; defaults to `gpt-5.6-sol`.                                                                                               |
+| `OCC_TEST_OPENAI_MODEL`                | Authorized provider model; defaults to `gpt-6-astra`.                                                                                               |
 | `OCC_TEST_KUBERNETES_KUBECONFIG`       | Absolute kubeconfig path for the dedicated disposable k3d cluster.                                                                                  |
 | `OCC_TEST_KUBERNETES_CONTEXT`          | Explicit `k3d-*` context with a verified loopback HTTPS API.                                                                                        |
 | `OCC_TEST_KUBERNETES_GATEWAY_IMAGE`    | Imported immutable real OpenClaw gateway image; `OCC_TEST_KUBERNETES_RUNTIME_IMAGE` is accepted as a fallback.                                      |

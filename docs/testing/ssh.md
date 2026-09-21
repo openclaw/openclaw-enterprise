@@ -110,7 +110,7 @@ inside the container when readiness fails; keep logs free of credential values.
 
 With the disposable SSH host inputs above, also set `OCC_TEST_SSH_MODEL=1`,
 `OCC_TEST_OPENAI_API_KEY_FILE` to a protected local file containing an authorized
-OpenAI API key, and optionally `OCC_TEST_OPENAI_MODEL` (default `gpt-4.1`). Run the
+OpenAI API key, and optionally `OCC_TEST_OPENAI_MODEL` (default `gpt-6-astra`). Run the
 same `tests/integration/ssh-compute-real.test.mjs` file. This selector requires
 the SSH inputs and fails if the host or credential is unavailable; it never
 substitutes the local systemd fixture.

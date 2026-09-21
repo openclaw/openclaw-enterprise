@@ -8,12 +8,13 @@ When the user or owning workflow requests independent developer review, read the
 Enterprise repository root:
 
 ```sh
-.agents/skills/autoreview/scripts/autoreview --mode local
+.agents/skills/autoreview/scripts/autoreview --mode local --model codex=gpt-6-astra
 ```
 
 The helper requires Python 3 and an installed, authenticated reviewer CLI (Codex
-by default). It needs no Enterprise runtime or pnpm dependencies. For a committed
-branch, use `--mode branch --base origin/main`; fetch the intended base first.
+by default). Pass `--model codex=gpt-6-astra` to select the Enterprise standard;
+the unchanged upstream helper has its own default when the option is omitted. It
+needs no Enterprise runtime or pnpm dependencies. For a committed branch, use `--mode branch --base origin/main`; fetch the intended base first.
 Local mode includes untracked files and staged and unstaged changes. The default
 threshold is P0; pass `--max-priority P2` when that broader scope is requested.
 

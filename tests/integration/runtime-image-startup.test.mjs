@@ -1,3 +1,4 @@
+import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -14,7 +15,7 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 const execute = promisify(execFile);
 const docker = process.env.OCC_DOCKER_BIN ?? "docker";
 const image = process.env.OCC_TEST_RUNTIME_IMAGE;
-const runtimeImageModel = "gpt-5.1";
+const runtimeImageModel = defaultAgentModel;
 const syntheticCodexApiKey = "sk-openclaw-runtime-image-smoke-synthetic";
 const imageTestOptions =
   image === undefined

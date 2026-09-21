@@ -1,3 +1,4 @@
+import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -25,7 +26,7 @@ const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 let adminKey = process.env.OCC_TEST_CHATGPT_ADMIN_KEY;
 const adminKeySourcePath = process.env.OCC_TEST_CHATGPT_ADMIN_KEY_PATH;
 const workspaceId = process.env.OCC_TEST_CHATGPT_WORKSPACE_ID;
-const providerModel = (process.env.OCC_TEST_OPENAI_MODEL ?? "gpt-5.6-sol").replace(
+const providerModel = (process.env.OCC_TEST_OPENAI_MODEL ?? defaultAgentModel).replace(
   /^(?:openai|codex)\//,
   "",
 );

@@ -1,5 +1,21 @@
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
+import { defaultAgentModel } from "../apps/controller/src/console/agents/starter-model.mjs";
+
+export function selectFirstAgentModel(configuredModel, existing) {
+  const model = configuredModel || existing?.model || defaultAgentModel;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(model)) {
+    throw new Error(
+      "OPENCLAW_FIRST_AGENT_MODEL must be a plain OpenAI model ID, without the provider prefix.",
+    );
+  }
+  if (existing && configuredModel && model !== existing.model) {
+    throw new Error(
+      "This Agent's recorded Namespace or model differs. Reuse its recorded model or choose a new Agent name.",
+    );
+  }
+  return model;
+}
 
 const readinessTimeout = 8 * 60_000;
 const readinessInterval = 5_000;

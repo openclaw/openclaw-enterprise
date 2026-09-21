@@ -1,3 +1,4 @@
+import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -36,7 +37,10 @@ function requiredPluginProofEnv(name, description = name) {
 }
 
 export function optionalPluginProofModel() {
-  return (process.env.OCC_TEST_OPENAI_MODEL ?? "gpt-4.1").replace(/^(?:openai|codex)\//, "");
+  return (process.env.OCC_TEST_OPENAI_MODEL ?? defaultAgentModel).replace(
+    /^(?:openai|codex)\//,
+    "",
+  );
 }
 
 function selectPluginProofDatabaseUrl({ scenario, databaseUrl }) {

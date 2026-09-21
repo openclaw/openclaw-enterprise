@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-09-17
-last_updated_session: codex/01a0acbf-4d5a-7413-9411-dce911f3ad23
+updated: 2026-09-21
+last_updated_session: codex/01a0c580-9e39-7e21-bb0f-28fcc4752c59
 ---
 
 # Platform console request flow
@@ -134,7 +134,10 @@ Provider selection does not filter service accounts. A failed list read
 shows a field-level error and retains the unset association option.
 
 The form starts with editable native JSON for the selected execution mode and
-optional Agent-owned plugin selections. Submission parses the JSON object and
+optional Agent-owned plugin selections. `apps/controller/src/console/agents/starter-model.mjs`
+selects the shared first-party default: `codex/gpt-6-astra` for dedicated or
+`openai/gpt-6-astra` for embedded. A mode change preserves edited JSON; reset
+restores the selected mode’s starter. Submission parses the JSON object and
 posts `{kind: "agent", values}` to
 `POST /namespaces/:namespaceId/configurations`. After that returns its ID,
 `POST /namespaces/:namespaceId/agents` creates the Agent draft with the selected
@@ -209,6 +212,8 @@ refreshes and inspects the Agent and revision history.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-21 19:52: Trace the shared default in dedicated and embedded Agent creation and preserve edited model selection. (01a0c580-9e39-7e21-bb0f-28fcc4752c59 - 4ec004dbefd25070ff1bdeb89cfb16d245296ac9)
 
 - 2026-09-17 19:14: Expose operator-managed credentials without a managed-credential deployment gate. (01a0acbf-4d5a-7413-9411-dce911f3ad23 - b8cabaf9a49e069a7668ccf88b9e71a7484227b7)
 

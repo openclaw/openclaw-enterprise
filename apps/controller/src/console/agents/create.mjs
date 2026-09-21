@@ -1,5 +1,6 @@
 import { element, button } from "../dom.mjs";
 import { createHarnessAuthFields } from "./harness-auth.mjs";
+import { defaultAgentModel } from "./starter-model.mjs";
 import { renderChannels } from "../channels.mjs";
 import { link, message, namespacePath } from "./list.mjs";
 
@@ -15,7 +16,7 @@ function field(label, input, hint) {
 
 function configurationTemplate(mode) {
   const harnessId = mode === "dedicated" ? "codex" : "openclaw";
-  const providerModel = "gpt-5.1";
+  const providerModel = defaultAgentModel;
   const modelReference = `${harnessId === "codex" ? "codex" : "openai"}/${providerModel}`;
   const provider =
     harnessId === "codex"
