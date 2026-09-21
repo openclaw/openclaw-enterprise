@@ -33,12 +33,12 @@ graph TD
   E --> F["Recheck gates and package metadata"]
   F -->|valid existing private package| G["Keep package unchanged"]
   F -->|404| H["Copy marker with workflow token"]
-  H --> I["Verify private linkage and remote digest"]
+  H --> I["Wait for private metadata and verify remote digest"]
   I -->|mismatch| X
   I -->|verified| J["Record marker in job summary"]
   G --> K["Continue to next package"]
   J --> K
-  K --> L["Operator starts separate Enterprise publication"]
+  K --> L["Reviewer confirms linkage for separate Enterprise publication"]
 ```
 
 The diagram describes implemented control flow; it does not establish that a
@@ -56,7 +56,10 @@ environment requires independent review, disables admin bypass, and permits
 only branch `main`. Invalid context fails before a registry write.
 
 Each configured package name passes `ghcrPackageName`. Existing metadata must
-pass `validatePackage` for private visibility and exact repository linkage.
+pass `validatePackage` for private visibility and, when returned, exact private
+repository linkage. GitHub's optional repository field may be absent or null.
+Bootstrap allows that omission because it copies only harmless marker bytes;
+publication requires separate linkage evidence before copying Enterprise source.
 Only bootstrap opts into `github`'s 404 result; normal publication still fails
 on missing metadata. A 404 can also hide inaccessible packages, so it authorizes
 only the non-sensitive marker attempt. Authorization and other API errors fail.
@@ -71,8 +74,9 @@ Skopeo authenticates using the workflow token over stdin and a temporary auth fi
 
 Before each transfer, the helper repeats source, CI, environment, and package
 checks. Valid existing packages remain unchanged. A 404 permits copying the
-marker under a unique run/attempt tag. The helper then requires private linked
-metadata and matching remote manifest digest. A failed post-push check fails the
+marker under a unique run/attempt tag. The helper retries post-push metadata 404s
+up to five times, two seconds apart, then requires private metadata and a matching
+remote manifest digest. Other API errors fail immediately. A failed post-push check fails the
 run and leaves the harmless marker for operator inspection; it changes no grants
 or visibility and performs no automatic deletion.
 
@@ -85,6 +89,14 @@ lock, which does not constrain external package administrators. Partial success
 is possible. The operator follows the existing publication procedure to build,
 smoke, independently approve, and publish actual Enterprise images.
 
+`scripts/ci/container-release.mjs:verifyGhcr` is shared by publication and promotion.
+If package metadata omits the repository, it requires the independent reviewer's
+exact linkage confirmation in GitHub's environment approval history. The current
+environment ID, package, repository, source, run, and attempt must match; the
+reviewer must differ from both the initiator and rerun actor. The reviewer checks
+the live package settings using the [approval procedure](../../.github/containers.md#confirm-package-linkage).
+This records operator evidence; the API does not independently prove the connection.
+
 ## Debugging and Verification
 
 - `node --test tests/integration/container-release.test.mjs` checks shared gate
@@ -93,6 +105,9 @@ smoke, independently approve, and publish actual Enterprise images.
   destinations. Marker success proves package bootstrap, not Enterprise availability.
 - A package or metadata permission failure needs operator access repair. Keep
   self-review prevention and private-package checks enabled.
+- Missing repository metadata requires the reviewer's linkage confirmation for
+  the current publication or promotion attempt; retrying an unchanged approval
+  does not fix it. An explicit wrong repository always fails.
 - Treat `bootstrap-*` as non-deployable markers. Release evidence comes from the
   separate publisher's receipt and authenticated image digest verification.
 
@@ -108,4 +123,5 @@ smoke, independently approve, and publish actual Enterprise images.
 
 ## Changelog
 
+- 2026-09-21 19:00: Separate marker verification from recorded reviewer linkage evidence and bound metadata propagation retries. (01a0c179-19f7-7111-8bb4-fc7680da5545 - aa6dd7415d65ffba5fa40098b2142eb2a7d73df4)
 - 2026-09-21 01:00: Trace protected marker package bootstrap and publication handoff. (01a0c179-19f7-7111-8bb4-fc7680da5545 - 4e056c57390397b89642783fea5f1d19834b0325)

@@ -47,10 +47,16 @@ credential does not prove a package is absent.
 Bootstrap runs only from trusted `main`, after exact-source successful main-push
 CI and environment approval. It builds a scratch image from a temporary directory
 containing only a fixed non-sensitive marker and repository labels. It never
-copies the checkout into an image. Existing destinations must already be private
-and linked to this repository; valid existing packages are left unchanged.
+copies the checkout into an image. Existing destinations must already be private;
+explicit repository metadata must match this private repository. Valid existing packages are left unchanged.
 An authenticated 404 permits a marker push only, followed by required private
-visibility and linkage verification. Other API failures stop the run. Bootstrap
+visibility and digest verification. Post-push metadata 404s receive five bounded
+retries; other API failures stop the run. GHCR can omit repository metadata, so
+marker bootstrap does not establish linkage. Before real-image publication or
+promotion, missing linkage metadata requires the independent environment
+reviewer's recorded confirmation of live package settings, bound to the package,
+repository, source, current run and attempt. The [operator procedure](../.github/containers.md#confirm-package-linkage)
+defines the evidence; explicit conflicting metadata always fails. Bootstrap
 never changes visibility, grants, or Enterprise source tags. Its unique
 `bootstrap-<run-id>-<attempt>` tag is not a deployable release.
 
@@ -96,7 +102,7 @@ checks to complete a release.
 | Required outcome                     | Proof                                                                                                                                          |
 | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | Correct source and approval          | Exact main CI URL and SHA; live environment metadata; independent approval record.                                                             |
-| Harmless bootstrap                   | Review temporary build context; hosted marker-only push; private linked package metadata for both destinations.                                |
+| Harmless bootstrap                   | Review temporary build context; hosted marker-only push; private package metadata and remote marker digests for both destinations.             |
 | Fail-closed bootstrap                | Gate tests reject public/wrong repositories, invalid packages, unsafe contexts, and API failures.                                              |
 | Prepared image identity              | Hosted startup smoke and sealed OCI/config digests from the same publication run.                                                              |
 | Successful first publication         | Publish job succeeds; receipt names both remote digest references and `linux/amd64`; authenticated digest inspection and pull where available. |

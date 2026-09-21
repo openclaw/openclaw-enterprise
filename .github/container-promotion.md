@@ -40,7 +40,10 @@ closed. No private-code bootstrap is attempted. The GitHub token needs only
    exact attempt. Its publication receipt must still be retained.
 3. Under an explicit publication request, manually dispatch **Promote Enterprise
    Containers to Docker Hub** on `main` with those three inputs. Approve the
-   protected environment after checking the producer and destinations.
+   protected environment after checking the producer, destinations, and
+   [GHCR package linkage](containers.md#confirm-package-linkage). When repository
+   metadata is absent, include the linkage confirmation for this promotion run
+   and attempt in the approval comment.
 4. Use the digest references in the job summary. Skopeo copies from GHCR by digest
    with `--all --preserve-digests`; the copied digest is verified at Docker Hub.
    Existing identical tags are left unchanged; conflicting tags are rejected.

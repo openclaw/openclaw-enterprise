@@ -81,12 +81,19 @@ export function ghcrPackageName(image) {
   return image.slice("ghcr.io/openclaw/".length);
 }
 
-export function validatePackage(pkg, image) {
+export function validatePackage(pkg, image, { allowMissingRepository = false } = {}) {
   assert.equal(pkg.name, ghcrPackageName(image));
   assert.equal(pkg.package_type, "container");
   assert.equal(pkg.visibility, "private", "GHCR package must already exist and be private.");
+  // GitHub's package schema makes repository nullable and optional. Absence
+  // cannot establish linkage; only marker bootstrap or independent review may
+  // handle that case. Explicit conflicting metadata always fails.
+  if (pkg.repository == null && allowMissingRepository) {
+    return false;
+  }
   assert.equal(pkg.repository?.full_name, repository, "Link the package to Enterprise first.");
   assert.equal(pkg.repository?.private, true);
+  return true;
 }
 
 export function validatePreparedImage(metadata, expected) {
@@ -107,17 +114,26 @@ export function validatePreparedImage(metadata, expected) {
   assert.match(metadata.archiveSha256 ?? "", /^[a-f0-9]{64}$/);
 }
 
-export async function github(path, { allowNotFound = false } = {}) {
+export async function github(path, { allowNotFound = false, retryNotFound = false } = {}) {
   assert.ok(process.env.GH_TOKEN, "A GitHub workflow token is required.");
-  const response = await fetch(`https://api.github.com/${path}`, {
-    headers: {
-      Authorization: `Bearer ${process.env.GH_TOKEN}`,
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
-    },
-    redirect: "error",
-    signal: AbortSignal.timeout(30_000),
-  });
+  let response;
+  for (let attempt = 0; attempt < (retryNotFound ? 6 : 1); attempt += 1) {
+    if (attempt > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+    }
+    response = await fetch(`https://api.github.com/${path}`, {
+      headers: {
+        Authorization: `Bearer ${process.env.GH_TOKEN}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+      redirect: "error",
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (response.status !== 404) {
+      break;
+    }
+  }
   if (allowNotFound && response.status === 404) {
     return null;
   }
@@ -272,9 +288,36 @@ async function seal(directory, env) {
   await writeFile(join(directory, "metadata.json"), `${JSON.stringify(metadata, null, 2)}\n`);
 }
 
-export async function verifyGhcr(image, digest, tag) {
+export async function verifyGhcr(image, digest, tag, env) {
   const packagePath = `orgs/openclaw/packages/container/${encodeURIComponent(ghcrPackageName(image))}`;
-  validatePackage(await github(packagePath), image);
+  const linked = validatePackage(await github(packagePath), image, {
+    allowMissingRepository: true,
+  });
+  if (!linked) {
+    assert.match(env.GITHUB_RUN_ID ?? "", integerPattern);
+    assert.match(env.GITHUB_RUN_ATTEMPT ?? "", integerPattern);
+    assert.match(env.SOURCE_SHA ?? "", shaPattern);
+    assert.ok(env.GITHUB_ACTOR);
+    const environment = await github(`repos/${repository}/environments/container-publish`);
+    assert.ok(Number.isSafeInteger(environment.id) && environment.id > 0);
+    const reviews = await github(`repos/${repository}/actions/runs/${env.GITHUB_RUN_ID}/approvals`);
+    const confirmation = `Verified GHCR linkage: ${image} -> ${repository}; source=${env.SOURCE_SHA}; run=${env.GITHUB_RUN_ID}; attempt=${env.GITHUB_RUN_ATTEMPT}`;
+    assert.ok(
+      Array.isArray(reviews) &&
+        reviews.some(
+          (review) =>
+            review.state === "approved" &&
+            review.user?.type === "User" &&
+            review.user.login !== env.GITHUB_ACTOR &&
+            review.user.login !== env.GITHUB_TRIGGERING_ACTOR &&
+            review.environments?.some(
+              (entry) => entry.id === environment.id && entry.name === "container-publish",
+            ) &&
+            review.comment?.split(/\r?\n/).some((line) => line.trim() === confirmation),
+        ),
+      `Missing independent package linkage confirmation. Verify package settings, then include this line when approving this attempt: ${confirmation}`,
+    );
+  }
   const versions = await githubPages(`${packagePath}/versions`);
   const existing = versions.filter((version) => version.metadata?.container?.tags?.includes(tag));
   assert.ok(
@@ -298,7 +341,7 @@ async function publish(directory, env) {
     assert.equal(await fileDigest(archive), metadata.archiveSha256, "OCI archive bytes changed.");
     assert.equal(inspectDigest(`oci-archive:${archive}`), metadata.digest, "OCI digest changed.");
     const destination = env[`GHCR_${image.toUpperCase()}_IMAGE`];
-    await verifyGhcr(destination, metadata.digest, tag);
+    await verifyGhcr(destination, metadata.digest, tag, env);
     prepared.push({ ...metadata, destination, archive });
   }
   assert.notEqual(
@@ -324,7 +367,7 @@ async function publish(directory, env) {
     for (const image of prepared) {
       // Approval and visibility may change while large images are being copied.
       await validate(env);
-      await verifyGhcr(image.destination, image.digest, tag);
+      await verifyGhcr(image.destination, image.digest, tag, env);
       skopeo(
         [
           "copy",
