@@ -425,6 +425,10 @@ async function pluginRuntimeStatus(namespaceName, podName) {
 async function waitForReadyPluginStatus(fixture) {
   return waitFor("ready plugin runtime status from the exact gateway Pod", async () => {
     const observation = await prepareRevisionEventually(fixture);
+    // Pod status can become ready after this earlier Driver observation.
+    if (!observation.ready) {
+      return undefined;
+    }
     const pods = (await exactGatewayPods(fixture.namespaceName, fixture.candidate)).filter(
       (pod) => pod.metadata.deletionTimestamp === undefined && isReadyPod(pod),
     );
@@ -452,6 +456,10 @@ async function waitForReadyPluginStatus(fixture) {
 async function waitForReadyPluginWarning(fixture, warning) {
   return waitFor("ready plugin runtime warning from the exact gateway Pod", async () => {
     const observation = await prepareRevisionEventually(fixture);
+    // Require Driver readiness as well as the subsequent Pod and plugin checks.
+    if (!observation.ready) {
+      return undefined;
+    }
     const pods = (await exactGatewayPods(fixture.namespaceName, fixture.candidate)).filter(
       (pod) => pod.metadata.deletionTimestamp === undefined && isReadyPod(pod),
     );

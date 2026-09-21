@@ -67,6 +67,10 @@ selected disposable cluster and tenant credentials. Without those inputs, they
 skip explicitly. Schema, controller, and SDK fixtures do not exercise that live
 cluster behavior.
 
+The plugin-status fixture tests wait for Driver readiness, a ready gateway Pod,
+and its plugin status before asserting startup or restart results. A later Pod
+status read does not establish that an earlier Driver observation was ready.
+
 ## Kubernetes model turns and Secrets
 
 ### Develop with local containers and k3d
