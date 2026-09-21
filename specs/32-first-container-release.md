@@ -93,8 +93,11 @@ the publication receipt's digest references, not the bootstrap tag or chart vers
 
 Two-image publication is not atomic. On partial failure, inspect both destinations
 before retrying. Preserve already-published source tags; a fresh build may resolve
-different runtime dependencies and must fail on a digest conflict. Fix the cause
-and use a newly reviewed source when necessary. Never relax privacy or approval
+different runtime dependencies and must fail on a digest conflict. Use the protected [recovery workflow](../.github/containers.md#recover-a-partial-publication)
+to resume from the original retained archives after fixing the cause. Recovery
+separately verifies current workflow CI and original image CI, preserves the
+producer seals, and requires a fresh independent approval. Expired archives
+cannot be rebuilt under an existing source tag with different bytes. Never relax privacy or approval
 checks to complete a release.
 
 ## Verification
@@ -114,7 +117,12 @@ introduced the intentionally separate bootstrap prerequisite.
 prepared images but skipped publication. On 2026-09-21 the required publication
 environment was initially absent. It is now configured with `openclaw/maintainer`
 reviewers, self-review and administrator bypass disabled, only branch `main`, and
-the two destination variables above. No published-image digest is claimed here.
+the two destination variables above. Bootstrap run `35647474652` succeeded. Publication run `35648198492`, attempt 1,
+prepared and smoked both images from `4ec004dbefd25070ff1bdeb89cfb16d245296ac9`;
+controller transfer and remote digest verification completed before a metadata
+transport failure. Runtime remains unpublished and no final receipt exists.
+Retained artifacts `10661476204` and `10660634184` are the recovery inputs.
+The first complete publication remains unverified.
 Repository administration alone proves neither package access nor independent approval.
 
 ## Manual Notes

@@ -10,8 +10,10 @@ last_updated_session: codex/01a0c179-19f7-7111-8bb4-fc7680da5545
 
 A separately approved GitHub Actions run creates private GHCR packages using
 harmless marker images. This supplies the existing Enterprise publisher's
-pre-existing-package prerequisite. The flow ends after package metadata and
-marker digests verify; Enterprise publication needs its own dispatch and approval.
+pre-existing-package prerequisite. Bootstrap ends after package metadata and
+marker digests verify. Enterprise
+publication and recovery each need their own dispatch and approval; recovery
+reuses retained archives after an interrupted publication.
 
 ## Entry Points
 
@@ -20,6 +22,8 @@ marker digests verify; Enterprise publication needs its own dispatch and approva
 - `scripts/ci/container-bootstrap.mjs:main`: protected job with `actions: read`,
   `contents: read`, and `packages: write`; explicit destination variables select
   two different GHCR packages in the `openclaw` organization.
+- `.github/workflows/container-resume.yml:jobs.publish`: separately approved
+  recovery using retained archives from an unchanged producer run attempt.
 
 ## Flow
 
@@ -39,6 +43,15 @@ graph TD
   G --> K["Continue to next package"]
   J --> K
   K --> L["Reviewer confirms linkage for separate Enterprise publication"]
+  R["Operator dispatches recovery of retained archives"] --> S["Verify recovery CI and original preparation"]
+  S --> T["Independent reviewer approves recovery"]
+  T --> U["Verify original seals, CI and private packages"]
+  U --> V["Inspect authenticated remote source tag"]
+  V -->|matching digest| W["Keep existing image"]
+  V -->|manifest unknown| Y["Copy original archive and verify digest"]
+  V -->|conflict or other error| X
+  W --> Z["Repeat for both images then write recovery receipt"]
+  Y --> Z
 ```
 
 The diagram describes implemented control flow; it does not establish that a
@@ -97,7 +110,41 @@ reviewer must differ from both the initiator and rerun actor. The reviewer check
 the live package settings using the [approval procedure](../../.github/containers.md#confirm-package-linkage).
 This records operator evidence; the API does not independently prove the connection.
 
+### 4. Recover retained publication bytes after a partial failure
+
+`.github/workflows/container-resume.yml` runs validation without registry write
+permission, then uses the same protected environment and concurrency lock as
+publication. `scripts/ci/container-resume.mjs:verifyPreparation` checks the
+current recovery workflow's main-push CI separately from the original image
+source. The original producer must be the trusted publication workflow on main,
+completed at the unchanged selected attempt, with successful validation and both
+prepare/smoke jobs. Exactly named, nonexpired artifacts must belong to that run
+and source; the workflow downloads their validated IDs with digest checks.
+
+`scripts/ci/container-resume.mjs:resume` preserves the producer identity in each
+seal and rechecks original source CI. It calls
+`scripts/ci/container-release.mjs:publishPrepared`, which verifies both archive
+hashes and OCI digests before registry writes. Before each image, source, CI,
+producer, environment, and private-package/linkage evidence are rechecked. A
+matching existing source tag is inspected remotely and left untouched, even if
+package metadata has not caught up. Only the registry's explicit manifest-unknown
+response permits copying an unlisted tag; authorization and transport failures
+stop recovery. A conflicting tag or remote digest fails.
+Metadata GET transport failures are bounded and report the endpoint. No archive
+is rebuilt and no original seal is rewritten.
+
+Only after both remote digests match does `resume` write the recovery receipt,
+separating original image provenance from the current publishing run. The
+operator retains that receipt and uses digest references from it. The current
+Docker Hub promotion workflow does not consume recovery receipts. A failed
+recovery can leave one image published; follow the
+[recovery procedure](../../.github/containers.md#recover-a-partial-publication)
+without deleting the original archives or rerunning their producer.
+
 ## Debugging and Verification
+
+- `node --test tests/integration/container-resume.test.mjs` exercises the recovery
+  CLI with HTTP/transport fixtures; a hosted run must prove actual GHCR transfer.
 
 - `node --test tests/integration/container-release.test.mjs` checks shared gate
   behavior and that only explicit bootstrap lookups tolerate API 404 responses.
@@ -122,6 +169,8 @@ This records operator evidence; the API does not independently prove the connect
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-21 20:25: Trace recovery from retained OCI artifacts with separate preparation and publication identities. (01a0c179-19f7-7111-8bb4-fc7680da5545 - 4ec004dbefd25070ff1bdeb89cfb16d245296ac9)
 
 - 2026-09-21 19:00: Separate marker verification from recorded reviewer linkage evidence and bound metadata propagation retries. (01a0c179-19f7-7111-8bb4-fc7680da5545 - aa6dd7415d65ffba5fa40098b2142eb2a7d73df4)
 - 2026-09-21 01:00: Trace protected marker package bootstrap and publication handoff. (01a0c179-19f7-7111-8bb4-fc7680da5545 - 4e056c57390397b89642783fea5f1d19834b0325)

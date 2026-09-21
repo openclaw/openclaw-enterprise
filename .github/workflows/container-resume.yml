@@ -1,0 +1,102 @@
+name: Resume Enterprise Container Publication
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full original main SHA sealed into the prepared images
+        required: true
+        type: string
+      preparation_run_id:
+        description: Original Enterprise Containers run with two successful prepare jobs
+        required: true
+        type: string
+      preparation_attempt:
+        description: Original run attempt, which must not have been rerun
+        required: true
+        type: string
+      workflow_ci_run_id:
+        description: Successful main push CI for the selected recovery workflow revision
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_SHA: ${{ inputs.source_sha }}
+  PREPARATION_RUN_ID: ${{ inputs.preparation_run_id }}
+  PREPARATION_ATTEMPT: ${{ inputs.preparation_attempt }}
+  WORKFLOW_CI_RUN_ID: ${{ inputs.workflow_ci_run_id }}
+  NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      artifact_ids: ${{ steps.gate.outputs.artifact_ids }}
+      workflow_ci_attempt: ${{ steps.gate.outputs.workflow_ci_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "24.16.0"
+      - name: Validate recovery workflow CI and original preparation
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/container-resume.mjs validate
+
+  publish:
+    name: Resume exact OCI digests to private GHCR
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: container-publish
+    concurrency:
+      group: enterprise-container-publish
+      cancel-in-progress: false
+    permissions:
+      actions: read
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "24.16.0"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.preparation_run_id }}
+          artifact-ids: ${{ needs.validate.outputs.artifact_ids }}
+          path: ${{ runner.temp }}/prepared
+      - name: Install OCI transport
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y skopeo
+          skopeo --version | grep -Fx 'skopeo version 1.13.3'
+      - name: Revalidate original archives and resume under current approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREPARATION_ARTIFACT_IDS: ${{ needs.validate.outputs.artifact_ids }}
+          WORKFLOW_CI_ATTEMPT: ${{ needs.validate.outputs.workflow_ci_attempt }}
+          GHCR_CONTROLLER_IMAGE: ${{ vars.GHCR_CONTROLLER_IMAGE }}
+          GHCR_RUNTIME_IMAGE: ${{ vars.GHCR_RUNTIME_IMAGE }}
+        run: node scripts/ci/container-resume.mjs publish "$RUNNER_TEMP/prepared"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: container-recovery-publication-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/prepared/publication.json
+          if-no-files-found: error
+          retention-days: 30

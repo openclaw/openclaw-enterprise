@@ -369,3 +369,54 @@ test("prepared OCI metadata cannot cross source, image, attempt, CI or base-imag
   assert.throws(() => validatePreparedImage({ ...metadata, digest: "latest" }, expected));
   assert.throws(() => validatePreparedImage({ ...metadata, platform: "linux/arm64" }, expected));
 });
+
+test("metadata GET transport retries are bounded, diagnostic and do not retry denials", async (t) => {
+  const token = process.env.GH_TOKEN;
+  process.env.GH_TOKEN = "test-token";
+  t.after(() => {
+    if (token === undefined) {
+      delete process.env.GH_TOKEN;
+    } else {
+      process.env.GH_TOKEN = token;
+    }
+  });
+  t.mock.method(globalThis, "setTimeout", (resolve) => queueMicrotask(resolve));
+  const path = "orgs/openclaw/packages/container/example";
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    calls += 1;
+    if (calls === 1) {
+      throw new TypeError("fetch failed with a secret diagnostic");
+    }
+    if (calls === 2) {
+      return {
+        status: 200,
+        text: async () => {
+          throw new Error("body interrupted");
+        },
+      };
+    }
+    return Response.json({ visibility: "private" });
+  });
+  assert.deepEqual(await github(path), { visibility: "private" });
+  assert.equal(calls, 3);
+  calls = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    calls += 1;
+    throw new TypeError("fetch failed with a secret diagnostic");
+  });
+  await assert.rejects(github(path), (error) => {
+    assert.equal(error.message, `GitHub GET ${path} transport failed after 3 attempts.`);
+    return true;
+  });
+  assert.equal(calls, 3);
+  for (const status of [401, 403, 404, 429, 500]) {
+    calls = 0;
+    t.mock.method(globalThis, "fetch", async () => {
+      calls += 1;
+      return new Response(null, { status });
+    });
+    await assert.rejects(github(path), new RegExp(`\\(${status}\\)`));
+    assert.equal(calls, 1);
+  }
+});

@@ -78,13 +78,14 @@ Verified GHCR linkage: ghcr.io/openclaw/openclaw-enterprise-controller -> opencl
 Verified GHCR linkage: ghcr.io/openclaw/openclaw-enterprise-runtime -> openclaw/openclaw-enterprise; source=<source_sha>; run=<current_run_id>; attempt=<current_attempt>
 ```
 
-The publisher and Docker Hub promotion read GitHub's authenticated
+The publisher, recovery workflow, and Docker Hub promotion read GitHub's authenticated
 [environment review history](https://docs.github.com/en/rest/actions/workflow-runs#get-the-review-history-for-a-workflow-run)
 and require an approved review for the current environment ID from someone other
 than the run initiator or rerun actor. The statement binds each package and
 repository to the selected source, current run, and attempt. A normal approval
 without these lines, or a statement from an earlier attempt, does not satisfy
 this fallback. For promotion, use the promotion run and attempt, not the producer's.
+For recovery, use the original image source SHA and the new recovery run and attempt.
 This is recorded operator verification of the live settings, not an API-derived
 proof of linkage. Recheck the settings before approving each attempt.
 
@@ -156,7 +157,49 @@ is not transactional; on a partial failure inspect each recorded registry digest
 before deciding on recovery. The publisher's concurrency lock serializes these
 workflow writes, not external registry administrators.
 
-For a separately authorized copy of these digests to private Docker Hub
+## Recover a partial publication
+
+Preserve the original seven-day OCI artifacts. Do not rerun their producer: its
+attempt identity must remain unchanged. If those archives have expired, this
+recovery path cannot reconstruct their exact bytes.
+
+After merging reviewed recovery code and waiting for its successful main-push CI,
+dispatch [Resume Enterprise Container Publication](workflows/container-resume.yml)
+on `main` with:
+
+- `source_sha`: the original image source SHA.
+- `preparation_run_id` and `preparation_attempt`: the original **Enterprise
+  Containers** run, with successful validation and both prepare/smoke jobs.
+- `workflow_ci_run_id`: successful main-push CI for the current recovery workflow
+  revision. This is separate from the original image's CI evidence in its seal.
+
+Review the validated artifact IDs, original digests, and current private package
+settings, then approve `container-publish` with the current recovery run's
+[linkage confirmation](#confirm-package-linkage). Recovery downloads the exact
+artifact IDs from the original run, verifies seals and archive hashes, and
+rechecks original source CI as well as recovery workflow CI. Source must remain
+in main history and precede the recovery workflow revision. The approved Node
+base must still match the original seals.
+
+An existing source tag must match both package metadata and its remote manifest
+digest; recovery leaves it untouched even when package metadata lags. Only an
+authenticated manifest-unknown response permits copying an unlisted tag; other
+inspection failures stop the run. Missing tags receive the original OCI bytes, with digest preservation and remote verification. Conflicting tags,
+expired or changed producer evidence, stale approvals, or failed checks stop the
+run. Neither recovery nor ordinary publication automatically rolls back a copy.
+GitHub metadata GET transport failures receive bounded retries (normally three
+attempts) and report the failing endpoint; authorization failures and other HTTP
+errors still fail immediately, except the bootstrap's explicit 404 retry.
+
+Success produces `container-recovery-publication-<run-id>-<attempt>` with a
+`publication.json` receipt containing original image seals, preparation artifact
+IDs/digests, and separate recovery publication run/attempt/workflow/CI identity.
+Both remote digests must match before the receipt is written. Its 30-day retention
+matches ordinary receipts. This recovery receipt is not accepted by the existing
+Docker Hub promotion workflow, which requires an ordinary successful producer.
+No build, visibility change, tag replacement, or deployment occurs during recovery.
+
+For a separately authorized copy of ordinary publication digests to private Docker Hub
 repositories, use [Docker Hub promotion](container-promotion.md).
 
 ## Proof boundaries
@@ -169,7 +212,10 @@ archive hash bind smoke to the prepared image. Skopeo preserves manifest
 digests during publication. These are not provider, cluster, or registry
 end-to-end tests.
 
-Local gate tests: `node --test tests/integration/container-release.test.mjs`.
+Local gate and recovery tests: `node --test tests/integration/container-{release,resume,promote}.test.mjs`.
+Recovery tests use HTTP and transport fixtures; they prove gate ordering, original
+identity, conflict rejection, unchanged existing images, and receipt behavior,
+not a live GHCR transfer.
 Workflow syntax: `actionlint .github/workflows/*.yml`.
 Actual no-push builds and the first private-registry transfer still require
 their respective authorized hosted runs; configuration and unit tests alone

@@ -116,29 +116,46 @@ export function validatePreparedImage(metadata, expected) {
 
 export async function github(path, { allowNotFound = false, retryNotFound = false } = {}) {
   assert.ok(process.env.GH_TOKEN, "A GitHub workflow token is required.");
-  let response;
-  for (let attempt = 0; attempt < (retryNotFound ? 6 : 1); attempt += 1) {
-    if (attempt > 0) {
+  const attempts = retryNotFound ? 6 : 3;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    let response;
+    let body;
+    try {
+      response = await fetch(`https://api.github.com/${path}`, {
+        headers: {
+          Authorization: `Bearer ${process.env.GH_TOKEN}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+        redirect: "error",
+        signal: AbortSignal.timeout(30_000),
+      });
+      // Reading the body can fail after headers arrive. Retry only this GET's
+      // transport, never HTTP authorization errors or invalid JSON metadata.
+      if (response.status === 200) {
+        body = await response.text();
+      }
+    } catch {
+      if (attempt === attempts) {
+        throw new Error(`GitHub GET ${path} transport failed after ${attempts} attempts.`);
+      }
       await new Promise((resolve) => setTimeout(resolve, 2_000));
+      continue;
     }
-    response = await fetch(`https://api.github.com/${path}`, {
-      headers: {
-        Authorization: `Bearer ${process.env.GH_TOKEN}`,
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-      },
-      redirect: "error",
-      signal: AbortSignal.timeout(30_000),
-    });
-    if (response.status !== 404) {
-      break;
+    if (response.status === 404 && retryNotFound && attempt < attempts) {
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+      continue;
     }
+    if (allowNotFound && response.status === 404) {
+      return null;
+    }
+    assert.equal(
+      response.status,
+      200,
+      `GitHub GET ${path} metadata preflight failed (${response.status}).`,
+    );
+    return JSON.parse(body);
   }
-  if (allowNotFound && response.status === 404) {
-    return null;
-  }
-  assert.equal(response.status, 200, `GitHub metadata preflight failed (${response.status}).`);
-  return response.json();
 }
 
 export async function githubPages(path, field) {
@@ -324,19 +341,17 @@ export async function verifyGhcr(image, digest, tag, env) {
     existing.every((version) => version.name === digest),
     "Refusing to overwrite an existing source tag with different image bytes.",
   );
+  return existing.length > 0;
 }
 
-async function publish(directory, env) {
-  await validate(env);
+export async function publishPrepared(directory, env, producer, verify) {
+  await verify();
   const tag = `sha-${env.SOURCE_SHA}`;
   const prepared = [];
   for (const image of images) {
-    const dir = join(
-      directory,
-      `container-${image}-${env.GITHUB_RUN_ID}-${env.GITHUB_RUN_ATTEMPT}`,
-    );
+    const dir = join(directory, `container-${image}-${producer.runId}-${producer.attempt}`);
     const metadata = JSON.parse(await readFile(join(dir, "metadata.json"), "utf8"));
-    validatePreparedImage(metadata, identity(env, image));
+    validatePreparedImage(metadata, { ...producer, image });
     const archive = join(dir, "image.tar");
     assert.equal(await fileDigest(archive), metadata.archiveSha256, "OCI archive bytes changed.");
     assert.equal(inspectDigest(`oci-archive:${archive}`), metadata.digest, "OCI digest changed.");
@@ -366,31 +381,56 @@ async function publish(directory, env) {
     );
     for (const image of prepared) {
       // Approval and visibility may change while large images are being copied.
-      await validate(env);
-      await verifyGhcr(image.destination, image.digest, tag, env);
-      skopeo(
-        [
-          "copy",
-          "--all",
-          "--preserve-digests",
-          "--authfile",
-          authfile,
-          `oci-archive:${image.archive}`,
-          `docker://${image.destination}:${tag}`,
-        ],
-        { stdio: "inherit" },
-      );
+      await verify();
+      const listed = await verifyGhcr(image.destination, image.digest, tag, env);
+      let remoteDigest;
+      try {
+        remoteDigest = inspectDigest(`docker://${image.destination}:${tag}`, authfile);
+      } catch (error) {
+        // Skopeo 1.13.3 reports the registry's MANIFEST_UNKNOWN as this terminal
+        // diagnostic. Auth, transport, name and ambiguous failures must not copy.
+        const missing = `reading manifest ${tag} in ${image.destination}: manifest unknown`;
+        const diagnostic = error.stderr?.toString().trim().replace(/"$/, "");
+        if (
+          listed ||
+          error.status !== 1 ||
+          (diagnostic !== missing &&
+            !diagnostic?.endsWith(`: ${missing}`) &&
+            !diagnostic?.endsWith(`${missing}: manifest unknown`))
+        ) {
+          throw error;
+        }
+      }
+      if (remoteDigest !== undefined) {
+        assert.equal(remoteDigest, image.digest, "Remote source tag has different image bytes.");
+      } else {
+        skopeo(
+          [
+            "copy",
+            "--all",
+            "--preserve-digests",
+            "--authfile",
+            authfile,
+            `oci-archive:${image.archive}`,
+            `docker://${image.destination}:${tag}`,
+          ],
+          { stdio: "inherit" },
+        );
+      }
       assert.equal(inspectDigest(`docker://${image.destination}:${tag}`, authfile), image.digest);
+      console.log(
+        `Verified ${image.destination}:${tag} @ ${image.digest}${remoteDigest ? " (already published)" : ""}`,
+      );
     }
   } finally {
     await rm(authDirectory, { recursive: true, force: true });
   }
   const receipt = prepared.map(({ archive, ...image }) => ({ ...image, tag }));
-  await writeFile(join(directory, "publication.json"), `${JSON.stringify(receipt, null, 2)}\n`);
   await appendFile(
     env.GITHUB_STEP_SUMMARY,
     receipt.map((image) => `- ${image.image}: \`${image.destination}@${image.digest}\`\n`).join(""),
   );
+  return receipt;
 }
 
 async function main() {
@@ -404,7 +444,13 @@ async function main() {
     await seal(directory, process.env);
   } else if (command === "publish") {
     assert.equal(process.env.PUBLISH, "true");
-    await publish(directory, process.env);
+    const receipt = await publishPrepared(
+      directory,
+      process.env,
+      identity(process.env, "controller"),
+      () => validate(process.env),
+    );
+    await writeFile(join(directory, "publication.json"), `${JSON.stringify(receipt, null, 2)}\n`);
   } else {
     throw new Error("Expected validate, smoke, seal, or publish.");
   }
