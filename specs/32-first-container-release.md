@@ -28,6 +28,8 @@ Before a production release, resolve the SecOps-only ownership prerequisite in
   prerequisites, then run and verify the first private publication.
 - Update the [operator procedure](../.github/containers.md) and document the
   bootstrap flow. Preserve both Dockerfiles, release gates, and chart defaults.
+- Replace each retried CI lane's earlier result artifact so exact-source CI
+  aggregates the successful retry instead of stale failure evidence.
 
 ## Contract
 
@@ -114,5 +116,7 @@ Repository administration alone proves neither package access nor independent ap
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-21 01:50: Include CI retry artifact replacement after a successful fixture retry was masked by its stale failed result. (01a0c179-19f7-7111-8bb4-fc7680da5545 - e836c3f9ec002d91d6f26c6ca49a08345a8c9f4f)
 
 - 2026-09-21 01:00: Specify protected marker bootstrap and first private SHA-image publication from current source. (01a0c179-19f7-7111-8bb4-fc7680da5545 - 4e056c57390397b89642783fea5f1d19834b0325)

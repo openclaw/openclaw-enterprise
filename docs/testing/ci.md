@@ -37,6 +37,12 @@ Prepare infrastructure only on a disposable host or through the reviewed CI help
 
 See the [execution flow](../flows/github-actions-testing.md) for entrypoints, result accounting, cleanup and failure interpretation. Use the [suite-specific guides](README.md#integration-tests) to reproduce a run locally.
 
+A lane retry replaces that lane's result artifact within the workflow run so the
+aggregate reads its latest result. Other lanes keep their existing artifacts.
+Preserve a failed result before retrying if it is needed for investigation;
+earlier attempt logs remain available. Reruns still require every selected lane
+and the aggregate to pass.
+
 ### Integration coverage by trigger
 
 The [CI workflow](../../.github/workflows/ci.yml) runs five noncredentialed lanes on

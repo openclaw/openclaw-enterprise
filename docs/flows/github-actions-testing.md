@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
-updated: 2026-09-18
-last_updated_session: codex/01a0b0fc-4a24-76c0-8fb7-f3a3a434d464
+updated: 2026-09-21
+last_updated_session: codex/01a0c179-19f7-7111-8bb4-fc7680da5545
 ---
 
 # GitHub Actions testing flow
@@ -76,6 +76,12 @@ Required named cases must pass. Every skip or TODO fails the selected lane; ther
 
 `scripts/ci/cleanup.mjs:main` and `scripts/ci/run-tests.mjs:main`
 
+`.github/actions/run-ci-lane/action.yml` uploads one sanitized result artifact
+per lane and workflow run. A job retry replaces that lane's earlier artifact;
+other lanes retain their results. This prevents aggregation from selecting a
+stale failed result after a successful retry. The earlier job logs remain the
+failure record; retain a result separately before retrying when needed.
+
 Per-file cleanup releases its disposable database. Job cleanup removes only the state-owned resources. A whole owned `k3d-cluster` resource owns Kubernetes API object deletion for its Collector Namespace and RBAC. Logging cleanup cleans the local Docker backend container and JSONL/config directory independently, so a dead Kubernetes API does not block local log backend teardown. Cleanup failure fails the check and keeps the private state file usable only while that runner host and path remain available. User databases, contexts, unrelated containers and global images remain outside that ownership.
 
 The aggregate runs after success or failure and checks expected job outcomes plus same-revision lane results. Case validation belongs to the runner; the aggregate checks lane identity and success, required evidence, and cleanup outcomes without interpreting cases again. Missing, failed, cancelled or skipped selected jobs cannot pass. A full-suite result accounts for every lane selected by the `full` group. The explicitly selected `ssh-host` lane remains outside the automatic groups until an operator prepares its disposable host; see [SSH raw-host testing](../testing/ssh.md#ssh-raw-hosts). Abrupt hosted-runner loss can prevent teardown and also loses the private `RUNNER_TEMP` state at job end. External resource reconciliation is deferred until an approved resource ledger exists.
@@ -101,6 +107,8 @@ The aggregate runs after success or failure and checks expected job outcomes plu
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-21 01:50: Replace earlier lane result artifacts on retry so aggregation reads current evidence. (01a0c179-19f7-7111-8bb4-fc7680da5545 - e836c3f9ec002d91d6f26c6ca49a08345a8c9f4f)
 
 - 2026-09-18 00:00: Bound plugin-status rollout diagnostics to allowlisted Pod and container state. (codex/01a0b0fc-4a24-76c0-8fb7-f3a3a434d464 - 18d8ef0d)
 

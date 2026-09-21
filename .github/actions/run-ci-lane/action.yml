@@ -96,5 +96,7 @@ runs:
       with:
         name: ${{ inputs.artifact-prefix }}-${{ inputs.lane }}
         path: ${{ runner.temp }}/results/${{ inputs.lane }}.json
+        # A job retry must replace its earlier result before aggregation.
+        overwrite: true
         if-no-files-found: error
         retention-days: 7
