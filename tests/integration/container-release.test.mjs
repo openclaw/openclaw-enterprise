@@ -86,8 +86,11 @@ test("only explicit bootstrap lookups tolerate missing package metadata", async 
   const token = process.env.GH_TOKEN;
   process.env.GH_TOKEN = "test-token";
   t.after(() => {
-    if (token === undefined) delete process.env.GH_TOKEN;
-    else process.env.GH_TOKEN = token;
+    if (token === undefined) {
+      delete process.env.GH_TOKEN;
+    } else {
+      process.env.GH_TOKEN = token;
+    }
   });
   for (const status of [401, 403, 404, 429, 500]) {
     t.mock.method(globalThis, "fetch", async () => new Response(null, { status }));
@@ -96,8 +99,11 @@ test("only explicit bootstrap lookups tolerate missing package metadata", async 
       new RegExp(`\\(${status}\\)`),
     );
     const lookup = github("orgs/openclaw/packages/container/example", { allowNotFound: true });
-    if (status === 404) assert.equal(await lookup, null);
-    else await assert.rejects(lookup, new RegExp(`\\(${status}\\)`));
+    if (status === 404) {
+      assert.equal(await lookup, null);
+    } else {
+      await assert.rejects(lookup, new RegExp(`\\(${status}\\)`));
+    }
     t.mock.restoreAll();
   }
   const pkg = { name: "example", visibility: "private" };

@@ -39,7 +39,9 @@ async function main(env) {
   // permits harmless bootstrap bytes, never Enterprise source-bearing images.
   for (const pkg of packages) {
     const existing = await github(pkg.path, { allowNotFound: true });
-    if (existing) validatePackage(existing, pkg.image);
+    if (existing) {
+      validatePackage(existing, pkg.image);
+    }
   }
   assert.match(env.GITHUB_RUN_ID ?? "", /^[1-9][0-9]*$/);
   assert.match(env.GITHUB_RUN_ATTEMPT ?? "", /^[1-9][0-9]*$/);
