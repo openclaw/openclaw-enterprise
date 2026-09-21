@@ -1,9 +1,35 @@
 # Image and Helm tests
 
 Check packaged controller and runtime images and render the production Helm
-chart. These checks use local images and do not require model credentials.
+chart. These checks use images present in the local Docker engine, either pulled
+from a registry or built from source. They do not require model credentials.
 
 ## Images and Helm
+
+### Check published images
+
+On a `linux/amd64` host, follow [Use published images](../guides/deploy/production-installation.md#use-published-images)
+to authenticate to private GHCR and export `CONTROLLER_IMAGE` and `RUNTIME_IMAGE`.
+Run from the repository root with the [local test prerequisites](local.md).
+To reproduce the published release's checks, use its recorded source revision;
+when validating source changes, build images from that checkout instead.
+
+```bash
+docker pull "$CONTROLLER_IMAGE"
+docker pull "$RUNTIME_IMAGE"
+OCC_TEST_PRODUCTION_IMAGE="$CONTROLLER_IMAGE" \
+OCC_TEST_RUNTIME_IMAGE="$RUNTIME_IMAGE" \
+  node --test tests/integration/production-image-startup.test.mjs \
+    tests/integration/runtime-image-startup.test.mjs
+```
+
+Both image suites must run without skips. If the registry denies a pull, check
+the account's package access and token scope; successful `git clone` alone does not
+establish `read:packages` token scope. These checks verify the release images,
+not unbuilt changes in the working tree. Source CI continues to build the
+revision it tests.
+
+### Build images from the checkout
 
 Build the [runtime image](../../deploy/runtime/README.md), then run its startup smoke:
 
@@ -31,6 +57,8 @@ OCC_TEST_PRODUCTION_IMAGE=openclaw-enterprise:reviewed \
 The controller smoke intentionally uses an unreachable database with networking
 disabled. It verifies module loading and packaged OpenShell protocol assets;
 the expected database error is the boundary being tested.
+
+### Render the Helm chart
 
 With Helm and a `yq` executable supporting `eval-all -o=json` installed:
 
@@ -67,16 +95,16 @@ selects `podman-compose` when Docker's JSON config capability is unavailable.
 ## Production image startup test environment
 
 [`production-image-startup.test.mjs`](../../tests/integration/production-image-startup.test.mjs)
-verifies a locally built production controller image before Helm installation.
+verifies a locally available production controller image before Helm installation.
 It runs the image with no network, deliberately points it at an unreachable
 database, checks that startup reaches that expected database boundary without
 missing bundled production modules, and verifies that the OpenShell gRPC proto
 asset is present.
 
-| Variable                    | Requirement or default                                      |
-| --------------------------- | ----------------------------------------------------------- |
-| `OCC_TEST_PRODUCTION_IMAGE` | Locally built production controller image tag; unset skips. |
-| `OCC_DOCKER_BIN`            | Optional Docker executable path; defaults to `docker`.      |
+| Variable                    | Requirement or default                                       |
+| --------------------------- | ------------------------------------------------------------ |
+| `OCC_TEST_PRODUCTION_IMAGE` | Local controller image tag or digest reference; unset skips. |
+| `OCC_DOCKER_BIN`            | Optional Docker executable path; defaults to `docker`.       |
 
 This check does not prove PostgreSQL connectivity, Helm rendering, Kubernetes
 reconciliation, runtime image execution, or a model turn.
@@ -84,16 +112,16 @@ reconciliation, runtime image execution, or a model turn.
 ## Runtime image startup test environment
 
 [`runtime-image-startup.test.mjs`](../../tests/integration/runtime-image-startup.test.mjs)
-verifies a locally built OpenClaw runtime image before Docker Compose or
+verifies a locally available OpenClaw runtime image before Docker Compose or
 Kubernetes execution. It starts task-owned containers with the Docker Compute
 Driver gateway entrypoint, UID `1000:1000`, a read-only root filesystem, and
 tmpfs-backed `/home/node` and `/tmp`. Host Node.js 24+ is required to run the
 test.
 
-| Variable                 | Requirement or default                                 |
-| ------------------------ | ------------------------------------------------------ |
-| `OCC_TEST_RUNTIME_IMAGE` | Locally built OpenClaw runtime image tag; unset skips. |
-| `OCC_DOCKER_BIN`         | Optional Docker executable path; defaults to `docker`. |
+| Variable                 | Requirement or default                                    |
+| ------------------------ | --------------------------------------------------------- |
+| `OCC_TEST_RUNTIME_IMAGE` | Local runtime image tag or digest reference; unset skips. |
+| `OCC_DOCKER_BIN`         | Optional Docker executable path; defaults to `docker`.    |
 
 This check proves an embedded OpenClaw gateway reaches `/readyz` from a fresh
 runtime home and the bundled Codex plugin can be discovered without missing

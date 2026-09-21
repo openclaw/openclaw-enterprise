@@ -34,7 +34,7 @@ Confirm the server version, that nodes have the control-plane and Agent labels y
 
 ## 2. Prepare the inputs and install OCC
 
-Use [Install the production control plane](deploy/production-installation.md) to publish images by digest, configure protected Helm values and Installation YAML, create the system Secrets, and prepare the fresh bootstrap volume. The chart does not create these inputs. Stop when you reach **Install the chart with native values** in [Prepare the fresh bootstrap output PVC](deploy/production-installation.md#prepare-the-fresh-bootstrap-output-pvc). Keep the same shell and protected files, then return here to run Helm once:
+Use [Install the production control plane](deploy/production-installation.md) to select published images or build your own, configure protected Helm values and Installation YAML with image digests, create the system Secrets, and prepare the fresh bootstrap volume. The chart does not create these inputs. Stop when you reach **Install the chart with native values** in [Prepare the fresh bootstrap output PVC](deploy/production-installation.md#prepare-the-fresh-bootstrap-output-pvc). Keep the same shell and protected files, then return here to run Helm once:
 
 ```bash
 helm upgrade --install oce deploy/helm/openclaw-enterprise \

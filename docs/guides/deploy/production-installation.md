@@ -1,10 +1,46 @@
 # Install the production control plane
 
-Build and install the OpenClaw Control Plane (OCC) on Kubernetes, then verify
+Install the OpenClaw Control Plane (OCC) on Kubernetes, then verify
 authenticated API access. Prepare [standard Kubernetes](kubernetes.md) or
 [Amazon EKS](eks.md) and complete the [production prerequisites](../deploy.md#production-prerequisites)
 first. Run the commands from the repository root in one shell; retain its
 exports and protected files for [Agent deployment](production-agents.md).
+
+## Use published images
+
+For an authorized trial on `linux/amd64`, use the private images below instead
+of building them. Both were built from source
+`4ec004dbefd25070ff1bdeb89cfb16d245296ac9`, passed image startup checks, and had
+their remote digests verified in [publication run 35657515726](https://github.com/openclaw/openclaw-enterprise/actions/runs/35657515726).
+This first image publication does not establish production deployment readiness.
+There is no published ARM64 variant; for ARM64 nodes or changes to the image
+contents, [build your own images](#build-and-publish-production-images).
+
+You need read access to both GHCR packages. At publication, they inherited access
+from `openclaw/openclaw-enterprise`. Authenticate locally with a GitHub personal
+access token **(classic)** with `read:packages`; authorize it for organization
+SSO if required. Replace the username below and enter the token at Docker's
+password prompt. Do not paste the token into the command itself. See
+[GitHub's registry authentication instructions](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#authenticating-to-the-container-registry).
+
+```bash
+docker login ghcr.io --username '<your-github-username>'
+
+export CONTROLLER_IMAGE='ghcr.io/openclaw/openclaw-enterprise-controller@sha256:1832d6d91727f48fa0fa46c51999f66b1e4b45b2ce158432d0d2319883c3b373'
+export RUNTIME_IMAGE='ghcr.io/openclaw/openclaw-enterprise-runtime@sha256:0b4bdb5d447bba75801cd8e3b2b362ed383ffa1db43890715870da996cca2f0f'
+```
+
+The controller image serves the API, worker, migration, and bootstrap. Use the
+same runtime image for both gateways and Agents. These digest references select
+the tested bytes; do not substitute `latest` or a bootstrap marker tag.
+
+For Kubernetes, configure approved cluster/node pull credentials for **both
+control-plane and tenant Pods**. Local `docker login` does not authenticate
+cluster nodes. Use the same amd64 scheduling constraints for both sets of Pods
+on a mixed-architecture cluster. Continue at [Configure the Installation](#configure-the-installation)
+with these exports; skip the build-and-publish block below. Local quickstart and
+image-test readers should return to their calling guide after authentication
+and exporting the image references.
 
 ## Build and publish production images
 
@@ -74,7 +110,9 @@ Set the production shell inputs before the first Kubernetes command. For a local
 Kubernetes trial, [build and import the test images](local-operations.md#build-images-for-local-kubernetes)
 to produce YAML copies with real image digests, then set
 `OCC_INPUT_DIRECTORY` to that generated directory and keep those files.
-For production, use the registry digests from the build-and-publish step above.
+For a registry-backed installation, keep the digest exports from either
+[Use published images](#use-published-images) or
+[Build and publish production images](#build-and-publish-production-images).
 
 ```bash
 umask 077
