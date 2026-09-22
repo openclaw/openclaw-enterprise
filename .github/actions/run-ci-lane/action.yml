@@ -20,13 +20,13 @@ runs:
       with:
         node-version: ${{ inputs.node-version }}
     - id: pnpm-store
-      uses: openclaw/openclaw/.github/actions/setup-pnpm-store-cache@ee0cf16623068ff535cc20f4a1ce175c8c5b8d25
+      uses: openclaw/openclaw/.github/actions/setup-pnpm-store-cache@2c23442435e829a868fbc69f9e26ab747a4fd7fa
       with:
         node-version: ${{ inputs.node-version }}
         cache-mode: read-write
     - uses: ./.github/actions/setup-test-docker
       if: inputs.lane == 'docker-model' || inputs.lane == 'logging-collector'
-    - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+    - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       if: >-
         (inputs.profile == 'full' || inputs.profile == 'images' || inputs.profile == 'k3d') &&
         inputs.lane != 'docker-model' && inputs.lane != 'logging-collector'
