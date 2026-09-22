@@ -1,6 +1,6 @@
 ---
 created: 2026-09-21
-updated: 2026-09-21
+updated: 2026-09-22
 last_updated_session: codex/01a0c179-19f7-7111-8bb4-fc7680da5545
 ---
 
@@ -56,6 +56,8 @@ permission or protected-environment credentials.
 registers ARM64 QEMU support and asks Buildx for `linux/amd64,linux/arm64`, with
 provenance disabled, in a single OCI archive. The approved Node base index must
 provide both platforms. The controller and runtime use their existing recipes.
+After OCI export, the job prunes only its dedicated Buildx builder's cache so
+the cache and unpacked smoke images do not exhaust the runner's disk together.
 
 ### 2. Verify and execute both platform variants
 
@@ -71,6 +73,8 @@ at a time. Docker's loaded config ID must match the selected index entry before
 the existing controller or runtime startup suite runs against that ID. AMD64 runs
 natively and ARM64 under QEMU. Both must pass, and the archive hash must remain
 unchanged. A failure prevents sealing and artifact upload for that image.
+After each successful platform smoke, the loaded image tag is removed before
+the next variant is loaded. The exported archive remains the publication input.
 
 ### 3. Seal and await approval
 
@@ -118,5 +122,7 @@ not rebuild them. Old amd64-only seals cannot satisfy this platform contract.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-09-22 01:10: Bound disk use by pruning the job-owned build cache and removing each successfully checked image variant (codex/01a0c179-19f7-7111-8bb4-fc7680da5545 - 1e486bffadbe5f5f9f6437bfc8da2e4176ffefd6)
 
 - 2026-09-21 22:14: Describe multi-platform preparation, per-platform smoke and immutable publication with the accompanying workflow change (codex/01a0c179-19f7-7111-8bb4-fc7680da5545 - b233abec94bce0448768a013f44fcbfab2ce7919)

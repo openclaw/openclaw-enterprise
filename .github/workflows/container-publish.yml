@@ -78,6 +78,7 @@ jobs:
         with:
           platforms: arm64
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        id: buildx
       - name: Prepare OCI output directory
         run: mkdir -p "$RUNNER_TEMP/oci"
       - name: Build without registry credentials or publication
@@ -97,6 +98,12 @@ jobs:
           outputs: type=oci,dest=${{ runner.temp }}/oci/image.tar
           provenance: false
           push: false
+      - name: Release this job's build cache before loading OCI images
+        env:
+          BUILDER_NAME: ${{ steps.buildx.outputs.name }}
+        run: |
+          docker buildx prune --builder "$BUILDER_NAME" --all --force
+          df -h / "$RUNNER_TEMP"
       - name: Install existing smoke test prerequisites
         run: |
           sudo apt-get update

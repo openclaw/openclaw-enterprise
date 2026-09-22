@@ -348,6 +348,8 @@ async function smoke(directory, env) {
         stdio: "inherit",
       },
     );
+    // Keep only one unpacked variant on this disposable preparation runner.
+    execFileSync("docker", ["image", "rm", tag], { stdio: "inherit" });
   }
   assert.equal(await fileDigest(archive), archiveSha256, "OCI archive changed during smoke.");
 }
