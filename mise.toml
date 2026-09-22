@@ -1,0 +1,21 @@
+min_version = "2026.4.0"
+
+[settings]
+auto_install = false
+# package.json remains the owner of the exact pnpm version.
+idiomatic_version_file_enable_tools = ["pnpm"]
+
+[tools]
+# Keep CI-covered pins aligned with the workflow Node version and setup-tools.sh.
+node = "24.16.0"
+python = "3.14.7"
+go = "1.27.1"
+actionlint = "1.7.7"
+helm = "3.19.2"
+k3d = "5.8.3"
+kubectl = "1.35.0"
+yq = "4.48.1"
+
+[tasks.setup]
+description = "Install workspace and documentation dependencies from their lockfiles"
+run = ["pnpm install --frozen-lockfile", "pnpm docs:install"]
