@@ -1,0 +1,53 @@
+name: Console Storybook
+
+on:
+  pull_request:
+    paths:
+      - "apps/controller/src/console/**"
+      - "apps/controller/src/console-assets.ts"
+      - "packages/contracts/src/preset-variables.mjs"
+      - "scripts/console-storybook/**"
+      - ".github/workflows/console-storybook.yml"
+  push:
+    branches: [main]
+    paths:
+      - "apps/controller/src/console/**"
+      - "apps/controller/src/console-assets.ts"
+      - "packages/contracts/src/preset-variables.mjs"
+      - "scripts/console-storybook/**"
+      - ".github/workflows/console-storybook.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: console-storybook-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "24"
+      - name: Install pinned pnpm
+        run: npm install --global pnpm@11.15.1
+      - name: Install Storybook dependencies
+        run: npm run storybook:install
+      - name: Build Storybook
+        run: npm run storybook:build
+      - name: Upload static Storybook
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: console-storybook
+          path: scripts/console-storybook/dist/site
+          if-no-files-found: error
+          retention-days: 14

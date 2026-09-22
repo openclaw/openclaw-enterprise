@@ -1,0 +1,139 @@
+# Console Storybook
+
+Browse the console's pages, component states, and Agent workflows without starting
+OCC or a cluster. Storybook uses the production console modules and styles with
+an isolated, in-memory API fixture for each preview. It does not deploy workloads,
+contact Providers, or verify runtime behavior. Use only dummy credentials.
+
+## Run locally
+
+From the repository root, with Node.js 24+ and the pinned pnpm version:
+
+```sh
+npm run storybook:install
+npm run storybook
+```
+
+Open `http://127.0.0.1:6006`. Use **Reset story** to discard changes. Selecting a
+new story starts an independent fixture. Installations and browser sessions in
+other tabs are not used.
+
+To build and serve a static copy:
+
+```sh
+npm run storybook:build
+python3 -m http.server 6006 --bind 127.0.0.1 \
+  --directory scripts/console-storybook/dist/site
+```
+
+Serve this build at its own origin's root. The console uses absolute `/console/`
+URLs. Reload with **Reset story**, not the embedded frame's current console URL.
+The Storybook build workflow also uploads a static artifact; it does not publish
+or change access to the documentation site.
+
+## Pages and components
+
+The sidebar contains these groups. Stories with open dialogs or errors reach
+those states by interacting with the real controls after loading fixture data.
+
+| Group                   | Coverage                                                                                                                                                                                          |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Sign in                 | Signed out, rejected login, expired session, session-read failure, loading, unconfirmed logout.                                                                                                   |
+| Agents                  | Populated and empty collections, no search matches, inaccessible Namespace, no readable Namespaces, permission denial, read failure, loading.                                                     |
+| Providers               | Configured, empty, and discovery failure.                                                                                                                                                         |
+| Namespaces              | Ready and provisioning, empty, permission denial.                                                                                                                                                 |
+| Settings and navigation | Signed-in account and unknown route.                                                                                                                                                              |
+| Create Agent            | Preset selection and variables, no Presets, dedicated and embedded forms, optional discovery denial, invalid JSON, partial save with conflict, unknown save outcome.                              |
+| Agent detail            | Saved draft, admitted snapshot, queued or failed deployment, denied deployment, missing Agent, unavailable Configuration and revision history.                                                    |
+| Navigation components   | Account menu, Namespace switcher, mobile drawer.                                                                                                                                                  |
+| Channels                | Unconfigured cards, Slack editor with pairing/open/disabled policies, unsupported Slack shape, read-only snapshot, save conflict, Microsoft Teams editor.                                         |
+| Credentials             | Stored and missing metadata, Slack password inputs, generated credentials locked after admission, metadata failure, missing authentication, operator-managed credentials, issued ChatGPT account. |
+| Native admin            | Available launch, stopped or unsupported runtime, denied panel hidden. The launch target is an explanatory fixture page.                                                                          |
+| Workspace               | Four editable files, undeployed Agent, denied reads, missing file, unknown write outcome.                                                                                                         |
+| Deletion                | Confirmation, pending cleanup, permission denial, conflict, unknown outcome.                                                                                                                      |
+
+The production UI supplies buttons, forms, tables, badges, notices, JSON views,
+revision controls, and dialogs inside these stories. Storybook does not duplicate
+those components. Pending-read stories use the real client's 15-second timeout;
+reset them to replay loading.
+
+## Agent flows and UI gaps
+
+Each flow includes steps above an interactive console frame.
+
+### Create and deploy
+
+Choose a Preset, fill its variables, review the form, and create the Agent. Open
+Credentials, provision generated runtime credentials, then deploy the saved
+draft. **Refresh deployment** advances the fixture from queued to succeeded. Use the page’s **Refresh** button to reread the Agent’s
+active revision.
+That transition demonstrates presentation only; it does not prove a worker ran.
+
+The fixture supplies a ready Namespace, Preset, and model Secret. Namespace
+provisioning, Preset CRUD, model-Secret creation, and service-account issuance
+have no console pages. The model API-key field takes an existing Secret ID.
+Slack tokens can be saved in Credentials after Agent creation. Teams credentials
+remain operator-managed; the console blocks deployment while Teams is enabled.
+See [Create and deploy in the console](../reference/console/create-and-deploy.md)
+for the supported installation workflow and prerequisites.
+
+### Update
+
+Edit Slack settings on the saved draft and compare them with the original
+revision. Deploy again to admit a new snapshot. The fixture retains both versions.
+Credential edits likewise need deployment to affect managed runtime configuration.
+Workspace-file writes apply immediately and do not create a revision.
+
+The detail page has no general Configuration JSON or model editor. Use the API or
+CLI for those changes. The Slack drawer preserves existing access policies; it
+does not provide a policy selector. See [Agent revisions](../guides/topics/agent-revisions.md).
+
+### Stop
+
+There is no Stop button. The stop story shows the current Agent page and calls out
+the bodyless `POST /namespaces/:namespaceId/agents/:agentId/stop` API, which requires
+exact-Agent `operate`. Acceptance queues shutdown; it does not confirm completion.
+Deployment resumes the Agent by creating a new revision. Disabling Slack does not
+stop an Agent, and deleting an Agent is destructive. See
+[Stop and resume](../reference/agents/deployment.md#stop-and-resume).
+
+### Delete
+
+Open **Delete Agent**, inspect or cancel the confirmation, and confirm permanent
+deletion. The UI enters cleanup state and removes editing/deployment controls.
+**Refresh deletion status** completes the fixture and returns to the Agent list.
+The console has no detailed cleanup-progress view. Namespace-owned Configurations
+and Secrets remain and require separate management. See
+[Agent deletion](../reference/agents.md#deletion).
+
+Serving health, completed routing cutover, real shutdown, channel delivery, and
+model responses require runtime verification outside Storybook. The console's
+serving-status notice remains visible in previews.
+
+## Maintain coverage
+
+The isolated tool lives in `scripts/console-storybook/` and has its own manifest,
+lockfile, and dependency installation. It uses the same seven-day dependency
+release-age policy as the repository. Root workspace dependencies are unchanged.
+
+- `prepare-assets.mjs` copies the current console assets and its shared Preset
+  renderer into ignored `dist/assets/`. Run the build again after source edits;
+  the development server does not automatically recopy console source files.
+- `public/scenarios.mjs` owns story descriptions, initial data options, failure
+  responses, automatic setup actions, and workflow instructions.
+- `public/fixtures.mjs` intercepts API calls inside the preview. Unconfigured
+  requests report an error and return 501; they never fall through to a server.
+  Preview CSP also blocks network connections. Authentication and authorization
+  responses are examples, not a security implementation.
+- `public/frame.mjs` starts the production console and opens configured controls.
+- `*.stories.mjs` exports named stories by group; `story.mjs` adds instructions,
+  UI-gap notices, the preview, and Reset story.
+
+When changing console pages, shared components, or lifecycle controls, update the
+corresponding scenarios and flow instructions in the same PR. Add an export to
+the owning story file for a new scenario. Keep visible failure messages owned by
+the console; configure API responses instead of writing replacement UI markup.
+
+Build Storybook, inspect the affected previews, and walk through changed flows.
+Keep backend and runtime verification in the existing code suites; a successful
+storybook fixture is not evidence that the real API or infrastructure works.

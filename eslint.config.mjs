@@ -60,6 +60,8 @@ export default defineConfig(
     files: [
       "apps/controller/src/console/**/*.mjs",
       "scripts/docs-site/site.mjs",
+      "scripts/console-storybook/story.mjs",
+      "scripts/console-storybook/public/*.mjs",
       "scripts/docs-site/compute-matrix-browser.mjs",
     ],
     languageOptions: {

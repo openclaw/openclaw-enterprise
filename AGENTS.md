@@ -368,6 +368,14 @@ cutover, and allowed/denied NetworkPolicy checks. Configure API egress for its
 actual translated `/32` endpoint and port. The fixture suite's scoped RBAC does
 not verify shared-cluster admission guardrails.
 
+## Console Storybook
+
+When adding or changing console pages, shared components, or Agent lifecycle
+controls, update the matching stories and workflow gaps in
+`scripts/console-storybook/`. Follow
+[Console Storybook](docs/contributing/console-storybook.md) for setup, coverage,
+and the distinction between simulated UI states and real backend verification.
+
 ## TypeScript style and verification
 
 - Separate imports from following code with a blank line, declare one variable

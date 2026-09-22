@@ -618,6 +618,10 @@
                     "label": "Environment"
                   },
                   {
+                    "page": "contributing/console-storybook",
+                    "label": "Console Storybook"
+                  },
+                  {
                     "page": "flows/docker-compose-development",
                     "label": "Docker and Podman"
                   },

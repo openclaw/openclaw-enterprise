@@ -18,6 +18,8 @@ The configuration excludes `legacy/`; do not import archived implementations.
 The Go CLI uses the root [Go module](../go.mod). The documentation renderer in
 `scripts/docs-site/` has its own package manifest, pnpm workspace, and lockfile;
 keep its dependency installation separate from the root workspace.
+The console Storybook in `scripts/console-storybook/` is also an isolated tool
+with its own manifest and lockfile. See [Console Storybook](contributing/console-storybook.md).
 
 ## Source ownership
 
