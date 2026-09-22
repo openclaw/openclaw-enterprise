@@ -11,7 +11,7 @@ function unavailableText(status) {
     case "unsupported":
       return "This Agent does not expose a supported native admin UI endpoint.";
     case "unavailable":
-      return "Native admin UI access is unavailable. Check gateway routing and try again.";
+      return "Native admin UI access is unavailable because OCE could not load an active AgentRevision. Check this Agent’s deployment, then refresh access.";
     default:
       return "Native admin UI access is unavailable.";
   }
@@ -65,7 +65,7 @@ export function renderNativeAdminAccess(context, path) {
         return;
       }
       if (current.status === "available") {
-        status.textContent = "Native admin UI is available for the selected AgentRevision.";
+        status.textContent = "Native admin UI is available for this Agent’s active revision.";
       } else if (current.status === "disabled" || current.status === "denied") {
         status.textContent = "";
       } else {

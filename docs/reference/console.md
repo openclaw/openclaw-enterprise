@@ -156,17 +156,20 @@ result. For unavailable gateways, follow the
 ## Open the native admin UI
 
 When [Agent native admin UI access](agent-native-admin.md) is enabled, the
-Workspace files tab includes a **Native admin UI** panel for callers with exact
-Agent `administer` permission. The panel is hidden when the Installation disables
-the feature or when the caller lacks that grant. It reports stopped,
-unsupported, or unavailable gateway states without granting broader access.
+Agent detail tabs, including Configuration and Workspace files, include a
+**Native admin UI** panel for callers with exact Agent `administer` permission.
+The panel is hidden when the Installation disables the feature or when the
+caller lacks that grant. If OCE cannot load an active revision, the panel asks
+you to check the Agent's deployment and refresh access. It also reports when the
+Agent is stopped or native admin is unsupported.
 
-**Open native admin UI** opens the returned per-Agent URL in a new tab. The
-visible warning is part of the operator contract: the native UI can change the
-gateway outside OCE, and those changes are not recorded in AgentRevisions. Use
-OCE for durable configuration. The Agent tab uses the same OCE session cookie as
-the console through the configured shared cookie parent domain; native chat or
-other Agent-host activity does not extend that console session.
+**Open native admin UI** opens the Agent's active revision in a new tab, even
+when you are viewing a draft or an older revision. The visible warning is part
+of the operator contract: the native UI can change the gateway outside OCE, and
+those changes are not recorded in AgentRevisions. Use OCE for durable
+configuration. The Agent tab uses the same OCE session cookie as the console
+through the configured shared cookie parent domain; native chat or other
+Agent-host activity does not extend that console session.
 
 ## Routes
 

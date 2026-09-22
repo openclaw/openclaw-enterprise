@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: "2026-09-20"
-last_updated_session: "01a0b7fd-13fa-7dc2-8653-5c5814b59305"
+updated: "2026-09-21"
+last_updated_session: "01a0c750-0c10-7492-97eb-f4124cded820"
 ---
 
 # Agent Native Admin UI Flow
@@ -9,7 +9,7 @@ last_updated_session: "01a0b7fd-13fa-7dc2-8653-5c5814b59305"
 ## Overview
 
 This flow traces Agent native admin UI access. A console user opens an Agent
-workspace tab, OCC checks the user's exact Agent administrator grant, selects
+detail tab, OCC checks the user's exact Agent administrator grant, selects
 the active gateway revision, returns a stable per-Agent URL, and the Agent host
 reuses the same OCE session cookie as the console. OCC resolves the requested
 host to the exact Agent, rechecks authorization, and proxies native HTTP and
@@ -72,7 +72,7 @@ The route is `GET /namespaces/:namespaceId/agents/:agentId/native-admin`. Its op
 `apps/controller/src/index.ts:resolveNativeAdminAvailability`
 `apps/controller/src/index.ts:nativeAdminAvailabilityData`
 
-The status handler validates the human session, preserves the OCC exact-Agent `administer` authorization and existence boundary, then delegates to `resolveNativeAdminAvailability`. The resolver returns `disabled` only after that protected boundary succeeds. When enabled, it requires a configured public origin and native admin domain, then calls `controller.getAdministerableActiveAgentRevision`. That controller method authorizes exact Agent `administer`, loads the Agent, requires `activeRevisionId`, and returns the selected active revision. If that active-revision selection raises `DependencyUnavailableError`, the resolver returns `unavailable` in a successful status envelope instead of the protected-route error envelope. If authorization denial bubbles out of the selection path, the resolver maps it to a protected-route `403` and preserves the human IAM denial audit.
+The status handler validates the human session, preserves the OCC exact-Agent `administer` authorization and existence boundary, then delegates to `resolveNativeAdminAvailability`. The resolver returns `disabled` only after that protected boundary succeeds. When enabled, it requires a configured public origin and native admin domain, then calls `controller.getAdministerableActiveAgentRevision`. That controller method authorizes exact Agent `administer`, loads the Agent, requires `activeRevisionId`, and returns the selected active revision. If that active-revision selection raises `DependencyUnavailableError`, the resolver returns `unavailable` in a successful status envelope instead of the protected-route error envelope. The console asks the operator to check the Agent's deployment and refresh access; private gateway routing has not been evaluated. The panel always reports the Agent's active revision, independently of the draft or revision selected on an Agent detail tab. If authorization denial bubbles out of the selection path, the resolver maps it to a protected-route `403` and preserves the human IAM denial audit.
 
 After active revision selection succeeds, OCC derives the native target. If the Agent's desired runtime state is not `running`, the resolver returns `stopped` with the derived host and origin. If `nativeAdminConfigurationSupported` rejects trusted-proxy auth, admin identity scopes, admin device auto-approval, `controlUi.enabled`, exact `allowedOrigins`, or host-header fallback/device-auth settings, the resolver returns `unsupported` with the same derived target. If the selected Compute Driver cannot provide a gateway endpoint or the endpoint is not a clean private `wss:` URL, it also returns `unsupported`. Only the `available` result carries the private `gatewayBase`; `nativeAdminAvailabilityData` omits that value from the browser API response.
 
@@ -165,6 +165,7 @@ The WebSocket proxy requires a non-null exact Agent `Origin`, forwards a sanitiz
 
 ## Changelog
 
+- 2026-09-21 21:17: Clarified the console's active-revision dependency message and its independence from the viewed configuration snapshot. (01a0c750-0c10-7492-97eb-f4124cded820 - f3dbdd41c8f3b49573d1353a4b06ce510ee43a56)
 - 2026-09-20 09:45: Reused session metadata from admission and replaced launch bookkeeping with a direct browser link; socket lifecycle state remains owned by the proxy. (01a0b7fd-13fa-7dc2-8653-5c5814b59305 - bbb864aadc709dcc4f7b95d4b42b74823c18363a)
 - 2026-09-20 08:53: Replaced the native-admin exchange flow with shared OCE session cookie admission, host-to-Agent resolution, credential stripping, and current-revision reconnect behavior. (cody/01a0b7fd-13fa-7dc2-8653-5c5814b59305 - 5e5f12f37842ae7239d73432e00609547627ded8)
 - 2026-09-19 22:27: Documented exact-Agent disabled-status gating, IAM denial audit preservation, and WebSocket `connectionId`/`closeReason` audit fields. (01a0b7fd-13fa-7dc2-8653-5c5814b59305 - 9621ce4e)
