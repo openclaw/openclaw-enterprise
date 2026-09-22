@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
 import { promisify } from "node:util";
+import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 
 const execute = promisify(execFile);
 const docker = process.env.OCC_DOCKER_BIN ?? "docker";
@@ -131,7 +132,7 @@ function productionInstallation(adminKeyPath) {
 }
 async function runDocker(args, options = {}) {
   return execute(docker, args, {
-    timeout: 20_000,
+    timeout: 20_000 * imageSmokeTimeoutMultiplier,
     maxBuffer: 1_000_000,
     ...options,
   });
@@ -272,10 +273,10 @@ test("production image includes the OpenShell gRPC proto asset", imageTestOption
     const client = new GrpcOpenShellGatewayClient({
       endpoint: "127.0.0.1:9",
       auth: { mode: "unauthenticated" },
-      requestTimeoutMs: 1000,
+      requestTimeoutMs: ${1000 * imageSmokeTimeoutMultiplier},
     });
     try {
-      await client.health(AbortSignal.timeout(1500));
+      await client.health(AbortSignal.timeout(${1500 * imageSmokeTimeoutMultiplier}));
       assert.fail("OpenShell probe unexpectedly reached an unavailable test endpoint.");
     } catch (error) {
       assert.equal(error?.code, 14);

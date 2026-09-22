@@ -71,7 +71,9 @@ corrupt entries stop preparation.
 Buildx output, then uses Skopeo's explicit platform selection to load one variant
 at a time. Docker's loaded config ID must match the selected index entry before
 the existing controller or runtime startup suite runs against that ID. AMD64 runs
-natively and ARM64 under QEMU. Both must pass, and the archive hash must remain
+natively and ARM64 under QEMU. The ARM64 invocation scales smoke command and
+probe deadlines by six; native deadlines and all outcome assertions stay unchanged.
+Both must pass, and the archive hash must remain
 unchanged. A failure prevents sealing and artifact upload for that image.
 After each successful platform smoke, the loaded image tag is removed before
 the next variant is loaded. The exported archive remains the publication input.
@@ -122,6 +124,8 @@ not rebuild them. Old amd64-only seals cannot satisfy this platform contract.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-09-22 01:34: Record bounded QEMU smoke timeouts while retaining native deadlines and startup assertions (codex/01a0c179-19f7-7111-8bb4-fc7680da5545 - 473d9b45ee5aa8d8a081cca7664973fee5bd7e11)
 
 - 2026-09-22 01:10: Bound disk use by pruning the job-owned build cache and removing each successfully checked image variant (codex/01a0c179-19f7-7111-8bb4-fc7680da5545 - 1e486bffadbe5f5f9f6437bfc8da2e4176ffefd6)
 

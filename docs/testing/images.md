@@ -64,6 +64,15 @@ If a provider or YAML converter is missing, the Compose cases fail rather than
 skip. A `docker` command pointing to Podman is supported: provider detection
 selects `podman-compose` when Docker's JSON config capability is unavailable.
 
+## Emulated image startup checks
+
+Both startup suites accept `OCC_TEST_IMAGE_TIMEOUT_MULTIPLIER`, an integer from
+1 through 10, to scale command and in-container probe deadlines. It defaults to
+
+1. Release preparation sets it to 6 for ARM64 running under QEMU and 1 for native
+   amd64. Expected errors, readiness, plugin discovery, and packaging assertions are
+   unchanged; a timeout still fails the suite.
+
 ## Production image startup test environment
 
 [`production-image-startup.test.mjs`](../../tests/integration/production-image-startup.test.mjs)

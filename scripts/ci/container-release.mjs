@@ -343,6 +343,7 @@ async function smoke(directory, env) {
       {
         env: {
           ...env,
+          OCC_TEST_IMAGE_TIMEOUT_MULTIPLIER: arch === "arm64" ? "6" : "1",
           [controller ? "OCC_TEST_PRODUCTION_IMAGE" : "OCC_TEST_RUNTIME_IMAGE"]: loaded.Id,
         },
         stdio: "inherit",
