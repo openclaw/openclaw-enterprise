@@ -136,7 +136,7 @@ gateway:
       - https://agent-<opaque-hash>.agents.oce.example.com
 ```
 
-Do not set `gateway.auth.token`, `controlUi.dangerouslyDisableDeviceAuth`, or `controlUi.dangerouslyAllowHostHeaderOriginFallback`. Deploy the updated Agent revision, then call the status route again and expect `data.status: "available"` with the same `data.origin`. If the first status response is `data.status: "unavailable"`, fix active revision selection before saving the native configuration; OCC cannot derive the Agent origin until it can select the active revision.
+Do not set `gateway.auth.token`, `controlUi.dangerouslyDisableDeviceAuth`, or `controlUi.dangerouslyAllowHostHeaderOriginFallback`. Deploy the updated Agent revision, then call the status route again and expect `data.status: "available"` with the same `data.origin`. A stopped Agent with no active revision returns only `data.status: "stopped"`; deploy it if native admin access is intended. If the response is `data.status: "unavailable"`, check active revision selection before saving the native configuration; OCC cannot derive the Agent origin until it can select the active revision.
 
 Keep durable configuration changes in OCE. For compatible Kubernetes gateways,
 native edits affect a Pod-local copy and are discarded when the Pod is replaced
@@ -157,7 +157,7 @@ Full runtime proof still requires a real browser test that loads native assets t
 | Helm render fails                                   | `agentNativeAdmin.enabled` requires `gatewayRouting.enabled`, a DNS-only `agentNativeAdmin.domain`, and a valid `agentNativeAdmin.sharedCookieDomain` parent. |
 | API startup fails with `AGENT_NATIVE_ADMIN_INVALID` | `agentNativeAdmin.domain`, `agentNativeAdmin.sharedCookieDomain`, `OCC_AUTH_BASE_URL`, cookie-scope compatibility, auth secret length, and gateway routing.   |
 | Console panel is hidden                             | Feature enablement and exact Agent `administer` permission.                                                                                                   |
-| Panel reports stopped                               | Deploy or restart the Agent before opening the native UI.                                                                                                     |
+| Panel reports stopped                               | Deploy the Agent if native admin access is intended. An Agent stopped after a prior deployment may no longer have an active revision or return an origin.     |
 | Panel reports unavailable                           | Active revision selection. Fix the Agent's active revision before discovering `data.origin` or redeploying compatible native configuration.                   |
 | Panel reports unsupported                           | Compute gateway routing, `getGatewayEndpoint` support, and native trusted-proxy/control UI configuration for the active revision.                             |
 | Native tab cannot load                              | Browser wildcard DNS/TLS to API, shared session cookie scope, host-to-Agent resolution, native `controlUi.allowedOrigins`, and private gateway routing.       |
@@ -176,6 +176,7 @@ Full runtime proof still requires a real browser test that loads native assets t
 
 ## Changelog
 
+- 2026-09-21 21:20: Explained why intentionally stopped Agents return no native admin origin after their active revision is cleared. (01a0c750-0c10-7492-97eb-f4124cded820 - 156dd67b7bd280a380d96b5c34a64e402fe3b96b)
 - 2026-09-20 08:21: Linked Kubernetes configuration-copy details to the implementation reference after the Driver documentation refactor. (01a0b7fd-13fa-7dc2-8653-5c5814b59305 - f4e22e48)
 - 2026-09-20 08:53: Updated the deployment procedure for the shared OCE session cookie parent domain, cookie migration, and no-exchange Agent host test path. (cody/01a0b7fd-13fa-7dc2-8653-5c5814b59305 - 5e5f12f37842ae7239d73432e00609547627ded8)
 - 2026-09-19 21:14: Replaced manual cookie copying with authenticated-browser status discovery and documented Helm, service-worker domain setup, and the explicit writable-config predicate. (01a0b7fd-13fa-7dc2-8653-5c5814b59305 - 06c23b9c)

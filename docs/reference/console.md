@@ -159,9 +159,11 @@ When [Agent native admin UI access](agent-native-admin.md) is enabled, the
 Agent detail tabs, including Configuration and Workspace files, include a
 **Native admin UI** panel for callers with exact Agent `administer` permission.
 The panel is hidden when the Installation disables the feature or when the
-caller lacks that grant. If OCE cannot load an active revision, the panel asks
-you to check the Agent's deployment and refresh access. It also reports when the
-Agent is stopped or native admin is unsupported.
+caller lacks that grant. An Agent that is stopped reports that it must be started,
+including before its first deployment or after stopping clears its active
+revision. If a desired-running Agent has no active revision yet, the panel asks
+you to check the Agent's deployment and refresh access. It also reports when
+native admin is unsupported.
 
 **Open native admin UI** opens the Agent's active revision in a new tab, even
 when you are viewing a draft or an older revision. The visible warning is part

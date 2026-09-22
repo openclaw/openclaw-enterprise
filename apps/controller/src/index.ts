@@ -2940,7 +2940,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     readonly target: NativeAdminTarget;
   };
   type NativeAdminAvailability =
-    | { readonly status: "disabled" | "unavailable" }
+    | { readonly status: "disabled" | "stopped" | "unavailable" }
     | ({ readonly status: "stopped" | "unsupported" } & NativeAdminTargetStatus)
     | ({ readonly status: "available"; readonly gatewayBase: string } & NativeAdminTargetStatus);
 
@@ -2967,6 +2967,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         input.agentId,
       );
     } catch (error) {
+      // This administering lookup conflicts only when the authorized Agent is stopped without an active revision.
+      if (error instanceof ResourceConflictError) {
+        return { status: "stopped" };
+      }
       if (isDependencyUnavailable(error)) {
         return { status: "unavailable" };
       }

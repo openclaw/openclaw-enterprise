@@ -1312,6 +1312,9 @@ export class OpenClawController {
         );
       }
       if (!isNonEmptyString(agent.activeRevisionId)) {
+        if (action === "administer" && agent.desiredRuntimeState === "stopped") {
+          throw new ResourceConflictError("A stopped Agent has no active gateway revision.");
+        }
         throw new DependencyUnavailableError("The Agent has no active gateway revision.");
       }
       const revision = await state.revisions.findRevision(

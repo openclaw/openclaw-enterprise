@@ -829,13 +829,25 @@ test("Agent detail opens native admin UI only after real API access checks pass"
     false,
   );
 
-  // A new Agent has no active revision; the real status route has not evaluated gateway routing.
+  // New Agents are stopped; missing an active revision must not suggest a routing problem.
+  const initiallyStopped = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`,
+  );
+  assert.equal(initiallyStopped.status, 200);
+  assert.deepEqual(initiallyStopped.data, { status: "stopped" });
+  await page.getByText("Start this Agent before opening its native admin UI.").waitFor();
+  assert.equal(await page.getByText("Open native admin UI", { exact: true }).isVisible(), false);
+
+  // A real deployment requests running before reconciliation selects the admitted revision.
+  const pending = await fixture.deployAgent(namespace.id, agent.id);
   const unavailable = await fixture.request(
     "GET",
     `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`,
   );
   assert.equal(unavailable.status, 200);
   assert.deepEqual(unavailable.data, { status: "unavailable" });
+  await page.getByRole("button", { name: "Refresh access" }).click();
   await page
     .getByText(
       "Native admin UI access is unavailable because OCE could not load an active AgentRevision. Check this Agent’s deployment, then refresh access.",
@@ -843,7 +855,8 @@ test("Agent detail opens native admin UI only after real API access checks pass"
     .waitFor({ timeout: 5_000 });
   assert.equal(await page.getByText("Open native admin UI", { exact: true }).isVisible(), false);
 
-  let active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  let active = { revision: pending };
+  await fixture.activateRevision(namespace.id, agent.id, pending.id);
   const historicalRevisionId = active.revision.id;
   const initialNativeAccess = await fixture.request(
     "GET",
@@ -880,6 +893,11 @@ test("Agent detail opens native admin UI only after real API access checks pass"
     `/namespaces/${namespace.id}/agents/${agent.id}/stop`,
   );
   assert.equal(stopped.status, 202);
+  // Reproduce the state after the worker clears the revision, while this historical URL remains open.
+  const cleared = await fixture.controller.transact((state) =>
+    state.agents.compareAndClearActiveRevision(namespace.id, agent.id, active.revision.id),
+  );
+  assert.equal(cleared.activeRevisionId, undefined);
   await page.reload();
   await page.getByRole("heading", { name: "Native admin Agent" }).waitFor();
   await page.getByRole("heading", { name: "Native admin UI" }).waitFor();
@@ -891,7 +909,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
     agent.configurationId,
     nativeAdminValues("supported-ui", initialNativeAccess.data.origin),
   );
-  active = await fixture.seedActiveAgentRevision(namespace.id, agent.id, active.revision.id);
+  active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   await page.goto(`${fixture.origin}${detail().pathname}${detail().search}`);
   await page.getByRole("heading", { name: "Native admin Agent" }).waitFor();
   await page.getByText("Native admin UI is available for this Agent’s active revision.").waitFor();

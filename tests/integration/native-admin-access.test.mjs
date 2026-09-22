@@ -11,6 +11,7 @@ import test from "node:test";
 
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
+import { DependencyUnavailableError, ResourceConflictError } from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
@@ -338,6 +339,51 @@ test("native admin status requires exact Agent administer and reports lifecycle 
   assert.equal(stoppedStatus.status, 200);
   assert.equal(stoppedStatus.data.status, "stopped");
   assert.equal(stoppedStatus.data.host, available.data.host);
+
+  // Completed stop reconciliation clears the selected revision but retains historical revisions.
+  const cleared = await context.fixture.controller.transact((state) =>
+    state.agents.compareAndClearActiveRevision(
+      context.namespace.id,
+      context.agent.id,
+      context.revision.id,
+    ),
+  );
+  assert.equal(cleared.desiredRuntimeState, "stopped");
+  assert.equal(cleared.activeRevisionId, undefined);
+  const controllerStatus = () =>
+    context.fixture.controller.getAdministerableActiveAgentRevision(
+      adminPrincipal(context.fixture).id,
+      context.namespace.id,
+      context.agent.id,
+    );
+  await assert.rejects(controllerStatus, ResourceConflictError);
+  const fullyStopped = await nativeStatus(context, { session: exactAdministerOnlySession });
+  assert.equal(fullyStopped.status, 200);
+  assert.deepEqual(fullyStopped.data, { status: "stopped" });
+  const stillDenied = await nativeStatus(context, { session: limitedSession });
+  assert.equal(stillDenied.status, 403);
+  assert.equal(stillDenied.body.error.code, "FORBIDDEN");
+  const serviceKey = await issueServiceKeyForNativeAgent(context);
+  const serviceDenied = await injectJson(
+    context.fixture,
+    "GET",
+    `/namespaces/${context.namespace.id}/agents/${context.agent.id}/native-admin`,
+    { headers: { "x-api-key": serviceKey } },
+  );
+  assert.equal(serviceDenied.statusCode, 403);
+  assert.equal(serviceDenied.json().error.code, "FORBIDDEN");
+
+  // Redeployment makes the Agent desired-running before a worker selects the new revision.
+  const pending = await context.fixture.deployAgent(context.namespace.id, context.agent.id);
+  await assert.rejects(controllerStatus, DependencyUnavailableError);
+  const unavailable = await nativeStatus(context, { session: exactAdministerOnlySession });
+  assert.equal(unavailable.status, 200);
+  assert.deepEqual(unavailable.data, { status: "unavailable" });
+  await context.fixture.activateRevision(context.namespace.id, context.agent.id, pending.id);
+  const restored = await nativeStatus(context, { session: exactAdministerOnlySession });
+  assert.equal(restored.status, 200);
+  assert.equal(restored.data.status, "available");
+  assert.equal(restored.data.activeRevisionId, pending.id);
 });
 
 test("native admin disabled status still requires exact Agent administer", async (t) => {

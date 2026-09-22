@@ -17,7 +17,7 @@ WebSocket traffic through the API process. Live runtime proof remains separate.
 
 ## Entry Points
 
-- Trigger: Console renders the Agent detail workspace tab, calls the native admin availability API, and opens the returned Agent URL.
+- Trigger: Console renders an Agent detail tab, calls the native admin availability API, and opens the returned Agent URL.
 - Source: `apps/controller/src/console/agents/native-admin.mjs:renderNativeAdminAccess`
 - Source: `apps/controller/src/index.ts:resolveNativeAdminAvailability`
 - Source: `apps/controller/src/index.ts:handleNativeAdminUpgrade`
@@ -27,7 +27,7 @@ WebSocket traffic through the API process. Live runtime proof remains separate.
 
 ```mermaid
 graph TD
-  A["Console opens Agent workspace tab"] --> B["GET exact Agent native-admin status"]
+  A["Console opens Agent detail tab"] --> B["GET exact Agent native-admin status"]
   B --> C["Resolve OCC session and exact Agent administrator principal"]
   C --> D{"Exact Agent exists?"}
   D -->|no| E["Return protected-route error"]
@@ -35,7 +35,9 @@ graph TD
   F -->|no| G["Return disabled"]
   F -->|yes| H["Call resolveNativeAdminAvailability"]
   H --> I{"Active revision selection available?"}
-  I -->|no| J["Return unavailable"]
+  I -->|no| J{"Authorized stopped Agent without an active revision?"}
+  J -->|yes| X["Return stopped without an origin"]
+  J -->|no| Y["Return unavailable"]
   I -->|yes| K{"Agent desired running?"}
   K -->|no| L["Return stopped with derived origin"]
   K -->|yes| M{"Native config and endpoint supported?"}
@@ -56,7 +58,7 @@ graph TD
 
 `apps/controller/src/console/agents/native-admin.mjs:renderNativeAdminAccess`
 
-The Agent detail page inserts the native admin panel on the Workspace files tab. The panel starts hidden while it requests `${path}/native-admin`. The UI hides disabled and denied states, reports stopped or unsupported states, and shows the **Open native admin UI** link only when the API returns `status: "available"` with an Agent URL. The link opens that URL in a new tab with `noopener noreferrer`; opening it makes no additional availability or launch request.
+The Agent detail page inserts the native admin panel on its tabs, including Configuration and Workspace files. The panel starts hidden while it requests `${path}/native-admin`. The UI hides disabled and denied states, reports stopped, unavailable, or unsupported states, and shows the **Open native admin UI** link only when the API returns `status: "available"` with an Agent URL. The link opens that URL in a new tab with `noopener noreferrer`; opening it makes no additional availability or launch request.
 
 The warning text tells operators that native admin access can change gateway state outside OCE and that durable configuration should remain in OCE.
 
@@ -70,9 +72,9 @@ The route is `GET /namespaces/:namespaceId/agents/:agentId/native-admin`. Its op
 
 `apps/controller/src/index.ts:getNativeAdminStatus`
 `apps/controller/src/index.ts:resolveNativeAdminAvailability`
-`apps/controller/src/index.ts:nativeAdminAvailabilityData`
+`packages/occ/src/index.ts:getAdministerableActiveAgentRevision`
 
-The status handler validates the human session, preserves the OCC exact-Agent `administer` authorization and existence boundary, then delegates to `resolveNativeAdminAvailability`. The resolver returns `disabled` only after that protected boundary succeeds. When enabled, it requires a configured public origin and native admin domain, then calls `controller.getAdministerableActiveAgentRevision`. That controller method authorizes exact Agent `administer`, loads the Agent, requires `activeRevisionId`, and returns the selected active revision. If that active-revision selection raises `DependencyUnavailableError`, the resolver returns `unavailable` in a successful status envelope instead of the protected-route error envelope. The console asks the operator to check the Agent's deployment and refresh access; private gateway routing has not been evaluated. The panel always reports the Agent's active revision, independently of the draft or revision selected on an Agent detail tab. If authorization denial bubbles out of the selection path, the resolver maps it to a protected-route `403` and preserves the human IAM denial audit.
+The status handler validates the human session, preserves the OCC exact-Agent `administer` authorization and existence boundary, then delegates to `resolveNativeAdminAvailability`. The resolver returns `disabled` only after that protected boundary succeeds. When enabled, it requires a configured public origin and native admin domain, then calls `controller.getAdministerableActiveAgentRevision`. That controller method authorizes exact Agent `administer` and loads the Agent before inspecting its state. If the Agent is stopped and has no `activeRevisionId`, it raises `ResourceConflictError`; the resolver returns only `status: "stopped"`. This covers new Agents and completed stops. If active-revision selection instead raises `DependencyUnavailableError`, as for a desired-running Agent awaiting activation, the resolver returns `unavailable` in a successful status envelope. The console asks the operator to check the Agent's deployment and refresh access; private gateway routing has not been evaluated. The panel always reports the Agent's active revision, independently of the viewed snapshot. Authorization denial remains a protected-route `403` and preserves the human IAM denial audit.
 
 After active revision selection succeeds, OCC derives the native target. If the Agent's desired runtime state is not `running`, the resolver returns `stopped` with the derived host and origin. If `nativeAdminConfigurationSupported` rejects trusted-proxy auth, admin identity scopes, admin device auto-approval, `controlUi.enabled`, exact `allowedOrigins`, or host-header fallback/device-auth settings, the resolver returns `unsupported` with the same derived target. If the selected Compute Driver cannot provide a gateway endpoint or the endpoint is not a clean private `wss:` URL, it also returns `unsupported`. Only the `available` result carries the private `gatewayBase`; `nativeAdminAvailabilityData` omits that value from the browser API response.
 
@@ -139,7 +141,7 @@ The WebSocket proxy requires a non-null exact Agent `Origin`, forwards a sanitiz
 
 - `AGENT_NATIVE_ADMIN_INVALID` at startup points to invalid native admin enablement, missing public origin, invalid Agent domain, invalid shared cookie parent domain, invalid Better Auth cookie scope, or insufficient auth secret material.
 - `disabled` means the Installation has not enabled the feature.
-- `stopped` means the selected Agent is not desired running.
+- `stopped` means the exact Agent is not desired running. Its response has no origin or revision after stop reconciliation clears the active revision, or before the first deployment.
 - `unavailable` means active revision selection raised `DependencyUnavailableError` before OCC could derive the Agent target.
 - `unsupported` means the selected Compute Driver, gateway endpoint, or native trusted-proxy/control UI configuration cannot support the active revision.
 - Wrong or unknown Agent hosts fail before gateway proxying. Check the derived host calculation, Agent lifecycle state, and `agentNativeAdmin.domain`.
@@ -165,6 +167,7 @@ The WebSocket proxy requires a non-null exact Agent `Origin`, forwards a sanitiz
 
 ## Changelog
 
+- 2026-09-21 21:20: Distinguished authorized stopped Agents with no active revision from unavailable running deployments. (01a0c750-0c10-7492-97eb-f4124cded820 - 156dd67b7bd280a380d96b5c34a64e402fe3b96b)
 - 2026-09-21 21:17: Clarified the console's active-revision dependency message and its independence from the viewed configuration snapshot. (01a0c750-0c10-7492-97eb-f4124cded820 - f3dbdd41c8f3b49573d1353a4b06ce510ee43a56)
 - 2026-09-20 09:45: Reused session metadata from admission and replaced launch bookkeeping with a direct browser link; socket lifecycle state remains owned by the proxy. (01a0b7fd-13fa-7dc2-8653-5c5814b59305 - bbb864aadc709dcc4f7b95d4b42b74823c18363a)
 - 2026-09-20 08:53: Replaced the native-admin exchange flow with shared OCE session cookie admission, host-to-Agent resolution, credential stripping, and current-revision reconnect behavior. (cody/01a0b7fd-13fa-7dc2-8653-5c5814b59305 - 5e5f12f37842ae7239d73432e00609547627ded8)
