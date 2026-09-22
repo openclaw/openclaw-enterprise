@@ -1,6 +1,8 @@
 ARG NODE_BASE_IMAGE=docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584
 FROM ${NODE_BASE_IMAGE}
 
+# TODO: Pin the OpenClaw release providing `plugins install --no-enable` before
+# shipping managed plugin preparation; 2026.9.1 cannot preserve install policy.
 ARG OPENCLAW_VERSION=2026.9.1
 ARG OPENCLAW_CODEX_PLUGIN_VERSION=2026.9.1
 ARG OPENCLAW_SLACK_PLUGIN_VERSION=2026.9.1

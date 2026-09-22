@@ -6079,6 +6079,7 @@
                                   { "const": "installation", "type": "string" },
                                   { "const": "namespace", "type": "string" },
                                   { "const": "configuration", "type": "string" },
+                                  { "const": "preset", "type": "string" },
                                   { "const": "service_account", "type": "string" },
                                   { "const": "secret", "type": "string" },
                                   { "const": "agent", "type": "string" },
@@ -6198,6 +6199,7 @@
                       { "const": "agent", "type": "string" },
                       { "const": "agent_revision", "type": "string" },
                       { "const": "configuration", "type": "string" },
+                      { "const": "preset", "type": "string" },
                       { "const": "secret", "type": "string" },
                       { "const": "service_account", "type": "string" }
                     ]
@@ -6256,6 +6258,7 @@
                                 { "const": "installation", "type": "string" },
                                 { "const": "namespace", "type": "string" },
                                 { "const": "configuration", "type": "string" },
+                                { "const": "preset", "type": "string" },
                                 { "const": "service_account", "type": "string" },
                                 { "const": "secret", "type": "string" },
                                 { "const": "agent", "type": "string" },
@@ -6532,6 +6535,7 @@
                                 { "const": "installation", "type": "string" },
                                 { "const": "namespace", "type": "string" },
                                 { "const": "configuration", "type": "string" },
+                                { "const": "preset", "type": "string" },
                                 { "const": "service_account", "type": "string" },
                                 { "const": "secret", "type": "string" },
                                 { "const": "agent", "type": "string" },
@@ -6681,6 +6685,7 @@
                                     { "const": "installation", "type": "string" },
                                     { "const": "namespace", "type": "string" },
                                     { "const": "configuration", "type": "string" },
+                                    { "const": "preset", "type": "string" },
                                     { "const": "service_account", "type": "string" },
                                     { "const": "secret", "type": "string" },
                                     { "const": "agent", "type": "string" },
@@ -6810,6 +6815,7 @@
                             { "const": "agent", "type": "string" },
                             { "const": "agent_revision", "type": "string" },
                             { "const": "configuration", "type": "string" },
+                            { "const": "preset", "type": "string" },
                             { "const": "secret", "type": "string" },
                             { "const": "service_account", "type": "string" }
                           ]
@@ -6871,6 +6877,7 @@
                                   { "const": "installation", "type": "string" },
                                   { "const": "namespace", "type": "string" },
                                   { "const": "configuration", "type": "string" },
+                                  { "const": "preset", "type": "string" },
                                   { "const": "service_account", "type": "string" },
                                   { "const": "secret", "type": "string" },
                                   { "const": "agent", "type": "string" },
@@ -7105,6 +7112,7 @@
                                   { "const": "installation", "type": "string" },
                                   { "const": "namespace", "type": "string" },
                                   { "const": "configuration", "type": "string" },
+                                  { "const": "preset", "type": "string" },
                                   { "const": "service_account", "type": "string" },
                                   { "const": "secret", "type": "string" },
                                   { "const": "agent", "type": "string" },
@@ -7184,6 +7192,1059 @@
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" },
           { "action": "read", "resourceKind": "namespace", "scope": "requested" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/presets": {
+      "get": {
+        "description": "Only Preset resources with individual read permission are returned.",
+        "operationId": "listPresets",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "createdAt": {
+                            "format": "date-time",
+                            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                            "type": "string"
+                          },
+                          "id": {
+                            "pattern": "^pre_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "name": {
+                            "maxLength": 200,
+                            "minLength": 1,
+                            "pattern": "^(?!\\s)(?!.*\\s$)(?!.*[\\u0000-\\u001f\\u007f]).+$",
+                            "type": "string"
+                          },
+                          "namespaceId": {
+                            "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "template": {
+                            "additionalProperties": false,
+                            "description": "Reusable partial Agent launch settings. Scalar values may use {{ vars.name }}. Admission validates template syntax and credential boundaries. Ordinary creation APIs validate concrete launch settings.",
+                            "properties": {
+                              "agent": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "executionMode": { "$ref": "#/components/schemas/def-0" },
+                                  "harnessAuth": { "$ref": "#/components/schemas/def-0" },
+                                  "name": { "$ref": "#/components/schemas/def-0" },
+                                  "plugins": { "$ref": "#/components/schemas/def-0" },
+                                  "providerId": { "$ref": "#/components/schemas/def-0" }
+                                },
+                                "type": "object"
+                              },
+                              "configuration": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "secretBindings": {
+                                    "additionalProperties": {
+                                      "$ref": "#/components/schemas/def-0"
+                                    },
+                                    "description": "Namespace-owned Secret bindings. Reference fields may use {{ vars.name }}.",
+                                    "properties": {},
+                                    "type": "object"
+                                  },
+                                  "values": {
+                                    "additionalProperties": {
+                                      "$ref": "#/components/schemas/def-0"
+                                    },
+                                    "description": "A native OpenClaw configuration document.",
+                                    "properties": {},
+                                    "type": "object"
+                                  }
+                                },
+                                "type": "object"
+                              },
+                              "variables": {
+                                "additionalProperties": {
+                                  "anyOf": [
+                                    {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "default": { "type": "string" },
+                                        "description": { "type": "string" },
+                                        "type": { "const": "string", "type": "string" }
+                                      },
+                                      "required": ["type"],
+                                      "type": "object"
+                                    },
+                                    {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "default": { "type": "number" },
+                                        "description": { "type": "string" },
+                                        "type": { "const": "number", "type": "string" }
+                                      },
+                                      "required": ["type"],
+                                      "type": "object"
+                                    },
+                                    {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "default": { "type": "boolean" },
+                                        "description": { "type": "string" },
+                                        "type": { "const": "boolean", "type": "string" }
+                                      },
+                                      "required": ["type"],
+                                      "type": "object"
+                                    }
+                                  ]
+                                },
+                                "type": "object"
+                              }
+                            },
+                            "type": "object"
+                          }
+                        },
+                        "required": ["id", "namespaceId", "name", "template", "createdAt"],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "List readable Presets in one Namespace",
+        "tags": ["Presets"],
+        "x-openclaw-permissions": [
+          { "action": "read", "resourceKind": "preset", "scope": "each_returned" }
+        ]
+      },
+      "post": {
+        "description": "Requires create permission for Preset resources in the requested Namespace.",
+        "operationId": "createPreset",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "pattern": "^(?!\\s)(?!.*\\s$)(?!.*[\\u0000-\\u001f\\u007f]).+$",
+                    "type": "string"
+                  },
+                  "template": {
+                    "additionalProperties": false,
+                    "description": "Reusable partial Agent launch settings. Scalar values may use {{ vars.name }}. Admission validates template syntax and credential boundaries. Ordinary creation APIs validate concrete launch settings.",
+                    "properties": {
+                      "agent": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "executionMode": { "$ref": "#/components/schemas/def-0" },
+                          "harnessAuth": { "$ref": "#/components/schemas/def-0" },
+                          "name": { "$ref": "#/components/schemas/def-0" },
+                          "plugins": { "$ref": "#/components/schemas/def-0" },
+                          "providerId": { "$ref": "#/components/schemas/def-0" }
+                        },
+                        "type": "object"
+                      },
+                      "configuration": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "secretBindings": {
+                            "additionalProperties": { "$ref": "#/components/schemas/def-0" },
+                            "description": "Namespace-owned Secret bindings. Reference fields may use {{ vars.name }}.",
+                            "properties": {},
+                            "type": "object"
+                          },
+                          "values": {
+                            "additionalProperties": { "$ref": "#/components/schemas/def-0" },
+                            "description": "A native OpenClaw configuration document.",
+                            "properties": {},
+                            "type": "object"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "variables": {
+                        "additionalProperties": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "default": { "type": "string" },
+                                "description": { "type": "string" },
+                                "type": { "const": "string", "type": "string" }
+                              },
+                              "required": ["type"],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "default": { "type": "number" },
+                                "description": { "type": "string" },
+                                "type": { "const": "number", "type": "string" }
+                              },
+                              "required": ["type"],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "default": { "type": "boolean" },
+                                "description": { "type": "string" },
+                                "type": { "const": "boolean", "type": "string" }
+                              },
+                              "required": ["type"],
+                              "type": "object"
+                            }
+                          ]
+                        },
+                        "type": "object"
+                      }
+                    },
+                    "type": "object"
+                  }
+                },
+                "required": ["name", "template"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "createdAt": {
+                          "format": "date-time",
+                          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                          "type": "string"
+                        },
+                        "id": {
+                          "pattern": "^pre_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "name": {
+                          "maxLength": 200,
+                          "minLength": 1,
+                          "pattern": "^(?!\\s)(?!.*\\s$)(?!.*[\\u0000-\\u001f\\u007f]).+$",
+                          "type": "string"
+                        },
+                        "namespaceId": {
+                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "template": {
+                          "additionalProperties": false,
+                          "description": "Reusable partial Agent launch settings. Scalar values may use {{ vars.name }}. Admission validates template syntax and credential boundaries. Ordinary creation APIs validate concrete launch settings.",
+                          "properties": {
+                            "agent": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "executionMode": { "$ref": "#/components/schemas/def-0" },
+                                "harnessAuth": { "$ref": "#/components/schemas/def-0" },
+                                "name": { "$ref": "#/components/schemas/def-0" },
+                                "plugins": { "$ref": "#/components/schemas/def-0" },
+                                "providerId": { "$ref": "#/components/schemas/def-0" }
+                              },
+                              "type": "object"
+                            },
+                            "configuration": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "secretBindings": {
+                                  "additionalProperties": { "$ref": "#/components/schemas/def-0" },
+                                  "description": "Namespace-owned Secret bindings. Reference fields may use {{ vars.name }}.",
+                                  "properties": {},
+                                  "type": "object"
+                                },
+                                "values": {
+                                  "additionalProperties": { "$ref": "#/components/schemas/def-0" },
+                                  "description": "A native OpenClaw configuration document.",
+                                  "properties": {},
+                                  "type": "object"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "variables": {
+                              "additionalProperties": {
+                                "anyOf": [
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "default": { "type": "string" },
+                                      "description": { "type": "string" },
+                                      "type": { "const": "string", "type": "string" }
+                                    },
+                                    "required": ["type"],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "default": { "type": "number" },
+                                      "description": { "type": "string" },
+                                      "type": { "const": "number", "type": "string" }
+                                    },
+                                    "required": ["type"],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "default": { "type": "boolean" },
+                                      "description": { "type": "string" },
+                                      "type": { "const": "boolean", "type": "string" }
+                                    },
+                                    "required": ["type"],
+                                    "type": "object"
+                                  }
+                                ]
+                              },
+                              "type": "object"
+                            }
+                          },
+                          "type": "object"
+                        }
+                      },
+                      "required": ["id", "namespaceId", "name", "template", "createdAt"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "413": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "415": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Create a reusable Namespace-owned Agent Preset",
+        "tags": ["Presets"],
+        "x-openclaw-permissions": [
+          { "action": "create", "resourceKind": "preset", "scope": "namespace" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/presets/{presetId}": {
+      "delete": {
+        "description": "Requires delete permission on the requested Preset.",
+        "operationId": "deletePreset",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "presetId",
+            "required": true,
+            "schema": {
+              "pattern": "^pre_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": { "description": "Default Response" },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Delete a Preset without changing existing Agents",
+        "tags": ["Presets"],
+        "x-openclaw-permissions": [
+          { "action": "delete", "resourceKind": "preset", "scope": "requested" }
+        ]
+      },
+      "get": {
+        "description": "Requires read permission on the requested Preset.",
+        "operationId": "getPreset",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "presetId",
+            "required": true,
+            "schema": {
+              "pattern": "^pre_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "createdAt": {
+                          "format": "date-time",
+                          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                          "type": "string"
+                        },
+                        "id": {
+                          "pattern": "^pre_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "name": {
+                          "maxLength": 200,
+                          "minLength": 1,
+                          "pattern": "^(?!\\s)(?!.*\\s$)(?!.*[\\u0000-\\u001f\\u007f]).+$",
+                          "type": "string"
+                        },
+                        "namespaceId": {
+                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "template": {
+                          "additionalProperties": false,
+                          "description": "Reusable partial Agent launch settings. Scalar values may use {{ vars.name }}. Admission validates template syntax and credential boundaries. Ordinary creation APIs validate concrete launch settings.",
+                          "properties": {
+                            "agent": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "executionMode": { "$ref": "#/components/schemas/def-0" },
+                                "harnessAuth": { "$ref": "#/components/schemas/def-0" },
+                                "name": { "$ref": "#/components/schemas/def-0" },
+                                "plugins": { "$ref": "#/components/schemas/def-0" },
+                                "providerId": { "$ref": "#/components/schemas/def-0" }
+                              },
+                              "type": "object"
+                            },
+                            "configuration": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "secretBindings": {
+                                  "additionalProperties": { "$ref": "#/components/schemas/def-0" },
+                                  "description": "Namespace-owned Secret bindings. Reference fields may use {{ vars.name }}.",
+                                  "properties": {},
+                                  "type": "object"
+                                },
+                                "values": {
+                                  "additionalProperties": { "$ref": "#/components/schemas/def-0" },
+                                  "description": "A native OpenClaw configuration document.",
+                                  "properties": {},
+                                  "type": "object"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "variables": {
+                              "additionalProperties": {
+                                "anyOf": [
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "default": { "type": "string" },
+                                      "description": { "type": "string" },
+                                      "type": { "const": "string", "type": "string" }
+                                    },
+                                    "required": ["type"],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "default": { "type": "number" },
+                                      "description": { "type": "string" },
+                                      "type": { "const": "number", "type": "string" }
+                                    },
+                                    "required": ["type"],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "default": { "type": "boolean" },
+                                      "description": { "type": "string" },
+                                      "type": { "const": "boolean", "type": "string" }
+                                    },
+                                    "required": ["type"],
+                                    "type": "object"
+                                  }
+                                ]
+                              },
+                              "type": "object"
+                            }
+                          },
+                          "type": "object"
+                        }
+                      },
+                      "required": ["id", "namespaceId", "name", "template", "createdAt"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Read one exact Namespace-owned Preset",
+        "tags": ["Presets"],
+        "x-openclaw-permissions": [
+          { "action": "read", "resourceKind": "preset", "scope": "requested" }
+        ]
+      },
+      "patch": {
+        "description": "Requires update permission on the requested Preset.",
+        "operationId": "updatePreset",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "presetId",
+            "required": true,
+            "schema": {
+              "pattern": "^pre_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "minProperties": 1,
+                "properties": {
+                  "name": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "pattern": "^(?!\\s)(?!.*\\s$)(?!.*[\\u0000-\\u001f\\u007f]).+$",
+                    "type": "string"
+                  },
+                  "template": {
+                    "additionalProperties": false,
+                    "description": "Reusable partial Agent launch settings. Scalar values may use {{ vars.name }}. Admission validates template syntax and credential boundaries. Ordinary creation APIs validate concrete launch settings.",
+                    "properties": {
+                      "agent": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "executionMode": { "$ref": "#/components/schemas/def-0" },
+                          "harnessAuth": { "$ref": "#/components/schemas/def-0" },
+                          "name": { "$ref": "#/components/schemas/def-0" },
+                          "plugins": { "$ref": "#/components/schemas/def-0" },
+                          "providerId": { "$ref": "#/components/schemas/def-0" }
+                        },
+                        "type": "object"
+                      },
+                      "configuration": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "secretBindings": {
+                            "additionalProperties": { "$ref": "#/components/schemas/def-0" },
+                            "description": "Namespace-owned Secret bindings. Reference fields may use {{ vars.name }}.",
+                            "properties": {},
+                            "type": "object"
+                          },
+                          "values": {
+                            "additionalProperties": { "$ref": "#/components/schemas/def-0" },
+                            "description": "A native OpenClaw configuration document.",
+                            "properties": {},
+                            "type": "object"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "variables": {
+                        "additionalProperties": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "default": { "type": "string" },
+                                "description": { "type": "string" },
+                                "type": { "const": "string", "type": "string" }
+                              },
+                              "required": ["type"],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "default": { "type": "number" },
+                                "description": { "type": "string" },
+                                "type": { "const": "number", "type": "string" }
+                              },
+                              "required": ["type"],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "default": { "type": "boolean" },
+                                "description": { "type": "string" },
+                                "type": { "const": "boolean", "type": "string" }
+                              },
+                              "required": ["type"],
+                              "type": "object"
+                            }
+                          ]
+                        },
+                        "type": "object"
+                      }
+                    },
+                    "type": "object"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "createdAt": {
+                          "format": "date-time",
+                          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                          "type": "string"
+                        },
+                        "id": {
+                          "pattern": "^pre_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "name": {
+                          "maxLength": 200,
+                          "minLength": 1,
+                          "pattern": "^(?!\\s)(?!.*\\s$)(?!.*[\\u0000-\\u001f\\u007f]).+$",
+                          "type": "string"
+                        },
+                        "namespaceId": {
+                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "template": {
+                          "additionalProperties": false,
+                          "description": "Reusable partial Agent launch settings. Scalar values may use {{ vars.name }}. Admission validates template syntax and credential boundaries. Ordinary creation APIs validate concrete launch settings.",
+                          "properties": {
+                            "agent": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "executionMode": { "$ref": "#/components/schemas/def-0" },
+                                "harnessAuth": { "$ref": "#/components/schemas/def-0" },
+                                "name": { "$ref": "#/components/schemas/def-0" },
+                                "plugins": { "$ref": "#/components/schemas/def-0" },
+                                "providerId": { "$ref": "#/components/schemas/def-0" }
+                              },
+                              "type": "object"
+                            },
+                            "configuration": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "secretBindings": {
+                                  "additionalProperties": { "$ref": "#/components/schemas/def-0" },
+                                  "description": "Namespace-owned Secret bindings. Reference fields may use {{ vars.name }}.",
+                                  "properties": {},
+                                  "type": "object"
+                                },
+                                "values": {
+                                  "additionalProperties": { "$ref": "#/components/schemas/def-0" },
+                                  "description": "A native OpenClaw configuration document.",
+                                  "properties": {},
+                                  "type": "object"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "variables": {
+                              "additionalProperties": {
+                                "anyOf": [
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "default": { "type": "string" },
+                                      "description": { "type": "string" },
+                                      "type": { "const": "string", "type": "string" }
+                                    },
+                                    "required": ["type"],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "default": { "type": "number" },
+                                      "description": { "type": "string" },
+                                      "type": { "const": "number", "type": "string" }
+                                    },
+                                    "required": ["type"],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "default": { "type": "boolean" },
+                                      "description": { "type": "string" },
+                                      "type": { "const": "boolean", "type": "string" }
+                                    },
+                                    "required": ["type"],
+                                    "type": "object"
+                                  }
+                                ]
+                              },
+                              "type": "object"
+                            }
+                          },
+                          "type": "object"
+                        }
+                      },
+                      "required": ["id", "namespaceId", "name", "template", "createdAt"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "413": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "415": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Update a Preset without changing existing Agents",
+        "tags": ["Presets"],
+        "x-openclaw-permissions": [
+          { "action": "update", "resourceKind": "preset", "scope": "requested" }
         ]
       }
     },

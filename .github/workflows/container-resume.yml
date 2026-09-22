@@ -86,7 +86,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y skopeo
           skopeo --version | grep -Fx 'skopeo version 1.13.3'
-      - name: Revalidate original archives and resume under current approval
+      - name: Revalidate original archives and resume publication
         env:
           GH_TOKEN: ${{ github.token }}
           PREPARATION_ARTIFACT_IDS: ${{ needs.validate.outputs.artifact_ids }}

@@ -110,7 +110,7 @@ credential on the controller.
 
 - `OPENAI_API_KEY` — Authorized credential for local real-model use.
 - `OPENAI_API_KEY_FILE` — Absolute path to a private credential file for the first-Agent helper.
-- `OPENCLAW_FIRST_AGENT_MODEL` — Plain OpenAI model ID, without a provider prefix; default for a new Agent: `gpt-5.1`.
+- `OPENCLAW_FIRST_AGENT_MODEL` — Plain OpenAI model ID, without a provider prefix; default for a new Agent: `gpt-6-astra`.
 
 ## Observability
 

@@ -27,7 +27,7 @@ test("Docker Hub promotion rejects receipts from another source, CI run or publi
     ciRunId: "456",
     ciAttempt: "1",
     nodeBaseImage: env.NODE_BASE_IMAGE,
-    platform: "linux/amd64",
+    platforms: ["linux/amd64", "linux/arm64"],
     digest,
     archiveSha256: "c".repeat(64),
     destination: `ghcr.io/openclaw/enterprise-${image}`,

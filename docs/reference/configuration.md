@@ -6,6 +6,7 @@ Namespace. Saving a change does not affect a running Agent; deploy each Agent
 that should use it. Platform operators set Installation and Driver options in
 trusted startup YAML, not in Agent Configurations.
 
+- To reuse launch settings when creating Agents, use [Presets](presets.md).
 - To change a model or other Agent settings and put them into use, follow
   [Agent revisions](../guides/topics/agent-revisions.md).
 - To choose Agent credentials or enable a channel, see

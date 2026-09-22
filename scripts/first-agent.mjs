@@ -9,10 +9,10 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { findFirstAgentSecret, grantFirstAgentSecret } from "./first-agent-database.mjs";
-import { verifyFirstAgentModel } from "./first-agent-model.mjs";
+import { defaultAgentModel } from "../apps/controller/src/console/agents/starter-model.mjs";
+import { selectFirstAgentModel, verifyFirstAgentModel } from "./first-agent-model.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const defaultModel = "gpt-5.1";
 
 function usage() {
   return `Usage: node scripts/first-agent.mjs <name> [--prompt <text>] [--replace-key]
@@ -25,7 +25,7 @@ another prompt or verify it again.
   --prompt <text>  Ask the Agent an additional question and print its response.
   --replace-key    Replace this Agent's saved model key and deploy a new revision.
 
-OPENCLAW_FIRST_AGENT_MODEL defaults to gpt-5.1 for a new Agent. Set OPENAI_API_KEY,
+OPENCLAW_FIRST_AGENT_MODEL defaults to ${defaultAgentModel} for a new Agent. Set OPENAI_API_KEY,
 use OPENAI_API_KEY_FILE, or enter the key at the hidden prompt. A normal repeat
 uses the previously stored key. Set OCC_DEVELOPMENT_STATE_DIRECTORY if Local Setup
 used a custom state directory.
@@ -620,18 +620,12 @@ async function main(options) {
 
   await withRecord(local.directory, options.name, async (existing, save) => {
     const configuredModel = process.env.OPENCLAW_FIRST_AGENT_MODEL;
-    const model = configuredModel || existing?.model || defaultModel;
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(model)) {
-      throw new Error(
-        "OPENCLAW_FIRST_AGENT_MODEL must be a plain OpenAI model ID, without the provider prefix.",
-      );
-    }
+    const model = selectFirstAgentModel(configuredModel, existing);
     if (
       existing &&
       (existing.version !== 1 ||
         existing.name !== options.name ||
-        existing.namespaceId !== namespace.id ||
-        (configuredModel && model !== existing.model))
+        existing.namespaceId !== namespace.id)
     ) {
       throw new Error(
         "This Agent's recorded Namespace or model differs. Reuse its recorded model or choose a new Agent name.",

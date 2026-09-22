@@ -22,6 +22,15 @@ const controlNames = new Set([
   "NO_PROXY",
 ]);
 
+export function isAllowedSecretBindingDestination(name: string): boolean {
+  return (
+    /^[A-Za-z_][A-Za-z0-9_]{0,252}$/.test(name) &&
+    !reserved.test(name) &&
+    !controlNames.has(name.toUpperCase()) &&
+    !name.toUpperCase().startsWith("OPENAI_")
+  );
+}
+
 /** One canonical, closed binding grammar, used at admission and rendering. */
 export function normalizeSecretBindings(input: unknown): SecretBindings {
   if (input === undefined) {
@@ -37,12 +46,7 @@ export function normalizeSecretBindings(input: unknown): SecretBindings {
   return Object.freeze(
     Object.fromEntries(
       entries.map(([name, binding]) => {
-        if (
-          !/^[A-Za-z_][A-Za-z0-9_]{0,252}$/.test(name) ||
-          reserved.test(name) ||
-          controlNames.has(name.toUpperCase()) ||
-          name.toUpperCase().startsWith("OPENAI_")
-        ) {
+        if (!isAllowedSecretBindingDestination(name)) {
           throw new Error("A secret binding uses a reserved or invalid environment destination.");
         }
         if (

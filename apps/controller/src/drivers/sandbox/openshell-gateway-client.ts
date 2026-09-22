@@ -253,7 +253,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
         "CreateSandbox",
         {
           name: request.name,
-          workspace: request.workspace,
+          workspace_scope: { workspace: request.workspace },
           labels: { ...request.labels },
           annotations: { ...request.annotations },
           spec: request.spec,
@@ -292,7 +292,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     try {
       await this.unary(
         "DeleteSandbox",
-        { name: request.name, workspace: request.workspace },
+        { name: request.name, workspace_scope: { workspace: request.workspace } },
         signal,
       );
     } catch (error) {

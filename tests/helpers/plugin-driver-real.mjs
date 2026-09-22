@@ -1,3 +1,4 @@
+import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -36,7 +37,10 @@ function requiredPluginProofEnv(name, description = name) {
 }
 
 export function optionalPluginProofModel() {
-  return (process.env.OCC_TEST_OPENAI_MODEL ?? "gpt-4.1").replace(/^(?:openai|codex)\//, "");
+  return (process.env.OCC_TEST_OPENAI_MODEL ?? defaultAgentModel).replace(
+    /^(?:openai|codex)\//,
+    "",
+  );
 }
 
 function selectPluginProofDatabaseUrl({ scenario, databaseUrl }) {
@@ -841,6 +845,25 @@ function createNativePluginAssertions({
     return { runtime: execution.label, ...summary };
   }
 
+  async function readOpenClawPluginPolicy(agent, pluginId) {
+    const execution = await execGateway(agent, [
+      "node",
+      "-e",
+      `const { readFileSync } = require("node:fs");
+       const config = JSON.parse(readFileSync("/home/node/.openclaw/openclaw.json", "utf8"));
+       process.stdout.write(JSON.stringify({
+         plugins: {
+           allow: config.plugins?.allow,
+           deny: config.plugins?.deny,
+           enabled: config.plugins?.entries?.[process.argv[1]]?.enabled,
+         },
+         tools: { allow: config.tools?.allow, alsoAllow: config.tools?.alsoAllow, deny: config.tools?.deny },
+       }));`,
+      pluginId,
+    ]);
+    return JSON.parse(execution.stdout);
+  }
+
   function isTransientGatewayReadinessAssertion(error) {
     return (
       error?.name === "AssertionError" &&
@@ -1173,6 +1196,7 @@ function createNativePluginAssertions({
     normalGatewayTurn,
     assertSessionToolCallEvidence,
     assertNoSessionToolCallEvidence,
+    readOpenClawPluginPolicy,
     listCodexNativeCatalog,
     codexNativePluginDetail,
     codexEffectivePluginConfiguration,
@@ -1930,6 +1954,7 @@ export async function createPluginDriverRealFixture(
     normalGatewayTurn: nativeAssertions.normalGatewayTurn,
     assertSessionToolCallEvidence: nativeAssertions.assertSessionToolCallEvidence,
     assertNoSessionToolCallEvidence: nativeAssertions.assertNoSessionToolCallEvidence,
+    readOpenClawPluginPolicy: nativeAssertions.readOpenClawPluginPolicy,
     listCodexNativeCatalog: nativeAssertions.listCodexNativeCatalog,
     codexNativePluginDetail: nativeAssertions.codexNativePluginDetail,
     codexEffectivePluginConfiguration: nativeAssertions.codexEffectivePluginConfiguration,

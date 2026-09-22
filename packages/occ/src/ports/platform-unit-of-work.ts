@@ -20,6 +20,7 @@ export function bindPlatformUnitOfWork(
       "lockNamespace",
       "hasAgents",
       "hasConfigurations",
+      "hasPresets",
       "hasServiceAccounts",
       "hasSecrets",
       "transitionNamespaceStatus",
@@ -31,6 +32,14 @@ export function bindPlatformUnitOfWork(
       "lockConfiguration",
       "advanceConfigurationGeneration",
       "deleteConfiguration",
+    ]),
+    presets: bindRepository(repositories.presets, lifetime, [
+      "findPreset",
+      "listPresets",
+      "createPreset",
+      "lockPreset",
+      "updatePreset",
+      "deletePreset",
     ]),
     secrets: bindRepository(repositories.secrets, lifetime, [
       "findSecret",

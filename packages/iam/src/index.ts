@@ -124,11 +124,12 @@ export function createAuthPrincipalSeed(
         action,
         resourceKind: "namespace" as const,
       })),
-      ...(["configuration", "service_account", "secret"] as const).flatMap((resourceKind) =>
-        (["create", "read", "update", "delete"] as const).map((action) => ({
-          action,
-          resourceKind,
-        })),
+      ...(["configuration", "service_account", "secret", "preset"] as const).flatMap(
+        (resourceKind) =>
+          (["create", "read", "update", "delete"] as const).map((action) => ({
+            action,
+            resourceKind,
+          })),
       ),
       { action: "operate", resourceKind: "secret" },
       ...(["create", "read", "update", "delete", "deploy", "operate", "administer"] as const).map(
@@ -201,6 +202,7 @@ const ACTIONS: readonly PermissionAction[] = [
 ];
 
 const MANAGED_RESOURCE_KINDS: readonly ManagedIAMResourceKind[] = [
+  "preset",
   "agent",
   "agent_revision",
   "configuration",
@@ -524,8 +526,9 @@ export function validateNativeIAMState(state: NativeIAMState): void {
       `AccessBinding ${binding.id} has an invalid resource id`,
     );
     assertCondition(
-      binding.resourceKind !== "configuration" || isNonEmptyString(binding.namespaceId),
-      `AccessBinding ${binding.id} targets a Configuration without a Namespace`,
+      !["configuration", "preset"].includes(binding.resourceKind ?? "") ||
+        isNonEmptyString(binding.namespaceId),
+      `AccessBinding ${binding.id} targets a Namespace resource without a Namespace`,
     );
     assertCondition(
       binding.resourceKind !== "service_account" || isNonEmptyString(binding.namespaceId),
@@ -645,7 +648,8 @@ function validRequest(request: AuthorizationRequest): boolean {
     isNonEmptyString(request.principalId) &&
     isNonEmptyString(request.resource.id) &&
     optionalNonempty(request.resource.namespaceId) &&
-    (request.resource.kind !== "configuration" || isNonEmptyString(request.resource.namespaceId)) &&
+    (!["configuration", "preset"].includes(request.resource.kind) ||
+      isNonEmptyString(request.resource.namespaceId)) &&
     (request.resource.kind !== "service_account" ||
       isNonEmptyString(request.resource.namespaceId)) &&
     (request.resource.kind !== "secret" || isNonEmptyString(request.resource.namespaceId)) &&

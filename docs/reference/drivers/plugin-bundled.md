@@ -78,7 +78,7 @@ Agent thread retains it.
 
 | Surface                                       | Current behavior                                                                                                                                                        |
 | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| OpenClaw `always` and enable/disable          | Set `plugins.entries.<id>.enabled`; enabled selections receive existing `tools.alsoAllow` plugin grants without removing operator restrictions.                         |
+| OpenClaw `always` and enable/disable          | Set `plugins.entries.<id>.enabled`; extend a nonempty `tools.allow`, otherwise `tools.alsoAllow`, while preserving other native restrictions.                           |
 | OpenClaw `never`                              | Disable the selected plugin, blocking its owned execution surfaces.                                                                                                     |
 | OpenClaw `prompt`, `auto`, reviewer           | Startup failure; no equivalent generic native plugin approval control is implemented.                                                                                   |
 | Tool/category policy on catalog entries       | Startup failure when current curated entries do not expose reliable per-tool metadata to Enterprise.                                                                    |
@@ -124,8 +124,14 @@ than silently overwriting it. For OpenClaw, this includes an existing selected
 plugin entry in `values.plugins.entries` whose JSON differs from the managed entry.
 For Codex, a differing
 `values.plugins.entries.codex.config.codexPlugins` bridge selection conflicts
-with Driver ownership. Identical managed entries are accepted. Native
-configuration outside managed fields is retained.
+with Driver ownership. Identical managed entries are accepted. An enabled native
+plugin entry also conflicts with `plugins.enabled:false`, a matching
+`plugins.deny` entry, or a nonempty `plugins.allow` that excludes it. This includes
+the Codex transport plugin required by selected Codex apps. Disabled and `never`
+OpenClaw selections can remain denied. Gateway startup rejects these conflicts
+before OpenClaw package installation or starting the Gateway; Agent writes still
+save structurally valid desired state. Native configuration outside managed
+fields, including tool denies and profiles, is retained.
 
 ## Preparation and security
 
@@ -140,10 +146,14 @@ process installs only after the old gateway stops. This uses the existing
 serialized lifecycle, with no database copy or plugin-specific coordinator.
 Docker keeps native state in the replacement container's private temporary home.
 
-OpenClaw preparation installs the supported exact npm version, refreshes the native
-registry, reapplies the requested policy to its private writable configuration,
-and checks plugin ID, package name, runtime/install version, recorded integrity,
-and that the runtime source resolves within the resolved install path.
+OpenClaw preparation installs the supported exact npm version with
+`plugins install --no-enable`, preserving plugin allow/deny lists and entry
+settings. It refreshes the native registry, reapplies the requested policy to its
+private writable configuration, and checks plugin ID, package name,
+runtime/install version, recorded integrity, and that the runtime source resolves
+within the resolved install path. This requires an OpenClaw runtime that supports
+`--no-enable`; the currently pinned `2026.9.1` image must be updated before this
+preparation path can ship. There is no fallback to installation that changes policy.
 Identity, integrity, or effective-policy verification failure prevents the
 replacement gateway from starting. A confirmed installation rejection can instead
 disable that optional selection and produce a warning. The previous revision

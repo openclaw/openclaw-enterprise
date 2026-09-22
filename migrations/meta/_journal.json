@@ -169,6 +169,13 @@
       "when": 1787000000023,
       "tag": "0023_runtime_failure_timestamp_validation",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1787000000024,
+      "tag": "0024_agent_presets",
+      "breakpoints": true
     }
   ]
 }

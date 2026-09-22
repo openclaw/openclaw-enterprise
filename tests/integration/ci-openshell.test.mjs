@@ -8,7 +8,6 @@ import {
   kubectlVersion,
   prepareOpenShell,
   prepareOpenShellClusterBootstrap,
-  selectCliAsset,
   selectKubectlAsset,
 } from "../../scripts/ci/openshell.mjs";
 import { openShellChartImageValues } from "../helpers/openshell-kubernetes-real.mjs";
@@ -29,11 +28,6 @@ function ownedCluster(root, name = "openclaw-k8s-openshell-test") {
   };
 }
 
-test("selectCliAsset rejects unsupported OpenShell host artifacts", () => {
-  assert.equal(selectCliAsset("linux", "x64").sha256.length, 64);
-  assert.throws(() => selectCliAsset("darwin", "x64"), /no pinned CLI asset/);
-});
-
 test("kubectl asset selection supports the pinned OpenShell CI host platforms", () => {
   assert.equal(selectKubectlAsset("darwin", "arm64").name, "kubectl-darwin-arm64");
   assert.throws(() => selectKubectlAsset("darwin", "x64"), /no pinned kubectl/);
@@ -43,7 +37,7 @@ test("OpenShell Helm chart image values preserve immutable digests in rendered t
   const digest = "@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
   assert.deepEqual(
-    openShellChartImageValues("image", `localhost/example/gateway:local${digest}`, "0.0.113"),
+    openShellChartImageValues("image", `localhost/example/gateway:local${digest}`, "0.1.0-pre.5"),
     [
       "--set-string=image.repository=localhost/example/gateway",
       `--set-string=image.tag=local${digest}`,
@@ -53,15 +47,26 @@ test("OpenShell Helm chart image values preserve immutable digests in rendered t
     openShellChartImageValues(
       "supervisor.image",
       `localhost/example/supervisor${digest}`,
-      "0.0.113",
+      "0.1.0-pre.5",
     ),
     [
       "--set-string=supervisor.image.repository=localhost/example/supervisor",
-      `--set-string=supervisor.image.tag=0.0.113${digest}`,
+      `--set-string=supervisor.image.tag=0.1.0-pre.5${digest}`,
+    ],
+  );
+  assert.deepEqual(
+    openShellChartImageValues(
+      "sandboxRuntime.image",
+      `localhost/example/sandbox${digest}`,
+      "0.1.0-pre.5",
+    ),
+    [
+      "--set-string=sandboxRuntime.image.repository=localhost/example/sandbox",
+      `--set-string=sandboxRuntime.image.tag=0.1.0-pre.5${digest}`,
     ],
   );
   assert.throws(
-    () => openShellChartImageValues("image", "localhost/example/gateway:local", "0.0.113"),
+    () => openShellChartImageValues("image", "localhost/example/gateway:local", "0.1.0-pre.5"),
     /immutable OpenShell image digest/,
   );
 });

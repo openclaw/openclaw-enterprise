@@ -54,6 +54,23 @@ test(
     const modelSecret = await fixture.bindOpenAIModelSecret(primary.id);
     await fixture.bindOpenAIModelSecret(sibling.id);
 
+    // Compose the selection with real reusable Configuration policy before the
+    // ordinary deploy path snapshots it and the native installer runs.
+    const nativePluginId = pluginId.replace(/^occ-plugin:/, "");
+    const allowedPlugins = ["openai", nativePluginId];
+    const configurationPath = `/namespaces/${fixture.namespaceId}/configurations/${primary.configurationId}`;
+    const configuration = await fixture.request("GET", configurationPath);
+    assert.equal(configuration.status, 200, JSON.stringify(configuration.error));
+    const restrictedConfiguration = {
+      ...configuration.data.values,
+      plugins: { ...configuration.data.values.plugins, allow: allowedPlugins },
+      tools: { ...configuration.data.values.tools, allow: ["read"], deny: ["exec"] },
+    };
+    const configured = await fixture.request("PATCH", configurationPath, {
+      values: restrictedConfiguration,
+    });
+    assert.equal(configured.status, 200, JSON.stringify(configured.error));
+
     const siblingBefore = await fixture.getAgent(sibling.id);
     assert.ok(
       Object.keys(siblingBefore.plugins ?? {}).length === 0,
@@ -73,6 +90,10 @@ test(
     assert.equal(deployedPrimary.revision.plugins?.driver.id, "occ-plugin");
     assert.ok(Object.hasOwn(deployedPrimary.revision.plugins?.plugins ?? {}, pluginId));
     assert.equal(Object.hasOwn(deployedPrimary.revision.plugins, "artifacts"), false);
+    assert.deepEqual(await fixture.readOpenClawPluginPolicy(primary, nativePluginId), {
+      plugins: { allow: allowedPlugins, enabled: true },
+      tools: { allow: ["read", nativePluginId], deny: ["exec"] },
+    });
     assert.deepEqual(
       deployedPrimary.status.warnings,
       [],
@@ -104,8 +125,20 @@ test(
 
     const disabled = await fixture.updatePluginPolicy(primary.id, pluginId, { enabled: false });
     assert.equal(disabled.enabled, false);
+    const deniedConfiguration = {
+      ...restrictedConfiguration,
+      plugins: { ...restrictedConfiguration.plugins, deny: [nativePluginId] },
+    };
+    const denied = await fixture.request("PATCH", configurationPath, {
+      values: deniedConfiguration,
+    });
+    assert.equal(denied.status, 200, JSON.stringify(denied.error));
     const disabledRevision = await fixture.deployAndWait(primary);
     assert.equal(disabledRevision.revision.plugins?.plugins[pluginId]?.enabled, false);
+    assert.deepEqual(await fixture.readOpenClawPluginPolicy(primary, nativePluginId), {
+      plugins: { allow: allowedPlugins, deny: [nativePluginId], enabled: false },
+      tools: { allow: ["read"], deny: ["exec"] },
+    });
     const disabledMarker = `OPENCLAW_PLUGIN_DISABLED_${randomUUID()}`;
     const disabledSessionKey = `agent:main:plugin-disabled-${randomUUID()}`;
     await fixture.normalGatewayTurn({
@@ -164,6 +197,62 @@ test(
       turnMarker: siblingMarker,
       toolName,
     });
+
+    // A later contradictory selection must fail in the replacement's startup,
+    // rather than allowing installation to erase the reusable Configuration deny.
+    await fixture.selectPlugin(primary.id, { pluginId, enabled: true, approvalMode: "always" });
+    const conflicting = await fixture.request(
+      "POST",
+      `/namespaces/${fixture.namespaceId}/agents/${primary.id}/deploy`,
+    );
+    assert.equal(conflicting.status, 202, JSON.stringify(conflicting.error));
+    const failed = await fixture.waitFor(
+      "conflicting plugin revision startup failure",
+      async () => {
+        const listed = JSON.parse(
+          await fixture.kubectl(
+            "get",
+            "pods",
+            "--namespace",
+            fixture.tenantNamespace,
+            "--selector",
+            `openclaw.dev/revision=${conflicting.data.id}`,
+            "-o",
+            "json",
+          ),
+        );
+        for (const pod of listed.items) {
+          const container = pod.status.containerStatuses?.find((container) => {
+            const terminated = container.state.terminated ?? container.lastState?.terminated;
+            return terminated !== undefined && terminated.exitCode !== 0;
+          });
+          if (container !== undefined) {
+            return { pod, container };
+          }
+        }
+      },
+    );
+    const logs = await fixture.kubectl(
+      "logs",
+      failed.pod.metadata.name,
+      "--namespace",
+      fixture.tenantNamespace,
+      ...(failed.container.state.terminated === undefined && failed.container.restartCount > 0
+        ? ["--previous"]
+        : []),
+    );
+    assertNoSecretMaterial(
+      logs,
+      [modelSecret, deployedPrimary.gatewayToken],
+      "failed startup must not expose credentials.",
+    );
+    assert.equal(logs.includes("OpenClaw plugin configuration conflicts"), true);
+    assert.equal(
+      failed.pod.status.conditions?.some(
+        ({ type, status }) => type === "Ready" && status === "True",
+      ),
+      false,
+    );
   },
 );
 

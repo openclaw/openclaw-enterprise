@@ -5,37 +5,23 @@ import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { request } from "node:https";
 
-const openShellVersion = "0.0.113";
+const openShellVersion = "0.1.0-pre.5";
+const openShellRevision = "484f0768fc6a0d93e0a2be295c1679aed24e18a9";
 const agentSandboxVersion = "v0.5.2";
 const kubectlVersion = "v1.36.4";
 const k3sImage =
   "docker.io/rancher/k3s:v1.36.4-k3s1@sha256:edad48e12bf81c3a09ac1c05c0c0ffaaa22145980b989d6fae84543a76b83657";
-const openShellChartReference = "oci://ghcr.io/nvidia/openshell/helm-chart";
 const openShellChartArchive = `helm-chart-${openShellVersion}.tgz`;
-const openShellChartSha256 = "7bf2df0e490282ab4b7fd55217e5a79dfdd0b1b19ea87cb50a2cc229ccd0400e";
+const openShellSourceArchive = `openshell-v${openShellVersion}.tar.gz`;
+const openShellSourceRoot = `OpenShell-${openShellVersion}`;
+const openShellSourceSha256 = "24e4bca1884075ca5706bd78a1c5efa13be167668bff0afb301bcb98248b3b1e";
 const agentSandboxManifestSha256 =
   "230ee446d6035f631577e1c6b857f6973a8f09a0a853675d3cc34ebfe47abd6b";
-const openShellGatewayImage =
-  "ghcr.io/nvidia/openshell/gateway:0.0.113@sha256:0f8210db6590f02a2007271794104a6fcdcec0cee7a97a1cb015fafd1609ff9d";
-const openShellSupervisorImage =
-  "ghcr.io/nvidia/openshell/supervisor:0.0.113@sha256:28f6a05314fb9aba73b0c6518aed3ffbde4b51565bfe92477241d2c94488cfbb";
+const openShellGatewayImage = `ghcr.io/nvidia/openshell/gateway:${openShellRevision}@sha256:0d58d9bb9fbad1f5bceafaea0f5af2e57e9b520809fef85cfc6d10027f095bba`;
+const openShellSandboxImage = `ghcr.io/nvidia/openshell/sandbox:${openShellRevision}@sha256:6b133b8e97083f6e6218811401b6c1e11d127484c83c3818730f9cd465146c2f`;
+const openShellSupervisorImage = `ghcr.io/nvidia/openshell/supervisor:${openShellRevision}@sha256:40febe95703b2a810f264003499a8e094de7c54020328d17c1c0279b4e09e6f9`;
 const podSecurityAdmissionConfigName = "openshell-pod-security-admission.yaml";
 const podSecurityAdmissionContainerPath = `/etc/openclaw-ci/${podSecurityAdmissionConfigName}`;
-
-const cliAssets = Object.freeze({
-  "darwin:arm64": {
-    name: "openshell-aarch64-apple-darwin.tar.gz",
-    sha256: "3e78bd581187ee6ace027a9fcee32970573e4a786384ed37d247c3623de19869",
-  },
-  "linux:arm64": {
-    name: "openshell-aarch64-unknown-linux-musl.tar.gz",
-    sha256: "588692603cc518ab1aa062d69cde07cb8425a245030f222544f886e45a72f69d",
-  },
-  "linux:x64": {
-    name: "openshell-x86_64-unknown-linux-musl.tar.gz",
-    sha256: "e6bab4e7298f311a8e04a53a089ab836d239a90ca65f66f247f71a8d5926bdd7",
-  },
-});
 
 const kubectlAssets = Object.freeze({
   "darwin:arm64": {
@@ -104,8 +90,8 @@ async function ensurePrivateDirectory(path) {
   await assertPrivateDirectory(await stat(path), path);
 }
 
-function openShellReleaseUrl(asset) {
-  return `https://github.com/NVIDIA/OpenShell/releases/download/v${openShellVersion}/${asset}`;
+function openShellSourceUrl() {
+  return `https://github.com/NVIDIA/OpenShell/archive/refs/tags/v${openShellVersion}.tar.gz`;
 }
 
 function agentSandboxManifestUrl() {
@@ -164,16 +150,6 @@ async function downloadVerified(url, destination, expectedSha256) {
   await download(url, destination);
   await chmod(destination, 0o600);
   await verifySha256(destination, expectedSha256);
-}
-
-function selectCliAsset(platform = process.platform, arch = process.arch) {
-  const asset = cliAssets[`${platform}:${arch}`];
-  if (!asset) {
-    throw new Error(
-      `OpenShell ${openShellVersion} has no pinned CLI asset for ${platform}/${arch}.`,
-    );
-  }
-  return asset;
 }
 
 function normalizeArchitecture(arch) {
@@ -245,34 +221,36 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-async function acquireOpenShellCli(execFile, directory) {
-  const asset = selectCliAsset();
-  const archive = join(directory, asset.name);
-  const binDirectory = join(directory, "bin");
-  await ensurePrivateDirectory(binDirectory);
-  await downloadVerified(openShellReleaseUrl(asset.name), archive, asset.sha256);
-  await execFile("tar", ["-xzf", archive, "-C", binDirectory], { cwd: directory });
-  const cliPath = join(binDirectory, "openshell");
-  await chmod(cliPath, 0o700);
-  await execFile(cliPath, ["--help"]);
-  return cliPath;
-}
-
 async function acquireOpenShellChart(execFile, helm, directory) {
   const chartDirectory = join(directory, "chart");
   const chartPath = join(chartDirectory, openShellChartArchive);
+  const sourceDirectory = join(directory, "source");
+  const sourceArchive = join(sourceDirectory, openShellSourceArchive);
+  const sourceRoot = join(sourceDirectory, openShellSourceRoot);
+  const sourceChart = join(sourceRoot, "deploy", "helm", "openshell");
   await ensurePrivateDirectory(chartDirectory);
+  await ensurePrivateDirectory(sourceDirectory);
+  await rm(sourceRoot, { recursive: true, force: true });
   await rm(chartPath, { force: true });
+  await downloadVerified(openShellSourceUrl(), sourceArchive, openShellSourceSha256);
+  await execFile("tar", [
+    "-xzf",
+    sourceArchive,
+    "-C",
+    sourceDirectory,
+    `${openShellSourceRoot}/deploy/helm/openshell`,
+  ]);
   await execFile(helm, [
-    "pull",
-    openShellChartReference,
+    "package",
+    sourceChart,
     "--version",
+    openShellVersion,
+    "--app-version",
     openShellVersion,
     "--destination",
     chartDirectory,
   ]);
   await chmod(chartPath, 0o600);
-  await verifySha256(chartPath, openShellChartSha256);
   await execFile(helm, ["show", "chart", chartPath]);
   return chartPath;
 }
@@ -621,10 +599,12 @@ async function prepareOpenShell({ cluster, execFile, registerImage, env = proces
   const runtimeClass = env.OCC_TEST_OPENSHELL_RUNTIME_CLASS ?? "openshell-sandbox";
   const runtimeHandler = env.OCC_TEST_OPENSHELL_RUNTIME_HANDLER ?? "runc";
   const gatewaySourceImage = env.OCC_TEST_OPENSHELL_GATEWAY_IMAGE || openShellGatewayImage;
+  const sandboxSourceImage = env.OCC_TEST_OPENSHELL_SANDBOX_IMAGE || openShellSandboxImage;
   const supervisorSourceImage = env.OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE || openShellSupervisorImage;
   assertKubernetesName(runtimeClass, "OpenShell RuntimeClass");
   assertRuntimeHandler(runtimeHandler);
   assertImmutableImageReference(gatewaySourceImage, "OCC_TEST_OPENSHELL_GATEWAY_IMAGE");
+  assertImmutableImageReference(sandboxSourceImage, "OCC_TEST_OPENSHELL_SANDBOX_IMAGE");
   assertImmutableImageReference(supervisorSourceImage, "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE");
 
   await execFile(kubectl, kubectlArgs(selectedCluster, ["version", "--client=true"]));
@@ -655,10 +635,7 @@ async function prepareOpenShell({ cluster, execFile, registerImage, env = proces
     assertRuntimeSmokeImage(env.OCC_TEST_KUBERNETES_AGENT_IMAGE),
   );
 
-  const [cliPath, chartPath] = await Promise.all([
-    acquireOpenShellCli(execFile, directory),
-    acquireOpenShellChart(execFile, helm, directory),
-  ]);
+  const chartPath = await acquireOpenShellChart(execFile, helm, directory);
   await installAgentSandbox(execFile, kubectl, selectedCluster, directory);
 
   const gatewayImage = chartDeployableImageReference(
@@ -669,14 +646,18 @@ async function prepareOpenShell({ cluster, execFile, registerImage, env = proces
     await registerImage(supervisorSourceImage, "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE"),
     "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
   );
+  const sandboxImage = chartDeployableImageReference(
+    await registerImage(sandboxSourceImage, "OCC_TEST_OPENSHELL_SANDBOX_IMAGE"),
+    "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
+  );
 
   return {
     OCC_TEST_OPENSHELL_K3D_REAL: "1",
-    OCC_TEST_OPENSHELL_CLI: cliPath,
     OCC_TEST_OPENSHELL_HELM: helm,
     OCC_TEST_OPENSHELL_HELM_CHART: chartPath,
     OCC_TEST_OPENSHELL_CHART_VERSION: openShellVersion,
     OCC_TEST_OPENSHELL_GATEWAY_IMAGE: gatewayImage,
+    OCC_TEST_OPENSHELL_SANDBOX_IMAGE: sandboxImage,
     OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE: supervisorImage,
     OCC_TEST_OPENSHELL_RUNTIME_CLASS: runtimeClass,
   };
@@ -686,11 +667,10 @@ export {
   agentSandboxVersion,
   k3sImage,
   kubectlVersion,
-  openShellChartReference,
+  openShellRevision,
   openShellVersion,
   prepareOpenShell,
   prepareOpenShellClusterBootstrap,
   prepareOpenShellPodSecurityAdmission,
-  selectCliAsset,
   selectKubectlAsset,
 };

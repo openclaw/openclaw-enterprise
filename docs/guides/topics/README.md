@@ -9,6 +9,7 @@ Enterprise, start with [Concepts](../concepts.md) or
 
 - [Agent overview](agent.md): identity, supported operations,
   and what happens when you deploy or stop an Agent.
+- [Presets](agent-presets.md): reuse launch settings and fill variables when creating an Agent.
 - [Compute](agent-compute.md): where Agents run and which execution modes each
   bundled Driver supports.
 - [Harness](../../reference/harness-execution.md): how OpenClaw or Codex runs

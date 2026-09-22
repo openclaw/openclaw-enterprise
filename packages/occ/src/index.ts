@@ -24,6 +24,8 @@ import type {
   OpenClawConfigurationDocument,
   ManagedIAMResourceKind,
   Permission,
+  Preset,
+  PresetTemplate,
   PermissionAction,
   PluginDesiredState,
   PluginDriver,
@@ -52,6 +54,9 @@ import {
   admitLoggingConfiguration,
   normalizeLoggingLevel,
   normalizePluginDesiredState,
+  normalizePresetTemplate,
+  presetTemplateDefaults,
+  PresetValidationError,
   normalizeSecretBindings,
   normalizeHarnessAuthBinding,
   freezeAgentRevision,
@@ -212,6 +217,19 @@ export type HarnessResolver = (
   harnessId: string,
   executionMode: HarnessExecutionMode,
 ) => HarnessDescriptor | undefined;
+
+export interface CreatePresetInput {
+  readonly namespaceId: string;
+  readonly name: string;
+  readonly template: PresetTemplate;
+}
+
+export interface UpdatePresetInput {
+  readonly namespaceId: string;
+  readonly presetId: string;
+  readonly name?: string;
+  readonly template?: PresetTemplate;
+}
 
 export interface CreateSecretInput {
   readonly namespaceId: string;
@@ -1364,6 +1382,142 @@ export class OpenClawController {
     });
   }
 
+  async createPreset(principalId: string, input: CreatePresetInput): Promise<Readonly<Preset>> {
+    if (!validName(input.name)) {
+      throw new PresetValidationError("The Preset name is invalid.");
+    }
+    return this.mutate(async (state) => {
+      const namespace = await this.lockNamespace(state, input.namespaceId);
+      await this.authorize(principalId, "create", {
+        kind: "preset",
+        id: namespace.id,
+        namespaceId: namespace.id,
+      });
+      if (namespace.status !== "ready") {
+        throw new NamespaceNotReadyError();
+      }
+      const template = await this.admitPresetTemplate(input.template, namespace.id);
+      return state.presets.createPreset({
+        id: this.nextIdentifier("preset"),
+        namespaceId: namespace.id,
+        name: input.name,
+        template,
+        createdAt: this.timestamp(),
+      });
+    });
+  }
+
+  async listPresets(
+    principalId: string,
+    namespaceId: string,
+  ): Promise<readonly Readonly<Preset>[]> {
+    return this.read(async (state) => {
+      const namespace = await this.exactNamespace(state, namespaceId);
+      const readable: Readonly<Preset>[] = [];
+      for (const preset of await state.presets.listPresets(namespace.id)) {
+        if (
+          await this.canRead(principalId, {
+            kind: "preset",
+            id: preset.id,
+            namespaceId: namespace.id,
+          })
+        ) {
+          readable.push(preset);
+        }
+      }
+      return Object.freeze(readable);
+    });
+  }
+
+  async getPreset(
+    principalId: string,
+    namespaceId: string,
+    presetId: string,
+  ): Promise<Readonly<Preset>> {
+    await this.authorize(principalId, "read", { kind: "preset", id: presetId, namespaceId });
+    return this.read(async (state) => {
+      await this.exactNamespace(state, namespaceId);
+      const preset = await state.presets.findPreset(namespaceId, presetId);
+      if (!preset) {
+        throw new ScopeViolationError("The Preset does not belong to the exact Namespace.");
+      }
+      return preset;
+    });
+  }
+
+  async updatePreset(principalId: string, input: UpdatePresetInput): Promise<Readonly<Preset>> {
+    if (input.name !== undefined && !validName(input.name)) {
+      throw new PresetValidationError("The Preset name is invalid.");
+    }
+    return this.mutate(async (state) => {
+      const namespace = await this.lockNamespace(state, input.namespaceId);
+      await this.authorize(principalId, "update", {
+        kind: "preset",
+        id: input.presetId,
+        namespaceId: namespace.id,
+      });
+      if (namespace.status !== "ready") {
+        throw new NamespaceNotReadyError();
+      }
+      if (!(await state.presets.lockPreset(namespace.id, input.presetId))) {
+        throw new ScopeViolationError("The Preset does not belong to the exact Namespace.");
+      }
+      const template =
+        input.template === undefined
+          ? undefined
+          : await this.admitPresetTemplate(input.template, namespace.id);
+      const updated = await state.presets.updatePreset(namespace.id, input.presetId, {
+        ...(input.name === undefined ? {} : { name: input.name }),
+        ...(template === undefined ? {} : { template }),
+      });
+      if (!updated) {
+        throw new ResourceConflictError("The Preset changed during update.");
+      }
+      return updated;
+    });
+  }
+
+  async deletePreset(principalId: string, namespaceId: string, presetId: string): Promise<void> {
+    return this.mutate(async (state) => {
+      const namespace = await this.lockNamespace(state, namespaceId);
+      await this.authorize(principalId, "delete", {
+        kind: "preset",
+        id: presetId,
+        namespaceId: namespace.id,
+      });
+      if (!(await state.presets.lockPreset(namespace.id, presetId))) {
+        throw new ScopeViolationError("The Preset does not belong to the exact Namespace.");
+      }
+      for (const binding of await state.iamPolicy.listAccessBindings(namespace.id)) {
+        if (binding.resourceKind === "preset" && binding.resourceId === presetId) {
+          await state.iamPolicy.deleteAccessBinding(namespace.id, binding.id);
+        }
+      }
+      if (!(await state.presets.deletePreset(namespace.id, presetId))) {
+        throw new ResourceConflictError("The Preset changed during deletion.");
+      }
+    });
+  }
+
+  private async admitPresetTemplate(
+    input: PresetTemplate,
+    namespaceId: string,
+  ): Promise<PresetTemplate> {
+    const template = normalizePresetTemplate(input, namespaceId);
+    const values = presetTemplateDefaults(template).configuration?.values;
+    if (values !== undefined) {
+      const driver = this.configurationDriver();
+      if (!driver.validateValues) {
+        throw new DependencyUnavailableError(
+          "The selected Configuration Driver cannot validate Preset values.",
+        );
+      }
+      // Validation owns native credential rules; Preset CRUD never creates runtime resources.
+      await driver.validateValues(values);
+    }
+    return template;
+  }
+
   async createSecret(
     principalId: string,
     input: CreateSecretInput,
@@ -2218,6 +2372,9 @@ export class OpenClawController {
       if (await state.namespaces.hasAgents(namespace.id)) {
         throw new NamespaceNotEmptyError();
       }
+      if (await state.namespaces.hasPresets(namespace.id)) {
+        throw new NamespaceNotEmptyError();
+      }
       if (await state.namespaces.hasConfigurations(namespace.id)) {
         throw new NamespaceNotEmptyError();
       }
@@ -2907,6 +3064,7 @@ export class OpenClawController {
       kind !== "agent" &&
       kind !== "agent_revision" &&
       kind !== "configuration" &&
+      kind !== "preset" &&
       kind !== "secret" &&
       kind !== "service_account"
     ) {
@@ -2970,6 +3128,12 @@ export class OpenClawController {
         throw new ScopeViolationError(
           "The IAM target AgentRevision does not belong to the Namespace.",
         );
+      }
+      if (resourceKind === "preset") {
+        if ((await state.presets.findPreset(namespaceId, resourceId)) === undefined) {
+          throw new ScopeViolationError("The IAM target Preset does not belong to the Namespace.");
+        }
+        return;
       }
       if (resourceKind === "configuration") {
         if ((await state.configurations.findConfiguration(namespaceId, resourceId)) === undefined) {
@@ -3179,6 +3343,7 @@ export class OpenClawController {
       installation: "ins",
       namespace: "ns",
       configuration: "cfg",
+      preset: "pre",
       service_account: "sa",
       secret: "sec",
       agent: "agt",

@@ -6,13 +6,14 @@ gateway with a dedicated Codex Harness and the bundled
 Agents, revisions, Namespaces, routing, credentials, and authorization.
 
 **OpenShell is not supported for production Agent deployment.** The stock
-OpenShell version this integration targets, `v0.0.113`, cannot accept the
+OpenShell version this integration targets,
+[`v0.1.0-pre.5`](https://github.com/NVIDIA/OpenShell/tree/v0.1.0-pre.5), cannot accept the
 Kubernetes Secret-backed environment entries or projected workload identity a
 dedicated Codex Agent requires. The Enterprise Driver rejects deployment rather
-than starting an incorrectly credentialed Harness. The existing OpenShell
-integration verifies that rejection; it does not establish a successful Agent
-deployment or model response. Use Kubernetes Compute without OpenShell when
-you need to run Agents.
+than starting an incorrectly credentialed Harness. The real integration keeps
+that rejection proof and has a separate CI-only compatibility bridge for a real
+in-Sandbox model turn. That bridge is not a supported deployment path. Use
+Kubernetes Compute without OpenShell when you need to run Agents.
 
 Embedded OpenClaw also fails when OpenShell is selected; the integration is
 designed only for dedicated Codex. See the [upstream requirements](#current-upstream-preconditions)
@@ -64,11 +65,11 @@ The Driver configures all three available
 [SandboxDriver containment facets](sandbox.md#containment-facets). Applying them
 to a running Agent requires upstream support:
 
-| Facet        | Current OpenShell behavior                                                                  |
-| ------------ | ------------------------------------------------------------------------------------------- |
-| `networking` | OpenShell network policies for Harness tool traffic, plus Kubernetes baseline policies.     |
-| `filesystem` | Approved PVC subpath mounts and OpenShell filesystem policy for read-only/read-write paths. |
-| `process`    | OpenShell process policy, including the configured run-as user and group.                   |
+| Facet        | Current OpenShell behavior                                                                    |
+| ------------ | --------------------------------------------------------------------------------------------- |
+| `networking` | Binary-scoped OpenShell policies for Harness tool traffic, plus Kubernetes baseline policies. |
+| `filesystem` | Approved PVC subpath mounts and OpenShell filesystem policy for read-only/read-write paths.   |
+| `process`    | OpenShell process policy, including the configured run-as user and group.                     |
 
 There is no `exec` facet. Command-level authorization and per-tool dynamic
 sandbox creation are deferred; `exec` remains a tool invocation that runs inside
@@ -103,7 +104,7 @@ drivers:
       kubernetes:
         runtimeClassName: openshell-sandbox
         serviceAccount:
-          mode: driverConfig
+          mode: gatewayConfigured
         sandboxDataMount:
           subPath: workspace
           mountPath: /sandbox/enterprise
@@ -114,11 +115,27 @@ drivers:
           runAsGroup: "1000"
         networkPolicies:
           - name: model-egress
+            binaries:
+              - path: /path/to/model-client
             endpoints:
               - host: api.openai.com
                 ports: [443]
                 protocol: tcp
+                tls: skip
 ```
+
+Each pre.5 network policy requires at least one binary identity with a nonempty
+executable path. OpenShell applies the endpoints only to those
+binaries. The optional endpoint fields use OpenShell's configuration spellings: `tls`
+accepts `skip` or `terminate`; `enforcement` accepts `enforce` or `audit`; and
+`access` accepts `read_only`, `read_write`, or `full`. OpenShell pre.5 treats
+`terminate` as a deprecated alias for automatic TLS detection and termination.
+It also changed the old `passthrough` spelling to that behavior, so the Driver
+rejects `passthrough` at startup. Replace `tls: passthrough` with `tls: skip` to
+retain uninspected TLS relay.
+`gatewayConfigured` is the only ServiceAccount mode for `v0.1.0-pre.5`; the
+gateway's configured sandbox ServiceAccount applies to every Sandbox it creates
+and does not satisfy the per-Agent production requirement below.
 
 The OpenShell gateway must be installed separately before this driver's
 `ensureNamespace` runs. The bundled driver does not install the gateway.
@@ -165,7 +182,7 @@ exempts the whole Pod, the cluster must also install a fail-closed admission
 policy that restricts the exemption to the approved OpenShell workload shape:
 trusted OpenShell images by digest, expected ServiceAccounts, approved
 Namespaces, expected labels, and the exact elevated capabilities needed by
-OpenShell init or sidecar containers.
+OpenShell init and supervisor components.
 
 Do not grant wildcard tenant permissions to the SandboxDriver. It is wired to
 use the same authenticated Kubernetes client as the Kubernetes Compute Driver;
@@ -192,14 +209,17 @@ require upstream OpenShell to satisfy all of these conditions:
   creates for the Harness.
 - OpenShell must preserve the Harness's exact audience-bound, short-lived
   projected ServiceAccount token and read-only mount. Its gateway bootstrap
-  token is not a substitute. Stock OpenShell `v0.0.113` does not support
+  token is not a substitute. Stock OpenShell `v0.1.0-pre.5` does not support
   projected volumes in gateway driver configuration. An operator-created
   template bridge is not a supported workaround.
 - OpenShell must preserve all approved Agent workspace PVC subpath mounts
   without falling back to its default workspace claim or mounting the PVC root.
+- OpenShell must preserve the immutable plugin-runtime `runtime.json` and
+  `config.toml` ConfigMap entries at `/etc/openclaw/plugin-runtime`. The Codex
+  entrypoint reads these files even when the Agent selects no optional plugins.
 - OpenShell must support exact environment entries backed by Kubernetes
   `secretKeyRef`, including the startup app-server token Secret. Stock
-  OpenShell `v0.0.113` cannot receive those entries through the current gateway
+  OpenShell `v0.1.0-pre.5` cannot receive those entries through the current gateway
   API, and the Enterprise Driver rejects them. A credential bridge is not a
   supported workaround.
 - OpenShell gateway authentication must be bound to the trusted caller and the
@@ -217,13 +237,14 @@ Common fail-closed errors include:
 - `OpenShell gateway Service is unavailable.`
 - `OpenShell gateway Pod is not ready.`
 - `OpenShell SandboxDriver only supports dedicated Codex Harness revisions.`
-- `OpenShell v0.0.113 cannot receive secretKeyRef environment ...`
+- `OpenShell v0.1.0-pre.5 cannot receive secretKeyRef environment ...`
 
 ## Related documentation
 
 - [Development and production deployment](../../guides/deploy.md)
 
 - [OpenShell testing](../../testing/openshell.md)
+- [OpenShell Sandbox provisioning flow](../../flows/openshell-sandbox-provisioning.md)
 - [SandboxDriver contract](sandbox.md)
 - [ComputeDriver contract](compute.md)
 - [Kubernetes ComputeDriver](kubernetes-compute.md)

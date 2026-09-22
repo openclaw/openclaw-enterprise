@@ -1,3 +1,4 @@
+import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -59,9 +60,9 @@ const LABEL_AGENT = "org.openclaw.enterprise.agent-id";
 const LABEL_REVISION = "org.openclaw.enterprise.revision-id";
 const LABEL_ROLE = "org.openclaw.enterprise.role";
 
-// Dedicated Codex app-server execution sends Codex custom tools, so the default
-// stays on the exact GPT-5.6 Sol API model ID.
-const providerModel = (process.env.OCC_TEST_OPENAI_MODEL ?? "gpt-5.6-sol").replace(
+// Dedicated Codex app-server execution sends Codex custom tools, so explicit model overrides
+// must support those tools.
+const providerModel = (process.env.OCC_TEST_OPENAI_MODEL ?? defaultAgentModel).replace(
   /^(?:openai|codex)\//,
   "",
 );

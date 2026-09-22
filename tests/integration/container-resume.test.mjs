@@ -64,7 +64,7 @@ test("recovery preserves producer bytes and identity across a partial publicatio
       ciAttempt: "1",
       nodeBaseImage: env.NODE_BASE_IMAGE,
       image,
-      platform: "linux/amd64",
+      platforms: ["linux/amd64", "linux/arm64"],
       digest: `sha256:${hash(bytes)}`,
       archiveSha256: hash(bytes),
     };
@@ -134,7 +134,6 @@ if (args[0] === "inspect") {
     workflow_run: { id: 123, head_sha: sourceSha },
     digest: `sha256:${"c".repeat(64)}`,
   }));
-  let approvalRun = "999";
   let packageVisibility = "private";
   let interruptRuntime = false;
   let sourceCiConclusion = "success";
@@ -190,29 +189,12 @@ if (args[0] === "inspect") {
         id: 42,
         name: "container-publish",
         can_admins_bypass: false,
-        protection_rules: [
-          { type: "required_reviewers", prevent_self_review: true, reviewers: [{ type: "Team" }] },
-        ],
+        protection_rules: [],
         deployment_branch_policy: { custom_branch_policies: true, protected_branches: false },
       });
     }
     if (path.endsWith("/deployment-branch-policies")) {
       return Response.json({ branch_policies: [{ name: "main", type: "branch" }] });
-    }
-    if (path.endsWith("/approvals")) {
-      return Response.json([
-        {
-          state: "approved",
-          user: { type: "User", login: "reviewer" },
-          environments: [{ id: 42, name: "container-publish" }],
-          comment: images
-            .map(
-              (image) =>
-                `Verified GHCR linkage: ${env[`GHCR_${image.toUpperCase()}_IMAGE`]} -> ${repository}; source=${sourceSha}; run=${approvalRun}; attempt=1`,
-            )
-            .join("\n"),
-        },
-      ]);
     }
     for (const [index, image] of images.entries()) {
       const packagePath = `/orgs/openclaw/packages/container/enterprise-${image}`;
@@ -245,7 +227,7 @@ if (args[0] === "inspect") {
     `
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-const { env, sourceSha, workflowSha, repository, publishWorkflow, repo, run, jobs, artifacts, images, prepared, statePath, approvalRun, packageVisibility, interruptRuntime, sourceCiConclusion, metadataMissing, tag } = JSON.parse(await readFile(${JSON.stringify(fixtureConfig)}, "utf8"));
+const { env, sourceSha, workflowSha, repository, publishWorkflow, repo, run, jobs, artifacts, images, prepared, statePath, packageVisibility, interruptRuntime, sourceCiConclusion, metadataMissing, tag } = JSON.parse(await readFile(${JSON.stringify(fixtureConfig)}, "utf8"));
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 globalThis.fetch = ${fetchFixture.toString()};
 globalThis.setTimeout = (resolve) => queueMicrotask(resolve);
@@ -267,7 +249,6 @@ globalThis.setTimeout = (resolve) => queueMicrotask(resolve);
         images,
         prepared,
         statePath,
-        approvalRun,
         packageVisibility,
         interruptRuntime,
         sourceCiConclusion,
@@ -327,14 +308,6 @@ globalThis.setTimeout = (resolve) => queueMicrotask(resolve);
       },
       () => {
         artifacts[1].id = 11;
-      },
-    ],
-    [
-      () => {
-        approvalRun = "123";
-      },
-      () => {
-        approvalRun = "999";
       },
     ],
     [

@@ -1,7 +1,7 @@
-// Minimal OpenShell v0.0.113 gateway surface used by OpenClaw Enterprise.
+// Minimal OpenShell v0.1.0-pre.5 gateway surface used by OpenClaw Enterprise.
 //
 // This intentionally models only the messages needed for lifecycle-safe
-// Sandbox creation and deletion. Field numbers and packages match the
+// Sandbox creation and deletion. Field numbers and wire types match the
 // OpenShell public protos so grpc-js can interoperate with the real gateway.
 syntax = "proto3";
 
@@ -32,12 +32,10 @@ enum ServiceStatus {
 message ObjectMeta {
   string id = 1;
   string name = 2;
-  int64 created_at_ms = 3;
   map<string, string> labels = 4;
   uint64 resource_version = 5;
   map<string, string> annotations = 6;
   string workspace = 7;
-  int64 deletion_timestamp_ms = 8;
 }
 
 message Sandbox {
@@ -111,15 +109,36 @@ message NetworkEndpoint {
   string host = 1;
   uint32 port = 2;
   string protocol = 3;
-  string tls = 4;
-  string enforcement = 5;
-  string access = 6;
+  NetworkTlsMode tls = 4;
+  NetworkEnforcementMode enforcement = 5;
+  NetworkAccessPreset access = 6;
   repeated uint32 ports = 9;
+}
+
+enum NetworkTlsMode {
+  NETWORK_TLS_MODE_UNSPECIFIED = 0;
+  NETWORK_TLS_MODE_SKIP = 1;
+  NETWORK_TLS_MODE_TERMINATE = 2;
+  NETWORK_TLS_MODE_PASSTHROUGH = 3;
+}
+
+enum NetworkEnforcementMode {
+  NETWORK_ENFORCEMENT_MODE_UNSPECIFIED = 0;
+  NETWORK_ENFORCEMENT_MODE_ENFORCE = 1;
+  NETWORK_ENFORCEMENT_MODE_AUDIT = 2;
+}
+
+enum NetworkAccessPreset {
+  NETWORK_ACCESS_PRESET_UNSPECIFIED = 0;
+  NETWORK_ACCESS_PRESET_READ_ONLY = 1;
+  NETWORK_ACCESS_PRESET_READ_WRITE = 2;
+  NETWORK_ACCESS_PRESET_FULL = 3;
 }
 
 message NetworkBinary {
   string path = 1;
-  string sha256 = 2;
+  reserved 2;
+  reserved "harness";
 }
 
 message NetworkMiddlewareConfig {
@@ -137,7 +156,6 @@ message MiddlewareEndpointSelector {
 }
 
 message SandboxStatus {
-  string sandbox_name = 1;
   string agent_pod = 2;
   string agent_fd = 3;
   string sandbox_fd = 4;
@@ -173,12 +191,18 @@ message CreateSandboxRequest {
   string name = 2;
   map<string, string> labels = 3;
   map<string, string> annotations = 4;
-  string workspace = 5;
+  WorkspaceSelector workspace_scope = 7;
 }
 
 message DeleteSandboxRequest {
   string name = 1;
-  string workspace = 2;
+  WorkspaceSelector workspace_scope = 2;
+}
+
+message WorkspaceSelector {
+  oneof selection {
+    string workspace = 1;
+  }
 }
 
 message SandboxResponse {

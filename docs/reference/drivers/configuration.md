@@ -16,7 +16,7 @@ development uses filesystem storage. See [Driver selection](selection.md).
 ### Operations and ownership
 
 The [shared interface](../../../packages/contracts/src/index.ts) requires all five
-methods; there are no optional Configuration methods.
+core methods. Optional value validation supports Preset admission.
 
 | Method                        | Contract                                                                                                        |
 | ----------------------------- | --------------------------------------------------------------------------------------------------------------- |
@@ -30,6 +30,18 @@ A Configuration has `id`, `namespaceId`, `kind`, `generation`, `values`, and
 `createdAt`. The current kind is `agent`; `values` is native OpenClaw JSON. OCC
 checks returned resources against its metadata. A result for another Namespace,
 ID, kind, or generation cannot substitute for the requested resource.
+
+### Optional validation
+
+`validateValues?(values)` validates native JSON without a Configuration identity
+or storage writes. OCC calls it before persisting a [Preset](../presets.md) that
+contains native values, after resolving available variable defaults. Unfilled
+variables remain tokens. The Driver owns native credential restrictions; OCC
+owns template structure, Namespace scope, and authorization.
+
+Bundled filesystem and Kubernetes Drivers implement this method. A Driver that
+omits it still supports ordinary Configuration operations, but OCC rejects
+Preset writes containing `configuration.values` with dependency unavailable.
 
 ## IAM
 

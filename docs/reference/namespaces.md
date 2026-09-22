@@ -111,9 +111,9 @@ Deleting a tenant preserves its discovered, operator-owned Kubernetes namespace
 and external resources, removing only OCC-owned infrastructure. Driver-owned
 Kubernetes namespaces are deleted normally.
 
-A Namespace containing any Agent, Configuration, or service account
+A Namespace containing any Agent, Configuration, Preset, or service account
 cannot be deleted and returns `409 NAMESPACE_NOT_EMPTY`. Delete unreferenced
-Agents, Configurations, and service accounts before deleting their Namespace.
+Agents, Configurations, [Presets](presets.md), and service accounts before deleting their Namespace.
 Agent deletion is asynchronous; wait until each deleted Agent disappears from
 reads before retrying Namespace deletion.
 

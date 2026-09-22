@@ -2,8 +2,9 @@
 
 [`container-publish.yml`](workflows/container-publish.yml) prepares the existing
 controller (`Dockerfile`, target `runtime`) and combined gateway/Agent runtime
-(`deploy/runtime/Dockerfile`) as OCI archives. It supports `linux/amd64`, matching
-the current CI image lane and deployment example. It does not change recipes,
+(`deploy/runtime/Dockerfile`) as OCI archives containing both `linux/amd64` and
+`linux/arm64`. Each image has one multi-platform index digest; Docker selects
+the matching architecture when pulling it. It does not change recipes,
 package versions, Kubernetes deployment, or the existing CI test matrix.
 
 ## Source visibility
@@ -13,7 +14,7 @@ No-push preparation supports private or public source in
 (`PUBLISH` is the exact string `"false"`). The trusted main workflow, immutable
 source SHA, successful exact-source CI, and approved base-image checks still apply.
 Actual GHCR publication and Docker Hub promotion continue to require private
-source and private linked GHCR packages. From public source, both remain blocked
+source and private GHCR packages. From public source, both remain blocked
 pending an explicitly reviewed package-access and credential design.
 
 [GitHub warns](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility#ensuring-workflow-access-to-your-package)
@@ -26,21 +27,23 @@ guarantee.
 
 ## Operator setup
 
-Publication is disabled until an operator independently authorizes and completes
-these prerequisites. Adding the workflow does not authorize publication.
+Maintainers publish by manually dispatching the workflow. GitHub requires
+[repository write access](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
+to run it; repository writers can dispatch it too. There is no second-person
+approval or approval-comment requirement. Complete these prerequisites first.
 
 - Protect `main`, require the real `CI Required` check, and review workflow changes.
-- Create a dedicated `container-publish` environment with required reviewers,
-  self-approval disabled, administrator bypass disabled, and one deployment
-  branch policy: branch `main`. Do not reuse the integration environments.
+- Create a dedicated `container-publish` environment with no required reviewers or
+  wait timer, administrator bypass disabled, and one deployment branch policy:
+  branch `main`. Do not reuse the integration environments.
 - Set repository or organization variable `CONTAINER_NODE_BASE_IMAGE` to the
   approved Node 24 digest used by `scripts/ci/test-suites.json` and the runtime
   Dockerfile. All three must agree. This is an explicit approval, not a default.
-- Independently bootstrap two **private**, pre-existing GHCR container packages,
+- Bootstrap two **private**, pre-existing GHCR container packages,
   link each to `openclaw/openclaw-enterprise`, and grant this repository Actions
   access. GHCR packages are first created by pushing an image; the Enterprise
-  publisher deliberately cannot perform that initial push. Use the separately
-  approved [marker bootstrap](#bootstrap-private-packages), then confirm private
+  publisher deliberately cannot perform that initial push. Use the manual
+  [marker bootstrap](#bootstrap-private-packages), then confirm private
   visibility and linkage.
 - Set environment variables `GHCR_CONTROLLER_IMAGE` and `GHCR_RUNTIME_IMAGE`
   to their full `ghcr.io/openclaw/...` names without tags or digests. They must be
@@ -52,8 +55,8 @@ No-push preparation needs the approved base-image variable and trusted source/CI
 not the publishing environment or package-access grants. Do not apply the
 private-package setup above to a public source repository.
 Missing settings, inaccessible metadata, conflicting package linkage, or nonprivate
-visibility stop publication. When GitHub omits repository metadata, publication
-requires the independent [linkage confirmation](#confirm-package-linkage) below.
+visibility stop publication. GitHub may omit repository metadata; that omission
+does not require an approval comment.
 Repository-level secrets/variables alone do not
 describe effective organization/environment credentials.
 
@@ -62,32 +65,23 @@ describe effective organization/environment credentials.
 GitHub's [package response](https://docs.github.com/en/rest/packages/packages#get-a-package-for-an-organization)
 may omit `repository` or return `null` even for a connected GHCR package. The
 workflow always verifies package identity and private visibility. An explicit
-repository must match the private Enterprise repository; an approval cannot
-override conflicting metadata.
+repository must match the private Enterprise repository; conflicting metadata
+stops publication.
 
-When repository metadata is absent, the independent environment reviewer must
-open **Package settings** for each destination and confirm its connected
-repository is `openclaw/openclaw-enterprise`, its visibility is **Private**, and
-that repository has the required **Manage Actions access** grant. Source labels
-alone are not linkage evidence. Include one exact line per package in the
-environment approval comment, replacing the placeholders and image names with
-the selected values:
+During package setup, open **Package settings** for each destination and confirm
+its connected repository is `openclaw/openclaw-enterprise`, its visibility is
+**Private**, and that repository has the required **Manage Actions access**
+grant. Source labels alone do not prove linkage. When GitHub omits repository
+metadata, the publisher relies on this configured package access and still
+checks package identity, private visibility, and immutable tag contents. It does
+not claim to verify omitted linkage through the API.
 
-```text
-Verified GHCR linkage: ghcr.io/openclaw/openclaw-enterprise-controller -> openclaw/openclaw-enterprise; source=<source_sha>; run=<current_run_id>; attempt=<current_attempt>
-Verified GHCR linkage: ghcr.io/openclaw/openclaw-enterprise-runtime -> openclaw/openclaw-enterprise; source=<source_sha>; run=<current_run_id>; attempt=<current_attempt>
-```
-
-The publisher, recovery workflow, and Docker Hub promotion read GitHub's authenticated
-[environment review history](https://docs.github.com/en/rest/actions/workflow-runs#get-the-review-history-for-a-workflow-run)
-and require an approved review for the current environment ID from someone other
-than the run initiator or rerun actor. The statement binds each package and
-repository to the selected source, current run, and attempt. A normal approval
-without these lines, or a statement from an earlier attempt, does not satisfy
-this fallback. For promotion, use the promotion run and attempt, not the producer's.
-For recovery, use the original image source SHA and the new recovery run and attempt.
-This is recorded operator verification of the live settings, not an API-derived
-proof of linkage. Recheck the settings before approving each attempt.
+To migrate an existing environment, first merge this manual-publication change
+and wait for its main-push CI. Then remove required reviewers and any wait timer
+from **Settings → Environments → container-publish**. Retain the environment
+variables, main-only branch policy, and disabled administrator bypass. Old runs
+execute their original workflow code; use a new recovery dispatch to publish
+retained artifacts under the updated policy.
 
 ## Bootstrap private packages
 
@@ -96,7 +90,7 @@ reviewed [bootstrap workflow](workflows/container-bootstrap.yml) and wait for
 its exact main-push CI run to succeed. An operator must first confirm that the
 organization permits creation of private container packages under those names.
 Dispatch **Bootstrap Enterprise Container Packages** on `main` with that
-`ci_run_id`; an independent reviewer approves `container-publish`.
+`ci_run_id`. The manual dispatch authorizes the run.
 
 The workflow uses its short-lived `GITHUB_TOKEN` to build and push a scratch
 image containing only a fixed marker. Its temporary context contains no checkout
@@ -106,8 +100,8 @@ push; it is not proof that a package is absent rather than inaccessible. Other
 metadata errors stop the run. After each push, the metadata lookup retries only
 404 responses up to five times at two-second intervals for registry propagation;
 persistent 404 responses fail. Private visibility and the remote digest must
-verify before bootstrap succeeds. Missing repository metadata is allowed only
-for this marker stage; confirm linkage before approving real-image publication.
+verify before bootstrap succeeds. Confirm package linkage during setup before
+real-image publication.
 
 The job summary records package coordinates and marker digests. The unique
 `bootstrap-<run-id>-<attempt>` tags are not runnable Enterprise images. Bootstrap
@@ -130,17 +124,24 @@ grant a workstation credential additional scopes.
 2. Manually dispatch **Enterprise Containers**, selecting branch `main`, its full
    current `source_sha`, and that `ci_run_id`. Leave `publish` false for no-push
    preparation. If main moved, select the new SHA and its own completed CI run.
-3. Only under an explicit publication request, dispatch with `publish` true and
-   approve the protected environment after reviewing the SHA, CI run, and OCI
-   artifacts and [package linkage](#confirm-package-linkage). Preparation builds once, loads that archive into Docker, verifies
-   its config ID, and runs the existing controller or runtime startup smoke
-   against that ID before sealing/uploading. The publisher copies those exact
-   archive digests with Skopeo and verifies the remote digests. Source, CI attempt,
-   environment protections, and package visibility are checked again after approval.
+3. To publish, dispatch with `publish` true after reviewing the SHA, CI run,
+   and [package setup](#confirm-package-linkage). Preparation builds
+   both platforms in one OCI archive, checks the index and child manifest/config
+   digests, and loads each platform into Docker separately. Its config ID must
+   match that index entry. Both platforms run the existing controller or runtime
+   startup smoke before sealing/uploading. ARM64 builds and smoke tests use QEMU
+   on the amd64 runner; this is not native ARM64 performance proof. The publisher copies those exact
+   archive and all child manifests with Skopeo and verifies the remote index digests. Source, CI attempt,
+   environment branch policy, and package visibility are rechecked before transfer.
 4. Use the `image@sha256:...` references in the job summary and
    `container-publication-<run-id>-<attempt>` receipt for deployment. No Git tag,
    release, `latest` alias, or deployment is created. Existing `sha-<source-sha>`
    image tags cannot be replaced by different bytes.
+
+The multi-platform publisher requires both architectures in every seal. Earlier
+amd64-only tags retain their original bytes and digests; building this workflow
+requires a new source SHA. Old single-platform archives are not accepted by the
+current recovery or promotion validator. See the [publication execution flow](../docs/flows/container-publication.md).
 
 OCI archives are retained for seven days and publication receipts for 30 days.
 Uploaded archives follow the repository's
@@ -173,9 +174,8 @@ on `main` with:
 - `workflow_ci_run_id`: successful main-push CI for the current recovery workflow
   revision. This is separate from the original image's CI evidence in its seal.
 
-Review the validated artifact IDs, original digests, and current private package
-settings, then approve `container-publish` with the current recovery run's
-[linkage confirmation](#confirm-package-linkage). Recovery downloads the exact
+Review the original digests and current private package settings before dispatch.
+Recovery validates artifact IDs and downloads the exact
 artifact IDs from the original run, verifies seals and archive hashes, and
 rechecks original source CI as well as recovery workflow CI. Source must remain
 in main history and precede the recovery workflow revision. The approved Node
@@ -185,7 +185,7 @@ An existing source tag must match both package metadata and its remote manifest
 digest; recovery leaves it untouched even when package metadata lags. Only an
 authenticated manifest-unknown response permits copying an unlisted tag; other
 inspection failures stop the run. Missing tags receive the original OCI bytes, with digest preservation and remote verification. Conflicting tags,
-expired or changed producer evidence, stale approvals, or failed checks stop the
+expired or changed producer evidence, or failed checks stop the
 run. Neither recovery nor ordinary publication automatically rolls back a copy.
 GitHub metadata GET transport failures receive bounded retries (normally three
 attempts) and report the failing endpoint; authorization failures and other HTTP
@@ -207,8 +207,8 @@ repositories, use [Docker Hub promotion](container-promotion.md).
 The existing CI Images and Packaging lane gates the selected source. Preparation
 reuses its controller/runtime startup tests against the newly prepared bytes:
 source CI alone cannot prove a subsequent build with newly resolved npm
-transitives. Loading does not rebuild; the loaded config ID and unchanged
-archive hash bind smoke to the prepared image. Skopeo preserves manifest
+transitives. Loading does not rebuild; each loaded config ID, its index entry, and the
+unchanged archive hash bind both platform smokes to the prepared image. Skopeo preserves manifest
 digests during publication. These are not provider, cluster, or registry
 end-to-end tests.
 

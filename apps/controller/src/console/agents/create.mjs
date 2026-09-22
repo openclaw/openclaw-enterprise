@@ -1,5 +1,7 @@
 import { element, button } from "../dom.mjs";
 import { createHarnessAuthFields } from "./harness-auth.mjs";
+import { createPresetFields } from "./presets.mjs";
+import { defaultAgentModel } from "./starter-model.mjs";
 import { renderChannels } from "../channels.mjs";
 import { link, message, namespacePath } from "./list.mjs";
 
@@ -15,7 +17,7 @@ function field(label, input, hint) {
 
 function configurationTemplate(mode) {
   const harnessId = mode === "dedicated" ? "codex" : "openclaw";
-  const providerModel = "gpt-5.1";
+  const providerModel = defaultAgentModel;
   const modelReference = `${harnessId === "codex" ? "codex" : "openai"}/${providerModel}`;
   const provider =
     harnessId === "codex"
@@ -76,8 +78,46 @@ function configurationTemplate(mode) {
 }
 
 export function renderCreateAgent(context) {
-  const { view, request, namespaceId } = context;
   context.setTitle("Create Agent");
+  context.view.replaceChildren(
+    link("← Agents", "agents", context),
+    createPresetFields(context, (rendered) => renderAgentForm(context, rendered)),
+    button("Start without Preset", () => renderAgentForm(context, {})),
+  );
+}
+
+function renderAgentForm(context, rendered) {
+  const { view, request, namespaceId } = context;
+  const agent = rendered.agent ?? {};
+  const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  if (
+    (agent.name !== undefined && typeof agent.name !== "string") ||
+    (agent.executionMode !== undefined &&
+      !["embedded", "dedicated"].includes(agent.executionMode)) ||
+    (agent.providerId != null && typeof agent.providerId !== "string") ||
+    (agent.plugins !== undefined && !isObject(agent.plugins)) ||
+    (rendered.configuration?.secretBindings !== undefined &&
+      !isObject(rendered.configuration.secretBindings))
+  ) {
+    throw new Error("Rendered Preset contains invalid Agent fields or Secret bindings.");
+  }
+  const binding = agent.harnessAuth;
+  if (
+    binding != null &&
+    (!isObject(binding) ||
+      !["runtime", "api_key", "chatgpt_service_account"].includes(binding.method) ||
+      (binding.method === "chatgpt_service_account" &&
+        typeof binding.serviceAccountId !== "string") ||
+      (binding.method === "api_key" &&
+        (binding.source?.kind !== "secret" ||
+          binding.source.namespaceId !== namespaceId ||
+          typeof binding.source.id !== "string")))
+  ) {
+    throw new Error(
+      "Rendered Preset contains an invalid authentication source for this Namespace.",
+    );
+  }
+
   const formId = "create-agent-form";
   const name = element("input", {
     id: "agent-name",
@@ -101,9 +141,19 @@ export function renderCreateAgent(context) {
     spellcheck: "false",
     "aria-describedby": "configuration-json-hint",
   });
+  name.value = agent.name ?? "";
+  mode.value = agent.executionMode ?? "dedicated";
   let template = JSON.stringify(configurationTemplate(mode.value), null, 2);
-  configuration.value = template;
+  configuration.value =
+    rendered.configuration?.values === undefined
+      ? template
+      : JSON.stringify(rendered.configuration.values, null, 2);
+  let edited = false;
+  const confirmDiscard = () => !edited || window.confirm("Discard your edited launch settings?");
   const reset = button("Reset template", () => {
+    if (!confirmDiscard()) {
+      return;
+    }
     template = JSON.stringify(configurationTemplate(mode.value), null, 2);
     configuration.value = template;
     configuration.setCustomValidity("");
@@ -130,7 +180,20 @@ export function renderCreateAgent(context) {
     { id: "provider-id", disabled: true },
     element("option", { value: "" }, "None"),
   );
-  const auth = createHarnessAuthFields(context);
+  const providerId = agent.providerId ?? "";
+  if (providerId) {
+    provider.append(element("option", { value: providerId }, providerId));
+    provider.value = providerId;
+  }
+  const auth = createHarnessAuthFields(context, agent.harnessAuth ?? null);
+  const plugins = element("textarea", { id: "agent-plugins", rows: "4", spellcheck: "false" });
+  plugins.value = JSON.stringify(agent.plugins ?? {}, null, 2);
+  const secretBindings = element("textarea", {
+    id: "configuration-secret-bindings",
+    rows: "4",
+    spellcheck: "false",
+  });
+  secretBindings.value = JSON.stringify(rendered.configuration?.secretBindings ?? {}, null, 2);
   const providerStatus = element("p", { className: "hint", role: "status" }, "Loading Providers…");
   let providersLoaded = false;
   let pending = false;
@@ -143,10 +206,16 @@ export function renderCreateAgent(context) {
     { type: "submit", form: formId, className: "primary" },
     "Create Agent",
   );
+  const startOver = button("Start over", () => {
+    if (window.confirm("Discard this draft and start again?")) {
+      renderCreateAgent(context);
+    }
+  });
   const actions = element(
     "div",
     { className: "form-actions" },
     button("Cancel", () => context.navigate("agents")),
+    startOver,
     submit,
   );
   const channelEditor = element("div", { className: "create-channels" });
@@ -168,18 +237,31 @@ export function renderCreateAgent(context) {
       "Starter template applied. Edit the sample model and settings before saving. After creation, use the Agent Credentials tab for transport and Slack credentials. Microsoft Teams credentials remain operator-managed.",
     ),
     reset,
+    field(
+      "Secret bindings JSON",
+      secretBindings,
+      "Map environment names to existing Secret references in this Namespace. Do not enter credentials.",
+    ),
+    field("Plugin selections JSON", plugins, "Desired plugin selections and policies."),
   );
-  function parseConfiguration(reportInvalid = false) {
+  form.addEventListener("input", (event) => {
+    edited = true;
+    event.target.setCustomValidity?.("");
+  });
+  form.addEventListener("change", () => {
+    edited = true;
+  });
+  function parseObject(input, reportInvalid = false) {
     try {
-      const values = JSON.parse(configuration.value);
+      const values = JSON.parse(input.value);
       if (values === null || Array.isArray(values) || typeof values !== "object") {
         throw new Error();
       }
       return values;
     } catch {
       if (reportInvalid) {
-        configuration.setCustomValidity("Enter a valid JSON object.");
-        configuration.reportValidity();
+        input.setCustomValidity("Enter a valid JSON object.");
+        input.reportValidity();
       }
       return undefined;
     }
@@ -200,7 +282,7 @@ export function renderCreateAgent(context) {
     });
   }
   function renderChannelEditor() {
-    const values = parseConfiguration();
+    const values = parseObject(configuration);
     if (values === undefined) {
       channelEditor.replaceChildren(
         element(
@@ -232,9 +314,10 @@ export function renderCreateAgent(context) {
         readOnlyCardMessage: "This saved initial Configuration cannot be edited from this form.",
       },
       onSave: async (updatedValues) => {
-        if (!context.isCurrent() || pending || outcomeUnknown) {
+        if (!context.isCurrent() || pending || outcomeUnknown || savedConfiguration) {
           throw new Error("This view has changed. Reopen Agent creation before applying channels.");
         }
+        edited = true;
         configuration.value = JSON.stringify(updatedValues, null, 2);
         configuration.setCustomValidity("");
         setTimeout(() => {
@@ -266,8 +349,10 @@ export function renderCreateAgent(context) {
     provider.disabled = pending || !providersLoaded;
     auth.setDisabled(pending);
     reset.disabled = pending || Boolean(savedConfiguration);
+    startOver.disabled = pending || outcomeUnknown || Boolean(savedConfiguration);
     mode.disabled = pending || Boolean(savedConfiguration);
     configuration.readOnly = Boolean(savedConfiguration);
+    secretBindings.readOnly = Boolean(savedConfiguration);
     submit.disabled = pending || outcomeUnknown;
   };
   renderChannelEditor();
@@ -277,7 +362,9 @@ export function renderCreateAgent(context) {
         return;
       }
       provider.append(
-        ...items.map((item) => element("option", { value: item.id }, `${item.id} · ${item.type}`)),
+        ...items
+          .filter((item) => item.id !== providerId)
+          .map((item) => element("option", { value: item.id }, `${item.id} · ${item.type}`)),
       );
       providersLoaded = true;
       providerStatus.textContent = items.length
@@ -300,8 +387,10 @@ export function renderCreateAgent(context) {
     if (pending || outcomeUnknown || !form.reportValidity()) {
       return;
     }
-    const values = parseConfiguration(true);
-    if (values === undefined) {
+    const values = parseObject(configuration, true);
+    const desiredPlugins = parseObject(plugins, true);
+    const bindings = parseObject(secretBindings, true);
+    if (values === undefined || desiredPlugins === undefined || bindings === undefined) {
       return;
     }
     if (mode.value === "embedded" && hasEnabledChannel(values)) {
@@ -312,6 +401,7 @@ export function renderCreateAgent(context) {
     const body = {
       name: name.value.trim(),
       executionMode: mode.value,
+      ...(Object.keys(desiredPlugins).length ? { plugins: desiredPlugins } : {}),
       ...(provider.value ? { providerId: provider.value } : {}),
     };
     pending = true;
@@ -327,12 +417,16 @@ export function renderCreateAgent(context) {
       if (!savedConfiguration) {
         savedConfiguration = await request(`${namespacePath(namespaceId)}/configurations`, {
           method: "POST",
-          body: { kind: "agent", values },
+          body: {
+            kind: "agent",
+            values,
+            ...(Object.keys(bindings).length ? { secretBindings: bindings } : {}),
+          },
         });
         if (!context.isCurrent()) {
           return;
         }
-        savedStatus.textContent = `Configuration saved: ${savedConfiguration.id}. Its JSON and execution mode are now fixed for this form; retrying Agent creation will reuse it.`;
+        savedStatus.textContent = `Configuration saved: ${savedConfiguration.id}. Its JSON, Secret bindings, and execution mode are now fixed for this form; retrying Agent creation will reuse it.`;
         renderChannelEditor();
       }
       const created = await request(`${namespacePath(namespaceId)}/agents`, {

@@ -6,6 +6,7 @@ import type {
   ConfigurationDriver,
   ConfigurationReference,
   JSONSchema,
+  OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
 import { ConfigurationValidationError, validateModelCredentialReferences } from "../model-auth.ts";
 import { resolveKubernetesNamespace } from "../../compute/kubernetes/index.ts";
@@ -184,11 +185,15 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
     if (Number.isNaN(Date.parse(createdAt))) {
       throw new ConfigurationValidationError("Configuration creation time must be valid.");
     }
-    const values = asRecord(resource.values);
+    await this.validateValues(configuration.values);
+  }
+
+  async validateValues(document: OpenClawConfigurationDocument): Promise<void> {
+    const values = asRecord(document);
     if (values === undefined) {
       throw new ConfigurationValidationError("Configuration values must be a JSON object.");
     }
-    validateModelCredentialReferences(configuration.values);
+    validateModelCredentialReferences(document);
     if (Buffer.byteLength(JSON.stringify(values), "utf8") >= MAX_CONFIGMAP_BYTES) {
       throw new ConfigurationValidationError(
         "Configuration exceeds the Kubernetes ConfigMap size limit.",

@@ -2,6 +2,9 @@ import { Type } from "typebox";
 
 import {
   AgentParams,
+  PresetParams,
+  CreatePresetBody,
+  UpdatePresetBody,
   AgentRuntimeCredentialsBody,
   ConfigurationParams,
   CreateIAMAccessBindingBody,
@@ -30,6 +33,8 @@ import {
 } from "./common.ts";
 import {
   AgentListResponse,
+  PresetResponse,
+  PresetListResponse,
   AgentDeploymentStatusResponse,
   AgentRuntimeCredentialResponse,
   AgentResponse,
@@ -75,6 +80,89 @@ const mutationErrors = {
 } as const;
 
 export const occApiRoutes = [
+  {
+    operationId: "createPreset",
+    method: "POST",
+    path: "/namespaces/:namespaceId/presets",
+    action: "openclaw.presets.create",
+    iamAction: "create",
+    resourceKind: "preset",
+    authorizationTarget: "namespace_collection",
+    summary: "Create a reusable Namespace-owned Agent Preset",
+    tags: ["Presets"],
+    schema: {
+      querystring: EmptyQuery,
+      params: NamespaceParams,
+      body: CreatePresetBody,
+      response: { 201: PresetResponse, ...createErrors },
+    },
+  },
+  {
+    operationId: "listPresets",
+    method: "GET",
+    path: "/namespaces/:namespaceId/presets",
+    action: "openclaw.presets.list",
+    iamAction: "read",
+    resourceKind: "preset",
+    authorizationTarget: "preset_candidates",
+    summary: "List readable Presets in one Namespace",
+    tags: ["Presets"],
+    schema: {
+      querystring: EmptyQuery,
+      params: NamespaceParams,
+      response: { 200: PresetListResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "getPreset",
+    method: "GET",
+    path: "/namespaces/:namespaceId/presets/:presetId",
+    action: "openclaw.presets.read",
+    iamAction: "read",
+    resourceKind: "preset",
+    authorizationTarget: "preset",
+    summary: "Read one exact Namespace-owned Preset",
+    tags: ["Presets"],
+    schema: {
+      querystring: EmptyQuery,
+      params: PresetParams,
+      response: { 200: PresetResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "updatePreset",
+    method: "PATCH",
+    path: "/namespaces/:namespaceId/presets/:presetId",
+    action: "openclaw.presets.update",
+    iamAction: "update",
+    resourceKind: "preset",
+    authorizationTarget: "preset",
+    summary: "Update a Preset without changing existing Agents",
+    tags: ["Presets"],
+    schema: {
+      querystring: EmptyQuery,
+      params: PresetParams,
+      body: UpdatePresetBody,
+      response: { 200: PresetResponse, ...createErrors },
+    },
+  },
+  {
+    operationId: "deletePreset",
+    method: "DELETE",
+    path: "/namespaces/:namespaceId/presets/:presetId",
+    action: "openclaw.presets.delete",
+    iamAction: "delete",
+    resourceKind: "preset",
+    authorizationTarget: "preset",
+    summary: "Delete a Preset without changing existing Agents",
+    tags: ["Presets"],
+    schema: {
+      querystring: EmptyQuery,
+      params: PresetParams,
+      response: { 204: Type.Null(), ...mutationErrors },
+    },
+  },
+
   {
     operationId: "bootstrapInstallation",
     method: "POST",

@@ -73,6 +73,16 @@ Stores each Agent Configuration’s current generation and Secret bindings; the 
 - `secret_bindings`
 - `created_at`
 
+### `presets`
+
+Stores reusable Agent launch templates and variable definitions within one Namespace.
+
+- `id`
+- `namespace_id`
+- `name`
+- `template`
+- `created_at`
+
 ### `secrets`
 
 Stores Secret metadata and backend references; Secret values are kept by the selected Driver.

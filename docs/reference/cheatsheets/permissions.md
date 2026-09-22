@@ -29,12 +29,13 @@ principal. Rerunning bootstrap does not add missing permissions to existing Role
 | [`installation`](../api.md#installation)        | `read`, `administer`                                                    | Singleton Installation.                                                                                                             |
 | [`namespace`](../api.md#namespaces)             | `create`, `read`, `delete`                                              | Installation for create; exact Namespace otherwise.                                                                                 |
 | [`configuration`](../api.md#configurations)     | `create`, `read`, `update`, `delete`                                    | Namespace for create; exact Configuration otherwise.                                                                                |
+| [`preset`](../presets.md)                       | `create`, `read`, `update`, `delete`                                    | Namespace for create; exact Preset otherwise.                                                                                       |
 | [`service_account`](../api.md#service-accounts) | `create`, `read`, `update`, `delete`                                    | Namespace for create; exact ServiceAccount otherwise. Credential creation also uses `update`.                                       |
 | [`secret`](../api.md#secrets)                   | `create`, `read`, `update`, `delete`, `operate`                         | Namespace for create; exact Secret otherwise. `operate` is checked when a Secret is bound or used, not through a value-reading API. |
 | [`agent`](../api.md#agents)                     | `create`, `read`, `update`, `delete`, `deploy`, `operate`, `administer` | Namespace for create; exact Agent otherwise. Native admin requires a human session.                                                 |
 | [`agent_revision`](../api.md#agent-revisions)   | `read`                                                                  | Exact AgentRevision; deployment-status reads use this permission too.                                                               |
 
-Namespace, Agent, ServiceAccount, and AgentRevision lists check each returned
+Namespace, Preset, Agent, ServiceAccount, and AgentRevision lists check each returned
 resource. Listing Agents or ServiceAccounts also requires `namespace:read`;
 listing AgentRevisions also requires `agent:read` on the parent. The
 [HTTP API reference](../api.md#operations) lists exact targets and conditions for
@@ -69,7 +70,7 @@ needs its principal’s own grants; it does not inherit the issuer’s. See
   separate permission resource kinds.
 
 The [Namespace policy API](../authorization.md#manage-namespace-policy) accepts
-all seven action names on `agent`, `agent_revision`, `configuration`, `secret`,
+all seven action names on `agent`, `agent_revision`, `configuration`, `preset`, `secret`,
 and `service_account`, including combinations no current operation checks.
 It can create bindings only for an identity and an existing exact resource.
 It cannot create Installation or Namespace-wide grants, including the collection

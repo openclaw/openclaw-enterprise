@@ -46,7 +46,13 @@
           "path": "tests/conformance/occ-read.test.mjs"
         },
         {
+          "path": "tests/conformance/openshell-gateway-wire.test.mjs"
+        },
+        {
           "path": "tests/conformance/platform-state-memory.test.mjs"
+        },
+        {
+          "path": "tests/conformance/presets.test.mjs"
         },
         {
           "path": "tests/conformance/secret-gateway-delivery.test.mjs"
@@ -68,6 +74,9 @@
         },
         {
           "path": "tests/conformance/workspace-files.test.mjs"
+        },
+        {
+          "path": "tests/integration/presets-controller.test.mjs"
         },
         {
           "path": "tests/integration/bootstrap-output.test.mjs"
@@ -196,6 +205,9 @@
           "path": "tests/conformance/plugin-compute.test.mjs"
         },
         {
+          "path": "tests/conformance/plugin-runtime-policy.test.mjs"
+        },
+        {
           "path": "tests/conformance/plugin-driver.test.mjs"
         },
         {
@@ -318,6 +330,13 @@
             "concurrent claims exclude one Namespace lifecycle and one Agent while distinct Agents progress",
             "a restarted queue recovers expired claims, fences old tokens, and persists exhausted failures",
             "batch stale recovery reports each expired claim once and writes one audit event per item"
+          ]
+        },
+        {
+          "path": "tests/integration/postgres-presets.test.mjs",
+          "expectedTests": [
+            "in-memory Presets preserve template copies, Namespace isolation, and deletion boundaries",
+            "PostgreSQL Presets survive reopening and enforce names, ownership, and Namespace deletion"
           ]
         },
         {
@@ -774,8 +793,9 @@
         "OCC_TEST_KUBERNETES_AGENT_IMAGE",
         "OPENAI_API_KEY",
         "OCC_TEST_OPENAI_MODEL",
-        "OCC_TEST_OPENSHELL_CLI",
+        "OCC_TEST_OPENSHELL_SECRET_PROJECTION",
         "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
+        "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
         "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
         "OCC_TEST_OPENSHELL_HELM",
         "OCC_TEST_OPENSHELL_HELM_CHART",
@@ -793,15 +813,14 @@
           "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
           "OCC_TEST_KUBERNETES_AGENT_IMAGE",
           "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
+          "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
           "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE"
         ]
       },
       "files": [
         {
           "path": "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
-          "expectedTests": [
-            "OpenShell SandboxDriver provisions and enforces one provider-owned dedicated Codex Harness"
-          ]
+          "expectedTests": ["OpenShell enforces the selected Secret projection contract"]
         }
       ]
     },

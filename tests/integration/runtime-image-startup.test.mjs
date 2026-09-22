@@ -1,3 +1,4 @@
+import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -6,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
+import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT as DOCKER_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/docker/index.ts";
 import { GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
@@ -14,7 +16,7 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 const execute = promisify(execFile);
 const docker = process.env.OCC_DOCKER_BIN ?? "docker";
 const image = process.env.OCC_TEST_RUNTIME_IMAGE;
-const runtimeImageModel = "gpt-5.1";
+const runtimeImageModel = defaultAgentModel;
 const syntheticCodexApiKey = "sk-openclaw-runtime-image-smoke-synthetic";
 const imageTestOptions =
   image === undefined
@@ -25,7 +27,7 @@ const imageTestOptions =
 
 async function runDocker(args, options = {}) {
   return execute(docker, args, {
-    timeout: 60_000,
+    timeout: 60_000 * imageSmokeTimeoutMultiplier,
     maxBuffer: 1_000_000,
     ...options,
   });
@@ -279,7 +281,7 @@ const runtime = resolveCodexAppServerRuntimeOptions({
 const client = await createIsolatedCodexAppServerClient({
   agentDir,
   authProfileId: null,
-  timeoutMs: 10_000,
+  timeoutMs: ${10_000 * imageSmokeTimeoutMultiplier},
   startOptions: {
     ...runtime.start,
     env: {
@@ -303,7 +305,7 @@ try {
 }
 `,
     ],
-    { timeout: 20_000 },
+    { timeout: 20_000 * imageSmokeTimeoutMultiplier },
   );
 
   const result = JSON.parse(stdout);
@@ -476,7 +478,7 @@ test(
 
     const probe = String.raw`
 set -eu
-printf "%s\n" "$SYNTHETIC_CODEX_API_KEY" | timeout 20s codex login --with-api-key >/tmp/codex-login.stdout 2>/tmp/codex-login.stderr || {
+printf "%s\n" "$SYNTHETIC_CODEX_API_KEY" | timeout ${20 * imageSmokeTimeoutMultiplier}s codex login --with-api-key >/tmp/codex-login.stdout 2>/tmp/codex-login.stderr || {
   sed -E "s/sk-[A-Za-z0-9_-]+/[REDACTED_SYNTHETIC_KEY]/g" /tmp/codex-login.stderr >&2
   exit 1
 }
@@ -534,7 +536,7 @@ NODE
         "-c",
         probe,
       ],
-      { timeout: 30_000 },
+      { timeout: 30_000 * imageSmokeTimeoutMultiplier },
     ).catch((error) => {
       throw new Error(sanitizeSyntheticCredential(commandOutput(error)));
     });

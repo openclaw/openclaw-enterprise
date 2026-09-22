@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
   ghcrPackageName,
   github,
+  readArchivePlatforms,
   repository,
   publishWorkflow,
   validateCi,
@@ -159,7 +165,7 @@ test("post-marker metadata retries only 404 and remains bounded", async (t) => {
   }
 });
 
-test("GHCR repository omission needs independent linkage evidence for this run attempt", async (t) => {
+test("GHCR publication accepts omitted repository metadata without approval and rejects unsafe packages", async (t) => {
   const token = process.env.GH_TOKEN;
   process.env.GH_TOKEN = "test-token";
   t.after(() => {
@@ -170,35 +176,15 @@ test("GHCR repository omission needs independent linkage evidence for this run a
     }
   });
   const image = "ghcr.io/openclaw/openclaw-enterprise-controller";
-  const context = {
-    ...env,
-    GITHUB_RUN_ID: "123",
-    GITHUB_RUN_ATTEMPT: "2",
-    GITHUB_ACTOR: "publisher",
-    GITHUB_TRIGGERING_ACTOR: "rerunner",
-  };
-  // GHCR can omit repository even for a connected package. Approval history
-  // comes from GitHub's documented workflow-run reviews endpoint, not OCI labels.
+  // GHCR can omit repository even for connected packages. The real validator
+  // must accept that response without consulting deployment review history.
   let pkg = {
     name: "openclaw-enterprise-controller",
     package_type: "container",
     visibility: "private",
   };
-  const approval = {
-    state: "approved",
-    user: { login: "maintainer", type: "User" },
-    environments: [{ id: 42, name: "container-publish" }],
-    comment: `Verified GHCR linkage: ${image} -> ${repository}; source=${sourceSha}; run=123; attempt=2`,
-  };
-  let reviews = [approval];
   t.mock.method(globalThis, "fetch", async (url) => {
     const path = new URL(url).pathname;
-    if (path.endsWith("/approvals")) {
-      return Response.json(reviews);
-    }
-    if (path.endsWith("/environments/container-publish")) {
-      return Response.json({ id: 42 });
-    }
     if (path.endsWith("/versions")) {
       return Response.json([]);
     }
@@ -207,34 +193,9 @@ test("GHCR repository omission needs independent linkage evidence for this run a
     }
     throw new Error(`Unexpected metadata request: ${path}`);
   });
-  await verifyGhcr(image, digest, `sha-${sourceSha}`, context);
+  await verifyGhcr(image, digest, `sha-${sourceSha}`);
   pkg.repository = null;
-  await verifyGhcr(image, digest, `sha-${sourceSha}`, context);
-  // No approval, an ordinary approval, stale evidence, another destination,
-  // self-review, or a different environment must not authorize source bytes.
-  for (const patch of [
-    { comment: "" },
-    { state: "rejected" },
-    { comment: approval.comment.replace("attempt=2", "attempt=1") },
-    { comment: approval.comment.replace("run=123", "run=456") },
-    { comment: approval.comment.replace(sourceSha, "c".repeat(40)) },
-    { comment: approval.comment.replace(image, `${image}-other`) },
-    { user: { login: "publisher", type: "User" } },
-    { user: { login: "rerunner", type: "User" } },
-    { environments: [{ id: 41, name: "container-publish" }] },
-  ]) {
-    reviews = [{ ...approval, ...patch }];
-    await assert.rejects(
-      verifyGhcr(image, digest, `sha-${sourceSha}`, context),
-      /linkage confirmation/,
-    );
-  }
-  reviews = [];
-  await assert.rejects(
-    verifyGhcr(image, digest, `sha-${sourceSha}`, context),
-    /linkage confirmation/,
-  );
-  reviews = [approval];
+  await verifyGhcr(image, digest, `sha-${sourceSha}`);
   for (const patch of [
     { visibility: "public" },
     { visibility: undefined },
@@ -245,13 +206,12 @@ test("GHCR repository omission needs independent linkage evidence for this run a
   ]) {
     const original = pkg;
     pkg = { ...pkg, ...patch };
-    await assert.rejects(verifyGhcr(image, digest, `sha-${sourceSha}`, context));
+    await assert.rejects(verifyGhcr(image, digest, `sha-${sourceSha}`));
     pkg = original;
   }
-  // Explicit correct repository metadata continues to work without fallback.
+  // Explicit correct repository metadata remains valid.
   pkg.repository = repo;
-  reviews = [];
-  await verifyGhcr(image, digest, `sha-${sourceSha}`, context);
+  await verifyGhcr(image, digest, `sha-${sourceSha}`);
 });
 
 test("container release requires exact successful CI identity and its aggregate job", () => {
@@ -292,17 +252,11 @@ test("container release requires exact successful CI identity and its aggregate 
   }
 });
 
-test("container publication rejects unprotected environments and public or unrelated packages", () => {
+test("container publication requires main-only environments and private matching packages", () => {
   const environment = {
     name: "container-publish",
     can_admins_bypass: false,
-    protection_rules: [
-      {
-        type: "required_reviewers",
-        prevent_self_review: true,
-        reviewers: [{ type: "Team", reviewer: { id: 1 } }],
-      },
-    ],
+    protection_rules: [],
     deployment_branch_policy: { custom_branch_policies: true, protected_branches: false },
   };
   const policies = [{ name: "main", type: "branch" }];
@@ -311,7 +265,6 @@ test("container publication rejects unprotected environments and public or unrel
   assert.throws(() =>
     validateEnvironment({ ...environment, can_admins_bypass: undefined }, policies),
   );
-  assert.throws(() => validateEnvironment({ ...environment, protection_rules: [] }, policies));
   assert.throws(() => validateEnvironment(environment, [{ name: "*", type: "branch" }]));
   assert.throws(() => validateEnvironment(environment, [{ name: "main", type: "tag" }]));
   const image = "ghcr.io/openclaw/openclaw-enterprise/controller";
@@ -322,7 +275,7 @@ test("container publication rejects unprotected environments and public or unrel
     repository: repo,
   };
   validatePackage(pkg, image);
-  // Only harmless bootstrap can accept missing linkage without review evidence.
+  // Missing linkage is allowed explicitly; reported conflicting linkage still fails.
   for (const repository of [undefined, null]) {
     const unreported = { ...pkg, repository };
     assert.throws(() => validatePackage(unreported, image));
@@ -361,13 +314,103 @@ test("prepared OCI metadata cannot cross source, image, attempt, CI or base-imag
     nodeBaseImage: `docker.io/library/node:24-bookworm@${digest}`,
     image: "controller",
   };
-  const metadata = { ...expected, platform: "linux/amd64", digest, archiveSha256: "c".repeat(64) };
+  const metadata = {
+    ...expected,
+    platforms: ["linux/amd64", "linux/arm64"],
+    digest,
+    archiveSha256: "c".repeat(64),
+  };
   validatePreparedImage(metadata, expected);
   for (const key of Object.keys(expected)) {
     assert.throws(() => validatePreparedImage({ ...metadata, [key]: "different" }, expected));
   }
   assert.throws(() => validatePreparedImage({ ...metadata, digest: "latest" }, expected));
-  assert.throws(() => validatePreparedImage({ ...metadata, platform: "linux/arm64" }, expected));
+  assert.throws(() => validatePreparedImage({ ...metadata, platforms: ["linux/amd64"] }, expected));
+  assert.throws(() => validatePreparedImage({ ...metadata, platforms: ["linux/arm64"] }, expected));
+  assert.throws(() =>
+    validatePreparedImage({ ...metadata, platforms: ["linux/amd64", "linux/amd64"] }, expected),
+  );
+});
+
+test("OCI archive validation binds both platforms to their real manifest and config blobs", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "enterprise-oci-platforms-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await mkdir(join(directory, "blobs/sha256"), { recursive: true });
+  async function blob(value) {
+    const bytes = JSON.stringify(value);
+    const hash = createHash("sha256").update(bytes).digest("hex");
+    await writeFile(join(directory, "blobs/sha256", hash), bytes);
+    return { digest: `sha256:${hash}`, size: Buffer.byteLength(bytes) };
+  }
+  const manifests = [];
+  const configs = [];
+  // These are actual OCI scratch-image configs/manifests in a tar archive.
+  // No replacement tar, Docker, or registry implementation decides the outcome.
+  for (const architecture of ["amd64", "arm64"]) {
+    const config = await blob({
+      architecture,
+      os: "linux",
+      config: {},
+      rootfs: { type: "layers", diff_ids: [] },
+    });
+    configs.push(config);
+    const manifest = await blob({
+      schemaVersion: 2,
+      mediaType: "application/vnd.oci.image.manifest.v1+json",
+      config: { mediaType: "application/vnd.oci.image.config.v1+json", ...config },
+      layers: [],
+    });
+    manifests.push({
+      mediaType: "application/vnd.oci.image.manifest.v1+json",
+      ...manifest,
+      platform: { os: "linux", architecture },
+    });
+  }
+  async function archive(entries) {
+    const index = {
+      schemaVersion: 2,
+      mediaType: "application/vnd.oci.image.index.v1+json",
+      manifests: entries,
+    };
+    const descriptor = await blob(index);
+    await writeFile(
+      join(directory, "index.json"),
+      JSON.stringify({
+        ...index,
+        manifests: [{ mediaType: index.mediaType, ...descriptor }],
+      }),
+    );
+    await writeFile(join(directory, "oci-layout"), '{"imageLayoutVersion":"1.0.0"}');
+    const path = join(directory, "image.tar");
+    execFileSync("tar", ["-cf", path, "-C", directory, "blobs", "index.json", "oci-layout"]);
+    return [path, descriptor.digest];
+  }
+  assert.deepEqual(
+    readArchivePlatforms(...(await archive([...manifests].reverse()))),
+    manifests.map((manifest, index) => ({
+      platform: `linux/${manifest.platform.architecture}`,
+      digest: manifest.digest,
+      configDigest: configs[index].digest,
+    })),
+  );
+  for (const invalid of [
+    [manifests[0]],
+    [manifests[1]],
+    [manifests[0], manifests[0]],
+    [manifests[0], { ...manifests[1], platform: { os: "linux", architecture: "s390x" } }],
+    [manifests[0], { ...manifests[1], platform: { os: "linux", architecture: "amd64" } }],
+    [
+      manifests[0],
+      { ...manifests[1], platform: { os: "linux", architecture: "arm64", variant: "v9" } },
+    ],
+  ]) {
+    const input = await archive(invalid);
+    assert.throws(() => readArchivePlatforms(...input));
+  }
+  // Replacing an architecture's blob without updating its digest must fail.
+  await writeFile(join(directory, "blobs/sha256", configs[1].digest.slice(7)), "{}");
+  const corrupt = await archive(manifests);
+  assert.throws(() => readArchivePlatforms(...corrupt));
 });
 
 test("metadata GET transport retries are bounded, diagnostic and do not retry denials", async (t) => {

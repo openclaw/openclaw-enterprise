@@ -1,3 +1,4 @@
+import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
 // Opt-in real SSH, systemd and OpenClaw gateway proof on a disposable Linux host.
 // OCC_TEST_SSH_MODEL also verifies real provider calls and runtime-owned credential behavior.
 import assert from "node:assert/strict";
@@ -120,7 +121,7 @@ test(
     for (const name of requiredNames) {
       assert.ok(process.env[name]?.trim(), `${name} is required when OCC_TEST_SSH_REAL=1.`);
     }
-    const model = process.env.OCC_TEST_OPENAI_MODEL || "gpt-4.1";
+    const model = process.env.OCC_TEST_OPENAI_MODEL || defaultAgentModel;
     let providerKey;
     if (modelProof) {
       assert.ok(

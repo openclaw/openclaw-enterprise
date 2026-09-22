@@ -4,6 +4,7 @@ import type {
   HarnessExecutionMode,
   HarnessAuthBinding,
   PluginDesiredState,
+  PresetTemplate,
   SecretBindings,
   ServiceAccountCredential,
 } from "@openclaw-enterprise/contracts";
@@ -37,6 +38,7 @@ const collatedText = customType<{ data: string; driverData: string }>({
 const identifierPatterns = {
   installation: "^ins_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
   namespace: "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+  preset: "^pre_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
   configuration: "^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
   serviceAccount: "^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
   agent: "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -98,6 +100,29 @@ export const namespaces = occSchema.table(
       "namespaces_tombstone_valid",
       sql`${table.deletedAt} IS NULL OR (${table.status} = 'deleting' AND ${table.deletedAt} >= ${table.createdAt})`,
     ),
+  ],
+);
+
+export const presets = occSchema.table(
+  "presets",
+  {
+    id: text("id").primaryKey(),
+    namespaceId: text("namespace_id")
+      .notNull()
+      .references(() => namespaces.id, { onDelete: "restrict", onUpdate: "restrict" }),
+    name: collatedText("name").notNull(),
+    template: jsonb("template").$type<PresetTemplate>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    unique("presets_namespace_id_name_unique").on(table.namespaceId, table.name),
+    check("presets_id_format", sql`${table.id} ~ ${identifierPatterns.preset}`),
+    check("presets_name_length", sql`char_length(${table.name}) BETWEEN 1 AND 200`),
+    check(
+      "presets_name_normalized",
+      sql`${table.name} = btrim(${table.name}) AND ${table.name} !~ '[[:cntrl:]]'`,
+    ),
+    check("presets_template_object", sql`jsonb_typeof(${table.template}) = 'object'`),
   ],
 );
 
@@ -628,7 +653,7 @@ export const iamRestrictions = occSchema.table(
     ),
     check(
       "iam_restrictions_resource_kind_valid",
-      sql`${table.resourceKind} IN ('installation', 'namespace', 'configuration', 'service_account', 'secret', 'agent', 'agent_revision')`,
+      sql`${table.resourceKind} IN ('installation', 'namespace', 'configuration', 'preset', 'service_account', 'secret', 'agent', 'agent_revision')`,
     ),
     check("iam_restrictions_effect_deny", sql`${table.effect} = 'deny'`),
     check(

@@ -74,7 +74,7 @@ Choose one runtime mode and write the matching Namespace-owned
 ```bash
 export AGENT_EXECUTION_MODE='embedded'
 cat > configuration.json <<'JSON'
-{"kind":"agent","values":{"gateway":{"mode":"local","bind":"lan","auth":{"mode":"token","token":"${OPENCLAW_GATEWAY_TOKEN}"}},"agents":{"defaults":{"model":"openai/gpt-5.6-sol","skipBootstrap":true,"models":{"openai/gpt-5.6-sol":{"agentRuntime":{"id":"openclaw"}}}}},"models":{"providers":{"openai":{"baseUrl":"https://api.openai.com/v1","api":"openai-responses","models":[{"id":"gpt-5.6-sol","name":"gpt-5.6-sol"}]}}}}}
+{"kind":"agent","values":{"gateway":{"mode":"local","bind":"lan","auth":{"mode":"token","token":"${OPENCLAW_GATEWAY_TOKEN}"}},"agents":{"defaults":{"model":"openai/gpt-6-astra","skipBootstrap":true,"models":{"openai/gpt-6-astra":{"agentRuntime":{"id":"openclaw"}}}}},"models":{"providers":{"openai":{"baseUrl":"https://api.openai.com/v1","api":"openai-responses","models":[{"id":"gpt-6-astra","name":"gpt-6-astra"}]}}}}}
 JSON
 ```
 
@@ -89,8 +89,8 @@ cat > configuration.json <<'JSON'
   "kind": "agent",
   "values": {
     "gateway": {"mode": "local", "bind": "lan", "controlUi": {"enabled": false}, "auth": {"mode": "token", "token": "${OPENCLAW_GATEWAY_TOKEN}"}, "http": {"endpoints": {"chatCompletions": {"enabled": true}}}},
-    "agents": {"defaults": {"model": "codex/gpt-5.6-sol", "skipBootstrap": true, "models": {"codex/gpt-5.6-sol": {"agentRuntime": {"id": "codex"}}}}},
-    "models": {"providers": {"codex": {"baseUrl": "http://127.0.0.1:9", "api": "openai-responses", "models": [{"id": "gpt-5.6-sol", "name": "gpt-5.6-sol"}]}}},
+    "agents": {"defaults": {"model": "codex/gpt-6-astra", "skipBootstrap": true, "models": {"codex/gpt-6-astra": {"agentRuntime": {"id": "codex"}}}}},
+    "models": {"providers": {"codex": {"baseUrl": "http://127.0.0.1:9", "api": "openai-responses", "models": [{"id": "gpt-6-astra", "name": "gpt-6-astra"}]}}},
     "plugins": {"allow": ["codex"], "entries": {"codex": {"enabled": true, "config": {"appServer": {
       "mode": "guardian", "approvalPolicy": "on-request", "sandbox": "read-only",
       "transport": "websocket", "url": "${APP_SERVER_URL}", "authToken": "${APP_SERVER_TOKEN}"

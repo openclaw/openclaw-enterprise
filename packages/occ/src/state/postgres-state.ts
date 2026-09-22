@@ -13,6 +13,7 @@ import type {
   Installation,
   Namespace,
   PluginDesiredState,
+  Preset,
   Permission,
   Principal,
   Restriction,
@@ -45,6 +46,7 @@ import type {
   IAMPolicyRepository,
   NamespaceRepository,
   PersistedNamespace,
+  PresetRepository,
   PlatformAuditSink,
   PlatformOperation,
   PlatformReadView,
@@ -213,6 +215,16 @@ function namespaceFromRow(row: PostgresRow): Readonly<PersistedNamespace> {
     status: status as Namespace["status"],
     createdAt: timestamp(row, "created_at"),
     ...(deletedAt === undefined ? {} : { deletedAt }),
+  });
+}
+
+function presetFromRow(row: PostgresRow): Readonly<Preset> {
+  return immutableCopy({
+    id: text(row, "id"),
+    namespaceId: text(row, "namespace_id"),
+    name: text(row, "name"),
+    template: jsonObject(row.template) as Preset["template"],
+    createdAt: timestamp(row, "created_at"),
   });
 }
 
@@ -1148,6 +1160,17 @@ export class PostgresPlatformState implements PlatformStateStore {
         )[0];
         return found?.present === true;
       },
+      hasPresets: async (namespaceId) => {
+        const found = rows(
+          (
+            await client.query(
+              "SELECT EXISTS (SELECT 1 FROM occ.presets WHERE namespace_id = $1) AS present",
+              [namespaceId],
+            )
+          ).rows,
+        )[0];
+        return found?.present === true;
+      },
       hasServiceAccounts: async (namespaceId) => {
         const found = rows(
           (
@@ -1210,6 +1233,92 @@ export class PostgresPlatformState implements PlatformStateStore {
           ).rows,
         )[0];
         return existing === undefined ? undefined : namespaceFromRow(existing);
+      },
+    };
+
+    const findPreset = async (
+      namespaceId: string,
+      presetId: string,
+      lock = false,
+    ): Promise<Readonly<Preset> | undefined> => {
+      const found = rows(
+        (
+          await client.query(
+            `SELECT p.id, p.namespace_id, p.name, p.template, p.created_at
+         FROM occ.presets AS p
+         JOIN occ.namespaces AS n ON n.id = p.namespace_id AND n.deleted_at IS NULL
+         WHERE p.namespace_id = $1 AND p.id = $2${lock ? " FOR UPDATE OF p" : ""}`,
+            [namespaceId, presetId],
+          )
+        ).rows,
+      )[0];
+      return found === undefined ? undefined : presetFromRow(found);
+    };
+    const presets: PresetRepository = {
+      findPreset,
+      listPresets: async (namespaceId) =>
+        Object.freeze(
+          rows(
+            (
+              await client.query(
+                `SELECT p.id, p.namespace_id, p.name, p.template, p.created_at
+         FROM occ.presets AS p
+         JOIN occ.namespaces AS n ON n.id = p.namespace_id AND n.deleted_at IS NULL
+         WHERE p.namespace_id = $1 ORDER BY p.id`,
+                [namespaceId],
+              )
+            ).rows,
+          ).map(presetFromRow),
+        ),
+      createPreset: async (preset) => {
+        await this.requireInitialized(context);
+        const namespace = await namespaces.lockNamespace(preset.namespaceId);
+        if (namespace === undefined || !["provisioning", "ready"].includes(namespace.status)) {
+          throw new ScopeViolationError("The Preset belongs to an unavailable Namespace.");
+        }
+        await client.query(
+          `INSERT INTO occ.presets (id, namespace_id, name, template, created_at)
+           VALUES ($1, $2, $3, $4::jsonb, $5)`,
+          [
+            preset.id,
+            preset.namespaceId,
+            preset.name,
+            JSON.stringify(preset.template),
+            preset.createdAt,
+          ],
+        );
+        return immutableCopy(preset);
+      },
+      lockPreset: async (namespaceId, presetId) => findPreset(namespaceId, presetId, true),
+      updatePreset: async (namespaceId, presetId, changes) => {
+        const current = await findPreset(namespaceId, presetId, true);
+        if (current === undefined) {
+          return undefined;
+        }
+        const found = rows(
+          (
+            await client.query(
+              `UPDATE occ.presets SET name = $3, template = $4::jsonb
+           WHERE namespace_id = $1 AND id = $2
+           RETURNING id, namespace_id, name, template, created_at`,
+              [
+                namespaceId,
+                presetId,
+                changes.name ?? current.name,
+                JSON.stringify(changes.template ?? current.template),
+              ],
+            )
+          ).rows,
+        )[0];
+        return found === undefined ? undefined : presetFromRow(found);
+      },
+      deletePreset: async (namespaceId, presetId) => {
+        const deleted = await client.query(
+          `DELETE FROM occ.presets AS p USING occ.namespaces AS n
+           WHERE p.namespace_id = $1 AND p.id = $2 AND n.id = p.namespace_id AND n.deleted_at IS NULL`,
+          [namespaceId, presetId],
+        );
+        return deleted.rowCount === 1;
       },
     };
 
@@ -2004,6 +2113,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         agent_revision: "SELECT 1 FROM occ.agent_revisions WHERE namespace_id = $1 AND id = $2",
         configuration:
           "SELECT 1 FROM occ.configurations WHERE namespace_id = $1 AND id = $2 FOR KEY SHARE",
+        preset: "SELECT 1 FROM occ.presets WHERE namespace_id = $1 AND id = $2 FOR KEY SHARE",
         secret: "SELECT 1 FROM occ.secrets WHERE namespace_id = $1 AND id = $2 FOR KEY SHARE",
         service_account:
           "SELECT 1 FROM occ.service_accounts WHERE namespace_id = $1 AND id = $2 FOR KEY SHARE",
@@ -2164,6 +2274,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       installations,
       namespaces,
       configurations,
+      presets,
       secrets,
       serviceAccounts,
       agents,

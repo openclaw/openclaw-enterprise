@@ -1,36 +1,35 @@
 ---
 created: 2026-09-21
-updated: 2026-09-21
-last_updated_session: codex/01a0c179-19f7-7111-8bb4-fc7680da5545
+updated: 2026-09-22
+last_updated_session: codex/01a0c70f-8a8f-7c62-ac81-ee1a3e99f48b
 ---
 
 # Container package bootstrap flow
 
 ## Overview
 
-A separately approved GitHub Actions run creates private GHCR packages using
+A manually dispatched GitHub Actions run creates private GHCR packages using
 harmless marker images. This supplies the existing Enterprise publisher's
 pre-existing-package prerequisite. Bootstrap ends after package metadata and
 marker digests verify. Enterprise
-publication and recovery each need their own dispatch and approval; recovery
+publication and recovery each need their own dispatch; recovery
 reuses retained archives after an interrupted publication.
 
 ## Entry Points
 
 - `.github/workflows/container-bootstrap.yml:jobs.bootstrap`: manual dispatch on
   `main` with the successful exact-source main-push CI run ID.
-- `scripts/ci/container-bootstrap.mjs:main`: protected job with `actions: read`,
+- `scripts/ci/container-bootstrap.mjs:main`: main-only job with `actions: read`,
   `contents: read`, and `packages: write`; explicit destination variables select
   two different GHCR packages in the `openclaw` organization.
-- `.github/workflows/container-resume.yml:jobs.publish`: separately approved
+- `.github/workflows/container-resume.yml:jobs.publish`: manual
   recovery using retained archives from an unchanged producer run attempt.
 
 ## Flow
 
 ```mermaid
 graph TD
-  A["Operator dispatches bootstrap"] --> B["Independent environment reviewer approves"]
-  B --> C["Runner verifies private main source, CI and protections"]
+  A["Operator dispatches bootstrap"] --> C["Runner verifies private main source, CI and branch policy"]
   C --> D["GitHub returns destination metadata"]
   D -->|invalid existing package or API error| X["Run fails"]
   D -->|valid private package or 404| E["Build scratch marker from temporary context"]
@@ -42,10 +41,9 @@ graph TD
   I -->|verified| J["Record marker in job summary"]
   G --> K["Continue to next package"]
   J --> K
-  K --> L["Reviewer confirms linkage for separate Enterprise publication"]
+  K --> L["Operator completes package setup for Enterprise publication"]
   R["Operator dispatches recovery of retained archives"] --> S["Verify recovery CI and original preparation"]
-  S --> T["Independent reviewer approves recovery"]
-  T --> U["Verify original seals, CI and private packages"]
+  S --> U["Verify original seals, CI and private packages"]
   U --> V["Inspect authenticated remote source tag"]
   V -->|matching digest| W["Keep existing image"]
   V -->|manifest unknown| Y["Copy original archive and verify digest"]
@@ -65,14 +63,13 @@ hosted bootstrap or subsequent release has succeeded.
 `scripts/ci/container-release.mjs:verifyMainSource`, `verifyCi`, and
 `verifyEnvironment`. Source equals the trusted main workflow revision and
 checkout. The repository is private, exact-source main-push CI succeeds, and the
-environment requires independent review, disables admin bypass, and permits
-only branch `main`. Invalid context fails before a registry write.
+environment disables admin bypass and permits only branch `main`. Invalid context fails before a registry write.
 
 Each configured package name passes `ghcrPackageName`. Existing metadata must
 pass `validatePackage` for private visibility and, when returned, exact private
 repository linkage. GitHub's optional repository field may be absent or null.
-Bootstrap allows that omission because it copies only harmless marker bytes;
-publication requires separate linkage evidence before copying Enterprise source.
+Both bootstrap and publication accept omitted linkage without an approval
+comment. Operators configure the package connection and Actions access at setup.
 Only bootstrap opts into `github`'s 404 result; normal publication still fails
 on missing metadata. A 404 can also hide inaccessible packages, so it authorizes
 only the non-sensitive marker attempt. Authorization and other API errors fail.
@@ -100,20 +97,18 @@ package in the job summary and removes the temporary context, archive, and auth
 file in `finally`. Bootstrap and publication share the same workflow concurrency
 lock, which does not constrain external package administrators. Partial success
 is possible. The operator follows the existing publication procedure to build,
-smoke, independently approve, and publish actual Enterprise images.
+smoke and publish actual Enterprise images.
 
 `scripts/ci/container-release.mjs:verifyGhcr` is shared by publication and promotion.
-If package metadata omits the repository, it requires the independent reviewer's
-exact linkage confirmation in GitHub's environment approval history. The current
-environment ID, package, repository, source, run, and attempt must match; the
-reviewer must differ from both the initiator and rerun actor. The reviewer checks
-the live package settings using the [approval procedure](../../.github/containers.md#confirm-package-linkage).
-This records operator evidence; the API does not independently prove the connection.
+It checks private package identity and rejects conflicting repository metadata.
+When GitHub omits repository metadata, it accepts the omission without querying
+approval history. Package linkage is configured during
+[operator setup](../../.github/containers.md#confirm-package-linkage).
 
 ### 4. Recover retained publication bytes after a partial failure
 
 `.github/workflows/container-resume.yml` runs validation without registry write
-permission, then uses the same protected environment and concurrency lock as
+permission, then uses the same main-only environment and concurrency lock as
 publication. `scripts/ci/container-resume.mjs:verifyPreparation` checks the
 current recovery workflow's main-push CI separately from the original image
 source. The original producer must be the trusted publication workflow on main,
@@ -125,7 +120,7 @@ and source; the workflow downloads their validated IDs with digest checks.
 seal and rechecks original source CI. It calls
 `scripts/ci/container-release.mjs:publishPrepared`, which verifies both archive
 hashes and OCI digests before registry writes. Before each image, source, CI,
-producer, environment, and private-package/linkage evidence are rechecked. A
+producer, environment, and private-package metadata are rechecked. A
 matching existing source tag is inspected remotely and left untouched, even if
 package metadata has not caught up. Only the registry's explicit manifest-unknown
 response permits copying an unlisted tag; authorization and transport failures
@@ -151,10 +146,9 @@ without deleting the original archives or rerunning their producer.
 - Inspect the hosted job summary and authenticated package metadata for both
   destinations. Marker success proves package bootstrap, not Enterprise availability.
 - A package or metadata permission failure needs operator access repair. Keep
-  self-review prevention and private-package checks enabled.
-- Missing repository metadata requires the reviewer's linkage confirmation for
-  the current publication or promotion attempt; retrying an unchanged approval
-  does not fix it. An explicit wrong repository always fails.
+  the main-only environment policy and private-package checks enabled.
+- Missing repository metadata does not require an approval comment. An explicit
+  wrong repository always fails.
 - Treat `bootstrap-*` as non-deployable markers. Release evidence comes from the
   separate publisher's receipt and authenticated image digest verification.
 
@@ -169,6 +163,8 @@ without deleting the original archives or rerunning their producer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-22 03:04: Use manual dispatch without an independent approval or linkage comment (codex/01a0c70f-8a8f-7c62-ac81-ee1a3e99f48b - 149ac0fe)
 
 - 2026-09-21 20:25: Trace recovery from retained OCI artifacts with separate preparation and publication identities. (01a0c179-19f7-7111-8bb4-fc7680da5545 - 4ec004dbefd25070ff1bdeb89cfb16d245296ac9)
 

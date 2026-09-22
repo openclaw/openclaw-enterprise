@@ -71,6 +71,7 @@ export const RESOURCE_KINDS = Object.freeze([
   "installation",
   "namespace",
   "configuration",
+  "preset",
   "service_account",
   "secret",
   "agent",
@@ -688,7 +689,7 @@ export interface IAMPolicyManagementContext {
 }
 
 export type ManagedIAMResourceKind =
-  "agent" | "agent_revision" | "configuration" | "secret" | "service_account";
+  "agent" | "agent_revision" | "configuration" | "preset" | "secret" | "service_account";
 
 export interface IAMManagedRoleInput {
   readonly id: string;
@@ -845,6 +846,8 @@ export interface ComputeDriver extends Driver {
 
 export interface ConfigurationDriver extends Driver {
   readonly capability: "configuration";
+  /** Side-effect-free admission of partial native values before Preset storage. */
+  validateValues?(values: OpenClawConfigurationDocument): Promise<void>;
   create(configuration: Configuration): Promise<Configuration>;
   read(reference: ConfigurationReference): Promise<Configuration>;
   update(configuration: Configuration): Promise<Configuration>;
@@ -859,3 +862,12 @@ export * from "./api/resources.ts";
 export * from "./api/routes.ts";
 
 export { normalizeHarnessAuthBinding, harnessAuthBindingFromSnapshot } from "./harness-auth.ts";
+
+export type { Preset, PresetTemplate, PresetLaunchSettings, PresetVariable } from "./presets.ts";
+export { normalizePresetTemplate } from "./presets.ts";
+export {
+  PresetValidationError,
+  renderPresetTemplate,
+  validatePresetTemplate,
+  presetTemplateDefaults,
+} from "./preset-variables.mjs";

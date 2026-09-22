@@ -60,7 +60,7 @@ prerequisites then fail rather than skip.
 | `OCC_TEST_DATABASE_URL`                 | Migrated disposable loopback PostgreSQL database named `openclaw_k8s_*`.                 |
 
 This scenario uses its newly issued access token, not `OPENAI_API_KEY`. Its
-optional `OCC_TEST_OPENAI_MODEL` defaults to `gpt-5.6-sol`; select a model
+optional `OCC_TEST_OPENAI_MODEL` defaults to `gpt-6-astra`; select a model
 available to the issued ChatGPT account's Codex credentials. API-key model
 availability does not establish support for this authentication mode.
 When using the file path, unset `OCC_TEST_CHATGPT_ADMIN_KEY` first so the test

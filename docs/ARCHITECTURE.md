@@ -34,7 +34,7 @@ infrastructure; they do not bypass OCC authorization or become resource owners.
 ## Platform resources
 
 Each deployment has one Installation. Its Namespaces contain Configurations,
-ServiceAccounts, Secrets, and Agents. Each Agent owns immutable AgentRevisions.
+ServiceAccounts, Secrets, [Presets](reference/presets.md), and Agents. Each Agent owns immutable AgentRevisions.
 References must stay within their admitted scope.
 
 [Concepts](guides/concepts.md) defines these resources and distinguishes platform

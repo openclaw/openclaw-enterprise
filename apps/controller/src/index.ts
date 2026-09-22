@@ -20,6 +20,7 @@ import { AuditEventFactory, type AuditSink } from "@openclaw-enterprise/audit";
 import { AuthAccountRoleNotFoundError, type AuthPrincipalSeed } from "@openclaw-enterprise/iam";
 import {
   harnessAuthBindingFromSnapshot,
+  PresetValidationError,
   ErrorResponse,
   AgentRuntimeCredentialResponse,
   JsonValue,
@@ -44,6 +45,7 @@ import {
   type OccApiRoute,
   type OpenClawConfigurationDocument,
   type PermissionAction,
+  type PresetTemplate,
   type ProviderSummary,
   type ResourceKind,
   type ResourceRef,
@@ -231,6 +233,7 @@ const LOOPBACK_ADDRESSES = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
 const RESOURCE_ID = {
   namespaceId: /^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  presetId: /^pre_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
   configurationId: /^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
   serviceAccountId: /^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
   secretId: /^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
@@ -369,11 +372,15 @@ function operationTarget(
     typeof params.configurationId === "string" ? params.configurationId : undefined;
   const serviceAccountId =
     typeof params.serviceAccountId === "string" ? params.serviceAccountId : undefined;
+  const presetId = typeof params.presetId === "string" ? params.presetId : undefined;
   const secretId = typeof params.secretId === "string" ? params.secretId : undefined;
   const agentId = typeof params.agentId === "string" ? params.agentId : undefined;
   const revisionId = typeof params.revisionId === "string" ? params.revisionId : undefined;
   if (operation.operationId === "createNamespace") {
     return { kind: "namespace", id: installationId };
+  }
+  if (operation.resourceKind === "preset" && namespaceId) {
+    return { kind: "preset", id: presetId ?? namespaceId, namespaceId };
   }
   if (operation.operationId === "createConfiguration" && namespaceId) {
     return { kind: "configuration", id: namespaceId, namespaceId };
@@ -533,6 +540,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
   switch (operation.authorizationTarget) {
     case "namespace_collection":
       return [{ ...permission, scope: "namespace" }];
+    case "preset_candidates":
     case "namespace_candidates":
       return [{ ...permission, scope: "each_returned" }];
     case "namespace_and_agent_candidates":
@@ -563,6 +571,7 @@ function permissionDescription(
     installation: "Installation",
     namespace: "Namespace",
     configuration: "Configuration",
+    preset: "Preset",
     service_account: "ServiceAccount",
     secret: "Secret",
     agent: "Agent",
@@ -774,6 +783,9 @@ function isDependencyUnavailable(error: unknown): boolean {
 function requestFailure(error: unknown): RequestFailure {
   if (error instanceof RequestFailure) {
     return error;
+  }
+  if (error instanceof PresetValidationError) {
+    return failure(400, "INVALID_REQUEST", "The supplied Preset template is invalid.");
   }
   if (error instanceof ConfigurationValidationError) {
     return failure(400, "INVALID_REQUEST", "The supplied configuration is invalid.");
@@ -2116,6 +2128,84 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             operation,
             request,
             { kind: "configuration", id: params.configurationId as string, namespaceId },
+            "mutation",
+            context,
+          ),
+        );
+      });
+      reply.status(204).send();
+      return;
+    }
+
+    if (operation.operationId === "createPreset") {
+      const preset = await controller.transact(async (unit) => {
+        const created = await controller!.createPreset(context.actorId, {
+          namespaceId,
+          name: body?.name as string,
+          template: body?.template as PresetTemplate,
+        });
+        await unit.audit.append(
+          event(
+            operation,
+            request,
+            { kind: "preset", id: created.id, namespaceId },
+            "mutation",
+            context,
+          ),
+        );
+        return created;
+      });
+      reply.status(201).send({ data: preset, meta: { requestId: request.id } });
+      return;
+    }
+
+    if (operation.operationId === "listPresets") {
+      const presets = await controller.listPresets(context.actorId, namespaceId);
+      reply.send({ data: presets, meta: { requestId: request.id } });
+      return;
+    }
+
+    if (operation.operationId === "getPreset") {
+      const preset = await controller.getPreset(
+        context.actorId,
+        namespaceId,
+        params.presetId as string,
+      );
+      reply.send({ data: preset, meta: { requestId: request.id } });
+      return;
+    }
+
+    if (operation.operationId === "updatePreset") {
+      const preset = await controller.transact(async (unit) => {
+        const updated = await controller!.updatePreset(context.actorId, {
+          namespaceId,
+          presetId: params.presetId as string,
+          ...(body?.name === undefined ? {} : { name: body.name as string }),
+          ...(body?.template === undefined ? {} : { template: body.template as PresetTemplate }),
+        });
+        await unit.audit.append(
+          event(
+            operation,
+            request,
+            { kind: "preset", id: updated.id, namespaceId },
+            "mutation",
+            context,
+          ),
+        );
+        return updated;
+      });
+      reply.send({ data: preset, meta: { requestId: request.id } });
+      return;
+    }
+
+    if (operation.operationId === "deletePreset") {
+      await controller.transact(async (unit) => {
+        await controller!.deletePreset(context.actorId, namespaceId, params.presetId as string);
+        await unit.audit.append(
+          event(
+            operation,
+            request,
+            { kind: "preset", id: params.presetId as string, namespaceId },
             "mutation",
             context,
           ),

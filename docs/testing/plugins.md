@@ -74,14 +74,19 @@ All native scenarios use Kubernetes. Provide
 `OCC_TEST_PLUGIN_DRIVER_OPENCLAW_DATABASE_URL` or
 `OCC_TEST_PLUGIN_DRIVER_CODEX_CALENDAR_DATABASE_URL`. The Codex failure scenario
 requires its own distinct `OCC_TEST_PLUGIN_DRIVER_CODEX_FAILURE_DATABASE_URL`.
-The OpenClaw scenario also requires `OPENAI_API_KEY` in the process environment.
+The OpenClaw scenario also requires `OPENAI_API_KEY` in the process environment
+and a runtime image with `plugins install --no-enable` support. The repository
+still pins OpenClaw `2026.9.1`, which lacks that flag; update the pin after the
+prerequisite release. The extended scenario checks explicit tool allowlist
+composition, preserved plugin deny policy on a disabled deployment, and rejection
+of a later conflicting enabled selection before the replacement becomes ready.
 
 Codex scenarios additionally need a Codex runtime image via
 `OCC_TEST_KUBERNETES_AGENT_IMAGE` or `OCC_TEST_KUBERNETES_CODEX_IMAGE`, an
 injected `CODEX_ACCESS_TOKEN` for the existing designated test account, and a
 runtime image that supports `OPENCLAW_STATE_DIR` for OpenClaw state writes when
 the test starts without a useful `HOME`. Set `OCC_TEST_OPENAI_MODEL` to a model
-supported by that Codex path; the existing acceptance fixture uses `gpt-5.6-sol`.
+supported by that Codex path; the current source default is `gpt-6-astra`.
 The Calendar proof also needs `OCC_TEST_CODEX_CALENDAR_TOOL_NAME` and
 `OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT`, and must show a model-chosen
 `list_calendars(max_results:1)` read during a normal Agent turn.
@@ -117,6 +122,11 @@ a new upstream account. Never print credential values or resolved account
 identifiers.
 
 ## Current proof notes
+
+The policy-composition and installation changes have not been verified in a real
+Kubernetes Agent deployment. The extended scenario requires the prerequisite
+OpenClaw release plus the cluster, database, image, and credentials above. The
+proofs below predate these changes and do not cover them.
 
 Best-effort installation verification for
 [PR #228](https://github.com/openclaw/openclaw-enterprise/pull/228) uses an isolated

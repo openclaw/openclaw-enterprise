@@ -5,6 +5,8 @@ An Agent is an AI workload that you name, configure, and deploy inside a
 and, once deployed, gateway. It cannot use another Namespace's resources
 through its own permissions.
 
+Use a [Preset](presets.md) to copy reusable launch settings into a new Agent draft.
+
 To get one running, [deploy your first Agent](../guides/first-agent.md). For an
 existing Agent, see [Compute](../guides/topics/agent-compute.md) for execution
 choices, [Agent Revisions](../guides/topics/agent-revisions.md) for changes, or

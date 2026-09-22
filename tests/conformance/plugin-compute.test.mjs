@@ -30,9 +30,8 @@ import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
 
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
 
-const OCC_DIFFS_DIGEST =
-  "sha512-5VTDNEo7D3iOgRoL5C31JPTbA/EXQEFRuxOvLy67IMFmOajwroGsUMWeuKkmqzFbPNQxvn7GACDSr/5Vmpx3/g==";
 const CODEX_LINEAR_NATIVE_ID = "linear@openai-curated-remote";
 const CODEX_LINEAR_REMOTE_ID = "plugin_asdk_app_69a089a326dc8191b32a3f2553f5be2c";
 const CODEX_LINEAR_APP_ID = "asdk_app_69a089a326dc8191b32a3f2553f5be2c";
@@ -247,78 +246,6 @@ function kubernetesOptions(overrides = {}) {
     },
     ...overrides,
   };
-}
-
-function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
-  const calls = [];
-  const files = new Map([
-    [
-      "/etc/openclaw/openclaw.json",
-      JSON.stringify(
-        options.baseConfig ?? {
-          gateway: { port: 8080 },
-          plugins: { installs: { keep: { source: "npm" } }, load: { paths: ["existing"] } },
-          tools: { alsoAllow: ["existing-tool"] },
-        },
-      ),
-    ],
-    ...(options.files ?? []),
-  ]);
-  const sandbox = {
-    Buffer,
-    JSON,
-    files,
-    process: {
-      env: {
-        OPENCLAW_CONFIG_PATH: "/etc/openclaw/openclaw.json",
-        HOME: "/home/node",
-        ...(options.env ?? {}),
-      },
-    },
-    require(specifier) {
-      if (specifier === "node:child_process") {
-        return {
-          spawnSync(command, args, spawnOptions) {
-            options.beforeSpawn?.(command, args, sandbox);
-            calls.push({ command, args, options: spawnOptions });
-            return responses.shift() ?? { status: 0, stdout: "", stderr: "" };
-          },
-        };
-      }
-      if (specifier === "node:fs") {
-        return {
-          existsSync(path) {
-            return files.has(path);
-          },
-          mkdirSync() {},
-          readFileSync(path) {
-            if (!files.has(path)) {
-              throw new Error(`Missing mocked file: ${path}`);
-            }
-            return files.get(path);
-          },
-          writeFileSync(path, data) {
-            files.set(path, String(data));
-          },
-        };
-      }
-      return nodeRequire(specifier);
-    },
-    result: {},
-  };
-  try {
-    vm.runInNewContext(
-      `${PLUGIN_RUNTIME_HELPERS}
-result.value = installOpenClawPlugins(${JSON.stringify(runtime)}, ${JSON.stringify(options.failures ?? [])});`,
-      sandbox,
-    );
-  } catch (error) {
-    if (options.captureError === true) {
-      return { calls, files, error };
-    }
-    throw error;
-  }
-  return { calls, files, value: sandbox.result.value };
 }
 
 function codexListResponse(options = {}) {
@@ -1270,94 +1197,6 @@ test("Codex runtime helper fails before readiness when selected plugin lacks app
   );
 });
 
-test("OpenClaw runtime helper installs exact admitted package pins and verifies the install record", async () => {
-  const state = openClawPluginState();
-  const runtime = {
-    manifest: pluginRuntimeSpecForRevision(
-      revision({ harness: { id: "openclaw", version: "1.0.0", mode: "embedded" }, plugins: state }),
-    ),
-  };
-  const firstInstallConfig = { path: undefined, config: undefined };
-  const { calls, files } = runOpenClawRuntimeHelper(
-    runtime,
-    [
-      { status: 0, stdout: "", stderr: "" },
-      { status: 0, stdout: JSON.stringify({ refreshed: true }), stderr: "" },
-      {
-        status: 0,
-        stdout: JSON.stringify({
-          plugin: {
-            id: "diffs",
-            version: "2026.8.2",
-            rootDir: "/home/node/.openclaw/plugins/@openclaw/diffs",
-          },
-          install: {
-            source: "npm",
-            resolvedName: "@openclaw/diffs",
-            resolvedVersion: "2026.8.2",
-            installPath: "/home/node/.openclaw/plugins/@openclaw/diffs",
-            integrity: OCC_DIFFS_DIGEST,
-          },
-        }),
-        stderr: "",
-      },
-    ],
-    {
-      beforeSpawn(command, args, sandbox) {
-        if (command === "node" && args[1] === "plugins" && args[2] === "install") {
-          firstInstallConfig.path = sandbox.process.env.OPENCLAW_CONFIG_PATH;
-          firstInstallConfig.config = JSON.parse(sandbox.files.get(firstInstallConfig.path));
-        }
-      },
-    },
-  );
-
-  assert.deepEqual(JSON.parse(JSON.stringify(calls.map((call) => call.args))), [
-    ["/app/openclaw.mjs", "plugins", "install", "@openclaw/diffs@2026.8.2", "--pin", "--force"],
-    ["/app/openclaw.mjs", "plugins", "registry", "--refresh", "--json"],
-    ["/app/openclaw.mjs", "plugins", "inspect", "diffs", "--json"],
-  ]);
-  assert.equal(firstInstallConfig.path, "/home/node/.openclaw/openclaw.json");
-  assert.deepEqual(firstInstallConfig.config.plugins.entries, { diffs: { enabled: true } });
-  assert.deepEqual(firstInstallConfig.config.tools.alsoAllow, ["existing-tool", "diffs"]);
-
-  const effective = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
-  assert.equal(effective.gateway.port, 8080);
-  assert.deepEqual(effective.plugins.installs.keep, { source: "npm" });
-  assert.deepEqual(effective.plugins.load.paths, ["existing"]);
-  assert.deepEqual(effective.plugins.entries, { diffs: { enabled: true } });
-  assert.deepEqual(effective.tools.alsoAllow, ["existing-tool", "diffs"]);
-});
-
-test("OpenClaw runtime helper reports selected plugin install warnings after disabling config", () => {
-  const state = openClawPluginState();
-  const runtime = {
-    manifest: pluginRuntimeSpecForRevision(
-      revision({ harness: { id: "openclaw", version: "1.0.0", mode: "embedded" }, plugins: state }),
-    ),
-  };
-  const result = runOpenClawRuntimeHelper(
-    runtime,
-    [{ status: 1, stdout: "", stderr: "native install failed" }],
-    {
-      env: {
-        OPENCLAW_PLUGIN_STATUS_PORT: "18791",
-        OPENCLAW_AGENT_REVISION_ID: "revision-plugin-compute-1",
-        OPENCLAW_PLUGIN_STATUS_CONTAINER: "gateway",
-      },
-    },
-  );
-
-  assert.deepEqual(plain(result.value), {
-    successfulPluginIds: [],
-    failures: [{ pluginId: "occ-plugin:diffs", code: "PLUGIN_INSTALL_FAILED" }],
-  });
-  assert.equal(result.calls.length, 1);
-  const effective = JSON.parse(result.files.get("/home/node/.openclaw/openclaw.json"));
-  assert.deepEqual(effective.plugins.entries, { diffs: { enabled: false } });
-  assert.equal(effective.tools?.alsoAllow?.includes("diffs"), false);
-});
-
 test("OpenClaw runtime helper rejects foreign OpenClaw plugin config before native install", () => {
   const state = openClawPluginState();
   const runtime = {
@@ -1398,106 +1237,6 @@ test("OpenClaw runtime helper keeps install signals generic", () => {
 
   assert.match(result.error.message, /OpenClaw plugin install failed/);
   assert.equal(result.error.diagnostic, undefined);
-});
-
-test("OpenClaw runtime helper fails before readiness when raw Codex bridge config conflicts", () => {
-  const state = codexLinearPluginState();
-  const runtime = {
-    manifest: pluginRuntimeSpecForRevision(revision({ plugins: state })),
-  };
-
-  assert.throws(
-    () =>
-      runOpenClawRuntimeHelper(runtime, [], {
-        baseConfig: {
-          gateway: { port: 8080 },
-          plugins: {
-            entries: {
-              codex: {
-                config: {
-                  codexPlugins: {
-                    enabled: true,
-                    allow_all_plugins: false,
-                    plugins: { google_calendar: { enabled: true } },
-                  },
-                },
-              },
-            },
-          },
-        },
-      }),
-    /Codex bridge configuration conflicts/,
-  );
-});
-
-test("OpenClaw runtime helper fails before readiness when installed metadata drifts", async () => {
-  const state = openClawPluginState();
-  const runtime = {
-    manifest: pluginRuntimeSpecForRevision(
-      revision({ harness: { id: "openclaw", version: "1.0.0", mode: "embedded" }, plugins: state }),
-    ),
-  };
-  assert.throws(
-    () =>
-      runOpenClawRuntimeHelper(runtime, [
-        { status: 0, stdout: "", stderr: "" },
-        { status: 0, stdout: JSON.stringify({ refreshed: true }), stderr: "" },
-        {
-          status: 0,
-          stdout: JSON.stringify({
-            plugin: {
-              id: "diffs",
-              version: "2026.8.2",
-              rootDir: "/home/node/.openclaw/plugins/@openclaw/diffs",
-            },
-            install: {
-              source: "npm",
-              resolvedName: "@openclaw/diffs",
-              resolvedVersion: "2026.8.3",
-              installPath: "/home/node/.openclaw/plugins/@openclaw/diffs",
-              integrity: OCC_DIFFS_DIGEST,
-            },
-          }),
-          stderr: "",
-        },
-      ]),
-    /installed version does not match/,
-  );
-});
-
-test("OpenClaw runtime helper fails before readiness when bundled metadata shadows the install", async () => {
-  const state = openClawPluginState();
-  const runtime = {
-    manifest: pluginRuntimeSpecForRevision(
-      revision({ harness: { id: "openclaw", version: "1.0.0", mode: "embedded" }, plugins: state }),
-    ),
-  };
-  assert.throws(
-    () =>
-      runOpenClawRuntimeHelper(runtime, [
-        { status: 0, stdout: "", stderr: "" },
-        { status: 0, stdout: JSON.stringify({ refreshed: true }), stderr: "" },
-        {
-          status: 0,
-          stdout: JSON.stringify({
-            plugin: {
-              id: "diffs",
-              version: "2026.8.2",
-              rootDir: "/app/plugin-skills/diffs",
-            },
-            install: {
-              source: "npm",
-              resolvedName: "@openclaw/diffs",
-              resolvedVersion: "2026.8.2",
-              installPath: "/home/node/.openclaw/plugins/@openclaw/diffs",
-              integrity: OCC_DIFFS_DIGEST,
-            },
-          }),
-          stderr: "",
-        },
-      ]),
-    /runtime root directory does not resolve inside the admitted install path/,
-  );
 });
 
 test("compute rejects plugin selections that target the wrong native runtime", async () => {

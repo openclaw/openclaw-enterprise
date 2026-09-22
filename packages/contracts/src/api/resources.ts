@@ -2,6 +2,8 @@ import { Type } from "typebox";
 
 import {
   AgentId,
+  PresetId,
+  PresetTemplateSchema,
   ConfigurationGeneration,
   ConfigurationId,
   ConfigurationKindSchema,
@@ -481,3 +483,25 @@ export type AgentRevisionListResponse = Type.Static<typeof AgentRevisionListResp
 export type AgentDeploymentStatusResponse = Type.Static<typeof AgentDeploymentStatusResponse>;
 export type WorkspaceFileResponse = Type.Static<typeof WorkspaceFileResponse>;
 export type WorkspaceFileUpdateResponse = Type.Static<typeof WorkspaceFileUpdateResponse>;
+
+export const PresetSchema = Type.Object(
+  {
+    id: PresetId,
+    namespaceId: NamespaceId,
+    name: Name,
+    template: PresetTemplateSchema,
+    createdAt: Timestamp,
+  },
+  { additionalProperties: false },
+);
+export const PresetResponse = Type.Object(
+  { data: PresetSchema, meta: Meta },
+  { additionalProperties: false },
+);
+export const PresetListResponse = Type.Object(
+  { data: Type.Array(PresetSchema), meta: Meta },
+  { additionalProperties: false },
+);
+export type PresetWire = Type.Static<typeof PresetSchema>;
+export type PresetResponse = Type.Static<typeof PresetResponse>;
+export type PresetListResponse = Type.Static<typeof PresetListResponse>;

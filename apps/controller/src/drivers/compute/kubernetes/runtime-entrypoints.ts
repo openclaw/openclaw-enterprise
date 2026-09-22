@@ -350,7 +350,21 @@ function assertNoOpenClawPluginConfigConflict(base, overlay, options = {}) {
   const baseEntries = objectAtPath(base, ["plugins", "entries"]);
   const overlayEntries = objectAtPath(overlay, ["plugins", "entries"]);
   if (overlayEntries === undefined) return;
+  const policyIds = (value) => Array.isArray(value)
+    ? value.map((id) => id.trim().toLowerCase()).filter(Boolean)
+    : [];
+  const allow = policyIds(base?.plugins?.allow);
+  const deny = policyIds(base?.plugins?.deny);
   for (const pluginId of Object.keys(overlayEntries)) {
+    if (overlayEntries[pluginId].enabled === true) {
+      let conflict;
+      if (base?.plugins?.enabled === false) conflict = "plugins.enabled is false";
+      else if (deny.includes(pluginId)) conflict = "plugins.deny includes the plugin";
+      else if (allow.length > 0 && !allow.includes(pluginId)) conflict = "plugins.allow excludes the plugin";
+      if (conflict !== undefined) {
+        throw new Error("OpenClaw plugin configuration conflicts with managed plugin selection " + pluginId + ": " + conflict + ". Update Configuration or the Agent plugin selection.");
+      }
+    }
     if (pluginId === "codex") continue;
     if (
       baseEntries?.[pluginId] !== undefined &&
@@ -378,11 +392,11 @@ function assertNoOpenClawPluginConfigConflict(base, overlay, options = {}) {
 function mergeOpenClawPluginConfiguration(base, overlay, options = {}) {
   assertNoOpenClawPluginConfigConflict(base, overlay, options);
   const next = mergeConfig(base, overlay);
-  const baseAllow = Array.isArray(base?.tools?.alsoAllow) ? base.tools.alsoAllow : [];
-  const overlayAllow = Array.isArray(overlay?.tools?.alsoAllow) ? overlay.tools.alsoAllow : [];
-  if (overlayAllow.length > 0) {
-    next.tools = isPlainObject(next.tools) ? next.tools : {};
-    next.tools.alsoAllow = [
+  for (const key of ["allow", "alsoAllow"]) {
+    const baseAllow = Array.isArray(base?.tools?.[key]) ? base.tools[key] : [];
+    const overlayAllow = Array.isArray(overlay?.tools?.[key]) ? overlay.tools[key] : [];
+    if (overlayAllow.length === 0) continue;
+    next.tools[key] = [
       ...baseAllow,
       ...overlayAllow.filter((tool) => !baseAllow.includes(tool)),
     ];
@@ -492,7 +506,15 @@ function openClawPluginConfiguration(runtime, failures = []) {
 function applyOpenClawPluginConfiguration(runtime, failures = [], options = {}) {
   const overlay = openClawPluginConfiguration(runtime, failures);
   if (overlay === undefined) return;
-  writeOpenClawConfig(mergeOpenClawPluginConfiguration(readOpenClawConfig(), overlay, options));
+  const base = readOpenClawConfig();
+  // Native allow and alsoAllow are mutually exclusive. Keep grants in the
+  // configured policy form so both application and verification use that form.
+  if (base?.tools?.allow?.length > 0 && Array.isArray(overlay?.tools?.alsoAllow)) {
+    overlay.tools.allow = overlay.tools.alsoAllow;
+    delete overlay.tools.alsoAllow;
+  }
+  writeOpenClawConfig(mergeOpenClawPluginConfiguration(base, overlay, options));
+  return overlay;
 }
 
 function assertConfigContainsOverlay(base, overlay, path) {
@@ -503,7 +525,7 @@ function assertConfigContainsOverlay(base, overlay, path) {
     }
     return;
   }
-  if (path === "tools.alsoAllow" && Array.isArray(base) && Array.isArray(overlay)) {
+  if (["tools.allow", "tools.alsoAllow"].includes(path) && Array.isArray(base) && Array.isArray(overlay)) {
     for (const tool of overlay) {
       if (!base.includes(tool)) {
         throw new Error("OpenClaw plugin effective config does not match admitted configuration.");
@@ -617,13 +639,14 @@ function installOpenClawPlugins(runtime, failures = []) {
   const failed = [...failures];
   const successfulPluginIds = [];
   const failedIds = pluginFailureIds(failed);
+  const originalTools = readOpenClawConfig().tools;
   applyOpenClawPluginConfiguration(runtime, failed);
   for (const plugin of installs) {
     if (failedIds.has(plugin.pluginId)) continue;
     const spec = openClawPluginPackageSpec(plugin);
     try {
       runOpenClaw(
-        ["plugins", "install", spec, "--pin", "--force"],
+        ["plugins", "install", spec, "--pin", "--force", "--no-enable"],
         "OpenClaw plugin install",
         pluginDiagnostic(plugin.pluginId, "PLUGIN_INSTALL_FAILED"),
       );
@@ -641,8 +664,12 @@ function installOpenClawPlugins(runtime, failures = []) {
   if (successfulPluginIds.length > 0) {
     runOpenClawJson(["plugins", "registry", "--refresh", "--json"], "OpenClaw plugin registry refresh");
   }
-  applyOpenClawPluginConfiguration(runtime, failed, { allowManagedOpenClawPluginReplacement: true });
-  const overlay = openClawPluginConfiguration(runtime, failed);
+  // Rebuild grants from the operator's policy so failed installs cannot leave
+  // generated allow entries behind or erase an original restrictive allowlist.
+  const installedConfig = readOpenClawConfig();
+  installedConfig.tools = originalTools;
+  writeOpenClawConfig(installedConfig);
+  const overlay = applyOpenClawPluginConfiguration(runtime, failed, { allowManagedOpenClawPluginReplacement: true });
   if (overlay !== undefined) {
     assertConfigContainsOverlay(readOpenClawConfig(), overlay);
   }

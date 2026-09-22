@@ -15,6 +15,7 @@ import type {
   Namespace,
   NamespaceStatus,
   PluginDesiredState,
+  Preset,
   Secret,
   SecretBindings,
   ServiceAccount,
@@ -62,6 +63,7 @@ export interface NamespaceRepository extends NamespaceReadRepository {
   ): Promise<Readonly<PersistedNamespace> | undefined>;
   hasAgents(namespaceId: string): Promise<boolean>;
   hasConfigurations(namespaceId: string): Promise<boolean>;
+  hasPresets(namespaceId: string): Promise<boolean>;
   hasServiceAccounts(namespaceId: string): Promise<boolean>;
   hasSecrets(namespaceId: string): Promise<boolean>;
   transitionNamespaceStatus(
@@ -169,6 +171,22 @@ export interface ConfigurationRepository extends ConfigurationReadRepository {
     secretBindings?: SecretBindings,
   ): Promise<Readonly<ConfigurationOwnership> | undefined>;
   deleteConfiguration(namespaceId: string, configurationId: string): Promise<boolean>;
+}
+
+export interface PresetReadRepository {
+  findPreset(namespaceId: string, presetId: string): Promise<Readonly<Preset> | undefined>;
+  listPresets(namespaceId: string): Promise<readonly Readonly<Preset>[]>;
+}
+
+export interface PresetRepository extends PresetReadRepository {
+  createPreset(preset: Preset): Promise<Readonly<Preset>>;
+  lockPreset(namespaceId: string, presetId: string): Promise<Readonly<Preset> | undefined>;
+  updatePreset(
+    namespaceId: string,
+    presetId: string,
+    changes: Partial<Pick<Preset, "name" | "template">>,
+  ): Promise<Readonly<Preset> | undefined>;
+  deletePreset(namespaceId: string, presetId: string): Promise<boolean>;
 }
 
 export interface SecretReadRepository {
@@ -491,6 +509,7 @@ export interface PlatformReadView {
   readonly installations: InstallationReadRepository;
   readonly namespaces: NamespaceReadRepository;
   readonly configurations: ConfigurationReadRepository;
+  readonly presets: PresetReadRepository;
   readonly secrets: SecretReadRepository;
   readonly serviceAccounts: ServiceAccountReadRepository;
   readonly agents: AgentReadRepository;
@@ -503,6 +522,7 @@ export interface PlatformUnitOfWork extends PlatformReadView {
   readonly installations: InstallationRepository;
   readonly namespaces: NamespaceRepository;
   readonly configurations: ConfigurationRepository;
+  readonly presets: PresetRepository;
   readonly secrets: SecretRepository;
   readonly serviceAccounts: ServiceAccountRepository;
   readonly agents: AgentRepository;
@@ -538,6 +558,7 @@ interface PlatformSnapshot {
   installation: Readonly<Installation> | undefined;
   readonly namespaces: Map<string, Readonly<PersistedNamespace>>;
   readonly configurations: Map<string, Readonly<ConfigurationOwnership>>;
+  readonly presets: Map<string, Readonly<Preset>>;
   readonly secrets: Map<string, Readonly<Secret>>;
   readonly serviceAccounts: Map<string, Readonly<ServiceAccount>>;
   readonly agents: Map<string, Readonly<Agent>>;
@@ -574,6 +595,7 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
         immutableCopy(configuration),
       ]),
     ),
+    presets: new Map(Array.from(snapshot.presets, ([key, preset]) => [key, immutableCopy(preset)])),
     secrets: new Map(Array.from(snapshot.secrets, ([key, secret]) => [key, immutableCopy(secret)])),
     serviceAccounts: new Map(
       Array.from(snapshot.serviceAccounts, ([key, account]) => [key, immutableCopy(account)]),
@@ -808,6 +830,8 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
       Array.from(snapshot.configurations.values()).some(
         (configuration) => configuration.namespaceId === namespaceId,
       ),
+    hasPresets: async (namespaceId) =>
+      Array.from(snapshot.presets.values()).some((preset) => preset.namespaceId === namespaceId),
     hasServiceAccounts: async (namespaceId) =>
       Array.from(snapshot.serviceAccounts.values()).some(
         (account) => account.namespaceId === namespaceId,
@@ -851,6 +875,9 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
         Array.from(snapshot.configurations.values()).some(
           (configuration) => configuration.namespaceId === namespaceId,
         ) ||
+        Array.from(snapshot.presets.values()).some(
+          (preset) => preset.namespaceId === namespaceId,
+        ) ||
         Array.from(snapshot.serviceAccounts.values()).some(
           (account) => account.namespaceId === namespaceId,
         ) ||
@@ -866,6 +893,71 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
       const saved = immutableCopy({ ...namespace, deletedAt });
       snapshot.namespaces.set(key, saved);
       return immutableCopy(saved);
+    },
+  };
+
+  const findPreset: PresetReadRepository["findPreset"] = async (namespaceId, presetId) => {
+    if (snapshot.namespaces.get(namespaceId)?.deletedAt !== undefined) {
+      return undefined;
+    }
+    const preset = snapshot.presets.get(agentKey(namespaceId, presetId));
+    return preset === undefined ? undefined : immutableCopy(preset);
+  };
+  const presets: PresetRepository = {
+    findPreset,
+    listPresets: async (namespaceId) =>
+      Object.freeze(
+        snapshot.namespaces.get(namespaceId)?.deletedAt !== undefined
+          ? []
+          : Array.from(snapshot.presets.values())
+              .filter((preset) => preset.namespaceId === namespaceId)
+              .sort((a, b) => a.id.localeCompare(b.id))
+              .map((preset) => immutableCopy(preset)),
+      ),
+    createPreset: async (preset) => {
+      assertInitialized(snapshot);
+      const namespace = await namespaces.lockNamespace(preset.namespaceId);
+      if (namespace === undefined || !["provisioning", "ready"].includes(namespace.status)) {
+        throw new ScopeViolationError("The Preset belongs to an unavailable Namespace.");
+      }
+      if (
+        Array.from(snapshot.presets.values()).some(
+          (existing) =>
+            existing.id === preset.id ||
+            (existing.namespaceId === preset.namespaceId && existing.name === preset.name),
+        )
+      ) {
+        throw new ResourceConflictError("The Preset identity or Namespace name already exists.");
+      }
+      const saved = immutableCopy(preset);
+      snapshot.presets.set(agentKey(preset.namespaceId, preset.id), saved);
+      return immutableCopy(saved);
+    },
+    lockPreset: findPreset,
+    updatePreset: async (namespaceId, presetId, changes) => {
+      const current = await findPreset(namespaceId, presetId);
+      if (current === undefined) {
+        return undefined;
+      }
+      const saved = immutableCopy({ ...current, ...changes });
+      if (
+        Array.from(snapshot.presets.values()).some(
+          (existing) =>
+            existing.namespaceId === namespaceId &&
+            existing.id !== presetId &&
+            existing.name === saved.name,
+        )
+      ) {
+        throw new ResourceConflictError("The Preset name already exists in this Namespace.");
+      }
+      snapshot.presets.set(agentKey(namespaceId, presetId), saved);
+      return immutableCopy(saved);
+    },
+    deletePreset: async (namespaceId, presetId) => {
+      if ((await findPreset(namespaceId, presetId)) === undefined) {
+        return false;
+      }
+      return snapshot.presets.delete(agentKey(namespaceId, presetId));
     },
   };
 
@@ -1445,6 +1537,9 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
     if (resourceKind === "configuration") {
       return (await configurations.findConfiguration(namespaceId, resourceId)) !== undefined;
     }
+    if (resourceKind === "preset") {
+      return (await presets.findPreset(namespaceId, resourceId)) !== undefined;
+    }
     if (resourceKind === "secret") {
       return (await secrets.findSecret(namespaceId, resourceId)) !== undefined;
     }
@@ -1573,6 +1668,7 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
     installations,
     namespaces,
     configurations,
+    presets,
     secrets,
     serviceAccounts,
     agents,
@@ -1704,6 +1800,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     installation: undefined,
     namespaces: new Map(),
     configurations: new Map(),
+    presets: new Map(),
     secrets: new Map(),
     serviceAccounts: new Map(),
     agents: new Map(),

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-09-18
-last_updated_session: codex/01a0b0fc-4a24-76c0-8fb7-f3a3a434d464
+updated: 2026-09-21
+last_updated_session: codex/01a0b17c-68b6-7e11-bedc-f74de7d606ed
 ---
 
 # Agent Plugin Deployment Flow
@@ -104,9 +104,14 @@ in its container's private temporary home.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:installOpenClawPlugins`
 
 For embedded OpenClaw, the entrypoint resolves the requested selection against
-the bundled OpenClaw catalog, writes the resulting policy into its private
-writable configuration, installs the supported npm package version with `--pin`
-and `--force`, refreshes the registry, then reapplies and checks the policy overlay.
+the bundled OpenClaw catalog and rejects conflicts with native plugin policy
+before installation. It merges generated tool grants into an existing nonempty
+`tools.allow`, otherwise `tools.alsoAllow`, preserving tool denies and profiles.
+The resulting configuration is private to the revision. Installation uses
+`--pin --force --no-enable` so native installation cannot change enablement or
+plugin allow/deny lists; preparation then refreshes the registry and verifies the
+admitted configuration. The runtime image must first gain the required native
+flag; the pinned release does not support it.
 Native inspection verifies plugin ID, package name, runtime/install version,
 recorded integrity, and the runtime source's containment in the install path.
 Verification failure stops startup before the replacement gateway becomes ready.
@@ -222,7 +227,7 @@ completed deployment attempt rather than ongoing runtime health.
 ## Related docs
 
 - [Agent plugin reference](../reference/agent-plugins.md).
-- [PluginDriver selection and limits](../reference/drivers/plugin.md).
+- [PluginDriver selection and limits](../reference/drivers/plugin-bundled.md).
 - [Controller worker](controller-worker.md).
 - [Harness execution topology](harness-execution-topology.md).
 - [Deployment guide](../guides/deploy.md).
@@ -233,6 +238,10 @@ completed deployment attempt rather than ongoing runtime health.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-21 21:23: Reconciled policy composition and installation without enablement changes with optional-plugin warnings and the bundled Driver reference; runtime release and Kubernetes proof remain pending (codex/01a0b17c-68b6-7e11-bedc-f74de7d606ed - 9405e20)
+
+- 2026-09-18 17:38: Documented plugin policy conflict rejection, tool allowlist composition, and installation without enablement changes; runtime release and Kubernetes proof remain pending (codex/01a0b17c-68b6-7e11-bedc-f74de7d606ed - 724dcb5)
 
 - 2026-09-18 17:17: Linked plugin warning persistence to the generalized controller work result. (codex/01a0b0fc-4a24-76c0-8fb7-f3a3a434d464 - 6a582ce9)
 

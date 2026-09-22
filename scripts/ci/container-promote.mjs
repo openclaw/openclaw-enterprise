@@ -165,7 +165,7 @@ async function promote(path, env) {
   );
   // Check both private destinations before transmitting either image.
   for (const image of targets) {
-    await verifyGhcr(image.destination, image.digest, image.tag, env);
+    await verifyGhcr(image.destination, image.digest, image.tag);
     await verifyHub(image.hubImage, image.digest, image.tag, env);
   }
   const authDirectory = await mkdtemp(join(tmpdir(), "enterprise-promotion-"));
@@ -186,7 +186,7 @@ async function promote(path, env) {
     for (const image of targets) {
       assert.equal(await verifyProducer(env), env.ARTIFACT_ID);
       await verifyCi(ci);
-      await verifyGhcr(image.destination, image.digest, image.tag, env);
+      await verifyGhcr(image.destination, image.digest, image.tag);
       assert.equal(
         inspectDigest(`docker://${image.destination}:${image.tag}`, authfile),
         image.digest,

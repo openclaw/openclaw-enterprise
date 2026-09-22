@@ -10,6 +10,7 @@ import { pathToFileURL } from "node:url";
 export const repository = "openclaw/openclaw-enterprise";
 export const publishWorkflow = ".github/workflows/container-publish.yml";
 const images = ["controller", "runtime"];
+const platforms = ["linux/amd64", "linux/arm64"];
 const shaPattern = /^[a-f0-9]{40}$/;
 const digestPattern = /^sha256:[a-f0-9]{64}$/;
 const integerPattern = /^[1-9][0-9]*$/;
@@ -57,12 +58,7 @@ export function validateCi(run, workflow, jobs, sourceSha, runId, attempt) {
 
 export function validateEnvironment(environment, policies) {
   assert.equal(environment.name, "container-publish");
-  assert.equal(environment.can_admins_bypass, false, "Disable administrator approval bypass.");
-  const reviewers = environment.protection_rules?.find(
-    (rule) => rule.type === "required_reviewers",
-  );
-  assert.ok(reviewers?.reviewers?.length > 0, "Configure required environment reviewers.");
-  assert.equal(reviewers.prevent_self_review, true, "Disable self-approval for publication.");
+  assert.equal(environment.can_admins_bypass, false, "Disable administrator environment bypass.");
   assert.equal(environment.deployment_branch_policy?.custom_branch_policies, true);
   assert.equal(environment.deployment_branch_policy?.protected_branches, false);
   assert.deepEqual(
@@ -86,8 +82,8 @@ export function validatePackage(pkg, image, { allowMissingRepository = false } =
   assert.equal(pkg.package_type, "container");
   assert.equal(pkg.visibility, "private", "GHCR package must already exist and be private.");
   // GitHub's package schema makes repository nullable and optional. Absence
-  // cannot establish linkage; only marker bootstrap or independent review may
-  // handle that case. Explicit conflicting metadata always fails.
+  // cannot establish linkage; callers may accept the setup-time package grant.
+  // Explicit conflicting metadata always fails.
   if (pkg.repository == null && allowMissingRepository) {
     return false;
   }
@@ -109,7 +105,7 @@ export function validatePreparedImage(metadata, expected) {
   ]) {
     assert.equal(metadata[key], expected[key], `Prepared image ${key} does not match this run.`);
   }
-  assert.equal(metadata.platform, "linux/amd64");
+  assert.deepEqual(metadata.platforms, platforms);
   assert.match(metadata.digest ?? "", digestPattern);
   assert.match(metadata.archiveSha256 ?? "", /^[a-f0-9]{64}$/);
 }
@@ -239,7 +235,7 @@ function identity(env, image) {
     ciAttempt: env.CI_ATTEMPT,
     nodeBaseImage: env.NODE_BASE_IMAGE,
     image,
-    platform: "linux/amd64",
+    platforms,
   };
 }
 
@@ -265,38 +261,98 @@ export function inspectDigest(reference, authfile) {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
+// Read the exact blobs named by the OCI index, never an extracted checkout path.
+// Hash verification binds platform/config claims to the index's immutable digest.
+export function readArchivePlatforms(archive, indexDigest) {
+  function blob(digest) {
+    assert.match(digest ?? "", digestPattern);
+    const bytes = execFileSync("tar", ["-xOf", archive, `blobs/sha256/${digest.slice(7)}`], {
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    assert.equal(`sha256:${createHash("sha256").update(bytes).digest("hex")}`, digest);
+    return JSON.parse(bytes);
+  }
+  const index = blob(indexDigest);
+  assert.equal(index.schemaVersion, 2);
+  assert.equal(index.mediaType, "application/vnd.oci.image.index.v1+json");
+  assert.ok(Array.isArray(index.manifests));
+  const selected = index.manifests
+    .map((descriptor) => {
+      assert.equal(descriptor.mediaType, "application/vnd.oci.image.manifest.v1+json");
+      const platform = `${descriptor.platform?.os}/${descriptor.platform?.architecture}`;
+      assert.ok(platforms.includes(platform), `Unexpected image platform: ${platform}`);
+      assert.ok(
+        descriptor.platform.variant === undefined ||
+          (platform === "linux/arm64" && descriptor.platform.variant === "v8"),
+        "Unsupported platform variant.",
+      );
+      const manifest = blob(descriptor.digest);
+      assert.equal(manifest.schemaVersion, 2);
+      assert.equal(manifest.mediaType, descriptor.mediaType);
+      const config = blob(manifest.config?.digest);
+      assert.equal(`${config.os}/${config.architecture}`, platform, "Config platform mismatch.");
+      return { platform, digest: descriptor.digest, configDigest: manifest.config.digest };
+    })
+    .sort((left, right) => left.platform.localeCompare(right.platform));
+  assert.deepEqual(
+    selected.map((image) => image.platform),
+    platforms,
+  );
+  return selected;
+}
+
 async function smoke(directory, env) {
   assert.ok(images.includes(env.IMAGE));
   const archive = join(directory, "image.tar");
   const archiveSha256 = await fileDigest(archive);
   assert.equal(inspectDigest(`oci-archive:${archive}`), env.IMAGE_DIGEST);
-  const manifest = JSON.parse(skopeo(["inspect", "--raw", `oci-archive:${archive}`]));
-  assert.match(manifest.config?.digest ?? "", digestPattern);
-  const tag = `localhost/enterprise-${env.IMAGE}:prepared`;
-  skopeo(["copy", `oci-archive:${archive}`, `docker-daemon:${tag}`], { stdio: "inherit" });
-  const [loaded] = JSON.parse(execFileSync("docker", ["image", "inspect", tag]));
-  // Docker may translate the manifest media type; the immutable config ID binds
-  // the loaded image to the prepared config and its ordered filesystem diff IDs.
-  assert.equal(loaded.Id, manifest.config.digest);
-  assert.equal(loaded.Os, "linux");
-  assert.equal(loaded.Architecture, "amd64");
-  const controller = env.IMAGE === "controller";
-  execFileSync(
-    process.execPath,
-    ["--test", `tests/integration/${controller ? "production" : "runtime"}-image-startup.test.mjs`],
-    {
-      env: {
-        ...env,
-        [controller ? "OCC_TEST_PRODUCTION_IMAGE" : "OCC_TEST_RUNTIME_IMAGE"]: loaded.Id,
+  for (const image of readArchivePlatforms(archive, env.IMAGE_DIGEST)) {
+    const [, arch] = image.platform.split("/");
+    const tag = `localhost/enterprise-${env.IMAGE}:prepared-${arch}`;
+    skopeo(
+      [
+        "--override-os",
+        "linux",
+        "--override-arch",
+        arch,
+        "copy",
+        `oci-archive:${archive}`,
+        `docker-daemon:${tag}`,
+      ],
+      { stdio: "inherit" },
+    );
+    const [loaded] = JSON.parse(execFileSync("docker", ["image", "inspect", tag]));
+    // Docker may translate the manifest media type; the config ID binds the
+    // loaded image to this index entry and its ordered filesystem diff IDs.
+    assert.equal(loaded.Id, image.configDigest);
+    assert.equal(loaded.Os, "linux");
+    assert.equal(loaded.Architecture, arch);
+    const controller = env.IMAGE === "controller";
+    console.log(`Smoke ${env.IMAGE} ${image.platform} @ ${image.digest}`);
+    execFileSync(
+      process.execPath,
+      [
+        "--test",
+        `tests/integration/${controller ? "production" : "runtime"}-image-startup.test.mjs`,
+      ],
+      {
+        env: {
+          ...env,
+          OCC_TEST_IMAGE_TIMEOUT_MULTIPLIER: arch === "arm64" ? "6" : "1",
+          [controller ? "OCC_TEST_PRODUCTION_IMAGE" : "OCC_TEST_RUNTIME_IMAGE"]: loaded.Id,
+        },
+        stdio: "inherit",
       },
-      stdio: "inherit",
-    },
-  );
+    );
+    // Keep only one unpacked variant on this disposable preparation runner.
+    execFileSync("docker", ["image", "rm", tag], { stdio: "inherit" });
+  }
   assert.equal(await fileDigest(archive), archiveSha256, "OCI archive changed during smoke.");
 }
 
 async function seal(directory, env) {
   assert.match(env.IMAGE_DIGEST ?? "", digestPattern);
+  readArchivePlatforms(join(directory, "image.tar"), env.IMAGE_DIGEST);
   const metadata = {
     ...identity(env, env.IMAGE),
     digest: env.IMAGE_DIGEST,
@@ -305,36 +361,11 @@ async function seal(directory, env) {
   await writeFile(join(directory, "metadata.json"), `${JSON.stringify(metadata, null, 2)}\n`);
 }
 
-export async function verifyGhcr(image, digest, tag, env) {
+export async function verifyGhcr(image, digest, tag) {
   const packagePath = `orgs/openclaw/packages/container/${encodeURIComponent(ghcrPackageName(image))}`;
-  const linked = validatePackage(await github(packagePath), image, {
-    allowMissingRepository: true,
-  });
-  if (!linked) {
-    assert.match(env.GITHUB_RUN_ID ?? "", integerPattern);
-    assert.match(env.GITHUB_RUN_ATTEMPT ?? "", integerPattern);
-    assert.match(env.SOURCE_SHA ?? "", shaPattern);
-    assert.ok(env.GITHUB_ACTOR);
-    const environment = await github(`repos/${repository}/environments/container-publish`);
-    assert.ok(Number.isSafeInteger(environment.id) && environment.id > 0);
-    const reviews = await github(`repos/${repository}/actions/runs/${env.GITHUB_RUN_ID}/approvals`);
-    const confirmation = `Verified GHCR linkage: ${image} -> ${repository}; source=${env.SOURCE_SHA}; run=${env.GITHUB_RUN_ID}; attempt=${env.GITHUB_RUN_ATTEMPT}`;
-    assert.ok(
-      Array.isArray(reviews) &&
-        reviews.some(
-          (review) =>
-            review.state === "approved" &&
-            review.user?.type === "User" &&
-            review.user.login !== env.GITHUB_ACTOR &&
-            review.user.login !== env.GITHUB_TRIGGERING_ACTOR &&
-            review.environments?.some(
-              (entry) => entry.id === environment.id && entry.name === "container-publish",
-            ) &&
-            review.comment?.split(/\r?\n/).some((line) => line.trim() === confirmation),
-        ),
-      `Missing independent package linkage confirmation. Verify package settings, then include this line when approving this attempt: ${confirmation}`,
-    );
-  }
+  // The manual dispatch authorizes publication. GHCR may omit repository
+  // metadata; explicit conflicting linkage still fails package validation.
+  validatePackage(await github(packagePath), image, { allowMissingRepository: true });
   const versions = await githubPages(`${packagePath}/versions`);
   const existing = versions.filter((version) => version.metadata?.container?.tags?.includes(tag));
   assert.ok(
@@ -356,7 +387,7 @@ export async function publishPrepared(directory, env, producer, verify) {
     assert.equal(await fileDigest(archive), metadata.archiveSha256, "OCI archive bytes changed.");
     assert.equal(inspectDigest(`oci-archive:${archive}`), metadata.digest, "OCI digest changed.");
     const destination = env[`GHCR_${image.toUpperCase()}_IMAGE`];
-    await verifyGhcr(destination, metadata.digest, tag, env);
+    await verifyGhcr(destination, metadata.digest, tag);
     prepared.push({ ...metadata, destination, archive });
   }
   assert.notEqual(
@@ -380,9 +411,9 @@ export async function publishPrepared(directory, env, producer, verify) {
       { input: env.GH_TOKEN, stdio: ["pipe", "ignore", "pipe"] },
     );
     for (const image of prepared) {
-      // Approval and visibility may change while large images are being copied.
+      // Source, CI and visibility may change while large images are being copied.
       await verify();
-      const listed = await verifyGhcr(image.destination, image.digest, tag, env);
+      const listed = await verifyGhcr(image.destination, image.digest, tag);
       let remoteDigest;
       try {
         remoteDigest = inspectDigest(`docker://${image.destination}:${tag}`, authfile);

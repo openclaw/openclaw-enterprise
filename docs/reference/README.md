@@ -41,6 +41,7 @@ and the private listener configuration.
   and [Installation settings](settings.md) cover supported configuration.
 - [Authentication](authentication.md) and [authorization](authorization.md)
   explain which credentials and permissions requests need.
+- [Agent Presets](presets.md) defines reusable launch settings, variables, and CRUD permissions.
 - [Agent native admin UI](agent-native-admin.md) covers trusted operator access,
   exact Agent authorization, and routing limits.
 

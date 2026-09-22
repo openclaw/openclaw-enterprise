@@ -172,7 +172,7 @@
   },
   "tests/helpers/openshell-kubernetes-real.mjs": {
     "no-unused-vars": {
-      "count": 2
+      "count": 1
     }
   },
   "tests/helpers/plugin-driver-real.mjs": {

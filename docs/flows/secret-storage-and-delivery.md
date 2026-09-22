@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-09-20
-last_updated_session: codex/01a0bce5-9f29-7110-85fd-6b140674d362
+updated: 2026-09-21
+last_updated_session: codex/01a0c580-9e39-7e21-bb0f-28fcc4752c59
 ---
 
 # Secret Storage and Gateway Delivery Flow
@@ -137,8 +137,11 @@ execution topology.
 The [tool](../../scripts/first-agent.mjs) targets the persistent installation
 started with `OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes ./bin/occ dev up`.
 With the [bootstrap service key](../../packages/iam/src/index.ts), it creates a
-Secret, Configuration, and named Agent through the OCC HTTP API. Bootstrap already
-has Secret `operate`; the Agent does not.
+Secret, Configuration, and named Agent through the OCC HTTP API. A new Agent uses
+`openai/gpt-6-astra` unless `OPENCLAW_FIRST_AGENT_MODEL` selects another authorized
+plain model ID; a repeat without an override keeps the recorded model, and a
+conflicting override is rejected. Bootstrap already has Secret `operate`; the
+Agent does not.
 
 OCC has no public IAM management endpoint. The tool opens the recorded local
 PostgreSQL service. One transaction verifies the Namespace, Agent, and Secret, then
@@ -257,6 +260,8 @@ credential at its issuer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-21 19:52: Trace the local Agent default and preservation or rejection of recorded model selections. (01a0c580-9e39-7e21-bb0f-28fcc4752c59 - 4ec004dbefd25070ff1bdeb89cfb16d245296ac9)
 
 - 2026-09-20 18:25: Document the local first-Agent Secret grant and model-response check added with the installer tool. (01a0c00c-8a45-7233-82c4-e12fb2c3b0d7 - 3bbdc447dbe2dee8c5f757b822e9ebe034047193)
 - 2026-09-20 00:00: Recorded channel credentials as Configuration Secret bindings with Agent service-principal grants and gateway-only delivery. (01a0bce5-9f29-7110-85fd-6b140674d362 - 93fe0a83)

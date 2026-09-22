@@ -5,6 +5,7 @@ import type {
   Configuration,
   ConfigurationDriver,
   ConfigurationReference,
+  OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
 import { validateModelCredentialReferences } from "../model-auth.ts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
@@ -38,9 +39,13 @@ export class FilesystemConfigurationDriver implements ConfigurationDriver {
     this.root = resolve(root);
   }
 
+  async validateValues(values: OpenClawConfigurationDocument): Promise<void> {
+    validateModelCredentialReferences(values);
+  }
+
   async validate(configuration: Configuration): Promise<void> {
     pathFor(this.root, configuration);
-    validateModelCredentialReferences(configuration.values);
+    await this.validateValues(configuration.values);
   }
 
   async create(configuration: Configuration): Promise<Configuration> {

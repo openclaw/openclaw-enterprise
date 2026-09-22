@@ -104,3 +104,11 @@
 ### Providers
 
 - [`listProviders`](../api.md#get-providers): List configured Providers.
+
+### Presets
+
+- [`listPresets`](../api.md#get-namespacesnamespaceidpresets): List readable Presets in one Namespace.
+- [`getPreset`](../api.md#get-namespacesnamespaceidpresetspresetid): Read one exact Namespace-owned Preset.
+- [`createPreset`](../api.md#post-namespacesnamespaceidpresets): Create a reusable Namespace-owned Agent Preset.
+- [`updatePreset`](../api.md#patch-namespacesnamespaceidpresetspresetid): Update a Preset without changing existing Agents.
+- [`deletePreset`](../api.md#delete-namespacesnamespaceidpresetspresetid): Delete a Preset without changing existing Agents.

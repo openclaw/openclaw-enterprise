@@ -750,3 +750,163 @@ test(
     assert.equal(await runCommand(fixture, "docker", dumpArgs), beforeSchema);
   },
 );
+
+test(
+  "Preset migration upgrades only unchanged built-in administrators and preserves custom policy",
+  requiresOwnedPostgres,
+  async (context) => {
+    const fixture = await ownedPostgres();
+    const database = `openclaw_presets_upgrade_${randomUUID().replaceAll("-", "").slice(0, 16)}`;
+    const databaseCommand = (sql, target = "postgres") =>
+      runCommand(fixture, "docker", [
+        ...fixture.composeArgs,
+        "psql",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-U",
+        "postgres",
+        "-d",
+        target,
+        "-c",
+        sql,
+      ]);
+    let pool;
+    context.after(async () => {
+      try {
+        await pool?.end();
+      } finally {
+        await databaseCommand(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
+      }
+    });
+    await databaseCommand(`CREATE DATABASE ${database}`);
+    await databaseCommand(
+      `GRANT CREATE ON DATABASE ${database} TO occ_migrator; CREATE SCHEMA occ AUTHORIZATION occ_migrator; CREATE SCHEMA drizzle AUTHORIZATION occ_migrator; REVOKE CREATE ON SCHEMA public FROM PUBLIC;`,
+      database,
+    );
+    const migrationUrl = new URL(fixture.migrationUrl);
+    migrationUrl.pathname = `/${database}`;
+    pool = new pg.Pool({ connectionString: migrationUrl.toString(), max: 1 });
+    const priorMigrations = (await readdir(migrationsDirectory))
+      .filter((name) => /^\d{4}_.+\.sql$/.test(name) && name < "0024_agent_presets.sql")
+      .sort();
+    assert.equal(priorMigrations.at(-1), "0023_runtime_failure_timestamp_validation.sql");
+    for (const name of priorMigrations) {
+      await pool.query(await readFile(join(migrationsDirectory, name), "utf8"));
+    }
+
+    // Freeze the historical policy: future seed-policy edits must not alter this upgrade fixture.
+    const legacyPermissions = [
+      ["installation", ["administer", "read"]],
+      ["namespace", ["create", "read", "delete"]],
+      ["configuration", ["create", "read", "update", "delete"]],
+      ["service_account", ["create", "read", "update", "delete"]],
+      ["secret", ["create", "read", "update", "delete", "operate"]],
+      ["agent", ["create", "read", "update", "delete", "deploy", "operate", "administer"]],
+      ["agent_revision", ["read"]],
+    ].flatMap(([resourceKind, actions]) => actions.map((action) => ({ action, resourceKind })));
+    const presetPermissions = ["create", "read", "update", "delete"].map((action) => ({
+      action,
+      resourceKind: "preset",
+    }));
+    const installationId = `ins_${randomUUID()}`;
+    const namespaceId = `ns_${randomUUID()}`;
+    await pool.query("INSERT INTO occ.installation VALUES ($1, 'Upgrade', now())", [
+      installationId,
+    ]);
+    await pool.query(
+      "INSERT INTO occ.namespaces (id, name, status, created_at) VALUES ($1, 'Upgrade', 'ready', now())",
+      [namespaceId],
+    );
+    const role = (overrides = {}) => ({
+      id: `role_admin_${randomUUID()}`,
+      namespace_id: null,
+      name: "Installation administrator",
+      permissions: legacyPermissions,
+      ...overrides,
+    });
+    const stock = role();
+    const reordered = role({ permissions: [...legacyPermissions].reverse() });
+    const reduced = role({ permissions: legacyPermissions.slice(1) });
+    const roles = [
+      stock,
+      reordered,
+      reduced,
+      role({
+        permissions: [...legacyPermissions, { action: "update", resourceKind: "namespace" }],
+      }),
+      role({ name: "Custom administrator" }),
+      role({ id: `role_${randomUUID()}` }),
+      role({ namespace_id: namespaceId }),
+      role({ permissions: [...legacyPermissions, presetPermissions[1]] }),
+    ];
+    for (const entry of roles) {
+      await pool.query("INSERT INTO occ.iam_roles VALUES ($1, $2, $3, $4::jsonb)", [
+        entry.id,
+        entry.namespace_id,
+        entry.name,
+        JSON.stringify(entry.permissions),
+      ]);
+    }
+    const principals = [];
+    for (const entry of [stock, reduced]) {
+      const principalId = `prn_${randomUUID()}`;
+      principals.push(principalId);
+      await pool.query(
+        "INSERT INTO occ.iam_identities (id, kind, issuer, subject) VALUES ($1, 'principal', 'upgrade', $1)",
+        [principalId],
+      );
+      await pool.query(
+        "INSERT INTO occ.iam_access_bindings (id, identity_subject_id, role_id) VALUES ($1, $2, $3)",
+        [`binding_admin_${randomUUID()}`, principalId, entry.id],
+      );
+    }
+    const [{ NativeIAMDriver }, { PostgresPlatformState }] = await Promise.all([
+      import("../../packages/iam/src/index.ts"),
+      import("../../packages/occ/src/state/postgres-state.ts"),
+    ]);
+    const iam = new NativeIAMDriver(new PostgresPlatformState(pool));
+    const presetId = `pre_${randomUUID()}`;
+    const authorize = (principalId, action, kind = "preset") =>
+      iam.authorize({
+        principalId,
+        action,
+        resource: {
+          kind,
+          id:
+            kind === "installation"
+              ? installationId
+              : kind === "preset" && action !== "create"
+                ? presetId
+                : namespaceId,
+          ...(kind === "installation" ? {} : { namespaceId }),
+        },
+      });
+    assert.equal((await authorize(principals[0], "create")).allowed, false);
+    assert.equal((await authorize(principals[0], "administer", "installation")).allowed, true);
+
+    // Run the repository migration itself, not copied UPDATE text or a test-only migrator.
+    await pool.query(await readFile(join(migrationsDirectory, "0024_agent_presets.sql"), "utf8"));
+    await pool.query(
+      "INSERT INTO occ.presets (id, namespace_id, name, template, created_at) VALUES ($1, $2, 'Upgrade', '{}'::jsonb, now())",
+      [presetId, namespaceId],
+    );
+    const upgraded = new Set([stock.id, reordered.id]);
+    for (const entry of roles) {
+      const actual = (await pool.query("SELECT * FROM occ.iam_roles WHERE id = $1", [entry.id]))
+        .rows[0];
+      assert.deepEqual(actual, {
+        ...entry,
+        permissions: upgraded.has(entry.id)
+          ? [...entry.permissions, ...presetPermissions]
+          : entry.permissions,
+      });
+    }
+    for (const { action } of presetPermissions) {
+      assert.equal((await authorize(principals[0], action)).allowed, true);
+      assert.equal((await authorize(principals[1], action)).allowed, false);
+    }
+    assert.equal((await authorize(principals[0], "administer", "installation")).allowed, true);
+    assert.equal((await authorize(principals[0], "read", "namespace")).allowed, true);
+    assert.equal((await authorize(principals[1], "read", "namespace")).allowed, true);
+  },
+);
