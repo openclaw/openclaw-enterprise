@@ -1,6 +1,7 @@
 import { element, button } from "../dom.mjs";
 import { createHarnessAuthFields, harnessAuthDescription } from "./harness-auth.mjs";
 import { renderNativeAdminAccess } from "./native-admin.mjs";
+import { createAgentDeletion } from "./deletion.mjs";
 import { renderChannels } from "../channels.mjs";
 import { renderWorkspaceFiles } from "./workspace.mjs";
 import { displayDate, shortId, namespacePath, link, message } from "./list.mjs";
@@ -157,6 +158,7 @@ export async function renderAgentDetail(context) {
     return;
   }
   context.setTitle(agent.name);
+  let deleting = agent.status === "deleting";
   const selected = url.searchParams.get("revision") ?? agent.activeRevisionId ?? "draft";
   const tab = url.searchParams.get("tab");
   const tabsForSelection = [
@@ -182,6 +184,16 @@ export async function renderAgentDetail(context) {
     ),
   );
   const identity = element("p", { className: "resource-id" }, agent.id);
+  const deletion = createAgentDeletion(context, path, agent, showDeleting);
+  function showDeleting() {
+    deleting = true;
+    header.lastChild.textContent = "Deleting";
+    view.replaceChildren(header, identity, deletion);
+  }
+  if (deleting) {
+    showDeleting();
+    return;
+  }
   const selector = element("section", { className: "agent-card revision-selector" });
   const content = element("div");
   const tabs = element("nav", {
@@ -243,7 +255,7 @@ export async function renderAgentDetail(context) {
           : `${path}/revisions/${encodeURIComponent(selected)}`,
       ),
     ]);
-    if (!context.isCurrent()) {
+    if (!context.isCurrent() || deleting) {
       return;
     }
     if (results.some((result) => result.status === "rejected" && result.reason.status === 401)) {
@@ -515,7 +527,7 @@ export async function renderAgentDetail(context) {
     }
     content.append(element("p", { role: "status" }, "Loading configuration…"));
     const data = await (details ??= loadDetails());
-    if (!tabContext.isCurrent()) {
+    if (!tabContext.isCurrent() || deleting) {
       return;
     }
     content.replaceChildren();
@@ -688,16 +700,6 @@ export async function renderAgentDetail(context) {
       );
     }
   }
-  const deletion = element(
-    "section",
-    { className: "agent-card deletion-note" },
-    element("h2", {}, "Delete Agent"),
-    element(
-      "p",
-      { className: "muted" },
-      "Agent deletion is unavailable in the current API. This Agent and its revision history cannot be deleted from the console.",
-    ),
-  );
   view.append(deletion);
   context.setTabNavigation((next) => {
     const nextRevision = next.searchParams.get("revision") ?? agent.activeRevisionId ?? "draft";
@@ -706,6 +708,7 @@ export async function renderAgentDetail(context) {
       : "configuration";
     if (
       !context.isCurrent() ||
+      deleting ||
       next.pathname !== url.pathname ||
       next.searchParams.get("namespace") !== namespaceId ||
       nextRevision !== selected ||

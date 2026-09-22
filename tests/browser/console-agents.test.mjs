@@ -63,10 +63,10 @@ async function newPage(t, fixture, options = {}) {
   return { page: await context.newPage(), artifacts };
 }
 
-async function login(page, fixture, path = "/console/agents") {
+async function login(page, fixture, path = "/console/agents", credentials = fixture.credentials) {
   await page.goto(`${fixture.origin}${path}`);
-  await page.getByLabel("Username").fill(fixture.credentials.email);
-  await page.getByLabel("Password").fill(fixture.credentials.password);
+  await page.getByLabel("Username").fill(credentials.email);
+  await page.getByLabel("Password").fill(credentials.password);
   await page.getByRole("button", { name: "Login" }).click();
   await page.waitForURL(/\/console\/(agents|providers|namespaces|settings)/);
 }
@@ -131,6 +131,14 @@ function configurationPostRequests(requests, namespaceId) {
 
 function agentPostRequests(requests, namespaceId) {
   return pathRequests(requests, "POST", `/namespaces/${namespaceId}/agents`);
+}
+
+function agentDeleteRequests(requests, namespaceId, agentId) {
+  return pathRequests(
+    requests,
+    "DELETE",
+    `/namespaces/${namespaceId}/agents/${encodeURIComponent(agentId)}`,
+  );
 }
 
 async function optionValues(locator) {
@@ -747,6 +755,238 @@ test("Agent detail preserves admitted revision history while draft edits change 
     (await page.locator("body").textContent()).includes(agent.harnessAuth.source.id),
     false,
   );
+});
+
+test("Agent delete confirmation can be canceled without sending a write request", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Delete cancellation", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Cancel Candidate", nativeValues("keep"));
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").pathname +
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").search,
+  );
+  await page.getByRole("heading", { name: "Cancel Candidate" }).waitFor();
+  requests.length = 0;
+
+  await page.getByRole("button", { name: "Delete Agent" }).click();
+  const dialog = page.getByRole("dialog", { name: "Delete Cancel Candidate?" });
+  await dialog.getByText(/Agent, its revision history, and its workspace data/i).waitFor();
+  const cancel = dialog.getByRole("button", { name: "Cancel" });
+  assert.equal(await cancel.evaluate((node) => node.ownerDocument.activeElement === node), true);
+  const unexpectedDelete = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}` &&
+      response.request().method() === "DELETE",
+    { timeout: 300 },
+  );
+  await cancel.click();
+  await assert.rejects(unexpectedDelete, /Timeout/);
+
+  await page.getByRole("heading", { name: "Cancel Candidate" }).waitFor();
+  assert.match(page.url(), new RegExp(`/console/agents/${agent.id}`));
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  assert.equal(current.data.status, "active");
+});
+
+test("Agent delete confirmation sends the real delete API and leaves visible queued state", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Delete success", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Success Candidate", nativeValues("go"));
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").pathname +
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").search,
+  );
+  await page.getByRole("heading", { name: "Success Candidate" }).waitFor();
+  requests.length = 0;
+
+  await page.getByRole("button", { name: "Delete Agent" }).click();
+  const dialog = page.getByRole("dialog", { name: "Delete Success Candidate?" });
+  await dialog.getByText(/Agent, its revision history, and its workspace data/i).waitFor();
+  const deleteResponse = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}` &&
+      response.request().method() === "DELETE",
+  );
+  await dialog.getByRole("button", { name: "Permanently delete Agent" }).click();
+  const response = await deleteResponse;
+  assert.equal(response.status(), 202);
+  assert.equal((await response.json()).data.status, "deleting");
+
+  assert.match(page.url(), new RegExp(`/console/agents/${agent.id}`));
+  await page.getByRole("status").getByText("Deletion in progress").waitFor();
+  await page.getByRole("button", { name: "Refresh deletion status" }).waitFor();
+  assert.deepEqual(
+    agentDeleteRequests(requests, namespace.id, agent.id).map((request) => [
+      request.method,
+      request.path,
+      request.body,
+    ]),
+    [["DELETE", `/namespaces/${namespace.id}/agents/${agent.id}`, null]],
+  );
+  const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  assert.equal(current.data.status, "deleting");
+
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await page.getByRole("heading", { name: "Agents" }).waitFor();
+  await page
+    .getByRole("row")
+    .filter({ hasText: "Success Candidate" })
+    .getByText("Deleting", { exact: true })
+    .waitFor();
+});
+
+test("Agent delete uncertainty requires refresh before another destructive request", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Delete uncertainty", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Uncertain Candidate",
+    nativeValues("uncertain"),
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const deletePath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  let interceptedDeletes = 0;
+  await page.route(`**${deletePath}`, async (route, request) => {
+    if (request.method() !== "DELETE") {
+      await route.continue();
+      return;
+    }
+    interceptedDeletes += 1;
+    await route.fetch();
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "DEPENDENCY_UNAVAILABLE", message: "masked deletion response" },
+        meta: { requestId: "req_00000000-0000-4000-8000-000000000503" },
+      }),
+    });
+  });
+
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").pathname +
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").search,
+  );
+  await page.getByRole("heading", { name: "Uncertain Candidate" }).waitFor();
+  requests.length = 0;
+
+  await page.getByRole("button", { name: "Delete Agent" }).click();
+  const dialog = page.getByRole("dialog", { name: "Delete Uncertain Candidate?" });
+  await dialog.getByText(/Agent, its revision history, and its workspace data/i).waitFor();
+  await dialog.getByRole("button", { name: "Permanently delete Agent" }).click();
+
+  await page.getByText("Outcome unknown. Deletion may have started.").waitFor();
+  assert.equal(await page.getByRole("button", { name: "Delete Agent" }).isDisabled(), true);
+  assert.equal(interceptedDeletes, 1);
+  assert.equal(agentDeleteRequests(requests, namespace.id, agent.id).length, 1);
+  const deleting = await fixture.request("GET", deletePath);
+  assert.equal(deleting.data.status, "deleting");
+
+  const refresh = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}${deletePath}` && response.request().method() === "GET",
+  );
+  await page.getByRole("button", { name: "Refresh deletion status" }).click();
+  assert.equal((await refresh).status(), 200);
+  await page.getByRole("status").getByText("Deletion in progress").waitFor();
+  assert.equal(interceptedDeletes, 1);
+  assert.equal(agentDeleteRequests(requests, namespace.id, agent.id).length, 1);
+});
+
+test("Agent deletion recovery returns a missing Agent detail to its Namespace list", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Deleted detail", { ready: true });
+  const agentId = `agt_${randomUUID()}`;
+  const { page } = await newPage(t, fixture);
+  const unavailable = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agentId}` &&
+      response.request().method() === "GET",
+  );
+
+  await login(page, fixture, `/console/agents/${agentId}?namespace=${namespace.id}`);
+  assert.equal((await unavailable).status(), 404);
+  await page.getByRole("heading", { name: "Resource unavailable" }).waitFor();
+  await page.getByRole("button", { name: "Back to Agents" }).click();
+  await page.waitForURL(
+    (url) =>
+      url.pathname === "/console/agents" && url.searchParams.get("namespace") === namespace.id,
+  );
+  await page.getByRole("heading", { name: "Agents" }).waitFor();
+});
+
+test("Agent delete denial keeps the Agent visible with permission feedback", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Delete denial", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Denied Candidate", nativeValues("stay"));
+  const limited = await fixture.createAccountWithPolicy("agent-delete-denied", (principal) => {
+    fixture.policy.roles.push({
+      id: "role-console-agent-delete-denied",
+      namespaceId: namespace.id,
+      permissions: [
+        { action: "read", resourceKind: "namespace" },
+        { action: "read", resourceKind: "agent" },
+        { action: "read", resourceKind: "configuration" },
+        { action: "read", resourceKind: "agent_revision" },
+      ],
+    });
+    fixture.policy.bindings.push({
+      id: "binding-console-agent-delete-denied",
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: principal.id,
+      roleId: "role-console-agent-delete-denied",
+    });
+  });
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").pathname +
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").search,
+    limited.credentials,
+  );
+  await page.getByRole("heading", { name: "Denied Candidate" }).waitFor();
+  requests.length = 0;
+
+  await page.getByRole("button", { name: "Delete Agent" }).click();
+  const dialog = page.getByRole("dialog", { name: "Delete Denied Candidate?" });
+  await dialog.getByText(/Agent, its revision history, and its workspace data/i).waitFor();
+  const denied = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}` &&
+      response.request().method() === "DELETE",
+  );
+  await dialog.getByRole("button", { name: "Permanently delete Agent" }).click();
+  assert.equal((await denied).status(), 403);
+
+  await page.getByText("You do not have permission to delete this Agent").waitFor();
+  await page.getByRole("heading", { name: "Denied Candidate" }).waitFor();
+  assert.match(page.url(), new RegExp(`/console/agents/${agent.id}`));
+  assert.equal(agentDeleteRequests(requests, namespace.id, agent.id).length, 1);
+  const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  assert.equal(current.data.status, "active");
 });
 
 test("Agent detail opens native admin UI only after real API access checks pass", async (t) => {

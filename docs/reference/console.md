@@ -1,12 +1,12 @@
 # Platform console
 
 Use the browser console at `/console/` on your OCC address to sign in, choose a
-Namespace, create and deploy Agents, and edit supported Slack or Microsoft Teams
+Namespace, create, deploy, and delete Agents, and edit supported Slack or Microsoft Teams
 draft settings. You can also set up initial runtime credentials, read or replace
 supported live workspace files, and list the Agents, Providers, and Namespaces
 you can access. When the pilot is enabled, trusted operators can open an Agent's
 [native admin UI](#open-the-native-admin-ui). The console does not offer rollback,
-live runtime health, browser chat through OCE, or Agent deletion.
+live runtime health, or browser chat through OCE.
 
 For browser deployment instructions, follow [Create and deploy Agents](console/create-and-deploy.md).
 See the [deployment guide](../guides/deploy.md) for operator procedures and
@@ -123,6 +123,23 @@ including non-Socket Slack settings, non-standard credential references, mixed
 per-channel mention settings, or unsupported plugin shapes. Inspect unsupported
 settings in the native Configuration view and edit them through the API or
 operator workflow.
+
+## Delete an Agent
+
+Open the Agent and find **Delete Agent** below the detail tabs. In the
+confirmation dialog, select **Permanently delete Agent**. This requires `delete`
+permission on that Agent; being able to read or operate it does not grant
+deletion. Deletion is permanent: it removes the Agent, its revision history, and its workspace data.
+Namespace-owned Configurations and Secrets remain. See the [Agent deletion
+reference](agents.md#deletion) for the complete cleanup behavior.
+
+An accepted request starts asynchronous cleanup. The detail page shows the Agent
+as deleting; select **Refresh deletion status** to check progress. When the API
+confirms that the Agent is gone, the console returns to the Agents list in the
+same Namespace. An access-denied response stays on the detail page and tells you
+that deletion requires permission. If the console cannot confirm the outcome,
+the request may have succeeded; refresh to read the Agent's current state before
+retrying. The console does not automatically send another delete request.
 
 ## Failures and logout
 

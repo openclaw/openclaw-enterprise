@@ -1,8 +1,48 @@
+---
+created: 2026-09-09
+updated: 2026-09-21
+last_updated_session: codex/01a0c76f-2534-7991-932a-345782408759
+---
+
 # Console Agent editing and runtime requests
 
-Follow authorized Agent detail requests through draft editing, initial credentials, and live workspace files. See the [parent flow](../platform-console.md) for its context and overall sequence.
+## Overview
 
-## Execution trace
+Follow authorized Agent detail requests through draft editing, initial
+credentials, live workspace files, and Agent deletion. This trace starts after
+the console selects an exact Agent and ends with a rendered API response or the
+return to the Agents list after confirmed deletion. See the
+[parent flow](../platform-console.md) for the overall sequence.
+
+## Entry Points
+
+- `apps/controller/src/console/agents/detail.mjs:renderAgentDetail` loads the exact Agent and composes the detail actions.
+- `apps/controller/src/console/agents/credentials.mjs:createRuntimeCredentialsPanel` submits explicitly entered credentials.
+- `apps/controller/src/console/agents/workspace.mjs:renderWorkspaceFiles` opens live workspace files.
+- A signed-in caller must hold each action's permission on the exact resource.
+
+## Flow
+
+```mermaid
+graph TD
+  subgraph Browser["Browser"]
+    A["Read exact Agent"] --> B["Open detail action"]
+    B --> C["Edit draft or provision credentials"]
+    B --> D["Read or write workspace files"]
+    B --> E["Confirm Agent deletion"]
+  end
+  subgraph API["Controller API"]
+    C --> F["Authorize exact request"]
+    D --> F
+    E --> G["DELETE exact Agent"]
+    G -->|accepted or uncertain| H["Refresh exact Agent"]
+    G -->|denied| I["Show access denied"]
+    H -->|exists| J["Show current Agent state"]
+    H -->|not found| K["Return to Agents list"]
+  end
+```
+
+## Execution Trace
 
 ### 4. Render draft, revision, or channels
 
@@ -16,7 +56,7 @@ newest revision and the viewed snapshot can both differ from that pointer.
 Serving status stays explicitly unavailable because these API responses provide
 no serving observation. Revision snapshots
 are read-only and do not expose rollback, edit, deploy, or live-health controls.
-The console does not yet expose the API's Agent deletion operation.
+Deletion applies to the Agent itself, regardless of the viewed revision or tab.
 
 `apps/controller/src/console/channels.mjs:renderChannels` renders supported
 Slack and Microsoft Teams channel settings for the saved draft only. Slack uses
@@ -37,6 +77,8 @@ Configuration values; it does not stop a running Agent. The
 describes the supported edits and their deployment boundaries.
 
 ### 5. Provision initial runtime credentials
+
+`apps/controller/src/console/agents/credentials.mjs:createRuntimeCredentialsPanel`
 
 The **Operator-managed credentials** selection saves `{ "method": "runtime" }`
 without a source field. The console explains “Configured on the runtime host;
@@ -78,6 +120,43 @@ Creation uses the channel editor to update the initial Configuration JSON before
 its POST. It cannot send initial workspace files because the create API has no
 file fields and workspace access requires a deployed gateway.
 
-## Related
+### 7. Confirm deletion and read back the Agent
+
+`apps/controller/src/console/agents/deletion.mjs:createAgentDeletion`
+
+The **Delete Agent** area requests explicit confirmation before sending a
+bodyless `DELETE` to the exact Agent URL. The controller requires Agent `delete`
+permission; a `403` stays visible on the detail page. An accepted request starts
+asynchronous cleanup and keeps the detail page in a deleting state, with
+**Refresh deletion status** for an exact Agent read. Only a not-found read after
+an accepted or uncertain request, or when an already-deleting Agent is opened,
+returns to the Agents list in the selected Namespace. An
+uncertain deletion blocks another write until a successful read establishes the
+current state; the browser never automatically retries the deletion.
+
+`packages/occ/src/index.ts:deleteAgent` owns deletion admission. The
+[Agent deletion reference](../../reference/agents.md#deletion) covers the
+subsequent worker cleanup and the Namespace-owned resources it preserves.
+
+## Debugging and Verification
+
+- On `403`, check `delete` permission on the exact Agent; Agent `read` and
+  `operate` do not authorize deletion. Use the displayed request ID when present.
+- An accepted deletion remains in progress until the exact Agent read reports
+  not found. A failed refresh does not establish whether cleanup finished.
+- See [console failures](../../reference/console.md#failures-and-logout) for
+  session, permission, and network recovery.
+
+## Related docs
 
 - [Return to the parent flow](../platform-console.md).
+- [Console reference](../../reference/console.md)
+- [Agent lifecycle reference](../../reference/agents.md#deletion)
+
+## Manual Notes
+
+[keep this for the user to add notes. do not change between edits]
+
+## Changelog
+
+- 2026-09-21 21:46: Trace Agent deletion, readback, and recovery from denied or uncertain requests. (01a0c76f-2534-7991-932a-345782408759 - b61c3cae6c35e28db4153eaee9b477e8f5637894)

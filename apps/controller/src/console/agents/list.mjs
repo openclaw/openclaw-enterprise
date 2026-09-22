@@ -98,6 +98,7 @@ export function renderAgentList(context) {
             {},
             link(item.name, `agents/${item.id}`, context),
             element("span", { className: "resource-id" }, item.id),
+            item.status === "deleting" ? element("span", { className: "badge" }, "Deleting") : null,
           ),
           element("td", {}, item.executionMode === "dedicated" ? "Dedicated" : "Embedded"),
           element(

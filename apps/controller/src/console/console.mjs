@@ -305,6 +305,17 @@ async function loadPage({ fromNavigation = false } = {}) {
       return;
     }
     shell = renderShell(current.feature);
+    if (current.agentId && error.status === 404) {
+      panel(
+        shell.view,
+        "Resource unavailable",
+        "This Agent may have been deleted or is no longer available in this Namespace.",
+        "Back to Agents",
+        () => navigate("agents"),
+        error.requestId,
+      );
+      return;
+    }
     const title =
       error.status === 403
         ? "Access denied"
