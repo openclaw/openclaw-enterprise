@@ -8,9 +8,11 @@ from a registry or built from source. They do not require model credentials.
 
 ### Check published images
 
-On a `linux/amd64` host, follow [Use published images](../guides/deploy/production-installation.md#use-published-images)
+On a `linux/amd64` or `linux/arm64` host, follow [Use published images](../guides/deploy/production-installation.md#use-published-images)
 to authenticate to private GHCR and export `CONTROLLER_IMAGE` and `RUNTIME_IMAGE`.
-Run from the repository root with the [local test prerequisites](local.md).
+Docker pulls the variant matching the host. These commands check that variant;
+they do not test both architectures in one invocation. Run from the repository
+root with the [local test prerequisites](local.md).
 To reproduce the published release's checks, use its recorded source revision;
 when validating source changes, build images from that checkout instead.
 

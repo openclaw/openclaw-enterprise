@@ -25,19 +25,18 @@ key available when you continue to [deploy your first Agent](first-agent.md).
 
 ## Optional: use the published runtime
 
-On an amd64 Docker host, you can avoid the first runtime build by pulling the
+On an amd64 or ARM64 Docker host, you can avoid the first runtime build by pulling the
 published image. Follow [Use published images](deploy/production-installation.md#use-published-images)
 for private GHCR access, authentication, and the `RUNTIME_IMAGE` digest export.
-The published image is `linux/amd64` only. On ARM64 hosts, keep the default
-source build below.
+Docker selects the matching Linux variant, including on Apple Silicon.
 
 Pull the pinned digest and tag it locally for k3d import:
 
 ```bash
 : "${RUNTIME_IMAGE:?Set the published runtime digest reference}"
 docker pull "$RUNTIME_IMAGE"
-docker tag "$RUNTIME_IMAGE" openclaw-enterprise-runtime:published-4ec004db
-export OCC_KUBERNETES_RUNTIME_IMAGE='openclaw-enterprise-runtime:published-4ec004db'
+docker tag "$RUNTIME_IMAGE" openclaw-enterprise-runtime:published-e3b28515
+export OCC_KUBERNETES_RUNTIME_IMAGE='openclaw-enterprise-runtime:published-e3b28515'
 ```
 
 Keep this export in the shell used for `dev up`. The CLI requires an explicitly
