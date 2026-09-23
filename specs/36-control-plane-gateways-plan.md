@@ -125,6 +125,23 @@ Real runtime pins, staging/model turns, replacement/reconnect and disjoint node-
 placement remain separate deployment acceptance. Single-node fixture success is
 not proof of node isolation or a real model turn.
 
+## Review follow-up
+
+Kevin's four comments on PR #327 were checked against the source. Cross-mode
+retirement now preserves shared data-plane resources while another Gateway
+revision survives in the other target. Final Agent deletion inspects both targets
+regardless of the current draft mode. The operator port-forward uses the selected
+Gateway namespace; the Slack test uses data-plane placement for Harness lookup.
+These are lifecycle fixes, not state migration or full mode-switch qualification.
+
+Six regression scenarios failed before the fixes and pass afterward; all 252
+focused Kubernetes, credential, plugin and packaging tests pass. The public
+API/worker cluster test also edits each Agent's draft mode before deletion and
+checks historical resources disappear. Local cluster discovery skips its three
+cases because cluster prerequisites are absent; CI and real-runtime acceptance
+remain separate. TypeScript, changed-file lint, docs links/length and the topology
+flow validator pass.
+
 ## Open work and release boundaries
 
 This PR owns [#75](https://github.com/openclaw/openclaw-enterprise/issues/75):

@@ -5552,8 +5552,8 @@ test("retirement preserves active storage and node routing and deletes exact own
   };
   driver.apiClients = Promise.resolve({
     apps: {
-      async readNamespacedDeployment({ name }) {
-        if (name !== gatewayName) {
+      async readNamespacedDeployment({ name, namespace: target }) {
+        if (name !== gatewayName || target !== namespace) {
           return missing();
         }
         if (observedGateway === undefined) {
@@ -5621,7 +5621,11 @@ test("retirement preserves active storage and node routing and deletes exact own
           }
           return structuredClone(resource);
         }
-        if (kind !== "HTTPRoute" || metadata.name !== gatewayName) {
+        if (
+          kind !== "HTTPRoute" ||
+          metadata.name !== gatewayName ||
+          metadata.namespace !== namespace
+        ) {
           return missing();
         }
         if (observedRoute === undefined) {
@@ -6449,3 +6453,101 @@ test("a missing or foreign Gateway namespace never falls back to the Harness tar
     assert.equal(records.length, 0);
   }
 });
+
+for (const embedded of [true, false]) {
+  for (const surviving of ["Deployment", "HTTPRoute"]) {
+    test(`retiring ${embedded ? "embedded" : "dedicated"} preserves other-mode runtime with surviving ${surviving}`, async () => {
+      const { driver, revision, namespace, objects } = workspaceSetupFixture(embedded);
+      const successor = {
+        ...revision,
+        id: "successor-revision",
+        revision: revision.revision + 1,
+        harness: embedded
+          ? { id: "codex", version: "1.0.0", mode: "dedicated" }
+          : { id: "openclaw", version: "1.0.0", mode: "embedded" },
+      };
+      const control = kubernetesGatewayNamespaceName(revision.namespaceId);
+      const oldTarget = embedded ? namespace : control;
+      const nextTarget = embedded ? control : namespace;
+      const suffix = digest(revision.agentId);
+      const gatewayName = `gateway-${suffix}`;
+      const agentName = `agent-${suffix}`;
+      const owner = { namespaceId: revision.namespaceId, agentId: revision.agentId };
+      const save = (kind, name, target, selected = undefined, principal = false) => {
+        const resource = driver.manifest(
+          kind === "Deployment" ? "apps/v1" : "v1",
+          kind,
+          name,
+          {
+            ...owner,
+            ...(principal ? { servicePrincipalId: revision.servicePrincipalId } : {}),
+            ...(selected ? { revisionId: selected.id } : {}),
+          },
+          target,
+        );
+        resource.metadata.uid = `${target}-${name}-uid`;
+        resource.metadata.resourceVersion = "1";
+        if (selected) {
+          resource.metadata.annotations["openclaw.dev/agent-revision-id"] = selected.id;
+        }
+        objects.set(`${kind}:${target}:${name}`, resource);
+        return resource;
+      };
+      save("Deployment", gatewayName, oldTarget, revision);
+      save("Service", gatewayName, oldTarget);
+      save("ServiceAccount", gatewayName, oldTarget);
+      save(surviving, gatewayName, nextTarget, successor);
+      save("Service", agentName, namespace, undefined, true);
+      save("ServiceAccount", agentName, namespace, undefined, true);
+      for (const name of [
+        "allow-agent-runtime",
+        "allow-agent-auth",
+        "allow-plugin-status-proxy",
+        "allow-plugin-status-agent",
+      ]) {
+        save(
+          "NetworkPolicy",
+          `${name}-${suffix}`,
+          namespace,
+          undefined,
+          name === "allow-agent-auth",
+        );
+      }
+      for (const name of [
+        "allow-gateway-agent",
+        "allow-gateway-channels",
+        "allow-plugin-status-gateway",
+      ]) {
+        save("NetworkPolicy", `${name}-${suffix}`, oldTarget);
+      }
+      const preserved = new Map(
+        [...objects]
+          .filter(
+            ([key]) =>
+              key === `${surviving}:${nextTarget}:${gatewayName}` ||
+              key === `Service:${namespace}:${agentName}` ||
+              key === `ServiceAccount:${namespace}:${agentName}` ||
+              key.startsWith(`NetworkPolicy:${namespace}:allow-agent-`) ||
+              key === `NetworkPolicy:${namespace}:allow-plugin-status-proxy-${suffix}` ||
+              key === `NetworkPolicy:${namespace}:allow-plugin-status-agent-${suffix}`,
+          )
+          .map(([key, value]) => [key, structuredClone(value)]),
+      );
+      await driver.retireRevision(revision);
+      await driver.retireRevision(revision);
+      for (const [key, value] of preserved) {
+        assert.deepEqual(objects.get(key), value, key);
+      }
+      for (const kind of ["Deployment", "Service", "ServiceAccount"]) {
+        assert.equal(objects.has(`${kind}:${oldTarget}:${gatewayName}`), false);
+      }
+      for (const name of [
+        "allow-gateway-agent",
+        "allow-gateway-channels",
+        "allow-plugin-status-gateway",
+      ]) {
+        assert.equal(objects.has(`NetworkPolicy:${oldTarget}:${name}-${suffix}`), false);
+      }
+    });
+  }
+}

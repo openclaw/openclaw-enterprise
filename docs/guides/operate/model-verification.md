@@ -98,7 +98,7 @@ if not ready:
 print(ready[0]["metadata"]["name"])
 ' "$expected_configmap")"; then
       printf 'Forwarding to revision %s on Pod %s.\n' "$REVISION_ID" "$pod" >&2
-      kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n "$TENANT_NAMESPACE" \
+      kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n "$GATEWAY_NAMESPACE" \
         port-forward --address 127.0.0.1 "pod/$pod" 18789:http
       return $?
     else

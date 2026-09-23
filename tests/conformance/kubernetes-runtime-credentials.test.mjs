@@ -99,6 +99,11 @@ function credentialFixture({
   const calls = [];
   const created = [];
   const deleted = [];
+  const locate = (resources, request) =>
+    Object.entries(resources).find(
+      ([, value]) =>
+        value.metadata.name === request.name && value.metadata.namespace === request.namespace,
+    );
   const core = {
     async listNamespace(request) {
       calls.push({ kind: "listNamespace", request: structuredClone(request) });
@@ -121,33 +126,23 @@ function credentialFixture({
     },
     async readNamespacedPersistentVolumeClaim(request) {
       calls.push({ kind: "readClaim", name: request.name });
-      const target = request.name.startsWith("gateway-state-")
-        ? kubernetesGatewayNamespaceName(namespace.id)
-        : namespaceName;
-      assert.equal(request.namespace, target);
-      const claim = claims[request.name];
+      const claim = locate(claims, request)?.[1];
       if (claim === undefined) {
         throw httpError(404);
       }
       return structuredClone(claim);
     },
     async deleteNamespacedPersistentVolumeClaim(request) {
-      const claim = claims[request.name];
+      const [key, claim] = locate(claims, request);
       assert.equal(request.namespace, claim.metadata.namespace);
       assert.equal(request.body?.preconditions?.uid, claim.metadata.uid);
       calls.push({ kind: "deleteClaim", name: request.name });
-      delete claims[request.name];
+      delete claims[key];
       return {};
     },
     async readNamespacedSecret(request) {
       calls.push({ kind: "readSecret", name: request.name });
-      assert.equal(
-        request.namespace,
-        request.name.startsWith("workspace-setup-")
-          ? namespaceName
-          : kubernetesGatewayNamespaceName(namespace.id),
-      );
-      const secret = secrets[request.name];
+      const secret = locate(secrets, request)?.[1];
       if (secret === undefined) {
         throw httpError(404);
       }
@@ -169,13 +164,7 @@ function credentialFixture({
     },
     async deleteNamespacedSecret(request) {
       calls.push({ kind: "deleteSecret", name: request.name });
-      assert.equal(
-        request.namespace,
-        request.name.startsWith("workspace-setup-")
-          ? namespaceName
-          : kubernetesGatewayNamespaceName(namespace.id),
-      );
-      const secret = secrets[request.name];
+      const [key, secret] = locate(secrets, request) ?? [];
       if (secret === undefined) {
         throw httpError(404);
       }
@@ -183,7 +172,7 @@ function credentialFixture({
         assert.equal(request.body?.preconditions?.uid, secret.metadata.uid);
       }
       deleted.push(request.name);
-      delete secrets[request.name];
+      delete secrets[key];
       return {};
     },
   };
@@ -693,3 +682,39 @@ test("Agent deletion removes private Gateway storage after the data namespace di
   await fixture.driver.deleteAgentRuntimeCredentials(binding());
   assert.deepEqual(Object.keys(claims), []);
 });
+
+for (const executionMode of ["embedded", "dedicated"]) {
+  test(`Agent deletion cleans both physical targets despite draft mode ${executionMode}`, async () => {
+    const initial = credentialFixture();
+    const ownership = { namespaceId: namespace.id, agentId: agent.id };
+    const targets = [initial.namespaceName, kubernetesGatewayNamespaceName(namespace.id)];
+    const claims = {};
+    const secrets = {};
+    for (const target of targets) {
+      const claim = initial.driver.gatewayPrivateStateClaim(agent.id, ownership, target);
+      claim.metadata.uid = `${target}-claim-uid`;
+      claims[target] = claim;
+      const secret = initial.driver.manifest(
+        "v1",
+        "Secret",
+        `transport-${digest(agent.id)}`,
+        ownership,
+        target,
+      );
+      secret.metadata.uid = `${target}-transport-uid`;
+      secrets[target] = secret;
+    }
+    const fixture = credentialFixture({ claims, secrets });
+    const current = { namespace, agent: { ...agent, executionMode } };
+    await fixture.driver.deleteAgentRuntimeCredentials(current);
+    assert.deepEqual(
+      Object.keys(claims),
+      [],
+      "Neither historical private claim may survive Agent deletion",
+    );
+    assert.deepEqual(Object.keys(secrets), [], "Both owned transport Secrets must be removed");
+    await fixture.driver.deleteAgentRuntimeCredentials(current);
+    assert.equal(fixture.calls.filter(({ kind }) => kind === "deleteClaim").length, 2);
+    assert.equal(fixture.deleted.length, 2);
+  });
+}

@@ -176,10 +176,13 @@ required cleanup after stopping a Compute-owned ordinary Harness, or delegates
 provider-owned Harness removal to that cleanup. An absent ordinary Deployment
 does not skip cleanup, so a cleanup failure remains retryable.
 Revision retirement retains both owned claims even after stop removed the
-gateway. `apps/controller/src/worker.ts:ControllerWorker.processAgentDeletion`
+gateway. When another revision's Gateway or route survives in the other physical
+namespace, retirement removes only the old Gateway's resources and preserves the
+shared data-plane Agent identity, Service and policies. `apps/controller/src/worker.ts:ControllerWorker.processAgentDeletion`
 retires every revision before calling
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.deleteAgentRuntimeCredentials`
-to delete exact-owned private and shared claims by UID. Cleanup failures retry
+to delete exact-owned private and shared claims by UID. Final deletion checks
+both physical targets, independently of the Agent draft's current execution mode. Cleanup failures retry
 before the worker removes the Agent's database identity. The [storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
 owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 
@@ -222,6 +225,8 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 12:38: Guard cross-mode retirement and inspect both targets during final Agent cleanup. (codex/01a0cf72-6985-7712-ba92-d8cc32470f24 - 25a520de9d0259c3ae6b7ef6d7c0e7e6ccce0349)
 
 - 2026-09-23 12:26: Describe canonical CP sources and the selected DP runtime projection. (codex/01a0cf72-6985-7712-ba92-d8cc32470f24 - 429f46735be45247c3b8a406e1c9f57c2ef0327f)
 

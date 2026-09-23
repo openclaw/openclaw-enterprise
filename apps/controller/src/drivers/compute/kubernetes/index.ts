@@ -1358,23 +1358,23 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (binding.agent.namespaceId !== namespaceId) {
         throw new ResourceConflictError("The Agent runtime credential binding is invalid.");
       }
-      if (binding.agent.executionMode === "dedicated") {
-        const target = kubernetesGatewayNamespaceName(namespaceId);
-        const observed = await this.get("Namespace", target);
-        if (observed !== undefined) {
-          this.verifyGatewayNamespace(observed, { namespaceId });
-          await this.deleteGatewayPrivateStateClaim({ namespaceId, agentId }, target);
-          for (const name of [
-            `${this.options.runtime.transportSecretPrefix}-${sha256Hex(agentId, 12)}`,
-            `gateway-password-${sha256Hex(agentId, 12)}`,
-          ]) {
-            await this.deleteOwnedNamespacedResource(
-              "Secret",
-              name,
-              { namespaceId, agentId },
-              target,
-            );
-          }
+      // A draft mode edit does not describe historical runtime placement. Final
+      // Agent deletion checks both targets, with ownership and UID fences.
+      const target = kubernetesGatewayNamespaceName(namespaceId);
+      const observed = await this.get("Namespace", target);
+      if (observed !== undefined) {
+        this.verifyGatewayNamespace(observed, { namespaceId });
+        await this.deleteGatewayPrivateStateClaim({ namespaceId, agentId }, target);
+        for (const name of [
+          `${this.options.runtime.transportSecretPrefix}-${sha256Hex(agentId, 12)}`,
+          `gateway-password-${sha256Hex(agentId, 12)}`,
+        ]) {
+          await this.deleteOwnedNamespacedResource(
+            "Secret",
+            name,
+            { namespaceId, agentId },
+            target,
+          );
         }
       }
       const context = await this.agentResourceContext(binding);
@@ -1385,9 +1385,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       validateKubernetesResourceName(transportName, "Agent runtime credential Secret name");
       // Only Agent deletion owns durable state. Revision retirement also runs after
       // stop, when no gateway remains to distinguish it from final teardown.
-      if (binding.agent.executionMode !== "dedicated") {
-        await this.deleteGatewayPrivateStateClaim(context.ownership, context.namespace);
-      }
+      await this.deleteGatewayPrivateStateClaim(context.ownership, context.namespace);
       await this.deleteSharedWorkspaceClaim(context.ownership, context.namespace);
       const setupName = this.workspaceSetupSecretName(binding.agent.id);
       const setup = await this.getOwned("Secret", setupName, context.namespace, context.ownership);
@@ -1405,36 +1403,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
           { mutating: true },
         );
       }
-      if (binding.agent.executionMode === "dedicated") {
-        return;
-      }
-      const existing = await this.getOwned(
+      await this.deleteOwnedNamespacedResource(
         "Secret",
         transportName,
-        context.namespace,
         context.ownership,
+        context.namespace,
       );
-      if (existing === undefined) {
-        return;
-      }
-      const clients = await this.clients();
-      try {
-        await this.request(
-          () =>
-            clients.core.deleteNamespacedSecret({
-              name: transportName,
-              namespace: context.namespace,
-              ...(existing.metadata.uid === undefined
-                ? {}
-                : { body: { preconditions: { uid: existing.metadata.uid } } }),
-            }),
-          { mutating: true },
-        );
-      } catch (error) {
-        if (numericErrorStatus(error) !== 404) {
-          throw error;
-        }
-      }
     });
   }
 
@@ -2995,13 +2969,42 @@ export class KubernetesComputeDriver implements ComputeDriver {
     await this.deleteGatewayRoute(gatewayName, ownership, gatewayNamespace, revision.id);
     await this.deleteNamedRuntimeResources(gatewayName, ownership, gatewayNamespace);
     await this.waitForRevisionPodsToTerminate(revision, gatewayNamespace, "gateway");
-    await this.deleteNamedRuntimeResources(
-      `agent-${sha256Hex(revision.agentId, 12)}`,
-      { ...ownership, servicePrincipalId: revision.servicePrincipalId },
-      namespace,
-    );
+    // Another mode can have a live Gateway in the other physical namespace.
+    // Those revisions still share the data-plane Agent Service, identity and policies.
+    const preserveHarness = await this.hasOtherGatewayRevision(revision, namespace);
+    if (!preserveHarness) {
+      await this.deleteNamedRuntimeResources(
+        `agent-${sha256Hex(revision.agentId, 12)}`,
+        { ...ownership, servicePrincipalId: revision.servicePrincipalId },
+        namespace,
+      );
+    }
     await this.deleteRetiredRevisionArtifacts(revision, namespace);
-    await this.deleteRetiredAgentPolicies(revision, namespace);
+    await this.deleteRetiredAgentPolicies(revision, namespace, preserveHarness);
+  }
+
+  private async hasOtherGatewayRevision(
+    revision: AgentRevision,
+    namespace: string,
+  ): Promise<boolean> {
+    const ownership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
+    const otherTarget =
+      revision.harness.mode === "dedicated"
+        ? namespace
+        : kubernetesGatewayNamespaceName(revision.namespaceId);
+    const name = `gateway-${sha256Hex(revision.agentId, 12)}`;
+    for (const kind of this.options.gatewayRouting === undefined
+      ? (["Deployment"] as const)
+      : (["Deployment", "HTTPRoute"] as const)) {
+      const resource = await this.getOwned(kind, name, otherTarget, ownership);
+      if (
+        resource !== undefined &&
+        resource.metadata.annotations?.[AGENT_REVISION_ID_ANNOTATION] !== revision.id
+      ) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private async deleteRetiredRevisionArtifacts(
@@ -3045,19 +3048,45 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private async deleteRetiredAgentPolicies(
     revision: AgentRevision,
     namespace: string,
+    preserveHarness: boolean,
   ): Promise<void> {
     const suffix = sha256Hex(revision.agentId, 12);
     const ownership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
-    for (const [name, target] of [
-      [`allow-agent-runtime-${suffix}`, namespace],
-      [`allow-gateway-agent-${suffix}`, this.gatewayNamespace(revision, namespace)],
-      [`allow-gateway-channels-${suffix}`, this.gatewayNamespace(revision, namespace)],
-      [`allow-plugin-status-proxy-${suffix}`, namespace],
-      [`allow-plugin-status-proxy-${suffix}`, this.gatewayNamespace(revision, namespace)],
-      [`allow-plugin-status-gateway-${suffix}`, this.gatewayNamespace(revision, namespace)],
-      [`allow-plugin-status-agent-${suffix}`, namespace],
-    ] as const) {
-      await this.deleteOwnedNamespacedResource("NetworkPolicy", name, ownership, target);
+    const gatewayNamespace = this.gatewayNamespace(revision, namespace);
+    for (const name of [
+      "allow-gateway-agent",
+      "allow-gateway-channels",
+      "allow-plugin-status-gateway",
+    ]) {
+      await this.deleteOwnedNamespacedResource(
+        "NetworkPolicy",
+        `${name}-${suffix}`,
+        ownership,
+        gatewayNamespace,
+      );
+    }
+    if (gatewayNamespace !== namespace) {
+      await this.deleteOwnedNamespacedResource(
+        "NetworkPolicy",
+        `allow-plugin-status-proxy-${suffix}`,
+        ownership,
+        gatewayNamespace,
+      );
+    }
+    if (preserveHarness) {
+      return;
+    }
+    for (const name of [
+      "allow-agent-runtime",
+      "allow-plugin-status-proxy",
+      "allow-plugin-status-agent",
+    ]) {
+      await this.deleteOwnedNamespacedResource(
+        "NetworkPolicy",
+        `${name}-${suffix}`,
+        ownership,
+        namespace,
+      );
     }
     await this.deleteOwnedNamespacedResource(
       "NetworkPolicy",

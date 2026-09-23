@@ -2214,7 +2214,7 @@ test(
         ? []
         : ["transport"].map((prefix) => `${prefix}-${hash(embeddedDelete.id)}`);
     for (const name of adoptedCredentialSecrets) {
-      await resource("secret", name, existingName);
+      await resource("secret", name, kubernetesGatewayNamespaceName(adopted.data.id));
     }
     for (const name of embeddedCredentialSecrets) {
       await resource("secret", name, placements.get(namespaceIds[1]));
@@ -2412,6 +2412,13 @@ test(
       ),
     );
 
+    // Editing the draft mode does not move the deployed revision or its private storage.
+    const updatedEmbedded = await request(
+      "PATCH",
+      `/namespaces/${namespaceIds[1]}/agents/${embeddedDelete.id}`,
+      { configurationId: embeddedDelete.configurationId, executionMode: "dedicated" },
+    );
+    assert.equal(updatedEmbedded.status, 200, JSON.stringify(updatedEmbedded.error));
     // Deleting an active embedded Agent must not finalize until its gateway Pod is gone.
     const deletingEmbedded = await request(
       "DELETE",
@@ -2443,7 +2450,7 @@ test(
     await resource(
       "configmap",
       kubernetesConfigurationName(adoptedTenant.configurationId),
-      existingName,
+      kubernetesGatewayNamespaceName(adopted.data.id),
     );
 
     const retainedFile = `stop-state-${randomUUID()}.txt`;
@@ -2635,6 +2642,12 @@ test(
       ),
     );
 
+    const updatedDedicated = await request(
+      "PATCH",
+      `/namespaces/${adopted.data.id}/agents/${adoptedTenant.id}`,
+      { configurationId: adoptedTenant.configurationId, executionMode: "embedded" },
+    );
+    assert.equal(updatedDedicated.status, 200, JSON.stringify(updatedDedicated.error));
     // Public deletion of an active dedicated Agent must remove persisted ownership only after
     // every real Agent-owned Kubernetes effect, including its live Pods, has been removed.
     const deleting = await request(
@@ -2663,7 +2676,10 @@ test(
       },
     );
     for (const name of adoptedCredentialSecrets) {
-      assert.equal(await missing("secret", name, existingName), true);
+      assert.equal(
+        await missing("secret", name, kubernetesGatewayNamespaceName(adopted.data.id)),
+        true,
+      );
     }
     const deletedClaims = [adoptedWorkspace.metadata.name];
     if (runtimeImage !== undefined) {
@@ -2711,7 +2727,7 @@ test(
     await resource(
       "configmap",
       kubernetesConfigurationName(adoptedTenant.configurationId),
-      existingName,
+      kubernetesGatewayNamespaceName(adopted.data.id),
     );
     await resource("namespace", existingName);
     await assertReadyGateway(placement, second.id, namespaceIds[0]);
