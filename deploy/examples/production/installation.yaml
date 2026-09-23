@@ -96,14 +96,13 @@ drivers:
         # Native gateway listener port; keep it aligned with the runtime.
         # See [Networking](../../../docs/reference/drivers/kubernetes-compute/networking-and-isolation.md#networking).
         gatewayPort: 8080
-        # In direct-access mode, allow only the selected controller API Pods.
-        # Omit this field when enabling private Envoy gateway routing.
-        # See [Networking](../../../docs/reference/drivers/kubernetes-compute/networking-and-isolation.md#networking).
-        gatewayClients:
-          - namespace: openclaw-system
-            podLabels:
-              app.kubernetes.io/name: openclaw-enterprise
-              app.kubernetes.io/component: api
+      # Dedicated Harness storage requires private routing and native node enrollment.
+      # Match the Helm release `oce` in namespace `openclaw-system`.
+      # Configure Agent trusted-proxy auth as described in workspace-routing.md.
+      gatewayRouting:
+        gatewayName: oce-agent-gateways
+        gatewayNamespace: openclaw-system
+        envoyNamespace: envoy-gateway-system
       # Project an Agent identity token with this audience and a 15-minute lifetime.
       # See [Namespace isolation](../../../docs/reference/drivers/kubernetes-compute/networking-and-isolation.md#namespaces-and-isolation).
       servicePrincipalCredentials:

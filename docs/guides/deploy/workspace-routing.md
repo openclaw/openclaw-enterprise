@@ -6,6 +6,29 @@ workspace files through the OpenClaw Control Plane (OCC). Start with the
 Helm values, Installation YAML, and Kubernetes context. On EKS, also complete
 the [strict-mode routing prerequisites](eks.md#enable-console-workspace-files).
 
+## Runtime prerequisite for separate storage
+
+The current dedicated Codex implementation requires private routing, native node enrollment, and
+Gateway and Harness images containing the matching OpenClaw workspace changes.
+[Storage integration #76](https://github.com/openclaw/openclaw-enterprise/issues/76)
+tracks the current runtime PRs and remaining limits. The Codex plugin must include
+the matching attachment changes. Compute rejects dedicated runtime revisions
+without routing or an enrollment client before provisioning workloads.
+
+These prerequisites describe the [Kubernetes Codex implementation](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#shared-contracts-and-the-codex-implementation).
+They do not establish support for a dedicated OpenClaw remote worker.
+
+The production Installation and Helm examples enable routing together. Create
+the service-key Secret and configure native trusted-proxy authentication below
+before creating a dedicated Agent. Direct access remains available for embedded
+Harnesses.
+
+The runtime Dockerfile's default `2026.9.1` packages do not include this stack.
+Updating the controller alone removes dedicated Gateway workspace mounts without
+supplying the replacement runtime path. Use matching images before deploying
+this change; source merges alone do not update installed images. Native node
+enrollment through Envoy and a complete Enterprise task remain unverified.
+
 ## Agent workspace files
 
 OCC supports four files: `AGENTS.md`, `SOUL.md`, `IDENTITY.md`, and `USER.md`.
@@ -87,6 +110,8 @@ Helm and Compute derive the hostname independently from these same settings;
 Helm does not rewrite the Installation Secret. The
 [Compute reference](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes)
 defines the naming rule. It does not require an existing Agent gateway.
+If you override `gatewayRouting.envoyHttpsTargetPort` (default `10443`),
+set the same value in Helm and the Installation Compute configuration.
 
 To use an existing issuer instead of creating a CA, set
 `gatewayRouting.issuerRef.name`, with `kind` (default `ClusterIssuer`) and
@@ -153,22 +178,26 @@ fallback works when OCC and Envoy share a Pod CIDR. Do not fabricate an address
 or allow direct workload access to work around an attribution failure.
 
 NetworkPolicy must restrict native gateway ingress to those Envoy Pods. The
-chart restricts proxy ingress to the OCC API and permits its required routing
+chart restricts proxy ingress to OCC API/worker Pods and Harness Pods in attached
+tenant namespaces, and permits its required routing
 and control-plane traffic. A trusted source CIDR by itself is not sufficient
 isolation. Restrict Kubernetes writes to the Gateway, attached HTTPRoutes,
 SecurityPolicy, native configuration, and namespace attachment labels to trusted
 operators and the scoped worker. Untrusted tenants must not be able to replace
 route authentication or attach their own routes.
 
-The chart mounts the service key only into the API and sets
+The chart mounts the service key into the API and worker and sets
 `OCC_GATEWAY_API_KEY_PATH`. Automatic CA mode projects only the root Secret's
 public `tls.crt` as `ca.crt` and sets `NODE_EXTRA_CA_CERTS`; the signing key is
 never mounted into OCC. The Pod waits for that Secret before starting. With an
-explicit issuer, the API uses the optional configured CA bundle instead.
-The routing service key and endpoint map are not mounted into the worker,
-Agent, or gateway. The service key grants native administrative access across
-the Installation; do not reuse a Better Auth signing key or model-provider
-token. OCC still checks the caller's exact Agent `read` or `operate` permission.
+explicit issuer, both use the optional configured CA bundle instead.
+The Harness receives only its node setup code and the public CA bundle.
+The service key is an Installation-wide native administrative
+credential; do not reuse a Better Auth signing key or model-provider token.
+OCC still checks the human caller's exact Agent `read` or `operate` permission.
+Routing-enabled workers also require tenant-local Secret get/create/update/delete
+for node enrollment. The required OC modules are merged;
+matching runtime images and full Enterprise runtime verification are still required.
 
 ### Enable routing for existing Namespaces and Agents
 

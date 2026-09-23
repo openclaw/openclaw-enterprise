@@ -1,5 +1,13 @@
-import { GatewayClient } from "@openclaw/gateway-client";
-import { randomUUID, X509Certificate } from "node:crypto";
+import assert from "node:assert/strict";
+import { GatewayClient, GatewayClientRequestError } from "@openclaw/gateway-client";
+import {
+  createHash,
+  createPublicKey,
+  generateKeyPairSync,
+  randomUUID,
+  sign,
+  X509Certificate,
+} from "node:crypto";
 import { connect as connectTls } from "node:tls";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -11,7 +19,7 @@ async function readInput() {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
-async function connectGateway({ url, apiKey, extraHeaders = {} }) {
+async function connectGateway({ url, apiKey, extraHeaders = {}, native = {} }) {
   let resolveHello;
   let rejectHello;
   const connected = new Promise((resolve, reject) => {
@@ -25,6 +33,7 @@ async function connectGateway({ url, apiKey, extraHeaders = {} }) {
     role: "operator",
     scopes: [],
     deviceIdentity: null,
+    ...native,
     edgeAuthHeaders: {
       ...(apiKey === undefined ? {} : { "x-api-key": apiKey }),
       ...extraHeaders,
@@ -123,6 +132,160 @@ async function modelTurn({ url, apiKey, expectedMarker, timeoutMs = 240_000 }) {
   }
 }
 
+async function requestGatewayHello({ onConnected = async (_client, hello) => hello, ...options }) {
+  const { client, hello } = await connectGateway(options);
+  try {
+    return await onConnected(client, hello);
+  } finally {
+    client.stop();
+    await client.stopAndWait?.({ timeoutMs: 1_000 }).catch(() => undefined);
+  }
+}
+
+async function assertNativeNodeRouteAuthentication({
+  url,
+  apiKey,
+  gatewayIdentity,
+  gatewayIdentityHeader,
+}) {
+  // This fixture is mounted at /app/apps/controller/gateway-probe.mjs.
+  const { createGatewayNodeEnrollment } = await import("./src/gateway/node-enrollment-client.ts");
+  const enrollment = createGatewayNodeEnrollment(async () => apiKey);
+  const nodeUrl = `${url}/node`;
+  // Use the published client contract and an ephemeral Ed25519 identity. The
+  // real native Gateway owns token issuance, signature verification and pairing.
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const rawPublicKey = publicKey.export({ format: "jwk" }).x;
+  const deviceIdentity = {
+    deviceId: createHash("sha256").update(Buffer.from(rawPublicKey, "base64url")).digest("hex"),
+    publicKeyPem: publicKey.export({ format: "pem", type: "spki" }).toString(),
+    privateKeyPem: privateKey.export({ format: "pem", type: "pkcs8" }).toString(),
+  };
+  const native = {
+    clientName: "node-host",
+    mode: "node",
+    role: "node",
+    scopes: [],
+    caps: ["file"],
+    commands: [
+      "file.fetch",
+      "file.stat",
+      "file.write",
+      "file.create",
+      "dir.list",
+      "workspace.memory",
+      "workspace.skills",
+    ],
+    deviceIdentity,
+    hostDeps: {
+      signDevicePayload: (pem, payload) =>
+        sign(null, Buffer.from(payload), pem).toString("base64url"),
+      publicKeyRawBase64UrlFromPem: (pem) => createPublicKey(pem).export({ format: "jwk" }).x,
+    },
+  };
+  // Reaching native authentication without an API key proves the route policy
+  // overrides Envoy's Gateway policy; forged headers must not grant its identity.
+  for (const extraHeaders of [
+    {},
+    {
+      [gatewayIdentityHeader]: gatewayIdentity,
+      "x-api-key": apiKey,
+      "x-openclaw-scopes": "operator.admin",
+      "x-real-ip": "127.0.0.1",
+      "x-forwarded-for": "127.0.0.1",
+      forwarded: "for=127.0.0.1",
+      "tailscale-user-login": "spoofed@example.test",
+    },
+  ]) {
+    await assert.rejects(
+      () => requestGatewayHello({ url: nodeUrl, extraHeaders, native }),
+      (error) => {
+        assert.ok(error instanceof GatewayClientRequestError);
+        assert.equal(error.details?.authReason, "trusted_proxy_user_missing");
+        return true;
+      },
+    );
+  }
+  const setup = await enrollment.createSetup(url, nodeUrl, AbortSignal.timeout(15_000));
+  const payload = JSON.parse(Buffer.from(setup.setupCode, "base64url").toString("utf8"));
+  assert.equal(payload.url, nodeUrl);
+  assert.equal(typeof payload.bootstrapToken, "string");
+  try {
+    const hello = await requestGatewayHello({
+      url: nodeUrl,
+      native: { ...native, bootstrapToken: payload.bootstrapToken, preferBootstrapToken: true },
+      onConnected: async (_client, hello) => {
+        assert.deepEqual(
+          await enrollment.observeSetup(url, setup.setupId, AbortSignal.timeout(15_000)),
+          { deviceId: deviceIdentity.deviceId, connected: true },
+          "Compute must observe the paired identity and its admitted file commands",
+        );
+        return hello;
+      },
+    });
+    assert.equal(hello.auth?.role, "node");
+    assert.deepEqual(hello.auth.scopes, []);
+    assert.equal(typeof hello.auth.deviceToken, "string");
+    // A connected node without streaming input creation cannot serve uploads.
+    // Keep the same approved identity so only its live command surface changes.
+    await requestGatewayHello({
+      url: nodeUrl,
+      native: {
+        ...native,
+        commands: native.commands.filter((command) => command !== "file.create"),
+        deviceToken: hello.auth.deviceToken,
+      },
+      onConnected: async () => {
+        assert.equal(
+          await enrollment.isConnected(url, deviceIdentity.deviceId, AbortSignal.timeout(15_000)),
+          false,
+          "Compute must not mark a node ready when attachment upload is unavailable",
+        );
+      },
+    });
+    const reconnected = await requestGatewayHello({
+      url: nodeUrl,
+      native: { ...native, deviceToken: hello.auth.deviceToken },
+      onConnected: async (_client, hello) => {
+        assert.equal(
+          await enrollment.isConnected(url, deviceIdentity.deviceId, AbortSignal.timeout(15_000)),
+          true,
+          "the saved identity is ready after all required file commands return",
+        );
+        return hello;
+      },
+    });
+    assert.equal(reconnected.auth?.role, "node");
+    assert.deepEqual(reconnected.auth.scopes, []);
+    await assert.rejects(
+      () =>
+        requestGatewayHello({
+          url: nodeUrl,
+          native: {
+            ...native,
+            clientName: "gateway-client",
+            mode: "backend",
+            role: "operator",
+            scopes: ["operator.admin"],
+            deviceToken: hello.auth.deviceToken,
+          },
+        }),
+      GatewayClientRequestError,
+    );
+  } finally {
+    await requestGatewayHello({
+      url,
+      apiKey,
+      onConnected: (client) =>
+        client.request(
+          "device.pair.remove",
+          { deviceId: deviceIdentity.deviceId },
+          { timeoutMs: 15_000 },
+        ),
+    });
+  }
+}
+
 const input = await readInput();
 let result;
 switch (input.action) {
@@ -136,6 +299,10 @@ switch (input.action) {
     await client.stopAndWait?.({ timeoutMs: 1_000 }).catch(() => undefined);
     break;
   }
+  case "node-authentication":
+    await assertNativeNodeRouteAuthentication(input);
+    result = { ok: true };
+    break;
   case "model-turn":
     result = await modelTurn(input);
     break;

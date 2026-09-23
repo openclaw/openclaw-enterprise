@@ -1098,15 +1098,8 @@ function probeOpenClawAuthenticationFailureCode() {
 }
 `;
 
-export const GATEWAY_RUNTIME_ENTRYPOINT = String.raw`
-const { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, rmSync } = require("node:fs");
-const { join } = require("node:path");
-const { spawn } = require("node:child_process");
-
-${PLUGIN_RUNTIME_HELPERS}
-${OPENCLAW_AUTH_PROBE_HELPERS}
-
-startPluginRuntimeStatusServer();
+const WORKSPACE_ASSET_HELPERS = String.raw`
+const { cpSync, existsSync, lstatSync, readdirSync } = require("node:fs");
 const runtimeAssetsDirectory = "/home/node/openclaw-runtime-assets";
 
 function clearDirectoryContents(directory) {
@@ -1135,10 +1128,23 @@ function publishImageTree(source, destination, required) {
   cpSync(source, destination, { recursive: true });
 }
 
-function publishDedicatedGatewayRuntimeAssets() {
+function initializeRuntimeAssets() {
   publishImageTree("/app/skills", runtimeAssetsDirectory + "/bundled-skills", true);
   publishImageTree("/app/plugin-skills", runtimeAssetsDirectory + "/plugin-skills", false);
 }
+
+`;
+
+export const GATEWAY_RUNTIME_ENTRYPOINT = String.raw`
+const { mkdirSync, rmSync } = require("node:fs");
+const { join } = require("node:path");
+const { spawn } = require("node:child_process");
+
+${PLUGIN_RUNTIME_HELPERS}
+${WORKSPACE_ASSET_HELPERS}
+${OPENCLAW_AUTH_PROBE_HELPERS}
+
+startPluginRuntimeStatusServer();
 
 function forwardTermination(child) {
   let terminating = false;
@@ -1163,7 +1169,7 @@ mkdirSync("/home/node/.openclaw", { recursive: true });
 mkdirSync("/home/node/workspace", { recursive: true });
 if (process.env.OPENCLAW_WORKSPACE_DIR !== undefined) {
   mkdirSync(process.env.OPENCLAW_WORKSPACE_DIR, { recursive: true });
-  publishDedicatedGatewayRuntimeAssets();
+  initializeRuntimeAssets();
 }
 delete process.env.OPENCLAW_LOG_LEVEL;
 const pluginRuntime = readGatewayPluginRuntime();
@@ -1184,6 +1190,97 @@ if (peerStatus !== undefined) {
   pluginResult.successfulPluginIds = peerStatus.successfulPluginIds;
 }
 publishPluginRuntimeStatus({ phase: "ready", ...pluginResult });
+const workspaceNodeId = process.env.OPENCLAW_WORKSPACE_NODE_ID;
+if (workspaceNodeId !== undefined || process.env.APP_SERVER_URL !== undefined) {
+  const config = readOpenClawConfig();
+  // The first pairing records its command grant before a node ID is available.
+  const commands = ((config.gateway ??= {}).nodes ??= {}).commands ??= {};
+  commands.allow = [...new Set([...(commands.allow ?? []), "file.fetch", "file.stat", "file.write", "file.create", "dir.list", "workspace.memory", "workspace.skills"])];
+  if (workspaceNodeId !== undefined) {
+    const plugins = config.plugins ??= {};
+    if (plugins.deny?.includes("file-transfer")) {
+      throw new Error("The workspace node requires the file-transfer plugin.");
+    }
+    if (Array.isArray(plugins.allow)) {
+      plugins.allow = [...new Set([...plugins.allow, "file-transfer"])];
+    }
+    const entries = plugins.entries ??= {};
+    const transfer = entries["file-transfer"] ??= {};
+    if (transfer.enabled === false) {
+      throw new Error("The workspace node requires the file-transfer plugin.");
+    }
+    transfer.enabled = true;
+    const fileConfig = transfer.config ??= {};
+    // Current Kubernetes Codex layout; this is not a cross-Harness workspace root.
+    const remoteRoot = "/home/node/workspace";
+    // Codex stages reply artifacts while its client is live, even when both
+    // hosts use the same workspace path. A shared path no longer means shared files.
+    if (entries.codex) {
+      const appServer = (entries.codex.config ??= {}).appServer ??= {};
+      appServer.remoteWorkspaceRoot ??= remoteRoot;
+    }
+    // OCC edits four owner documents; bootstrap additionally reads these two.
+    const editable = ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"];
+    const readable = [...editable, "BOOTSTRAP.md", "MEMORY.md"];
+    const memoryPaths = ["MEMORY.md", "memory.md", "DREAMS.md", "dreams.md", "memory", "memory/**"]
+      .map((name) => remoteRoot + "/" + name);
+    const skillRoots = [
+      remoteRoot + "/skills", remoteRoot + "/.agents/skills",
+      "/home/node/.openclaw/skills", "/home/node/.openclaw/plugin-skills",
+      "/home/node/.agents/skills", "/home/node/openclaw-runtime-assets/bundled-skills",
+      "/home/node/openclaw-runtime-assets/plugin-skills",
+    ];
+    const nodes = fileConfig.nodes ??= {};
+    if (nodes[workspaceNodeId] === undefined && nodes["*"] === undefined) {
+      nodes[workspaceNodeId] = {
+        ask: "off",
+        allowReadPaths: [
+          remoteRoot,
+          ...readable.map((name) => remoteRoot + "/" + name),
+          ...memoryPaths,
+          "/home/node/.openclaw",
+          ...skillRoots.flatMap((root) => [root, root + "/**"]),
+          remoteRoot + "/media/inbound/openclaw-staged-*",
+          remoteRoot + "/media/inbound/openclaw-staged-*/**",
+          remoteRoot + "/media/outbound/**",
+        ],
+        allowWritePaths: [
+          ...editable.map((name) => remoteRoot + "/" + name),
+          ...memoryPaths,
+          remoteRoot + "/skills",
+          remoteRoot + "/media/inbound/openclaw-staged-*/**",
+        ],
+        followSymlinks: false,
+      };
+      const hook = config.hooks?.internal?.entries?.["bootstrap-extra-files"];
+      if (config.hooks?.internal?.enabled !== false && hook && hook.enabled !== false) {
+        const declared = [hook.paths, hook.patterns, hook.files]
+          .map((value) => Array.isArray(value)
+            ? value.filter((item) => typeof item === "string").map((item) => item.trim()).filter(Boolean)
+            : [])
+          .find((value) => value.length > 0) ?? [];
+        const paths = new Set(declared.filter((value) => !/[?*{}]/u.test(value))
+          .map((value) => pluginResolve(remoteRoot, value))
+          .filter((value) => value.startsWith(remoteRoot + "/")
+            && readable.includes(value.slice(value.lastIndexOf("/") + 1))));
+        // Native bootstrap accepts literal bracketed paths. Reuse command-bound
+        // exact grants instead of interpreting those paths as policy globs.
+        for (const requestedPath of paths) {
+          for (const command of ["file.fetch", "file.stat"]) {
+            (fileConfig.literalGrants ??= []).push({
+              nodeId: workspaceNodeId, command, requestedPath, canonicalPath: requestedPath,
+            });
+          }
+        }
+      }
+    }
+    // TODO(workspace-storage-split): support bootstrap glob traversal and contained
+    // symlinks through the node file policy.
+    fileConfig.policyVersion ??= 2;
+    (fileConfig.workspaces ??= {}).main = { nodeId: workspaceNodeId, remoteRoot };
+  }
+  writeOpenClawConfig(config);
+}
 publishRuntimeReady();
 const child = spawn(
   "node",
@@ -1373,6 +1470,14 @@ const child = spawn(
     "otel.exporter=\"none\"",
     "-c",
     "otel.log_user_prompt=false",
+    // Managed container tools must retain the runtime PATH, including Skill dependencies.
+    // Login profiles otherwise replace it with the image's system-only PATH.
+    "-c",
+    "allow_login_shell=false",
+    "-c",
+    "shell_environment_policy.experimental_use_profile=false",
+    "-c",
+    "shell_environment_policy.set.PATH=" + JSON.stringify(process.env.PATH ?? ""),
     "app-server",
     "--listen",
     "ws://0.0.0.0:" + process.env.APP_SERVER_PORT,
@@ -1402,6 +1507,108 @@ child.on("exit", (code, signal) => process.exit(code ?? (signal === "SIGTERM" ? 
 })();
 }
 }
+`;
+
+// Kubernetes Codex implementation: this file-only node is not an OpenClaw
+// execution worker; its explicit command allowlist disables worker hosting.
+// It serves files while Codex restarts. Reuse Codex login/plugin initialization
+// for each Codex start; other Harnesses need their own execution composition.
+export const AGENT_WITH_NODE_ENTRYPOINT = String.raw`
+const { mkdirSync, writeFileSync, rmSync } = require("node:fs");
+const { join } = require("node:path");
+const { spawn, spawnSync } = require("node:child_process");
+${WORKSPACE_ASSET_HELPERS}
+const state = process.env.OPENCLAW_NODE_STATE_DIR;
+const setupCode = process.env.OPENCLAW_NODE_SETUP_CODE;
+if (!state || !setupCode) throw new Error("The workspace node is not provisioned.");
+mkdirSync(state, { recursive: true });
+initializeRuntimeAssets();
+const configPath = join(state, "openclaw.json");
+writeFileSync(configPath, JSON.stringify({
+  agents: { defaults: JSON.parse(process.env.OPENCLAW_WORKSPACE_BOOTSTRAP || "{}") },
+  plugins: {
+    allow: ["file-transfer"],
+    slots: { memory: "none" },
+    entries: { "file-transfer": { enabled: true } },
+  },
+}), { mode: 0o600 });
+// Both the node file worker and Codex execute installed Skill dependencies.
+const harnessPath = [process.env.PATH, "/home/node/.local/bin", "/home/node/.openclaw/tools/node/npm/bin"].filter(Boolean).join(":");
+const nodeEnv = {
+  HOME: process.env.HOME,
+  PATH: harnessPath,
+  OPENCLAW_STATE_DIR: state,
+  OPENCLAW_CONFIG_PATH: configPath,
+};
+if (process.env.OPENCLAW_NODE_CA_PEM) {
+  const caPath = join(state, "gateway-ca.pem");
+  writeFileSync(caPath, process.env.OPENCLAW_NODE_CA_PEM, { mode: 0o600 });
+  nodeEnv.NODE_EXTRA_CA_CERTS = caPath;
+}
+// The workspace belongs to the Harness. Native setup creates missing defaults
+// without replacing owner edits; neither child may serve an uninitialized workspace.
+const baseline = spawnSync(process.execPath, [
+  "/app/openclaw.mjs", "setup", "--baseline", "--workspace", "/home/node/workspace", "--json",
+], { env: nodeEnv, stdio: "inherit" });
+if (baseline.error) throw baseline.error;
+if (baseline.status !== 0) throw new Error("Workspace initialization failed.");
+const codexEnv = { ...process.env, PATH: harnessPath };
+delete codexEnv.OPENCLAW_NODE_SETUP_CODE;
+delete codexEnv.OPENCLAW_NODE_CA_PEM;
+delete codexEnv.OPENCLAW_NODE_STATE_DIR;
+delete codexEnv.OPENCLAW_WORKSPACE_BOOTSTRAP;
+const processes = [
+  {
+    name: "workspace node",
+    args: ["/app/openclaw.mjs", "node", "run", "--pair-if-needed", setupCode,
+      "--commands", "file.fetch,file.stat,file.write,file.create,dir.list,workspace.memory,workspace.skills"],
+    env: nodeEnv,
+  },
+  { name: "Codex", args: ["-e", ${JSON.stringify(AGENT_RUNTIME_ENTRYPOINT)}], env: codexEnv },
+];
+let stopping = false;
+function killGroup(child, signal) {
+  if (!child?.pid) return;
+  try { process.kill(-child.pid, signal); }
+  catch (error) { if (error.code !== "ESRCH") throw error; }
+}
+function start(slot) {
+  if (stopping) return;
+  const child = spawn(process.execPath, slot.args, {
+    env: slot.env, stdio: "inherit", detached: true,
+  });
+  slot.child = child;
+  child.on("error", () => console.error(slot.name + " failed to start."));
+  child.on("exit", () => {
+    // The Codex wrapper may exit after plugin failure while its app-server is
+    // still shutting down. Retire that group before starting another wrapper.
+    killGroup(child, "SIGKILL");
+  });
+  child.on("close", () => {
+    slot.child = undefined;
+    if (stopping) {
+      if (processes.every((entry) => !entry.child)) process.exit(0);
+    } else {
+      slot.timer = setTimeout(() => start(slot), 1_000);
+    }
+  });
+}
+function stop(signal) {
+  if (stopping) return;
+  stopping = true;
+  for (const slot of processes) {
+    clearTimeout(slot.timer);
+    killGroup(slot.child, signal);
+  }
+  if (processes.every((slot) => !slot.child)) process.exit(0);
+  setTimeout(() => {
+    for (const slot of processes) killGroup(slot.child, "SIGKILL");
+    process.exit(1);
+  }, 9_000).unref();
+}
+process.on("SIGTERM", () => stop("SIGTERM"));
+process.on("SIGINT", () => stop("SIGINT"));
+for (const slot of processes) start(slot);
 `;
 
 // Check native readiness over Pod loopback: kubelet's node source can also be

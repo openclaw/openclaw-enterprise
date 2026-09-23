@@ -8,22 +8,35 @@ const kubeletSeccompRoot = "/var/lib/kubelet/seccomp";
 const codexProbeTimeoutMs = 180_000;
 const kubectlRequestTimeout = "75s";
 
+// The vendored Bubblewrap sources are byte-identical across the reviewed releases.
+// Codex 0.156.0 adds socket masking with existing tmpfs and remount flags.
+// Version admission does not change the syscall rules or the live positive/negative probes.
 const codexBwrapSourceProvenance = Object.freeze([
   {
     name: "containerd RuntimeDefault seccomp",
     source: "actual CRI runtimeSpec.linux.seccomp from each selected k3d node",
   },
   {
+    name: "Codex 0.152.1 and 0.154.0 bubblewrap launcher",
+    source: "openai/codex rust-v0.152.1 and rust-v0.154.0 codex-rs/linux-sandbox/src/bwrap.rs",
+    sha256: "bfce8aa44048b2441a7c02b301fe7366ae1b8b9ddd8ff8518711cd874a9e749e",
+  },
+  {
     name: "Codex 0.156.0 bubblewrap launcher",
     source: "openai/codex rust-v0.156.0 codex-rs/linux-sandbox/src/bwrap.rs",
+    sha256: "e1c2a7a0ac805a70f3531ff7d584970b023da2d59fc221e0cb6bd0fa0c31729d",
   },
   {
     name: "bubblewrap mount setup",
-    source: "openai/codex rust-v0.156.0 codex-rs/vendor/bubblewrap/bubblewrap.c",
+    source:
+      "openai/codex rust-v0.152.1, rust-v0.154.0 and rust-v0.156.0 codex-rs/vendor/bubblewrap/bubblewrap.c",
+    sha256: "9bc38fb46080b6854e0c414ccb5fbd369d9d7c0230fdfa877283d31aef0c5720",
   },
   {
     name: "bubblewrap bind mount flags",
-    source: "openai/codex rust-v0.156.0 codex-rs/vendor/bubblewrap/bind-mount.c",
+    source:
+      "openai/codex rust-v0.152.1, rust-v0.154.0 and rust-v0.156.0 codex-rs/vendor/bubblewrap/bind-mount.c",
+    sha256: "19a6ae020803e342667dd562efab027967b1c1f2965525ec7ee09521554f8f71",
   },
 ]);
 
@@ -636,10 +649,9 @@ async function prepareCodexSeccompProfile({
   const exec = requireExecFile(execFile);
   assertImmutableImageReference(image);
   assertLocalhostProfileName(profileName);
-  assert.equal(
-    codexVersion,
-    "0.156.0",
-    "Codex seccomp profile verification is pinned to Codex 0.156.0.",
+  assert.ok(
+    ["0.152.1", "0.154.0", "0.156.0"].includes(codexVersion),
+    "Codex seccomp profile verification is limited to reviewed Codex versions: 0.152.1, 0.154.0, 0.156.0.",
   );
   const selection = { kubeconfig: selectedCluster.kubeconfig, context: selectedCluster.context };
   const namespace = `openclaw-ci-seccomp-${randomSuffix(4)}`;

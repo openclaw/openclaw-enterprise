@@ -14,18 +14,19 @@ For caller permissions and file operations, see the
 
 ## Resources and ownership
 
-| Owner                     | Resources or responsibility                                                                                                                       |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Installation operator     | Envoy Gateway and cert-manager controllers, Gateway API CRDs, an existing GatewayClass, enforced NetworkPolicies, and the service-key Secret.     |
-| Helm chart                | Shared Gateway, ClusterIP EnvoyProxy, SecurityPolicy, certificates and optional CA issuers, API credential mounts, and API/Envoy NetworkPolicies. |
-| Kubernetes Compute Driver | Tenant namespace attachment labels, Agent HTTPRoutes, gateway Services, and tenant NetworkPolicies through worker reconciliation.                 |
-| OCC API                   | Caller authorization, endpoint derivation through Compute, and native file RPCs using the mounted service key.                                    |
+| Owner                     | Resources or responsibility                                                                                                                                     |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Installation operator     | Envoy Gateway and cert-manager controllers, Gateway API CRDs, an existing GatewayClass, enforced NetworkPolicies, and the service-key Secret.                   |
+| Helm chart                | Shared Gateway, ClusterIP EnvoyProxy, SecurityPolicy, certificates and optional CA issuers, API/worker credential mounts, and controller/Envoy NetworkPolicies. |
+| Kubernetes Compute Driver | Tenant attachment labels, Agent HTTPRoutes and node-route SecurityPolicies, gateway Services, and tenant NetworkPolicies through worker reconciliation.         |
+| OCC API                   | Caller authorization, endpoint derivation through Compute, and native file RPCs using the mounted service key.                                                  |
+| OCC worker                | Native node enrollment through Compute, using the mounted service key and revision-owned enrollment Secrets.                                                    |
 
 The shared Gateway and certificate resources are in the Helm release namespace.
 Envoy's proxy Service and Pods are in `envoyNamespace`. Each Agent's HTTPRoute
 and gateway Service are in its tenant Kubernetes namespace. The installer needs
 permission to create the shared resources, including the NetworkPolicy in the
-Envoy namespace. The worker needs tenant HTTPRoute permissions; the API does
+Envoy namespace. The worker needs tenant HTTPRoute and SecurityPolicy permissions; the API does
 not need to write routes or execute commands in gateway Pods.
 
 ## Endpoint and route
@@ -63,6 +64,36 @@ is replaced. Retiring an older revision preserves the newer gateway's route;
 final gateway cleanup removes it. Compute repairs the route while reconciling
 a revision. There is no separate periodic repair.
 
+### Native node endpoint
+
+Runtime-enabled dedicated revisions also receive an exact `/node` route under
+the same Agent URL, hostname and `https` listener. It uses the same backend
+Service and path rewrite. The route removes `x-occ-identity`, `x-api-key`,
+forwarded identity and scope headers, and Tailscale identity headers while
+setting `x-real-ip` from Envoy's downstream socket. This preserves trusted
+proxy attribution without granting the OCC administrative identity.
+
+Compute attaches a tenant-local SecurityPolicy with no authentication fields
+to this node HTTPRoute. Envoy Gateway v1.6.7 replaces the entire inherited
+Gateway policy at this more specific scope, so the node route does not require
+the OCC service key. Native OpenClaw verifies the signed device identity and
+node-only bootstrap or device token. Invalid credentials and attempts to use
+node credentials as an operator fail at the native Gateway.
+
+Preparation creates or repairs these resources under the serving Gateway's
+revision. Preparing a replacement preserves that ownership until activation
+replaces the Deployment.
+Stop and retirement remove the exact revision's node route before
+its policy, checking ownership and deletion UIDs; newer revisions remain.
+The Compute enrollment path also admits Harness egress to this installation's
+Envoy Pods on the configured HTTPS target port. File, Memory and Skills access
+use the enrolled node. Dedicated Gateway does not mount the Harness workspace
+or generated-image directories; sessions stay in Gateway private storage.
+Native runtime and Envoy integration verification remain incomplete. See the
+[enrollment trace](../flows/workspace-files.md#6-compute-resolves-a-route-and-occ-loads-the-current-key).
+Real Envoy node-authentication verification is described in
+[routing tests](../testing/gateway-routing.md).
+
 ## Service key and native identity
 
 The Installation operator must create the service key, even when the certificate
@@ -71,11 +102,17 @@ hex without a trailing newline and store the result in a dedicated Opaque
 Secret under the key `occ`. Set `gatewayRouting.apiKeySecretName` to its name.
 The Secret belongs in the Helm release namespace; see the [setup commands](../guides/deploy/workspace-routing.md#configure-private-routing).
 
-Helm mounts that Secret only into the OCC API at
+Helm mounts that Secret into the OCC API and worker at
 `/etc/openclaw/gateway-api-key/key` and sets `OCC_GATEWAY_API_KEY_PATH`.
 The Gateway-level SecurityPolicy references the same Secret. OCC reads the key
 for each operation and sends it as `x-api-key`. Envoy validates and strips that
 header before forwarding.
+
+With routing enabled, the tenant-worker role gains Secret get/create/update/delete
+for Compute-owned node enrollment. Operators bind this role only in approved
+tenant namespaces; the chart creates no cluster-wide binding for it. The worker
+is part of the trusted control plane. Harnesses receive a node-only setup code
+and public CA bundle, never this administrative service key.
 
 The HTTPRoute sets `x-occ-identity: occ-workspace-files` and sets `x-real-ip`
 from Envoy's direct downstream connection. It removes `x-forwarded-for`,
@@ -111,7 +148,7 @@ before starting. The CA signing key is never mounted into OCC. Normal CA and
 hostname verification remain enabled; OCC does not pin the listener leaf.
 
 To use an existing issuer, set `issuerRef.name` and its kind/group. Set
-`caSecretName` and `caSecretKey` together if the API needs an additional public
+`caSecretName` and `caSecretKey` together if OCC needs an additional public
 CA bundle; otherwise it uses Node's existing trust store. Explicit CA trust
 requires an explicit issuer. Keep root, listener, service-key, and other
 credential Secrets distinct.
@@ -119,7 +156,9 @@ credential Secrets distinct.
 OCC rereads the service-key file for new operations, allowing projected Secret
 updates without an API restart after Envoy also observes the update. Rotation
 is not coordinated atomically between those consumers. Node loads additional
-CA trust at process startup: changing the trust bundle requires an API restart.
+CA trust at process startup: changing the trust bundle requires restarting both
+the API and worker. Workspace nodes receive a public CA snapshot at launch;
+their Harness workloads also need replacement when that trust changes.
 Listener renewal under the existing CA does not require changing OCC trust.
 
 ## Routing configuration
@@ -144,7 +183,9 @@ Helm's `gatewayRouting` settings configure shared infrastructure:
 
 The Installation's `drivers.compute.configuration.gatewayRouting` separately
 requires `gatewayName`, `gatewayNamespace`, and `envoyNamespace`; `hostname` is
-optional. Match the Helm values and use the release namespace for
+optional. `envoyHttpsTargetPort` defaults to `10443` and must match Helm's value,
+so the Harness egress rule permits the listener's actual Pod port.
+Match the Helm values and use the release namespace for
 `gatewayNamespace`. Helm does not rewrite the Installation Secret. Remove
 `network.gatewayClients` when enabling routing: Compute derives the Envoy peer
 and rejects explicit clients in this mode. Restart API and worker after changing
@@ -153,7 +194,8 @@ map or controller restart.
 
 ## Network enforcement and failures
 
-Envoy ingress is restricted to the selected OCC API Pods. Its egress permits
+Envoy ingress permits the selected OCC API/worker Pods and Harness Pods in
+attached tenant namespaces. Its egress permits
 tenant gateway traffic, configured DNS, and the Envoy Gateway control-plane
 connection. Tenant gateway ingress permits the selected Envoy Pods. The Gateway
 accepts HTTPRoutes only from namespaces bearing its attachment label.

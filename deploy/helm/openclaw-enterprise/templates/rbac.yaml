@@ -51,6 +51,11 @@ kind: ClusterRole
 metadata:
   name: {{ .Release.Name }}-openclaw-tenant-worker
 rules:
+  {{- if .Values.gatewayRouting.enabled }}
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, create, update, delete]
+  {{- end }}
   {{- if .Values.repositoryCredentials.enabled }}
   - apiGroups: [""]
     resources: [secrets]
@@ -76,6 +81,9 @@ rules:
     verbs: [get, list, create, patch, delete]
   - apiGroups: [gateway.networking.k8s.io]
     resources: [httproutes]
+    verbs: [get, create, patch, delete]
+  - apiGroups: [gateway.envoyproxy.io]
+    resources: [securitypolicies]
     verbs: [get, create, patch, delete]
   - apiGroups: [discovery.k8s.io]
     resources: [endpointslices]

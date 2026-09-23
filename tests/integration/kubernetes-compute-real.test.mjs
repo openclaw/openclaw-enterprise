@@ -827,15 +827,21 @@ test(
         sharedWorkspaceIdentities.get(identityKey),
       );
       sharedWorkspaceIdentities.set(identityKey, sharedClaim.metadata.uid);
-      for (const workload of [gateway, deployment]) {
-        assert.deepEqual(
-          workload.spec.template.spec.volumes.find(({ name }) => name === "openclaw-workspace"),
-          {
-            name: "openclaw-workspace",
-            persistentVolumeClaim: { claimName: sharedWorkspaceClaimName(candidate.agentId) },
-          },
-        );
-      }
+      assert.equal(
+        gateway.spec.template.spec.volumes.some(
+          ({ persistentVolumeClaim }) =>
+            persistentVolumeClaim?.claimName === sharedClaim.metadata.name,
+        ),
+        false,
+        "Gateway must not mount the Harness workspace claim",
+      );
+      assert.deepEqual(
+        deployment.spec.template.spec.volumes.find(({ name }) => name === "openclaw-workspace"),
+        {
+          name: "openclaw-workspace",
+          persistentVolumeClaim: { claimName: sharedClaim.metadata.name },
+        },
+      );
       assert.equal(deployment.spec.template.spec.serviceAccountName, agentName(candidate.agentId));
       assert.equal(deployment.spec.template.spec.automountServiceAccountToken, false);
       assert.equal(deployment.spec.template.spec.securityContext.runAsNonRoot, true);
@@ -1470,7 +1476,7 @@ test(
     await configurationDriver.delete(reference);
     assert.equal(await missing("configmap", configurationName, existingName), true);
 
-    // Dedicated workloads and their Agent-owned shared drive must remain inside the exact tenant.
+    // Dedicated workloads and the Harness workspace must remain inside the exact tenant.
     const agentId = `agt_${randomUUID()}`;
     const candidate = revision(driver, readyOwner, agentId, 1);
     await waitFor("discovered Agent gateway and immutable revision to become ready", async () => {
@@ -1481,15 +1487,21 @@ test(
     const gateway = await assertReadyGateway(existingName, agentId, owner.id, candidate);
     const workload = await resource("deployment", revisionName(candidate), existingName);
     const sharedClaim = await assertSharedWorkspaceClaim(existingName, owner.id, agentId);
-    for (const deployment of [gateway, workload]) {
-      assert.deepEqual(
-        deployment.spec.template.spec.volumes.find(({ name }) => name === "openclaw-workspace"),
-        {
-          name: "openclaw-workspace",
-          persistentVolumeClaim: { claimName: sharedClaim.metadata.name },
-        },
-      );
-    }
+    assert.equal(
+      gateway.spec.template.spec.volumes.some(
+        ({ persistentVolumeClaim }) =>
+          persistentVolumeClaim?.claimName === sharedClaim.metadata.name,
+      ),
+      false,
+      "Gateway must not mount the Harness workspace claim",
+    );
+    assert.deepEqual(
+      workload.spec.template.spec.volumes.find(({ name }) => name === "openclaw-workspace"),
+      {
+        name: "openclaw-workspace",
+        persistentVolumeClaim: { claimName: sharedClaim.metadata.name },
+      },
+    );
     await driver.stopRevision(candidate);
     assert.equal(await missing("deployment", revisionName(candidate), existingName), true);
     assert.equal(await missing("deployment", gatewayName(agentId), existingName), true);
@@ -1864,19 +1876,25 @@ test(
     }
 
     const initialWorkspaceFilesByAgent = new Map();
-    async function assertInitialWorkspace(namespaceId, agentId, expectedFiles) {
+    async function assertInitialWorkspace(
+      namespaceId,
+      agentId,
+      expectedFiles,
+      candidate,
+      executionMode = "dedicated",
+    ) {
       const placement = placements.get(namespaceId);
       const output = await kubectl(
         "exec",
-        `deployment/${gatewayName(agentId)}`,
+        `deployment/${executionMode === "embedded" ? gatewayName(agentId) : revisionName(candidate)}`,
         "--namespace",
         placement,
         "-c",
-        "gateway",
+        executionMode === "embedded" ? "gateway" : "agent",
         "--",
         "node",
         "-e",
-        `const fs = require('node:fs'); process.stdout.write(JSON.stringify(Object.fromEntries(${JSON.stringify(Object.keys(expectedFiles))}.map(name => [name, fs.readFileSync('/home/node/.openclaw/workspace/' + name, 'utf8')]))));`,
+        `const fs = require('node:fs'); process.stdout.write(JSON.stringify(Object.fromEntries(${JSON.stringify(Object.keys(expectedFiles))}.map(name => [name, fs.readFileSync(${JSON.stringify(executionMode === "embedded" ? "/home/node/.openclaw/workspace/" : "/home/node/workspace/")} + name, 'utf8')]))));`,
       );
       assert.deepEqual(JSON.parse(output), expectedFiles);
       const completed = await state.read((view) => view.workspaceSetups.find(namespaceId, agentId));
@@ -2123,6 +2141,8 @@ test(
             namespaceId,
             agent.id,
             initialWorkspaceFilesByAgent.get(agent.id),
+            candidate,
+            executionMode,
           );
         }
         if (executionMode === "dedicated") {
@@ -2374,7 +2394,12 @@ test(
     await waitForActive(adopted.data.id, adoptedTenant.id, restarted.id);
     await assertReadyGateway(existingName, adoptedTenant.id, adopted.data.id, restarted);
     if (runtimeImage !== undefined) {
-      await assertInitialWorkspace(adopted.data.id, adoptedTenant.id, editedWorkspaceFiles);
+      await assertInitialWorkspace(
+        adopted.data.id,
+        adoptedTenant.id,
+        editedWorkspaceFiles,
+        restarted,
+      );
     }
     const restartedPod = await waitFor("redeployed Agent revision Pod to become ready", async () =>
       (await resources("pods", existingName)).find(

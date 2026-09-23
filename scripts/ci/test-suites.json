@@ -76,6 +76,9 @@
           "path": "tests/conformance/workspace-files.test.mjs"
         },
         {
+          "path": "tests/conformance/workspace-node-supervisor.test.mjs"
+        },
+        {
           "path": "tests/integration/presets-controller.test.mjs"
         },
         {
@@ -699,10 +702,13 @@
       "requiredEnv": [
         "OCC_TEST_KUBERNETES_KUBECONFIG",
         "OCC_TEST_KUBERNETES_CONTEXT",
+        "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE",
         "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
         "OCC_TEST_KUBERNETES_AGENT_IMAGE",
         "OPENAI_API_KEY",
-        "OCC_TEST_OPENAI_MODEL"
+        "OCC_TEST_OPENAI_MODEL",
+        "OCC_TEST_GATEWAY_CA_CERT_PATH",
+        "OCC_TEST_GATEWAY_CA_KEY_PATH"
       ],
       "env": {
         "OCC_TEST_HARNESS_K3D_REAL": "1",
@@ -715,7 +721,7 @@
         "k3d": true,
         "codexSeccomp": true,
         "requiresPreparedStateForFile": true,
-        "requireEnv": ["OPENAI_API_KEY", "OCC_TEST_OPENAI_MODEL"],
+        "requireEnv": ["OPENAI_API_KEY", "OCC_TEST_OPENAI_MODEL", "NODE_BASE_IMAGE"],
         "immutableOptionalEnvImages": [
           "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
           "OCC_TEST_KUBERNETES_AGENT_IMAGE",
@@ -831,6 +837,7 @@
       "requiredEnv": [
         "OCC_TEST_KUBERNETES_KUBECONFIG",
         "OCC_TEST_KUBERNETES_CONTEXT",
+        "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE",
         "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
         "OCC_TEST_KUBERNETES_AGENT_IMAGE",
         "OPENAI_API_KEY",
@@ -839,7 +846,9 @@
         "OCC_TEST_SLACK_CHANNEL_ID",
         "OCC_TEST_SLACK_SENDER_BOT_TOKEN",
         "SLACK_APP_TOKEN",
-        "SLACK_BOT_TOKEN"
+        "SLACK_BOT_TOKEN",
+        "OCC_TEST_GATEWAY_CA_CERT_PATH",
+        "OCC_TEST_GATEWAY_CA_KEY_PATH"
       ],
       "env": {
         "OCC_TEST_SLACK_LIVE": "1"
@@ -852,6 +861,7 @@
         "requireEnv": [
           "OPENAI_API_KEY",
           "OCC_TEST_OPENAI_MODEL",
+          "NODE_BASE_IMAGE",
           "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
           "OCC_TEST_KUBERNETES_AGENT_IMAGE",
           "OCC_TEST_SLACK_PROXY_URL",
@@ -1008,7 +1018,7 @@
         "k3d": true,
         "codexSeccomp": true,
         "requiresPreparedStateForFile": true,
-        "requireEnv": ["OPENAI_API_KEY", "OCC_TEST_OPENAI_MODEL"],
+        "requireEnv": ["OPENAI_API_KEY", "OCC_TEST_OPENAI_MODEL", "NODE_BASE_IMAGE"],
         "immutableOptionalEnvImages": [
           "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
           "OCC_TEST_KUBERNETES_AGENT_IMAGE",
@@ -1019,11 +1029,14 @@
       "requiredEnv": [
         "OCC_TEST_KUBERNETES_KUBECONFIG",
         "OCC_TEST_KUBERNETES_CONTEXT",
+        "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE",
         "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
         "OCC_TEST_KUBERNETES_AGENT_IMAGE",
         "OPENAI_API_KEY",
         "OCC_TEST_OPENAI_MODEL",
-        "OCC_TEST_OTEL_LOGS_JSONL"
+        "OCC_TEST_OTEL_LOGS_JSONL",
+        "OCC_TEST_GATEWAY_CA_CERT_PATH",
+        "OCC_TEST_GATEWAY_CA_KEY_PATH"
       ],
       "files": [
         {

@@ -1,5 +1,8 @@
 # Gateway–Harness storage split
 
+> **Memory and Skills placement is superseded by [spec30](30-storage-split-integration.md).**
+> The current proposal keeps the Memory index on Gateway; the original design below is preserved as history.
+
 **Status: Proposed.** Covers [#76](https://github.com/openclaw/openclaw-enterprise/issues/76)
 and [#89](https://github.com/openclaw/openclaw-enterprise/issues/89), building on
 Russell Bryant's placement design in [#125](https://github.com/openclaw/openclaw-enterprise/pull/125).

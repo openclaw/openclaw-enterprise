@@ -174,6 +174,7 @@ if (command === "docker" || command === "podman") {
     }
   }
 }
+if (command === "helm" && equals(args, ["version", "--short"])) finish("v3.19.0\n");
 if (command === "corepack" && equals(args, ["pnpm", "db:migrate"])) {
   assert.match(process.env.OCC_MIGRATION_DATABASE_URL, /^postgresql:\/\/occ_migrator:.*\/openclaw_k8s_/);
   finish();
@@ -285,7 +286,7 @@ if (command === "kubectl") {
 }
 throw new Error("Unexpected external command: " + command + " " + JSON.stringify(args));
 `}`;
-  for (const command of ["docker.mjs", "k3d.mjs", "kubectl.mjs", "podman", "corepack"]) {
+  for (const command of ["docker.mjs", "k3d.mjs", "kubectl.mjs", "podman", "corepack", "helm"]) {
     await writeFile(join(bin, command), commandSource, { mode: 0o700 });
   }
   const statePath = join(root, "state.json");
@@ -478,12 +479,15 @@ test("k3d preparation reuses only matching local immutable images and verifies f
     "inspect-failed",
   ]) {
     const commands = await fixtureImageCommands(t, scenario, "k3d-model", {
+      NODE_BASE_IMAGE: nodeBaseImage,
+      // Supply the controller artifact so this case isolates image import, not its build.
+      OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: immutableImage,
       OPENAI_API_KEY: "test-only-key",
       OCC_TEST_OPENAI_MODEL: "test-model",
       OCC_TEST_KUBERNETES_GATEWAY_IMAGE: immutableImage,
       OCC_TEST_KUBERNETES_AGENT_IMAGE: immutableImage,
       // Stop at the next independent preparation boundary after image import.
-      OCC_TEST_KUBERNETES_CODEX_VERSION: "0.152.1",
+      OCC_TEST_KUBERNETES_CODEX_VERSION: "0.153.0",
     });
     const result = commands.prepare();
     assert.equal(result.status, 1);
@@ -503,7 +507,7 @@ test("k3d preparation reuses only matching local immutable images and verifies f
       assert.match(result.stderr, /Cannot connect to the Docker daemon/);
       assert.equal(imported.length, 0);
     } else {
-      assert.match(result.stderr, /pinned to Codex 0\.156\.0/);
+      assert.match(result.stderr, /limited to reviewed Codex versions/);
       assert.equal(imported.length, 1);
       assert.equal(imported[0].status, "ready");
       assert.equal(imported[0].sourceImage, immutableImage);
@@ -778,9 +782,9 @@ test("codex seccomp preparation fails closed for unverified Codex versions and f
         cluster,
         image: immutableImage,
         execFile,
-        codexVersion: "0.152.1",
+        codexVersion: "0.153.0",
       }),
-    /pinned to Codex 0\.156\.0/,
+    /reviewed Codex versions: 0\.152\.1, 0\.154\.0, 0\.156\.0/,
   );
   await assert.rejects(
     () =>
@@ -879,6 +883,8 @@ test("codex seccomp preparation requires a namespace/seccomp RuntimeDefault deni
       prepareCodexSeccompProfile({
         cluster,
         image: immutableImage,
+        // The current runtime must still reject unrelated setup failures before node writes.
+        codexVersion: "0.156.0",
         execFile: execFileForRuntimeDefaultFailure((command, args) => {
           const commandText = `${command} ${args.join(" ")}`;
           assert.match(commandText, /--namespace/);
@@ -1066,6 +1072,7 @@ test("prepareLane rejects mutable Kubernetes image inputs before creating state"
       envName: "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
       env: {
         ...baseModelEnv,
+        NODE_BASE_IMAGE: nodeBaseImage,
         ...optionalKubernetesImages,
         OCC_TEST_KUBERNETES_GATEWAY_IMAGE: mutableImage,
       },
@@ -1075,6 +1082,7 @@ test("prepareLane rejects mutable Kubernetes image inputs before creating state"
       envName: "OCC_TEST_KUBERNETES_AGENT_IMAGE",
       env: {
         ...baseModelEnv,
+        NODE_BASE_IMAGE: nodeBaseImage,
         ...optionalKubernetesImages,
         OCC_TEST_KUBERNETES_AGENT_IMAGE: mutableImage,
       },
@@ -1095,6 +1103,7 @@ test("prepareLane rejects mutable Kubernetes image inputs before creating state"
       envName: "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
       env: {
         ...baseModelEnv,
+        NODE_BASE_IMAGE: nodeBaseImage,
         ...k3dImages,
         OCC_TEST_KUBERNETES_GATEWAY_IMAGE: mutableImage,
         OCC_TEST_SLACK_PROXY_URL: "http://127.0.0.1:3000",

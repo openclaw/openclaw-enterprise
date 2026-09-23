@@ -2,14 +2,17 @@ import { defaultAgentModel } from "../../apps/controller/src/console/agents/star
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT as DOCKER_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/docker/index.ts";
-import { GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import {
+  AGENT_WITH_NODE_ENTRYPOINT,
+  GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
@@ -24,6 +27,153 @@ const imageTestOptions =
         skip: "Set OCC_TEST_RUNTIME_IMAGE to a locally built OpenClaw runtime image tag.",
       }
     : {};
+
+test(
+  "runtime image reaps descendants during workspace node and Codex restarts",
+  imageTestOptions,
+  async (t) => {
+    const containerName = `oce-runtime-image-supervisor-${randomBytes(6).toString("hex")}`;
+    t.after(() => runDocker(["rm", "-f", containerName]).catch(() => {}));
+    // Run the same process proof inside the image, using the production init
+    // command. Copy source over argv so this also works with a remote Docker engine.
+    const paths = [
+      "tests/conformance/workspace-node-supervisor.test.mjs",
+      "apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
+      "apps/controller/src/drivers/plugin/runtime-translator.ts",
+    ];
+    const files = await Promise.all(
+      paths.map(async (path) => [
+        path,
+        await readFile(new URL(`../../${path}`, import.meta.url), "utf8"),
+      ]),
+    );
+    const launch = String.raw`
+const { mkdirSync, writeFileSync } = require("node:fs");
+const { dirname, join } = require("node:path");
+const { spawnSync } = require("node:child_process");
+for (const [relative, content] of JSON.parse(process.argv[1])) {
+  const target = join("/tmp/proof", relative);
+  mkdirSync(dirname(target), { recursive: true });
+  writeFileSync(target, content);
+}
+const child = spawnSync(process.execPath, ["--test", "/tmp/proof/tests/conformance/workspace-node-supervisor.test.mjs"], { stdio: "inherit" });
+if (child.error) throw child.error;
+process.exit(child.status ?? 1);
+`;
+    const { stdout } = await runDocker([
+      "run",
+      "--rm",
+      "--name",
+      containerName,
+      "--user",
+      "1000:1000",
+      "--read-only",
+      "--cap-drop",
+      "ALL",
+      "--security-opt",
+      "no-new-privileges",
+      "--network",
+      "none",
+      "--tmpfs",
+      "/tmp:size=64m,mode=1777",
+      "--entrypoint",
+      "/usr/bin/tini",
+      image,
+      "-s",
+      "--",
+      "node",
+      "-e",
+      launch,
+      JSON.stringify(files),
+    ]);
+    assert.match(stdout, /pass 1/);
+    assert.match(stdout, /skipped 0/);
+  },
+);
+
+test(
+  "runtime image initializes the Harness workspace without replacing owner edits",
+  imageTestOptions,
+  async () => {
+    // Run the real Harness entrypoint and native setup. Replace only the long-lived
+    // node/Codex bodies: this proves initialization order, not pairing or a model turn.
+    const launch = String.raw`
+const assert = require("node:assert/strict");
+const { existsSync, readFileSync, writeFileSync } = require("node:fs");
+const { spawnSync } = require("node:child_process");
+const entrypoint = process.argv[1];
+const sentinel = "Owner edit that must survive a Harness restart.\n";
+for (let attempt = 0; attempt < 4; attempt++) {
+  const bootstrap = attempt === 0 ? { skipBootstrap: true } : attempt === 3 ? { skipBootstrap: "invalid" } : {};
+  const substitute = [
+    'const cp = require("node:child_process");',
+    'cp.spawn = () => {',
+    'if (!JSON.parse(process.env.OPENCLAW_WORKSPACE_BOOTSTRAP).skipBootstrap) require("node:assert/strict").ok(require("node:fs").readFileSync("/home/node/workspace/AGENTS.md", "utf8").length > 0);',
+    'console.log("WORKSPACE_CHILD_STARTED");',
+    'return new (require("node:events").EventEmitter)();',
+    '};',
+    entrypoint,
+  ].join("\n");
+  const result = spawnSync(process.execPath, ["-e", substitute], {
+    env: { PATH: process.env.PATH, HOME: "/home/node", OPENCLAW_NODE_STATE_DIR: "/tmp/node-state", OPENCLAW_NODE_SETUP_CODE: "synthetic-setup", OPENCLAW_WORKSPACE_BOOTSTRAP: JSON.stringify(bootstrap) },
+    encoding: "utf8",
+  });
+  if (attempt === 3) {
+    assert.notEqual(result.status, 0);
+    assert.doesNotMatch(result.stdout, /WORKSPACE_CHILD_STARTED/);
+    assert.match(result.stderr, /Workspace initialization failed/);
+    continue;
+  }
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  assert.ok(require("node:fs").readdirSync("/home/node/openclaw-runtime-assets/bundled-skills").length > 0);
+  assert.ok(require("node:fs").statSync("/home/node/openclaw-runtime-assets/plugin-skills").isDirectory());
+  assert.equal(result.stdout.split("WORKSPACE_CHILD_STARTED").length - 1, 2);
+  if (attempt === 0) {
+    assert.equal(existsSync("/home/node/workspace/AGENTS.md"), false);
+    continue;
+  }
+  for (const name of ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md", "BOOTSTRAP.md"]) {
+    assert.ok(readFileSync("/home/node/workspace/" + name, "utf8").length > 0);
+  }
+  if (attempt === 2) assert.equal(readFileSync("/home/node/workspace/AGENTS.md", "utf8"), sentinel);
+  writeFileSync("/home/node/workspace/AGENTS.md", sentinel);
+}
+console.log("WORKSPACE_INITIALIZATION_PASSED");
+`;
+    const { stdout } = await runDocker(
+      [
+        "run",
+        "--rm",
+        "--user",
+        "1000:1000",
+        "--read-only",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--network",
+        "none",
+        "--tmpfs",
+        "/tmp:size=64m,mode=1777",
+        "--tmpfs",
+        "/home/node:size=64m,uid=1000,gid=1000",
+        "--tmpfs",
+        "/home/node/workspace:size=16m,uid=1000,gid=1000",
+        "--entrypoint",
+        "/usr/bin/tini",
+        image,
+        "-s",
+        "--",
+        "node",
+        "-e",
+        launch,
+        AGENT_WITH_NODE_ENTRYPOINT,
+      ],
+      { timeout: 120_000 },
+    );
+    assert.match(stdout, /WORKSPACE_INITIALIZATION_PASSED/);
+  },
+);
 
 async function runDocker(args, options = {}) {
   return execute(docker, args, {

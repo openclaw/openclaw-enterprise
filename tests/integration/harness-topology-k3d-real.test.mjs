@@ -6,8 +6,8 @@ import {
   assertInvalidHarnessAuthStaysUnready,
   assertDedicatedAgentsInstructionsInFreshSession,
   assertLegacyModelSecretBindingDenied,
-  assertDedicatedSharedWorkspaceResources,
-  assertDedicatedSharedWorkspaceRuntime,
+  assertDedicatedWorkspaceResources,
+  assertDedicatedWorkspaceRuntime,
   assertDeniedConnection,
   assertEmbeddedCreatesNoSharedWorkspaceClaim,
   assertGatewayPodContinuity,
@@ -35,7 +35,9 @@ test(
   "production dedicated Codex preserves gateway conversations and retained images across Pod replacement",
   { ...requiresProductionCluster, timeout: 1_200_000 },
   async (context) => {
-    const topology = await arrangeProductionTopology(context, "dedicated");
+    const topology = await arrangeProductionTopology(context, "dedicated", undefined, {
+      gatewayPassword: true,
+    });
     assert.ok(topology.harnessPod, "dedicated production must start a real separate Codex Pod");
     assert.notEqual(topology.gatewayPod.metadata.uid, topology.harnessPod.metadata.uid);
     assert.equal(topology.gatewayPod.spec.serviceAccountName, topology.gatewayServiceName);
@@ -46,7 +48,7 @@ test(
     );
     assertPrivateStateInitContainer(topology.gatewayPod);
     assertPrivateStateInitContainer(topology.harnessPod);
-    const sharedWorkspaceClaim = await assertDedicatedSharedWorkspaceResources(topology);
+    const harnessWorkspaceClaim = await assertDedicatedWorkspaceResources(topology);
     const privateClaim = await assertGatewayPrivateResources(topology);
 
     const [gatewayEnvironment, harnessEnvironment, gatewayIdentity, harnessIdentity] =
@@ -61,7 +63,7 @@ test(
       [secretRotationProbe]: false,
       APP_SERVER_TOKEN: true,
       APP_SERVER_URL: true,
-      OPENCLAW_GATEWAY_TOKEN: true,
+      OPENCLAW_GATEWAY_TOKEN: false,
     });
     assert.deepEqual(harnessEnvironment, {
       OPENAI_API_KEY: true,
@@ -119,25 +121,16 @@ test(
     );
     process.stderr.write("k3d dedicated: topology ready; running a real model turn.\n");
     await assertActualModelTurn(topology);
-    process.stderr.write(
-      "k3d dedicated: model turn passed; testing invalid credential rejection and recovery.\n",
-    );
+    process.stderr.write("k3d dedicated: model turn passed; testing normal workspace flows.\n");
+    await assertDedicatedAgentsInstructionsInFreshSession(topology);
+    await assertDedicatedWorkspaceRuntime(context, topology, harnessWorkspaceClaim, privateClaim);
+    await assertGatewayPodContinuity(context, topology, privateClaim);
+    process.stderr.write("k3d dedicated: storage flows passed; testing credential recovery.\n");
     await assertInvalidHarnessAuthStaysUnready(context, topology);
     process.stderr.write(
       "k3d dedicated: credential recovery passed; testing legacy binding rejection.\n",
     );
     await assertLegacyModelSecretBindingDenied(topology);
-    process.stderr.write(
-      "k3d dedicated: legacy binding rejected; testing instructions and retained state.\n",
-    );
-    await assertDedicatedAgentsInstructionsInFreshSession(topology);
-    await assertGatewayPodContinuity(context, topology, privateClaim);
-    await assertDedicatedSharedWorkspaceRuntime(
-      context,
-      topology,
-      sharedWorkspaceClaim,
-      privateClaim,
-    );
     process.stderr.write("k3d dedicated: retained state and Pod replacement passed.\n");
   },
 );

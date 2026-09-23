@@ -21,6 +21,22 @@ and asks a fresh native session for the marker supplied only through
 model consumption. Proxy authentication denials, key rotation, and cert-manager
 leaf renewal under the same CA are separate required assertions.
 
+The same case exercises Compute's dedicated `/node` route with the published
+Gateway client and a temporary Ed25519 identity. It issues a node-only setup
+code through the administrative route, pairs and reconnects without the Envoy
+API key, rejects forged administrative headers and operator-role escalation,
+then stops the Agent through OCC and waits for both routes and the node policy
+to disappear. This verifies routing and native protocol authentication, not
+the Harness's node process, credential persistence, CA delivery or egress.
+The node-route assertions remain pending until this real Envoy case runs;
+conformance and rendered resources do not prove policy override behavior.
+
+The pinned Envoy Gateway v1.6.7
+[SecurityPolicy translator](https://github.com/envoyproxy/gateway/blob/v1.6.7/internal/gatewayapi/securitypolicy.go)
+applies route policies before Gateway policies and skips an already configured
+route. A route policy containing only `targetRefs` therefore replaces inherited
+API-key authentication; it does not merge with the Gateway policy.
+
 For CI-shaped setup, let `prepare.mjs` install the pinned Gateway API,
 cert-manager v1.18.4, and Envoy Gateway v1.6.7 controllers, then create the
 disposable test CA before `run-tests.mjs` invokes the case:
@@ -53,11 +69,13 @@ k3s storage-version ownership instead of attempting an unsafe CRD downgrade.
 
 The focused fixture requires a supported local container engine. Preparation
 builds and imports the current controller image, then the fixture runs the
-production OCC API inside the disposable cluster. The API uses Compute's
+production OCC API and worker inside the disposable cluster with separate
+ServiceAccounts. Both use Compute's
 standard Envoy Service DNS URL and HTTPS port; no test-only endpoint port or
 host publisher is involved. A loopback port-forward exposes only the API to the
-local OCC console and test coordinator. The worker remains in the Node test
-process, so this is not a Helm-installed controller proof. The test applies the
+local OCC console and test coordinator. The coordinator reads real worker logs
+for lifecycle assertions. The fixture does not install the full controller Helm
+release. The test applies the
 chart's Gateway policies, rotates the listener key and API-side projected key,
 and verifies certificate renewal without restarting OCC.
 

@@ -1,6 +1,7 @@
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { readFile, realpath } from "node:fs/promises";
 import { createRequire, findPackageJSON } from "node:module";
+import { X509Certificate } from "node:crypto";
 import { dirname, extname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { loadYaml } from "@kubernetes/client-node";
@@ -39,6 +40,8 @@ import {
 } from "../drivers/secret/kubernetes/index.ts";
 import { type LoggingConfiguration, operationalLoggingConfiguration } from "../logging.ts";
 import { OCCPluginDriver, CodexPluginDriver } from "../drivers/plugin/index.ts";
+import { createGatewayNodeEnrollment } from "../gateway/node-enrollment-client.ts";
+import { readWorkspaceFilesApiKey } from "./workspace-files.ts";
 import { GitHubRepoDriver } from "../drivers/repo/github/driver.ts";
 import { composeRepoDriver } from "./repository-credentials/platform.ts";
 
@@ -728,6 +731,30 @@ export async function loadInstallationConfiguration(options: {
         implementation: compute.implementation,
         lifecycleDrivers: [configurationDriver],
         ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
+        nodeEnrollment: createGatewayNodeEnrollment(() =>
+          readWorkspaceFilesApiKey(
+            nonempty(environment.OCC_GATEWAY_API_KEY_PATH, "OCC_GATEWAY_API_KEY_PATH"),
+          ),
+        ),
+        readNodeCa: async () => {
+          const path = environment.NODE_EXTRA_CA_CERTS;
+          if (path === undefined) {
+            return undefined;
+          }
+          const bundle = await readFile(path, "utf8");
+          const certificates = bundle.match(
+            /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g,
+          );
+          if (
+            certificates === null ||
+            certificates.reduce((rest, certificate) => rest.replace(certificate, ""), bundle).trim()
+          ) {
+            throw new Error("The Harness trust bundle must contain only public CA certificates.");
+          }
+          return certificates
+            .map((certificate) => new X509Certificate(certificate).toString())
+            .join("\n");
+        },
       },
     );
   }

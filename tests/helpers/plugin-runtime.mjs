@@ -1,10 +1,15 @@
 import { createRequire } from "node:module";
 import vm from "node:vm";
-import { PLUGIN_RUNTIME_HELPERS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import {
+  GATEWAY_RUNTIME_ENTRYPOINT,
+  PLUGIN_RUNTIME_HELPERS,
+} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 
 const nodeRequire = createRequire(import.meta.url);
 
 export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
+  const gatewayRuntime =
+    options.workspaceNodeId !== undefined || options.env?.APP_SERVER_URL !== undefined;
   const calls = options.calls ?? [];
   const files = new Map([
     [
@@ -28,11 +33,19 @@ export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
         OPENCLAW_CONFIG_PATH: "/etc/openclaw/openclaw.json",
         HOME: "/home/node",
         ...(options.env ?? {}),
+        ...(options.workspaceNodeId === undefined
+          ? {}
+          : { OPENCLAW_WORKSPACE_NODE_ID: options.workspaceNodeId }),
       },
+      on() {},
     },
     require(specifier) {
       if (specifier === "node:child_process") {
         return {
+          spawn(command, args) {
+            calls.push({ command, args });
+            return { on() {} };
+          },
           spawnSync(command, args, spawnOptions) {
             options.beforeSpawn?.(command, args, sandbox);
             calls.push({ command, args, options: spawnOptions });
@@ -62,11 +75,16 @@ export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
     result: {},
   };
   try {
-    vm.runInNewContext(
-      `${PLUGIN_RUNTIME_HELPERS}
-result.value = installOpenClawPlugins(${JSON.stringify(runtime)}, ${JSON.stringify(options.failures ?? [])});`,
+    const execution = vm.runInNewContext(
+      !gatewayRuntime
+        ? `${PLUGIN_RUNTIME_HELPERS}
+result.value = installOpenClawPlugins(${JSON.stringify(runtime)}, ${JSON.stringify(options.failures ?? [])});`
+        : GATEWAY_RUNTIME_ENTRYPOINT,
       sandbox,
     );
+    if (gatewayRuntime) {
+      return execution.then(() => ({ calls, files }));
+    }
   } catch (error) {
     if (options.captureError === true) {
       return { calls, files, error };

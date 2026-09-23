@@ -1,7 +1,7 @@
 ---
 created: 2026-08-31
 updated: 2026-09-22
-last_updated_session: 01a0c755-0518-7502-a533-64cd7465de15
+last_updated_session: 01a082d6-50c7-7953-808f-7e609f6fc7cb
 ---
 
 # Agent Workspace Files Flow
@@ -17,6 +17,11 @@ A later read or edit authorizes the exact active Agent, derives its private
 endpoint through Compute, and sends one native file RPC through Envoy Gateway.
 This flow ends at setup completion or the bounded live-file response; model
 execution and general revision activation belong to adjacent flows.
+
+The dedicated path in this flow uses the Kubernetes Codex implementation.
+See [shared contracts and the Codex implementation](../reference/drivers/kubernetes-compute/storage-and-credentials.md#shared-contracts-and-the-codex-implementation)
+for the boundary between workspace capabilities and its launcher, paths and
+app-server settings. Dedicated OpenClaw worker execution remains pending.
 
 ## Entry Points
 
@@ -95,12 +100,15 @@ Agent's serialized startup and passes `workspaceSetup` to Compute.
 
 The bundled Drivers deliver inputs to the shared
 `apps/controller/src/drivers/compute/workspace-setup-runtime.ts:WORKSPACE_SETUP_RUNTIME`:
-Kubernetes uses an owned Secret and gateway init container; Docker uses a
+Kubernetes uses an owned Secret and an init container on the workspace owner
+(Gateway for embedded execution; Harness for dedicated execution); Docker uses a
 separate setup container and Agent-owned durable volumes; SSH uses the protected
 exact-Agent directory and remote helper. Delivery does not put document strings
 in container arguments or environment values. Dedicated Harness startup must
 also verify completion before execution. Unsupported workspace placement fails
-instead of writing outside the Agent's managed storage.
+instead of writing outside the Agent's managed storage. Provider-owned Sandbox
+startup cannot carry this init container and rejects workspace setup rather than
+dropping initialization.
 
 The runner checks the exact setup identity and workspace path, rejects links
 and conflicting files, and verifies OpenClaw `2026.9.1` and the optional rendered
@@ -138,18 +146,17 @@ not update the original setup record.
 `apps/controller/src/server.mjs:start` validates the optional absolute
 `OCC_GATEWAY_API_KEY_PATH` before opening the database. Production and
 PostgreSQL development composition bind the selected Compute Driver to
-`createWorkspaceFilesAccess`. The key is API-only; the worker manages routes
-without reading this credential. Node loads any `NODE_EXTRA_CA_CERTS` trust
+`createWorkspaceFilesAccess`. The worker uses the same mounted service key
+for native node enrollment. Node loads any `NODE_EXTRA_CA_CERTS` trust
 bundle at startup.
 
-For the chart's automatic CA, the API Pod waits for cert-manager's generated
-root Secret and receives only its public certificate. It does not receive the
+For the chart's automatic CA, API and worker Pods wait for cert-manager's generated
+root Secret and receive only its public certificate. They do not receive the
 CA signing key. An explicit external issuer uses the configured public CA
 bundle, or Node's existing trust store when no bundle is configured.
 
-There is no per-Agent map. Kubernetes endpoint derivation uses the admitted
-Namespace and Agent IDs plus trusted Installation routing settings. A Driver
-without the optional endpoint capability cannot serve this file feature.
+Kubernetes derives endpoints from admitted Namespace/Agent IDs and Installation
+routing settings. Drivers without endpoint support cannot serve workspace files.
 
 ### 5. OCC admits one exact-Agent file operation
 
@@ -167,12 +174,65 @@ admission and native access.
 ### 6. Compute resolves a route and OCC loads the current key
 
 `apps/controller/src/composition/workspace-files.ts:createWorkspaceFilesAccess`
-uses `ComputeDriver.getGatewayEndpoint(revision)`. Kubernetes returns
-`wss://<hostname>/namespaces/<namespaceId>/agents/<agentId>` without reading
-Kubernetes resources. The optional hostname defaults to the same Service DNS
-name used by Helm, derived from the shared Gateway's name and namespaces.
-Preparation and activation create or repair the route;
-resolution itself does not prove that the gateway is serving.
+uses `ComputeDriver.getGatewayEndpoint(revision)` to resolve
+`wss://<hostname>/namespaces/<namespaceId>/agents/<agentId>`. The default hostname
+matches Helm's Service DNS. Resolution does not prove readiness.
+
+`kubernetes/index.ts:reconcileGatewayRoute` provisions operator routing and a
+separate exact `/node` HTTPRoute and SecurityPolicy for dedicated runtimes.
+Only operator routing allows native admin UI subpaths. Both strip authorization
+and cookies; node routing also strips administrative identity headers, relying
+on native device authentication instead of OCC's key.
+Preparation creates or repairs the node route under the serving revision;
+activation transfers ownership after replacing Gateway. This allows enrollment
+before candidate activation. Stop and retirement remove the exact revision's
+endpoint before its policy, checking ownership and UID. See the
+[node endpoint contract](../reference/gateway-routing.md#native-node-endpoint).
+
+Dedicated runtimes require routing and enrollment wiring before Kubernetes access.
+`prepareWorkspaceNode` uses
+`gateway/node-enrollment-client.ts:createGatewayNodeEnrollment` after Gateway
+readiness. A revision-owned Secret holds the setup code, then the device ID.
+The next reconciliation attaches the node to the Harness; its Deployment uses
+`Recreate` throughout enrollment.
+
+- Readiness requires `file.fetch`, `file.stat`, `file.write`, `file.create`,
+  `dir.list`, `workspace.memory`, and `workspace.skills`. Gateway admits these
+  commands before pairing, preserving explicit denies.
+- The Harness PVC stores revision-specific identity at `/home/node/.openclaw-node`.
+  The nonroot private-state initializer creates it at `0700`; Pod replacement
+  reuses it. Retirement deletes the enrollment Secret; PVC deletion removes identity.
+- `AGENT_WITH_NODE_ENTRYPOINT` runs native `setup --baseline` before supervising
+  Codex and the node under `tini`. It passes admitted bootstrap options, preserves
+  existing edits, and stops on setup failure. Only the node receives its setup
+  code; neither process receives OCC's key. Codex preserves the managed PATH.
+- Activation reads the exact revision's device ID and sets
+  `file-transfer.config.workspaces.main` in runtime configuration before Gateway
+  starts. Candidate preparation preserves the serving binding; losing it fails
+  rather than restoring local reads. The revision ConfigMap remains immutable.
+- Default grants read the four owner documents, `BOOTSTRAP.md`, and `MEMORY.md`;
+  owner writes remain limited to four documents. Enabled `bootstrap-extra-files`
+  adds literal read grants. Explicit policies survive; glob traversal and contained
+  symlinks remain unsupported by defaults.
+- Input grants cover `media/inbound/openclaw-staged-*` and its contents; `file.create`
+  preserves Harness edits. Outputs under `media/outbound/**` are read-only.
+  Binary fetches above 16 MiB remain bounded by caller and node policy. Command
+  admission never substitutes for path authorization.
+
+The chart supplies worker credentials/public trust and Compute installs node
+access to Envoy. Memory uses node duplex with existing native file workers;
+index and embedding configuration stay on Gateway. Skills uses remote discovery,
+reads and policy-checked dependency installation. Each host initializes its own
+image assets; Gateway-provided Skills stay local. See the
+[ownership table](../../specs/30-storage-split-integration.md#where-data-lives).
+Remote channel menus remain deferred to [#241](https://github.com/openclaw/openclaw-enterprise/issues/241).
+
+Only Harness mounts dedicated workspace/generated-image storage. Gateway sessions
+use its private PVC; Codex's existing remote-media reader transfers reply artifacts
+before cleanup. Embedded storage is unchanged. The Harness PVC remains RWX because
+revision preparation precedes predecessor retirement; removing that backend
+requirement needs a separate rollout decision. These contracts require matching
+runtime images; local checks alone do not prove deployed Enterprise acceptance.
 
 The API reads the mounted key for each operation, so new connections pick up
 Secret rotation without an API restart. Missing routing, missing or invalid
@@ -210,10 +270,10 @@ primary Agent `main`. Reads re-check the response content limit and return
 `{ name, content }`; writes return `{ name, size }`. There is no list, delete,
 compare-and-swap, generic RPC, chat bridge, or PostgreSQL file copy.
 
-The Kubernetes PVC retains the native workspace across gateway Pod replacement.
+The Harness PVC retains the dedicated workspace across Pod replacement.
 Certificate renewal under the same trusted CA affects new WSS connections
-without restarting OCC. Root-CA replacement requires restarting the API with
-its updated trust bundle.
+without restarting OCC. Root-CA replacement follows the
+[trust rotation requirements](../reference/gateway-routing.md#tls-and-certificate-lifecycle).
 
 Writes audit only the Agent resource, authorization action, outcome, reason
 when present, and file name. If a dispatched write has an unknown outcome,
@@ -261,17 +321,62 @@ replays it. The native client closes in the operation's cleanup path.
 
 ## Changelog
 
-- 2026-09-22 04:18: Added creation-time staging, native setup before execution, completion and retry boundaries, and live-edit handoff. (01a0c755-0518-7502-a533-64cd7465de15 - f3dbdd41c8f3b49573d1353a4b06ce510ee43a56)
+- 2026-09-22 04:18: Added creation-time workspace setup and completion boundaries. (01a0c755-0518-7502-a533-64cd7465de15 - f3dbdd41c8f3b49573d1353a4b06ce510ee43a56)
 
-- 2026-09-18 00:02: Confirmed that Compute returns the standard private Service endpoint; local routing proof now runs OCC inside Kubernetes instead of adding a host-only port seam. (authoring-run/245cc03e-4bd3-48b3-ba17-8d5e2768262d - 782017d5405e156116bd31e78fa744ef20c540cc)
+- 2026-09-21 14:26: Documented node admission and nonroot startup. (01a082d6-50c7-7953-808f-7e609f6fc7cb - a34328eb09ad9374d856a178af8cb03f5b0dfa57)
 
-- 2026-09-01 17:26: Replaced per-Agent endpoint maps with Compute-owned private Envoy routes, API-key authentication, and cert-manager certificate renewal. (01a04ae1-7ba7-7372-88a4-488e01f690ae - 3e26931d31ba03a7fa187c12009867c636a86041)
+- 2026-09-20 19:37: Combined admin and node routing. (01a082d6-50c7-7953-808f-7e609f6fc7cb - afe3861dfec5d288fd5a4651a9e052e935e6493d)
 
-- 2026-09-01 12:03: Documented the operator-configured endpoint map, API startup loading, Helm ConfigMap mount, and private WSS proxy boundary. (NOT_IN_SPEC)
-- 2026-09-01 12:03: Added the trusted-proxy native Configuration precondition that omits gateway auth tokens and recorded Docker/Kubernetes automatic token projection omission for that explicit mode. (NOT_IN_SPEC)
-- 2026-09-01 12:03: Clarified Docker tmpfs workspace lifetime and Kubernetes PVC workspace-file persistence proof boundaries. (NOT_IN_SPEC)
-- 2026-09-01 13:24: Replaced the superseded generic gateway administration flow with the current four-file workspace route and recorded the missing WSS target provisioning gap. (NOT_IN_SPEC)
-- 2026-09-01 08:38: Replaced the superseded native-device enrollment flow with the current fixed CLI execution path through Kubernetes exec. (cody/01a05d9c-4cb5-7602-8df5-56d7f8309f44 - 7b4a819f02d6950e8cc2a2e08eb29c2f668493ad)
-- 2026-08-31 16:49: Documented canonical private-key storage with derived native identity; the independent PVC identity pin remains unchanged. (cody/01a04ae1-7ba7-7372-88a4-488e01f690ae - f2e164c)
-- 2026-08-31 12:52: Corrected the native SDK pin and documented manual pairing pause, single helper barrier, and one reconnect under the enrollment deadline. (cody/01a04ae1-7ba7-7372-88a4-488e01f690ae - 61542d0)
-- 2026-08-31 12:41: Documented bundled Kubernetes native gateway enrollment, controller-owned token readiness, Agent-scoped dispatch, and unknown-outcome handling. (cody/01a04ae1-7ba7-7372-88a4-488e01f690ae - 61542d0)
+- 2026-09-19 15:37: Required dedicated routing and plugin readiness. (01a082d6-50c7-7953-808f-7e609f6fc7cb - 30878c9b0f830126e8433b76d1c7174227d311b6)
+
+- 2026-09-18 14:15: Clarified Skill ownership and menu deferral. (01a082d6-50c7-7953-808f-7e609f6fc7cb - 56e4fa74eacb0c411f51353f4f726444fc572336)
+
+- 2026-09-18 13:22: Reused revision-specific Harness identity storage. (01a082d6-50c7-7953-808f-7e609f6fc7cb - e257c4d96934895de7d3e06980dddce05ae19725)
+
+- 2026-09-18 00:02: Used in-cluster endpoint verification. (authoring-run/245cc03e-4bd3-48b3-ba17-8d5e2768262d - 782017d5405e156116bd31e78fa744ef20c540cc)
+- 2026-09-17 20:24: Separated Gateway sessions and Harness storage. (authoring-run/81318408-6a1f-4628-b3f2-04ab723554c8 - 14ad14c04deeeaa79f325b14d492ab13730adc7f)
+
+- 2026-09-17 20:10: Initialized assets from each host image. (authoring-run/81318408-6a1f-4628-b3f2-04ab723554c8 - 14ad14c04deeeaa79f325b14d492ab13730adc7f)
+
+- 2026-09-17 20:00: Added remote Skills commands and grants. (authoring-run/81318408-6a1f-4628-b3f2-04ab723554c8 - 14ad14c04deeeaa79f325b14d492ab13730adc7f)
+
+- 2026-09-17 19:43: Added remote Memory commands and grants. (authoring-run/81318408-6a1f-4628-b3f2-04ab723554c8 - 14ad14c04deeeaa79f325b14d492ab13730adc7f)
+
+- 2026-09-17 19:09: Clarified ordinary-flow completion gates. (authoring-run/aaa352ba-dcbd-49b1-b031-0580d511f561 - 14ad14c04deeeaa79f325b14d492ab13730adc7f)
+
+- 2026-09-17 13:18: Connected Codex reply-artifact reads. (authoring-run/d81f8dbd-ab58-4115-bad4-7d4d50382e04 - 14ad14c04deeeaa79f325b14d492ab13730adc7f)
+
+- 2026-09-17 13:13: Granted literal extra bootstrap reads. (authoring-run/2a92b4f3-ac86-4352-a64a-3a0126288787 - 14ad14c04deeeaa79f325b14d492ab13730adc7f)
+
+- 2026-09-17 13:08: Connected attachment readiness and enrollment. (authoring-run/545cf8dc-f67c-4e84-aa23-e80359fea1d3 - 14ad14c04deeeaa79f325b14d492ab13730adc7f)
+
+- 2026-09-17 06:09: Updated binary output-read dependency. (authoring-run/7783310f-9f59-4cd0-9109-ca74877c066f - 14ad14c04deeeaa79f325b14d492ab13730adc7f)
+
+- 2026-09-17 05:35: Added output-folder read grant. (authoring-run/999ece5a-22b2-40a7-80fa-7d0d1f35bda2 - 14ad14c04deeeaa79f325b14d492ab13730adc7f)
+
+- 2026-09-17 05:13: Added attachment staging-directory read grant. (authoring-run/e4b0b1f2-63ce-4291-8214-aa218ba984aa - 14ad14c04deeeaa79f325b14d492ab13730adc7f)
+
+- 2026-09-17 05:01: Connected restricted attachment commands. (authoring-run/87bd4d73-3f20-4949-8db1-54a3691ca4fe - 14ad14c04deeeaa79f325b14d492ab13730adc7f)
+
+- 2026-09-17 03:44: Enabled bounded directory listing. (authoring-run/e253e9b6-4a46-4c3c-84e6-f2f8ab34cc91 - 14ad14c04deeeaa79f325b14d492ab13730adc7f)
+
+- 2026-09-17 03:35: Initialized Harness before node startup. (authoring-run/b75fab11-a672-432b-a966-61bb491af2b4 - 14ad14c04deeeaa79f325b14d492ab13730adc7f)
+
+- 2026-09-17 03:24: Traced revision-owned workspace binding. (authoring-run/7804ba57-dbe8-4a75-8a04-b02ff9f03b38 - 14ad14c04deeeaa79f325b14d492ab13730adc7f)
+
+- 2026-09-17 03:13: Added worker trust and node egress. (authoring-run/be0c5601-ea50-414b-a5f7-fdbc2aa6ef0d - 14ad14c04deeeaa79f325b14d492ab13730adc7f)
+
+- 2026-09-17 02:54: Traced Compute enrollment and route repair. (authoring-run/9238ab38-287b-43d6-818f-132a2aeab7df - 14ad14c04deeeaa79f325b14d492ab13730adc7f)
+
+- 2026-09-17 01:36: Added exact-owned native node routes. (authoring-run/e63c5d56-929f-40cb-9b31-e80f856690ca - 14ad14c04deeeaa79f325b14d492ab13730adc7f)
+
+- 2026-09-01 17:26: Adopted Compute-owned Envoy routes. (01a04ae1-7ba7-7372-88a4-488e01f690ae - 3e26931d31ba03a7fa187c12009867c636a86041)
+
+- 2026-09-01 12:03: Documented endpoint-map configuration. (NOT_IN_SPEC)
+- 2026-09-01 12:03: Clarified trusted-proxy authentication. (NOT_IN_SPEC)
+- 2026-09-01 12:03: Clarified workspace persistence boundaries. (NOT_IN_SPEC)
+- 2026-09-01 13:24: Replaced generic administration flow. (NOT_IN_SPEC)
+- 2026-09-01 08:38: Documented bounded Kubernetes execution. (cody/01a05d9c-4cb5-7602-8df5-56d7f8309f44 - 7b4a819f02d6950e8cc2a2e08eb29c2f668493ad)
+- 2026-08-31 16:49: Documented private-key storage. (cody/01a04ae1-7ba7-7372-88a4-488e01f690ae - f2e164c)
+- 2026-08-31 12:52: Updated SDK and pairing behavior. (cody/01a04ae1-7ba7-7372-88a4-488e01f690ae - 61542d0)
+- 2026-08-31 12:41: Documented enrollment and uncertain outcomes. (cody/01a04ae1-7ba7-7372-88a4-488e01f690ae - 61542d0)

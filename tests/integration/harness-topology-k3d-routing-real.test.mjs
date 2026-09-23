@@ -9,6 +9,7 @@ import {
   kubectl,
   requiresGatewayRouting,
   resource,
+  waitFor,
   waitForReadyGatewayPod,
 } from "../helpers/harness-topology-k3d-real.mjs";
 
@@ -30,22 +31,35 @@ test(
         topology.placement,
       );
       for (const verb of ["get", "create", "patch", "delete"]) {
-        const denied = await kubectl(
-          "auth",
-          "can-i",
-          verb,
+        for (const resourceName of [
           "httproutes.gateway.networking.k8s.io",
-          "--namespace",
-          topology.placement,
-          `--as=system:serviceaccount:${topology.platformNamespace}:${topology.apiAccount}`,
-        ).catch(({ stdout }) => stdout);
-        assert.equal(denied.trim(), "no", "the OCC API must not manage tenant HTTPRoutes");
+          "securitypolicies.gateway.envoyproxy.io",
+        ]) {
+          const denied = await kubectl(
+            "auth",
+            "can-i",
+            verb,
+            resourceName,
+            "--namespace",
+            topology.placement,
+            `--as=system:serviceaccount:${topology.platformNamespace}:${topology.apiAccount}`,
+          ).catch(({ stdout }) => stdout);
+          assert.equal(
+            denied.trim(),
+            "no",
+            "the OCC API must not manage tenant routes or policies",
+          );
+        }
       }
       const proof = await assertRoutedWorkspaceFilesThroughOcc(topology, connection);
       context.diagnostic(
         "Real Envoy and Compute-created HTTPRoute passed four OCC file writes/reads and fresh native model consumption without API restart.",
       );
       await connection.assertSecurity();
+      await connection.assertNodeAuthentication();
+      context.diagnostic(
+        "Compute enrollment observed native pairing and reconnect; missing attachment upload support failed readiness. Forged proxy identity and operator escalation were denied.",
+      );
       await connection.rotateApiKey(() => assertRoutedWorkspaceFileReads(topology, proof.files));
       await assertRoutedWorkspaceFileReads(topology, proof.files);
       const certificates = await connection.renewCertificate();
@@ -80,9 +94,39 @@ test(
       assert.deepEqual(routeAfter.spec, routeBefore.spec);
       await assertRoutedWorkspaceFileReads(topology, proof.files);
       await assertRoutedWorkspaceModelTurn(topology, connection, proof.marker);
+      await connection.assertNodeAuthentication();
       context.diagnostic(
         "Gateway Pod UID changed; unchanged route served four persisted files and a second fresh model session.",
       );
+      // Stop through OCC so the normal worker must remove both serving routes
+      // and the node policy, rather than relying on namespace teardown.
+      const stopped = await topology.request(
+        "POST",
+        `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}/stop`,
+      );
+      assert.equal(stopped.status, 202, JSON.stringify(stopped.error));
+      await waitFor("worker to remove stopped Agent routing", async () => {
+        for (const [kind, name] of [
+          ["httproute", topology.gatewayServiceName],
+          ["httproute", `${topology.gatewayServiceName}-node`],
+          ["securitypolicy", `${topology.gatewayServiceName}-node`],
+        ]) {
+          const remaining = await kubectl(
+            "get",
+            kind,
+            name,
+            "--namespace",
+            topology.placement,
+            "--ignore-not-found=true",
+            "-o",
+            "name",
+          );
+          if (remaining.trim()) {
+            return undefined;
+          }
+        }
+        return true;
+      });
     } catch (error) {
       // Emit the failure before Kubernetes teardown so the live run can be diagnosed promptly.
       process.stderr.write(`Private routing proof failed: ${error.message}\n`);

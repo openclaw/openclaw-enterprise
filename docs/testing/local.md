@@ -41,6 +41,18 @@ Account-management fixtures exercise ownership and failure handling. They do
 not prove OS account isolation, SSH reachability, real systemd, util-linux
 `flock`, or real OpenClaw.
 
+`workspace-node-supervisor` runs the Kubernetes entrypoint with real fixture
+processes on Linux. It checks independent restarts and descendant termination,
+not native node pairing or Codex execution. It is skipped on macOS because
+Darwin's process-group signaling differs. When running it in a Linux container,
+use `/usr/bin/tini -s -- node --test tests/conformance/workspace-node-supervisor.test.mjs`
+as in the Harness command; the init process must reap orphaned descendants.
+The runtime-image initialization case separately runs native `setup --baseline`
+through the Harness entrypoint, checking document creation before either child
+starts, preservation of owner edits on restart, the bootstrap opt-out, and
+startup failure on invalid native initialization config. It substitutes the long-lived
+node and Codex bodies, so it does not prove pairing or model execution.
+
 The local [integration tests](../../tests/integration) include these groups:
 
 - `occ-api`, `configuration-controller`, `secret-api`, and `service-api-keys`:

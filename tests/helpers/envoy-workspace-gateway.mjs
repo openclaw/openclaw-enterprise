@@ -212,6 +212,24 @@ export async function createEnvoyWorkspaceGatewayPlan(context, { platformNamespa
           });
           await assertDirectGatewayPeerDenied(context, topology, helpers, envoyService);
         },
+        async assertNodeAuthentication() {
+          const name = `${topology.gatewayServiceName}-node`;
+          await helpers.waitFor("Compute-created native node route policy acceptance", async () => {
+            const policy = await helpers.resource("securitypolicy", name, topology.placement);
+            return policy.status?.ancestors?.some((ancestor) =>
+              ancestor.conditions?.some(
+                ({ type, status }) => type === "Accepted" && status === "True",
+              ),
+            );
+          });
+          await probe({
+            action: "node-authentication",
+            url: gatewayUrl,
+            apiKey,
+            gatewayIdentity,
+            gatewayIdentityHeader,
+          });
+        },
         async renewCertificate() {
           const previous = await gatewayServedCertificate(probe, gatewayUrl);
           await helpers.kubectl(

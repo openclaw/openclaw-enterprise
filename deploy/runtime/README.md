@@ -56,6 +56,31 @@ references. Follow [Build and publish production images](../../docs/guides/deplo
 for the controller and runtime build commands, registry publishing, and digest
 configuration.
 
+## Select a storage-split test image
+
+The default `2026.9.1` packages predate paired-node attachment, Memory and Skills
+support. For dedicated storage-split tests, both Gateway and Harness images must
+contain the implementation merged through OpenClaw commit
+`20db76a79212c7d0c4f2106fea4d61fdce9972a3`, or a verified descendant, with compatible
+plugins. The complete merged OC inventory and remaining Enterprise acceptance
+are tracked in [#76](https://github.com/openclaw/openclaw-enterprise/issues/76).
+Do not infer package publication from the source merge or select an unverified
+release number.
+
+The split-storage runtime target is OpenClaw `2026.9.5` with those merged
+interfaces. Updating the published npm pins, compatible plugins, creation-time
+setup version and rendered workspace defaults is a separate follow-up once that
+release is available. Keep this recipe on the existing npm installation path;
+this PR does not add an OpenClaw source build or release pipeline. The default
+`2026.9.1` image is not a split-storage deployment candidate.
+
+An unmerged Enterprise PR can supply a candidate controller build for a disposable
+staging environment. Record its exact commit and the selected runtime image
+digests; PR merge status is not runtime verification. Use the existing
+[Kubernetes test procedures](../../docs/testing/kubernetes.md) for explicit image
+selection and proof. The npm-only recipe above does not itself build an OpenClaw
+Git commit.
+
 ## Rebuild an existing image
 
 `scripts/dev-up` reuses the configured image tag and builds the default

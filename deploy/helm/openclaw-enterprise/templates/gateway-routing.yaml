@@ -153,14 +153,17 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: openclaw-enterprise-api-envoy-egress
+  name: openclaw-enterprise-controller-envoy-egress
   namespace: {{ .Release.Namespace }}
 spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: openclaw-enterprise
       app.kubernetes.io/instance: {{ .Release.Name }}
-      app.kubernetes.io/component: api
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [api, worker]
   policyTypes: [Egress]
   egress:
     - to:
@@ -201,7 +204,16 @@ spec:
             matchLabels:
               app.kubernetes.io/name: openclaw-enterprise
               app.kubernetes.io/instance: {{ .Release.Name }}
-              app.kubernetes.io/component: api
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values: [api, worker]
+        - namespaceSelector:
+            matchLabels:
+              openclaw-enterprise.io/gateway: {{ $routeNamespaceLabel }}
+          podSelector:
+            matchLabels:
+              openclaw.dev/workload-role: agent
       ports:
         - protocol: TCP
           port: {{ $routing.envoyHttpsTargetPort }}

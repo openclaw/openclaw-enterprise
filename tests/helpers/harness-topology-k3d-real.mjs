@@ -2,6 +2,8 @@ import { defaultAgentModel } from "../../apps/controller/src/console/agents/star
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { once } from "node:events";
+import { createInterface } from "node:readline";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { tmpdir } from "node:os";
@@ -93,16 +95,11 @@ const startupFailurePluginId = "codex-plugin:linear@openai-curated-remote";
 const deniedPort = 18791;
 const sharedWorkspaceVolumeName = "openclaw-workspace";
 const sharedWorkspaceClaimSize = "40Gi";
-const sharedWorkspaceSubPaths = Object.freeze([
-  "bundled-skills",
-  "generated-images",
-  "plugin-skills",
-  "sessions",
-  "workspace",
-]);
+const harnessWorkspaceSubPaths = Object.freeze(["generated-images", "workspace"]);
 const executeFile = promisify(execFile);
 const {
   kubectl,
+  kubectlArguments,
   applyManifest,
   resource,
   resources,
@@ -277,7 +274,13 @@ async function attachPostgresToK3d(context) {
   return address;
 }
 
-async function createScopedController(context, identifier, platformNamespace, kubeconfig) {
+async function createScopedController(
+  context,
+  identifier,
+  platformNamespace,
+  kubeconfig,
+  gatewayRouting,
+) {
   const suffix = hash(identifier);
   const account = "openclaw-production-controller";
   const namespaceRole = `oce-production-namespaces-${suffix}`;
@@ -324,10 +327,30 @@ async function createScopedController(context, identifier, platformNamespace, ku
     "--type=json",
     "--patch",
     JSON.stringify([
+      // Match the routed Helm worker: Compute persists node enrollment Secrets
+      // only inside the tenant namespaces that bind this role.
+      ...(gatewayRouting
+        ? [
+            {
+              op: "add",
+              path: "/rules/-",
+              value: {
+                apiGroups: [""],
+                resources: ["secrets"],
+                verbs: ["get", "create", "update", "delete"],
+              },
+            },
+          ]
+        : []),
       {
         op: "add",
         path: "/rules/-",
         value: { apiGroups: [""], resources: ["pods"], verbs: ["get", "list", "watch"] },
+      },
+      {
+        op: "add",
+        path: "/rules/-",
+        value: { apiGroups: [""], resources: ["pods/proxy"], verbs: ["get"] },
       },
       {
         op: "add",
@@ -344,6 +367,15 @@ async function createScopedController(context, identifier, platformNamespace, ku
         value: {
           apiGroups: ["gateway.networking.k8s.io"],
           resources: ["httproutes"],
+          verbs: ["get", "create", "patch", "delete"],
+        },
+      },
+      {
+        op: "add",
+        path: "/rules/-",
+        value: {
+          apiGroups: ["gateway.envoyproxy.io"],
+          resources: ["securitypolicies"],
           verbs: ["get", "create", "patch", "delete"],
         },
       },
@@ -398,13 +430,14 @@ async function createScopedController(context, identifier, platformNamespace, ku
   };
 }
 
-async function startInClusterControllerApi(
+async function startInClusterControllers(
   context,
   {
     apiConfiguration,
     authBaseURL,
     controller,
     controllerPort,
+    events,
     nativeAdminDomain,
     nativeAdminSharedCookieDomain,
     platformNamespace,
@@ -661,6 +694,77 @@ async function startInClusterControllerApi(
       },
     ],
   };
+  // Use the production worker entrypoint inside the same network as its private
+  // Gateway route, with the worker's own identity and only its required mounts.
+  const apiPodSpec = manifests.items.find(({ kind }) => kind === "Deployment").spec.template.spec;
+  const apiContainer = apiPodSpec.containers[0];
+  const workerName = "openclaw-enterprise-worker";
+  const workerLabels = { ...labels, "app.kubernetes.io/component": "worker" };
+  const workerVolumes = ["installation", "gateway-api-key", "gateway-ca"];
+  manifests.items.push({
+    apiVersion: "apps/v1",
+    kind: "Deployment",
+    metadata: { name: workerName, namespace: platformNamespace },
+    spec: {
+      replicas: 1,
+      selector: { matchLabels: workerLabels },
+      template: {
+        metadata: { labels: workerLabels },
+        spec: {
+          serviceAccountName: controller.account,
+          automountServiceAccountToken: true,
+          securityContext: apiPodSpec.securityContext,
+          containers: [
+            {
+              name: "worker",
+              image: controllerImage,
+              imagePullPolicy: "IfNotPresent",
+              args: ["apps/controller/src/worker.mjs"],
+              securityContext: apiContainer.securityContext,
+              resources: apiContainer.resources,
+              env: [
+                ...apiContainer.env.filter(({ name }) =>
+                  [
+                    "NODE_ENV",
+                    "OCC_CONFIG_PATH",
+                    "OCC_DATABASE_URL",
+                    "OCC_GATEWAY_API_KEY_PATH",
+                    "NODE_EXTRA_CA_CERTS",
+                  ].includes(name),
+                ),
+                { name: "OCC_WORKER_READINESS_PATH", value: "/var/run/openclaw/ready" },
+                { name: "OCC_WORKER_POLL_INTERVAL_MS", value: "50" },
+                { name: "OCC_WORKER_LEASE_DURATION_MS", value: "60000" },
+                { name: "OCC_WORKER_MAX_ATTEMPTS", value: "30" },
+              ],
+              volumeMounts: [
+                ...apiContainer.volumeMounts.filter(({ name }) => workerVolumes.includes(name)),
+                { name: "worker-readiness", mountPath: "/var/run/openclaw" },
+              ],
+              readinessProbe: {
+                exec: {
+                  command: ["node", "scripts/production-healthcheck.mjs", "worker", "ready"],
+                },
+              },
+              livenessProbe: {
+                exec: { command: ["node", "scripts/production-healthcheck.mjs", "worker"] },
+              },
+            },
+          ],
+          volumes: [
+            ...apiPodSpec.volumes.filter(({ name }) => workerVolumes.includes(name)),
+            { name: "worker-readiness", emptyDir: { medium: "Memory", sizeLimit: "1Mi" } },
+          ],
+        },
+      },
+    },
+  });
+  const workerIsolation = structuredClone(
+    manifests.items.find(({ kind }) => kind === "NetworkPolicy"),
+  );
+  workerIsolation.metadata.name = `${workerName}-isolation`;
+  workerIsolation.spec.podSelector.matchLabels = workerLabels;
+  manifests.items.push(workerIsolation);
   await applyManifest(JSON.stringify(manifests), {
     redactions: [databaseUrl, authSecret, workspaceGateway.apiKey],
   });
@@ -687,7 +791,81 @@ async function startInClusterControllerApi(
     `${controllerPort ?? 0}:18080`,
   );
   context.after(() => forwarding.stop());
-  return { pod: pods[0], url: forwarding.url };
+  await kubectl(
+    "wait",
+    "--namespace",
+    platformNamespace,
+    "--for=condition=Available",
+    `deployment/${workerName}`,
+    "--timeout=180s",
+  );
+  const logs = spawn(
+    "kubectl",
+    kubectlArguments([
+      "logs",
+      "--namespace",
+      platformNamespace,
+      `deployment/${workerName}`,
+      "--container=worker",
+      "--follow=true",
+    ]),
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  let logError;
+  let stopping = false;
+  logs.once("error", (error) => {
+    logError = error;
+  });
+  const logExit = new Promise((resolve) =>
+    logs.once("close", (code) => {
+      if (!stopping) {
+        logError ??= new Error(`Worker log stream exited unexpectedly (${code}).`);
+      }
+      resolve();
+    }),
+  );
+  logs.stderr.resume();
+  const lines = createInterface({ input: logs.stdout });
+  lines.on("line", (line) => {
+    try {
+      const event = JSON.parse(line);
+      if (event.service === "occ-worker" && typeof event.event === "string") {
+        events.push(event);
+      }
+    } catch {
+      logError ??= new Error("Worker emitted an invalid structured log record.");
+    }
+  });
+  const worker = {
+    async stop() {
+      if (stopping) {
+        return;
+      }
+      stopping = true;
+      try {
+        await kubectl(
+          "delete",
+          "deployment",
+          workerName,
+          "--namespace",
+          platformNamespace,
+          "--ignore-not-found=true",
+          "--wait=true",
+          "--timeout=120s",
+        );
+      } finally {
+        logs.kill("SIGTERM");
+        await logExit;
+        lines.close();
+      }
+      if (logError !== undefined) {
+        throw logError;
+      }
+    },
+  };
+  context.after(() => worker.stop());
+  await once(logs, "spawn");
+  return { pod: pods[0], url: forwarding.url, worker };
 }
 
 function installationConfiguration(authentication, platformNamespace, slack, options = {}) {
@@ -703,6 +881,8 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
   configuration.drivers.configuration.id = "configuration-kubernetes-production";
   configuration.drivers.compute.id = "compute-kubernetes-production";
   configuration.drivers.plugin = { id: "codex-plugin", configuration: {} };
+  // The real Gateway loads its plugins during the first model request.
+  configuration.drivers.compute.configuration.resources.gateway.limits.memory = "2Gi";
   const pluginStatusProxyCidrs = process.env.OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS;
   if (pluginStatusProxyCidrs !== undefined && pluginStatusProxyCidrs.trim().length > 0) {
     configuration.drivers.compute.configuration.network.pluginStatusProxySourceCidrs =
@@ -716,7 +896,8 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
     "requests.cpu": "2",
     "requests.memory": "2Gi",
     "limits.cpu": "8",
-    "limits.memory": "4Gi",
+    // Two embedded Agents plus one replacement Gateway may coexist during cutover.
+    "limits.memory": "6Gi",
   };
   configuration.drivers.compute.configuration.servicePrincipalCredentials.expirationSeconds = 3_600;
   if (options.gatewayRouting !== undefined) {
@@ -771,6 +952,17 @@ function nativeConfiguration(harnessId, slack, options = {}) {
     configuration.tools = {
       allow: ["*"],
       fs: { workspaceOnly: true },
+    };
+    // Admit the Memory tool owner through the same explicit plugin policy as Codex.
+    configuration.plugins.allow.push("memory-core");
+    // Exercise remote file indexing without projecting the Harness model key into Gateway.
+    configuration.memory = {
+      search: {
+        enabled: true,
+        provider: "none",
+        sources: ["memory"],
+        store: { vector: { enabled: false } },
+      },
     };
   }
   if (slack === undefined) {
@@ -1177,6 +1369,13 @@ async function storedAgent(pool, namespaceId, agentId) {
 async function arrangeProductionTopology(context, mode, slack, options = {}) {
   const loggingObservationStartedAt = Date.now();
   const includeSecretProbes = options.secretLifecycle === true;
+  if (mode === "dedicated") {
+    assert.match(
+      controllerImage ?? "",
+      /^\S+@sha256:[a-f0-9]{64}$/i,
+      "Dedicated storage requires the imported controller image for node enrollment through routing.",
+    );
+  }
   const kubeconfig = await validatePrerequisites();
   const identifier = randomUUID();
   const credentials =
@@ -1192,28 +1391,34 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
   const controllerAuthBaseURL = options.publicOrigin ?? bootstrapAuthBaseURL;
   const gatewayPassword =
     options.gatewayPassword === true ? randomBytes(32).toString("base64url") : undefined;
+  let inClusterWorker;
   const platformNamespace = `oce-production-${mode}-${hash(identifier)}`;
   await kubectl("create", "namespace", platformNamespace);
   context.after(async () => {
-    await kubectl(
-      "delete",
-      "namespace",
-      platformNamespace,
-      "--ignore-not-found=true",
-      "--wait=true",
-      "--timeout=120s",
-    );
+    try {
+      await inClusterWorker?.stop();
+    } finally {
+      await kubectl(
+        "delete",
+        "namespace",
+        platformNamespace,
+        "--ignore-not-found=true",
+        "--wait=true",
+        "--timeout=120s",
+      );
+    }
   });
   const controller = await createScopedController(
     context,
     identifier,
     platformNamespace,
     kubeconfig,
+    mode === "dedicated" || options.workspaceGateway === true,
   );
   // Shared infrastructure and API credentials exist before any Agent is created.
   // The production Compute Driver alone supplies each Agent's route and endpoint.
   let workspaceGateway;
-  if (options.workspaceGateway === true) {
+  if (mode === "dedicated" || options.workspaceGateway === true) {
     const gatewayHelpers = {
       kubectl,
       applyManifest,
@@ -1301,10 +1506,13 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
           environment: { OCC_CONFIG_PATH: startupPath },
         })
       : undefined;
-  const workerDrivers = await loadInstallationConfiguration({
-    mode: "production",
-    environment: { OCC_CONFIG_PATH: workerStartupPath },
-  });
+  const workerDrivers =
+    workspaceGateway === undefined
+      ? await loadInstallationConfiguration({
+          mode: "production",
+          environment: { OCC_CONFIG_PATH: workerStartupPath },
+        })
+      : undefined;
   const observerPool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
   const platformState = new PostgresPlatformState(observerPool);
   let activeInstallation = await platformState.loadInstallation();
@@ -1373,19 +1581,22 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
     createdFreshInstallation = true;
   }
 
+  const events = [];
   let controllerUrl;
   let requestFactory;
   if (workspaceGateway !== undefined) {
-    const controllerApi = await startInClusterControllerApi(context, {
+    const controllerApi = await startInClusterControllers(context, {
       apiConfiguration,
       authBaseURL: controllerAuthBaseURL,
       controller,
       controllerPort: options.controllerPort,
+      events,
       nativeAdminDomain: options.nativeAdmin?.domain,
       nativeAdminSharedCookieDomain: options.nativeAdmin?.sharedCookieDomain,
       platformNamespace,
       workspaceGateway,
     });
+    inClusterWorker = controllerApi.worker;
     controllerApiPod = controllerApi.pod;
     controllerUrl = controllerApi.url;
     requestFactory = (requestCredentials) =>
@@ -1428,7 +1639,6 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
   let adminRequest = await requestFactory(credentials);
   let request = adminRequest;
   let secretAssignmentPrincipalId;
-  const events = [];
   let namespaceId;
   if (createdFreshInstallation) {
     const namespaces = await adminRequest("GET", "/namespaces");
@@ -1446,17 +1656,19 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
     namespaceId = createdNamespace.data.id;
   }
   placement = kubernetesNamespaceName(namespaceId);
-  workerPool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
-  worker = createControllerWorker({
-    mode: "production",
-    pool: workerPool,
-    drivers: workerDrivers,
-    pollIntervalMs: 50,
-    leaseDurationMs: 60_000,
-    maxAttempts: 30,
-    emit: (event) => events.push(event),
-  });
-  await worker.start();
+  if (workspaceGateway === undefined) {
+    workerPool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
+    worker = createControllerWorker({
+      mode: "production",
+      pool: workerPool,
+      drivers: workerDrivers,
+      pollIntervalMs: 50,
+      leaseDurationMs: 60_000,
+      maxAttempts: 30,
+      emit: (event) => events.push(event),
+    });
+    await worker.start();
+  }
 
   // The real production worker must remain pending until an operator grants this exact tenant.
   await waitFor(`the production worker to create tenant namespace ${placement}`, async () => {
@@ -1508,8 +1720,8 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
     ).catch(({ stdout }) => stdout);
     assert.equal(
       secretAccess.trim(),
-      "no",
-      `the production worker must never receive Secret ${verb} access`,
+      workspaceGateway === undefined ? "no" : "yes",
+      `worker Secret ${verb} access must match the node enrollment role`,
     );
 
     const apiAccess = await kubectl(
@@ -1521,7 +1733,7 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
       placement,
       `--as=system:serviceaccount:${platformNamespace}:${controller.apiAccount}`,
     );
-    assert.equal(apiAccess.trim(), "yes", `only the production API gains Secret ${verb} access`);
+    assert.equal(apiAccess.trim(), "yes", `the production API requires Secret ${verb} access`);
 
     // Independent operator bootstrap credentials remain separate from application identities.
     const operatorAccess = await kubectl(
@@ -1533,6 +1745,19 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
       placement,
     );
     assert.equal(operatorAccess.trim(), "yes", `the external test operator must authorize ${verb}`);
+  }
+
+  for (const verb of ["list", "patch"]) {
+    const denied = await kubectl(
+      "auth",
+      "can-i",
+      verb,
+      "secrets",
+      "--namespace",
+      placement,
+      `--as=system:serviceaccount:${platformNamespace}:${controller.account}`,
+    ).catch(({ stdout }) => stdout);
+    assert.equal(denied.trim(), "no", `node enrollment must not grant Secret ${verb} access`);
   }
 
   await waitFor(`the production worker to provision tenant ${placement}`, async () => {
@@ -2598,7 +2823,7 @@ function assertPrivateStateInitContainer(pod) {
         { name: "runtime-state", mountPath: "/home/node" },
         ...(pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway"
           ? [{ name: "openclaw-gateway-state", mountPath: "/gateway-state" }]
-          : []),
+          : [{ name: "openclaw-node-state", mountPath: "/workspace-node-state" }]),
       ],
       [],
       [],
@@ -2636,7 +2861,7 @@ async function assertScopedTenantPvcAccess(topology) {
   );
 }
 
-async function assertDedicatedSharedWorkspaceResources(topology) {
+async function assertDedicatedWorkspaceResources(topology) {
   await assertScopedTenantPvcAccess(topology);
   const claimName = sharedWorkspaceClaimName(topology.agent.id);
   const claim = await resource("persistentvolumeclaim", claimName, topology.placement);
@@ -2647,11 +2872,12 @@ async function assertDedicatedSharedWorkspaceResources(topology) {
   );
   assert.deepEqual(
     [sharedVolumeClaimName(topology.gatewayPod), sharedVolumeClaimName(topology.harnessPod)],
-    [claimName, claimName],
+    [undefined, claimName],
+    "only Harness may mount the workspace claim",
   );
   assert.deepEqual(
     [sharedVolumeSubPaths(topology.gatewayPod), sharedVolumeSubPaths(topology.harnessPod)],
-    [sharedWorkspaceSubPaths, sharedWorkspaceSubPaths],
+    [[], harnessWorkspaceSubPaths],
   );
   return claim;
 }
@@ -2689,7 +2915,9 @@ async function assertGatewayPrivateResources(topology) {
       .map(({ subPath, mountPath }) => [subPath, mountPath]),
     [
       ...gatewayPrivatePaths,
-      ...(topology.mode === "embedded" ? [["workspace", "/home/node/.openclaw/workspace"]] : []),
+      ...(topology.mode === "embedded"
+        ? [["workspace", "/home/node/.openclaw/workspace"]]
+        : [["sessions", "/home/node/.openclaw/agents/main/sessions"]]),
     ],
   );
   if (topology.harnessPod !== undefined) {
@@ -2888,10 +3116,16 @@ async function inspectGatewayPersistence(topology, imageDigest, sessionKey, sess
   );
 }
 
-async function assertRetainedImage(
+async function assertRetainedArtifact(
   topology,
   sessionKey,
-  { expectedId, expectedData = continuityImage, messageSeq } = {},
+  {
+    expectedId,
+    expectedData = continuityImage,
+    messageSeq,
+    expectedType = "image",
+    expectedMimeType = "image/png",
+  } = {},
 ) {
   const deadline = Date.now() + 240_000;
   let lastArtifacts = [];
@@ -2901,7 +3135,7 @@ async function assertRetainedImage(
     lastArtifacts = artifacts.map(artifactSummaryForDiagnostics);
     artifact = artifacts.find(
       ({ type, id, source, messageSeq: artifactMessageSeq }) =>
-        type === "image" &&
+        type === expectedType &&
         /^artifact_[A-Za-z0-9_-]+$/.test(id) &&
         source === "session-transcript" &&
         (expectedId === undefined || id === expectedId) &&
@@ -2911,9 +3145,26 @@ async function assertRetainedImage(
       await delay(750);
     }
   }
+  if (artifact === undefined) {
+    const history = await gatewayCall(topology, "chat.history", { sessionKey, limit: 10 });
+    const observed = history.messages.map((message) => ({
+      role: message.role,
+      text: messageText(message).slice(0, 800),
+      seq: message.__openclaw?.seq,
+      contentTypes: Array.isArray(message.content)
+        ? message.content.map((block) => block.type)
+        : [],
+    }));
+    assertNoSecretMaterial(
+      observed,
+      [topology.gatewayToken, topology.gatewayPassword, process.env.OPENAI_API_KEY],
+      "artifact failure history",
+    );
+    process.stderr.write(`Artifact failure history: ${JSON.stringify(observed)}\n`);
+  }
   assert.ok(
     artifact,
-    `Timed out waiting for retained image artifact. Last artifacts: ${JSON.stringify(lastArtifacts)}`,
+    `Timed out waiting for retained ${expectedType} artifact. Last artifacts: ${JSON.stringify(lastArtifacts)}`,
   );
   assert.equal(artifact.download.mode, "url");
   // Mint a fresh ticket after each restart. The capability stays inside the Pod, out of kubectl args/logs.
@@ -2936,7 +3187,7 @@ async function assertRetainedImage(
     (async () => {
       const response = await fetch(url, { signal: AbortSignal.timeout(30000) });
       assert.equal(response.status, 200, "the current artifact ticket must download the retained bytes");
-      assert.match(response.headers.get("content-type"), /^image\\/png/);
+      assert.ok(response.headers.get("content-type").startsWith(${JSON.stringify(expectedMimeType)}));
       process.stdout.write(JSON.stringify({data: Buffer.from(await response.arrayBuffer()).toString("base64")}));
     })().catch(error => { console.error(error); process.exitCode = 1; });
   `,
@@ -2982,7 +3233,7 @@ async function assertGatewayPodContinuity(context, topology, privateClaim) {
     "number",
     "chat.history must expose the assistant transcript seq for the returned image artifact",
   );
-  const artifactId = await assertRetainedImage(topology, sessionKey, {
+  const artifactId = await assertRetainedArtifact(topology, sessionKey, {
     expectedData: continuityImage,
     messageSeq: imageMessageSeq,
   });
@@ -3040,7 +3291,7 @@ async function assertGatewayPodContinuity(context, topology, privateClaim) {
   const retained = await assertGatewayPrivateResources(topology);
   assert.equal(retained.metadata.uid, privateClaim.metadata.uid);
   await assertConversation(topology, sessionKey, nonce);
-  await assertRetainedImage(topology, sessionKey, { expectedId: artifactId });
+  await assertRetainedArtifact(topology, sessionKey, { expectedId: artifactId });
   const restored = await inspectGatewayPersistence(
     topology,
     digest,
@@ -3184,7 +3435,7 @@ async function requestDedicatedAgentTurn(topology, sessionKey, prompt) {
   const response = await fetch(`${topology.gatewayUrl}/v1/chat/completions`, {
     method: "POST",
     headers: {
-      authorization: `Bearer ${topology.gatewayToken}`,
+      authorization: `Bearer ${topology.gatewayPassword ?? topology.gatewayToken}`,
       "content-type": "application/json",
       "x-openclaw-session-key": sessionKey,
     },
@@ -3198,7 +3449,7 @@ async function requestDedicatedAgentTurn(topology, sessionKey, prompt) {
   const body = await response.text();
   assertNoSecretMaterial(
     body,
-    [topology.gatewayToken, process.env.OPENAI_API_KEY],
+    [topology.gatewayToken, topology.gatewayPassword, process.env.OPENAI_API_KEY],
     "Dedicated Agent responses must not expose credentials",
   );
   assert.equal(response.status, 200, `dedicated Agent model turn failed: ${body}`);
@@ -3299,7 +3550,7 @@ async function assertDedicatedAgentsInstructionsInFreshSession(topology) {
   const suffix = "enterprise openclaw";
   const sessionKey = `enterprise-agents-${randomUUID()}`;
 
-  // The actual Codex Agent must edit its shared workspace, not a test-injected fixture.
+  // The Agent edits Harness storage; Gateway must read it through the paired node.
   const editResponse = await requestDedicatedAgentTurn(
     topology,
     sessionKey,
@@ -3307,7 +3558,9 @@ async function assertDedicatedAgentsInstructionsInFreshSession(topology) {
   );
   const [gatewayInstructionsResult, harnessInstructionsResult] = await Promise.all([
     promiseResult(() =>
-      readFileInPod(topology.placement, topology.gatewayPod.metadata.name, instructionsPath),
+      gatewayCall(topology, "agents.files.get", { agentId: "main", name: "AGENTS.md" }).then(
+        (result) => result.file?.content,
+      ),
     ),
     promiseResult(() =>
       readFileInPod(topology.placement, topology.harnessPod.metadata.name, instructionsPath),
@@ -3357,23 +3610,6 @@ async function assertDedicatedAgentsInstructionsInFreshSession(topology) {
   // A new native harness thread must load persisted instructions absent from its neutral prompt.
   const response = await requestFreshDedicatedHarnessTurn(topology);
   assert.match(response.trimEnd(), /enterprise openclaw[.!?]*$/);
-}
-
-async function assertSharedText(
-  namespace,
-  { writerPod, readerPod, writerPath, readerPath, content },
-) {
-  await writeFileInPod(namespace, writerPod, writerPath, content);
-  assert.equal(await readFileInPod(namespace, readerPod, readerPath ?? writerPath), content);
-}
-
-async function assertWriteDenied(namespace, pod, file) {
-  const outcome = await execNode(
-    namespace,
-    pod,
-    `const { writeFileSync } = require("node:fs");try{writeFileSync(${JSON.stringify(file)}, "denied");process.stdout.write("ALLOWED");}catch(error){process.stdout.write(error.code || error.name || "DENIED");}`,
-  );
-  assert.match(outcome, /^(?:EACCES|EROFS|EPERM)$/);
 }
 
 async function waitForReadyAgentPod(topology, revisionId, previousUid) {
@@ -4326,72 +4562,57 @@ async function assertLegacyModelSecretBindingDenied(topology) {
   assert.equal(harness.metadata.uid, topology.harnessPod.metadata.uid);
 }
 
-async function assertDedicatedSharedWorkspaceRuntime(context, topology, claim, privateClaim) {
-  const nonce = `shared-${randomUUID()}`;
+async function assertDedicatedWorkspaceRuntime(context, topology, claim, privateClaim) {
+  const nonce = `split-${randomUUID()}`;
   const gatewayPod = topology.gatewayPod.metadata.name;
   let harnessPod = topology.harnessPod.metadata.name;
-  const workspaceFromGateway = `/home/node/workspace/gateway-${nonce}.txt`;
+  const workspaceFromGateway = "/home/node/workspace/AGENTS.md";
   const workspaceFromHarness = `/home/node/workspace/harness-${nonce}.txt`;
-  for (const probe of [
-    {
-      writerPod: gatewayPod,
-      readerPod: harnessPod,
-      writerPath: workspaceFromGateway,
-      content: `gateway:${nonce}`,
-    },
-    {
-      writerPod: harnessPod,
-      readerPod: gatewayPod,
-      writerPath: workspaceFromHarness,
-      content: `harness:${nonce}`,
-    },
-    {
-      writerPod: gatewayPod,
-      readerPod: harnessPod,
-      writerPath: `/home/node/.openclaw/agents/main/sessions/gateway-${nonce}.json`,
-      content: JSON.stringify({ nonce }),
-    },
-    {
-      writerPod: harnessPod,
-      readerPod: gatewayPod,
-      writerPath: `/home/node/.codex/generated_images/codex-${nonce}.png`,
-      readerPath: `/home/node/.openclaw/codex-artifacts/generated_images/codex-${nonce}.png`,
-      content: `image:${nonce}`,
-    },
-  ]) {
-    await assertSharedText(topology.placement, probe);
-  }
-  for (const [pod, file] of [
-    [harnessPod, `/home/node/.openclaw/agents/main/sessions/harness-denied-${nonce}.json`],
-    [
-      gatewayPod,
-      `/home/node/.openclaw/codex-artifacts/generated_images/gateway-denied-${nonce}.png`,
-    ],
-  ]) {
-    await assertWriteDenied(topology.placement, pod, file);
-  }
-
-  assert.notEqual(
-    await execNode(
-      topology.placement,
-      harnessPod,
-      'process.stdout.write(String(require("node:fs").readdirSync("/home/node/openclaw-runtime-assets/bundled-skills").length))',
-    ),
-    "0",
-    "Codex must see image-published bundled skills before runtime marker writes",
+  const harnessContent = randomBytes(24).toString("hex");
+  const opened = await gatewayCall(topology, "agents.files.get", {
+    agentId: "main",
+    name: "AGENTS.md",
+  });
+  assert.equal(opened.file.missing, false);
+  const ownerContent = `${opened.file.content}\n<!-- ${nonce} -->\n`;
+  await gatewayCall(topology, "agents.files.set", {
+    agentId: "main",
+    name: "AGENTS.md",
+    content: ownerContent,
+    expectedHash: opened.file.hash,
+  });
+  assert.equal(
+    await readFileInPod(topology.placement, harnessPod, workspaceFromGateway),
+    ownerContent,
+    "owner edits through Gateway must reach the Harness file",
   );
-  for (const [name, content] of [
-    ["/home/node/openclaw-runtime-assets/bundled-skills", `bundled:${nonce}`],
-    ["/home/node/openclaw-runtime-assets/plugin-skills", `plugin:${nonce}`],
-  ]) {
-    await assertSharedText(topology.placement, {
-      writerPod: gatewayPod,
-      readerPod: harnessPod,
-      writerPath: `${name}/gateway-${nonce}.txt`,
-      content,
-    });
-    await assertWriteDenied(topology.placement, harnessPod, `${name}/harness-denied-${nonce}.txt`);
-  }
+  assert.equal(
+    (await inspectFileInPod(topology.placement, gatewayPod, workspaceFromGateway)).exists,
+    false,
+    "Gateway must not retain a local workspace copy",
+  );
+
+  // The expected content is absent from the prompt: a real tool read must supply it.
+  await writeFileInPod(topology.placement, harnessPod, workspaceFromHarness, harnessContent);
+  await context.test("model reads the Harness-owned workspace file", async () => {
+    const response = await requestDedicatedAgentTurn(
+      topology,
+      `enterprise-workspace-${randomUUID()}`,
+      `Use your native Harness shell tool to read ${workspaceFromHarness} and return its entire contents. The file is local to your working environment; do not use Gateway network file-transfer tools or supply Gateway connection settings.`,
+    );
+    assert.ok(
+      response.includes(harnessContent),
+      `The model did not return the Harness file contents. Response: ${response.slice(0, 1500)}`,
+    );
+  });
+
+  const privateSession = `/home/node/.openclaw/agents/main/sessions/gateway-${nonce}.json`;
+  await writeFileInPod(topology.placement, gatewayPod, privateSession, JSON.stringify({ nonce }));
+  assert.equal(
+    (await inspectFileInPod(topology.placement, harnessPod, privateSession)).exists,
+    false,
+    "Harness must not see Gateway session files",
+  );
 
   const [harnessPrivate, gatewayPrivate] = await Promise.all([
     execNode(
@@ -4407,6 +4628,173 @@ async function assertDedicatedSharedWorkspaceRuntime(context, topology, claim, p
   ]);
   assert.equal(harnessPrivate, "false", "Codex must not see private gateway state");
   assert.deepEqual(JSON.parse(gatewayPrivate), { auth: false, config: false });
+
+  await context.test("attachment bytes and same-session continuation", async () => {
+    // Bytes beyond a preview must reach the Harness, return as a managed artifact,
+    // and remain usable in the same model session. Compare independent exact bytes.
+    const attachmentSession = `agent:main:attachment-${randomUUID()}`;
+    const attachmentNonce = `OCE-ATTACHMENT-${randomUUID()}`;
+    const attachmentInput = `${randomBytes(35000).toString("hex")}\n`;
+    const attachmentOutput = `${attachmentInput}VERIFIED\n`;
+    const outputPath = `/home/node/workspace/media/outbound/${nonce}.txt`;
+    await gatewayCall(topology, "chat.send", {
+      sessionKey: attachmentSession,
+      idempotencyKey: randomUUID(),
+      message: `Use your native Harness shell and the installed Node.js runtime to read the ORIGINAL attached file from its staged path, not its preview. Python is not installed. The staged file is local to this Harness; do not fetch it through Gateway network file-transfer tools. Write ${outputPath} with exactly those bytes followed by VERIFIED and a newline. Return ${attachmentNonce} on one line and MEDIA:${outputPath} on a separate line beginning with MEDIA:, without code fences. Do not edit other files or access external services.`,
+      attachments: [
+        {
+          type: "file",
+          mimeType: "text/plain",
+          fileName: `${nonce}.txt`,
+          content: Buffer.from(attachmentInput).toString("base64"),
+        },
+      ],
+    });
+    const attachmentHistory = await assertConversation(
+      topology,
+      attachmentSession,
+      attachmentNonce,
+    );
+    assert.equal(await readFileInPod(topology.placement, harnessPod, outputPath), attachmentOutput);
+    const attachmentSeq = assistantMessageContaining(attachmentHistory, attachmentNonce)?.__openclaw
+      ?.seq;
+    assert.equal(typeof attachmentSeq, "number");
+    await assertRetainedArtifact(topology, attachmentSession, {
+      messageSeq: attachmentSeq,
+      expectedType: "file",
+      expectedMimeType: "text/plain",
+      expectedData: Buffer.from(attachmentOutput).toString("base64"),
+    });
+    const continuation = await requestDedicatedAgentTurn(
+      topology,
+      attachmentSession,
+      `Use native file tools to compute the SHA-256 of the output file from the previous turn. Return its digest. Do not modify it.`,
+    );
+    assert.ok(continuation.includes(createHash("sha256").update(attachmentOutput).digest("hex")));
+    process.stderr.write(
+      "k3d dedicated: attachment processing, exact download and model continuation passed.\n",
+    );
+  });
+
+  await context.test("Memory search reads the remote workspace", async () => {
+    // The confirmation is absent from the prompt and only exists on the Harness.
+    // Native FTS indexing/search must bridge that source to Gateway-owned Memory.
+    const memoryKey = `memory${randomBytes(12).toString("hex")}`;
+    const memoryValue = randomBytes(24).toString("hex");
+    const memoryFile = `/home/node/workspace/memory/${memoryKey}.md`;
+    await writeFileInPod(
+      topology.placement,
+      harnessPod,
+      memoryFile,
+      `# ${memoryKey}\n\nThe confirmation for ${memoryKey} is ${memoryValue}.\n`,
+    );
+    assert.equal(
+      (await inspectFileInPod(topology.placement, gatewayPod, memoryFile)).exists,
+      false,
+    );
+    const memorySession = `agent:main:memory-${randomUUID()}`;
+    await waitFor("native Memory retrieval from the Harness workspace", async () => {
+      const answer = await requestDedicatedAgentTurn(
+        topology,
+        memorySession,
+        `Use memory_search to find the confirmation for ${memoryKey}. Return its source path and snippet. Do not use shell or file tools, edit files, or rebuild the index.`,
+      );
+      return answer.includes(memoryValue) ? answer : undefined;
+    });
+    const memoryHistory = await gatewayCall(topology, "chat.history", {
+      sessionKey: memorySession,
+      limit: 100,
+    });
+    assert.ok(
+      memoryHistory.messages.some(
+        (message) =>
+          message.role === "toolResult" &&
+          message.toolName === "memory_search" &&
+          messageText(message).includes(memoryValue),
+      ),
+      "the actual Memory tool result must contain the unprompted Harness marker",
+    );
+    process.stderr.write(
+      "k3d dedicated: native Memory FTS retrieved the unprompted Harness marker.\n",
+    );
+  });
+
+  await context.test("Skill installation runs on the remote Harness", async () => {
+    // Installation is an owner operation through Gateway; the fresh model then
+    // invokes the installed dependency by name in the remote Harness workspace.
+    const skillName = `storage-cowsay-${randomBytes(8).toString("hex")}`;
+    const skillFile = `/home/node/workspace/skills/${skillName}/SKILL.md`;
+    await writeFileInPod(
+      topology.placement,
+      harnessPod,
+      skillFile,
+      `---\nname: ${skillName}\ndescription: Print a synthetic storage verification message with cowsay.\nmetadata: ${JSON.stringify({ openclaw: { requires: { bins: ["cowsay"] }, install: [{ id: "node", kind: "node", package: "cowsay@1.6.0", bins: ["cowsay"] }] } })}\n---\nRun cowsay by command name with the requested message.\n`,
+    );
+    const skillStatus = await gatewayCall(topology, "skills.status", { agentId: "main" });
+    assert.ok(
+      skillStatus.skills.some((skill) => skill.name === skillName && skill.filePath === skillFile),
+    );
+    const installed = await gatewayCall(topology, "skills.install", {
+      agentId: "main",
+      name: skillName,
+      installId: "node",
+      timeoutMs: 120000,
+    });
+    assert.equal(installed.ok, true);
+    const installedCommand = await inspectFileInPod(
+      topology.placement,
+      harnessPod,
+      "/home/node/.openclaw/tools/node/npm/bin/cowsay",
+    );
+    process.stderr.write(
+      `k3d dedicated: installed Skill executable ${JSON.stringify({
+        exists: installedCommand.exists,
+        sizeBytes: installedCommand.sizeBytes,
+      })}\n`,
+    );
+    process.stderr.write(
+      `k3d dedicated: Skill runtime PATH admission ${await execNode(
+        topology.placement,
+        harnessPod,
+        `const fs = require("node:fs"); const rows = [];
+      for (const pid of fs.readdirSync("/proc").filter(name => /^\\d+$/.test(name))) {
+        try {
+          const name = fs.readFileSync("/proc/" + pid + "/comm", "utf8").trim();
+          if (name !== "node" && name !== "codex") continue;
+          const env = fs.readFileSync("/proc/" + pid + "/environ", "utf8").split("\\0");
+          const path = env.find(value => value.startsWith("PATH=")) ?? "";
+          rows.push({pid, name, managedBin: path.includes("/home/node/.openclaw/tools/node/npm/bin"), localBin: path.includes("/home/node/.local/bin")});
+        } catch {}
+      }
+      process.stdout.write(JSON.stringify(rows));`,
+      )}\n`,
+    );
+    const skillNonce = `OCE-SKILL-${randomBytes(8).toString("hex")}`;
+    const skillSession = `agent:main:skill-${randomUUID()}`;
+    const skillAnswer = await requestDedicatedAgentTurn(
+      topology,
+      skillSession,
+      `Read the ${skillName} Skill, then run cowsay ${skillNonce} by command name. Do not set PATH, use an absolute binary path, install packages yourself, or edit other files. Return the actual command output. If the command is unavailable, also report the actual shell PATH for diagnosis.`,
+    );
+    assert.ok(skillAnswer.includes(skillNonce));
+    const skillHistory = await gatewayCall(topology, "chat.history", {
+      sessionKey: skillSession,
+      limit: 100,
+    });
+    assert.ok(
+      skillHistory.messages.some(
+        (message) =>
+          message.role === "toolResult" &&
+          messageText(message).includes(skillNonce) &&
+          messageText(message).includes("(oo)"),
+      ),
+      "a successful native tool result must include actual cowsay output",
+    );
+    assert.equal((await inspectFileInPod(topology.placement, gatewayPod, skillFile)).exists, false);
+    process.stderr.write(
+      "k3d dedicated: owner Skill installation and real Harness command execution passed.\n",
+    );
+  });
 
   await kubectl(
     "delete",
@@ -4425,8 +4813,13 @@ async function assertDedicatedSharedWorkspaceRuntime(context, topology, claim, p
   harnessPod = restartedHarness.metadata.name;
   assert.equal(
     await readFileInPod(topology.placement, harnessPod, workspaceFromGateway),
-    `gateway:${nonce}`,
+    ownerContent,
   );
+  const reconnected = await gatewayCall(topology, "agents.files.get", {
+    agentId: "main",
+    name: "AGENTS.md",
+  });
+  assert.equal(reconnected.file.content, ownerContent, "paired node must reconnect after restart");
 
   const secondRevision = await topology.request(
     "POST",
@@ -4475,10 +4868,19 @@ async function assertDedicatedSharedWorkspaceRuntime(context, topology, claim, p
   );
   assert.equal(
     await readFileInPod(topology.placement, nextHarness.metadata.name, workspaceFromHarness),
-    `harness:${nonce}`,
+    harnessContent,
+  );
+  const afterRevision = await gatewayCall(topology, "agents.files.get", {
+    agentId: "main",
+    name: "AGENTS.md",
+  });
+  assert.equal(
+    afterRevision.file.content,
+    ownerContent,
+    "new revision must enroll its workspace node",
   );
   context.diagnostic(
-    `dedicated shared workspace PVC persisted across restart and revision: ${claim.metadata.name}`,
+    `Harness workspace and Gateway-private state persisted across restart and revision: ${claim.metadata.name}`,
   );
 }
 
@@ -4527,8 +4929,8 @@ export {
   assertActualModelTurn,
   assertDedicatedAgentsInstructionsInFreshSession,
   assertLegacyModelSecretBindingDenied,
-  assertDedicatedSharedWorkspaceResources,
-  assertDedicatedSharedWorkspaceRuntime,
+  assertDedicatedWorkspaceResources,
+  assertDedicatedWorkspaceRuntime,
   assertDeniedConnection,
   assertEmbeddedCreatesNoSharedWorkspaceClaim,
   assertGatewayPodContinuity,
