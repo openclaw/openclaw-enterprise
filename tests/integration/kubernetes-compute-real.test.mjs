@@ -195,6 +195,26 @@ async function assertReadyGateway(namespaceName, agentId, namespaceId, snapshot)
     false,
     "Agent gateway identity must remain stable across immutable revisions",
   );
+  const expectedNativeDocument =
+    snapshot === undefined
+      ? undefined
+      : {
+          ...snapshot.configuration,
+          gateway: {
+            ...snapshot.configuration.gateway,
+            trustedProxies: ["127.0.0.1/32"],
+            allowRealIpFallback: true,
+            auth: {
+              ...snapshot.configuration.gateway?.auth,
+              mode: "trusted-proxy",
+              trustedProxy: {
+                userHeader: "x-occ-identity",
+                allowUsers: ["occ-workspace-files"],
+              },
+              identityScopes: { "occ-workspace-files": ["operator.admin"] },
+            },
+          },
+        };
   if (snapshot !== undefined) {
     const document = JSON.stringify(snapshot.configuration);
     for (const metadata of [deployment.metadata, deployment.spec.template.metadata]) {
@@ -220,23 +240,7 @@ async function assertReadyGateway(namespaceName, agentId, namespaceId, snapshot)
     assert.deepEqual(Object.keys(configuration.data), ["openclaw.json"]);
     assert.deepEqual(
       JSON.parse(configuration.data["openclaw.json"]),
-      {
-        ...snapshot.configuration,
-        gateway: {
-          ...snapshot.configuration.gateway,
-          trustedProxies: ["127.0.0.1/32"],
-          allowRealIpFallback: true,
-          auth: {
-            ...snapshot.configuration.gateway?.auth,
-            mode: "trusted-proxy",
-            trustedProxy: {
-              userHeader: "x-occ-identity",
-              allowUsers: ["occ-workspace-files"],
-            },
-            identityScopes: { "occ-workspace-files": ["operator.admin"] },
-          },
-        },
-      },
+      expectedNativeDocument,
       "the immutable native document must preserve revision values and render the fixture Installation's gateway authentication",
     );
     assert.equal(configuration.metadata.annotations["openclaw.dev/agent-id"], agentId);
@@ -304,7 +308,7 @@ async function assertReadyGateway(namespaceName, agentId, namespaceId, snapshot)
     );
     assert.deepEqual(
       JSON.parse(mountedDocument),
-      snapshot.configuration,
+      expectedNativeDocument,
       "the running owner gateway must read the exact immutable native AgentRevision document",
     );
   }
