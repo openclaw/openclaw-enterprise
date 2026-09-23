@@ -21,6 +21,10 @@ Agent creation defaults to `embedded`; an update preserves the existing mode
 when omitted. Unsupported Harness/mode pairs are rejected before work is admitted.
 You cannot create a Harness or select it as a separate Driver. Availability
 and isolation also depend on the installation's Compute and optional Sandbox.
+Kubernetes places a dedicated Gateway in an OCC-managed control-plane runtime
+namespace with its own private storage and ServiceAccount. Its Harness stays in
+the data-plane namespace. Embedded OpenClaw remains one untrusted data-plane
+workload; it cannot move independently of its built-in Harness.
 
 ## Native runtime selection
 

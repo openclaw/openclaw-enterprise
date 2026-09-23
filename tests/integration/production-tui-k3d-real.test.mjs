@@ -1,3 +1,4 @@
+import { kubernetesGatewayNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -540,6 +541,34 @@ test(
           ],
         });
       }
+      const gatewayTarget = kubernetesGatewayNamespaceName(namespace.id);
+      names.push(gatewayTarget);
+      await waitFor("backing Gateway namespace", async () => {
+        const list = JSON.parse(
+          await kubectl(
+            "get",
+            "namespaces",
+            "-l",
+            `openclaw.dev/gateway-namespace=${namespace.id}`,
+            "-o",
+            "json",
+          ),
+        );
+        return list.items.some((item) => item.metadata.name === gatewayTarget);
+      });
+      await apply({
+        apiVersion: "rbac.authorization.k8s.io/v1",
+        kind: "RoleBinding",
+        metadata: metadata("production-tui-gateway-worker", gatewayTarget),
+        roleRef: {
+          apiGroup: "rbac.authorization.k8s.io",
+          kind: "ClusterRole",
+          name: `${release}-openclaw-tenant-worker`,
+        },
+        subjects: [
+          { kind: "ServiceAccount", name: "openclaw-enterprise-worker", namespace: system },
+        ],
+      });
       await waitFor("OCC Namespace ready", async () => {
         const current = await api("GET", `/namespaces/${namespace.id}`);
         assert.ok(!["failed", "deleting"].includes(current.status), `Namespace ${current.status}`);

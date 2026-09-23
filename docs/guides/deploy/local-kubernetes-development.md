@@ -204,3 +204,13 @@ provider authentication, or dedicated Codex WebSocket execution. Those checks
 require the real-cluster procedures, approved digest-pinned runtime images, and
 existing authorized credentials described in the
 [Kubernetes testing guide](../../testing/kubernetes.md).
+
+## Gateway placement boundary
+
+Dedicated Gateways use a managed Gateway runtime namespace, separate from the
+Harness namespace. The local development profile selects its single k3d server
+for Gateway scheduling. This exercises namespace separation on one disposable
+node; it does not prove production node isolation. Production must configure
+`runtime.gatewayNodeSelector` and `runtime.nodeSelector` for disjoint trusted and
+data-plane pools. See [production Namespace preparation](production-agents.md#prepare-each-namespace)
+for both scoped RoleBindings.

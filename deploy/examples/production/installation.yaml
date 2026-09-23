@@ -117,9 +117,11 @@ drivers:
         # Choose a private RWO block-backed filesystem with reliable SQLite locking.
         # See [Gateway storage](../../../docs/reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage).
         gatewayStorageClassName: occ-gateway-rwo
-        # Keep gateway, Agent, and private-state initialization Pods on the reviewed runtime node pool.
+        # Harness and embedded runtime use the data-plane pool; dedicated Gateways use a trusted pool.
         nodeSelector:
           oce-role: agents
+        gatewayNodeSelector:
+          oce-role: control-plane
         # Keep each Agent's transport tokens separate from its model API key.
         # See [Runtime credentials](../../../docs/reference/drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials).
         transportSecretPrefix: openclaw-agent-transport

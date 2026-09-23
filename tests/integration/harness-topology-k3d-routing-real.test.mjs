@@ -28,7 +28,7 @@ test(
       const routeBefore = await resource(
         "httproute",
         topology.gatewayServiceName,
-        topology.placement,
+        topology.gatewayPlacement,
       );
       for (const verb of ["get", "create", "patch", "delete"]) {
         for (const resourceName of [
@@ -41,7 +41,7 @@ test(
             verb,
             resourceName,
             "--namespace",
-            topology.placement,
+            topology.gatewayPlacement,
             `--as=system:serviceaccount:${topology.platformNamespace}:${topology.apiAccount}`,
           ).catch(({ stdout }) => stdout);
           assert.equal(
@@ -76,7 +76,7 @@ test(
         "pod",
         topology.gatewayPod.metadata.name,
         "--namespace",
-        topology.placement,
+        topology.gatewayPlacement,
         "--wait=true",
         "--timeout=120s",
       );
@@ -88,7 +88,7 @@ test(
       const routeAfter = await resource(
         "httproute",
         topology.gatewayServiceName,
-        topology.placement,
+        topology.gatewayPlacement,
       );
       assert.equal(routeAfter.metadata.uid, routeBefore.metadata.uid);
       assert.deepEqual(routeAfter.spec, routeBefore.spec);
@@ -116,7 +116,7 @@ test(
             kind,
             name,
             "--namespace",
-            topology.placement,
+            topology.gatewayPlacement,
             "--ignore-not-found=true",
             "-o",
             "name",

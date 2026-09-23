@@ -533,7 +533,7 @@ async function readRuntimeAccent(topology) {
     "exec",
     topology.gatewayPod.metadata.name,
     "--namespace",
-    topology.placement,
+    topology.gatewayPlacement,
     "--",
     "node",
     "-e",
@@ -727,7 +727,11 @@ test(
     assert.equal(status.url, expectedTarget.origin + "/");
     assert.equal(status.activeRevisionId, topology.revision.id);
 
-    const route = await resource("httproute", topology.gatewayServiceName, topology.placement);
+    const route = await resource(
+      "httproute",
+      topology.gatewayServiceName,
+      topology.gatewayPlacement,
+    );
     assert.ok(
       route.spec.rules.some((rule) =>
         rule.matches?.some(
@@ -842,7 +846,7 @@ test(
       "pod",
       topology.gatewayPod.metadata.name,
       "--namespace",
-      topology.placement,
+      topology.gatewayPlacement,
       "--wait=true",
       "--timeout=120s",
     );

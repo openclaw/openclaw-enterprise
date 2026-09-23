@@ -526,7 +526,10 @@ test(
     const tenantWorker = named("ClusterRole", "oce-openclaw-tenant-worker");
     assert.deepEqual(
       tenantWorker.rules.filter(({ resources }) => resources.includes("secrets")),
-      [{ apiGroups: [""], resources: ["secrets"], verbs: ["get", "list", "create", "delete"] }],
+      [
+        { apiGroups: [""], resources: ["secrets"], verbs: ["get", "create", "update", "delete"] },
+        { apiGroups: [""], resources: ["secrets"], verbs: ["get", "list", "create", "delete"] },
+      ],
     );
     // Tenant role binding remains an operator action; no Agent identity receives Secret access here.
     assert.ok(
@@ -586,7 +589,25 @@ test(
       ({ kind, metadata }) =>
         kind === "ClusterRole" && metadata.name === "oce-openclaw-tenant-worker",
     );
-    assert.ok(!tenantWorker.rules.some(({ resources }) => resources.includes("secrets")));
+    assert.deepEqual(
+      tenantWorker.rules.filter(({ resources }) => resources.includes("secrets")),
+      [{ apiGroups: [""], resources: ["secrets"], verbs: ["get", "create", "update", "delete"] }],
+    );
+    const gatewayObserver = objects.find(
+      ({ kind, metadata }) =>
+        kind === "ClusterRole" && metadata.name === "oce-openclaw-gateway-observer",
+    );
+    assert.deepEqual(gatewayObserver.rules, [
+      { apiGroups: ["apps"], resources: ["deployments"], verbs: ["list"] },
+    ]);
+    assert.equal(
+      objects.some(
+        ({ kind, roleRef }) =>
+          ["RoleBinding", "ClusterRoleBinding"].includes(kind) &&
+          roleRef?.name === gatewayObserver.metadata.name,
+      ),
+      false,
+    );
 
     assert.ok(!objects.some(({ kind }) => ["Ingress", "Gateway"].includes(kind)));
 
@@ -677,7 +698,7 @@ test(
     assert.equal(isolation.spec.ingress, undefined);
     assert.equal(isolation.spec.egress.length, 2);
 
-    // Worker tenant authority excludes Secret access and remains unbound until operators authorize each tenant.
+    // Worker runtime authority includes scoped Secret delivery and remains unbound until operators authorize each tenant.
     const roles = objects.filter(({ kind }) => kind === "ClusterRole");
     const bindings = new Set(
       objects
@@ -736,7 +757,9 @@ test(
       );
     }
     for (const role of roles.filter(
-      ({ metadata }) => metadata.name !== tenantApiRole.metadata.name,
+      ({ metadata }) =>
+        metadata.name !== tenantApiRole.metadata.name &&
+        !metadata.name.endsWith("-openclaw-tenant-worker"),
     )) {
       for (const rule of role.rules) {
         assert.ok(rule.resources?.includes("secrets") !== true);
@@ -919,7 +942,9 @@ test(
       ),
     );
     for (const role of roles.filter(
-      ({ metadata }) => metadata.name !== tenantApiRole.metadata.name,
+      ({ metadata }) =>
+        metadata.name !== tenantApiRole.metadata.name &&
+        !metadata.name.endsWith("-openclaw-tenant-worker"),
     )) {
       for (const rule of role.rules) {
         assert.ok(rule.resources?.includes("secrets") !== true);

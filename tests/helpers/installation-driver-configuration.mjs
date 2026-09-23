@@ -40,6 +40,7 @@ export function createInstallationDriverConfiguration() {
           runtime: {
             gatewayStorageClassName: "local-path",
             transportSecretPrefix: "openclaw-agent-transport",
+            gatewayNodeSelector: { "oce-role": "control-plane" },
           },
         },
       },

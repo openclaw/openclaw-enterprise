@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   createKubernetesComputeDriver,
   kubernetesNamespaceName,
+  kubernetesGatewayNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { DependencyUnavailableError, ResourceConflictError } from "../../packages/occ/src/index.ts";
 
@@ -106,6 +107,12 @@ function credentialFixture({
     },
     async readNamespace(request) {
       calls.push({ kind: "readNamespace", request: structuredClone(request) });
+      if (request.name === kubernetesGatewayNamespaceName(namespace.id)) {
+        return {
+          ...driver.gatewayNamespaceManifest({ namespaceId: namespace.id }),
+          status: { phase: "Active" },
+        };
+      }
       assert.equal(request.name, namespaceName);
       if (namespaceReadStatus !== 200) {
         throw httpError(namespaceReadStatus);
@@ -114,7 +121,10 @@ function credentialFixture({
     },
     async readNamespacedPersistentVolumeClaim(request) {
       calls.push({ kind: "readClaim", name: request.name });
-      assert.equal(request.namespace, namespaceName);
+      const target = request.name.startsWith("gateway-state-")
+        ? kubernetesGatewayNamespaceName(namespace.id)
+        : namespaceName;
+      assert.equal(request.namespace, target);
       const claim = claims[request.name];
       if (claim === undefined) {
         throw httpError(404);
@@ -123,7 +133,7 @@ function credentialFixture({
     },
     async deleteNamespacedPersistentVolumeClaim(request) {
       const claim = claims[request.name];
-      assert.equal(request.namespace, namespaceName);
+      assert.equal(request.namespace, claim.metadata.namespace);
       assert.equal(request.body?.preconditions?.uid, claim.metadata.uid);
       calls.push({ kind: "deleteClaim", name: request.name });
       delete claims[request.name];
@@ -162,12 +172,18 @@ function credentialFixture({
   const apps = {
     async listNamespacedDeployment(request) {
       calls.push({ kind: "listDeployments", request: structuredClone(request) });
-      assert.equal(request.namespace, namespaceName);
+      assert.ok(
+        [namespaceName, kubernetesGatewayNamespaceName(namespace.id)].includes(request.namespace),
+      );
       assert.equal(
         request.labelSelector,
         `openclaw.dev/namespace=${namespace.id},openclaw.dev/agent=${agent.id}`,
       );
-      return { items: deployments.map((deployment) => structuredClone(deployment)) };
+      return {
+        items: deployments
+          .filter((deployment) => deployment.metadata.namespace === request.namespace)
+          .map((deployment) => structuredClone(deployment)),
+      };
     },
   };
   driver.apiClients = Promise.resolve({ core, apps });
@@ -240,7 +256,13 @@ for (const runtime of [true, false]) {
     const owned = [
       first.driver.sharedWorkspaceClaim(agent.id, ownership, first.namespaceName),
       ...(runtime
-        ? [first.driver.gatewayPrivateStateClaim(agent.id, ownership, first.namespaceName)]
+        ? [
+            first.driver.gatewayPrivateStateClaim(
+              agent.id,
+              ownership,
+              kubernetesGatewayNamespaceName(namespace.id),
+            ),
+          ]
         : []),
     ];
     const claims = Object.fromEntries(
@@ -613,4 +635,35 @@ test("Codex startup rejects missing, blank, conflicting, and unsupported authent
     assert.equal(child.stdout, "");
     assert.doesNotMatch(child.stderr, /fixture-key|fixture-token/);
   }
+});
+
+test("credential provisioning cannot replace transport while only the control-plane Gateway survives", async () => {
+  const initial = credentialFixture();
+  const gateway = initial.driver.manifest(
+    "apps/v1",
+    "Deployment",
+    "gateway-existing",
+    { namespaceId: namespace.id, agentId: agent.id },
+    kubernetesGatewayNamespaceName(namespace.id),
+  );
+  const fixture = credentialFixture({ deployments: [gateway] });
+  await assert.rejects(
+    fixture.driver.provisionAgentRuntimeCredentials(binding(), {}),
+    /already been deployed/,
+  );
+  assert.equal(fixture.created.length, 0);
+});
+
+test("Agent deletion removes private Gateway storage after the data namespace disappears", async () => {
+  const initial = credentialFixture();
+  const claim = initial.driver.gatewayPrivateStateClaim(
+    agent.id,
+    { namespaceId: namespace.id, agentId: agent.id },
+    kubernetesGatewayNamespaceName(namespace.id),
+  );
+  claim.metadata.uid = "retained-gateway-claim";
+  const claims = { [claim.metadata.name]: claim };
+  const fixture = credentialFixture({ claims, namespaceReadStatus: 404 });
+  await fixture.driver.deleteAgentRuntimeCredentials(binding());
+  assert.deepEqual(Object.keys(claims), []);
 });

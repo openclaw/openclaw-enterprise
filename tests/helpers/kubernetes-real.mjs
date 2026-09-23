@@ -214,6 +214,10 @@ export function createKubernetesInstallationConfiguration({
   compute.authentication = structuredClone(authentication);
   compute.images.gateway = gatewayImage;
   compute.images.agent = codexImage;
+  // Disposable fixture clusters may use one node; production node isolation is separate proof.
+  compute.runtime.gatewayNodeSelector = JSON.parse(
+    process.env.OCC_TEST_KUBERNETES_GATEWAY_NODE_SELECTOR ?? '{"kubernetes.io/os":"linux"}',
+  );
   if (codexSeccompProfile !== undefined) {
     compute.runtime.codexSeccompProfile = codexSeccompProfile;
   }
@@ -402,6 +406,28 @@ export function createRealKubernetesFixture({
         namespace,
         `--from-file=app-server-token=${join(tokenDirectory, "app-server-token")}`,
         `--from-file=gateway-password=${join(tokenDirectory, "gateway-password")}`,
+      );
+      const owner = await kubernetes.resource("namespace", namespace);
+      const namespaceId = owner.metadata.labels["openclaw.dev/namespace"];
+      assert.ok(namespaceId, "transport source must belong to the resolved data-plane Namespace");
+      await kubectl(
+        "label",
+        "secret",
+        `openclaw-agent-transport-${suffix}`,
+        "--namespace",
+        namespace,
+        "app.kubernetes.io/managed-by=openclaw-enterprise",
+        `openclaw.dev/namespace=${namespaceId}`,
+        `openclaw.dev/agent=${agentId}`,
+      );
+      await kubectl(
+        "annotate",
+        "secret",
+        `openclaw-agent-transport-${suffix}`,
+        "--namespace",
+        namespace,
+        `openclaw.dev/namespace-id=${namespaceId}`,
+        `openclaw.dev/agent-id=${agentId}`,
       );
     } finally {
       await rm(tokenDirectory, { recursive: true, force: true });

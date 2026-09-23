@@ -34,7 +34,9 @@ app-server settings.
 Each real gateway, embedded or dedicated, receives one private `10Gi`
 `ReadWriteOnce` filesystem claim named `gateway-state-<agent-hash>`, where
 `agent-hash` is the first 12 hexadecimal characters of `sha256(agentId)`.
-The required `runtime.gatewayStorageClassName` selects an operator-provisioned
+Dedicated claims live in the managed Gateway runtime namespace; embedded claims
+remain in the tenant data-plane namespace. The required
+`runtime.gatewayStorageClassName` selects an operator-provisioned
 StorageClass for a local or cloud block disk mounted as a filesystem.
 
 "SQLite-compatible" describes the backing storage, not a Kubernetes feature or
@@ -143,6 +145,16 @@ and [deployment procedure](../../../guides/deploy/native-admin.md).
 
 ## Runtime credentials
 
+Canonical Agent transport and admitted OCC Secret sources stay in the data-plane
+namespace. Before a dedicated Gateway starts, the worker validates their exact
+ownership or admitted UID and copies only the app-server token, the optional
+Gateway password, and admitted environment-binding keys into a revision-owned
+Secret in the Gateway namespace. It never copies the entire source bundle or
+automatically includes Harness model/account credentials. Embedded projection
+remains local. Source changes are observed during reconciliation; environment
+updates require the normal workload restart lifecycle. Retirement removes the
+exact old revision projection without changing the active revision's copy.
+
 Before the first AgentRevision, the [console credential workflow](../../console/create-and-deploy.md#initial-runtime-credentials)
 can create initial per-Agent transport and Slack Secrets through
 the selected Driver. It derives their names internally, checks Namespace and
@@ -151,7 +163,7 @@ values. Provider-managed credentials and Configuration Secret bindings retain
 their separate provisioning paths.
 
 The controller API service account needs `list` permission for Deployments in
-that exact tenant namespace so it can reject an existing runtime before
+both physical namespaces so it can reject an existing runtime before
 creating initial Secrets.
 
 Before deploying an Agent, provision its Agent-specific transport Secret using

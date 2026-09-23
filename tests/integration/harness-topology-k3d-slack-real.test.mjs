@@ -76,11 +76,11 @@ test(
     const topology = await arrangeProductionTopology(context, "dedicated", slack);
     assert.ok(topology.harnessPod, "channels must preserve their separate dedicated Codex Agent");
     const suffix = hash(topology.agent.id);
-    const gateway = await resource("deployment", `gateway-${suffix}`, topology.placement);
+    const gateway = await resource("deployment", `gateway-${suffix}`, topology.gatewayPlacement);
     const agent = await resource(
       "deployment",
       `agent-${suffix}-rev-${hash(topology.revision.id)}`,
-      topology.placement,
+      topology.gatewayPlacement,
     );
     const gatewayEnvironment = gateway.spec.template.spec.containers[0].env;
     const agentEnvironment = agent.spec.template.spec.containers[0].env;
@@ -120,7 +120,7 @@ test(
     const policy = await resource(
       "networkpolicy",
       `allow-gateway-channels-${suffix}`,
-      topology.placement,
+      topology.gatewayPlacement,
     );
     assert.deepEqual(policy.spec.podSelector.matchLabels, {
       "openclaw.dev/workload-role": "gateway",
@@ -134,7 +134,7 @@ test(
     ]);
     const target = await resource("pod", topology.approvedClient, topology.platformNamespace);
     await assertDeniedConnection(
-      topology.placement,
+      topology.gatewayPlacement,
       topology.gatewayPod.metadata.name,
       target.status.podIP,
     );
@@ -144,7 +144,7 @@ test(
         "logs",
         topology.gatewayPod.metadata.name,
         "--namespace",
-        topology.placement,
+        topology.gatewayPlacement,
       );
       assert.equal(logs.includes(slack.appToken), false, "gateway logs must not expose app tokens");
       assert.equal(logs.includes(slack.botToken), false, "gateway logs must not expose bot tokens");
@@ -159,7 +159,7 @@ test(
       "logs",
       topology.gatewayPod.metadata.name,
       "--namespace",
-      topology.placement,
+      topology.gatewayPlacement,
     );
     const nonce = `OCC-SLACK-${randomUUID()}`;
     const message = {
@@ -206,7 +206,7 @@ test(
       "logs",
       topology.gatewayPod.metadata.name,
       "--namespace",
-      topology.placement,
+      topology.gatewayPlacement,
     );
     const turnLogs = gatewayLogs.slice(baselineLogs.length);
     const ingress = turnLogs
@@ -241,7 +241,7 @@ test(
         "exec",
         topology.gatewayPod.metadata.name,
         "--namespace",
-        topology.placement,
+        topology.gatewayPlacement,
         "--",
         "node",
         "-e",

@@ -282,6 +282,15 @@ async function createStatusCandidate(label, context) {
     await createDriver()
       .retireRevision(candidate)
       .catch(() => {});
+    const { kubernetesGatewayNamespaceName } =
+      await import("../../apps/controller/src/drivers/compute/kubernetes/index.ts");
+    await kubectl(
+      "delete",
+      "namespace",
+      kubernetesGatewayNamespaceName(owner.id),
+      "--ignore-not-found=true",
+      "--wait=true",
+    );
     await kubectl("delete", "namespace", namespaceName, "--ignore-not-found=true", "--wait=false");
     await kubectl("wait", "--for=delete", `namespace/${namespaceName}`, "--timeout=30s").catch(
       () => {},

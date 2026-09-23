@@ -64,10 +64,15 @@ current delivery exceptions from target mediation outside Harness execution.
 
 Runtime targets initially use one Kubernetes cluster, with distinct namespace
 placements for dedicated gateway and Harness. They may later use separate
-clusters or other Compute-backed locations. This placement is a target
-direction, not a shipped capability; [current Harness execution](../reference/harness-execution.md)
-describes the implemented embedded and dedicated topologies. One selected
-`ComputeDriver` orchestrates both targets under the
+clusters or other Compute-backed locations. Kubernetes Compute implements the
+same-cluster split: a managed Gateway runtime namespace per logical Namespace,
+separate from its Harness namespace and from OCC's own API/worker namespace.
+An explicit Gateway node selector places dedicated Gateways on the operator's
+trusted node pool; Harnesses retain their data-plane selector. Operators must
+keep those pools disjoint. Namespace separation alone does not provide node
+isolation. [Current Harness execution](../reference/harness-execution.md)
+describes supported runtimes. One selected `ComputeDriver` owns preparation,
+activation, stop, retirement, and deletion in both targets under the
 [Driver ownership contract](drivers.md#computedriver).
 
 The selected Harness comes from the Agent's native provider/model configuration;

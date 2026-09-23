@@ -1,8 +1,9 @@
 # Kubernetes Compute Driver
 
 The Kubernetes Compute Driver runs OpenClaw Agents on Kubernetes. It provisions
-or adopts an isolated namespace for each tenant and creates an OpenClaw gateway
-for each deployed Agent, with either an embedded or dedicated Agent Harness.
+or adopts a data-plane namespace for each tenant and creates an OpenClaw gateway
+for each deployed Agent. Dedicated Gateways run in a separate managed control-plane
+runtime namespace; embedded OpenClaw remains in the data plane.
 Kubernetes supports a managed model API key for both modes and a managed
 ChatGPT service-account credential for dedicated Codex only.
 
@@ -13,7 +14,7 @@ projections; Agent deployment with OpenShell is unsupported.
 
 For detailed operator contracts, see:
 
-- [Storage and credentials](kubernetes-compute/storage-and-credentials.md): gateway disks, shared workspaces, and runtime Secrets.
+- [Storage and credentials](kubernetes-compute/storage-and-credentials.md): separate Gateway state, Harness workspaces, and runtime Secrets.
 - [Networking and isolation](kubernetes-compute/networking-and-isolation.md): DNS, private gateway routes, and tenant namespace ownership.
 
 ## Requirements
@@ -47,7 +48,8 @@ For detailed operator contracts, see:
 
 The worker manages PersistentVolumeClaims and, when private gateway routing is
 enabled, HTTPRoutes through tenant-local RoleBindings. Only the controller API
-receives narrowly scoped Secret permissions for provider-issued credentials.
+issues provider credentials. The worker reads admitted transport/channel material
+and maintains revision-owned Gateway Secret projections in the separate target.
 The API does not need gateway Pod reads, exec, route writes, or certificate
 management for workspace-file access. Do not grant wildcard permissions,
 cluster-wide access to tenant resources, workload access to controller
@@ -135,6 +137,7 @@ drivers:
       runtime:
         gatewayStorageClassName: sqlite-block
         nodeSelector: { oce-role: agents }
+        gatewayNodeSelector: { oce-role: control-plane }
         transportSecretPrefix: openclaw-agent-transport
         # Optional; first install this reviewed profile on every eligible node.
         codexSeccompProfile: profiles/codex-0.156.0.json
@@ -158,8 +161,11 @@ Kubernetes API certificates must be verified in either mode.
 ### Images and resources
 
 Configure separate gateway and Agent images, CPU and memory requests and limits,
-namespace-level resource quotas and container defaults, and an optional
-`runtime.nodeSelector` for gateway and Agent Pods. Production requires
+namespace-level resource quotas and container defaults. `runtime.nodeSelector`
+selects Harness and embedded Pods; dedicated real Gateways require
+`runtime.gatewayNodeSelector`, including their private-state initializer. Use
+disjoint trusted and tenant node pools in production. Quotas and defaults apply
+separately to each physical namespace. Production requires
 `images.requireImmutableDigest: true` and SHA-256 image digests.
 
 See [network configuration](kubernetes-compute/networking-and-isolation.md#networking)
@@ -179,9 +185,10 @@ The Agent's Harness configuration determines its execution topology:
 - **Embedded:** OpenClaw runs the gateway and Harness in one Pod. It accepts
   an Agent-scoped model API key, uses `openai/` models, and does not require
   shared storage.
-- **Dedicated:** The gateway and Codex Harness run in separate Pods with
-  separate ServiceAccounts. They communicate through authenticated app-server
-  transport and share an Agent-owned PersistentVolumeClaim. Codex accepts an
+- **Dedicated:** The gateway and Codex Harness run in separate namespaces and
+  Pods, with separate ServiceAccounts and storage. They communicate through
+  authenticated app-server transport. The Gateway uses fully qualified Harness
+  Service DNS and the paired node for workspace operations. Codex accepts an
   Agent-scoped model API key or a managed ChatGPT service-account credential,
   and permits `openai/` or `codex/` models.
 
@@ -239,7 +246,7 @@ for additional execution details.
 
 - **Namespace provisioning fails:** Verify tenant-local RoleBindings, namespace
   ownership labels, restricted Pod Security labels, and enforced
-  NetworkPolicies. Existing namespaces additionally require external lifecycle
+  NetworkPolicies in both the Harness and Gateway runtime namespaces. Existing namespaces additionally require external lifecycle
   ownership, exclusive tenant use, and no foreign NetworkPolicies.
 - **Gateway or Harness remains pending:** Check image digests, image pull
   permissions, CPU and memory limits, namespace quotas, required Secrets, and
