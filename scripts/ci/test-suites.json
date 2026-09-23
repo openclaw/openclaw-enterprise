@@ -498,6 +498,18 @@
           ]
         },
         {
+          "path": "tests/integration/postgres-agent-provisioning.test.mjs",
+          "expectedTests": [
+            "provisioning API queues one job with existing Secret references and replays only the exact same request",
+            "provisioning worker creates Configuration and Agent from existing Secrets, then hands off one revision",
+            "queued provisioning leaves existing Secrets but creates no Agent or Configuration before a worker runs",
+            "provisioning worker reauthorizes after admission and revoked authority creates no backend effects",
+            "failed provisioning can retry through the API and resume without duplicating the Agent",
+            "Stop and Delete cancel failed pre-handoff provisioning Agents without deployment resurrection",
+            "failed provisioning keeps the accepted plan reserved until retry or deletion"
+          ]
+        },
+        {
           "path": "tests/integration/postgres-worker-stale-claim.test.mjs",
           "expectedTests": [
             "a worker that loses its claim during Compute cannot publish Namespace status, lifecycle audit, or completion"
@@ -662,6 +674,7 @@
           "expectedTests": [
             "real Kubernetes Compute Driver owns isolated Agent gateways, identities, revisions, and deletion",
             "real Kubernetes Drivers safely use and preserve an externally managed tenant namespace",
+            "provisioning API and worker hand off a dedicated Agent with real Kubernetes fixture storage",
             "authenticated PostgreSQL OCC API and worker deploy real Agent-owned gateways, Secret bindings, and revisions"
           ]
         }

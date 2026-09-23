@@ -83,6 +83,10 @@ export interface ProviderSummary {
   readonly type: ProviderType;
 }
 
+export interface InstallationCapabilities {
+  readonly agentProvisioning?: ComputeAgentProvisioningCapabilities;
+}
+
 export interface Provider<Client = unknown> {
   readonly id: string;
   readonly client: Client;
@@ -141,6 +145,7 @@ export interface Installation {
   readonly id: string;
   readonly name: string;
   readonly createdAt: string;
+  readonly capabilities?: InstallationCapabilities;
 }
 
 export type NamespaceStatus = "provisioning" | "ready" | "failed" | "deleting";
@@ -664,6 +669,7 @@ export interface DriverImplementation {
 
 export interface IAMDriver extends Driver {
   readonly capability: "iam";
+  readonly namespacePolicyTransaction?: "platform-unit-of-work";
   lookupIdentity(input: IdentityLookup): Promise<Identity | undefined>;
   authorize(request: AuthorizationRequest): Promise<AuthorizationDecision>;
   listNamespaceRoles?(
@@ -835,6 +841,15 @@ export interface ComputeAgentBinding {
   readonly agent: Readonly<Agent>;
 }
 
+export interface ComputeAgentProvisioningInput {
+  readonly executionMode: HarnessExecutionMode;
+  readonly configuration: Readonly<OpenClawConfigurationDocument>;
+}
+
+export interface ComputeAgentProvisioningCapabilities {
+  readonly executionModes: readonly HarnessExecutionMode[];
+}
+
 export type AgentRuntimeCredentialsInput = Readonly<Record<never, never>>;
 
 export interface AgentRuntimeCredentialStatus {
@@ -855,8 +870,10 @@ export interface ComputeDriver extends Driver {
   readonly capability: "compute";
   /** Default: platform admission policy. Driver ownership preserves native logging settings. */
   readonly runtimeLogging?: "platform" | "driver";
+  readonly agentProvisioning?: ComputeAgentProvisioningCapabilities;
   readonly activationOrder?: "beforeCommit" | "afterCommit";
   readonly maintenanceIntervalMs?: number;
+  validateAgentProvisioning?(input: ComputeAgentProvisioningInput): void;
   validateHarnessAuth?(
     harness: RevisionHarnessDescriptor,
     auth: HarnessAuthSnapshot,
@@ -896,6 +913,8 @@ export interface ConfigurationDriver extends Driver {
   /** Side-effect-free admission of partial native values before Preset storage. */
   validateValues?(values: OpenClawConfigurationDocument): Promise<void>;
   create(configuration: Configuration): Promise<Configuration>;
+  createExact?(configuration: Configuration): Promise<Configuration>;
+  inspectExact?(configuration: Configuration): Promise<Configuration | undefined>;
   read(reference: ConfigurationReference): Promise<Configuration>;
   update(configuration: Configuration): Promise<Configuration>;
   delete(reference: ConfigurationReference): Promise<void>;

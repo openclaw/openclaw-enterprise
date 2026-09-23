@@ -23,6 +23,11 @@ export const AgentId = Type.String({ pattern: `^agt_${UUID_V4}$` });
 export const RevisionId = Type.String({ pattern: `^rev_${UUID_V4}$` });
 export const AuditId = Type.String({ pattern: `^aud_${UUID_V4}$` });
 export const RequestId = Type.String({ pattern: `^req_${UUID_V4}$` });
+export const AgentProvisioningWorkId = Type.String({
+  minLength: 1,
+  maxLength: 200,
+  pattern: "^[A-Za-z0-9._~:@/-]{1,200}$",
+});
 export const ProviderId = Type.String({
   minLength: 1,
   maxLength: 200,
@@ -64,6 +69,11 @@ export const NamespaceParams = Type.Object(
 
 export const AgentParams = Type.Object(
   { namespaceId: NamespaceId, agentId: AgentId },
+  { additionalProperties: false },
+);
+
+export const AgentProvisioningParams = Type.Object(
+  { namespaceId: NamespaceId, workId: AgentProvisioningWorkId },
   { additionalProperties: false },
 );
 
@@ -372,6 +382,31 @@ export const CreateAgentBody = Type.Object(
   { additionalProperties: false },
 );
 
+export const ProvisionAgentConfigurationBody = Type.Object(
+  {
+    kind: ConfigurationKindSchema,
+    values: ConfigurationValues,
+    secretBindings: Type.Optional(SecretBindings),
+  },
+  { additionalProperties: false },
+);
+
+export const ProvisionAgentBody = Type.Object(
+  {
+    requestId: RequestId,
+    initialWorkspaceFiles: Type.Optional(CreateAgentBody.properties.initialWorkspaceFiles),
+    workspaceDefaultsId: Type.Optional(CreateAgentBody.properties.workspaceDefaultsId),
+    name: Name,
+    configuration: ProvisionAgentConfigurationBody,
+    providerId: Type.Optional(Type.Union([ProviderId, Type.Null()])),
+    harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
+    executionMode: Type.Optional(HarnessExecutionModeSchema),
+    plugins: Type.Optional(Type.Ref("PluginDesiredState")),
+    repositoryBindings: Type.Optional(RepositoryBindingRequestsSchema),
+  },
+  { additionalProperties: false },
+);
+
 export const UpdateAgentBody = Type.Object(
   {
     configurationId: ConfigurationId,
@@ -533,6 +568,7 @@ export type UpdateServiceAccountCredentialBody = Type.Static<
   typeof UpdateServiceAccountCredentialBody
 >;
 export type CreateAgentBody = Type.Static<typeof CreateAgentBody>;
+export type ProvisionAgentBody = Type.Static<typeof ProvisionAgentBody>;
 export type UpdateAgentBody = Type.Static<typeof UpdateAgentBody>;
 export type UpdateWorkspaceFileBody = Type.Static<typeof UpdateWorkspaceFileBody>;
 export type ErrorDetail = Type.Static<typeof ErrorDetail>;

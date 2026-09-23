@@ -142,6 +142,22 @@ cases because cluster prerequisites are absent; CI and real-runtime acceptance
 remain separate. TypeScript, changed-file lint, docs links/length and the topology
 flow validator pass.
 
+## CI repair after review
+
+Run 35910713902 tested merge SHA `caaf28e92fad1ef7b932c313069d7ed5186f7bcd`
+for branch head `df4ca44`. Checks/baseline passed 1337 tests and failed the stale
+activation fixture because its model Secret reference still named the DP target.
+The two cluster lanes failed six cases: fixture credential delivery skipped CP-to-DP
+materialization without native runtime options, and the adopted-namespace test
+still read canonical Configuration from DP. The two Pod-local credential
+regressions and stale-activation case reproduce locally and pass with these fixes.
+All 256 focused Kubernetes/credential/plugin/packaging tests pass. Cluster rerun
+is required; local discovery is not cluster acceptance.
+
+Upstream provisioning PR #322 is merged from `8adfd86`. Its new exact Configuration
+create/recovery methods use CP storage too. The import conflict is resolved without
+dropping either workflow. No dependency upgrade or migration code is introduced.
+
 ## Open work and release boundaries
 
 This PR owns [#75](https://github.com/openclaw/openclaw-enterprise/issues/75):

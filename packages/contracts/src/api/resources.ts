@@ -43,8 +43,25 @@ const RuntimeEvidenceTimestamp = Type.String({
     "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:[.][0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})$",
 });
 
+const InstallationCapabilitiesSchema = Type.Object(
+  {
+    agentProvisioning: Type.Optional(
+      Type.Object(
+        { executionModes: Type.Array(HarnessExecutionModeSchema, { minItems: 1, maxItems: 2 }) },
+        { additionalProperties: false },
+      ),
+    ),
+  },
+  { additionalProperties: false },
+);
+
 export const InstallationSchema = Type.Object(
-  { id: InstallationId, name: Name, createdAt: Timestamp },
+  {
+    id: InstallationId,
+    name: Name,
+    createdAt: Timestamp,
+    capabilities: Type.Optional(InstallationCapabilitiesSchema),
+  },
   { additionalProperties: false },
 );
 
@@ -163,6 +180,40 @@ export const AgentRuntimeCredentialStatusSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const AgentProvisioningStatusSchema = Type.Object(
+  {
+    workId: Type.String({ minLength: 1, maxLength: 200 }),
+    status: Type.Union([
+      Type.Literal("queued"),
+      Type.Literal("running"),
+      Type.Literal("succeeded"),
+      Type.Literal("failed"),
+    ]),
+    phase: Type.Union([
+      Type.Literal("admitted"),
+      Type.Literal("configuration"),
+      Type.Literal("transport"),
+      Type.Literal("handoff"),
+    ]),
+    attemptCount: Type.Integer({ minimum: 0 }),
+    updatedAt: Timestamp,
+    agentId: Type.Optional(AgentId),
+    configurationId: Type.Optional(ConfigurationId),
+    revisionId: Type.Optional(RevisionId),
+    url: Type.String({ minLength: 1 }),
+    error: Type.Optional(
+      Type.Object(
+        {
+          code: Type.String({ minLength: 1, maxLength: 64 }),
+          message: Type.String({ minLength: 1, maxLength: 256 }),
+        },
+        { additionalProperties: false },
+      ),
+    ),
+  },
+  { additionalProperties: false },
+);
+
 export const IAMPermissionSchema = Type.Object(
   { action: PermissionActionSchema, resourceKind: ResourceKindSchema },
   { additionalProperties: false },
@@ -214,7 +265,10 @@ export const ServiceAccountSchema = Type.Object(
 );
 
 export const ProviderSummarySchema = Type.Object(
-  { id: ProviderId, type: Type.Union([Type.Literal("chatgpt"), Type.Literal("github")]) },
+  {
+    id: ProviderId,
+    type: Type.Union([Type.Literal("chatgpt"), Type.Literal("github")]),
+  },
   { additionalProperties: false },
 );
 
@@ -263,6 +317,24 @@ export const ServiceAccountListResponse = Type.Object(
 
 export const AgentResponse = Type.Object(
   { data: AgentSchema, meta: Meta },
+  { additionalProperties: false },
+);
+
+export const AgentProvisioningResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        provisioning: AgentProvisioningStatusSchema,
+      },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);
+
+export const AgentProvisioningStatusResponse = Type.Object(
+  { data: AgentProvisioningStatusSchema, meta: Meta },
   { additionalProperties: false },
 );
 
@@ -482,6 +554,7 @@ export type AgentWire = Type.Static<typeof AgentSchema>;
 export type AgentRuntimeCredentialStatusWire = Type.Static<
   typeof AgentRuntimeCredentialStatusSchema
 >;
+export type AgentProvisioningStatusWire = Type.Static<typeof AgentProvisioningStatusSchema>;
 export type IAMPermissionWire = Type.Static<typeof IAMPermissionSchema>;
 export type IAMRoleWire = Type.Static<typeof IAMRoleSchema>;
 export type IAMAccessBindingWire = Type.Static<typeof IAMAccessBindingSchema>;
@@ -503,6 +576,8 @@ export type IAMAccessBindingResponse = Type.Static<typeof IAMAccessBindingRespon
 export type IAMAccessBindingListResponse = Type.Static<typeof IAMAccessBindingListResponse>;
 export type AgentListResponse = Type.Static<typeof AgentListResponse>;
 export type ProviderListResponse = Type.Static<typeof ProviderListResponse>;
+export type AgentProvisioningResponse = Type.Static<typeof AgentProvisioningResponse>;
+export type AgentProvisioningStatusResponse = Type.Static<typeof AgentProvisioningStatusResponse>;
 export type AgentRevisionResponse = Type.Static<typeof AgentRevisionResponse>;
 export type AgentRevisionListResponse = Type.Static<typeof AgentRevisionListResponse>;
 export type AgentDeploymentStatusResponse = Type.Static<typeof AgentDeploymentStatusResponse>;

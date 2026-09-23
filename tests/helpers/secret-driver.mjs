@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+
 /** Test-only passive storage; OCC still owns authorization, ownership, and metadata. */
 export function createTestSecretDriver(options = {}) {
   const entries = new Map();
@@ -61,7 +63,7 @@ export function createTestSecretDriver(options = {}) {
       if (entry === undefined) {
         throw new Error("Secret does not exist.");
       }
-      if (JSON.stringify(entry.backendRef) !== JSON.stringify(secret.backendRef)) {
+      if (!isDeepStrictEqual(entry.backendRef, secret.backendRef)) {
         throw new Error("Secret backend identity changed.");
       }
       entries.set(key, { ...entry, value });
@@ -76,7 +78,7 @@ export function createTestSecretDriver(options = {}) {
       if (entry === undefined) {
         throw new Error("Secret does not exist.");
       }
-      if (JSON.stringify(entry.backendRef) !== JSON.stringify(secret.backendRef)) {
+      if (!isDeepStrictEqual(entry.backendRef, secret.backendRef)) {
         throw new Error("Secret backend identity changed.");
       }
       entries.delete(key);
@@ -93,7 +95,7 @@ export function createTestSecretDriver(options = {}) {
       if (entry === undefined) {
         throw new Error("Secret does not exist.");
       }
-      if (JSON.stringify(entry.backendRef) !== JSON.stringify(secret.backendRef)) {
+      if (!isDeepStrictEqual(entry.backendRef, secret.backendRef)) {
         throw new Error("Secret backend identity changed.");
       }
       return clone(entry.backendRef);

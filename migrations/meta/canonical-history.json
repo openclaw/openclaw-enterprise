@@ -233,6 +233,14 @@
       "tag": "0028_agent_workspace_setup",
       "breakpoints": true,
       "sha256": "bb093c191fc0a02c9aac9e91f67df66e8fe0c5e7addd105330dcbff9c8d1ae91"
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1787000000029,
+      "tag": "0029_agent_provisioning_work",
+      "breakpoints": true,
+      "sha256": "beaff307eb286d20da1726c80b6428755d9937a8d1331b063eb6877f8d8b6d6f"
     }
   ],
   "initialSchemaStates": {
@@ -246,8 +254,18 @@
     "ownerOnly": {
       "owner": "occ_migrator",
       "privileges": [
-        ["occ_migrator", "occ_migrator", "CREATE", false],
-        ["occ_migrator", "occ_migrator", "USAGE", false]
+        [
+          "occ_migrator",
+          "occ_migrator",
+          "CREATE",
+          false
+        ],
+        [
+          "occ_migrator",
+          "occ_migrator",
+          "USAGE",
+          false
+        ]
       ],
       "objects": 0,
       "defaultPrivileges": 0,
@@ -259,7 +277,8 @@
     "prePresetsMain": "c2400ee2ec0c8168bd62de1ce0203bf364d38b3b7bbb51a0da35ed23c56e875f",
     "main": "fa7286bdba1ceac7097e75c05477664dbac21895280c972257ddfcd20bc76f9f",
     "repositoryCredentials": "a72e0e9b38947bb6fddc8f5b6b8179e7eee1ce4bb288cf3cc62e47bb9fa20e64",
-    "completed": "ba6666c978c47e0dd01c4b1251285f9c4c2b276c7c616fd5c8b861728c7d05e2",
+    "workspaceSetup": "ba6666c978c47e0dd01c4b1251285f9c4c2b276c7c616fd5c8b861728c7d05e2",
+    "completed": "622c7b63ee8ce0aaeffd37fc3c1d2d008d55558d47d42b4c561cdcc6d5b7593b",
     "repositoryRetention": "d283cb9e5f8866f4bde1ddba6fd76bd2b056bb8ee81ae0b42c2a80e78d9943fb"
   },
   "ledgerCatalogs": {

@@ -94,7 +94,9 @@ Kubernetes workload rendering calls `prepareHarnessAuth` once for the resolved
 source. It projects the OCC Secret key only into embedded OpenClaw or dedicated
 Codex. Canonical sources live in CP; Compute delivers selected fields into an
 exact revision-owned DP Secret, including the account token/workspace for ChatGPT.
-Dedicated gateways receive neither model source.
+Dedicated gateways receive neither model source. This namespace-local delivery
+also applies to fixture images without native runtime configuration; only the
+native dedicated transport token depends on that configuration.
 See the [harness authentication flow](native-service-account-credential-delivery.md)
 for admission, immutable source snapshots, and worker reauthorization.
 
@@ -225,6 +227,8 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 13:13: Keep fixture credential delivery namespace-local, matching native runtime placement. (codex/01a0cf72-6985-7712-ba92-d8cc32470f24 - df4ca4474d90de2d4ab0dd6f6d03a64ebb92526a)
 
 - 2026-09-23 12:38: Guard cross-mode retirement and inspect both targets during final Agent cleanup. (codex/01a0cf72-6985-7712-ba92-d8cc32470f24 - 25a520de9d0259c3ae6b7ef6d7c0e7e6ccce0349)
 

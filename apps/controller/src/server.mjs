@@ -235,7 +235,12 @@ async function start() {
   if (settings.gatewayApiKeyPath !== undefined) {
     await validateWorkspaceFilesApiKeyPath(settings.gatewayApiKeyPath);
   }
-  const compositionSettings = { ...settings, logger, logging, metrics };
+  const compositionSettings = {
+    ...settings,
+    logger,
+    logging,
+    metrics,
+  };
   const drivers = await loadInstallationConfiguration({
     mode: settings.mode,
     startupConfiguration,

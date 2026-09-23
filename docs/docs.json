@@ -736,6 +736,7 @@
               "flows/openshell-sandbox-provisioning",
               "flows/driver-plugin-loading",
               "flows/agent-plugins",
+              "flows/agent-provisioning",
               "flows/agent-native-admin",
               "flows/kubernetes-existing-namespace-placement",
               "flows/production-tui",

@@ -1,6 +1,6 @@
 import { element, button } from "../dom.mjs";
 import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../workspace-defaults.mjs";
-import { ensureSecretOperateBinding } from "./credentials.mjs";
+import { ensureSecretOperateBinding, secretIdForBinding } from "./credentials.mjs";
 import { createHarnessAuthFields } from "./harness-auth.mjs";
 import { createPresetFields } from "./presets.mjs";
 import { defaultAgentModel } from "./starter-model.mjs";
@@ -79,6 +79,136 @@ function configurationTemplate(mode) {
         }
       : {}),
   };
+}
+
+function createClientRequestId() {
+  return `req_${crypto.randomUUID()}`;
+}
+
+function parseJsonValue(input, reportInvalid = false) {
+  try {
+    return JSON.parse(input.value);
+  } catch {
+    if (reportInvalid) {
+      input.setCustomValidity("Enter valid JSON.");
+      input.reportValidity();
+    }
+    return undefined;
+  }
+}
+
+function parseObject(input, reportInvalid = false) {
+  const values = parseJsonValue(input, reportInvalid);
+  if (
+    values !== undefined &&
+    (values === null || Array.isArray(values) || typeof values !== "object")
+  ) {
+    if (reportInvalid) {
+      input.setCustomValidity("Enter a valid JSON object.");
+      input.reportValidity();
+    }
+    return undefined;
+  }
+  return values;
+}
+
+function provisioningStatusText(status) {
+  switch (status) {
+    case "queued":
+      return "Provisioning queued…";
+    case "running":
+      return "Provisioning Agent…";
+    case "succeeded":
+      return "Provisioning finished. Waiting for deployment activation…";
+    case "failed":
+      return "Provisioning failed.";
+    case "cancelled":
+      return "Provisioning was cancelled.";
+    default:
+      return "Provisioning Agent…";
+  }
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function deploymentStatusPath(namespaceId, provisioning) {
+  return typeof provisioning?.agentId === "string" &&
+    provisioning.agentId.length > 0 &&
+    typeof provisioning?.revisionId === "string" &&
+    provisioning.revisionId.length > 0
+    ? `${namespacePath(namespaceId)}/agents/${encodeURIComponent(provisioning.agentId)}/deployments/${encodeURIComponent(provisioning.revisionId)}`
+    : null;
+}
+
+async function waitForProvisioning({ request, status, namespaceId, first }) {
+  let current = first.provisioning ?? first;
+  const jobUrl = current?.url;
+  while (current?.status === "queued" || current?.status === "running") {
+    status.textContent = provisioningStatusText(current.status);
+    if (typeof current.url !== "string" || !current.url) {
+      throw new Error("Provisioning status URL is unavailable.");
+    }
+    await wait(1_000);
+    const next = await request(current.url);
+    current = next.provisioning ?? next;
+  }
+  status.textContent = provisioningStatusText(current?.status);
+  if (current?.status !== "succeeded") {
+    const error = new Error(current?.error?.message ?? "Provisioning did not complete.");
+    error.provisioningTerminal = true;
+    error.canRetryProvisioning = current?.status === "failed";
+    error.provisioningUrl = current?.url ?? jobUrl;
+    throw error;
+  }
+  const deploymentPath = deploymentStatusPath(namespaceId, current);
+  if (typeof current.agentId !== "string" || !current.agentId) {
+    throw new Error("Provisioning status did not include an Agent.");
+  }
+  if (typeof current.revisionId !== "string" || !current.revisionId) {
+    throw new Error("Provisioning status did not include an AgentRevision.");
+  }
+  if (!deploymentPath) {
+    return { agentId: current.agentId, revisionId: current.revisionId };
+  }
+  let deployment = current.deployment;
+  while (deployment?.status !== "succeeded") {
+    if (deployment?.status === "failed" || deployment?.status === "cancelled") {
+      const error = new Error(deployment.error?.message ?? "Deployment did not activate.");
+      error.provisioningTerminal = true;
+      throw error;
+    }
+    status.textContent = "Waiting for deployment activation…";
+    await wait(1_000);
+    deployment = await request(deploymentPath);
+  }
+  return { agentId: current.agentId, revisionId: deployment.revisionId ?? current.revisionId };
+}
+
+async function finishProvisioningAttempt({ request, status, namespaceId, attempt }) {
+  status.textContent = "Submitting provisioning request…";
+  const provisioned =
+    attempt.retryUrl === undefined
+      ? await request(`${namespacePath(namespaceId)}/agents/provision`, {
+          method: "POST",
+          body: attempt.body,
+        })
+      : await request(attempt.retryUrl, { method: "POST" });
+  attempt.acknowledged = true;
+  const accepted = provisioned.provisioning ?? provisioned;
+  attempt.statusUrl = accepted.url ?? attempt.statusUrl;
+  attempt.retryUrl =
+    typeof attempt.statusUrl === "string" && attempt.statusUrl.length > 0
+      ? `${attempt.statusUrl}/retry`
+      : undefined;
+  status.textContent = "Provisioning request accepted.";
+  return waitForProvisioning({
+    request,
+    status,
+    namespaceId,
+    first: provisioned,
+  });
 }
 
 export function renderCreateAgent(context) {
@@ -220,9 +350,15 @@ function renderAgentForm(context, rendered) {
   );
   const providerStatus = element("p", { className: "hint", role: "status" }, "Loading Providers…");
   let providersLoaded = false;
+  let modelProviderCount = 0;
+  let capabilityDiscoveryDone = false;
+  let capabilityDiscoveryFailed = false;
+  const provisionableExecutionModes = new Set();
   let pending = false;
   let outcomeUnknown = false;
   let savedConfiguration;
+  let provisioningRequestId = createClientRequestId();
+  let provisioningAttempt = null;
   let stagedChannelSecrets = [];
   const feedback = element("p", { className: "error", role: "alert" });
   const savedStatus = element("p", { className: "hint", role: "status" });
@@ -236,11 +372,21 @@ function renderAgentForm(context, rendered) {
       renderCreateAgent(context);
     }
   });
+  const retryProvisioning = button("Retry provisioning request", () => {
+    if (!provisioningAttempt || pending) {
+      return;
+    }
+    void submitProvisioningAttempt(provisioningAttempt);
+  });
+  const retryCapabilityDiscovery = button("Retry capability check", () => {
+    void loadInstallationCapabilities();
+  });
   const actions = element(
     "div",
     { className: "form-actions" },
     button("Cancel", () => context.navigate("agents")),
     startOver,
+    retryProvisioning,
     submit,
   );
   const channelEditor = element("div", { className: "create-channels" });
@@ -255,11 +401,12 @@ function renderAgentForm(context, rendered) {
     ),
     field("Provider (optional)", provider),
     providerStatus,
+    retryCapabilityDiscovery,
     auth.section,
     field(
       "Configuration JSON",
       configuration,
-      "Starter template applied. Edit the sample model and settings before saving. Slack token Secrets can be selected or created from the channel editor.",
+      "Starter template applied. Dedicated Agents are provisioned and deployed from this inline Configuration. Embedded Agents save a draft Configuration and Agent.",
     ),
     reset,
     field(
@@ -277,21 +424,6 @@ function renderAgentForm(context, rendered) {
   form.addEventListener("change", () => {
     edited = true;
   });
-  function parseObject(input, reportInvalid = false) {
-    try {
-      const values = JSON.parse(input.value);
-      if (values === null || Array.isArray(values) || typeof values !== "object") {
-        throw new Error();
-      }
-      return values;
-    } catch {
-      if (reportInvalid) {
-        input.setCustomValidity("Enter a valid JSON object.");
-        input.reportValidity();
-      }
-      return undefined;
-    }
-  }
   function hasEnabledChannel(values) {
     const channels = values?.channels;
     if (channels === null || typeof channels !== "object" || Array.isArray(channels)) {
@@ -319,6 +451,18 @@ function renderAgentForm(context, rendered) {
       }
       await ensureSecretOperateBinding(context, agent, secret);
     }
+  }
+  function retainReferencedStagedSecrets(nextSecretBindings, changedSecrets = []) {
+    const referencedSecretIds = new Set(
+      Object.values(nextSecretBindings ?? {})
+        .map((binding) => secretIdForBinding(binding))
+        .filter((id) => id !== null),
+    );
+    const merged = new Map(stagedChannelSecrets.map((secret) => [secret.id, secret]));
+    for (const secret of changedSecrets) {
+      merged.set(secret.id, secret);
+    }
+    return [...merged.values()].filter((secret) => referencedSecretIds.has(secret.id));
   }
   function renderChannelEditor() {
     const values = parseObject(configuration);
@@ -369,7 +513,10 @@ function renderAgentForm(context, rendered) {
         if (options.secretBindings !== undefined) {
           secretBindings.value = JSON.stringify(options.secretBindings, null, 2);
           secretBindings.setCustomValidity("");
-          stagedChannelSecrets = options.changedSecrets ?? [];
+          stagedChannelSecrets = retainReferencedStagedSecrets(
+            options.secretBindings,
+            options.changedSecrets,
+          );
         }
         configuration.setCustomValidity("");
         setTimeout(() => {
@@ -390,6 +537,25 @@ function renderAgentForm(context, rendered) {
     channelEditor.replaceChildren(...[channels, modeWarning].filter(Boolean));
     updateControls();
   }
+  const supportsProvisioning = () => provisionableExecutionModes.has(mode.value);
+  const shouldProvision = () => mode.value === "dedicated" && supportsProvisioning();
+  const addProvisionableExecutionModes = (executionModes) => {
+    for (const executionMode of executionModes ?? []) {
+      provisionableExecutionModes.add(executionMode);
+    }
+  };
+  const updateProviderStatusText = () => {
+    if (capabilityDiscoveryFailed) {
+      return;
+    }
+    if (modelProviderCount > 0) {
+      providerStatus.textContent = supportsProvisioning()
+        ? "Choose an installed Provider. This runtime supports first-time Agent provisioning."
+        : "Choose an installed Provider. This runtime creates draft Agents for later deployment.";
+    } else if (providersLoaded) {
+      providerStatus.textContent = "No Providers configured.";
+    }
+  };
   const updateControls = () => {
     for (const root of [form, actions]) {
       for (const node of root.querySelectorAll("button, input, select, textarea")) {
@@ -405,24 +571,58 @@ function renderAgentForm(context, rendered) {
     mode.disabled = pending || Boolean(savedConfiguration);
     configuration.readOnly = Boolean(savedConfiguration);
     secretBindings.readOnly = Boolean(savedConfiguration);
-    submit.disabled = pending || outcomeUnknown;
+    submit.disabled = pending || outcomeUnknown || !capabilityDiscoveryDone;
+    retryProvisioning.hidden =
+      (!outcomeUnknown && provisioningAttempt?.retryUrl === undefined) || !provisioningAttempt;
+    retryProvisioning.disabled = pending || !provisioningAttempt;
+    retryCapabilityDiscovery.hidden = !capabilityDiscoveryFailed;
+    retryCapabilityDiscovery.disabled = pending;
   };
   renderChannelEditor();
+  async function loadInstallationCapabilities() {
+    capabilityDiscoveryDone = false;
+    capabilityDiscoveryFailed = false;
+    updateControls();
+    try {
+      const installation = await request("/installation");
+      if (!context.isCurrent()) {
+        return;
+      }
+      provisionableExecutionModes.clear();
+      addProvisionableExecutionModes(installation.capabilities?.agentProvisioning?.executionModes);
+      capabilityDiscoveryDone = true;
+      updateProviderStatusText();
+    } catch (error) {
+      if (!context.isCurrent()) {
+        return;
+      }
+      if (error.status === 401) {
+        context.onExpired();
+        return;
+      }
+      capabilityDiscoveryFailed = true;
+      providerStatus.textContent = `Installation capabilities unavailable. ${message(error)} Retry before creating an Agent.`;
+    } finally {
+      if (context.isCurrent()) {
+        updateControls();
+      }
+    }
+  }
+  void loadInstallationCapabilities();
   request("/providers")
     .then((items) => {
       if (!context.isCurrent()) {
         return;
       }
       const modelProviders = items.filter((item) => item.type === "chatgpt");
+      modelProviderCount = modelProviders.length;
       provider.append(
         ...modelProviders
           .filter((item) => item.id !== providerId)
           .map((item) => element("option", { value: item.id }, `${item.id} · ${item.type}`)),
       );
       providersLoaded = true;
-      providerStatus.textContent = modelProviders.length
-        ? "Choose an installed Provider."
-        : "No Providers configured.";
+      updateProviderStatusText();
       updateControls();
     })
     .catch((error) => {
@@ -433,8 +633,66 @@ function renderAgentForm(context, rendered) {
         context.onExpired();
       } else {
         providerStatus.textContent = `Providers unavailable. ${message(error)} You can continue with None.`;
+        updateControls();
       }
     });
+  async function submitProvisioningAttempt(attempt) {
+    pending = true;
+    outcomeUnknown = false;
+    updateControls();
+    feedback.textContent = "";
+    let mutationStarted = false;
+    try {
+      mutationStarted = true;
+      const { agentId, revisionId } = await finishProvisioningAttempt({
+        request,
+        status: savedStatus,
+        namespaceId,
+        attempt,
+      });
+      if (!context.isCurrent()) {
+        return;
+      }
+      provisioningAttempt = null;
+      context.navigate(`agents/${agentId}?revision=${revisionId}&tab=workspace`);
+    } catch (error) {
+      if (!context.isCurrent()) {
+        return;
+      }
+      if (error.status === 401) {
+        context.onExpired();
+        return;
+      }
+      outcomeUnknown =
+        mutationStarted &&
+        !error.provisioningTerminal &&
+        ![400, 403, 404, 409, 429].includes(error.status);
+      const detail =
+        outcomeUnknown && attempt.acknowledged
+          ? "Outcome unknown after provisioning admission. Retry resubmits the same request ID and saved references so the API can recover the job."
+          : outcomeUnknown
+            ? "Outcome unknown. Retry resubmits the same request ID and saved references."
+            : error.provisioningTerminal && error.canRetryProvisioning
+              ? `${error.message} Retry uses the accepted provisioning job.`
+              : error.status === undefined && error.message
+                ? error.message
+                : message(error, mutationStarted);
+      feedback.textContent = detail + (error.requestId ? ` Request ID: ${error.requestId}` : "");
+      if (error.provisioningTerminal && error.canRetryProvisioning) {
+        provisioningAttempt = {
+          ...attempt,
+          retryUrl: error.provisioningUrl ? `${error.provisioningUrl}/retry` : attempt.retryUrl,
+        };
+      } else if (!outcomeUnknown) {
+        provisioningAttempt = null;
+      }
+    } finally {
+      if (context.isCurrent()) {
+        pending = false;
+        updateControls();
+      }
+    }
+  }
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (pending || outcomeUnknown || !form.reportValidity()) {
@@ -443,6 +701,7 @@ function renderAgentForm(context, rendered) {
     const values = parseObject(configuration, true);
     const desiredPlugins = parseObject(plugins, true);
     const bindings = parseObject(secretBindings, true);
+    const provisionable = shouldProvision();
     if (values === undefined || desiredPlugins === undefined || bindings === undefined) {
       return;
     }
@@ -471,6 +730,34 @@ function renderAgentForm(context, rendered) {
         return;
       }
       mutationStarted = true;
+      if (provisionable) {
+        provisioningAttempt = {
+          acknowledged: false,
+          body: {
+            requestId: provisioningRequestId,
+            ...body,
+            configuration: {
+              kind: "agent",
+              values,
+              ...(Object.keys(bindings).length ? { secretBindings: bindings } : {}),
+            },
+          },
+        };
+        const { agentId, revisionId } = await finishProvisioningAttempt({
+          request,
+          status: savedStatus,
+          namespaceId,
+          attempt: provisioningAttempt,
+        });
+        if (!context.isCurrent()) {
+          return;
+        }
+        provisioningAttempt = null;
+        if (context.isCurrent()) {
+          context.navigate(`agents/${agentId}?revision=${revisionId}&tab=workspace`);
+        }
+        return;
+      }
       if (!savedConfiguration) {
         savedConfiguration = await request(`${namespacePath(namespaceId)}/configurations`, {
           method: "POST",
@@ -491,7 +778,7 @@ function renderAgentForm(context, rendered) {
         body: { ...body, configurationId: savedConfiguration.id },
       });
       try {
-        await grantConfigurationSecretAccess(created, stagedChannelSecrets);
+        await grantConfigurationSecretAccess(created, retainReferencedStagedSecrets(bindings));
       } catch (error) {
         if (!context.isCurrent()) {
           return;
@@ -521,11 +808,20 @@ function renderAgentForm(context, rendered) {
         context.onExpired();
         return;
       }
+      outcomeUnknown =
+        mutationStarted &&
+        !error.provisioningTerminal &&
+        ![400, 403, 404, 409, 429].includes(error.status);
       const detail =
-        error.status === 409 && savedConfiguration
-          ? "Agent creation conflicts with the saved state. Check the Agent name and selections, then try again."
-          : message(error, mutationStarted);
-      outcomeUnknown = mutationStarted && ![400, 403, 404, 409, 429].includes(error.status);
+        outcomeUnknown && provisioningAttempt
+          ? provisioningAttempt.acknowledged
+            ? "Outcome unknown after provisioning admission. Retry resubmits the same request ID and saved references so the API can recover the job."
+            : "Outcome unknown. Retry resubmits the same request ID and saved references."
+          : error.status === undefined && error.message
+            ? error.message
+            : error.status === 409 && savedConfiguration
+              ? "Agent creation conflicts with the saved state. Check the Agent name and selections, then try again."
+              : message(error, mutationStarted);
       feedback.textContent = detail + (error.requestId ? ` Request ID: ${error.requestId}` : "");
     } finally {
       if (context.isCurrent()) {
@@ -539,7 +835,7 @@ function renderAgentForm(context, rendered) {
     element(
       "p",
       { className: "muted" },
-      "Save a Configuration and an Agent in this Namespace. Creation does not deploy it or create an AgentRevision.",
+      "Dedicated Agents are provisioned and deployed from this form. Embedded Agents save a Configuration and draft Agent for later deployment.",
     ),
     form,
     channelEditor,

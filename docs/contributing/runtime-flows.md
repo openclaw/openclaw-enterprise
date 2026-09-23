@@ -16,6 +16,7 @@ from each trace; for commands to run locally, see [Testing](../testing/README.md
 
 - [Platform console](../flows/platform-console.md) and [Agent editing](../flows/platform-console/agent-editing.md)
 - [Agent Presets](../flows/agent-presets.md): template admission, variable rendering, and independent draft creation
+- [Agent provisioning](../flows/agent-provisioning.md): separate Secret saving, queued setup, resource creation, safe retries, and first deployment handoff
 - [Agent native admin UI](../flows/agent-native-admin.md): console access, shared-session admission, and private gateway proxying
 - [Configuration Driver](../flows/configuration-driver.md) and [configuration persistence and revision admission](../flows/configuration-driver/persistence-and-revisions.md)
 - [Harness execution topology](../flows/harness-execution-topology.md)

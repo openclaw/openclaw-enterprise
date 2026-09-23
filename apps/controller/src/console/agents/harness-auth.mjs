@@ -29,7 +29,8 @@ export function createHarnessAuthFields(context, binding = null) {
     spellcheck: "false",
     autocomplete: "off",
     placeholder: "sec_…",
-    value: binding?.method === "api_key" ? binding.source.id : "",
+    value:
+      binding?.method === "api_key" && binding.source?.kind === "secret" ? binding.source.id : "",
   });
   const account = element(
     "select",

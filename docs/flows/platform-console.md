@@ -61,9 +61,11 @@ graph TD
     F -->|Providers and Installation admin| H["Project loaded Provider IDs and types"]
     S1 -->|create| S2["POST stores Namespace Secret immediately"]
     S2 --> S3
-    E1 --> M1["POST creates Configuration with staged bindings"]
+    E1 -->|ordinary draft| M1["POST creates Configuration with staged bindings"]
+    E1 -->|supported Dedicated runtime| M3["POST queues provisioning with inline Configuration"]
+    M3 --> M4["Worker creates resources, grants and first deployment"]
     M1 -->|returned Configuration ID| M["POST creates Agent draft only"]
-    M --> M2["Grant Agent use of selected Secrets"]
+    M --> M2["Console grants Agent use of selected Secrets"]
     E2 --> N["GET draft Configuration or immutable revision"]
     E3 --> O["PATCH Configuration, then grant selected Secret access"]
     E4 --> P["DELETE exact Agent"]
@@ -172,8 +174,14 @@ The Slack menus use the metadata list and creation paths traced in
 creation form. Cancel discards the drawer selections, but a Secret created by
 the modal already belongs to the Namespace and remains stored.
 
-Submission parses the JSON object and
-posts `{kind: "agent", values, secretBindings}` to
+For supported Dedicated runtimes, submission sends the inline Configuration and
+ordinary Secret references to the [provisioning API](agent-provisioning.md).
+Console polls the accepted job before an Agent exists, then opens the returned
+Agent revision. The worker creates resources and exact Secret grants before
+admitting deployment; Console does not duplicate those grants.
+
+Ordinary draft creation parses the JSON object and posts
+`{kind: "agent", values, secretBindings}` to
 `POST /namespaces/:namespaceId/configurations`. After that returns its ID,
 `POST /namespaces/:namespaceId/agents` creates the Agent draft with the selected
 plugin map, `initialWorkspaceFiles`, and `workspaceDefaultsId`, then returns to
@@ -186,11 +194,10 @@ then uses the returned Agent identity to grant exact Secret `operate` through
 Namespace IAM. These grants are separate writes from Configuration and Agent
 creation; they do not deploy the Agent. A grant failure blocks another creation
 attempt and links to the created Agent's Credentials tab for recovery.
-If that second
-write fails, the browser retains the Configuration ID and locks its JSON and
-execution mode; an explicit Agent retry reuses the saved Configuration. No write
-retries automatically, and creation alone does not admit a revision, validate the
-plugin catalog, or start runtime work.
+If Agent creation fails, the browser retains the Configuration ID and locks its
+JSON and execution mode; an explicit Agent retry reuses the saved Configuration.
+On this ordinary path, writes do not retry automatically, and draft creation
+alone does not admit a revision, validate the plugin catalog, or start runtime work.
 
 `apps/controller/src/console/agents/harness-auth.mjs:createHarnessAuthFields`
 masks the Secret ID input on creation and in the Credentials editor, including
@@ -307,6 +314,8 @@ refreshes and inspects the Agent and revision history.
 ## Changelog
 
 - 2026-09-23 19:09: Trace image-baked OCC revision metadata and OCE sidebar branding. (01a0cfaa-2b68-7e61-b8ff-a7eb82f1edc5 - 150ec08f059cebc4897b839d8318f7b1e3aba0e3)
+
+- 2026-09-23 11:20: Distinguished worker-owned first-time provisioning and Secret grants from ordinary Console draft creation. (01a0cc7f-028b-7803-acf5-803c3d799d75 - f2dd1d3f)
 
 - 2026-09-23 08:30: Trace pre-Agent Slack Secret selection and creation, staged Configuration bindings, and Agent Secret grants. (01a0cd92-fd3f-7d83-a51e-f6264ef6be09 - 941edc9f6971a24ae29a74a6ca749b6375e6ec01)
 

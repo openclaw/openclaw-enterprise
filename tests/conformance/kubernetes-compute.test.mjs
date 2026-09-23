@@ -1603,6 +1603,83 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
   );
 });
 
+test("agent provisioning validation reuses native trusted-proxy admission before cluster access", () => {
+  const driver = createKubernetesComputeDriver(routedOptions());
+  const revision = routedRevision(driver);
+  assert.deepEqual(driver.agentProvisioning.executionModes, ["dedicated"]);
+
+  assert.doesNotThrow(() =>
+    driver.validateAgentProvisioning({
+      executionMode: "dedicated",
+      configuration: revision.configuration,
+    }),
+  );
+  assert.throws(
+    () =>
+      driver.validateAgentProvisioning({
+        executionMode: "embedded",
+        configuration: revision.configuration,
+      }),
+    /dedicated execution mode/i,
+  );
+
+  for (const [configuration, expected] of [
+    [{ gateway: { auth: { mode: "oauth" } } }, /trusted-proxy/i],
+    [
+      {
+        gateway: {
+          auth: {
+            mode: "trusted-proxy",
+            unsupportedField: true,
+          },
+        },
+      },
+      /unsupported field unsupportedField/i,
+    ],
+    [
+      {
+        gateway: {
+          auth: {
+            identityScopes: { "occ-workspace-files": ["operator.read"] },
+          },
+        },
+      },
+      /identityScopes/i,
+    ],
+    [{ gateway: { trustedProxies: ["10.99.0.0/16"] } }, /gatewayTrustedProxyCidrs/i],
+  ]) {
+    const failClosed = createKubernetesComputeDriver(routedOptions());
+    let clusterTouched = false;
+    failClosed.clients = async () => {
+      clusterTouched = true;
+      throw new Error("cluster touched");
+    };
+    assert.throws(
+      () =>
+        failClosed.validateAgentProvisioning({
+          executionMode: "dedicated",
+          configuration: { ...revision.configuration, ...configuration },
+        }),
+      expected,
+    );
+    assert.equal(clusterTouched, false);
+  }
+
+  const missingRouting = createKubernetesComputeDriver(
+    options({
+      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+    }),
+  );
+  assert.throws(
+    () =>
+      missingRouting.validateAgentProvisioning({
+        executionMode: "dedicated",
+        configuration: revision.configuration,
+      }),
+    /gateway routing and node enrollment/i,
+  );
+});
+
 test("gateway routing startup validation and namespace membership fail closed", async () => {
   for (const envoyHttpsTargetPort of [0, -1, 65536, 443.5, "10443"]) {
     assert.throws(
@@ -2987,10 +3064,18 @@ test("Kubernetes lifecycle owners cannot be replaced after their first operation
   // Freeze ownership synchronously so an in-flight reconciliation cannot lose its revocation owner.
   assert.throws(() => driver.setLifecycleDrivers([]), /owners cannot change.*operations begin/i);
   await operation;
+  assert.doesNotThrow(() => driver.setLifecycleDrivers([selected]));
   assert.throws(
-    () => driver.setLifecycleDrivers([selected]),
+    () =>
+      driver.setLifecycleDrivers([
+        {
+          ...selected,
+          computeLifecycleHooks: { async afterNamespacePrepared() {} },
+        },
+      ]),
     /owners cannot change.*operations begin/i,
   );
+  assert.throws(() => driver.setLifecycleDrivers([]), /owners cannot change.*operations begin/i);
 });
 
 test("Kubernetes lifecycle hooks never run before cluster ownership and workload identity checks", async () => {
@@ -5874,11 +5959,13 @@ test("retirement preserves active storage and node routing and deletes exact own
 
 // These fixtures substitute Kubernetes transport only. Preparation, ownership, private delivery,
 // redaction, readiness, and completed-payload retention run through the production driver.
-function workspaceSetupFixture(embedded) {
+function workspaceSetupFixture(embedded, runtime = true) {
   const state = { ready: false, secretFailure: false, failedInitializer: false };
   const driver = new KubernetesComputeDriver(
     routedOptions({
-      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+      runtime: runtime
+        ? { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" }
+        : undefined,
     }),
     {
       nodeEnrollment: {
@@ -6550,4 +6637,31 @@ for (const embedded of [true, false]) {
       }
     });
   }
+}
+
+for (const embedded of [true, false]) {
+  test(`fixture ${embedded ? "embedded" : "dedicated"} Pods consume model credentials from their own namespace`, async () => {
+    const { driver, revision, objects } = workspaceSetupFixture(embedded, false);
+    await driver.prepareRevision(revision, authContext(revision));
+    const workloads = [...objects.values()].filter(({ kind }) => kind === "Deployment");
+    assert.equal(workloads.length, embedded ? 1 : 2);
+    let modelConsumers = 0;
+    for (const workload of workloads) {
+      for (const container of workload.spec.template.spec.containers) {
+        for (const environment of container.env ?? []) {
+          const ref = environment.valueFrom?.secretKeyRef;
+          if (!ref) {
+            continue;
+          }
+          const secret = objects.get(`Secret:${workload.metadata.namespace}:${ref.name}`);
+          assert.ok(secret, `${environment.name} must resolve in the Pod namespace`);
+          assert.ok(secret.data[ref.key]);
+          if (environment.name === "OPENAI_API_KEY") {
+            modelConsumers++;
+          }
+        }
+      }
+    }
+    assert.equal(modelConsumers, 1);
+  });
 }
