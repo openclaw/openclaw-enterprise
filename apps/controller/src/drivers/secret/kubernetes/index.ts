@@ -19,7 +19,7 @@ import {
   ResourceConflictError,
   ScopeViolationError,
 } from "@openclaw-enterprise/occ";
-import { resolveKubernetesNamespace } from "../../compute/kubernetes/index.ts";
+import { resolveKubernetesControlNamespace } from "../../compute/kubernetes/index.ts";
 import { createKubernetesClientConfiguration } from "../../kubernetes/client.ts";
 import {
   currentComputeAbortSignal,
@@ -157,27 +157,6 @@ function timeoutFailure(action: string): Error {
   return new SecretBackendUnavailableError(
     `The Kubernetes Secret ${action} outcome is unknown after timeout.`,
   );
-}
-
-function namespaceOwned(
-  metadata: V1ObjectMeta | undefined,
-  namespaceId: string,
-  expectedName: string,
-  external: boolean,
-): void {
-  const name = metadata?.name;
-  const labels = metadata?.labels;
-  const annotations = metadata?.annotations;
-  if (
-    name !== expectedName ||
-    labels?.[NAMESPACE_LABEL] !== namespaceId ||
-    annotations?.[NAMESPACE_ANNOTATION] !== namespaceId
-  ) {
-    throw new SecretOwnershipError("Refusing a Kubernetes namespace without exact OCC ownership.");
-  }
-  if (!external && labels["app.kubernetes.io/managed-by"] !== MANAGER) {
-    throw new SecretOwnershipError("Refusing an unmanaged Kubernetes namespace.");
-  }
 }
 
 export class KubernetesSecretDriver implements SecretDriver {
@@ -472,30 +451,15 @@ export class KubernetesSecretDriver implements SecretDriver {
   }
 
   private async readyNamespace(client: CoreV1Api, namespaceId: string): Promise<string> {
-    let placement: { readonly name: string; readonly external: boolean };
     try {
-      placement = await this.request(
-        () => resolveKubernetesNamespace(client, namespaceId),
+      const placement = await this.request(
+        () => resolveKubernetesControlNamespace(client, namespaceId),
         "namespace verification",
       );
-      const observed = await this.request(
-        () => client.readNamespace({ name: placement.name }),
-        "namespace verification",
-      );
-      namespaceOwned(observed.metadata, namespaceId, placement.name, placement.external);
-      if (
-        observed.status?.phase !== "Active" ||
-        observed.metadata?.deletionTimestamp !== undefined
-      ) {
-        throw new SecretOwnershipError("Secret storage requires a ready Kubernetes namespace.");
-      }
+      return placement.name;
     } catch (error) {
-      if (error instanceof SecretOwnershipError || error instanceof SecretValidationError) {
-        throw error;
-      }
       throw sanitizedFailure(error, "namespace verification");
     }
-    return placement.name;
   }
 
   private async request<T>(

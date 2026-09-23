@@ -1599,6 +1599,17 @@ export async function createPluginDriverRealFixture(
       throw error;
     }
   });
+  for (const role of [`${proofPrefix}-tenant-${suffix}`, `${proofPrefix}-secrets-${suffix}`]) {
+    await kubectl(
+      "create",
+      "rolebinding",
+      `${role}-api`,
+      "--namespace",
+      gatewayRuntimeNamespace,
+      `--clusterrole=${role}`,
+      `--serviceaccount=${platformNamespace}:${api.account}`,
+    );
+  }
   for (const [role, target] of [
     [`${proofPrefix}-tenant-${suffix}`, gatewayRuntimeNamespace],
     [`${proofPrefix}-tenant-pods-${suffix}`, gatewayRuntimeNamespace],
@@ -1669,7 +1680,9 @@ export async function createPluginDriverRealFixture(
   async function deployAndWait(agent) {
     let gatewayPassword = gatewayPasswords.get(agent.id);
     if (gatewayPassword === undefined) {
-      gatewayPassword = await provisionAgentTransportSecret(directory, tenantNamespace, agent.id);
+      gatewayPassword = await provisionAgentTransportSecret(directory, tenantNamespace, agent.id, {
+        executionMode: agent.executionMode,
+      });
       gatewayPasswords.set(agent.id, gatewayPassword);
     }
     const deployed = await request(

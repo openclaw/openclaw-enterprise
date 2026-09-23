@@ -1,7 +1,7 @@
 # Kubernetes Secret Driver
 
 The Kubernetes Secret Driver stores OCC Secret values in the Kubernetes
-namespace selected for the owning OpenClaw Namespace. Each Secret belongs to one
+managed control-plane namespace for the owning OpenClaw Namespace. Each Secret belongs to one
 Namespace, returns metadata only through OCC, and can be delivered as an
 environment variable through an Agent `harnessAuth` API-key binding or a
 Configuration `secretBindings` entry for gateway-only credentials.
@@ -18,12 +18,13 @@ gateway's responsibility.
 ## Requirements
 
 - The bundled Kubernetes Compute Driver must select or create the backing
-  Kubernetes namespace for the OpenClaw Namespace.
+  control-plane Kubernetes namespace for the OpenClaw Namespace.
 - The OpenClaw Namespace must be `ready` before Secret create, update, or
   projection validation can succeed.
 - The controller API needs tenant-local Kubernetes Secret `get`, `create`,
-  `update`, `patch`, and `delete` permission in each tenant namespace. The
-  worker and workloads do not need direct Kubernetes Secret API permission.
+  `update`, `patch`, and `delete` permission in each tenant control-plane namespace.
+  The trusted worker reads admitted sources and manages selected runtime projections
+  in the data plane. Workload ServiceAccounts receive no Secret API permissions.
 - The caller must be authenticated through OCC and authorized to create or
   mutate the exact Secret. Configuration and Agent assignment changes that bind a
   Secret separately require caller `operate` on each exact Secret. Deployment
@@ -195,8 +196,8 @@ The response returns the same metadata and `ref`. Update success means the
 driver stored the new value; it does not restart a gateway, edit an existing
 AgentRevision, or prove that a running process has consumed the value. Deploy or
 restart each consuming Agent again to create a new revision or process with the
-current Kubernetes Secret value. Restarting an older revision also consumes the
-current value because revisions hold references, not historical Secret bytes.
+current Kubernetes Secret value. Dedicated Gateway restarts read current canonical channel values. Harness Pod
+restarts read the existing revision projection; redeploy the Agent to refresh it.
 
 There is no value history, automatic rotation, automatic workload restart, or
 value rollback. Updating or deleting an OCC Secret does not remove credentials

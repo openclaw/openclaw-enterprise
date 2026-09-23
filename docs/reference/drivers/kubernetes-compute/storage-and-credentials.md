@@ -145,18 +145,40 @@ and [deployment procedure](../../../guides/deploy/native-admin.md).
 
 ## Runtime credentials
 
-Canonical Agent transport and admitted OCC Secret sources stay in the data-plane
-namespace. Before a dedicated Gateway starts, the worker validates their exact
-ownership or admitted UID and copies only the app-server token, the optional
-Gateway password, and admitted environment-binding keys into a revision-owned
-Secret in the Gateway namespace. It never copies the entire source bundle or
-automatically includes Harness model/account credentials. Embedded projection
-remains local. Source changes are observed during reconciliation; environment
-updates require the normal workload restart lifecycle. Retirement removes the
-exact old revision projection without changing the active revision's copy.
+Canonical Configuration, OCC Secret and managed account credential sources live
+in the tenant's managed control-plane namespace. Dedicated Gateways reference
+admitted channel Secrets there directly; Compute verifies their scope and UID.
+There is no data-plane source or Gateway Secret mirror.
+
+For dedicated execution, `transport-<agent-hash>` (using the configured prefix)
+contains only `app-server-token`; `gateway-password-<agent-hash>` contains only
+`gateway-password`. Both are canonical CP resources. Compute creates
+`harness-secrets-<agent-hash>-<revision-hash>` in the data plane, containing only
+the selected model credential fields and app-server token. Harness Pods reference
+that revision-owned runtime Secret. Gateway password and channel tokens never
+enter it. Managed account sources retain account ownership in CP; runtime copies
+have exact Namespace, Agent, service-principal and revision ownership.
+
+Preparation checks admitted source identities before writing runtime material.
+Repeated preparation repairs absent or changed projections. Activation validates
+Gateway sources and selects the prepared revision; it does not issue credentials.
+Retirement waits for the old workload to stop before deleting its projection by
+UID. Gateway and account canonical sources survive revision retirement; final
+Agent deletion removes its transport/password, while account and OCC Secret
+storage retain their separate lifecycles.
+
+Source updates do not restart running processes. New preparation reads current
+values; merely restarting a Harness Pod reads its existing runtime projection.
+Deploy each consumer to deliver updates. Deleting a source or runtime Secret
+does not revoke bytes already loaded into a process or accepted by a provider.
+Transport rotation, finite token TTL and immediate revocation remain open; see
+[follow-up tracking](../../../../specs/36-control-plane-gateways-plan.md#open-work-and-release-boundaries).
+Embedded execution retains its combined workload and transport bundle; CP-backed
+model/configuration sources are delivered to that workload as needed. It is
+outside the dedicated trust-boundary acceptance scope.
 
 Before the first AgentRevision, the [console credential workflow](../../console/create-and-deploy.md#initial-runtime-credentials)
-can create initial per-Agent transport and Slack Secrets through
+can create initial per-Agent transport and Gateway password Secrets through
 the selected Driver. It derives their names internally, checks Namespace and
 Agent ownership, and creates missing whole Secrets without replacing existing
 values. Provider-managed credentials and Configuration Secret bindings retain
@@ -171,9 +193,9 @@ the configured `runtime.transportSecretPrefix`. The Secret name appends the
 first 12 hexadecimal characters of `sha256(agentId)`. Kubernetes gateways use
 trusted-proxy authentication only. Initial provisioning generates
 `gateway-password` and the independent `app-server-token`; dedicated Codex
-requires the latter for its Harness transport. The transport bundle must contain
-exactly these two nonempty keys; initial credential inspection and provisioning
-reject other shapes.
+requires the latter for its Harness transport. Dedicated provisioning requires
+two separate nonempty single-key Secrets; embedded provisioning retains the
+combined bundle. Credential inspection rejects other shapes.
 The Driver projects `gateway-password` as `OPENCLAW_GATEWAY_PASSWORD`
 only when `gateway.auth.password` explicitly uses an environment SecretRef with
 that ID. This supports native local-direct password access alongside trusted-proxy
@@ -182,9 +204,9 @@ is rejected.
 
 The Agent's required [harnessAuth binding](../../agents.md#harness-authentication)
 selects the model credential. API keys use the selected OCC Secret Driver's
-exact reference; account tokens use one directly projected account-owned
-Secret. Kubernetes prepares the projection and explicit login mode during
-workload rendering. Only the combined embedded gateway/Harness or dedicated
+exact reference; account tokens use an account-owned CP source. Compute delivers
+only the admitted fields to a revision-owned runtime Secret and selects the
+explicit login mode during workload rendering. Only the combined embedded gateway/Harness or dedicated
 Codex consumer receives it; a dedicated gateway never receives model auth.
 
 If channels are enabled, configure `runtime.channels.proxyUrl`, then store the

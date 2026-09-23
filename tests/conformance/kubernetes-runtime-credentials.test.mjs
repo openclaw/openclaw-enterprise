@@ -141,7 +141,12 @@ function credentialFixture({
     },
     async readNamespacedSecret(request) {
       calls.push({ kind: "readSecret", name: request.name });
-      assert.equal(request.namespace, namespaceName);
+      assert.equal(
+        request.namespace,
+        request.name.startsWith("workspace-setup-")
+          ? namespaceName
+          : kubernetesGatewayNamespaceName(namespace.id),
+      );
       const secret = secrets[request.name];
       if (secret === undefined) {
         throw httpError(404);
@@ -150,13 +155,26 @@ function credentialFixture({
     },
     async createNamespacedSecret(request) {
       calls.push({ kind: "createSecret", name: request.body.metadata.name });
-      assert.equal(request.namespace, namespaceName);
+      assert.equal(request.namespace, kubernetesGatewayNamespaceName(namespace.id));
       created.push(structuredClone(request.body));
-      return structuredClone(request.body);
+      const observed = {
+        ...request.body,
+        metadata: { ...request.body.metadata, uid: `${request.body.metadata.name}-uid` },
+        data: Object.fromEntries(
+          Object.entries(request.body.stringData).map(([key, value]) => [key, encode(value)]),
+        ),
+      };
+      secrets[observed.metadata.name] = observed;
+      return structuredClone(observed);
     },
     async deleteNamespacedSecret(request) {
       calls.push({ kind: "deleteSecret", name: request.name });
-      assert.equal(request.namespace, namespaceName);
+      assert.equal(
+        request.namespace,
+        request.name.startsWith("workspace-setup-")
+          ? namespaceName
+          : kubernetesGatewayNamespaceName(namespace.id),
+      );
       const secret = secrets[request.name];
       if (secret === undefined) {
         throw httpError(404);
@@ -200,7 +218,7 @@ function runtimeSecret(driver, namespaceName, prefix, data, overrides = {}) {
         namespaceId: namespace.id,
         agentId: agent.id,
       },
-      namespaceName,
+      kubernetesGatewayNamespaceName(namespace.id),
     ),
     type: "Opaque",
     data: Object.fromEntries(Object.entries(data).map(([key, value]) => [key, encode(value)])),
@@ -213,8 +231,13 @@ test("mocked Kubernetes client reports only complete owned Agent runtime credent
   const secrets = {
     [`transport-${digest(agent.id)}`]: runtimeSecret(driver, namespaceName, "transport", {
       "app-server-token": "app-server-token-value",
-      "gateway-password": "gateway-password-value",
     }),
+    [`gateway-password-${digest(agent.id)}`]: runtimeSecret(
+      driver,
+      namespaceName,
+      "gateway-password",
+      { "gateway-password": "gateway-password-value" },
+    ),
   };
   const fixture = credentialFixture({ secrets });
 
@@ -340,7 +363,7 @@ test("mocked Kubernetes client preflights the transport Secret before initial cr
       .slice(0, firstCreate)
       .filter(({ kind }) => kind === "readSecret")
       .map(({ name }) => name),
-    [`transport-${digest(agent.id)}`],
+    [`transport-${digest(agent.id)}`, `gateway-password-${digest(agent.id)}`],
   );
   assert.equal(
     calls.slice(0, firstCreate).some(({ kind }) => kind === "listDeployments"),
@@ -348,12 +371,15 @@ test("mocked Kubernetes client preflights the transport Secret before initial cr
   );
   assert.deepEqual(
     created.map((secret) => secret.metadata.name),
-    [`transport-${digest(agent.id)}`],
+    [`transport-${digest(agent.id)}`, `gateway-password-${digest(agent.id)}`],
   );
   const transport = created[0].stringData;
   assert.match(transport["app-server-token"], /^[A-Za-z0-9_-]+$/);
-  assert.match(transport["gateway-password"], /^[A-Za-z0-9_-]+$/);
-  assert.notEqual(transport["app-server-token"], transport["gateway-password"]);
+  const password = created[1].stringData;
+  assert.deepEqual(Object.keys(transport), ["app-server-token"]);
+  assert.deepEqual(Object.keys(password), ["gateway-password"]);
+  assert.match(password["gateway-password"], /^[A-Za-z0-9_-]+$/);
+  assert.notEqual(transport["app-server-token"], password["gateway-password"]);
 });
 
 test("mocked Kubernetes client can recover missing transport when model credentials already exist", async () => {
@@ -370,7 +396,7 @@ test("mocked Kubernetes client can recover missing transport when model credenti
   });
   assert.deepEqual(
     created.map((secret) => secret.metadata.name),
-    [`transport-${digest(agent.id)}`],
+    [`transport-${digest(agent.id)}`, `gateway-password-${digest(agent.id)}`],
   );
 });
 
@@ -383,8 +409,13 @@ test("mocked Kubernetes client returns configured metadata without writes for ex
       "transport",
       {
         "app-server-token": "app-server-token-value",
-        "gateway-password": "gateway-password-value",
       },
+    ),
+    [`gateway-password-${digest(agent.id)}`]: runtimeSecret(
+      first.driver,
+      first.namespaceName,
+      "gateway-password",
+      { "gateway-password": "gateway-password-value" },
     ),
   };
   const { driver, created } = credentialFixture({ secrets });
@@ -418,7 +449,7 @@ test("mocked Kubernetes client rejects transport Secrets with unexpected keys", 
   assert.equal(created.length, 0);
 });
 
-test("gateway password env references project only from the Agent transport Secret", () => {
+test("embedded Gateway retains its existing transport Secret password reference", () => {
   const { driver, namespaceName } = credentialFixture();
   const agentId = "agent-password-projection";
   const suffix = digest(agentId);
@@ -505,12 +536,7 @@ test("gateway password env references project only from the Agent transport Secr
 test("mocked Kubernetes client rejects malformed existing credential Secrets before writes", async () => {
   const first = credentialFixture();
   for (const [name, secret] of [
-    [
-      "missing transport key",
-      runtimeSecret(first.driver, first.namespaceName, "transport", {
-        "app-server-token": "app-server-token-value",
-      }),
-    ],
+    ["missing transport key", runtimeSecret(first.driver, first.namespaceName, "transport", {})],
     [
       "empty decoded credential",
       runtimeSecret(

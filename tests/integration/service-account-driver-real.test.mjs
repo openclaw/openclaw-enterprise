@@ -309,7 +309,7 @@ test(
       "--resource=secrets",
     );
 
-    // Separate real Kubernetes identities prove API Secret access never leaks to the worker.
+    // Separate Kubernetes identities scope canonical storage and worker runtime delivery.
     const [api, workerIdentity] = await Promise.all(
       ["api", "worker"].map((role) =>
         createControllerIdentity({
@@ -482,6 +482,17 @@ test(
         throw error;
       }
     });
+    for (const role of [`oce-sa-driver-tenant-${suffix}`, `oce-sa-driver-secrets-${suffix}`]) {
+      await kubectl(
+        "create",
+        "rolebinding",
+        `${role}-api`,
+        "--namespace",
+        gatewayRuntimeNamespace,
+        `--clusterrole=${role}`,
+        `--serviceaccount=${platformNamespace}:${api.account}`,
+      );
+    }
     for (const [role, target] of [
       [`oce-sa-driver-tenant-${suffix}`, gatewayRuntimeNamespace],
       [`oce-sa-driver-secrets-${suffix}`, gatewayRuntimeNamespace],
@@ -570,7 +581,11 @@ test(
       false,
       "provider credential identity must remain private to the Driver",
     );
-    const accountSecret = await kubernetesResource("secret", secretRef.name, tenantNamespace);
+    const accountSecret = await kubernetesResource(
+      "secret",
+      secretRef.name,
+      gatewayRuntimeNamespace,
+    );
     assert.equal(accountSecret.metadata.annotations?.["openclaw.dev/namespace-id"], namespaceId);
     assert.equal(
       accountSecret.metadata.annotations?.["openclaw.dev/service-account-id"],
@@ -691,13 +706,19 @@ test(
     );
     assert.deepEqual(
       codexEnvironment.find(({ name }) => name === "CODEX_ACCESS_TOKEN")?.valueFrom.secretKeyRef,
-      { name: secretRef.name, key: secretRef.key },
-      "Codex must directly project the associated account's one exact token Secret",
+      {
+        name: `harness-secrets-${hash(agent.data.id)}-${hash(revision.data.id)}`,
+        key: "CODEX_ACCESS_TOKEN",
+      },
+      "Codex receives only its revision-owned runtime projection",
     );
     assert.deepEqual(
       codexEnvironment.find(({ name }) => name === "CODEX_CHATGPT_WORKSPACE_ID")?.valueFrom
         .secretKeyRef,
-      { name: secretRef.name, key: "workspace-id" },
+      {
+        name: `harness-secrets-${hash(agent.data.id)}-${hash(revision.data.id)}`,
+        key: "CODEX_CHATGPT_WORKSPACE_ID",
+      },
     );
     for (const name of ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN", "CODEX_CHATGPT_WORKSPACE_ID"]) {
       assert.equal(

@@ -466,7 +466,7 @@ async function setupRepositoryPlatformFixture(context, diagnostic) {
     { default: pg },
     { loadInstallationConfiguration },
     { composeProduction },
-    { kubernetesNamespaceName },
+    { kubernetesNamespaceName, kubernetesGatewayNamespaceName },
   ] = await Promise.all([
     import("pg"),
     import("../../apps/controller/src/composition/installation-config.ts"),
@@ -488,8 +488,8 @@ async function setupRepositoryPlatformFixture(context, diagnostic) {
     installationName: "Repository platform integration",
     environment: { PATH: process.env.PATH },
   });
-  const bootstrapNamespaces = (await pool.query("SELECT id FROM occ.namespaces")).rows.map(
-    ({ id }) => kubernetesNamespaceName(id),
+  const bootstrapNamespaces = (await pool.query("SELECT id FROM occ.namespaces")).rows.flatMap(
+    ({ id }) => [kubernetesNamespaceName(id), kubernetesGatewayNamespaceName(id)],
   );
   ownedNamespaces.push(...bootstrapNamespaces);
   let app;
@@ -561,9 +561,10 @@ async function setupRepositoryPlatformFixture(context, diagnostic) {
     201,
   );
   const placement = kubernetesNamespaceName(namespace.id);
-  ownedNamespaces.push(placement);
+  const controlPlacement = kubernetesGatewayNamespaceName(namespace.id);
+  ownedNamespaces.push(placement, controlPlacement);
   diagnostic.stage = "namespace-provisioning";
-  for (const tenant of [...bootstrapNamespaces, placement]) {
+  for (const tenant of [...bootstrapNamespaces, placement, controlPlacement]) {
     await kube.waitFor("worker-created tenant Namespace", async () => {
       const namespaces = JSON.parse(await kubectl("get", "namespaces", "-o", "json")).items;
       return namespaces.find(({ metadata }) => metadata.name === tenant);

@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from "node:util";
 import {
   KubernetesComputeDriver,
   kubernetesNamespaceName,
+  kubernetesGatewayNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/credentials/client/config.ts";
 
@@ -122,7 +123,8 @@ async function fixture() {
   const calls = [];
   let pods = [];
   let observePods;
-  const key = (kind, name) => `${kind}:${name}`;
+  const key = (kind, name, target = namespace) =>
+    `${kind}:${kind === "Namespace" ? "" : target}:${name}`;
   const failure = (statusCode) => Object.assign(new Error(`HTTP ${statusCode}`), { statusCode });
   const matching = (object, selector) =>
     (selector ?? "")
@@ -133,7 +135,10 @@ async function fixture() {
         return object.metadata?.labels?.[name] === value;
       });
   const save = (object) =>
-    objects.set(key(object.kind, object.metadata.name), structuredClone(object));
+    objects.set(
+      key(object.kind, object.metadata.name, object.metadata.namespace),
+      structuredClone(object),
+    );
   save({
     apiVersion: "v1",
     kind: "Namespace",
@@ -154,8 +159,43 @@ async function fixture() {
       (object) => object.kind === "Namespace" && matching(object, labelSelector),
     ),
   });
-  clients.core.readNamespace = async ({ name }) =>
-    structuredClone(objects.get(key("Namespace", name)));
+  clients.core.readNamespace = async ({ name }) => {
+    const observed = objects.get(key("Namespace", name));
+    if (!observed) {
+      throw failure(404);
+    }
+    return structuredClone(observed);
+  };
+  clients.core.createNamespace = async ({ body }) => {
+    const observed = {
+      ...body,
+      metadata: { ...body.metadata, uid: `${body.metadata.name}-uid` },
+      status: { phase: "Active" },
+    };
+    save(observed);
+    return observed;
+  };
+  save({
+    apiVersion: "v1",
+    kind: "Secret",
+    metadata: {
+      name: "model-key",
+      namespace: kubernetesGatewayNamespaceName(revision.namespaceId),
+      uid: "model-key-uid",
+    },
+    data: { value: Buffer.from("fixture-key").toString("base64") },
+  });
+  clients.core.deleteNamespace = async ({ name, body }) => {
+    const existing = objects.get(key("Namespace", name));
+    assert.equal(body.preconditions.uid, existing.metadata.uid);
+    objects.delete(key("Namespace", name));
+    for (const [id, object] of objects) {
+      if (object.metadata.namespace === name) {
+        objects.delete(id);
+      }
+    }
+    return {};
+  };
   clients.core.patchNamespace = async ({ body }) => {
     const previous = objects.get(key("Namespace", body.metadata.name));
     save({ ...previous, ...body, metadata: { ...previous.metadata, ...body.metadata } });
@@ -184,23 +224,26 @@ async function fixture() {
     [clients.networking, ["NetworkPolicy"]],
   ]) {
     for (const kind of kinds) {
-      api[`readNamespaced${kind}`] = async ({ name }) => {
-        const object = objects.get(key(kind, name));
+      api[`readNamespaced${kind}`] = async ({ name, namespace: target }) => {
+        const object = objects.get(key(kind, name, target));
         if (!object) {
           throw failure(404);
         }
         return structuredClone(object);
       };
-      api[`listNamespaced${kind}`] = async ({ labelSelector }) => ({
+      api[`listNamespaced${kind}`] = async ({ labelSelector, namespace: target }) => ({
         items: structuredClone(
           [...objects.values()].filter(
-            (object) => object.kind === kind && matching(object, labelSelector),
+            (object) =>
+              object.kind === kind &&
+              object.metadata.namespace === target &&
+              matching(object, labelSelector),
           ),
         ),
       });
       const write = async ({ body }) => {
         calls.push({ operation: "write", kind, name: body.metadata.name });
-        const previous = objects.get(key(kind, body.metadata.name));
+        const previous = objects.get(key(kind, body.metadata.name, body.metadata.namespace));
         const object = structuredClone(body);
         object.metadata.uid = previous?.metadata.uid ?? `${kind}-${body.metadata.name}-uid`;
         object.metadata.generation =
@@ -214,14 +257,15 @@ async function fixture() {
         return structuredClone(object);
       };
       api[`patchNamespaced${kind}`] = write;
+      api[`replaceNamespaced${kind}`] = write;
       api[`createNamespaced${kind}`] = async (request) => {
-        if (objects.has(key(kind, request.body.metadata.name))) {
+        if (objects.has(key(kind, request.body.metadata.name, request.namespace))) {
           throw failure(409);
         }
         return write(request);
       };
-      api[`deleteNamespaced${kind}`] = async ({ name, body }) => {
-        const object = objects.get(key(kind, name));
+      api[`deleteNamespaced${kind}`] = async ({ name, body, namespace: target }) => {
+        const object = objects.get(key(kind, name, target));
         if (!object) {
           throw failure(404);
         }
@@ -229,7 +273,7 @@ async function fixture() {
           throw failure(409);
         }
         calls.push({ operation: "delete", kind, name });
-        objects.delete(key(kind, name));
+        objects.delete(key(kind, name, target));
       };
     }
   }
@@ -270,7 +314,7 @@ async function fixture() {
     harnessAuth: {
       ...revision.harnessAuth,
       backendRef: {
-        namespaceName: namespace,
+        namespaceName: kubernetesGatewayNamespaceName(revision.namespaceId),
         name: "model-key",
         key: "value",
         uid: "model-key-uid",
@@ -279,7 +323,13 @@ async function fixture() {
     repositoryCredentials: bindings,
   });
   const deployments = () => [...objects.values()].filter((object) => object.kind === "Deployment");
-  const secrets = () => [...objects.values()].filter((object) => object.kind === "Secret");
+  const secrets = () =>
+    [...objects.values()].filter(
+      (object) =>
+        object.kind === "Secret" &&
+        object.metadata.namespace === namespace &&
+        !object.metadata.name.startsWith("harness-secrets-"),
+    );
   const markReady = () => {
     for (const object of deployments()) {
       object.status = { observedGeneration: object.metadata.generation, readyReplicas: 1 };
@@ -503,7 +553,12 @@ test("Kubernetes preparation creates immutable material and mounts only private 
   };
   await f.driver.prepareRevision(f.revision, f.context([retained]));
   assert.equal(
-    f.calls.filter((call) => call.operation === "write" && call.kind === "Secret").length,
+    f.calls.filter(
+      (call) =>
+        call.operation === "write" &&
+        call.kind === "Secret" &&
+        !call.name.startsWith("harness-secrets-"),
+    ).length,
     1,
   );
 });
@@ -528,7 +583,12 @@ test("Kubernetes reports exact missing retained material without silently creati
   });
   await assert.rejects(f.driver.activateRevision(f.revision, context));
   assert.equal(
-    f.calls.filter((call) => call.operation === "write" && call.kind === "Secret").length,
+    f.calls.filter(
+      (call) =>
+        call.operation === "write" &&
+        call.kind === "Secret" &&
+        !call.name.startsWith("harness-secrets-"),
+    ).length,
     0,
   );
   assert.equal(f.secrets().length, 0);
@@ -672,7 +732,7 @@ test("Kubernetes retirement finds material after its Deployment was already remo
   const f = await fixture();
   await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
   const deployment = f.deployments()[0];
-  f.objects.delete(`Deployment:${deployment.metadata.name}`);
+  f.objects.delete(`Deployment:${deployment.metadata.namespace}:${deployment.metadata.name}`);
   f.setPods([
     {
       apiVersion: "v1",
@@ -700,11 +760,11 @@ test("Kubernetes retirement finds material after its Deployment was already remo
 test("external namespace cleanup removes owned repository material and preserves unrelated Secrets", async () => {
   const f = await fixture();
   await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
-  const tenant = f.objects.get(`Namespace:${f.namespace}`);
+  const tenant = f.objects.get(`Namespace::${f.namespace}`);
   tenant.metadata.annotations["openclaw.dev/namespace-lifecycle"] = "external";
   f.save(tenant);
   for (const deployment of f.deployments()) {
-    f.objects.delete(`Deployment:${deployment.metadata.name}`);
+    f.objects.delete(`Deployment:${deployment.metadata.namespace}:${deployment.metadata.name}`);
   }
   f.save({
     apiVersion: "v1",
@@ -724,5 +784,5 @@ test("external namespace cleanup removes owned repository material and preserves
     f.secrets().map((secret) => secret.metadata.name),
     ["external-owner"],
   );
-  assert.ok(f.objects.has(`Namespace:${f.namespace}`));
+  assert.ok(f.objects.has(`Namespace::${f.namespace}`));
 });

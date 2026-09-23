@@ -37,24 +37,21 @@ after creation. Complete the tenant RoleBindings below, then wait until
 
 ### Grant tenant RoleBindings
 
-Grant the chart's worker, Configuration, and Secret ClusterRoles in each tenant
-namespace. Replace the `oce-` prefix if the Helm release name differs:
+Grant the worker runtime role in the data plane. The API needs list-only
+Deployment access there for dedicated credential preflight. Replace the `oce-` prefix if the Helm release name differs:
 
 ```bash
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
   -n "$TENANT_NAMESPACE" create rolebinding openclaw-enterprise-worker \
   --clusterrole=oce-openclaw-tenant-worker --serviceaccount=openclaw-system:openclaw-enterprise-worker
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  -n "$TENANT_NAMESPACE" create rolebinding openclaw-enterprise-api \
-  --clusterrole=oce-openclaw-tenant-configuration --serviceaccount=openclaw-system:openclaw-enterprise-api
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  -n "$TENANT_NAMESPACE" create rolebinding openclaw-enterprise-api-secrets \
-  --clusterrole=oce-openclaw-tenant-api --serviceaccount=openclaw-system:openclaw-enterprise-api
+  -n "$TENANT_NAMESPACE" create rolebinding openclaw-enterprise-api-observer \
+  --clusterrole=oce-openclaw-gateway-observer --serviceaccount=openclaw-system:openclaw-enterprise-api
 ```
 
 After the data-plane grant, the worker creates a second namespace. Discover it
-and grant the worker its scoped runtime permissions and the API list-only
-Deployment access for credential preflight:
+and grant worker runtime permissions plus API canonical Configuration/Secret
+storage and Deployment preflight access:
 
 ```bash
 GATEWAY_RUNTIME_NAMESPACE="$(kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
@@ -64,16 +61,21 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
   -n "$GATEWAY_RUNTIME_NAMESPACE" create rolebinding openclaw-enterprise-worker \
   --clusterrole=oce-openclaw-tenant-worker --serviceaccount=openclaw-system:openclaw-enterprise-worker
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  -n "$GATEWAY_RUNTIME_NAMESPACE" create rolebinding openclaw-enterprise-api-observer \
-  --clusterrole=oce-openclaw-gateway-observer --serviceaccount=openclaw-system:openclaw-enterprise-api
+  -n "$GATEWAY_RUNTIME_NAMESPACE" create rolebinding openclaw-enterprise-api-secrets \
+  --clusterrole=oce-openclaw-tenant-api --serviceaccount=openclaw-system:openclaw-enterprise-api
+kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
+  -n "$GATEWAY_RUNTIME_NAMESPACE" create rolebinding openclaw-enterprise-api-configuration \
+  --clusterrole=oce-openclaw-tenant-configuration --serviceaccount=openclaw-system:openclaw-enterprise-api
 ```
 
 The Secret RoleBinding grants tenant-local Secret access and list-only
 Deployment access to the API. The API lists Deployments to check for existing
 Agent workloads before provisioning initial runtime credentials. This binding
 does not replace OCC IAM grants for bound Secrets. Worker permissions in both
-targets allow admitted credential delivery; the API receives no Gateway Secret
-access. Wait for Namespace `ready` only after granting both targets.
+targets allow admitted credential delivery. Workload ServiceAccounts receive no
+Secret API access. For separately supported embedded execution, the API also
+needs the tenant-api role in the data plane to provision its combined transport
+bundle. Wait for Namespace `ready` only after granting both targets.
 
 ## Prepare each Agent
 

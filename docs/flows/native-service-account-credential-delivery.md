@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-09-17
-last_updated_session: codex/01a0acbf-4d5a-7413-9411-dce911f3ad23
+updated: 2026-09-23
+last_updated_session: codex/01a0cf72-6985-7712-ba92-d8cc32470f24
 ---
 
 # Harness Authentication Binding Flow
@@ -106,11 +106,10 @@ source authorization and lookup do not. The dispatch context carries only the
 method; SSH does not read the operator credential file or issue a model probe.
 
 For an API key it resolves authoritative backend ownership from OCC state and
-passes an ephemeral `ComputeRevisionContext`. It does not call the Secret Driver,
-read the Kubernetes Secret, or rewrite the revision. Physical backend identity
-is checked at API admission. A missing physical Secret/key later prevents workload
-startup; replacement of a physical Secret by a Kubernetes administrator is outside
-the dispatch metadata check. ChatGPT retains the exact account token/workspace source.
+passes an ephemeral `ComputeRevisionContext`. It does not rewrite the revision. Compute subsequently reads the canonical CP
+source, verifies admitted API-key UIDs or managed-account ownership, and delivers
+only selected fields into the DP revision Secret. Missing or replaced sources
+fail preparation. ChatGPT retains the exact account token/workspace source.
 Inactive revision history keeps references without indefinitely retaining their
 sources; drafts, active revisions, and pending deployments block source deletion.
 
@@ -121,8 +120,9 @@ sources; drafts, active revisions, and pending deployments block source deletion
 
 One internal workload-rendering step converts validated references to supported
 Secret projections and a closed login mode. Embedded OpenClaw receives the key
-in its combined workload. Dedicated Codex receives the key or the directly
-projected account token/workspace; its separate gateway receives neither.
+in its combined workload. Dedicated Codex receives the key or account
+token/workspace through a revision-owned DP projection; its separate Gateway
+receives neither. Canonical sources remain in CP.
 Configuration secret bindings remain gateway-only and cannot choose model auth.
 
 The selected Sandbox consumes these already-rendered
@@ -163,7 +163,8 @@ primary model. See [probe limitations](../reference/harness-execution.md#harness
 The [existing activation and recovery flow](harness-execution-topology.md#3-publish-safely-and-complete-activation-once)
 completes activation after readiness. Auth selection and successful storage do
 not establish provider acceptance.
-Updating a Secret leaves existing process environments unchanged: deploy each
+Updating a Secret leaves existing process environments and DP runtime copies
+unchanged until preparation: deploy each
 consumer, verify a real turn, then revoke the previous key upstream. Revision
 history cannot restore historical Secret values.
 
@@ -197,6 +198,8 @@ history cannot restore historical Secret values.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 12:22: Move canonical credential sources to CP and describe revision-scoped Harness delivery in the accompanying change. (codex/01a0cf72-6985-7712-ba92-d8cc32470f24 - 623d56dec26a8ef0f72b562254687cabecdbbf82)
 
 - 2026-09-17 19:14: Add runtime binding admission and worker behavior without managed source delivery. (01a0acbf-4d5a-7413-9411-dce911f3ad23 - b8cabaf9a49e069a7668ccf88b9e71a7484227b7)
 

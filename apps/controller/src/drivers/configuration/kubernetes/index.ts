@@ -9,7 +9,7 @@ import type {
   OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
 import { ConfigurationValidationError, validateModelCredentialReferences } from "../model-auth.ts";
-import { resolveKubernetesNamespace } from "../../compute/kubernetes/index.ts";
+import { resolveKubernetesControlNamespace } from "../../compute/kubernetes/index.ts";
 
 type KubernetesAuthentication =
   | { readonly mode: "inCluster" }
@@ -204,7 +204,10 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
   async create(configuration: Configuration): Promise<Configuration> {
     await this.validate(configuration);
     const client = await this.core();
-    const { name: namespace } = await resolveKubernetesNamespace(client, configuration.namespaceId);
+    const { name: namespace } = await resolveKubernetesControlNamespace(
+      client,
+      configuration.namespaceId,
+    );
     const observed = await client.createNamespacedConfigMap({
       namespace,
       body: this.manifest(configuration, namespace),
@@ -215,7 +218,10 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
   async read(reference: ConfigurationReference): Promise<Configuration> {
     validateReference(reference);
     const client = await this.core();
-    const { name: namespace } = await resolveKubernetesNamespace(client, reference.namespaceId);
+    const { name: namespace } = await resolveKubernetesControlNamespace(
+      client,
+      reference.namespaceId,
+    );
     const observed = await client.readNamespacedConfigMap({
       name: kubernetesConfigurationName(reference.id),
       namespace,
@@ -226,7 +232,10 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
   async update(configuration: Configuration): Promise<Configuration> {
     await this.validate(configuration);
     const client = await this.core();
-    const { name: namespace } = await resolveKubernetesNamespace(client, configuration.namespaceId);
+    const { name: namespace } = await resolveKubernetesControlNamespace(
+      client,
+      configuration.namespaceId,
+    );
     const name = kubernetesConfigurationName(configuration.id);
     const existing = await client.readNamespacedConfigMap({ name, namespace });
     const current = await this.checkedConfiguration(
@@ -260,7 +269,10 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
   async delete(reference: ConfigurationReference): Promise<void> {
     validateReference(reference);
     const client = await this.core();
-    const { name: namespace } = await resolveKubernetesNamespace(client, reference.namespaceId);
+    const { name: namespace } = await resolveKubernetesControlNamespace(
+      client,
+      reference.namespaceId,
+    );
     const name = kubernetesConfigurationName(reference.id);
     const existing = await client.readNamespacedConfigMap({ name, namespace });
     await this.checkedConfiguration(existing, reference, namespace);

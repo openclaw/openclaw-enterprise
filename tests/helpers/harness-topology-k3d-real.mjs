@@ -1750,6 +1750,17 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
     controller.account,
     platformNamespace,
   );
+  for (const role of [controller.apiSecretRole, controller.apiConfigurationRole]) {
+    await kubectl(
+      "create",
+      "rolebinding",
+      `canonical-${role}`,
+      "--namespace",
+      gatewayRuntimeNamespace,
+      `--clusterrole=${role}`,
+      `--serviceaccount=${platformNamespace}:${controller.apiAccount}`,
+    );
+  }
   for (const verb of ["get", "create"]) {
     const secretAccess = await kubectl(
       "auth",
@@ -2056,6 +2067,7 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
     agent.data.id,
     {
       gatewayPassword,
+      executionMode: mode,
     },
   );
   assert.equal(provisionedGatewayPassword, gatewayPassword);
@@ -3886,6 +3898,15 @@ async function assertCrossNamespaceSecretBindingDenied(context, topology) {
     topology.controllerAccount,
     topology.platformNamespace,
   );
+  await kubectl(
+    "create",
+    "rolebinding",
+    "canonical-secret-api",
+    "--namespace",
+    gatewayTarget,
+    `--clusterrole=${topology.apiSecretRole}`,
+    `--serviceaccount=${topology.platformNamespace}:${topology.apiAccount}`,
+  );
   await waitFor(
     `the production worker to provision cross-Namespace tenant ${placement}`,
     async () => {
@@ -4110,6 +4131,7 @@ async function assertSameNamespaceSecretSharing(context, topology) {
     topology.directory,
     topology.placement,
     agent.data.id,
+    { executionMode: "embedded" },
   );
   const deployed = await deployEmbeddedAgentAndWait(
     { ...topology, agent: agent.data },

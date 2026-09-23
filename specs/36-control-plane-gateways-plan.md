@@ -4,11 +4,13 @@
 
 OCC's Kubernetes Compute Driver deploys each dedicated Agent Gateway in a
 managed control-plane runtime namespace and its Harness in the tenant data-plane
-namespace. Both retain exact logical Namespace/Agent/revision ownership. Embedded
-execution stays in the data plane because its Gateway also executes the Harness.
+namespace. Both retain exact logical Namespace/Agent/revision ownership. This
+work covers dedicated execution only. Embedded OpenClaw is outside its design,
+implementation and runtime acceptance scope; its existing data-plane path remains.
 The authoritative architecture remains `docs/design.md` and its workload chapter.
 
-Base: `b141ba1157c2f28276717d35c8c63028f209a479`.
+Base: fresh upstream `main` at `150ec08f059cebc4897b839d8318f7b1e3aba0e3`,
+merged into the published branch without rewriting history.
 
 ## Decisions
 
@@ -24,6 +26,54 @@ Base: `b141ba1157c2f28276717d35c8c63028f209a479`.
   preserve durable Agent state until final deletion, including partial failure.
 - Runtime release pins, dedicated OpenClaw workers, remote Skills features, custom
   bootstrap paths, and live deployment are outside this change.
+- Support the expected final layout only. Do not add old-layout discovery,
+  relocation, dual-layout operation or compatibility branches for migration.
+
+### Namespace placement decision
+
+One Gateway namespace per logical Namespace is this Kubernetes implementation's
+isolation choice, not a platform requirement. It preserves namespace-scoped RBAC,
+quotas and tenant deletion boundaries without putting Agent resources alongside
+OCC API/worker credentials. A shared Gateway-only namespace is another possible
+implementation, but would require resource-level tenant isolation and cleanup
+instead of reusing those namespace boundaries. Gateway node placement still needs
+an explicit trusted pool; namespace separation alone does not establish trust.
+
+### Revised credential ownership decision
+
+Canonical tenant Configuration and Secret sources belong to trusted control-plane
+storage. With Kubernetes-backed Drivers, use the tenant's managed control-plane
+namespace; a separately selected trusted Secret store can own the same logical
+contract. Gateway-only passwords, channel credentials, policy and private state
+remain there. The Gateway receives only its admitted references, without a
+data-plane-to-control-plane Secret synchronization dependency.
+
+Compute delivers only the selected Harness revision's execution configuration,
+model authorization, app-server transport material and node enrollment material
+to the data plane. These are disposable runtime projections; the Harness cannot
+write canonical credentials, policy, routes or active-revision state. Credential
+domains must use separate Secrets, so a Harness transport Secret cannot also
+contain a Gateway password or channel token.
+
+Idempotent workload reconciliation still repairs missing projections from
+control-plane desired state. Credential issuance, version changes, rotation and
+revocation need explicit lifecycle semantics; repeated byte copying is not a
+rotation or revocation protocol. Deleting a Secret cannot revoke a token already
+loaded into a process or accepted by a provider.
+
+Cross-boundary RPCs must authenticate the endpoint and exact Agent/revision role,
+preserve confidentiality in transit, and treat Harness responses as untrusted
+data. The current capability-token app-server `ws://` path does not implement
+transport encryption. Node credentials authorize only the enrolled node role,
+never native operator or OCC administrator access. Current direct model-key
+delivery remains an explicit exposure to Harness execution; merely projecting
+an account-wide key does not narrow its provider-side authority.
+
+This PR changes existing Kubernetes Drivers and workload rendering. It adds no
+credential framework, broker, rotation controller, database migration, or new
+public platform primitive. Embedded execution retains its existing combined
+workload; canonical Kubernetes storage is shared by both modes, so only the
+necessary consumer delivery adapts to that storage change.
 
 ## Work
 
@@ -59,32 +109,44 @@ Current references: [Kubernetes Compute](../docs/reference/drivers/kubernetes-co
 and [current architecture](../docs/ARCHITECTURE.md). This change does not deploy
 the implementation or relocate existing runtime volumes.
 
-Local checks:
+Local validation: 246 targeted conformance and real Helm-rendering tests passed,
+with no failures or skips. The updated credential-boundary test also passed in
+all 113 Kubernetes Compute cases. TypeScript build, changed-file ESLint, workspace
+boundary, documentation links/length and the three credential flow validators passed.
+A full local conformance run reported six additional failures involving macOS
+control-directory/command cleanup or SSH preflight; these are not treated as green
+or as proven base failures. The earlier plugin fixture failure was repaired and
+its 48-test suite passed. Exact-lockfile CI is the remaining check.
 
-- Kubernetes Compute and runtime-credential conformance plus production Helm
-  packaging: 142 passed, zero failed or skipped with
-  `node --test tests/conformance/kubernetes-compute.test.mjs
-tests/conformance/kubernetes-runtime-credentials.test.mjs
-tests/integration/production-kubernetes-packaging.test.mjs`.
-- Direct installed TypeScript build, changed-file ESLint and Prettier, workspace
-  boundary verification, documentation length/link checks and both flow validators.
-- `GOPROXY=off go test ./internal/occdev` compiles the changed Go package; it has
-  no Go test files. Full CLI tests are unavailable because an existing required
-  dependency is not cached.
+Local checks and CI results are recorded with the PR revision. Installed
+TypeScript is version 7 while the manifest selects the TypeScript 6 alias;
+dependencies were not installed or reconciled. Exact-lockfile CI remains required.
+Real runtime pins, staging/model turns, replacement/reconnect and disjoint node-pool
+placement remain separate deployment acceptance. Single-node fixture success is
+not proof of node isolation or a real model turn.
 
-The existing installed dependency graph differs from the manifest: the direct
-TypeScript check uses installed TypeScript 7, not the manifest's TypeScript 6 alias.
-Dependencies were not installed or reconciled. Exact-lockfile CI remains required.
-The broader configuration-startup suite has two repository-configuration schema
-failures reproduced on the unchanged base with the same installed graph.
+## Open work and release boundaries
 
-Real-cluster discovery explicitly skipped the selected suites: no disposable k3d
-cluster, dedicated test database or runtime image selectors were supplied. The
-fixture changes have not established cross-node policy enforcement, real model
-turns, replacement, or reconnect. Staging/model E2E is separately owned. Runtime
-pins and actual disjoint node-pool placement remain deployment prerequisites.
+This PR owns [#75](https://github.com/openclaw/openclaw-enterprise/issues/75):
+placement, canonical CP sources, consumer-specific delivery, cross-namespace
+routing/policy and exact-owner lifecycle. Merge acceptance requires the changed
+fixture workflows and negative ownership tests to pass. It does not close the
+following work merely because Gateway Pods moved.
 
-The existing deployment, routing and Kubernetes testing guides remain together
-despite exceeding the 1,500-word review threshold: each owns a complete setup or
-acceptance workflow, including its permission and recovery requirements. All
-changed documents remain below the 2,500-word hard limit.
+| Open item                                                                 | Tracking and owner                                                                                                                                                                                                                                                                                | Boundary for this PR                                                                                                                                                                                                 |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Runtime release/version alignment and staging replacement/reconnect       | Separate runtime acceptance work; Kimi coordinates                                                                                                                                                                                                                                                | Deployment acceptance prerequisite; do not label local conformance or fixture CI as real-runtime proof.                                                                                                              |
+| Provider-owned Harness compatibility                                      | [#78](https://github.com/openclaw/openclaw-enterprise/issues/78), GitHub unassigned                                                                                                                                                                                                               | Existing Secret/Service/identity contract remains required. An unsupported provider must fail; this PR does not repair upstream OpenShell compatibility.                                                             |
+| Dedicated sandbox and Gateway local-execution boundary                    | [#79](https://github.com/openclaw/openclaw-enterprise/issues/79), Free                                                                                                                                                                                                                            | Placement alone does not prove all untrusted execution has left Gateway. Qualify allowed plugins/local execution before claiming the complete sandbox boundary.                                                      |
+| Credential mediation and raw model-key removal                            | [#85](https://github.com/openclaw/openclaw-enterprise/issues/85), [#116](https://github.com/openclaw/openclaw-enterprise/issues/116), Free; model-provider integration coordinated with Steven                                                                                                    | Existing selected model credentials still reach Harness. CP ownership and narrow delivery do not narrow provider-side authority. No broker implementation in this PR.                                                |
+| Broker authorization, OpenShell integration, revocation and qualification | [#117](https://github.com/openclaw/openclaw-enterprise/issues/117), [#118](https://github.com/openclaw/openclaw-enterprise/issues/118), [#119](https://github.com/openclaw/openclaw-enterprise/issues/119), [#120](https://github.com/openclaw/openclaw-enterprise/issues/120), GitHub unassigned | Separate implementation and acceptance; no claim of per-access authorization or immediate revocation here.                                                                                                           |
+| Authenticated/encrypted workload transport and lifecycle identity         | [#106–110](https://github.com/openclaw/openclaw-enterprise/issues/106), GitHub unassigned; concrete app-server transport hardening DRI TBD                                                                                                                                                        | Current app-server path is bearer-authenticated `ws://`. NetworkPolicy and labels are not mTLS or cryptographic revision identity. Security release policy must explicitly account for this remaining transport gap. |
+| Finite credential lifetime and replacement                                | [#101](https://github.com/openclaw/openclaw-enterprise/issues/101), GitHub unassigned                                                                                                                                                                                                             | No automatic rotation; source/projection deletion cannot revoke a loaded credential. Deploy consumers after an update; coordinate transport replacement separately.                                                  |
+| Active/candidate credential dependencies                                  | [#90](https://github.com/openclaw/openclaw-enterprise/issues/90), GitHub unassigned                                                                                                                                                                                                               | Preserve existing deletion guards; this PR does not claim the wider credential lifecycle qualification is complete.                                                                                                  |
+| Dedicated OpenClaw worker                                                 | [#77](https://github.com/openclaw/openclaw-enterprise/issues/77), GitHub unassigned                                                                                                                                                                                                               | Separate workstream; dedicated Codex proof does not qualify this worker. Embedded OpenClaw is excluded from the new boundary.                                                                                        |
+
+GitHub assignments were checked on 2026-09-23. A named adjacent workstream owner
+is not an assignment to finish this PR's remaining transport or release checks.
+Broader platform/Harness secret classification, remote Skills features and custom
+bootstrap paths remain deferred. Follow-up changes should be separately scoped
+and verified as their runtime contracts become available.

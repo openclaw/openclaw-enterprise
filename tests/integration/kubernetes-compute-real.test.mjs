@@ -548,6 +548,24 @@ async function createScopedController(context, installationId, platformNamespace
         path: "/rules/-",
         value: {
           apiGroups: [""],
+          resources: ["secrets"],
+          verbs: ["get", "create", "update", "delete"],
+        },
+      },
+    ]),
+  );
+  await kubectl(
+    "patch",
+    "clusterrole",
+    tenantRole,
+    "--type=json",
+    "--patch",
+    JSON.stringify([
+      {
+        op: "add",
+        path: "/rules/-",
+        value: {
+          apiGroups: [""],
           resources: ["pods"],
           verbs: ["get", "list", "watch", "patch"],
         },

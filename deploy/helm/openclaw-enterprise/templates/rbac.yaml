@@ -51,7 +51,7 @@ kind: ClusterRole
 metadata:
   name: {{ .Release.Name }}-openclaw-tenant-worker
 rules:
-  # Admitted channel and transport material is projected into the Gateway runtime namespace.
+  # Read canonical control-plane sources and manage revision-owned runtime material.
   - apiGroups: [""]
     resources: [secrets]
     verbs: [get, create, update, delete]
