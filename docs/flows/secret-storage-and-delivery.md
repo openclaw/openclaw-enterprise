@@ -212,11 +212,18 @@ For coordinated channel replacement, stop the Agent and wait for shutdown before
 updating each Secret. A partial update leaves it stopped until repaired; there is
 no multi-Secret transaction or rollback of stored bytes.
 
-An explicit deployment for each consuming Agent creates a new revision and
-restarts that gateway with the current value. An infrastructure restart of an
-older admitted revision also reads the current value; failed cutover does not
-restore old secret bytes. Revoking `operate` blocks new OCC admission, not
-kubelet process starts or already delivered bytes.
+For model-key replacement, update the OCC Secret and explicitly deploy each
+consuming Agent through OCE. The new revision's preparation calls
+`KubernetesComputeDriver.deliverHarnessAuth`, which reads the current CP source
+and writes the revision-owned DP Secret before the Harness starts. Wait for
+activation and verify a real model request before revoking the old key upstream.
+A Harness Pod recreation reads its existing DP projection; it does not deliver
+current CP values. This remains true when the Configuration and Secret reference
+are unchanged.
+
+Dedicated Gateway infrastructure restarts read canonical CP channel Secrets
+directly. Failed cutover does not restore old source values. Revoking `operate`
+blocks new OCC admission, not kubelet process starts or already delivered bytes.
 
 [deleteSecret](../../packages/occ/src/index.ts) rejects current Configuration,
 Agent harness-binding draft, active revision, and pending-work dependencies under the same serialization
@@ -262,6 +269,8 @@ credential at its issuer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 14:12: Clarify model-key replacement through OCE deployment and distinguish Harness Pod recreation from credential delivery. (codex/01a0cf72-6985-7712-ba92-d8cc32470f24 - 240c72f2ef96c034c4e05c4775a79a94ebbe64ab)
 
 - 2026-09-23 12:22: Move canonical credential sources to CP and describe revision-scoped Harness delivery in the accompanying change. (codex/01a0cf72-6985-7712-ba92-d8cc32470f24 - 623d56dec26a8ef0f72b562254687cabecdbbf82)
 

@@ -194,10 +194,20 @@ the PATCH operation. The Secret reference stays stable.
 
 The response returns the same metadata and `ref`. Update success means the
 driver stored the new value; it does not restart a gateway, edit an existing
-AgentRevision, or prove that a running process has consumed the value. Deploy or
-restart each consuming Agent again to create a new revision or process with the
-current Kubernetes Secret value. Dedicated Gateway restarts read current canonical channel values. Harness Pod
-restarts read the existing revision projection; redeploy the Agent to refresh it.
+AgentRevision, or prove that a running process has consumed the value.
+
+For a Harness model API key, update the OCC Secret, explicitly deploy every
+consuming Agent through OCE, wait for each new revision to become active, and
+verify a model request before revoking the old key upstream. Revision preparation
+reads the current CP source and delivers the admitted fields into the DP runtime
+Secret before starting the Harness. An unchanged Configuration or Secret reference
+does not remove the need to deploy again.
+
+Recreating a Harness Pod or running `kubectl rollout restart` only reads its
+existing revision projection; neither is a credential-delivery operation.
+Dedicated Gateway restarts read current canonical channel values directly.
+See the [replacement procedure](../../guides/deploy/credential-lifecycle.md#replace-runtime-values-and-verify-consumption)
+for verification and safe upstream revocation.
 
 There is no value history, automatic rotation, automatic workload restart, or
 value rollback. Updating or deleting an OCC Secret does not remove credentials

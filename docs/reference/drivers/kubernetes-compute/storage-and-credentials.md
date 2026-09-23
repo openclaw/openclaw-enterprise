@@ -167,9 +167,14 @@ UID. Gateway and account canonical sources survive revision retirement; final
 Agent deletion removes its transport/password, while account and OCC Secret
 storage retain their separate lifecycles.
 
-Source updates do not restart running processes. New preparation reads current
-values; merely restarting a Harness Pod reads its existing runtime projection.
-Deploy each consumer to deliver updates. Deleting a source or runtime Secret
+Source updates do not restart running processes. The supported model-key update
+sequence is: update the OCC Secret, redeploy each consuming Agent through OCE,
+wait for the new revision to become active, and verify a model request with the
+new credential. Preparation delivers current source values to the new revision's
+runtime Secret. Merely recreating a Harness Pod or restarting its Deployment
+reads the existing projection and does not refresh it from CP. See
+[update and redeploy](../kubernetes-secret.md#update-and-redeploy).
+Deleting a source or runtime Secret
 does not revoke bytes already loaded into a process or accepted by a provider.
 Transport rotation, finite token TTL and immediate revocation remain open; see
 [follow-up tracking](../../../../specs/36-control-plane-gateways-plan.md#open-work-and-release-boundaries).

@@ -58,17 +58,28 @@ rotate an existing generated bundle.
 
 List all affected applications or Agents before restarting or deploying them.
 A running process keeps the environment variables it received, even after the
-source Secret changes. Deploy each affected Agent again, confirm the expected
-active revision, then perform a [real workload check](production-agents.md#verify-production-workloads).
-For a channel credential, exercise the affected channel workflow; a successful
-model turn does not prove channel authentication. For transport tokens, coordinate
+source Secret changes. For a model API key, the supported sequence is:
+
+1. Update the existing OCC Secret through its API, retaining the Secret reference.
+2. Run `occ agent deploy "$AGENT_ID"` for each consuming Agent, even when its
+   Configuration and `harnessAuth` reference are unchanged.
+3. Wait for the new revision to become active, then perform a
+   [real model request](../operate/model-verification.md).
+
+With Kubernetes Compute, OCE preparation refreshes the Harness's DP credential
+projection from the CP source. Recreating its Pod or running `kubectl rollout restart` reads the existing
+projection and is not a substitute for this OCE deployment.
+
+For a channel credential, explicitly deploy each consumer and exercise the
+affected channel workflow; a successful model turn does not prove channel authentication. For transport tokens, coordinate
 both endpoints and clients, and verify a fresh allowed connection and rejection
 of the old token. No automatic coordinated transport-token rotation is provided.
 
 Where the provider permits overlap, revoke the old upstream credential after
 successful replacement checks. A stored credential status does not show that
-the provider accepts the value. Restarting an older revision also reads the
-current Secret value; revision history does not restore old values.
+the provider accepts the value. Dedicated Gateway restarts read current canonical
+channel values; Harness restarts read their existing runtime projection.
+Revision history does not restore old source values.
 
 Provider-managed account credentials require separate handling: OCC cannot
 refresh, rotate, or manually replace an issued token. Monitor expiry and arrange
