@@ -209,13 +209,13 @@ export const scenarios = {
   },
   createForm: {
     group: "Pages/Create Agent",
-    name: "Dedicated form",
+    name: "OpenAI with Codex harness",
     path: create,
     actions: form,
     description:
-      "Choose a provider and authentication method, enter a credential, and load model choices before provisioning. No model is selected by default.",
+      "OpenAI defaults to Codex. Choose the harness before entering its supported credential; execution mode follows the harness. No model is selected by default.",
     steps: [
-      "Keep OpenAI and Dedicated, enter a dummy API key, and select a returned model.",
+      "Keep OpenAI and the Codex harness, enter a dummy API key, and select a returned model.",
       'In Configuration JSON, edit plugins.entries.codex.config.appServer: set sandbox to "workspace-write", approvalPolicy to "never", and remoteWorkspaceRoot to "/workspace/custom".',
       "Change the model, then replace the dummy credential and choose a model again. Confirm all three edited appServer settings remain in Configuration JSON.",
       "Choose Reset template and confirm to restore the standard runtime settings for the selected model.",
@@ -227,7 +227,7 @@ export const scenarios = {
     path: create,
     actions: createProvisioningSecrets,
     description:
-      "Dedicated creation submits provisioning with inline Configuration and Secret references prepared through the channel modal.",
+      "Codex creation submits provisioning with inline Configuration and Secret references prepared through the channel modal.",
   },
   createUnsupportedProvisioning: {
     group: "Pages/Create Agent",
@@ -236,7 +236,7 @@ export const scenarios = {
     unsupportedProvisioning: true,
     actions: readyForm,
     description:
-      "When the runtime does not advertise first-time Agent provisioning, Dedicated creation saves a draft Configuration and Agent for later deployment.",
+      "When the runtime does not advertise first-time Agent provisioning, Codex creation saves a draft Configuration and Agent for later deployment.",
   },
   createSlackSecretMenu: {
     group: "Pages/Create Agent",
@@ -288,11 +288,11 @@ export const scenarios = {
   },
   createEmbedded: {
     group: "Pages/Create Agent",
-    name: "Embedded form",
+    name: "OpenAI with OpenClaw harness",
     path: create,
-    actions: [...form, { selector: "#execution-mode", value: "embedded" }],
+    actions: [...form, { selector: "#agent-harness", value: "openclaw" }],
     description:
-      "Embedded execution uses its starter configuration and disables unsupported channel editing.",
+      "OpenClaw remains available for OpenAI with an API key. It uses Embedded execution and disables unsupported channel editing.",
   },
   createPreset: {
     group: "Pages/Create Agent",
@@ -321,11 +321,11 @@ export const scenarios = {
       click("Use Preset"),
     ],
     description:
-      "The saved API-key credential fixes the provider. Models and compatible execution modes remain editable; JSON cannot redirect the credential to another provider.",
+      "The saved API-key credential fixes the provider. Models and compatible harnesses remain editable; JSON cannot redirect the credential to another provider.",
   },
   createAnthropic: {
     group: "Pages/Create Agent",
-    name: "Anthropic API key",
+    name: "Anthropic with OpenClaw harness",
     path: create,
     actions: [
       ...form,
@@ -333,7 +333,7 @@ export const scenarios = {
       { selector: "#provider-api-key", value: "storybook-anthropic-key" },
     ],
     description:
-      "Entering a key loads Anthropic model choices without selecting one. Anthropic uses Embedded OpenClaw execution.",
+      "Anthropic offers only the OpenClaw harness, with Embedded execution. Entering a key loads model choices without selecting one.",
   },
   createCodexPat: {
     group: "Pages/Create Agent",
@@ -341,12 +341,38 @@ export const scenarios = {
     path: create,
     actions: [
       ...form,
-      { selector: "#execution-mode", value: "embedded" },
       { selector: "#agent-auth-method", value: "codex_pat" },
       { selector: "#provider-api-key", value: "at-storybook-pat" },
     ],
     description:
-      "Service Accounts use a workspace token for Dedicated Codex. The form links to OpenAI admin and shows the at- prefix hint. Switching methods clears the credential and model selection.",
+      "Service Accounts authentication is available with the Codex harness and loads the account's Codex models. Switching to OpenClaw selects API-key authentication and clears the credential and model selection.",
+  },
+  createPatToOpenClaw: {
+    group: "Pages/Create Agent",
+    name: "Switch from Service Accounts to OpenClaw",
+    path: create,
+    actions: [
+      ...form,
+      { selector: "#agent-auth-method", value: "codex_pat" },
+      { selector: "#provider-api-key", value: "at-storybook-pat" },
+      { selector: "#agent-model", value: "codex-story-model" },
+      { selector: "#agent-harness", value: "openclaw" },
+    ],
+    description:
+      "Switching an unsaved service account form to OpenClaw clears the token and model, selects API-key authentication, and uses Embedded execution. Enter a dummy API key to continue.",
+  },
+  createBoundPatPreset: {
+    group: "Pages/Create Agent",
+    name: "Preset with saved service account token",
+    path: create,
+    presetAuth: "codex_pat",
+    actions: [
+      { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
+      { selector: "#preset-variable-name", value: "Preset Service Accounts demo" },
+      click("Use Preset"),
+    ],
+    description:
+      "A Preset with a saved service account token keeps its OpenAI provider and Codex harness fixed because the credential requires Codex. Start without a Preset to choose OpenClaw with an API key.",
   },
   createModels: {
     group: "Pages/Create Agent",
@@ -949,6 +975,21 @@ export const scenarios = {
     ],
     gap: "The fixture supplies a ready Namespace, Preset, and model Secret. Set those up outside the console. Verify actual serving health and a model response outside this walkthrough.",
   },
+  createHarnessFlow: {
+    group: "Flows",
+    name: "Choose provider and harness",
+    path: create,
+    actions: readyForm,
+    description:
+      "Choose the provider first, then a compatible harness. The production form updates native Configuration and execution mode; credentials and deployment remain simulated.",
+    steps: [
+      "OpenAI starts with Codex and Dedicated execution. Select OpenClaw: execution becomes Embedded and the API key and selected model remain available.",
+      "Select Anthropic: only OpenClaw is available, and the previous provider's credential and model are cleared. Enter a dummy API key and choose a returned demo model.",
+      "Select OpenAI again: Codex is selected by default. Choose Service Accounts, enter a dummy token, and choose a returned demo model.",
+      "Select OpenClaw: authentication changes to API key and the token and model are cleared. Enter a dummy API key and select a model to continue creation.",
+    ],
+    gap: "This walkthrough covers form state and simulated discovery. Real API integration and runtime checks establish credential routing and model execution.",
+  },
   createWorkspaceFlow: {
     group: "Flows",
     name: "Create with workspace files",
@@ -958,7 +999,7 @@ export const scenarios = {
     description:
       "Create a Dedicated Agent from the no-Preset form after editing IDENTITY.md and clearing USER.md, then inspect the seeded workspace after simulated provisioning.",
     steps: [
-      "Start without Preset, enter a demo Agent name, keep OpenAI and Dedicated, enter a dummy API key or service account token, and choose one of the returned demo models.",
+      "Start without Preset, enter a demo Agent name, keep OpenAI with the Codex harness, enter a dummy API key or service account token, and choose one of the returned demo models.",
       "Review AGENTS.md, SOUL.md, IDENTITY.md, and USER.md. Edit IDENTITY.md, leave USER.md empty, and create the Agent.",
       "Wait for automatic provisioning and deployment activation; the Console then opens Workspace files for the returned revision.",
       "Open Workspace files and inspect IDENTITY.md or USER.md to confirm the fixture carried the creation-time file contents into the deployed workspace.",

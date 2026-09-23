@@ -43,7 +43,7 @@ those states by interacting with the real controls after loading fixture data.
 | Providers               | Configured, empty, and discovery failure.                                                                                                                                                                                                        |
 | Namespaces              | Ready and provisioning, empty, permission denial.                                                                                                                                                                                                |
 | Settings and navigation | Signed-in account and unknown route.                                                                                                                                                                                                             |
-| Create Agent            | Preset selection and variables, no Presets, dedicated and embedded forms, seeded workspace files, OpenAI and Anthropic key entry, storage and grant denial, invalid JSON, partial save with conflict, unknown save outcome.                      |
+| Create Agent            | Preset variables, no Presets, OpenAI Codex/OpenClaw and Anthropic OpenClaw harnesses, Service Accounts switching and bound Presets, seeded workspace files, storage/grant denial, invalid JSON, partial save/conflict, unknown save outcome.     |
 | Agent detail            | New revision, native JSON editor, invalid JSON, admitted snapshot, queued or failed deployment, denied deployment, missing Agent, unavailable Configuration and revision history.                                                                |
 | Navigation components   | Account menu, Namespace switcher, mobile drawer, OCE branding, simulated OCC revision, missing development metadata.                                                                                                                             |
 | Channels                | Unconfigured cards, Slack editor with pairing/open/disabled policies, unsupported Slack shape, read-only snapshot, save conflict.                                                                                                                |
@@ -65,13 +65,19 @@ Each flow includes steps above an interactive console frame.
 ### Create and deploy
 
 Choose a Preset, fill its variables, review the seeded workspace files, and
-create a Dedicated Agent. The Console submits its inline Configuration and saved
-Secret references, follows simulated provisioning and deployment activation, and
-opens Workspace files for the returned revision. A separate flow starts without
-a Preset, enters a dummy OpenAI API key or Service Accounts token, selects a model, edits
-IDENTITY.md, and clears USER.md before creation. Embedded and unsupported-runtime
-stories retain the draft workflow: provision credentials and deploy from Agent detail.
-These transitions demonstrate presentation only; they do not prove a worker ran.
+create an Agent with the Codex harness. The Console submits its inline Configuration
+and saved Secret references, follows simulated provisioning and deployment
+activation, and opens Workspace files for the returned revision. A separate flow
+starts without a Preset, selects OpenAI with Codex, enters a dummy API key or service account
+token, selects a model, edits IDENTITY.md, and clears USER.md before creation.
+OpenClaw and unsupported-runtime stories retain the draft workflow: provision
+credentials and deploy from Agent detail. These transitions demonstrate
+presentation only; they do not prove a worker ran.
+
+**Choose provider and harness** walks through the OpenAI Codex default, OpenClaw
+selection, Anthropic's OpenClaw-only choice, and switching from an unsaved service account
+token to API-key authentication. Execution mode follows the harness. The saved-token
+Preset story shows why its harness is fixed to Codex.
 
 The fixture supplies a ready Namespace, Preset, and model Secret. Namespace
 provisioning, Preset CRUD, and service-account issuance have no console pages.

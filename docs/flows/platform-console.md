@@ -149,38 +149,39 @@ Installation `administer` precedes the safe startup-summary response. Explicit
 empty configuration is a successful empty list; absent wiring and dependency
 failure return errors.
 
-`apps/controller/src/console/agents/create.mjs:renderCreateAgent` offers native
-OpenAI and Anthropic configuration. OpenAI supports API keys or **Service Accounts**
-(`codex_pat`); Anthropic supports API keys. Service Accounts locks Dedicated execution.
-Credential hints link to the appropriate token console and show expected prefixes.
-Preset provider bindings remain fixed, and conflicting JSON is rejected before writes.
-These selections do not discover Installation Providers; that navigation item is hidden.
-The [creation reference](../reference/console/create-and-deploy.md) owns permissions
-and partial-save recovery.
+`apps/controller/src/console/agents/create.mjs:renderCreateAgent` selects Provider,
+then Harness. OpenAI defaults to Codex (Dedicated) and offers OpenClaw (Embedded);
+Anthropic offers OpenClaw. Codex accepts API keys or **Service Accounts**
+(`codex_pat`); OpenClaw accepts API keys. Provider changes reset harness,
+credential, and model. Switching an unsaved service account token to OpenClaw
+clears token/model and selects API-key auth; API-key harness changes retain both.
+Credential hints link to the token console and show expected prefixes.
 
-The form starts with editable native JSON for the selected execution mode and
-optional Agent-owned plugin selections, without a hardcoded model. After key
-entry, `POST /namespaces/:namespaceId/agents/models` reaches
-`OpenClawController.discoverAgentModels`, which authorizes Agent creation in the
-Namespace and calls the selected Compute Driver outside a state transaction.
-The bundled `compute/model-discovery.ts` queries fixed native provider URLs with
-bounded responses and pagination, returning only model IDs and labels. The
-explicit `authMethod` selects API-key or service-account discovery. OpenAI API-key
-discovery excludes models whose valid `shutdown_date` is today or earlier (UTC).
-Discovery makes no platform writes. Empty or failed discovery permits manual model entry; key
-and provider or authentication-method changes invalidate pending browser results. Model
-and key edits preserve provider transport and Codex plugin settings. Provider or
-execution-mode changes regenerate those entries; reset restores the selected starter.
-`configurationTemplate` enables native Control UI
-with explicit loopback origins on port 18789. Compute Drivers render gateway
-authentication from Installation trust settings; starters supply no gateway token.
-Preset values replace the starter unchanged. These defaults do not configure the
-isolated HTTPS origin required by [OCE native admin access](agent-native-admin.md).
-The Slack menus use the metadata list and creation paths traced in
-[Agent editing](platform-console/agent-editing.md#4-render-draft-revision-or-channels).
-**Apply channel settings** copies the drawer's values and bindings into the
-creation form. Cancel discards the drawer selections, but a Secret created by
-the modal already belongs to the Namespace and remains stored.
+Presets fix saved credential providers and reject cross-provider JSON before
+writes. Saved service account tokens lock Codex; operator-managed credentials
+lock OpenClaw across provider changes. These choices do not discover Installation
+Providers; that navigation item is hidden. The [creation reference](../reference/console/create-and-deploy.md)
+owns permissions and partial-save recovery.
+
+The form starts with editable native JSON, optional plugins, and no model.
+`POST /namespaces/:namespaceId/agents/models` reaches
+`OpenClawController.discoverAgentModels`, which authorizes Namespace Agent creation
+and calls Compute outside a state transaction. `compute/model-discovery.ts` uses
+fixed provider URLs, bounded responses and pagination, and returns IDs/labels.
+`authMethod` selects API-key or service-account discovery; OpenAI API-key results
+exclude valid `shutdown_date` values on or before today (UTC). Discovery writes
+nothing. Empty/error results allow manual entry; credential/provider/method
+changes invalidate pending results. Model and key edits preserve provider transport
+and Codex plugin settings. Provider or Harness changes regenerate those entries
+while preserving unrelated JSON; reset restores the selected starter.
+
+`configurationTemplate` enables Control UI with loopback origins on port 18789.
+Compute supplies gateway authentication from Installation trust; Presets replace
+the starter unchanged. [OCE native admin access](agent-native-admin.md) still
+requires isolated HTTPS origins. [Agent editing](platform-console/agent-editing.md#4-render-draft-revision-or-channels)
+traces Slack Secret selection/creation. **Apply channel settings** copies values
+and bindings into the form; cancellation discards selections but retains Secrets
+already created in the Namespace.
 
 For supported Dedicated runtimes, submission sends the inline Configuration and
 ordinary Secret references to the [provisioning API](agent-provisioning.md).
@@ -188,25 +189,21 @@ Console polls the accepted job before an Agent exists, then opens the returned
 Agent revision. The worker creates resources and exact Secret grants before
 admitting deployment; Console does not duplicate those grants.
 
-Ordinary draft creation parses the JSON object and posts
-`{kind: "agent", values, secretBindings}` to
-`POST /namespaces/:namespaceId/configurations`. After that returns its ID,
-`POST /namespaces/:namespaceId/agents` creates the Agent draft with the selected
-plugin map, `initialWorkspaceFiles`, and `workspaceDefaultsId`, then returns to
-the detail URL with `revision=draft`. The form preloads the four rendered native
-defaults and submits every textarea, including unchanged and empty values. OCC
-stages those inputs outside the Agent and Configuration; the
-[workspace setup flow](workspace-files.md) traces application before execution.
-`apps/controller/src/console/agents/create.mjs:grantConfigurationSecretAccess`
-then uses the returned Agent identity to grant exact Secret `operate` through
-Namespace IAM. These grants are separate writes from Configuration and Agent
-creation; they do not deploy the Agent. A grant failure preserves the saved Agent
-and enables **Retry credential access**, which rereads existing exact grants
-without creating duplicate resources. The saved Agent link also supports manual recovery.
-If the Agent write fails, the browser retains the Configuration ID and locks its JSON and
-execution mode; an explicit Agent retry reuses the saved Configuration. No write
-retries automatically, and ordinary draft creation alone does not admit a revision, validate the
-plugin catalog, or start runtime work.
+Ordinary draft creation posts `{kind: "agent", values, secretBindings}` to
+`POST /namespaces/:namespaceId/configurations`, then sends its returned ID to
+`POST /namespaces/:namespaceId/agents` with plugins, `initialWorkspaceFiles`, and
+`workspaceDefaultsId`. Success opens `revision=draft`. All four seeded workspace
+textareas, including unchanged/empty values, are submitted. OCC stages them
+outside Agent/Configuration; [workspace setup](workspace-files.md) applies them
+before execution.
+
+`create.mjs:grantConfigurationSecretAccess` grants the returned Agent exact
+Secret `operate` through separate Namespace IAM writes. Failure preserves the
+Agent and enables **Retry credential access**, which rereads exact grants without
+duplicating resources; the saved Agent link permits manual recovery. Failed Agent
+writes retain the Configuration ID and lock JSON/Harness; explicit retries reuse
+it. Writes never retry automatically. Draft creation neither admits revisions,
+validates the plugin catalog, nor starts runtime work.
 
 `apps/controller/src/console/agents/harness-auth.mjs:createHarnessAuthFields`
 masks the existing Secret ID input in the Credentials editor. `harnessAuthDescription` reports a configured Secret
@@ -315,6 +312,10 @@ refreshes and inspects the Agent and revision history.
 - 2026-09-23 21:41: Preserve edited Codex plugin settings across model and key changes. (01a0cce9-23e3-7072-aa3f-a2e26d2dbf11 - b8f23be17de4a4b077dab8d6b90b4add1f9146cb)
 
 - 2026-09-23 23:50: Describe Service Accounts hints and expired-model filtering; consolidate repeated creation and action details. (01a0cf27-71c6-7042-8357-74d1811a2ef8 - 9e0095c7)
+
+- 2026-09-23 19:28: Condense Console flow within the documentation length budget. (01a0cf27-71c6-7042-8357-74d1811a2ef8 - da797e3afa3752a7b3321733d27b6b5e6d0a505a)
+
+- 2026-09-23 18:51: Trace provider-dependent harness choices, derived execution mode, and Codex PAT switching boundaries. (01a0cf9b-8c16-7a73-a3d6-1496593034a0 - 6c6c3e4308946e7e66d656fb553da4dd5177f2c4)
 
 - 2026-09-23 18:48: Keep saved API-key and PAT Presets bound to their provider before Configuration or Agent writes. (01a0cf27-71c6-7042-8357-74d1811a2ef8 - 4da114ac7b11f926d4b774b8d32a09fa136135eb)
 

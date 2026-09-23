@@ -190,7 +190,11 @@ export function installFixture(scenario, evidence) {
           description: "Model reference copied into the draft.",
         },
       },
-      agent: { name: "{{ vars.name }}", executionMode: "dedicated", harnessAuth: auth },
+      agent: {
+        name: "{{ vars.name }}",
+        executionMode: "dedicated",
+        harnessAuth: { ...auth, method: scenario.presetAuth ?? auth.method },
+      },
       configuration: {
         values: { ...configurationValues({}), agents: { defaults: { model: "{{ vars.model }}" } } },
       },

@@ -17,8 +17,7 @@ function field(label, input, hint) {
   );
 }
 
-function configurationTemplate(mode, nativeProvider, providerModel) {
-  const harnessId = mode === "dedicated" ? "codex" : "openclaw";
+function configurationTemplate(harnessId, nativeProvider, providerModel) {
   const providerId = harnessId === "codex" ? "codex" : nativeProvider;
   const modelReference = `${providerId}/${providerModel}`;
   let baseUrl =
@@ -240,6 +239,13 @@ function renderAgentForm(context, rendered) {
     element("option", { value: "dedicated" }, "Dedicated"),
     element("option", { value: "embedded" }, "Embedded"),
   );
+  const harness = element(
+    "select",
+    { id: "agent-harness", "aria-describedby": "agent-harness-hint" },
+    element("option", { value: "codex" }, "Codex"),
+    element("option", { value: "openclaw" }, "OpenClaw"),
+  );
+  const harnessHint = element("p", { id: "agent-harness-hint", className: "hint" });
   const configuration = element("textarea", {
     id: "configuration-json",
     name: "configuration",
@@ -395,6 +401,8 @@ function renderAgentForm(context, rendered) {
     { className: "harness-auth-fields" },
     element("legend", {}, "Model provider"),
     field("Provider", nativeProvider),
+    field("Harness", harness),
+    harnessHint,
     binding
       ? element("p", {}, `Preset authentication: ${harnessAuthDescription(binding)}`)
       : authMethodField,
@@ -425,12 +433,13 @@ function renderAgentForm(context, rendered) {
   if (binding?.method === "codex_pat") {
     nativeProvider.value = "openai";
     mode.value = "dedicated";
-  } else if (nativeProvider.value === "anthropic") {
+  } else if (nativeProvider.value === "anthropic" || binding?.method === "runtime") {
     mode.value = "embedded";
   }
+  harness.value = mode.value === "dedicated" ? "codex" : "openclaw";
   const currentTemplate = () =>
     JSON.stringify(
-      configurationTemplate(mode.value, nativeProvider.value, model.value.trim()),
+      configurationTemplate(harness.value, nativeProvider.value, model.value.trim()),
       null,
       2,
     );
@@ -456,7 +465,7 @@ function renderAgentForm(context, rendered) {
     if (values === undefined) {
       return;
     }
-    const next = configurationTemplate(mode.value, nativeProvider.value, model.value.trim());
+    const next = configurationTemplate(harness.value, nativeProvider.value, model.value.trim());
     const previous = values.agents?.defaults?.model;
     const previousModel = typeof previous === "string" ? previous : previous?.primary;
     const modelSettings = { ...values.agents?.defaults?.models };
@@ -544,9 +553,10 @@ function renderAgentForm(context, rendered) {
     renderChannelEditor();
   }
   nativeProvider.addEventListener("change", () => {
-    if (nativeProvider.value === "anthropic") {
-      mode.value = "embedded";
-    }
+    // Operator-managed Presets retain the embedded harness required by their fixed binding.
+    harness.value =
+      nativeProvider.value === "anthropic" || binding?.method === "runtime" ? "openclaw" : "codex";
+    mode.value = harness.value === "codex" ? "dedicated" : "embedded";
     // A provider change must not send the previous provider's key to a different service.
     apiKey.value = "";
     if (!binding) {
@@ -557,15 +567,22 @@ function renderAgentForm(context, rendered) {
     }
   });
   authMethod.addEventListener("change", () => {
-    const changedTopology = authMethod.value === "codex_pat" && mode.value !== "dedicated";
-    if (authMethod.value === "codex_pat") {
-      mode.value = "dedicated";
-    }
     apiKey.value = "";
-    resetModelChoices(changedTopology);
+    resetModelChoices();
   });
   model.addEventListener("change", () => updateModelConfiguration());
-  mode.addEventListener("change", () => updateModelConfiguration(true));
+  harness.addEventListener("change", () => {
+    mode.value = harness.value === "codex" ? "dedicated" : "embedded";
+    // Service account tokens cannot authenticate OpenClaw; require a new API key.
+    if (!binding && harness.value === "openclaw" && authMethod.value === "codex_pat") {
+      authMethod.value = "api_key";
+      apiKey.value = "";
+      resetModelChoices(true);
+    } else {
+      updateModelConfiguration(true);
+    }
+    updateControls();
+  });
   configuration.addEventListener("input", () => {
     configuration.setCustomValidity("");
     feedback.textContent = "";
@@ -582,6 +599,7 @@ function renderAgentForm(context, rendered) {
         }
         nativeProvider.value = selectedProvider;
         if (selectedProvider === "anthropic") {
+          harness.value = "openclaw";
           mode.value = "embedded";
         }
       }
@@ -680,7 +698,7 @@ function renderAgentForm(context, rendered) {
     field(
       "Execution mode",
       mode,
-      "Service account tokens require Dedicated execution. Anthropic uses Embedded execution. Slack requires Dedicated execution with OpenAI.",
+      "Set by the harness: Codex uses Dedicated execution; OpenClaw uses Embedded execution. Slack requires Codex.",
     ),
     field(
       "Configuration JSON",
@@ -825,7 +843,7 @@ function renderAgentForm(context, rendered) {
         ? element(
             "p",
             { className: "error" },
-            "Channels require Dedicated execution. Select Dedicated or disable configured channels before creating the Agent.",
+            "Channels require Dedicated execution. Select OpenAI with the Codex harness or disable configured channels before creating the Agent.",
           )
         : null;
     channelEditor.replaceChildren(...[channels, modeWarning].filter(Boolean));
@@ -847,6 +865,7 @@ function renderAgentForm(context, rendered) {
       authMethod,
       model,
       modelChoice,
+      harness,
       mode,
       reset,
     ]) {
@@ -858,12 +877,27 @@ function renderAgentForm(context, rendered) {
     channelEditor.toggleAttribute("inert", pending || saved || outcomeUnknown);
     channelEditor.setAttribute("aria-busy", pending ? "true" : "false");
     const usesPat = (binding?.method ?? authMethod.value) === "codex_pat";
-    mode.disabled ||= nativeProvider.value === "anthropic" || usesPat;
+    mode.disabled = true;
+    harness.disabled ||=
+      binding?.method === "runtime" || (usesPat && Boolean(binding || savedSecret));
+    const codexOption = harness.querySelector('[value="codex"]');
+    codexOption.hidden = nativeProvider.value === "anthropic";
+    codexOption.disabled = nativeProvider.value === "anthropic";
+    harnessHint.textContent =
+      harness.disabled && usesPat
+        ? "This saved service account token requires Codex. Create a new draft without a Preset to use OpenClaw with an API key."
+        : "OpenClaw is available for both providers. OpenAI defaults to Codex; Anthropic uses OpenClaw.";
+    if (binding?.method === "runtime") {
+      harnessHint.textContent =
+        "This Preset's operator-managed credentials require the OpenClaw harness.";
+    }
     nativeProvider.disabled ||= Boolean(savedSecret) || hasBoundModelCredential;
     authMethod.disabled ||= Boolean(savedSecret) || nativeProvider.value === "anthropic";
     authMethod.querySelector('[value="api_key"]').textContent =
       nativeProvider.value === "anthropic" ? "Anthropic API key" : "OpenAI API key";
-    authMethod.querySelector('[value="codex_pat"]').hidden = nativeProvider.value === "anthropic";
+    const patOption = authMethod.querySelector('[value="codex_pat"]');
+    patOption.hidden = harness.value !== "codex";
+    patOption.disabled = harness.value !== "codex";
     credentialLabel.textContent = usesPat ? "Service account token" : "API key";
     if (usesPat) {
       apiKey.placeholder = "at-…";
@@ -1096,7 +1130,7 @@ function renderAgentForm(context, rendered) {
     }
     if (mode.value === "embedded" && hasEnabledChannel(values)) {
       feedback.textContent =
-        "Channels require Dedicated execution. Select Dedicated or disable configured channels before creating the Agent.";
+        "Channels require Dedicated execution. Select OpenAI with the Codex harness or disable configured channels before creating the Agent.";
       return;
     }
     const body = {

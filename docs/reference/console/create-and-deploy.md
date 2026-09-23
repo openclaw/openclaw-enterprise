@@ -32,19 +32,22 @@ does not make that link available.
    **Use Preset**. The chooser closes and the form opens with editable settings.
    Select **Start without Preset** to use standard defaults.
 3. Enter a name that is unique within the Namespace. Choose **OpenAI** or
-   **Anthropic** under **Model provider**. For OpenAI, choose **OpenAI API key**
-   or **Service Accounts** under **Authentication method**, then enter that credential.
-   For API keys, use [OpenAI API keys](https://platform.openai.com/api-keys). For Service
-   Accounts, open [OpenAI admin](https://admin.openai.com/), choose your workspace,
-   open **Service accounts**, and create a token with Codex scope. The fields show
-   `sk-…` and `at-…` prefix hints respectively; prefixes do not select the method.
-   Anthropic uses an API key. Model controls appear after credential entry. **Load models** queries the selected provider and lets
-   you choose the gateway's default model; no model is preselected. Choose a
-   text-generation model compatible with your runtime. If the list is empty or
-   unavailable, retry or select **Enter model ID manually**.
-   OpenAI API keys support dedicated Codex and embedded OpenClaw; Service Accounts
-   require dedicated Codex. Anthropic uses embedded OpenClaw. The form writes the corresponding native
-   model configuration. Credentials remain separate from Configuration JSON.
+   **Anthropic** under **Provider**, then choose **Harness**. OpenAI defaults to
+   **Codex** and also offers **OpenClaw**; Anthropic currently offers only
+   **OpenClaw**. **Execution mode** follows the harness: Dedicated for Codex,
+   Embedded for OpenClaw.
+   With OpenAI and Codex, choose **OpenAI API key** or **Service Accounts** under
+   **Authentication method**. OpenClaw uses the selected provider's API key.
+   For API keys, use [OpenAI API keys](https://platform.openai.com/api-keys). For
+   Service Accounts, open [OpenAI admin](https://admin.openai.com/), choose your
+   workspace, open **Service accounts**, and create a token with Codex scope.
+   The fields show `sk-…` and `at-…` hints; prefixes do not select the method.
+   Enter the credential to show model controls. **Load models** queries the
+   selected provider and lets you choose the gateway's default model; no model
+   is preselected. Choose a text-generation model compatible with your runtime.
+   If the list is empty or unavailable, retry or select **Enter model ID manually**.
+   The form writes the corresponding native model configuration. Credentials
+   remain separate from Configuration JSON.
 4. Review the generated Configuration JSON. Changing selections updates model and
    runtime entries while preserving unrelated edits; **Reset template** replaces
    your edits. Confirm your Installation
@@ -54,7 +57,7 @@ does not make that link available.
    trusted-proxy settings from the Installation's
    [operator-managed proxy trust](../drivers/kubernetes-compute/networking-and-isolation.md#gateway-authentication).
    Native admin UI still needs its [explicit opt-in configuration](../../guides/deploy/native-admin.md).
-5. If you need Slack, use OpenAI with **Dedicated** and use its channel card. Each token
+5. If you need Slack, use OpenAI with the **Codex** harness and use its channel card. Each token
    menu lets you select a readable Namespace Secret or **Create new Secret...**.
    The modal prefills the binding key and masks the value you enter. Creating a
    Secret stores it immediately, even if you later cancel Agent creation.
@@ -86,15 +89,21 @@ The key is never put into Configuration JSON, Agent responses, or browser storag
 A Preset with an existing authentication binding retains that binding; use the
 Agent's Credentials tab to change it after creation. API-key and Service Accounts
 Presets also keep their provider fixed, including when editing Configuration
-JSON. Start without a Preset to select a different provider and credential.
+JSON. A saved service account token also fixes the harness to Codex. Start without a Preset
+to select a different provider or use OpenClaw with an API key. Presets using
+operator-managed runtime credentials keep the harness fixed to OpenClaw, including
+when changing providers.
 
 Model discovery requires Agent `create` permission in this Namespace. It sends
 the supplied credential to the selected authentication method's official API
 without creating a Secret or saving credentials. Service Accounts token discovery (`codex_pat` in the API) validates
 the account with OpenAI authentication and lists its Codex models. The selector
 determines routing; credential prefixes do not choose an authentication method.
-Changing the provider or method clears the credential and model choice;
-changing the credential clears the model choice. A returned model is not proof of
+Changing the provider selects its default harness and clears the credential and
+model choice. Changing the authentication method also clears the credential and
+model. Switching from Codex to OpenClaw with an unsaved service account token selects API-key
+authentication and clears the token and model; switching harnesses with an API key
+preserves that credential and model. Changing the credential clears the model choice. A returned model is not proof of
 runtime compatibility. A model must be selected or entered before saving:
 OpenClaw's implicit default does not follow the selected provider.
 

@@ -360,6 +360,14 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     { value: "openai", text: "OpenAI" },
     { value: "anthropic", text: "Anthropic" },
   ]);
+  const harness = page.getByLabel("Harness", { exact: true });
+  assert.deepEqual(await optionValues(harness), [
+    { value: "codex", text: "Codex" },
+    { value: "openclaw", text: "OpenClaw" },
+  ]);
+  assert.equal(await harness.inputValue(), "codex");
+  assert.equal(await page.getByLabel("Execution mode").inputValue(), "dedicated");
+  assert.equal(await page.getByLabel("Execution mode").isDisabled(), true);
   assert.deepEqual(await optionValues(page.getByLabel("Authentication method", { exact: true })), [
     { value: "api_key", text: "OpenAI API key" },
     { value: "codex_pat", text: "Service Accounts" },
@@ -392,7 +400,7 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   assert.equal(await page.getByLabel("Execution mode").isDisabled(), true);
   assert.equal(await page.getByLabel("Model", { exact: true }).isVisible(), false);
   await page.getByLabel("Authentication method", { exact: true }).selectOption("api_key");
-  assert.equal(await page.getByLabel("Execution mode").isEnabled(), true);
+  assert.equal(await page.getByLabel("Harness", { exact: true }).isEnabled(), true);
   assert.equal(await keyInput.getAttribute("placeholder"), "sk-…");
   assert.equal(await page.getByRole("link", { name: "OpenAI admin", exact: true }).count(), 0);
   await enterManualModel(page, key, "gpt-5.1");
@@ -410,7 +418,7 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   await page.getByLabel("IDENTITY.md", { exact: true }).fill(customIdentity);
   await page.getByLabel("USER.md", { exact: true }).fill("");
   await page.getByLabel("Agent name").fill("Console-created Agent");
-  await page.getByLabel("Execution mode").selectOption("dedicated");
+  await page.getByLabel("Harness", { exact: true }).selectOption("codex");
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
   await page.getByRole("button", { name: "Configure Slack" }).click();
   const createChannelDialog = page.getByRole("dialog", { name: "Configure Slack" });
@@ -838,6 +846,7 @@ test("Dedicated Agent creation provisions inline Configuration and masked new Se
   );
   await page.getByRole("button", { name: "Create Agent" }).click();
   assert.equal((await provisionResponse).status(), 202);
+  assert.equal(await page.getByLabel("Harness", { exact: true }).isDisabled(), true);
   allowProvisioningSuccess = true;
   await page.waitForURL((url) => {
     return (
@@ -1145,6 +1154,8 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
     .waitFor();
   assert.equal(await page.getByLabel("Agent name").isDisabled(), true);
   assert.equal(await page.getByLabel("Configuration JSON").isDisabled(), true);
+  assert.equal(await page.getByLabel("Harness", { exact: true }).inputValue(), "codex");
+  assert.equal(await page.getByLabel("Harness", { exact: true }).isDisabled(), true);
   await page.getByRole("button", { name: "Retry provisioning request" }).click();
 
   await page.waitForURL((url) => {
@@ -1232,6 +1243,14 @@ test("Agent creation discovers available Anthropic models without saving the key
     .getByLabel("Service account token", { exact: true })
     .fill("at-discarded-before-anthropic");
   await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
+  assert.equal(await page.getByLabel("Harness", { exact: true }).inputValue(), "openclaw");
+  assert.deepEqual(
+    await page
+      .getByLabel("Harness", { exact: true })
+      .locator("option:not([disabled])")
+      .evaluateAll((options) => options.map((option) => option.value)),
+    ["openclaw"],
+  );
   assert.equal(
     await page.getByLabel("API key", { exact: true }).getAttribute("placeholder"),
     "sk-ant-…",
@@ -1556,7 +1575,39 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByRole("button", { name: "Start without Preset" }).click();
-  await page.getByLabel("Execution mode").selectOption("embedded");
+  await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
+  await page.getByLabel("Service account token", { exact: true }).fill("at-discarded-pat");
+  await page.getByLabel("Service account token", { exact: true }).press("Tab");
+  await page.getByLabel("Model ID", { exact: true }).fill("discarded-pat-model");
+  await page.getByLabel("Model ID", { exact: true }).press("Tab");
+  // OpenClaw requires a new API key, never the previous service account token.
+  await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+  assert.equal(await page.getByLabel("Execution mode").inputValue(), "embedded");
+  assert.equal(
+    await page.getByLabel("Authentication method", { exact: true }).inputValue(),
+    "api_key",
+  );
+  assert.equal(await page.getByLabel("API key", { exact: true }).inputValue(), "");
+  assert.equal(await page.getByLabel("Model ID", { exact: true }).isVisible(), false);
+  assert.equal(
+    JSON.parse(await page.getByLabel("Configuration JSON").inputValue()).agents.defaults.model,
+    undefined,
+  );
+  assert.equal(
+    await page
+      .getByLabel("Authentication method", { exact: true })
+      .locator('[value="codex_pat"]')
+      .isDisabled(),
+    true,
+  );
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  assert.deepEqual(
+    pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/models`).map(
+      ({ body }) => body,
+    ),
+    [{ provider: "openai", authMethod: "codex_pat", apiKey: "at-discarded-pat" }],
+  );
+  await page.getByLabel("Harness", { exact: true }).selectOption("codex");
   await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
   assert.equal(await page.getByLabel("Execution mode").inputValue(), "dedicated");
   assert.equal(await page.getByLabel("Execution mode").isDisabled(), true);
@@ -1595,6 +1646,8 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   assert.equal(await page.getByLabel("Service account token", { exact: true }).inputValue(), "");
   assert.equal(await page.getByLabel("Service account token", { exact: true }).isDisabled(), true);
   assert.equal(await page.getByLabel("Execution mode").isDisabled(), true);
+  assert.equal(await page.getByLabel("Harness", { exact: true }).inputValue(), "codex");
+  assert.equal(await page.getByLabel("Harness", { exact: true }).isDisabled(), true);
   assert.equal(await page.getByLabel("Authentication method", { exact: true }).isDisabled(), true);
   assert.equal(await page.getByRole("button", { name: "Reset template" }).isDisabled(), true);
   assert.deepEqual(
@@ -1628,7 +1681,12 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   assert.equal(retried.data.configurationId, savedConfiguration.data.id);
   assert.equal(retried.data.activeRevisionId, undefined);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
-  assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 1);
+  assert.deepEqual(
+    pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).map(
+      ({ body }) => body.value,
+    ),
+    ["at-browser-pat"],
+  );
   assert.equal(agentPostRequests(requests, namespace.id).length, 2);
   assert.deepEqual(
     agentPostRequests(requests, namespace.id)[0].body.harnessAuth,
@@ -1775,7 +1833,7 @@ test("Agent creation preserves unrelated edited JSON across model changes and re
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByRole("button", { name: "Start without Preset" }).click();
-  const mode = page.getByLabel("Execution mode");
+  const harness = page.getByLabel("Harness", { exact: true });
   const configuration = page.getByLabel("Configuration JSON");
   assert.equal(JSON.parse(await configuration.inputValue()).agents?.defaults?.model, undefined);
   await enterManualModel(page, "template-edit-key", "gpt-5.1");
@@ -1786,7 +1844,7 @@ test("Agent creation preserves unrelated edited JSON across model changes and re
   ]);
   assert.ok(dedicatedTemplate.plugins.entries.codex);
 
-  await mode.selectOption("embedded");
+  await harness.selectOption("openclaw");
   const embeddedTemplate = JSON.parse(await configuration.inputValue());
   assert.equal(embeddedTemplate.agents.defaults.model, "openai/gpt-5.1");
   assert.deepEqual(embeddedTemplate.models.providers.openai.models, [
@@ -1837,8 +1895,15 @@ test("Agent creation preserves unrelated edited JSON across model changes and re
   await modelInput.fill("gpt-4.1");
   await modelInput.press("Tab");
   await assertCustomTransport();
+  assert.equal(await harness.inputValue(), "openclaw");
+  assert.equal(await page.getByLabel("Execution mode").inputValue(), "embedded");
+  assert.equal(
+    JSON.parse(await configuration.inputValue()).agents.defaults.models["openai/gpt-4.1"]
+      .agentRuntime.id,
+    "openclaw",
+  );
 
-  await mode.selectOption("dedicated");
+  await harness.selectOption("codex");
   const retained = JSON.parse(await configuration.inputValue());
   assert.equal(retained.agents.defaults.model, "codex/gpt-4.1");
   assert.deepEqual(retained.models.providers.codex, {
@@ -1896,6 +1961,16 @@ test("Agent creation preserves unrelated edited JSON across model changes and re
     models: [{ id: "claude-template-model", name: "claude-template-model" }],
   });
   assert.equal(anthropicTemplate.models.providers.codex, undefined);
+  await page.getByLabel("Provider", { exact: true }).selectOption("openai");
+  assert.equal(await harness.inputValue(), "codex");
+  assert.equal(await page.getByLabel("Execution mode").inputValue(), "dedicated");
+  assert.equal(await page.getByLabel("API key", { exact: true }).inputValue(), "");
+  assert.equal(JSON.parse(await configuration.inputValue()).agents.defaults.model, undefined);
+  await enterManualModel(page, "returned-openai-key", "gpt-returned-model");
+  assert.equal(
+    JSON.parse(await configuration.inputValue()).agents.defaults.model,
+    "codex/gpt-returned-model",
+  );
   await page.getByLabel("Agent name").fill("Discarded draft");
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Start over" }).click();
@@ -1914,7 +1989,7 @@ test("Agent creation blocks an incompatible fallback after changing provider unt
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await enterManualModel(page, "fallback-openai-key", "gpt-5.1");
-  await page.getByLabel("Execution mode").selectOption("embedded");
+  await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
   const configuration = page.getByLabel("Configuration JSON");
   const values = JSON.parse(await configuration.inputValue());
   values.agents.defaults.model = {
@@ -1982,9 +2057,9 @@ test("Agent creation saves explicitly selected models for both harnesses", async
     await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
     await page.getByRole("heading", { name: "Create Agent" }).waitFor();
     await page.getByRole("button", { name: "Start without Preset" }).click();
+    await page.getByLabel("Harness", { exact: true }).selectOption(harness);
     await enterManualModel(page, `test-${mode}-${selectedModel}-key`, selectedModel);
     await page.getByLabel("Agent name").fill(`${mode}-${selectedModel}`);
-    await page.getByLabel("Execution mode").selectOption(mode);
     const saved = page.waitForResponse(
       (response) =>
         response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
@@ -1994,6 +2069,7 @@ test("Agent creation saves explicitly selected models for both harnesses", async
     const response = await saved;
     assert.equal(response.status(), 201);
     const agent = (await response.json()).data;
+    assert.equal(agent.executionMode, mode);
     const configuration = await fixture.request(
       "GET",
       `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
@@ -3459,6 +3535,77 @@ test("Channel drawer reports partial save when post-PATCH Secret grant is reject
   assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
 });
 
+test("Runtime-auth Presets retain OpenClaw when changing from Anthropic to OpenAI", async (t) => {
+  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Runtime Preset providers");
+  const root = await mkdtemp(join(tmpdir(), "occ-runtime-provider-preset-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  fixture.controller.registerDriver(configurationDriver);
+  fixture.controller.selectDriver("configuration", configurationDriver.id);
+  const primary = "anthropic/claude-runtime-model";
+  const values = nativeValues("runtime-preset");
+  values.agents.defaults.model = primary;
+  values.agents.defaults.models = { [primary]: { agentRuntime: { id: "openclaw" } } };
+  values.models.providers = {
+    anthropic: {
+      baseUrl: "https://api.anthropic.com",
+      api: "anthropic-messages",
+      models: [{ id: "claude-runtime-model", name: "claude-runtime-model" }],
+    },
+  };
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: {
+      name: "Operator-managed credentials",
+      template: {
+        agent: {
+          name: "Runtime provider Agent",
+          executionMode: "embedded",
+          harnessAuth: { method: "runtime" },
+        },
+        configuration: { values },
+      },
+    },
+  });
+  assert.equal(preset.status, 201);
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  assert.equal(await page.getByLabel("Provider", { exact: true }).inputValue(), "anthropic");
+  await page.getByLabel("Provider", { exact: true }).selectOption("openai");
+  // SSH's fixed runtime credential binding requires embedded OpenClaw for either provider.
+  assert.equal(await page.getByLabel("Harness", { exact: true }).isDisabled(), true);
+  assert.equal(await page.getByLabel("Harness", { exact: true }).inputValue(), "openclaw");
+  assert.equal(await page.getByLabel("Execution mode").inputValue(), "embedded");
+  await page.getByLabel("Model ID", { exact: true }).fill("gpt-4.1");
+  await page.getByLabel("Model ID", { exact: true }).press("Tab");
+  const createdResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const response = await createdResponse;
+  assert.equal(response.status(), 201);
+  const created = (await response.json()).data;
+  assert.equal(created.executionMode, "embedded");
+  assert.deepEqual(created.harnessAuth, { method: "runtime" });
+  const saved = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/configurations/${created.configurationId}`,
+  );
+  assert.equal(saved.data.values.agents.defaults.model, "openai/gpt-4.1");
+  assert.deepEqual(saved.data.values.agents.defaults.models["openai/gpt-4.1"].agentRuntime, {
+    id: "openclaw",
+  });
+  assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 0);
+  assert.equal(
+    pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/models`).length,
+    0,
+  );
+});
+
 test("API-key Presets keep their credential provider fixed while allowing model and runtime changes", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -3489,6 +3636,8 @@ test("API-key Presets keep their credential provider fixed while allowing model 
   await page.getByRole("button", { name: "Use Preset" }).click();
   const configuration = page.getByLabel("Configuration JSON", { exact: true });
   const original = JSON.parse(await configuration.inputValue());
+  assert.equal(await page.getByLabel("Harness", { exact: true }).inputValue(), "openclaw");
+  assert.equal(await page.getByLabel("Harness", { exact: true }).isEnabled(), true);
   // Editing JSON must not silently retarget the saved OpenAI Secret to Anthropic.
   const changed = structuredClone(original);
   changed.agents.defaults.model = "anthropic/claude-account-model";
@@ -3507,7 +3656,7 @@ test("API-key Presets keep their credential provider fixed while allowing model 
   await configuration.fill(JSON.stringify(original));
   await page.getByLabel("Model ID", { exact: true }).fill("gpt-5.1");
   await page.getByLabel("Model ID", { exact: true }).press("Tab");
-  await page.getByLabel("Execution mode").selectOption("dedicated");
+  await page.getByLabel("Harness", { exact: true }).selectOption("codex");
   const dedicated = JSON.parse(await configuration.inputValue());
   assert.equal(dedicated.agents.defaults.model, "codex/gpt-5.1");
   // Existing dedicated Presets may also use the supported OpenAI model prefix.
@@ -3611,6 +3760,8 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
     .waitFor();
   assert.equal(await page.getByLabel("Service account token", { exact: true }).count(), 0);
   assert.equal(await page.getByLabel("Execution mode").isDisabled(), true);
+  assert.equal(await page.getByLabel("Harness", { exact: true }).inputValue(), "codex");
+  assert.equal(await page.getByLabel("Harness", { exact: true }).isDisabled(), true);
   assert.equal(
     (await page.getByLabel("Configuration JSON", { exact: true }).inputValue()).includes(
       "test-channel-token",
@@ -3745,7 +3896,7 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   assert.equal(await page.getByLabel("Provider", { exact: true }).inputValue(), "openai");
   assert.equal(await presetKey.inputValue(), "");
   const mode = page.getByLabel("Execution mode");
-  await mode.selectOption("dedicated");
+  await page.getByLabel("Harness", { exact: true }).selectOption("codex");
   await presetKey.fill("preset-dedicated-openai-key");
   const anthropicConfiguration = JSON.parse(await native.inputValue());
   anthropicConfiguration.agents.defaults.model = "anthropic/claude-account-model";
