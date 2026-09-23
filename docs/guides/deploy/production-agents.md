@@ -68,13 +68,86 @@ is the Kubernetes namespace created by the driver during
 
 ## Configure the Agent runtime
 
+Complete [private routing](workspace-routing.md#configure-private-routing) first.
+Both examples below use native trusted-proxy authentication for Console workspace
+access. Replace `<actual-proxy-source-cidr>` with the verified Envoy source CIDR
+before posting the Configuration. Follow the [native authentication requirements](workspace-routing.md#configure-native-gateway-authentication)
+for proxy identity and NetworkPolicy isolation; do not trust arbitrary client
+addresses. The gateway password SecretRef enables the separate local model check.
+Dedicated Codex also requires the [matching runtime images](workspace-routing.md#runtime-prerequisite-for-separate-storage).
+
 Choose one runtime mode and write the matching Namespace-owned
 `kind: "agent"` Configuration. Use `embedded` for built-in OpenClaw:
 
 ```bash
 export AGENT_EXECUTION_MODE='embedded'
 cat > configuration.json <<'JSON'
-{"kind":"agent","values":{"gateway":{"mode":"local","bind":"lan","auth":{"mode":"token","token":"${OPENCLAW_GATEWAY_TOKEN}"}},"agents":{"defaults":{"model":"openai/gpt-6-astra","skipBootstrap":true,"models":{"openai/gpt-6-astra":{"agentRuntime":{"id":"openclaw"}}}}},"models":{"providers":{"openai":{"baseUrl":"https://api.openai.com/v1","api":"openai-responses","models":[{"id":"gpt-6-astra","name":"gpt-6-astra"}]}}}}}
+{
+  "kind": "agent",
+  "values": {
+    "gateway": {
+      "mode": "local",
+      "bind": "lan",
+      "trustedProxies": [
+        "<actual-proxy-source-cidr>"
+      ],
+      "allowRealIpFallback": true,
+      "auth": {
+        "mode": "trusted-proxy",
+        "trustedProxy": {
+          "userHeader": "x-occ-identity",
+          "allowUsers": [
+            "occ-workspace-files"
+          ]
+        },
+        "identityScopes": {
+          "occ-workspace-files": [
+            "operator.admin"
+          ]
+        },
+        "password": {
+          "source": "env",
+          "provider": "default",
+          "id": "OPENCLAW_GATEWAY_PASSWORD"
+        }
+      },
+      "http": {
+        "endpoints": {
+          "chatCompletions": {
+            "enabled": true
+          }
+        }
+      }
+    },
+    "agents": {
+      "defaults": {
+        "model": "openai/gpt-6-astra",
+        "skipBootstrap": true,
+        "models": {
+          "openai/gpt-6-astra": {
+            "agentRuntime": {
+              "id": "openclaw"
+            }
+          }
+        }
+      }
+    },
+    "models": {
+      "providers": {
+        "openai": {
+          "baseUrl": "https://api.openai.com/v1",
+          "api": "openai-responses",
+          "models": [
+            {
+              "id": "gpt-6-astra",
+              "name": "gpt-6-astra"
+            }
+          ]
+        }
+      }
+    }
+  }
+}
 JSON
 ```
 
@@ -88,13 +161,90 @@ cat > configuration.json <<'JSON'
 {
   "kind": "agent",
   "values": {
-    "gateway": {"mode": "local", "bind": "lan", "controlUi": {"enabled": false}, "auth": {"mode": "token", "token": "${OPENCLAW_GATEWAY_TOKEN}"}, "http": {"endpoints": {"chatCompletions": {"enabled": true}}}},
-    "agents": {"defaults": {"model": "codex/gpt-6-astra", "skipBootstrap": true, "models": {"codex/gpt-6-astra": {"agentRuntime": {"id": "codex"}}}}},
-    "models": {"providers": {"codex": {"baseUrl": "http://127.0.0.1:9", "api": "openai-responses", "models": [{"id": "gpt-6-astra", "name": "gpt-6-astra"}]}}},
-    "plugins": {"allow": ["codex"], "entries": {"codex": {"enabled": true, "config": {"appServer": {
-      "mode": "guardian", "approvalPolicy": "on-request", "sandbox": "read-only",
-      "transport": "websocket", "url": "${APP_SERVER_URL}", "authToken": "${APP_SERVER_TOKEN}"
-    }}}}}
+    "gateway": {
+      "mode": "local",
+      "bind": "lan",
+      "controlUi": {
+        "enabled": false
+      },
+      "trustedProxies": [
+        "<actual-proxy-source-cidr>"
+      ],
+      "allowRealIpFallback": true,
+      "auth": {
+        "mode": "trusted-proxy",
+        "trustedProxy": {
+          "userHeader": "x-occ-identity",
+          "allowUsers": [
+            "occ-workspace-files"
+          ]
+        },
+        "identityScopes": {
+          "occ-workspace-files": [
+            "operator.admin"
+          ]
+        },
+        "password": {
+          "source": "env",
+          "provider": "default",
+          "id": "OPENCLAW_GATEWAY_PASSWORD"
+        }
+      },
+      "http": {
+        "endpoints": {
+          "chatCompletions": {
+            "enabled": true
+          }
+        }
+      }
+    },
+    "agents": {
+      "defaults": {
+        "model": "codex/gpt-6-astra",
+        "skipBootstrap": true,
+        "models": {
+          "codex/gpt-6-astra": {
+            "agentRuntime": {
+              "id": "codex"
+            }
+          }
+        }
+      }
+    },
+    "models": {
+      "providers": {
+        "codex": {
+          "baseUrl": "http://127.0.0.1:9",
+          "api": "openai-responses",
+          "models": [
+            {
+              "id": "gpt-6-astra",
+              "name": "gpt-6-astra"
+            }
+          ]
+        }
+      }
+    },
+    "plugins": {
+      "allow": [
+        "codex"
+      ],
+      "entries": {
+        "codex": {
+          "enabled": true,
+          "config": {
+            "appServer": {
+              "mode": "guardian",
+              "approvalPolicy": "on-request",
+              "sandbox": "read-only",
+              "transport": "websocket",
+              "url": "${APP_SERVER_URL}",
+              "authToken": "${APP_SERVER_TOKEN}"
+            }
+          }
+        }
+      }
+    }
   }
 }
 JSON
@@ -256,16 +406,32 @@ every selected Secret before deploy. Binding changes are authorized by OCC IAM;
 Kubernetes RoleBindings only allow the API to materialize backing tenant
 Secrets.
 
+## Verify workspace access
+
+After deployment, complete [Verify routing and file access](workspace-routing.md#verify-routing-and-file-access):
+require the Gateway and Agent HTTPRoute to be accepted, TLS certificates ready,
+and a successful read through the OCC workspace-file API. In the Console, open
+the Agent and select **Reload AGENTS.md**. An existing file should load without
+**Workspace access is unavailable**. The caller needs exact-Agent `read`
+permission; saving also requires `operate`.
+
+An empty editor after an error is not evidence of an empty workspace. A missing
+file is a separate result: the file API can create or replace a file, but cannot
+delete it. Verify access before creating a missing file. See [workspace-file errors](../../reference/agents.md#workspace-files).
+Do not treat this setup as complete merely because a revision is active or
+credentials are stored. Keep model verification as a separate check below.
+
 ## Verify production workloads
 
 Wait for `GET /namespaces/$NAMESPACE_ID/agents/$AGENT_ID` to report the
 expected `activeRevisionId`, then require a real model response from that
-Agent. Choose the check for your gateway authentication:
+Agent. The Configurations in this guide use trusted-proxy authentication:
 
-- Token: [attach with the OpenClaw TUI](#attach-with-the-openclaw-tui).
-- Trusted proxy: [verify rejection of an unauthenticated request and a real
+- Default (trusted proxy): [verify rejection of an unauthenticated request and a real
   model response](../operate/model-verification.md) over an operator's local
   Kubernetes connection. This uses a separate gateway password.
+- For a separately configured token-authenticated gateway without Console
+  workspace routing: [attach with the OpenClaw TUI](#attach-with-the-openclaw-tui).
 
 A Helm release, ready controller, or active revision does not show that the
 Agent can reach its model.

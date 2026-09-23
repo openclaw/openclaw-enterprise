@@ -3,7 +3,11 @@
 Install the OpenClaw Control Plane (OCC) on Kubernetes, then verify
 authenticated API access. Prepare [standard Kubernetes](kubernetes.md) or
 [Amazon EKS](eks.md) and complete the [production prerequisites](../deploy.md#production-prerequisites)
-first. Run the commands from the repository root in one shell; retain its
+first. Workspace access is required: install the
+[routing prerequisites](workspace-routing.md#requirements), provide a GatewayClass,
+and keep routing enabled in both example files.
+
+Run the commands from the repository root in one shell; retain its
 exports and protected files for [Agent deployment](production-agents.md).
 
 ## Use published images
@@ -141,11 +145,8 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" version
 Older servers continue but remain unsupported; API and worker emit
 `compute.preflight-warning`.
 
-The default examples use native API-key operation. Helm values own the
-controller image, API endpoint, Secret names, bootstrap claim, optional
-Collector, and network selectors. Installation YAML owns gateway/Agent images,
-Driver selection, projected identity, runtime networking/storage, and the shared
-startup logging level.
+The examples use native API keys. Helm values configure OCC; Installation YAML
+configures Drivers, runtime images, identity, networking, storage, and logging.
 
 For `logging.level`, follow [Choose the log level](../observability.md#1-choose-the-log-level),
 including when to restart OCC and deploy a new AgentRevision.
@@ -167,14 +168,16 @@ Edit the protected YAML copies before provisioning anything:
 - `$OCC_INPUT_DIRECTORY/values.yaml`: set `images.controller`,
   `auth.baseUrl`, `bootstrap.adminEmail`, `database.cidrs`, `cluster.cidrs`,
   `controlPlane.nodeSelector`, `database.caSecretName`, `dns`, `api.clients`, and
-  `bootstrap.password.claimName` with reviewed site values. Keep the example
-  startup, database, and auth Secret names and keys for the commands below;
-  if you customize them, update the corresponding Secret creation commands.
+  `bootstrap.password.claimName`. Keep `gatewayRouting.enabled: true`, set
+  `gatewayRouting.gatewayClassName` to your GatewayClass, and retain the example
+  Secret names and keys; otherwise update the Secret creation commands below.
 - `$OCC_INPUT_DIRECTORY/installation.yaml`: set `occ.cluster`, `logging.level`,
-  `drivers.compute.configuration.images` digests, DNS and gateway-client
-  selectors, service-principal token settings, runtime selector, Secret
+  `drivers.compute.configuration.images` digests, DNS selectors, matching
+  `gatewayRouting` settings, service-principal token settings, runtime selector, Secret
   prefixes, and `runtime.gatewayStorageClassName`. Keep
   `drivers.compute.configuration.images.requireImmutableDigest: true`.
+  Do not set `network.gatewayClients` with routing enabled; Compute derives the
+  Envoy peer from `gatewayRouting`.
   If enabling Agent plugins, set one compatible bundled `drivers.plugin` selector
   and any required Codex catalog-reader configuration. See the
   [PluginDriver reference](../../reference/drivers/plugin.md#selection-and-catalogs).
@@ -194,7 +197,9 @@ yq e -e '.images.controller | test("@sha256:[a-f0-9]{64}$")' \
 yq e -e '.auth.baseUrl != "" and .bootstrap.adminEmail != "" and
   (.database.cidrs | length > 0) and (.cluster.cidrs | length > 0) and
   (.controlPlane.nodeSelector | length > 0) and
-  (.api.clients | length > 0)' \
+  (.api.clients | length > 0) and .gatewayRouting.enabled == true and
+  .gatewayRouting.gatewayClassName != "" and
+  .gatewayRouting.apiKeySecretName != ""' \
   "$OCC_INPUT_DIRECTORY/values.yaml" >/dev/null
 yq e -e '.drivers.compute.configuration.images.requireImmutableDigest == true and
   (.drivers.compute.configuration.images.gateway | test("@sha256:[a-f0-9]{64}$")) and
@@ -214,9 +219,8 @@ test "$BOOTSTRAP_CLAIM" = "$(yq e -r '.metadata.name' "$OCC_INPUT_DIRECTORY/boot
 
 `$KUBECONFIG_FILE` must select the same cluster as `$CONTEXT`.
 
-Prepare these local files under `/secure/occ`. Their contents become Kubernetes
-Secret values in the next step; each file contains one raw value, without quotes
-or a variable name such as `OCC_DATABASE_URL=`.
+Prepare these Secret inputs under `/secure/occ`, each containing one raw value
+without quotes or a variable assignment.
 
 | File                  | Contents and source                                                                                                                                                                                                                                                             |
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -225,9 +229,8 @@ or a variable name such as `OCC_DATABASE_URL=`.
 | `occ-database-ca.pem` | Optional PostgreSQL root CA bundle when the database root is not in the base image trust store. Required only when `database.caSecretName` is set; the example mount path is `/etc/openclaw/database-ca/ca.pem`.                                                                |
 | `occ-auth-secret`     | A random secret used to sign and verify user sessions. Generate it once for this Installation with the command below, then retain it across redeployments. It is separate from the administrator password, service API key, and model-provider key.                             |
 
-Save the two complete database URLs using your secret manager or a protected
-editor, replacing the example placeholders and preserving provider-required TLS
-options. For managed PostgreSQL roots supplied through `database.caSecretName`,
+Save both database URLs in protected files, replacing placeholders and preserving
+required TLS options. For managed PostgreSQL roots supplied through `database.caSecretName`,
 set `sslmode=verify-full` and `sslrootcert` to the mounted CA file in both URLs.
 With the example mount settings, the path is `/etc/openclaw/database-ca/ca.pem`;
 if you change them, use `<database.caMountPath>/<database.caKey>`. Introduce URL
@@ -255,12 +258,24 @@ fi
 Keep these values out of Helm values, Installation YAML, Configurations, shell
 history, and this repository.
 
-## Provision system Secrets and install
+## Prepare workspace access
 
-Create the namespace and system Secrets from protected files:
+Create the controller namespace:
 
 ```bash
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" create namespace openclaw-system
+```
+
+Complete [Configure private routing](workspace-routing.md#configure-private-routing):
+create `occ-private-gateway-key` and match the Helm and Installation routing
+settings. Rerun validation and rendering above if inputs change. Configure each
+Agent's authentication during [Agent deployment](production-agents.md#configure-the-agent-runtime).
+
+## Provision system Secrets and install
+
+Create the remaining system Secrets from protected files:
+
+```bash
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
   apply --dry-run=server -f /tmp/oce-rendered.yaml
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \

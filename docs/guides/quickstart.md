@@ -8,6 +8,19 @@ in a local Kubernetes cluster created with k3d. This setup is for development
 and uses loopback addresses. To install OCC itself in a cluster you already
 operate, use [Kubernetes Setup](kubernetes-setup.md).
 
+## Workspace access
+
+For Console workspace access, use [Kubernetes Setup](kubernetes-setup.md).
+That setup includes private gateway routing and Agent authentication so the
+Console can read and save `AGENTS.md`, `SOUL.md`, `IDENTITY.md`, and `USER.md`.
+
+The Compose + k3d helper below is a limited local development profile. It does
+not configure workspace access: `occ dev up` can succeed while the Console
+reports **Workspace access is unavailable**. A deployed Agent or a successful
+model response does not establish file access. The Kubernetes routing guide
+assumes OCC runs in the cluster; its `.svc` endpoint and Pod NetworkPolicies do
+not directly apply to an OCC API running on the host or in Compose.
+
 ## Before you start
 
 Run the commands below from the repository root on Linux or macOS. You need:

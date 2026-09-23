@@ -1,12 +1,13 @@
 # Set up OpenClaw Enterprise on Kubernetes
 
-Install the OpenClaw Control Plane (OCC) in a Kubernetes cluster you already operate. This guide takes you from checking the cluster to authenticating to the installed API. If you want to try OpenClaw Enterprise on your machine, use [Local Setup](quickstart.md); that profile runs OCC in Compose and Agent workloads in k3d.
+Install the OpenClaw Control Plane (OCC) in a Kubernetes cluster you already operate. This guide takes you from checking the cluster to authenticating to the installed API, with private routing for Console workspace access enabled as part of setup. If you want to try OpenClaw Enterprise on your machine, use [Local Setup](quickstart.md); that profile runs OCC in Compose and Agent workloads in k3d.
 
 ## Before you start
 
 You need:
 
 - Kubernetes 1.35 or later, IPv4 connectivity, and a network plugin that enforces NetworkPolicies. You need permissions to create the control-plane namespace, RBAC, Secrets, and storage claims.
+- Envoy Gateway, Gateway API CRDs, cert-manager, and an existing Envoy GatewayClass. Complete the [workspace routing requirements](deploy/workspace-routing.md#requirements) before installing OCC; the OCC chart does not install these controllers.
 - Helm, a version-compatible `kubectl`, Python 3, `yq` v4, and the [OCC CLI](cli.md).
 - External PostgreSQL with separate application and migration roles, verified TLS, and a registry your cluster can pull controller and runtime images from.
 - Storage for the bootstrap and gateway volumes, and an approved internal HTTPS origin for OCC. Dedicated Agent workspaces also need a default StorageClass that supports `ReadWriteMany`. The chart does not create public Ingress or TLS.
@@ -34,7 +35,7 @@ Confirm the server version, that nodes have the control-plane and Agent labels y
 
 ## 2. Prepare the inputs and install OCC
 
-Use [Install the production control plane](deploy/production-installation.md) to select published images or build your own, configure protected Helm values and Installation YAML with image digests, create the system Secrets, and prepare the fresh bootstrap volume. The chart does not create these inputs. Stop when you reach **Install the chart with native values** in [Prepare the fresh bootstrap output PVC](deploy/production-installation.md#prepare-the-fresh-bootstrap-output-pvc). Keep the same shell and protected files, then return here to run Helm once:
+Use [Install the production control plane](deploy/production-installation.md) to select published images or build your own, configure protected Helm values and Installation YAML with image digests, create the system Secrets, and prepare the fresh bootstrap volume. The chart does not create these inputs. Stop when you reach **Install the chart with native values** in [Prepare the fresh bootstrap output PVC](deploy/production-installation.md#prepare-the-fresh-bootstrap-output-pvc). Complete its required **Prepare workspace access** step, including the service-key Secret, before returning here. Keep routing enabled in both Helm values and the Installation startup configuration. Keep the same shell and protected files, then run Helm once:
 
 ```bash
 helm upgrade --install oce deploy/helm/openclaw-enterprise \
@@ -58,4 +59,4 @@ In the same shell, follow [Authenticate to the production API](deploy/production
 
 Expect the displayed `ID` to match `meta.installationId` in the key file. If it does not authenticate, see [Troubleshoot API authentication](operate/troubleshooting.md#authentication-fails-after-installation). If initialization did not finish, follow [bootstrap recovery](../reference/authentication/service-api-keys.md#recover-an-incomplete-bootstrap).
 
-Keep the same shell and temporary key copy to [prepare Namespaces and deploy Agents](deploy/production-agents.md), then [verify a real model response from that Agent](deploy/production-agents.md#verify-production-workloads). At the end, [remove only the temporary credential copies](deploy/production-agents.md#end-the-operator-session). The [local first-Agent walkthrough](first-agent.md) uses a different installation and should not be run against this one.
+Keep the same shell and temporary key copy to [prepare Namespaces and deploy Agents](deploy/production-agents.md), then [verify workspace access](deploy/production-agents.md#verify-workspace-access) and [a real model response from that Agent](deploy/production-agents.md#verify-production-workloads). These are separate completion checks; a successful deployment does not establish either one. At the end, [remove only the temporary credential copies](deploy/production-agents.md#end-the-operator-session). The [local first-Agent walkthrough](first-agent.md) uses a different installation and should not be run against this one.

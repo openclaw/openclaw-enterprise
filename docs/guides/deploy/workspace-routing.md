@@ -1,10 +1,25 @@
 # Configure private Agent workspace routing
 
-Set up private Kubernetes routing so operators can read and replace Agent
-workspace files through the OpenClaw Control Plane (OCC). Start with the
+Set up private Kubernetes routing so operators can read, create, and replace Agent
+workspace files through the OpenClaw Control Plane (OCC). This is a required
+part of the [Kubernetes setup](../kubernetes-setup.md), for embedded as well as
+dedicated Agents whose workspace files operators manage in the Console. Start with the
 [production installation](production-installation.md) and keep its protected
 Helm values, Installation YAML, and Kubernetes context. On EKS, also complete
 the [strict-mode routing prerequisites](eks.md#enable-console-workspace-files).
+
+This procedure assumes OCC API and worker Pods run in the same Kubernetes
+cluster as the private Envoy Service. The local Compose + k3d helper does not
+configure this topology. Use [Kubernetes setup](../kubernetes-setup.md) for
+workspace access; enabling a Helm value alone does not connect a Compose API
+to the private Service.
+
+The production examples enable routing; the chart default is
+`gatewayRouting.enabled: false`. Operators must install the routing controllers,
+create the service-key Secret, and configure Helm and Installation settings.
+The Console's built-in Agent template still uses token authentication: update its
+Configuration with the [native gateway settings](#configure-native-gateway-authentication)
+before deploying. Creating an Agent does not configure these prerequisites.
 
 ## Runtime prerequisite for separate storage
 
