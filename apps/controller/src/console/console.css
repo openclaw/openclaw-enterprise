@@ -151,13 +151,17 @@ p {
   z-index: 3;
 }
 .sidebar .brand {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
   padding: 10px 12px 0;
   margin-bottom: 28px;
 }
 .occ-version {
   color: var(--muted);
   font-size: 12px;
-  margin: 12px 12px 0;
+  text-transform: none;
+  letter-spacing: normal;
   font-family: ui-monospace, monospace;
 }
 .nav {

@@ -436,13 +436,13 @@ export const scenarios = {
     name: "OCC build revision",
     buildRevision: "abcdef1234567890abcdef1234567890abcdef12",
     description:
-      "OCE branding and an eight-character OCC commit. Hover the version for the full hash. This revision is simulated.",
+      "OCE branding with an adjacent eight-character OCC commit. Hover the version for the full hash. This revision is simulated.",
   },
   developmentBuild: {
     group: "Components/Navigation",
     name: "OCC development build",
     description:
-      "OCE branding with OCC development status when build metadata is unavailable. No checkout or gateway revision is inferred.",
+      "OCE branding with an adjacent dev label when OCC build metadata is unavailable. No checkout or gateway revision is inferred.",
   },
   menu: {
     group: "Components/Navigation",
@@ -464,7 +464,7 @@ export const scenarios = {
     mobile: true,
     actions: [{ selector: '.content [aria-busy="false"]' }, click("Open navigation")],
     description:
-      "390px viewport with OCE branding and a simulated OCC revision in the open drawer. Escape or the overlay closes it.",
+      "390px viewport with the simulated OCC revision beside OCE in the open drawer. Escape or the overlay closes it.",
   },
   slack: {
     group: "Components/Channels",

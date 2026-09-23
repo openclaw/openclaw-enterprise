@@ -112,9 +112,9 @@ errors. The Dockerfile copies these files into the existing controller image.
 The publisher supplies its checked `source_sha` as `OCC_BUILD_REVISION`, also used
 for the image revision label. Empty metadata stays empty; a nonempty value must
 be a full lowercase Git SHA. `apps/controller/src/console/shell.mjs:renderShell`
-reads that HTML metadata, labels the sidebar OCE, and renders the OCC short hash
-with its full value in a tooltip. Missing or invalid metadata displays development
-status. No browser or controller request inspects Git or an Agent gateway version.
+reads that HTML metadata and renders the short hash beside OCE at the top of the
+sidebar, with the full OCC revision in a tooltip. Missing or invalid metadata
+displays **dev** beside OCE. No browser or controller request inspects Git or an Agent gateway version.
 
 ### 2. Resolve the session before private reads
 

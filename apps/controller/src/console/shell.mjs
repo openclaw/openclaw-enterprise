@@ -244,17 +244,21 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     const sidebar = element(
       "aside",
       { className: "sidebar", id: "navigation-drawer" },
-      element("p", { className: "brand" }, "OCE"),
-      nav,
-      session ? accountMenu() : null,
       element(
         "p",
-        {
-          className: "occ-version",
-          title: knownRevision ? `OCC commit ${revision}` : "OCC build revision unavailable",
-        },
-        knownRevision ? `OCC · ${revision.slice(0, 8)}` : "OCC · development",
+        { className: "brand" },
+        "OCE",
+        element(
+          "span",
+          {
+            className: "occ-version",
+            title: knownRevision ? `OCC commit ${revision}` : "OCC build revision unavailable",
+          },
+          knownRevision ? revision.slice(0, 8) : "dev",
+        ),
       ),
+      nav,
+      session ? accountMenu() : null,
     );
     const main = element("main", { className: "content", id: "main" });
     const selected = namespaces.find((item) => item.id === namespaceId);
