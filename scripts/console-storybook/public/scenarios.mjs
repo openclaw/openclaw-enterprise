@@ -431,6 +431,19 @@ export const scenarios = {
     actions: [click("Deploy new revision")],
     description: "A rejected deployment reports failure and re-enables the action.",
   },
+  buildRevision: {
+    group: "Components/Navigation",
+    name: "OCC build revision",
+    buildRevision: "abcdef1234567890abcdef1234567890abcdef12",
+    description:
+      "OCE branding and an eight-character OCC commit. Hover the version for the full hash. This revision is simulated.",
+  },
+  developmentBuild: {
+    group: "Components/Navigation",
+    name: "OCC development build",
+    description:
+      "OCE branding with OCC development status when build metadata is unavailable. No checkout or gateway revision is inferred.",
+  },
   menu: {
     group: "Components/Navigation",
     name: "Account menu",
@@ -447,9 +460,11 @@ export const scenarios = {
   mobile: {
     group: "Components/Navigation",
     name: "Mobile drawer",
+    buildRevision: "abcdef1234567890abcdef1234567890abcdef12",
     mobile: true,
     actions: [click("Open navigation")],
-    description: "390px viewport with the navigation drawer open. Escape or the overlay closes it.",
+    description:
+      "390px viewport with OCE branding and a simulated OCC revision in the open drawer. Escape or the overlay closes it.",
   },
   slack: {
     group: "Components/Channels",

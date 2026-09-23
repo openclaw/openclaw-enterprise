@@ -154,6 +154,12 @@ p {
   padding: 10px 12px 0;
   margin-bottom: 28px;
 }
+.occ-version {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 12px 12px 0;
+  font-family: ui-monospace, monospace;
+}
 .nav {
   display: grid;
   gap: 6px;

@@ -29,6 +29,15 @@ The console uses the existing [email/password session contract](authentication.m
 with same-origin cookies. It does not store tokens or accept service keys. A
 missing or expired session clears private content and asks you to sign in again.
 
+## Identify the control-plane build
+
+The sidebar is branded **OCE**. Its **OCC** version shows the first eight
+characters of the running controller image's source commit; hover for the full
+hash. Published images bake the checked release revision into the console HTML.
+The hash identifies OCC, not an Agent's gateway. A source checkout or image built
+without revision metadata shows **OCC · development**, with a tooltip explaining
+that the build revision is unavailable.
+
 ## Browse and select a Namespace
 
 The sidebar opens **Agents**, **Providers**, or **Namespaces**. **Refresh**

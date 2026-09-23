@@ -123,6 +123,7 @@ test("console static routes expose only public assets and preserve API JSON fail
     assert.match(result.response.headers.get("content-type") ?? "", /text\/html/i, path);
     assert.match(result.text, /<script[^>]+src="\/console\/console\.mjs"/i, path);
     assert.doesNotMatch(result.text, /\{\s*"error"\s*:/, path);
+    assert.match(result.text, /<meta name="occ-build-revision" content="" \/>/, path);
   }
 
   for (const [path, mime] of [

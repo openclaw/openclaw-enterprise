@@ -97,6 +97,9 @@
           "path": "tests/integration/console-api.test.mjs"
         },
         {
+          "path": "tests/integration/console-build-metadata.test.mjs"
+        },
+        {
           "path": "tests/integration/controller-lifecycle.test.mjs"
         },
         {

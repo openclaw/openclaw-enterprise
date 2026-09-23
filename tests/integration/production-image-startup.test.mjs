@@ -302,6 +302,14 @@ test("production image includes the OpenShell gRPC proto asset", imageTestOption
 });
 
 test("production image includes console shell and public assets", imageTestOptions, async () => {
+  const { stdout: labels } = await runDocker([
+    "image",
+    "inspect",
+    "--format",
+    "{{json .Config.Labels}}",
+    image,
+  ]);
+  const revision = JSON.parse(labels)?.["org.opencontainers.image.revision"] ?? "";
   const probe = String.raw`
     import assert from "node:assert/strict";
     import { readConsoleAsset } from "./apps/controller/src/console-assets.ts";
@@ -310,6 +318,12 @@ test("production image includes console shell and public assets", imageTestOptio
     assert.equal(shell.statusCode, 200);
     assert.match(shell.contentType, /text\/html/);
     assert.match(shell.body.toString("utf8"), /\/console\/console\.mjs/);
+
+    const revision = shell.body.toString("utf8").match(/<meta name="occ-build-revision" content="([^"]*)" \/>/)?.[1];
+    assert.ok(revision === "" || /^[a-f0-9]{40}$/.test(revision));
+    if (process.env.EXPECTED_OCC_REVISION) {
+      assert.equal(revision, process.env.EXPECTED_OCC_REVISION);
+    }
 
     const css = await readConsoleAsset("/console/console.css");
     assert.equal(css.statusCode, 200);
@@ -332,6 +346,8 @@ test("production image includes console shell and public assets", imageTestOptio
     "--rm",
     "--network",
     "none",
+    "--env",
+    `EXPECTED_OCC_REVISION=${revision}`,
     image,
     "--input-type=module",
     "--eval",
