@@ -25,8 +25,9 @@ are flagged for review and pages above 2,500 fail, except the approved single-pa
 and links must pass. Run `pnpm docs:check-length` for the word-count
 check alone.
 
-Suite Audit, the shared runtime build, and eight PR lanes start independently on ephemeral runners.
-Image/packaging and repository-credentials-platform start after the runtime build.
+Suite Audit, the shared runtime build, and all ten PR lanes start independently on ephemeral runners.
+Image/packaging and repository-credentials-platform overlap tool setup with the build,
+then wait for its same-run artifact before preparing their images.
 Kubernetes lanes use `ubuntu-latest` for bridge netfilter support; other lanes
 and the audit use `blacksmith-8vcpu-ubuntu-2404`. `CI Required` uses Blacksmith and
 still requires the audit, runtime build, and every lane to pass, including result-artifact

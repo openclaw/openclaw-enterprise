@@ -259,6 +259,10 @@ async function markResourceReady(statePath, state, resource) {
   resource.status = "ready";
   resource.readyAt = new Date().toISOString();
   await writeState(statePath, state);
+  const seconds = Math.round(
+    (Date.parse(resource.readyAt) - Date.parse(resource.createdAt)) / 1_000,
+  );
+  progress(state.lane, `${resource.kind} ready in ${seconds}s`);
 }
 
 function execFile(command, args, options = {}) {
@@ -1262,6 +1266,7 @@ async function registerImageInK3d(statePath, state, cluster, image, envName) {
     // k3d can exit successfully after containerd rejects missing index content.
     // Export only the platform pulled locally, then verify the imported reference.
     const containerEngine = process.env.OCC_DOCKER_BIN ?? "docker";
+    const transferStarted = Date.now();
     await execFile(containerEngine, [
       "image",
       "save",
@@ -1270,6 +1275,10 @@ async function registerImageInK3d(statePath, state, cluster, image, envName) {
       archive,
       importReference,
     ]);
+    progress(
+      state.lane,
+      `image archive exported in ${Math.round((Date.now() - transferStarted) / 1_000)}s`,
+    );
     await execFile(process.env.OPENCLAW_CI_K3D_BIN ?? "k3d", [
       "image",
       "import",

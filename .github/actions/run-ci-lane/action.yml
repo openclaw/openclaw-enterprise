@@ -99,6 +99,13 @@ runs:
       env:
         OPENCLAW_CI_HEADROOM_LANE: ${{ inputs.lane }}
       run: node scripts/ci/repository-platform-headroom.mjs
+    - name: Wait for same-run runtime image
+      if: inputs.runtime-image-artifact != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        OPENCLAW_CI_RUNTIME_ARTIFACT: ${{ inputs.runtime-image-artifact }}
+      run: node scripts/ci/runtime-image.mjs --wait
     - name: Download same-run runtime image
       if: inputs.runtime-image-artifact != ''
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c

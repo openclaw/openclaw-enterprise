@@ -787,7 +787,7 @@ test(
     );
     await assert.rejects(loadRuntimeImage(directory, sourceSha), /recorded image identity/);
     await writeFile(metadataPath, JSON.stringify(metadata));
-    await appendFile(join(directory, "runtime.tar"), "corrupt");
+    await appendFile(join(directory, "runtime.tar.zst"), "corrupt");
     await assert.rejects(loadRuntimeImage(directory, sourceSha), /checksum mismatch/);
   },
 );

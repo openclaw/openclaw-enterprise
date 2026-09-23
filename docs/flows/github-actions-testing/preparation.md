@@ -20,9 +20,11 @@ conditions, and node pressure/taints outside the sanitized test reporter; they d
 not include tenant workloads or complete Pod specifications.
 
 Automatic CI builds the full `deploy/runtime/Dockerfile` once on Blacksmith using
-`scripts/ci/runtime-image.mjs`. It exports the immutable Docker image ID, archive
+`scripts/ci/runtime-image.mjs`. It exports a Zstandard-compressed image archive, its immutable Docker image ID, archive
 SHA-256 and checked-out workflow commit in the same-run `ci-runtime-image`
-artifact. Image/packaging and repository-credentials-platform download it;
+artifact. Image/packaging and repository-credentials-platform set up tools while
+the build runs, then discover and download the artifact within the current workflow
+run. Discovery has a bounded wait and fails if the producer fails;
 preparation verifies checkout, source, archive checksum and loaded image identity
 before assigning a lane-owned tag. Invalid input fails setup. Both lanes retain
 their original tests, and the platform lane still builds its final-runtime fixture

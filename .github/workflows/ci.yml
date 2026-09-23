@@ -115,16 +115,18 @@ jobs:
         with:
           name: ci-runtime-image
           path: |
-            ${{ runner.temp }}/runtime-image/runtime.tar
+            ${{ runner.temp }}/runtime-image/runtime.tar.zst
             ${{ runner.temp }}/runtime-image/metadata.json
-          compression-level: 1
+          compression-level: 0
           overwrite: true
           if-no-files-found: error
           retention-days: 1
 
   runtime-consumers:
     name: ${{ matrix.title }}
-    needs: runtime-image
+    permissions:
+      contents: read
+      actions: read
     runs-on: ${{ matrix.profile == 'k3d' && 'ubuntu-latest' || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
