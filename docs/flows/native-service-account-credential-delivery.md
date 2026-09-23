@@ -8,7 +8,7 @@ last_updated_session: codex/01a0cf27-71c6-7042-8357-74d1811a2ef8
 
 ## Overview
 
-An operator stores an OpenAI or Anthropic API key, or a Codex PAT, as an OCC Secret or separately issues a
+An operator stores an OpenAI or Anthropic API key, or a service account token, as an OCC Secret or separately issues a
 ChatGPT account credential, then selects that source through Agent `harnessAuth`.
 Deployment freezes the authorized binding; the worker rechecks it and Kubernetes
 renders the credential only into the model-executing workload. This flow ends
@@ -61,7 +61,7 @@ to discover models without storing the credential. OpenAI API-key discovery
 omits models whose valid `shutdown_date` is today or earlier in UTC, using the
 provider's [model-list contract](https://developers.openai.com/api/reference/resources/models/methods/list).
 Missing, null, malformed, or future dates remain in the list; model age and IDs
-do not imply expiry. This filter does not apply to Anthropic or the Codex PAT
+do not imply expiry. This filter does not apply to Anthropic or the service account token
 catalog. Discovery does not prove that a model call will succeed.
 
 `packages/occ/src/index.ts:OpenClawController.createAgent`, `updateAgent`,
@@ -84,7 +84,7 @@ creates only transport/channel groups and cannot supply model authentication.
 `packages/occ/src/index.ts:OpenClawController.deployAgent`, `admitHarnessAuth`
 
 Deployment requires a nonnull binding, exact Agent `deploy`, and Configuration
-`read`. For a key or PAT, OCC checks the actor and Agent principal's Secret `operate`,
+`read`. For a key or service account token, OCC checks the actor and Agent principal's Secret `operate`,
 resolves the backend through the selected Secret Driver, and freezes the stable
 reference and Driver identity. For a ChatGPT account, it verifies the issued
 access-token reference and private Provider, member Driver, and workspace
@@ -114,7 +114,7 @@ For `runtime`, worker Agent/Configuration authorization still runs but credentia
 source authorization and lookup do not. The dispatch context carries only the
 method; SSH does not read the operator credential file or issue a model probe.
 
-For an API key or PAT it resolves authoritative backend ownership from OCC state and
+For an API key or service account token it resolves authoritative backend ownership from OCC state and
 passes an ephemeral `ComputeRevisionContext`. It does not call the Secret Driver,
 read the Kubernetes Secret, or rewrite the revision. Physical backend identity
 is checked at API admission. A missing physical Secret/key later prevents workload
@@ -133,7 +133,7 @@ Secret projections and a closed login mode. Embedded OpenClaw receives the key
 in its combined workload as `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, derived
 from the immutable native model Configuration. Admission requires all selected
 models and fallbacks to use the same supported provider. Dedicated Codex receives the key or the directly
-projected account token/workspace. A direct PAT projects only `CODEX_ACCESS_TOKEN`; its separate gateway receives no model credential.
+projected account token/workspace. A directly supplied service account token projects only `CODEX_ACCESS_TOKEN`; its separate gateway receives no model credential.
 Configuration secret bindings remain gateway-only and cannot choose model auth.
 
 The selected Sandbox consumes these already-rendered
@@ -149,7 +149,7 @@ and Kubernetes workload identity remain separate credentials.
 `GATEWAY_RUNTIME_ENTRYPOINT`
 
 Codex consumes explicit `CODEX_LOGIN_MODE`: API-key login receives the key through
-stdin; managed account login forces the admitted workspace. Direct PAT login uses `--with-access-token` without a caller-supplied workspace; native whoami validates and hydrates identity. Credential environment variables are deleted before the probe and app-server start. Missing or conflicting
+stdin; managed account login forces the admitted workspace. Direct service account token login uses `--with-access-token` without a caller-supplied workspace; native whoami validates and hydrates identity. Credential environment variables are deleted before the probe and app-server start. Missing or conflicting
 inputs and failed login prevent app-server startup. A bounded native turn against
 the primary model must then complete successfully. The probe ignores user rules
 and configuration, disables execution and external tools, and applies read-only

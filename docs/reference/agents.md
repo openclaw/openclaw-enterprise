@@ -108,8 +108,9 @@ resolve to a configured Provider. No default is inferred. The nullable reference
 is returned on both Agent and AgentRevision responses.
 
 The Provider reference is independent of native model names and Harness
-selection. An Agent using an OpenAI or Anthropic API key, or a Codex PAT, does not need a Provider. An
-issued account token requires the matching Provider and account when deployment
+selection. An Agent using an OpenAI or Anthropic API key, or a directly supplied
+service account token, does not need a Provider. An OCE-issued ChatGPT account
+token requires the matching Provider and account when deployment
 is requested and again before startup; see [Provider deployment checks](providers.md#agent-association-and-immutable-deployment).
 Creating an Agent does not create a provider account or issue credentials.
 
@@ -135,8 +136,9 @@ A managed source must belong to the Agent's exact Namespace:
 
 See [supported providers and topologies](harness-execution.md#harness-authentication).
 
-For a Codex PAT stored in an OCC Secret, use the same `source` with
-`"method": "codex_pat"`. This requires dedicated Codex; no managed account is created.
+For a directly supplied service account token stored in an OCC Secret, use the same
+`source` with `"method": "codex_pat"`. Console labels this source **Service Accounts**.
+It requires dedicated Codex; no managed account is created.
 
 For an already issued ChatGPT account credential, use
 `{ "method": "chatgpt_service_account", "serviceAccountId": "sa_123e4567-e89b-42d3-a456-426614174000" }`.
@@ -150,7 +152,7 @@ Configuration authorization, topology checks, and process readiness remain
 required. No credential-source permission is needed because OCC owns no source.
 Kubernetes and Docker reject this method. See [SSH credentials](drivers/ssh-compute.md#credentials-and-supported-boundaries).
 
-API-key and Codex PAT bindings require the actor's exact Secret `operate`. Deployment also
+API-key and service account token bindings require the actor's exact Secret `operate`. Deployment also
 requires the Agent service principal's exact Secret `operate`. ChatGPT binding
 requires the actor's exact account `read`, including the current account when
 replacing or clearing a binding. There is no implied account grant for the Agent

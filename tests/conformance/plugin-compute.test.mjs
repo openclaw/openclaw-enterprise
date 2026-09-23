@@ -1643,7 +1643,7 @@ test("Codex runtime gates startup and readiness on a successful native authentic
   const scenarios = [
     { name: "failed login", loginStatus: 1 },
     {
-      name: "PAT uses native access-token login before probe and clears credentials",
+      name: "service account token uses native access-token login before probe and clears credentials",
       pat: true,
       events: [started, assistant, completed],
       ready: true,

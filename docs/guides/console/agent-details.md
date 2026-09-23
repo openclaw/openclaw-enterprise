@@ -157,13 +157,13 @@ the console. Use the operator workflow for those Agents.
 
 **Authentication source** determines how the harness gets model credentials:
 
-| Choice                           | Required input and effect                                                                     |
-| -------------------------------- | --------------------------------------------------------------------------------------------- |
-| **None**                         | No binding; deployment remains blocked.                                                       |
-| **API key**                      | Existing Namespace Secret ID, not the API key value.                                          |
-| **Codex PAT**                    | Existing Namespace Secret ID containing a Codex PAT; available for Dedicated execution.       |
-| **Operator-managed credentials** | Credentials configured on the runtime host; OCC does not validate them.                       |
-| **ChatGPT service account**      | Select an already issued account in this Namespace. This selector does not create an account. |
+| Choice                           | Required input and effect                                                                           |
+| -------------------------------- | --------------------------------------------------------------------------------------------------- |
+| **None**                         | No binding; deployment remains blocked.                                                             |
+| **API key**                      | Existing Namespace Secret ID, not the API key value.                                                |
+| **Service Accounts**             | Existing Namespace Secret ID containing a service account token; available for Dedicated execution. |
+| **Operator-managed credentials** | Credentials configured on the runtime host; OCC does not validate them.                             |
+| **ChatGPT service account**      | Select an already issued account in this Namespace. This selector does not create an account.       |
 
 **Save authentication source** saves the Agent binding for a future deployment.
 The account availability message describes discovery, not model readiness.

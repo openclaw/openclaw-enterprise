@@ -305,7 +305,7 @@ async function exerciseRepository(store) {
     );
   });
 
-  // PAT-only references must retain sources even without ordinary environment bindings.
+  // Service account token references must retain sources without ordinary environment bindings.
   const revisionSecret = secret(namespace.id);
   const activeSecret = secret(namespace.id);
   let activeRevisionId;

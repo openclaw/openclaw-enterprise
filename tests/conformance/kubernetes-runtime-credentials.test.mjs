@@ -620,7 +620,7 @@ test("Codex startup rejects missing, blank, conflicting, and unsupported authent
     assert.equal(child.status, 1);
     assert.match(
       child.stderr,
-      /Codex (?:API-key authentication configuration|PAT authentication configuration|service-account authentication configuration|authentication mode) is (?:invalid|missing or unsupported)/,
+      /Codex (?:API-key authentication configuration|service account token authentication configuration|service-account authentication configuration|authentication mode) is (?:invalid|missing or unsupported)/,
     );
     assert.equal(child.stdout, "");
     assert.doesNotMatch(child.stderr, /fixture-key|fixture-token/);

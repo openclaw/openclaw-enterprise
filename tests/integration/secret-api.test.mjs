@@ -356,7 +356,7 @@ test("OpenAI API-key model discovery excludes models whose shutdown date has arr
   ]);
 });
 
-test("Codex PAT discovery rejects invalid identity without falling through to the API-key endpoint", async (t) => {
+test("Service account token discovery rejects invalid identity without falling through to the API-key endpoint", async (t) => {
   const fixture = await createModelDiscoveryFixture();
   const namespace = await bootstrapNamespace(fixture);
   for (const [response, expectedCode] of [

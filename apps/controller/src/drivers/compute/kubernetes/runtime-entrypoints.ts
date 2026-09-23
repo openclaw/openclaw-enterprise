@@ -1348,7 +1348,7 @@ if (loginMode === "api_key") {
   }
 } else if (loginMode === "codex_pat") {
   if (!nonempty(accessToken) || !accessToken.startsWith("at-") || workspaceId !== undefined || apiKey !== undefined) {
-    throw new Error("Codex PAT authentication configuration is invalid.");
+    throw new Error("Codex service account token authentication configuration is invalid.");
   }
 } else if (loginMode === "chatgpt_service_account") {
   if (!nonempty(accessToken) || !nonempty(workspaceId) || apiKey !== undefined) {

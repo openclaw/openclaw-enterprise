@@ -1943,7 +1943,7 @@ test("dedicated Codex projects the account-owned token and workspace without exp
   assert.equal(gatewayEnvironment.has("MSTEAMS_APP_PASSWORD"), false);
 });
 
-test("direct Codex PAT is confined to the model container and exact admitted Secret", () => {
+test("direct service account token is confined to the model container and exact admitted Secret", () => {
   const driver = createKubernetesComputeDriver(options());
   const namespace = kubernetesNamespaceName(tenant.id);
   const revision = {

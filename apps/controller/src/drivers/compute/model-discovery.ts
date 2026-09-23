@@ -67,7 +67,7 @@ export async function discoverHarnessModels(input: {
     input.authMethod === "codex_pat" &&
     (input.provider !== "openai" || !input.apiKey.startsWith("at-"))
   ) {
-    // Native --with-access-token interprets other input as an identity JWT, not a PAT.
+    // Native --with-access-token treats tokens without the at- prefix as identity JWTs.
     throw new ModelDiscoveryError("credentials_rejected");
   }
   try {
