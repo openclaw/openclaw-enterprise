@@ -483,7 +483,7 @@ test("k3d preparation reuses only matching local immutable images and verifies f
       OCC_TEST_KUBERNETES_GATEWAY_IMAGE: immutableImage,
       OCC_TEST_KUBERNETES_AGENT_IMAGE: immutableImage,
       // Stop at the next independent preparation boundary after image import.
-      OCC_TEST_KUBERNETES_CODEX_VERSION: "0.153.0",
+      OCC_TEST_KUBERNETES_CODEX_VERSION: "0.152.1",
     });
     const result = commands.prepare();
     assert.equal(result.status, 1);
@@ -503,7 +503,7 @@ test("k3d preparation reuses only matching local immutable images and verifies f
       assert.match(result.stderr, /Cannot connect to the Docker daemon/);
       assert.equal(imported.length, 0);
     } else {
-      assert.match(result.stderr, /pinned to Codex 0\.152\.1/);
+      assert.match(result.stderr, /pinned to Codex 0\.156\.0/);
       assert.equal(imported.length, 1);
       assert.equal(imported[0].status, "ready");
       assert.equal(imported[0].sourceImage, immutableImage);
@@ -778,9 +778,9 @@ test("codex seccomp preparation fails closed for unverified Codex versions and f
         cluster,
         image: immutableImage,
         execFile,
-        codexVersion: "0.153.0",
+        codexVersion: "0.152.1",
       }),
-    /pinned to Codex 0\.152\.1/,
+    /pinned to Codex 0\.156\.0/,
   );
   await assert.rejects(
     () =>
@@ -915,7 +915,7 @@ test("codex seccomp preparation requires a namespace/seccomp RuntimeDefault deni
         image: immutableImage,
         execFile: execFileForRuntimeDefaultFailure((command, args) => {
           const error = new Error(`${command} ${args.join(" ")} failed: version mismatch`);
-          error.stderr = "Codex version mismatch: expected 0.152.1, got 0.153.0";
+          error.stderr = "Codex version mismatch: expected 0.156.0, got 0.152.1";
           error.stdout = "";
           error.exitCode = 64;
           error.timedOut = false;

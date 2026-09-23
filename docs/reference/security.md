@@ -112,7 +112,7 @@ overrides. The operator must install the pinned profile on every eligible node
 before workload startup; kubelet fails closed when the profile is absent.
 
 The optional profile is for cases where `RuntimeDefault` blocks the
-user-namespace `clone`, `unshare`, and `mount` calls used by Codex `0.152.1`
+user-namespace `clone`, `unshare`, and `mount` calls used by Codex `0.156.0`
 and bubblewrap. The profile is a syscall compatibility allowlist, not the
 filesystem or network boundary. Codex and bubblewrap continue to own runtime
 filesystem enforcement, and Kubernetes NetworkPolicies plus the configured

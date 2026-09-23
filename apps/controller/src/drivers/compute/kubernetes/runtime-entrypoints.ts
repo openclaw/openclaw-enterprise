@@ -775,7 +775,7 @@ function codexAppServerRequestSequence(requests, timeoutMs) {
         return;
       }
       if (message.id !== requestIndex + 1) return;
-      // Codex 0.152.1's app-server protocol uses id plus exactly one of
+      // Codex 0.156.0's app-server protocol uses id plus exactly one of
       // result or error; its pinned schema omits a jsonrpc response field.
       const hasResult = hasOwn(message, "result");
       const hasError = hasOwn(message, "error");

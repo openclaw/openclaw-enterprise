@@ -1367,7 +1367,7 @@ async function prepareK3dRuntimeImages(
       codexVersion:
         env.OCC_TEST_KUBERNETES_CODEX_VERSION ??
         process.env.OCC_TEST_KUBERNETES_CODEX_VERSION ??
-        "0.152.1",
+        "0.156.0",
     });
     env.OCC_TEST_KUBERNETES_CODEX_SECCOMP_PROFILE = seccomp.profileName;
     cluster.codexSeccompProfile = seccomp.profileName;

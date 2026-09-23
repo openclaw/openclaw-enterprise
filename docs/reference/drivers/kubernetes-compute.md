@@ -135,7 +135,7 @@ drivers:
         nodeSelector: { oce-role: agents }
         transportSecretPrefix: openclaw-agent-transport
         # Optional; first install this reviewed profile on every eligible node.
-        codexSeccompProfile: profiles/codex-0.152.1.json
+        codexSeccompProfile: profiles/codex-0.156.0.json
 ```
 
 This example shows only the Compute Driver portion of the Installation

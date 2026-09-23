@@ -139,7 +139,7 @@ Missing or incorrectly scoped credentials fail deployment.
 
 Use `runtime.codexSeccompProfile` only for a reviewed Codex compatibility
 allowlist. The optional profile exists for source-backed compatibility cases
-where Codex `0.152.1` cannot start because `RuntimeDefault` denies the
+where Codex `0.156.0` cannot start because `RuntimeDefault` denies the
 user-namespace `clone`, `unshare`, and `mount` calls used by bubblewrap. It
 does not relax filesystem or network policy: Codex and bubblewrap still own
 runtime filesystem boundaries, while Kubernetes NetworkPolicies and the

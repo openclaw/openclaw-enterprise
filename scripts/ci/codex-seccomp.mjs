@@ -14,16 +14,16 @@ const codexBwrapSourceProvenance = Object.freeze([
     source: "actual CRI runtimeSpec.linux.seccomp from each selected k3d node",
   },
   {
-    name: "Codex 0.152.1 bubblewrap launcher",
-    source: "openai/codex rust-v0.152.1 codex-rs/linux-sandbox/src/bwrap.rs",
+    name: "Codex 0.156.0 bubblewrap launcher",
+    source: "openai/codex rust-v0.156.0 codex-rs/linux-sandbox/src/bwrap.rs",
   },
   {
     name: "bubblewrap mount setup",
-    source: "openai/codex rust-v0.152.1 codex-rs/vendor/bubblewrap/bubblewrap.c",
+    source: "openai/codex rust-v0.156.0 codex-rs/vendor/bubblewrap/bubblewrap.c",
   },
   {
     name: "bubblewrap bind mount flags",
-    source: "openai/codex rust-v0.152.1 codex-rs/vendor/bubblewrap/bind-mount.c",
+    source: "openai/codex rust-v0.156.0 codex-rs/vendor/bubblewrap/bind-mount.c",
   },
 ]);
 
@@ -628,7 +628,7 @@ async function prepareCodexSeccompProfile({
   execFile,
   kubectl: kubectlBin,
   docker,
-  codexVersion = "0.152.1",
+  codexVersion = "0.156.0",
   commandTimeoutMs = timeoutMs + 15_000,
   env = process.env,
 } = {}) {
@@ -638,8 +638,8 @@ async function prepareCodexSeccompProfile({
   assertLocalhostProfileName(profileName);
   assert.equal(
     codexVersion,
-    "0.152.1",
-    "Codex seccomp profile verification is pinned to Codex 0.152.1.",
+    "0.156.0",
+    "Codex seccomp profile verification is pinned to Codex 0.156.0.",
   );
   const selection = { kubeconfig: selectedCluster.kubeconfig, context: selectedCluster.context };
   const namespace = `openclaw-ci-seccomp-${randomSuffix(4)}`;

@@ -1038,7 +1038,7 @@ test("dedicated Codex localhost seccomp profile is validated and rendered only o
     transportSecretPrefix: "transport",
     gatewayStorageClassName: "local-path",
   };
-  const profile = "profiles/codex-0.152.1.json";
+  const profile = "profiles/codex-0.156.0.json";
   const driver = createKubernetesComputeDriver(
     options({ runtime: { ...runtime, codexSeccompProfile: profile } }),
   );

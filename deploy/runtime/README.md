@@ -15,14 +15,14 @@ The Dockerfile installs only public npm packages:
 | `OPENCLAW_VERSION`              | `2026.9.1`                                                                                                   |
 | `OPENCLAW_CODEX_PLUGIN_VERSION` | `2026.9.1`                                                                                                   |
 | `OPENCLAW_SLACK_PLUGIN_VERSION` | `2026.9.1`                                                                                                   |
-| `OPENAI_CODEX_VERSION`          | `0.152.1`                                                                                                    |
+| `OPENAI_CODEX_VERSION`          | `0.156.0`                                                                                                    |
 
 Build it from the repository root:
 
 ```bash
 docker build -f deploy/runtime/Dockerfile \
   --tag openclaw-enterprise-runtime:quickstart \
-  deploy/runtime
+  .
 ```
 
 Set `OCC_DOCKER_RUNTIME_IMAGE=openclaw-enterprise-runtime:quickstart` for the
@@ -44,7 +44,10 @@ runtime Secrets; do not put them in the image.
 When overriding package versions, choose plugins compatible with the selected
 OpenClaw release and a Codex CLI accepted by the installed Codex plugin's runtime
 guard. A plugin's npm dependency version is not necessarily its exact app-server
-requirement. Run the compatibility check below against the resulting image.
+requirement. Run the compatibility check below against the resulting image. The default Codex
+release is [0.156.0](https://github.com/openai/codex/releases/tag/rust-v0.156.0);
+provider model availability still depends on the selected credential and must be
+verified with a real model turn.
 
 Production Kubernetes installations can use this recipe as a starting point,
 but must push the resulting image to an operator-controlled registry and
