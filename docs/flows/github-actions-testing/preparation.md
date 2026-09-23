@@ -19,19 +19,6 @@ database cleanup. Failures report bounded storage-controller logs, Pod schedulin
 conditions, and node pressure/taints outside the sanitized test reporter; they do
 not include tenant workloads or complete Pod specifications.
 
-Automatic CI builds the full `deploy/runtime/Dockerfile` once on Blacksmith using
-`scripts/ci/runtime-image.mjs`. It exports a Zstandard-compressed image archive, its immutable Docker image ID, archive
-SHA-256 and checked-out workflow commit in the same-run `ci-runtime-image`
-artifact. Image/packaging and repository-credentials-platform set up tools while
-the build runs, then discover and download the artifact within the current workflow
-run. Discovery has a bounded wait and fails if the producer fails;
-preparation verifies checkout, source, archive checksum and loaded image identity
-before assigning a lane-owned tag. Invalid input fails setup. Both lanes retain
-their original tests, and the platform lane still builds its final-runtime fixture
-and verifies the imported Kubernetes digest. The artifact is retained for one day
-and is not a release or cross-run cache. Manual Full Integration and local runs
-continue to build their own images when no artifact is selected.
-
 The runtime image recipe pins compatible OpenClaw, Codex-plugin and Slack-plugin releases together with the Codex app-server version required by the plugin. Image startup smoke verifies fresh-home plugin loading, actual app-server initialization, and nested Codex home ownership for generated images and credential files before credentialed tests. Routing additionally requires the Gateway identity-scope contract; embedded continuity requires outgoing media to remain visible through history and artifact APIs across Pod replacement. A successful image build alone establishes none of those live outcomes.
 
 For dedicated Codex preparation, each owned node supplies its actual `RuntimeDefault` syscall profile from a restricted probe Pod. In the same command path, preparation first verifies that `RuntimeDefault` denies the pinned Codex Bubblewrap sandbox, then preserves that baseline, adds the version-pinned Bubblewrap calls, installs the resulting Localhost profile, verifies its hash and effective OCI policy, and requires actual sandbox execution through the profile. A missing profile must prevent container creation. The selected relative profile path is passed to the live fixture as `runtime.codexSeccompProfile`; only the dedicated Codex container uses it. Node profile files belong to the disposable cluster, and temporary probe resources are cleaned before model tests. The live fixture checks the effective configured model before paid model turns. OpenShell continues to own containment for its provider-created Harness.

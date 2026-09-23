@@ -13,10 +13,6 @@ inputs:
   artifact-prefix:
     description: Prefix for the uploaded result artifact.
     required: true
-  runtime-image-artifact:
-    description: Full runtime image artifact from this workflow and source commit.
-    required: false
-    default: ""
 runs:
   using: composite
   steps:
@@ -39,7 +35,7 @@ runs:
       shell: bash
       run: bash scripts/ci/setup-tools.sh "${{ inputs.profile }}"
     - name: Enable Kubernetes bridge packet filtering
-      if: startsWith(inputs.lane, 'k3d-fixture-') || inputs.lane == 'repository-credentials-platform'
+      if: startsWith(inputs.lane, 'k3d-fixture-')
       shell: bash
       run: |
         # k3d nodes share the runner kernel; K3s cannot load absent host modules.
@@ -99,22 +95,7 @@ runs:
       env:
         OPENCLAW_CI_HEADROOM_LANE: ${{ inputs.lane }}
       run: node scripts/ci/repository-platform-headroom.mjs
-    - name: Wait for same-run runtime image
-      if: inputs.runtime-image-artifact != ''
-      shell: bash
-      env:
-        GH_TOKEN: ${{ github.token }}
-        OPENCLAW_CI_RUNTIME_ARTIFACT: ${{ inputs.runtime-image-artifact }}
-      run: node scripts/ci/runtime-image.mjs --wait
-    - name: Download same-run runtime image
-      if: inputs.runtime-image-artifact != ''
-      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-      with:
-        name: ${{ inputs.runtime-image-artifact }}
-        path: ${{ runner.temp }}/runtime-image
     - name: Prepare lane
-      env:
-        OPENCLAW_CI_RUNTIME_IMAGE_DIR: ${{ inputs.runtime-image-artifact != '' && format('{0}/runtime-image', runner.temp) || '' }}
       shell: bash
       run: node scripts/ci/prepare.mjs --lane "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --github-env "$GITHUB_ENV"
     - name: Run lane

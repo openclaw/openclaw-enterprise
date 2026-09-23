@@ -17,7 +17,6 @@ import {
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { loadRuntimeImage } from "./runtime-image.mjs";
 import { cleanupResourceIds } from "./cleanup.mjs";
 import { prepareGatewayRouting } from "./routing.mjs";
 import { prepareLogging } from "./logging.mjs";
@@ -259,10 +258,6 @@ async function markResourceReady(statePath, state, resource) {
   resource.status = "ready";
   resource.readyAt = new Date().toISOString();
   await writeState(statePath, state);
-  const seconds = Math.round(
-    (Date.parse(resource.readyAt) - Date.parse(resource.createdAt)) / 1_000,
-  );
-  progress(state.lane, `${resource.kind} ready in ${seconds}s`);
 }
 
 function execFile(command, args, options = {}) {
@@ -650,32 +645,16 @@ async function buildRuntimeImages(
     const resource = addResource(state, "image-tag", { name: tag, owner: state.prefix });
     resources.push(resource);
     await writeState(statePath, state);
-    const artifact = process.env.OPENCLAW_CI_RUNTIME_IMAGE_DIR;
-    if (artifact) {
-      if (!["images-packaging", "repository-credentials-platform"].includes(state.lane)) {
-        throw new Error(
-          "Shared runtime images are only supported by the automatic image consumers.",
-        );
-      }
-      const { stdout } = await execFile("git", ["rev-parse", "HEAD"]);
-      const sourceSha = stdout.trim();
-      if (sourceSha !== process.env.GITHUB_SHA) {
-        throw new Error("Runtime image consumer checkout must match the workflow commit.");
-      }
-      const imageId = await loadRuntimeImage(artifact, sourceSha);
-      await execFile(process.env.OCC_DOCKER_BIN ?? "docker", ["tag", imageId, tag]);
-    } else {
-      await execFile(process.env.OCC_DOCKER_BIN ?? "docker", [
-        "build",
-        ...(localStore ? ["--builder", "default", "--load"] : []),
-        "--pull=false",
-        "-f",
-        runtimeDockerfile,
-        "-t",
-        tag,
-        repositoryRoot,
-      ]);
-    }
+    await execFile(process.env.OCC_DOCKER_BIN ?? "docker", [
+      "build",
+      ...(localStore ? ["--builder", "default", "--load"] : []),
+      "--pull=false",
+      "-f",
+      runtimeDockerfile,
+      "-t",
+      tag,
+      repositoryRoot,
+    ]);
     await markResourceReady(statePath, state, resource);
     env.OCC_TEST_RUNTIME_IMAGE = tag;
     env.OCC_DOCKER_RUNTIME_IMAGE = tag;
@@ -1266,7 +1245,6 @@ async function registerImageInK3d(statePath, state, cluster, image, envName) {
     // k3d can exit successfully after containerd rejects missing index content.
     // Export only the platform pulled locally, then verify the imported reference.
     const containerEngine = process.env.OCC_DOCKER_BIN ?? "docker";
-    const transferStarted = Date.now();
     await execFile(containerEngine, [
       "image",
       "save",
@@ -1275,10 +1253,6 @@ async function registerImageInK3d(statePath, state, cluster, image, envName) {
       archive,
       importReference,
     ]);
-    progress(
-      state.lane,
-      `image archive exported in ${Math.round((Date.now() - transferStarted) / 1_000)}s`,
-    );
     await execFile(process.env.OPENCLAW_CI_K3D_BIN ?? "k3d", [
       "image",
       "import",
