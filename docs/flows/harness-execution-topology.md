@@ -92,8 +92,9 @@ validation. See the [SSH flow](pr-24-ssh-compute.md).
 
 Kubernetes workload rendering calls `prepareHarnessAuth` once for the resolved
 source. It projects the OCC Secret key only into embedded OpenClaw or dedicated
-Codex. For ChatGPT it projects the account's token and workspace directly into
-Codex with no credential copy. Dedicated gateways receive neither source.
+Codex. Canonical sources live in CP; Compute delivers selected fields into an
+exact revision-owned DP Secret, including the account token/workspace for ChatGPT.
+Dedicated gateways receive neither model source.
 See the [harness authentication flow](native-service-account-credential-delivery.md)
 for admission, immutable source snapshots, and worker reauthorization.
 
@@ -102,7 +103,8 @@ managed Gateway runtime namespace. `requireGatewayNamespace` verifies the latter
 exact logical owner. `prepareRevision` and `activateRevision` place dedicated
 Gateway Deployments, private PVCs, Services, native configuration and routes there;
 Harness resources stay in the data-plane namespace. `deliverGatewaySecrets`
-projects only admitted fields into a revision-owned Secret. Dedicated app-server
+validates direct references to canonical CP sources for dedicated Gateways;
+`deliverHarnessAuth` creates the selected DP runtime projection. Dedicated app-server
 DNS includes the Harness namespace, and NetworkPolicy peers combine namespace
 and exact Agent/revision selectors. `runtime.gatewayNodeSelector` independently
 places the Gateway Pod and private-state initializer on trusted nodes.
@@ -220,6 +222,8 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 12:26: Describe canonical CP sources and the selected DP runtime projection. (codex/01a0cf72-6985-7712-ba92-d8cc32470f24 - 429f46735be45247c3b8a406e1c9f57c2ef0327f)
 
 - 2026-09-23 11:31: Trace dedicated control-plane Gateway placement, scoped credential delivery and cross-namespace lifecycle. (01a0cf72-6985-7712-ba92-d8cc32470f24 - b141ba1157c2f28276717d35c8c63028f209a479)
 

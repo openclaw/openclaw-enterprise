@@ -6,7 +6,7 @@ import test from "node:test";
 import {
   arrangeProductionTopology,
   assertDeniedConnection,
-  channelPrefix,
+  storedSecret,
   hash,
   kubectl,
   requiresLiveSlack,
@@ -80,15 +80,24 @@ test(
     const agent = await resource(
       "deployment",
       `agent-${suffix}-rev-${hash(topology.revision.id)}`,
-      topology.gatewayPlacement,
+      topology.placement,
     );
     const gatewayEnvironment = gateway.spec.template.spec.containers[0].env;
     const agentEnvironment = agent.spec.template.spec.containers[0].env;
     for (const key of ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"]) {
+      const source = await storedSecret(
+        topology.observerPool,
+        topology.agent.namespaceId,
+        topology.secretApi[key === "SLACK_APP_TOKEN" ? "slackApp" : "slackBot"].id,
+      );
+      const { optional, ...ref } = gatewayEnvironment.find(({ name }) => name === key).valueFrom
+        .secretKeyRef;
+      assert.equal(source.backendRef.namespaceName, topology.gatewayPlacement);
+      assert.equal(optional ?? false, false);
       assert.deepEqual(
-        gatewayEnvironment.find(({ name }) => name === key)?.valueFrom?.secretKeyRef,
-        { name: `${channelPrefix}-${suffix}`, key },
-        "only the owning gateway may receive operator-owned channel credential references",
+        ref,
+        { name: source.backendRef.name, key: source.backendRef.key },
+        "only the owning Gateway may reference the admitted canonical channel source",
       );
       assert.equal(
         agentEnvironment.some(({ name }) => name === key),
@@ -123,6 +132,7 @@ test(
       topology.gatewayPlacement,
     );
     assert.deepEqual(policy.spec.podSelector.matchLabels, {
+      "openclaw.dev/namespace": topology.agent.namespaceId,
       "openclaw.dev/workload-role": "gateway",
       "openclaw.dev/agent": topology.agent.id,
     });

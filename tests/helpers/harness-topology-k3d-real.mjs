@@ -2212,12 +2212,7 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
     ({ metadata }) => metadata.labels?.["openclaw.dev/workload-role"] === "agent",
   );
   const modelStorage = await storedSecret(observerPool, namespaceId, secretApi.model.id);
-  const modelContainer = (harnessPod ?? gatewayPod).spec.containers[0];
-  const modelProjection = modelContainer.env.find(({ name }) => name === "OPENAI_API_KEY");
-  assertRequiredSecretKeyRef(modelProjection.valueFrom.secretKeyRef, {
-    name: modelStorage.backendRef.name,
-    key: modelStorage.backendRef.key,
-  });
+  await assertModelRuntimeProjection(harnessPod ?? gatewayPod, modelStorage);
   if (mode === "dedicated") {
     assert.equal(
       gatewayPod.spec.containers.some((container) =>
@@ -2236,18 +2231,23 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
     ]) {
       const ref = gatewayContainer.env.find((entry) => entry.name === name).valueFrom.secretKeyRef;
       if (mode === "dedicated") {
-        const projected = await resource("secret", ref.name, gatewayPlacement);
-        const original = await resource("secret", source.backendRef.name, placement);
-        assert.equal(
-          projected.data[ref.key] === original.data[source.backendRef.key],
-          true,
-          "only the admitted channel key must reach Gateway",
-        );
-      } else {
+        assert.equal(source.backendRef.namespaceName, gatewayPlacement);
         assertRequiredSecretKeyRef(ref, {
           name: source.backendRef.name,
           key: source.backendRef.key,
         });
+      } else {
+        const projected = await resource("secret", ref.name, gatewayPlacement);
+        const original = await resource(
+          "secret",
+          source.backendRef.name,
+          source.backendRef.namespaceName,
+        );
+        assert.equal(
+          projected.data[ref.key] === original.data[source.backendRef.key],
+          true,
+          "only the admitted channel key must reach the embedded runtime",
+        );
       }
     }
     if (harnessPod !== undefined) {
@@ -2561,17 +2561,7 @@ async function assertInvalidHarnessAuthStaysUnready(context, topology, options =
         pod.status.conditions?.some(({ type, status }) => type === "Ready" && status === "True"),
         false,
       );
-      const projection = pod.spec.containers
-        .flatMap(({ env = [] }) => env)
-        .find(({ name }) => name === "OPENAI_API_KEY");
-      assertRequiredSecretKeyRef(
-        projection?.valueFrom?.secretKeyRef,
-        {
-          name: storage.backendRef.name,
-          key: storage.backendRef.key,
-        },
-        "the rejected runtime must consume the deliberately invalid candidate source",
-      );
+      await assertModelRuntimeProjection(pod, storage);
       return pod;
     },
     120_000,
@@ -3768,18 +3758,33 @@ function assertRequiredSecretKeyRef(actual, expected, message) {
   assert.equal(optional ?? false, false, message);
 }
 
+async function assertModelRuntimeProjection(pod, storage) {
+  const ref = pod.spec.containers[0].env.find(({ name }) => name === "OPENAI_API_KEY")?.valueFrom
+    ?.secretKeyRef;
+  const agentId = pod.metadata.labels["openclaw.dev/agent"];
+  const revisionId = pod.metadata.labels["openclaw.dev/revision"];
+  assertRequiredSecretKeyRef(ref, {
+    name: `harness-secrets-${hash(agentId)}-${hash(revisionId)}`,
+    key: "OPENAI_API_KEY",
+  });
+  const [runtime, source] = await Promise.all([
+    resource("secret", ref.name, pod.metadata.namespace),
+    resource("secret", storage.backendRef.name, storage.backendRef.namespaceName),
+  ]);
+  assert.equal(
+    runtime.data[ref.key] === source.data[storage.backendRef.key],
+    true,
+    "the admitted model source must reach only its selected runtime projection",
+  );
+}
+
 async function assertOpenAiKeyProjectedFromSecret(topology, pod) {
   const storage = await storedSecret(
     topology.observerPool,
     topology.agent.namespaceId,
     topology.secretApi.model.id,
   );
-  const projection = pod.spec.containers[0].env.find(({ name }) => name === "OPENAI_API_KEY");
-  assertRequiredSecretKeyRef(
-    projection?.valueFrom?.secretKeyRef,
-    { name: storage.backendRef.name, key: storage.backendRef.key },
-    "OPENAI_API_KEY must remain projected from the valid Secret API backend",
-  );
+  await assertModelRuntimeProjection(pod, storage);
   const backend = await resource(
     "secret",
     storage.backendRef.name,
@@ -4366,13 +4371,7 @@ async function assertSecretApiRotationAndRedeploy(context, topology) {
   assert.equal(Object.hasOwn(modelStorage, "agentId"), false);
   assert.equal(Object.hasOwn(probeStorage, "agentId"), false);
 
-  const modelProjection = topology.gatewayPod.spec.containers[0].env.find(
-    ({ name }) => name === "OPENAI_API_KEY",
-  );
-  assertRequiredSecretKeyRef(modelProjection.valueFrom.secretKeyRef, {
-    name: modelStorage.backendRef.name,
-    key: modelStorage.backendRef.key,
-  });
+  await assertModelRuntimeProjection(topology.gatewayPod, modelStorage);
   assert.notEqual(modelStorage.backendRef.name, `${modelPrefix}-${hash(topology.agent.id)}`);
   await assertNoLegacyModelSecret(topology);
 
@@ -5081,6 +5080,7 @@ export {
   resource,
   resources,
   secretRotationProbe,
+  storedSecret,
   slackApi,
   waitFor,
   waitForReadyGatewayPod,

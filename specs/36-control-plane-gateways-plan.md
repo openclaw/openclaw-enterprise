@@ -114,7 +114,7 @@ with no failures or skips. The updated credential-boundary test also passed in
 all 113 Kubernetes Compute cases. TypeScript build, changed-file ESLint, workspace
 boundary, documentation links/length and the three credential flow validators passed.
 A full local conformance run reported six additional failures involving macOS
-control-directory/command cleanup or SSH preflight; these are not treated as green
+missing `/usr/bin/gh`, control-directory/command cleanup or SSH preflight; these are not treated as green
 or as proven base failures. The earlier plugin fixture failure was repaired and
 its 48-test suite passed. Exact-lockfile CI is the remaining check.
 
