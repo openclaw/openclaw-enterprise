@@ -59,7 +59,7 @@ the reusable, mutable input from which a new revision is created.
 | **AgentRevision** dropdown                | Selects the new revision or a historical snapshot to inspect. Revision entries include version, creation time, and whether the Agent selects them. |
 | **Older revision** / **Newer revision**   | Browses history; disabled at the corresponding end. Browsing does not activate a revision.                                                         |
 | **New revision**                          | Opens the current Configuration and supported editing controls.                                                                                    |
-| **View selected revision**                | Returns to the snapshot currently selected by the Agent.                                                                                           |
+| **View current revision**                 | Returns to the snapshot currently selected by the Agent.                                                                                           |
 | `rev_…`                                   | Identifies the viewed immutable revision.                                                                                                          |
 | **Source Configuration … · generation N** | Identifies the Configuration and generation captured for that revision. The draft instead shows its current generation.                            |
 | Read-only snapshot notice                 | Explains whether the viewed revision is selected and that its admitted settings cannot be edited.                                                  |

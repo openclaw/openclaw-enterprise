@@ -317,7 +317,7 @@ export async function renderAgentDetail(context) {
           selected !== "draft" && revisions.length > 1 ? newer : null,
           selected !== "draft" ? button("New revision", () => change("draft")) : null,
           agent.activeRevisionId && selected !== agent.activeRevisionId
-            ? button("View selected revision", () => change(agent.activeRevisionId))
+            ? button("View current revision", () => change(agent.activeRevisionId))
             : null,
         ),
       ].filter(Boolean),
