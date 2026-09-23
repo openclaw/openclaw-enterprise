@@ -5,7 +5,7 @@ import {
   sha256Hex,
 } from "@openclaw-enterprise/utils";
 import { randomBytes } from "node:crypto";
-import { isIP } from "node:net";
+import { BlockList, isIP } from "node:net";
 import { isAbsolute } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type {
@@ -494,12 +494,19 @@ function validatePeer(value: KubernetesWorkloadPeer, description: string): void 
   }
 }
 
-function validateCidr(value: unknown, description: string): void {
+interface ParsedCidr {
+  readonly value: string;
+  readonly address: string;
+  readonly family: 4 | 6;
+  readonly prefix: number;
+}
+
+function parseCidr(value: unknown, description: string): ParsedCidr {
   if (typeof value !== "string") {
     throw new ConfigurationFailure(`${description} must be a CIDR string.`);
   }
-  const [address, prefix, extra] = value.split("/");
-  const family = isIP(address ?? "");
+  const [address = "", prefix, extra] = value.split("/");
+  const family = isIP(address);
   const prefixValue =
     typeof prefix === "string" && /^(0|[1-9]\d*)$/u.test(prefix) ? Number(prefix) : NaN;
   if (
@@ -511,6 +518,42 @@ function validateCidr(value: unknown, description: string): void {
   ) {
     throw new ConfigurationFailure(`${description} must be a valid IPv4 or IPv6 CIDR.`);
   }
+  return { value, address, family: family === 4 ? 4 : 6, prefix: prefixValue };
+}
+
+function validateCidr(value: unknown, description: string): void {
+  parseCidr(value, description);
+}
+
+function trustedProxyCidrTrustsEverySource(cidr: ParsedCidr): boolean {
+  if (cidr.prefix === 0) {
+    return true;
+  }
+  if (cidr.family !== 6) {
+    return false;
+  }
+  const blockList = new BlockList();
+  blockList.addSubnet(cidr.address, cidr.prefix, "ipv6");
+  return blockList.check("0.0.0.0", "ipv4") && blockList.check("255.255.255.255", "ipv4");
+}
+
+function trustedProxyCidrSet(value: unknown, description: string): ReadonlySet<string> {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new ConfigurationFailure(`${description} must contain at least one CIDR.`);
+  }
+  const cidrs = new Set<string>();
+  value.forEach((entry, index) => {
+    const parsed = parseCidr(entry, `${description} ${index}`);
+    if (trustedProxyCidrTrustsEverySource(parsed)) {
+      throw new ConfigurationFailure(`${description}s cannot trust every source.`);
+    }
+    cidrs.add(parsed.value.toLowerCase());
+  });
+  return cidrs;
+}
+
+function cidrSetsEqual(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
+  return left.size === right.size && [...left].every((cidr) => right.has(cidr));
 }
 
 function validateDnsHostname(value: string, description: string): void {
@@ -921,18 +964,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     validatePeer(options.network.dns, "DNS peer");
     validatePort(options.network.gatewayPort, "Gateway port");
-    if (
-      !Array.isArray(options.network.gatewayTrustedProxyCidrs) ||
-      options.network.gatewayTrustedProxyCidrs.length === 0
-    ) {
-      throw new ConfigurationFailure("At least one trusted proxy CIDR is required.");
-    }
-    options.network.gatewayTrustedProxyCidrs.forEach((cidr, index) => {
-      validateCidr(cidr, `Trusted proxy CIDR ${index}`);
-      if (Number(cidr.split("/")[1]) === 0) {
-        throw new ConfigurationFailure("Trusted proxy CIDRs cannot trust every source.");
-      }
-    });
+    trustedProxyCidrSet(options.network.gatewayTrustedProxyCidrs, "Trusted proxy CIDR");
     if (options.network.pluginStatusProxySourceCidrs !== undefined) {
       if (!Array.isArray(options.network.pluginStatusProxySourceCidrs)) {
         throw new ConfigurationFailure("Plugin status proxy source CIDRs must be an array.");
@@ -5042,7 +5074,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     if (
       gateway.trustedProxies !== undefined &&
-      !isDeepStrictEqual(gateway.trustedProxies, this.options.network.gatewayTrustedProxyCidrs)
+      !cidrSetsEqual(
+        trustedProxyCidrSet(gateway.trustedProxies, "Kubernetes native trustedProxies"),
+        trustedProxyCidrSet(this.options.network.gatewayTrustedProxyCidrs, "Trusted proxy CIDR"),
+      )
     ) {
       throw new ConfigurationFailure(
         "Kubernetes native trustedProxies must match network.gatewayTrustedProxyCidrs.",
@@ -5064,6 +5099,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
     ) {
       throw new ConfigurationFailure(
         `Kubernetes native trustedProxy.allowUsers must contain only ${TRUSTED_PROXY_IDENTITY}.`,
+      );
+    }
+    if (trustedProxy.allowLoopback !== undefined && trustedProxy.allowLoopback !== false) {
+      throw new ConfigurationFailure(
+        "Kubernetes native trustedProxy.allowLoopback must be false when configured.",
       );
     }
     if (

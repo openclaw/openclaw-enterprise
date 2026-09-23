@@ -393,7 +393,7 @@ test("dedicated startup initializes Harness plugins before enrolling its workspa
     ...revision.configuration,
     gateway: {
       bind: "lan",
-      auth: { trustedProxy: { requiredHeaders: ["x-real-ip"] } },
+      auth: { trustedProxy: { requiredHeaders: ["x-real-ip"], allowLoopback: false } },
     },
   };
   revision.configuration = admitLoggingConfiguration(operatorSuppliedConfiguration, "info");
@@ -519,6 +519,7 @@ test("dedicated startup initializes Harness plugins before enrolling its workspa
     mode: "trusted-proxy",
     trustedProxy: {
       requiredHeaders: ["x-real-ip"],
+      allowLoopback: false,
       userHeader: "x-occ-identity",
       allowUsers: ["occ-workspace-files"],
     },
@@ -526,7 +527,7 @@ test("dedicated startup initializes Harness plugins before enrolling its workspa
   });
   assert.deepEqual(revision.configuration.gateway, {
     bind: "lan",
-    auth: { trustedProxy: { requiredHeaders: ["x-real-ip"] } },
+    auth: { trustedProxy: { requiredHeaders: ["x-real-ip"], allowLoopback: false } },
   });
   assert.equal(setupCalls, 0);
   assert.equal(objects.has(key("Deployment", gatewayName)), false);
@@ -1295,6 +1296,42 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
             trustedProxy: {
               userHeader: "x-occ-identity",
               allowUsers: ["occ-workspace-files"],
+              allowLoopback: true,
+            },
+            identityScopes: { "occ-workspace-files": ["operator.admin"] },
+          },
+          allowRealIpFallback: true,
+          trustedProxies: ["10.42.0.0/16"],
+        },
+      },
+      /allowLoopback/i,
+    ],
+    [
+      {
+        gateway: {
+          auth: {
+            mode: "trusted-proxy",
+            trustedProxy: {
+              userHeader: "x-occ-identity",
+              allowUsers: ["occ-workspace-files"],
+              allowLoopback: "false",
+            },
+            identityScopes: { "occ-workspace-files": ["operator.admin"] },
+          },
+          allowRealIpFallback: true,
+          trustedProxies: ["10.42.0.0/16"],
+        },
+      },
+      /allowLoopback/i,
+    ],
+    [
+      {
+        gateway: {
+          auth: {
+            mode: "trusted-proxy",
+            trustedProxy: {
+              userHeader: "x-occ-identity",
+              allowUsers: ["occ-workspace-files"],
             },
             identityScopes: { "occ-workspace-files": ["operator.read"] },
           },
@@ -1393,6 +1430,22 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
       }
     }
   }
+
+  const multiProxyDriver = createKubernetesComputeDriver(
+    routedOptions({
+      network: { gatewayTrustedProxyCidrs: ["10.42.0.0/16", "10.43.0.0/16"] },
+    }),
+  );
+  const multiProxyRevision = routedRevision(multiProxyDriver, {
+    configuration: {
+      ...revision.configuration,
+      gateway: {
+        ...revision.configuration.gateway,
+        trustedProxies: ["10.43.0.0/16", "10.42.0.0/16"],
+      },
+    },
+  });
+  assert.doesNotThrow(() => multiProxyDriver.gatewayConfiguration(multiProxyRevision));
 });
 
 test("gateway routing startup validation and namespace membership fail closed", async () => {
@@ -1549,9 +1602,30 @@ test("Kubernetes drivers require explicit authentication, images, and production
       { network: { ...baseNetwork, gatewayTrustedProxyCidrs: ["::/0"] } },
       /cannot trust every source/i,
     ],
+    [
+      { network: { ...baseNetwork, gatewayTrustedProxyCidrs: ["::ffff:0:0/96"] } },
+      /cannot trust every source/i,
+    ],
+    [
+      { network: { ...baseNetwork, gatewayTrustedProxyCidrs: ["::ffff:0.0.0.0/96"] } },
+      /cannot trust every source/i,
+    ],
     [{ servicePrincipalCredentials: undefined }, /credential|projection/i],
   ]) {
     assert.throws(() => createKubernetesComputeDriver(options(invalid)), expected);
+  }
+
+  for (const gatewayTrustedProxyCidrs of [
+    ["::/96"],
+    ["::ffff:0.0.0.0/120"],
+    ["::1/128"],
+    ["2001:db8::/32"],
+  ]) {
+    assert.doesNotThrow(() =>
+      createKubernetesComputeDriver(
+        options({ network: { ...baseNetwork, gatewayTrustedProxyCidrs } }),
+      ),
+    );
   }
 
   assert.doesNotThrow(() =>

@@ -9,7 +9,7 @@ Configure the cluster DNS namespace and Pod labels and the gateway port.
 Set `network.gatewayTrustedProxyCidrs` to a
 nonempty list of valid CIDRs for the actual proxy socket sources. This is trusted
 Installation configuration; the Driver has no production CIDR default and rejects
-all-source `/0` ranges. Without
+all-source ranges, including IPv4-mapped equivalents. Without
 private routing, also configure the namespace and Pod selectors in
 `network.gatewayClients` for your authenticated proxy.
 
@@ -46,9 +46,10 @@ it renders `gateway.trustedProxies` from `network.gatewayTrustedProxyCidrs`,
 identity `occ-workspace-files` with `operator.admin`, and
 `gateway.allowRealIpFallback: true`. Agent Configuration and Console starters
 can omit those fields. Explicit token mode, `gateway.auth.token`, or conflicting
-tenant trust fields fail deployment; matching legacy fields are accepted.
-The optional password environment SecretRef and native device auto-approval
-settings retain their separate purposes.
+tenant trust fields fail deployment; matching legacy CIDR lists are accepted
+regardless of order. `trustedProxy.allowLoopback` must be omitted or false:
+loopback access uses the separate password, not proxy identity headers. Native
+required-header and device auto-approval settings retain their separate purposes.
 
 The Driver never projects `OPENCLAW_GATEWAY_TOKEN`. An optional
 [loopback password](storage-and-credentials.md#runtime-credentials) supports
