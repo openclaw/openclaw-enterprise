@@ -68,6 +68,7 @@ import {
 } from "../workspace-setup-runtime.ts";
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
 import { currentComputeAbortSignal, withComputeAbortSignal } from "../operation-context.ts";
+import { unsupportedNativeGatewayAuthFields } from "../../../gateway/auth-fields.ts";
 import type { GatewayNodeEnrollment } from "../../../gateway/node-enrollment-client.ts";
 import {
   PLUGIN_RUNTIME_DIRECTORY,
@@ -383,7 +384,6 @@ const WORKLOAD_TERMINATION_TIMEOUT_MS = 120_000;
 const WORKLOAD_TERMINATION_POLL_MS = 100;
 const AGENT_TRANSPORT_PORT = 18_790;
 const AGENT_TRANSPORT_TOKEN_KEY = "app-server-token";
-const LEGACY_GATEWAY_TOKEN_KEY = "gateway-token";
 const GATEWAY_PASSWORD_KEY = "gateway-password";
 const OPENCLAW_GATEWAY_PASSWORD = "OPENCLAW_GATEWAY_PASSWORD";
 const TRUSTED_PROXY_IDENTITY = "occ-workspace-files";
@@ -3222,11 +3222,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const expected = [...spec.keys].sort();
     const actual = Object.keys(data).sort();
-    const extras = actual.filter((key) => !expected.includes(key));
-    if (
-      expected.some((key) => !actual.includes(key)) ||
-      extras.some((key) => key !== LEGACY_GATEWAY_TOKEN_KEY)
-    ) {
+    if (!isDeepStrictEqual(expected, actual)) {
       throw new ResourceConflictError("The Agent runtime credential Secret is incomplete.");
     }
     for (const key of expected) {
@@ -5062,14 +5058,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const identityScopes = identityScopesRecord as
       Record<string, OpenClawConfigurationValue> | undefined;
+    const unsupported = unsupportedNativeGatewayAuthFields(auth);
+    if (unsupported.length > 0) {
+      throw new ConfigurationFailure(
+        `Kubernetes native gateway authentication contains unsupported field ${unsupported[0]}.`,
+      );
+    }
     if (auth.mode !== undefined && auth.mode !== "trusted-proxy") {
       throw new ConfigurationFailure(
         "Kubernetes Compute supports only native trusted-proxy gateway authentication.",
-      );
-    }
-    if ("token" in auth) {
-      throw new ConfigurationFailure(
-        "Kubernetes native gateway authentication must omit auth.token.",
       );
     }
     if (
@@ -5261,8 +5258,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
         "Gateway routing requires native trusted-proxy authentication.",
       );
     }
-    if ("token" in (auth ?? {})) {
-      throw new ConfigurationFailure("Gateway routing native configuration must omit auth.token.");
+    const unsupported = unsupportedNativeGatewayAuthFields(auth);
+    if (unsupported.length > 0) {
+      throw new ConfigurationFailure(
+        `Gateway routing native configuration contains unsupported auth field ${unsupported[0]}.`,
+      );
     }
     if (trustedProxy?.userHeader !== "x-occ-identity") {
       throw new ConfigurationFailure(

@@ -140,7 +140,7 @@ gateway:
       - https://agent-<opaque-hash>.agents.oce.example.com
 ```
 
-Do not set `gateway.auth.token`, `controlUi.dangerouslyDisableDeviceAuth`, or `controlUi.dangerouslyAllowHostHeaderOriginFallback`. Deploy the updated Agent revision, then call the status route again and expect `data.status: "available"` with the same `data.origin`. A stopped Agent with no active revision returns only `data.status: "stopped"`; deploy it if native admin access is intended. If the response is `data.status: "unavailable"`, check active revision selection before saving the native configuration; OCC cannot derive the Agent origin until it can select the active revision.
+Do not set unsupported gateway authentication fields, `controlUi.dangerouslyDisableDeviceAuth`, or `controlUi.dangerouslyAllowHostHeaderOriginFallback`. Deploy the updated Agent revision, then call the status route again and expect `data.status: "available"` with the same `data.origin`. A stopped Agent with no active revision returns only `data.status: "stopped"`; deploy it if native admin access is intended. If the response is `data.status: "unavailable"`, check active revision selection before saving the native configuration; OCC cannot derive the Agent origin until it can select the active revision.
 
 Keep durable configuration changes in OCE. For compatible Kubernetes gateways,
 native edits affect a Pod-local copy and are discarded when the Pod is replaced

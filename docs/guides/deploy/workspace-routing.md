@@ -166,9 +166,9 @@ the API and worker after changing their startup configuration.
 Kubernetes Compute renders native trusted-proxy authentication, its fixed
 `x-occ-identity: occ-workspace-files` identity with `operator.admin`, proxy trust,
 and real-IP fallback. Agent Configurations and Presets can omit those fields.
-Remove `gateway.auth.mode: token` and `gateway.auth.token` from existing drafts;
-conflicting tenant trust settings fail deployment. Matching legacy settings are
-accepted. See the [gateway authentication contract](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#gateway-authentication).
+Remove unsupported gateway authentication fields from existing drafts;
+conflicting tenant trust settings fail deployment. Matching explicit settings
+are accepted. See the [gateway authentication contract](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#gateway-authentication).
 
 For optional operator loopback access, set `gateway.auth.password` to the
 environment SecretRef
@@ -206,11 +206,11 @@ matching runtime images and full Enterprise runtime verification are still requi
 
 ### Enable routing for existing Namespaces and Agents
 
-The authentication migration applies to every existing Kubernetes Installation,
-including embedded Agents without private routing. The Namespace ingress steps
-below apply when enabling private routing. Existing token-mode Configurations
-cannot deploy under the new Driver until updated; no automatic migration rewrites
-Configurations, Presets, Secrets, or PVCs.
+Migrate every Kubernetes Installation, including embedded Agents without private
+routing. Apply the Namespace ingress steps only when enabling private routing.
+Existing Configurations with unsupported gateway authentication cannot deploy
+until updated. No automatic migration rewrites Configurations, Presets, Secrets,
+or PVCs.
 
 Plan a maintenance window for the gateway restart and Namespace-wide ingress
 change. Preserve Agent IDs, Configuration IDs, PVC/PV identities, workspace
@@ -225,18 +225,18 @@ Configuration before replacing its values.
    prepared bootstrap volume; do not rerun fresh-volume preparation. Restart both
    API and worker to load the new startup configuration. Wait for the private Gateway, certificates, and policy.
 2. For every existing Kubernetes Agent, update its existing native Configuration
-   and any reusable Presets: remove `gateway.auth.mode: token` and
-   `gateway.auth.token`, and remove or align explicit proxy trust with the
-   Installation settings. Preserve model, channel, and Harness settings. Use
-   the environment SecretRef above if you need password access. PATCH the complete updated `values` through the
-   [Configuration API](../../reference/configuration.md#create-read-update-and-delete), then
-   `POST /namespaces/:namespaceId/agents/:agentId/deploy` for the same Agent.
-   Retain and poll the returned deployment ID. Do not recreate the Agent or
-   retire its current revision before successful cutover: its PVCs belong to
-   that Agent and must survive the gateway replacement.
-3. Retain the existing transport Secret values, including unused legacy
-   `gateway-token` keys, gateway passwords, and app-server tokens. This migration
-   does not rotate or delete Secrets. Initial credential provisioning is not a
+   and any reusable Presets: remove unsupported gateway authentication fields,
+   and remove or align explicit proxy trust with the Installation settings.
+   Preserve model, channel, and Harness settings. Use the environment SecretRef
+   above if you need password access. PATCH the complete updated `values` through the
+   [Configuration API](../../reference/configuration.md#create-read-update-and-delete).
+3. Have the operator verify the transport Secret contains exactly the nonempty
+   `gateway-password` and `app-server-token` keys. Correct older key sets while
+   preserving those values; initial credential APIs reject other shapes and do
+   not migrate Secrets. Back up the existing Secret securely before correction.
+   Do not rotate current credentials or delete the Secret. Then deploy the same
+   Agent and poll the returned deployment ID. Preserve its PVCs and current
+   revision until cutover succeeds. Initial credential provisioning is not a
    migration tool for an Agent with revisions.
 4. If enabling routing, reconcile existing ready Namespaces as described below.
    Agent activation alone is not proof that its HTTPRoute is accepted or files

@@ -113,7 +113,6 @@ test("Docker stop removes exact runtime containers and is retry-safe", async () 
 test("Docker Compute gateway containers use password auth by default and preserve trusted proxy auth", async () => {
   const defaultLaunch = await gatewayContainerLaunch();
   assert.match(defaultLaunch.environment.OPENCLAW_GATEWAY_PASSWORD ?? "", /^[0-9a-f]{64}$/);
-  assert.equal(defaultLaunch.environment.OPENCLAW_GATEWAY_TOKEN, undefined);
   assert.equal(defaultLaunch.environment.OPENCLAW_GATEWAY_PORT, "8080");
   assert.equal(
     JSON.parse(defaultLaunch.environment.OPENCLAW_CONFIG_JSON).gateway.auth.mode,
@@ -156,7 +155,6 @@ test("Docker Compute gateway containers use password auth by default and preserv
     gateway: { auth: { mode: "trusted-proxy" } },
   });
   assert.equal(trustedProxyLaunch.environment.OPENCLAW_GATEWAY_PASSWORD, undefined);
-  assert.equal(trustedProxyLaunch.environment.OPENCLAW_GATEWAY_TOKEN, undefined);
   assert.equal(
     JSON.parse(trustedProxyLaunch.environment.OPENCLAW_CONFIG_JSON).gateway.auth.mode,
     "trusted-proxy",
@@ -191,11 +189,8 @@ test("Docker Compute rejects unsupported native gateway auth before Docker engin
   });
 
   for (const [configuration, expected] of [
-    [
-      { gateway: { auth: { mode: "token", token: "${OPENCLAW_GATEWAY_TOKEN}" } } },
-      /token authentication|auth\.token/i,
-    ],
     [{ gateway: { auth: { mode: "oauth" } } }, /password or trusted-proxy/i],
+    [{ gateway: { auth: { unsupportedField: true } } }, /unsupported field unsupportedField/i],
     [{ gateway: { auth: null } }, /gateway auth must be an object/i],
   ]) {
     const revision = dockerGatewayRevision(driver, configuration);

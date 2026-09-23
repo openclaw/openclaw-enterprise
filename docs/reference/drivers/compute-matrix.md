@@ -22,8 +22,7 @@ are in the [canonical matrix data](../../assets/compute-driver-matrix.json).
 An optional [OpenShell Sandbox Driver](openshell-sandbox.md) can be selected
 with Kubernetes, but stock OpenShell lacks required credential and
 workload-identity projection. It is not a supported Agent deployment path.
-Gateway token mode is unsupported by all bundled Compute Drivers. Their current
-gateway authentication contracts are:
+The bundled Compute Drivers expose the current gateway authentication contracts:
 
 | Driver                                                                              | Gateway authentication                                                                                                                              |
 | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |

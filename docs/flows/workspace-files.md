@@ -256,10 +256,10 @@ restricted Kubernetes RBAC protect this mapping.
 
 Kubernetes Compute renders native trust from Installation
 `network.gatewayTrustedProxyCidrs`, fixing `occ-workspace-files` with
-`operator.admin`. Conflicting tenant trust or tokens fail deployment. `allowRealIpFallback` accepts its genuine nonloopback OCC
+`operator.admin`. Conflicting tenant trust settings fail deployment. `allowRealIpFallback` accepts its genuine nonloopback OCC
 connection address even within a shared Pod CIDR. NetworkPolicy admits only
 Envoy to the native gateway; the CIDR is not an independent authentication
-boundary. Kubernetes Compute never projects a gateway token. Native
+boundary. Native
 hello grants `operator.admin`; reads also accept `operator.read`.
 
 ### 8. Native file access returns a bounded result
@@ -322,8 +322,8 @@ replays it. The native client closes in the operation's cleanup path.
 
 ## Changelog
 
-- 2026-09-22 21:24: Remove Kubernetes gateway token authentication; render operator proxy trust and retain optional loopback passwords. (authoring-run/ffffed03-0b85-4984-990e-aa0705a91645 - cbf1851308a2db398820ae9e1000f57837703ace)
-- Kubernetes Compute no longer supports gateway token mode. (NOT_IN_SPEC)
+- 2026-09-22 21:24: Render Kubernetes operator proxy trust and retain optional loopback passwords. (authoring-run/ffffed03-0b85-4984-990e-aa0705a91645 - cbf1851308a2db398820ae9e1000f57837703ace)
+- Kubernetes Compute uses trusted proxy for native gateway authentication. (NOT_IN_SPEC)
 
 - 2026-09-22 04:18: Added creation-time workspace setup and completion boundaries. (01a0c755-0518-7502-a533-64cd7465de15 - f3dbdd41c8f3b49573d1353a4b06ce510ee43a56)
 

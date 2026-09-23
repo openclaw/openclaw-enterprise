@@ -130,8 +130,8 @@ inputs, writable container tmpfs remains ephemeral.
 
 The container implementation renders `gateway.auth.mode: password` when native
 Configuration omits the mode. Explicit `password` and `trusted-proxy` are supported.
-Gateway token mode and any `gateway.auth.token` field are rejected. These rules
-do not remove the harness-authentication admission limit above.
+Only supported authentication fields and modes are admitted. These rules do not
+remove the harness-authentication admission limit above.
 
 With password mode, omitting `gateway.auth.password` selects the managed
 `OPENCLAW_GATEWAY_PASSWORD` reference. An explicit reference to that variable also
@@ -143,13 +143,13 @@ still apply. Trusted proxy without a password reference receives no managed
 password. The dedicated Codex `APP_SERVER_TOKEN` remains a separate transport
 credential with its existing recovery checks.
 
-For existing token Configurations and Presets, remove `gateway.auth.mode: token`
-and `gateway.auth.token` before requesting a new revision. Configure direct
-clients for the replacement gateway's password, or retain an explicitly configured
-trusted proxy. Saving a draft does not change the running gateway. Do not delete
-state volumes or unrelated credentials to migrate authentication. Current Docker
-Agent admission still rejects every `harnessAuth` binding; this change does not
-make new Docker Agent deployment available.
+Before requesting a new revision, remove unsupported gateway authentication
+fields from existing Configurations and Presets. Configure direct clients for the
+replacement gateway's password, or retain an explicitly configured trusted
+proxy. Saving a draft does not change the running gateway. Do not delete state
+volumes or unrelated credentials to migrate authentication. Current Docker Agent
+admission still rejects every `harnessAuth` binding; this change does not make
+new Docker Agent deployment available.
 
 ## Initial workspace storage
 

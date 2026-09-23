@@ -1229,7 +1229,7 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
     [
       {
         gateway: {
-          auth: { mode: "token", token: "${OPENCLAW_GATEWAY_TOKEN}" },
+          auth: { mode: "oauth" },
           allowRealIpFallback: true,
           trustedProxies: ["10.42.0.0/16"],
         },
@@ -1241,7 +1241,7 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
         gateway: {
           auth: {
             mode: "trusted-proxy",
-            token: "legacy-token",
+            unsupportedField: true,
             trustedProxy: {
               userHeader: "x-occ-identity",
               allowUsers: ["occ-workspace-files"],
@@ -1252,7 +1252,7 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
           trustedProxies: ["10.42.0.0/16"],
         },
       },
-      /auth\.token/i,
+      /unsupported field unsupportedField/i,
     ],
     [
       {
@@ -1387,20 +1387,17 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
   }
 
   for (const [configuration, expected] of [
-    [
-      { gateway: { auth: { mode: "token", token: "${OPENCLAW_GATEWAY_TOKEN}" } } },
-      /trusted-proxy/i,
-    ],
+    [{ gateway: { auth: { mode: "oauth" } } }, /trusted-proxy/i],
     [
       {
         gateway: {
           auth: {
             mode: "trusted-proxy",
-            token: "legacy-token",
+            unsupportedField: true,
           },
         },
       },
-      /auth\.token/i,
+      /unsupported field unsupportedField/i,
     ],
     [
       {
@@ -4029,7 +4026,6 @@ test("revision lifecycle rejects another driver or missing identity before clust
     name: "occ-model-key",
     key: "value",
   });
-  assert.equal(environment.OPENCLAW_GATEWAY_TOKEN, undefined);
   assert.equal(environment.HOME.value, "/home/node");
   assert.equal(environment.APP_SERVER_TOKEN, undefined);
   assert.equal(environment.APP_SERVER_URL, undefined);

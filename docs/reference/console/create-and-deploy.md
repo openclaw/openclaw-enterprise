@@ -80,8 +80,8 @@ separately through `harnessAuth`; this form does not accept an OpenAI API key.
 
 Select **Provision generated runtime credentials** to create the transport bundle.
 The Kubernetes Driver generates an app-server transport token and a local
-gateway password. It does not generate a gateway token; Kubernetes gateway
-authentication is trusted-proxy only. The password is projected only when native Configuration
+gateway password. Kubernetes gateway authentication is trusted-proxy only. The
+password is projected only when native Configuration
 explicitly selects the supported environment reference; it is never returned by
 the credential API. Provisioning checks for existing Agent runtime Deployments
 before writing credentials so it does not modify values after a runtime has
@@ -97,8 +97,9 @@ action, and outcome, never the values.
 
 Provisioning creates missing whole Secrets before any AgentRevision exists. It
 never rotates or overwrites existing credentials. A retry may reuse complete,
-owned transport groups; a foreign or malformed Secret is a conflict that requires
-operator investigation. If a response is lost or a dependency fails, refresh
+owned transport groups. The Kubernetes transport group must contain exactly
+`app-server-token` and `gateway-password`; older key sets, foreign ownership, or
+malformed values require operator correction. The API does not migrate them. If a response is lost or a dependency fails, refresh
 stored status before explicitly retrying. Already-created Secrets remain in place
 even when later storage or audit work fails; there is no automatic retry or
 rollback deletion.

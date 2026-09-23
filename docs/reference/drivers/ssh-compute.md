@@ -108,7 +108,7 @@ SHA-256 of the exact Namespace, Agent, and AgentRevision IDs.
 <root>/namespaces/<nsHash>/agents/<agentHash>/agent.json
 <root>/namespaces/<nsHash>/agents/<agentHash>/home/
 <root>/namespaces/<nsHash>/agents/<agentHash>/state/
-<root>/namespaces/<nsHash>/agents/<agentHash>/gateway.env
+<root>/namespaces/<nsHash>/agents/<agentHash>/gateway-password.env
 <root>/namespaces/<nsHash>/agents/<agentHash>/env
 <root>/namespaces/<nsHash>/agents/<agentHash>/revisions/<revHash>/openclaw.json
 <root>/namespaces/<nsHash>/agents/<agentHash>/revisions/<revHash>/revision.json
@@ -129,7 +129,7 @@ Markers record exact Driver, Namespace, Agent, and ServicePrincipal ownership.
 Revision markers also record revision ID/number, configuration hash, and
 Harness. Foreign markers, changed snapshots, unexpected symlinks, and units
 without the exact Namespace/Agent ownership header are refused rather than
-adopted. JSON markers and `gateway.env` are `0600`; `home/` and `state/` are
+adopted. JSON markers and `gateway-password.env` are `0600`; `home/` and `state/` are
 `0700` and owned by the Agent's private user and group. The native configuration
 snapshot stays owned by the SSH account with mode `0640` and the Agent's
 private group, so its gateway can read but never rewrite the admitted document
@@ -206,23 +206,27 @@ When native Configuration omits `gateway.auth.mode`, the Driver renders
 `OPENCLAW_GATEWAY_PASSWORD`. Explicit `password` and `trusted-proxy` modes are
 supported. An explicit password must use that variable's default-provider
 environment SecretRef; trusted proxy can opt into the same loopback password.
-Gateway token mode and any `gateway.auth.token` field are rejected before host
+The Driver admits only supported authentication fields and modes before host
 changes.
 
 The helper creates a private per-Agent `gateway-password.env` when the managed
 password is needed. Later revisions reuse that file; the Driver does not rotate
 it during prepare, activation, or stop. The systemd unit loads it for managed
-password access and omits it for trusted proxy without a password. The previous
-`gateway.env` token file is left untouched and no longer loaded. The unit unsets
-`OPENCLAW_GATEWAY_TOKEN`, including legacy values in the operator environment,
-without modifying that file.
+password access and omits it for trusted proxy without a password. It has no
+legacy credential loading, cleanup, or environment migration path.
 
-To migrate, remove `gateway.auth.mode: token` and `gateway.auth.token` from
-existing Configurations and Presets, then deploy a new revision of the same
-Agent. Update direct clients to use its managed password, or preserve an
-explicit trusted-proxy configuration. Keep Agent IDs, home/state directories,
-operator credentials, and existing credential files; no automatic migration
-rewrites or deletes them. Do not rotate unrelated credentials or recreate the
+Before upgrading, use the previous Driver to stop and retire revisions whose
+saved authentication or snapshot format is no longer supported. Updating a
+draft does not migrate immutable revision snapshots.
+
+To migrate existing Configurations and Presets, remove unsupported gateway
+authentication fields, then deploy a new revision of the same Agent. Update
+direct clients to use its managed password, or preserve an explicit
+trusted-proxy configuration. Keep Agent IDs, home/state directories, operator
+credentials, and current password files. Before redeployment, operators must
+remove obsolete gateway authentication settings from their environment,
+especially when selecting trusted proxy. The Driver does not migrate that file
+or delete historical files. Do not rotate unrelated credentials or recreate the
 Agent to change gateway authentication.
 
 The optional `EnvironmentFile=-<agentDir>/env` is operator-owned and never read

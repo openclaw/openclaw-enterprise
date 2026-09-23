@@ -565,9 +565,6 @@ test("SSH embedded revisions stop without deleting snapshots or persistent Agent
   const operatorEnv = join(dir, "env");
   const operatorContents = "OPENAI_API_KEY=invalid-operator-key\n";
   await writeFile(operatorEnv, operatorContents, { mode: 0o600 });
-  await writeFile(join(dir, "gateway.env"), "OPENCLAW_GATEWAY_TOKEN=legacy-token\n", {
-    mode: 0o600,
-  });
   const operatorBefore = await stat(operatorEnv);
   await f.driver.activateRevision(rev, { secretEnvironment: [] });
   assert.equal((await stat(join(dir, "served.json"))).mode & 0o777, 0o600);
@@ -596,7 +593,6 @@ Environment=OPENCLAW_CONFIG_PATH=${dir}/current/openclaw.json
 Environment=OPENCLAW_GATEWAY_PORT=${port}
 EnvironmentFile=${dir}/gateway-password.env
 EnvironmentFile=-${dir}/env
-UnsetEnvironment=OPENCLAW_GATEWAY_TOKEN
 ExecStart=${process.execPath} ${f.configured.runtime.openclawPath} gateway --port ${port}
 Restart=always
 RestartSec=2
@@ -668,7 +664,6 @@ test("SSH trusted-proxy omits gateway.env, and allocation spans Agents and Names
     secondUnit,
     /EnvironmentFile=.*gateway(?:-password)?\.env|OPENCLAW_GATEWAY_PASSWORD|OPENCLAW_LOG_LEVEL/,
   );
-  assert.match(secondUnit, /^UnsetEnvironment=OPENCLAW_GATEWAY_TOKEN$/m);
   await missing(join(f.agentDir(second), "gateway.env"));
   await missing(join(f.agentDir(second), "gateway-password.env"));
   assert.equal(
@@ -733,39 +728,9 @@ test("SSH trusted-proxy can opt into direct loopback password authentication", a
     await readFile(join(f.units, f.unit(rev)), "utf8"),
     new RegExp(`^EnvironmentFile=${join(f.agentDir(rev), "gateway-password.env")}$`, "m"),
   );
-  assert.match(
-    await readFile(join(f.units, f.unit(rev)), "utf8"),
-    /^UnsetEnvironment=OPENCLAW_GATEWAY_TOKEN$/m,
-  );
   assert.doesNotMatch(await readFile(join(f.units, f.unit(rev)), "utf8"), /gateway\.env/);
   await missing(join(f.agentDir(rev), "gateway.env"));
   assert.deepEqual(await json(join(f.revisionDir(rev), "openclaw.json")), rev.configuration);
-});
-
-test("SSH cleanup accepts historical omitted-auth snapshots without re-rendering tokens", async (t) => {
-  const f = await fixture(t);
-  const legacy = await stage(f, revision(f.driver, 1, "agent-ssh-legacy-omitted-auth"));
-  const revisionDir = f.revisionDir(legacy);
-  const rawConfiguration = JSON.stringify(legacy.configuration);
-  await writeFile(join(revisionDir, "openclaw.json"), rawConfiguration);
-  await writeFile(
-    join(revisionDir, "revision.json"),
-    JSON.stringify({
-      ...(await json(join(revisionDir, "revision.json"))),
-      configurationHash: digest(rawConfiguration),
-    }),
-  );
-  await f.driver.retireRevision(legacy);
-  await missing(revisionDir);
-
-  const token = revision(f.driver, 1, "agent-ssh-legacy-token", {
-    gateway: { auth: { mode: "token", token: "${OPENCLAW_GATEWAY_TOKEN}" } },
-  });
-  bind(f.driver, token);
-  await assert.rejects(f.driver.prepareRevision(token), /gateway authentication|auth\.token/);
-  await f.driver.stopRevision(token);
-  await f.driver.retireRevision(token);
-  await missing(f.agentDir(token));
 });
 
 test("SSH activation invokes lifecycle start hooks and cleans them up after activation failure", async (t) => {
@@ -812,10 +777,13 @@ test("SSH activation invokes lifecycle start hooks and cleans them up after acti
 
   const beforeInvalidAuth = [...hooks];
   const invalidAuth = revision(f.driver, 3, "agent-ssh-invalid-auth", {
-    gateway: { auth: { token: "${OPENCLAW_GATEWAY_TOKEN}" } },
+    gateway: { auth: { unsupportedField: true } },
   });
   bind(f.driver, invalidAuth);
-  await assert.rejects(f.driver.activateRevision(invalidAuth), /auth\.token/);
+  await assert.rejects(
+    f.driver.activateRevision(invalidAuth),
+    /unsupported field unsupportedField/,
+  );
   assert.deepEqual(hooks, beforeInvalidAuth);
 });
 
@@ -871,8 +839,8 @@ test("SSH revisions fail closed on unbound identities, unsupported topology, san
     /PluginDriver installation/,
   );
   for (const configuration of [
-    { gateway: { auth: { mode: "token" } } },
-    { gateway: { auth: { token: "${OPENCLAW_GATEWAY_TOKEN}" } } },
+    { gateway: { auth: { mode: "oauth" } } },
+    { gateway: { auth: { unsupportedField: true } } },
     { gateway: { auth: { password: "plaintext" } } },
   ]) {
     await assert.rejects(

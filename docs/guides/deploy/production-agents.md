@@ -328,8 +328,8 @@ replace an existing transport bundle.
 
 Create the tenant transport Secret using the Agent ID suffix. Kubernetes
 gateways use trusted-proxy authentication; dedicated Codex separately requires
-`app-server-token`. Omit `gateway.auth.mode` and `gateway.auth.token`: Compute
-renders the gateway authentication from trusted Installation settings. To verify model responses through an
+`app-server-token`. Compute renders the gateway authentication from trusted
+Installation settings. To verify model responses through an
 operator's local Kubernetes connection, configure the `gateway-password` Secret
 reference and enable the native HTTP endpoint as described in
 [Model response verification](../operate/model-verification.md). The initial

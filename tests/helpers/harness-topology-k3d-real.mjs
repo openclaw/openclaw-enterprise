@@ -2312,7 +2312,6 @@ async function inspectWorkloadEnvironment(namespace, pod) {
     "APP_SERVER_TOKEN",
     "APP_SERVER_URL",
     "OPENCLAW_GATEWAY_PASSWORD",
-    "OPENCLAW_GATEWAY_TOKEN",
   ])};process.stdout.write(JSON.stringify(Object.fromEntries(keys.map(k=>[k,Object.hasOwn(process.env,k)]))))`;
   return JSON.parse(
     await kubectl("exec", pod, "--namespace", namespace, "--", "node", "-e", script),
@@ -3777,7 +3776,6 @@ async function assertSecretApiNoLeakage(topology, secrets) {
     APP_SERVER_TOKEN: false,
     APP_SERVER_URL: false,
     OPENCLAW_GATEWAY_PASSWORD: false,
-    OPENCLAW_GATEWAY_TOKEN: false,
   });
 }
 

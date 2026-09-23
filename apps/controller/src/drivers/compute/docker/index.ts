@@ -36,6 +36,7 @@ import {
   pluginRuntimeEnvironment,
   pluginRuntimeSpecForRevision,
 } from "../plugin-runtime.ts";
+import { unsupportedNativeGatewayAuthFields } from "../../../gateway/auth-fields.ts";
 
 export interface DockerComputeDriverOptions {
   readonly images: {
@@ -141,13 +142,11 @@ function dockerGatewayConfigurationDocument(configuration: OpenClawConfiguration
   }
   const auth = (authRecord ?? {}) as Record<string, OpenClawConfigurationValue>;
 
-  if (auth.mode === "token") {
+  const unsupported = unsupportedNativeGatewayAuthFields(auth);
+  if (unsupported.length > 0) {
     throw new ConfigurationFailure(
-      "Docker Compute does not support native gateway token authentication.",
+      `Docker native gateway authentication contains unsupported field ${unsupported[0]}.`,
     );
-  }
-  if ("token" in auth) {
-    throw new ConfigurationFailure("Docker native gateway authentication must omit auth.token.");
   }
   const passwordReference =
     auth.password === undefined ? undefined : gatewayPasswordEnvironmentReference(auth.password);

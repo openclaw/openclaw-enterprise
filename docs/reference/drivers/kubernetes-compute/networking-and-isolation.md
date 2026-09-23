@@ -45,20 +45,18 @@ it renders `gateway.trustedProxies` from `network.gatewayTrustedProxyCidrs`,
 `gateway.auth.mode: trusted-proxy`, `userHeader: x-occ-identity`, the allowed
 identity `occ-workspace-files` with `operator.admin`, and
 `gateway.allowRealIpFallback: true`. Agent Configuration and Console starters
-can omit those fields. Explicit token mode, `gateway.auth.token`, or conflicting
-tenant trust fields fail deployment; matching legacy CIDR lists are accepted
+can omit those fields. Unsupported gateway authentication fields or conflicting
+tenant trust fields fail deployment; matching explicit CIDR lists are accepted
 regardless of order. `trustedProxy.allowLoopback` must be omitted or false:
 loopback access uses the separate password, not proxy identity headers. Native
 required-header and device auto-approval settings retain their separate purposes.
 
-The Driver never projects `OPENCLAW_GATEWAY_TOKEN`. An optional
-[loopback password](storage-and-credentials.md#runtime-credentials) supports
-operator verification; it does not change the gateway's authentication mode.
+An optional [loopback password](storage-and-credentials.md#runtime-credentials)
+supports operator verification; it does not change the gateway's authentication mode.
 Readiness uses a Pod-local HTTP request to
 `127.0.0.1:$OPENCLAW_GATEWAY_PORT/readyz`; TLS terminates at Envoy, so native
 readiness probes remain unchanged. Docker and SSH default to managed password
-authentication and also support explicit trusted proxy; none of the bundled
-Compute Drivers supports gateway token mode.
+authentication and also support explicit trusted proxy.
 
 Operators must verify that the configured CIDRs contain the proxy's actual
 source addresses and exclude untrusted sources. CIDRs do not authenticate a

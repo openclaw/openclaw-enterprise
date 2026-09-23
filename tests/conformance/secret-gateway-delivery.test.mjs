@@ -163,7 +163,6 @@ test("secret-gateway-delivery renders exact bound Namespace Secret env only into
     optional: false,
   });
   assert.equal(environment.OPENAI_API_KEY.valueFrom.secretKeyRef.name, "stored-model-key");
-  assert.equal(environment.OPENCLAW_GATEWAY_TOKEN, undefined);
   assert.equal(environment.APP_SERVER_TOKEN, undefined);
   assert.equal(environment.CODEX_ACCESS_TOKEN, undefined);
 

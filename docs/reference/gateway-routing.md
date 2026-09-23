@@ -119,8 +119,7 @@ from Envoy's direct downstream connection. It removes `x-forwarded-for`,
 `forwarded`, and `x-openclaw-scopes`. Kubernetes Compute renders native
 trusted-proxy auth from the operator's `network.gatewayTrustedProxyCidrs`, enables
 `allowRealIpFallback`, and grants the fixed identity `operator.admin`. Agent
-Configuration cannot override that trust boundary; token mode and token fields
-are rejected. A direct loopback connection
+Configuration cannot override that trust boundary. A direct loopback connection
 can still use the Driver-managed gateway password if the native Configuration
 explicitly selects its [environment SecretRef](drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials).
 This password is separate from the Envoy service key. See the complete

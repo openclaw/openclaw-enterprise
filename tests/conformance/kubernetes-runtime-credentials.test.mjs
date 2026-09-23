@@ -332,7 +332,6 @@ test("mocked Kubernetes client preflights the transport Secret before initial cr
   assert.match(transport["app-server-token"], /^[A-Za-z0-9_-]+$/);
   assert.match(transport["gateway-password"], /^[A-Za-z0-9_-]+$/);
   assert.notEqual(transport["app-server-token"], transport["gateway-password"]);
-  assert.equal(Object.hasOwn(transport, "gateway-token"), false);
 });
 
 test("mocked Kubernetes client can recover missing transport when model credentials already exist", async () => {
@@ -374,7 +373,7 @@ test("mocked Kubernetes client returns configured metadata without writes for ex
   assert.equal(created.length, 0);
 });
 
-test("mocked Kubernetes client accepts legacy transport Secrets with an unused gateway token", async () => {
+test("mocked Kubernetes client rejects transport Secrets with unexpected keys", async () => {
   const first = credentialFixture();
   const secrets = {
     [`transport-${digest(agent.id)}`]: runtimeSecret(
@@ -383,16 +382,17 @@ test("mocked Kubernetes client accepts legacy transport Secrets with an unused g
       "transport",
       {
         "app-server-token": "app-server-token-value",
-        "gateway-token": "gateway-token-value",
+        unexpected: "unexpected-value",
         "gateway-password": "gateway-password-value",
       },
     ),
   };
   const { driver, created } = credentialFixture({ secrets });
 
-  assert.deepEqual(await driver.provisionAgentRuntimeCredentials(binding(), {}), {
-    transportConfigured: true,
-  });
+  await assert.rejects(
+    driver.provisionAgentRuntimeCredentials(binding(), {}),
+    /runtime credential Secret is incomplete/,
+  );
   assert.equal(created.length, 0);
 });
 

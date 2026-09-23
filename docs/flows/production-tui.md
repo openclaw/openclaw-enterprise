@@ -217,8 +217,8 @@ ConfigMap-mounted gateway is Running and Ready.
 
 ## Changelog
 
-- 2026-09-22 21:24: Remove Kubernetes gateway token authentication; render operator proxy trust and retain optional loopback passwords. (authoring-run/ffffed03-0b85-4984-990e-aa0705a91645 - cbf1851308a2db398820ae9e1000f57837703ace)
-- Kubernetes Compute no longer supports gateway token mode. (NOT_IN_SPEC)
+- 2026-09-22 21:24: Render Kubernetes operator proxy trust and retain optional loopback passwords. (authoring-run/ffffed03-0b85-4984-990e-aa0705a91645 - cbf1851308a2db398820ae9e1000f57837703ace)
+- Kubernetes Compute uses trusted proxy for native gateway authentication. (NOT_IN_SPEC)
 
 - 2026-09-17 00:48: Correct current harness admission and metadata-only dispatch boundaries after implementation review. (01a0acbf-4d5a-7413-9411-dce911f3ad23 - 107900e9551b90c3e9ac24d30f8ea866f17e5dbb)
 

@@ -274,26 +274,14 @@ function servedRevision(agentDir) {
 function snapshot(input, agentDir, revisionId, expected) {
   const path = join(agentDir, "revisions", hash(revisionId).slice(0, 12));
   directory(path);
-  const expectedHashes =
-    expected?.configurationHashes ??
-    (expected?.configurationHash === undefined ? undefined : [expected.configurationHash]);
-  const expectedMarker =
-    expected === undefined
-      ? undefined
-      : Object.fromEntries(
-          Object.entries(expected).filter(
-            ([key]) => key !== "configurationHash" && key !== "configurationHashes",
-          ),
-        );
   const marker = verify(readJson(join(path, "revision.json")), {
     ...agentOwnership(input),
     revisionId,
-    ...expectedMarker,
+    ...expected,
   });
   regular(join(path, "openclaw.json"));
   if (
     marker.configurationHash !== hash(fs.readFileSync(join(path, "openclaw.json"), "utf8")) ||
-    (expectedHashes !== undefined && !expectedHashes.includes(marker.configurationHash)) ||
     !Number.isSafeInteger(marker.revision) ||
     marker.revision < 1 ||
     marker.harness?.id !== "openclaw" ||
@@ -334,13 +322,6 @@ function revisionMetadata(input) {
     revision: input.revision.revision,
     configurationHash: input.configurationHash,
     harness: input.revision.harness,
-  };
-}
-
-function revisionExpectation(input) {
-  return {
-    ...revisionMetadata(input),
-    configurationHashes: input.configurationHashes,
   };
 }
 
@@ -709,7 +690,6 @@ Environment=OPENCLAW_STATE_DIR=${agentDir}/state
 Environment=OPENCLAW_CONFIG_PATH=${agentDir}/current/openclaw.json
 Environment=OPENCLAW_GATEWAY_PORT=${port}
 ${extraEnvironment}${password ? `EnvironmentFile=${agentDir}/gateway-password.env\n` : ""}EnvironmentFile=-${agentDir}/env
-UnsetEnvironment=OPENCLAW_GATEWAY_TOKEN
 ${setup}ExecStart=${runtime.nodePath} ${runtime.openclawPath} gateway --port ${port}
 Restart=always
 RestartSec=2
@@ -795,7 +775,7 @@ async function prepare(input, nsDir) {
   const revisionDir = join(agentDir, "revisions", hash(revision.id).slice(0, 12));
   const snapshotExists = inspect(revisionDir) !== undefined;
   if (snapshotExists) {
-    snapshot(input, agentDir, revision.id, revisionExpectation(input));
+    snapshot(input, agentDir, revision.id, revisionMetadata(input));
   }
   // A late worker must not write snapshots, credentials, units, or pointers over a newer revision.
   if (current !== undefined && current.revision > revision.revision) {
@@ -971,7 +951,7 @@ async function run(input) {
     ) {
       return {};
     }
-    snapshot(input, agentDir, revision.id, revisionExpectation(input));
+    snapshot(input, agentDir, revision.id, revisionMetadata(input));
     if (input.operation === "verify-revision") {
       return {};
     }
