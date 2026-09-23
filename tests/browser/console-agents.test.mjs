@@ -362,17 +362,39 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   ]);
   assert.deepEqual(await optionValues(page.getByLabel("Authentication method", { exact: true })), [
     { value: "api_key", text: "OpenAI API key" },
-    { value: "codex_pat", text: "Codex PAT" },
+    { value: "codex_pat", text: "Service Accounts" },
   ]);
   const keyInput = page.getByLabel("API key", { exact: true });
   assert.equal(await keyInput.getAttribute("type"), "password");
+  assert.equal(await keyInput.getAttribute("placeholder"), "sk-…");
+  assert.equal(
+    await page.getByRole("link", { name: "Create an API key", exact: true }).getAttribute("href"),
+    "https://platform.openai.com/api-keys",
+  );
   await keyInput.fill("discarded-api-key");
   await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
-  assert.equal(await page.getByLabel("Codex PAT", { exact: true }).inputValue(), "");
+  assert.equal(await page.getByLabel("Service account token", { exact: true }).inputValue(), "");
+  assert.equal(
+    await page.getByLabel("Service account token", { exact: true }).getAttribute("placeholder"),
+    "at-…",
+  );
+  assert.equal(
+    await page.getByRole("link", { name: "OpenAI admin", exact: true }).getAttribute("href"),
+    "https://admin.openai.com/",
+  );
+  await page
+    .getByText(
+      "choose your workspace, open Service accounts, and create a token with Codex scope.",
+      { exact: false },
+    )
+    .waitFor();
+  assert.equal(await page.getByRole("link", { name: "Create an API key", exact: true }).count(), 0);
   assert.equal(await page.getByLabel("Execution mode").isDisabled(), true);
   assert.equal(await page.getByLabel("Model", { exact: true }).isVisible(), false);
   await page.getByLabel("Authentication method", { exact: true }).selectOption("api_key");
   assert.equal(await page.getByLabel("Execution mode").isEnabled(), true);
+  assert.equal(await keyInput.getAttribute("placeholder"), "sk-…");
+  assert.equal(await page.getByRole("link", { name: "OpenAI admin", exact: true }).count(), 0);
   await enterManualModel(page, key, "gpt-5.1");
   await page
     .getByText(
@@ -1121,7 +1143,7 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Agent name").fill(agent.name);
   await page.getByLabel("Authentication method").selectOption("codex_pat");
-  await page.getByLabel("Codex PAT", { exact: true }).fill("model-secret-value");
+  await page.getByLabel("Service account token", { exact: true }).fill("model-secret-value");
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
   await page.getByRole("button", { name: "Configure Slack" }).click();
   const channelDialog = page.getByRole("dialog", { name: "Configure Slack" });
@@ -1232,8 +1254,15 @@ test("Agent creation discovers available Anthropic models without saving the key
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
-  await page.getByLabel("Codex PAT", { exact: true }).fill("at-discarded-before-anthropic");
+  await page
+    .getByLabel("Service account token", { exact: true })
+    .fill("at-discarded-before-anthropic");
   await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
+  assert.equal(
+    await page.getByLabel("API key", { exact: true }).getAttribute("placeholder"),
+    "sk-ant-…",
+  );
+  assert.equal(await page.getByRole("link", { name: "OpenAI admin", exact: true }).count(), 0);
   assert.equal(await page.getByLabel("Execution mode").inputValue(), "embedded");
   assert.equal(
     await page.getByLabel("Authentication method", { exact: true }).inputValue(),
@@ -1399,7 +1428,10 @@ test(
       await (await staleMethodResponse).finished();
       await page.evaluate(() => new Promise(globalThis.requestAnimationFrame));
       assert.equal(await page.getByLabel("Provider", { exact: true }).inputValue(), "openai");
-      assert.equal(await page.getByLabel("Codex PAT", { exact: true }).inputValue(), "");
+      assert.equal(
+        await page.getByLabel("Service account token", { exact: true }).inputValue(),
+        "",
+      );
       assert.equal(await choice.isVisible(), false);
       assert.equal(
         (await optionValues(choice)).some(({ value }) => value === "stale-method-model"),
@@ -1554,7 +1586,7 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
   assert.equal(await page.getByLabel("Execution mode").inputValue(), "dedicated");
   assert.equal(await page.getByLabel("Execution mode").isDisabled(), true);
-  const credential = page.getByLabel("Codex PAT", { exact: true });
+  const credential = page.getByLabel("Service account token", { exact: true });
   await credential.fill("at-browser-pat");
   await credential.press("Tab");
   await page.getByLabel("Model ID", { exact: true }).fill("gpt-5.1");
@@ -1586,8 +1618,8 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
     .waitFor();
   await page.getByText(/conflicts with the saved state/i).waitFor();
   assert.equal(await page.getByLabel("Configuration JSON").isDisabled(), true);
-  assert.equal(await page.getByLabel("Codex PAT", { exact: true }).inputValue(), "");
-  assert.equal(await page.getByLabel("Codex PAT", { exact: true }).isDisabled(), true);
+  assert.equal(await page.getByLabel("Service account token", { exact: true }).inputValue(), "");
+  assert.equal(await page.getByLabel("Service account token", { exact: true }).isDisabled(), true);
   assert.equal(await page.getByLabel("Execution mode").isDisabled(), true);
   assert.equal(await page.getByLabel("Authentication method", { exact: true }).isDisabled(), true);
   assert.equal(await page.getByRole("button", { name: "Reset template" }).isDisabled(), true);
@@ -3587,9 +3619,9 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   assert.equal(await page.getByLabel("Preset template").count(), 0);
   assert.equal(await page.getByLabel("Variable: marker", { exact: true }).count(), 0);
   await page
-    .getByText("Preset authentication: Codex PAT · Secret configured", { exact: true })
+    .getByText("Preset authentication: Service Accounts · Secret configured", { exact: true })
     .waitFor();
-  assert.equal(await page.getByLabel("Codex PAT", { exact: true }).count(), 0);
+  assert.equal(await page.getByLabel("Service account token", { exact: true }).count(), 0);
   assert.equal(await page.getByLabel("Execution mode").isDisabled(), true);
   assert.equal(
     (await page.getByLabel("Configuration JSON", { exact: true }).inputValue()).includes(
@@ -3683,9 +3715,9 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
 
   await page.waitForURL((url) => url.pathname === `/console/agents/${created.data.id}`);
   await page.getByRole("button", { name: "Credentials", exact: true }).click();
-  await page.getByLabel("Codex PAT Secret ID").waitFor();
+  await page.getByLabel("Service account token Secret ID").waitFor();
   assert.equal(await page.getByLabel("Authentication source").inputValue(), "codex_pat");
-  assert.equal(await page.getByLabel("Codex PAT Secret ID").inputValue(), secret.id);
+  assert.equal(await page.getByLabel("Service account token Secret ID").inputValue(), secret.id);
   const patched = page.waitForResponse(
     (response) =>
       response.url().endsWith(`/agents/${created.data.id}`) &&

@@ -33,7 +33,7 @@ export const CreateBoundCredentialPreset = {
 };
 export const CreateNoPresets = { ...story("createNoPresets"), name: "No Presets" };
 export const CreateAnthropic = { ...story("createAnthropic"), name: "Anthropic API key" };
-export const CreateCodexPat = { ...story("createCodexPat"), name: "Codex PAT" };
+export const CreateCodexPat = { ...story("createCodexPat"), name: "Service Accounts" };
 export const CreateModels = { ...story("createModels"), name: "Choose an available model" };
 export const CreateModelsEmpty = { ...story("createModelsEmpty"), name: "No model choices" };
 export const CreateModelsUnavailable = {

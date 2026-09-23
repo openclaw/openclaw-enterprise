@@ -68,7 +68,7 @@ Choose a Preset, fill its variables, review the seeded workspace files, and
 create a Dedicated Agent. The Console submits its inline Configuration and saved
 Secret references, follows simulated provisioning and deployment activation, and
 opens Workspace files for the returned revision. A separate flow starts without
-a Preset, enters a dummy OpenAI API key or Codex PAT, selects a model, edits
+a Preset, enters a dummy OpenAI API key or Service Accounts token, selects a model, edits
 IDENTITY.md, and clears USER.md before creation. Embedded and unsupported-runtime
 stories retain the draft workflow: provision credentials and deploy from Agent detail.
 These transitions demonstrate presentation only; they do not prove a worker ran.

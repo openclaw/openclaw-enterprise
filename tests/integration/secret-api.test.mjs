@@ -325,6 +325,37 @@ test("Agent model discovery uses native provider APIs without creating platform 
   assert.equal(JSON.stringify(fixture.auditSink.events).includes(apiKey), false);
 });
 
+test("OpenAI API-key model discovery excludes models whose shutdown date has arrived", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2030-04-15T23:59:59Z") });
+  const fixture = await createModelDiscoveryFixture();
+  const namespace = await bootstrapNamespace(fixture);
+  // OpenAI's optional shutdown_date is a calendar date, independent of model age or ID.
+  t.mock.method(globalThis, "fetch", async () =>
+    Response.json({
+      data: [
+        { id: "past-shutdown", shutdown_date: "2030-04-14" },
+        { id: "today-shutdown", shutdown_date: "2030-04-15" },
+        { id: "future-shutdown", shutdown_date: "2030-04-16" },
+        { id: "invalid-date", shutdown_date: "2030-02-30" },
+        { id: "invalid-type", shutdown_date: 1 },
+        { id: "null-shutdown", shutdown_date: null },
+        { id: "unspecified-shutdown", created: 1 },
+      ],
+    }),
+  );
+  const result = await request(fixture.app, "POST", `/namespaces/${namespace.id}/agents/models`, {
+    body: { provider: "openai", authMethod: "api_key", apiKey: "synthetic-discovery-key" },
+  });
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.data, [
+    { id: "future-shutdown", name: "future-shutdown" },
+    { id: "invalid-date", name: "invalid-date" },
+    { id: "invalid-type", name: "invalid-type" },
+    { id: "null-shutdown", name: "null-shutdown" },
+    { id: "unspecified-shutdown", name: "unspecified-shutdown" },
+  ]);
+});
+
 test("Codex PAT discovery rejects invalid identity without falling through to the API-key endpoint", async (t) => {
   const fixture = await createModelDiscoveryFixture();
   const namespace = await bootstrapNamespace(fixture);

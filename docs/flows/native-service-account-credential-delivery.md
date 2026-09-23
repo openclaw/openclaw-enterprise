@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
 updated: 2026-09-23
-last_updated_session: codex/01a0cce9-23e3-7072-aa3f-a2e26d2dbf11
+last_updated_session: codex/01a0cf27-71c6-7042-8357-74d1811a2ef8
 ---
 
 # Harness Authentication Binding Flow
@@ -54,6 +54,15 @@ graph TD
 ## Execution Trace
 
 ### 1. Save one source without issuing credentials
+
+Before saving, Console can call the selected Compute Driver's
+`apps/controller/src/drivers/compute/model-discovery.ts:discoverHarnessModels`
+to discover models without storing the credential. OpenAI API-key discovery
+omits models whose valid `shutdown_date` is today or earlier in UTC, using the
+provider's [model-list contract](https://developers.openai.com/api/reference/resources/models/methods/list).
+Missing, null, malformed, or future dates remain in the list; model age and IDs
+do not imply expiry. This filter does not apply to Anthropic or the Codex PAT
+catalog. Discovery does not prove that a model call will succeed.
 
 `packages/occ/src/index.ts:OpenClawController.createAgent`, `updateAgent`,
 `authorizeHarnessAuthSource`
@@ -199,6 +208,8 @@ history cannot restore historical Secret values.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 20:27: Filter OpenAI API-key discovery by provider-reported shutdown dates in UTC. (01a0cf27-71c6-7042-8357-74d1811a2ef8 - 9e0095c7)
 
 - 2026-09-23 09:00: Extend exact Secret admission, retention and dedicated native login to directly supplied Codex PATs. (01a0cce9-23e3-7072-aa3f-a2e26d2dbf11 - c5524b59)
 

@@ -9,7 +9,7 @@ export function harnessAuthDescription(binding) {
     return "Operator-managed credentials";
   }
   if (binding.method === "codex_pat") {
-    return "Codex PAT · Secret configured";
+    return "Service Accounts · Secret configured";
   }
   return binding.method === "api_key"
     ? "API key · Secret configured"
@@ -22,7 +22,9 @@ export function createHarnessAuthFields(context, binding = null, executionMode =
     { id: "harness-auth-method" },
     element("option", { value: "" }, "None"),
     element("option", { value: "api_key" }, "API key"),
-    executionMode === "dedicated" ? element("option", { value: "codex_pat" }, "Codex PAT") : null,
+    executionMode === "dedicated"
+      ? element("option", { value: "codex_pat" }, "Service Accounts")
+      : null,
     element("option", { value: "runtime" }, "Operator-managed credentials"),
     element("option", { value: "chatgpt_service_account" }, "ChatGPT service account"),
   );
@@ -96,7 +98,7 @@ export function createHarnessAuthFields(context, binding = null, executionMode =
     const directSecret = ["api_key", "codex_pat"].includes(method.value);
     secretField.hidden = !directSecret;
     secretLabel.textContent =
-      method.value === "codex_pat" ? "Codex PAT Secret ID" : "API key Secret ID";
+      method.value === "codex_pat" ? "Service account token Secret ID" : "API key Secret ID";
     accountField.hidden = method.value !== "chatgpt_service_account";
     secret.required = directSecret;
     account.required = method.value === "chatgpt_service_account";

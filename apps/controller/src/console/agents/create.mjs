@@ -277,11 +277,13 @@ function renderAgentForm(context, rendered) {
     "select",
     { id: "agent-auth-method" },
     element("option", { value: "api_key" }, "OpenAI API key"),
-    element("option", { value: "codex_pat" }, "Codex PAT"),
+    element("option", { value: "codex_pat" }, "Service Accounts"),
   );
   authMethod.value = binding?.method ?? "api_key";
   const authMethodField = field("Authentication method", authMethod);
   const credentialLabel = element("label", { for: apiKey.id }, "API key");
+  const credentialHelp = element("p", { className: "hint", id: "provider-credential-help" });
+  apiKey.setAttribute("aria-describedby", credentialHelp.id);
   let discoveryGeneration = 0;
   let modelsLoading = false;
   let modelOptions = [];
@@ -303,7 +305,7 @@ function renderAgentForm(context, rendered) {
     updateControls();
     model.focus();
   });
-  const modelField = field("Model ID", model, "Enter the model ID enabled for your API account.");
+  const modelField = field("Model ID", model, "Enter a model ID available to this credential.");
   const choiceField = field("Model", modelChoice);
   const modelSection = element(
     "section",
@@ -341,7 +343,7 @@ function renderAgentForm(context, rendered) {
       updateModelConfiguration();
       modelStatus.textContent = choices.length
         ? "Choose a text-generation model for this Agent."
-        : `No models were returned. Enter a model ID enabled for this ${authMethod.value === "codex_pat" ? "Codex PAT" : "API key"}, or retry loading.`;
+        : `No models were returned. Enter a model ID enabled for this ${authMethod.value === "codex_pat" ? "service account token" : "API key"}, or retry loading.`;
     } catch (error) {
       if (!context.isCurrent() || generation !== discoveryGeneration) {
         return;
@@ -353,14 +355,14 @@ function renderAgentForm(context, rendered) {
       modelOptions = [];
       manualModel = true;
       const reason = {
-        MODEL_DISCOVERY_CREDENTIALS_REJECTED: `The provider rejected this ${authMethod.value === "codex_pat" ? "Codex PAT" : "API key"} or its permission to list models.`,
+        MODEL_DISCOVERY_CREDENTIALS_REJECTED: `The provider rejected this ${authMethod.value === "codex_pat" ? "service account token" : "API key"} or its permission to list models.`,
         MODEL_DISCOVERY_RATE_LIMITED: "The provider rate limit was reached. Try again later.",
         MODEL_DISCOVERY_UNAVAILABLE:
           "The provider could not be reached or is unavailable. Check the server's provider access.",
         MODEL_DISCOVERY_INVALID_RESPONSE:
           "The provider returned an unsupported model-list response.",
       }[error.code];
-      modelStatus.textContent = `${reason ?? "Models could not be loaded. Check the API key and retry."} You can enter a model ID manually.${error.requestId ? ` Request: ${error.requestId}` : ""}`;
+      modelStatus.textContent = `${reason ?? "Models could not be loaded. Check the credential and retry."} You can enter a model ID manually.${error.requestId ? ` Request: ${error.requestId}` : ""}`;
     } finally {
       if (context.isCurrent() && generation === discoveryGeneration) {
         modelsLoading = false;
@@ -409,6 +411,7 @@ function renderAgentForm(context, rendered) {
           { className: "form-field" },
           credentialLabel,
           apiKey,
+          credentialHelp,
           element(
             "p",
             { className: "hint" },
@@ -672,7 +675,7 @@ function renderAgentForm(context, rendered) {
     field(
       "Execution mode",
       mode,
-      "Codex PAT requires Dedicated execution. Anthropic uses Embedded execution. Slack requires Dedicated execution with OpenAI.",
+      "Service account tokens require Dedicated execution. Anthropic uses Embedded execution. Slack requires Dedicated execution with OpenAI.",
     ),
     field(
       "Configuration JSON",
@@ -856,7 +859,37 @@ function renderAgentForm(context, rendered) {
     authMethod.querySelector('[value="api_key"]').textContent =
       nativeProvider.value === "anthropic" ? "Anthropic API key" : "OpenAI API key";
     authMethod.querySelector('[value="codex_pat"]').hidden = nativeProvider.value === "anthropic";
-    credentialLabel.textContent = usesPat ? "Codex PAT" : "API key";
+    credentialLabel.textContent = usesPat ? "Service account token" : "API key";
+    if (usesPat) {
+      apiKey.placeholder = "at-…";
+      credentialHelp.replaceChildren(
+        "Use a workspace service account token for dedicated Codex. In ",
+        element(
+          "a",
+          { href: "https://admin.openai.com/", target: "_blank", rel: "noopener noreferrer" },
+          "OpenAI admin",
+        ),
+        ", choose your workspace, open Service accounts, and create a token with Codex scope.",
+      );
+    } else if (nativeProvider.value === "openai") {
+      apiKey.placeholder = "sk-…";
+      credentialHelp.replaceChildren(
+        "Use an OpenAI API key with API billing. ",
+        element(
+          "a",
+          {
+            href: "https://platform.openai.com/api-keys",
+            target: "_blank",
+            rel: "noopener noreferrer",
+          },
+          "Create an API key",
+        ),
+        ".",
+      );
+    } else {
+      apiKey.placeholder = "sk-ant-…";
+      credentialHelp.textContent = "Use an Anthropic API key for embedded OpenClaw.";
+    }
     apiKey.disabled ||= Boolean(savedSecret);
     startOver.disabled = pending || outcomeUnknown || saved || Boolean(savedSecret);
     if (discoverModels) {
@@ -1048,7 +1081,7 @@ function renderAgentForm(context, rendered) {
       (nativeProvider.value !== "openai" || mode.value !== "dedicated")
     ) {
       feedback.textContent =
-        "Codex PAT requires OpenAI with Dedicated execution. Update the Configuration JSON or reset the template before saving.";
+        "Service account tokens require OpenAI with Dedicated execution. Update the Configuration JSON or reset the template before saving.";
       return;
     }
     if (nativeProvider.value === "anthropic" && mode.value !== "embedded") {

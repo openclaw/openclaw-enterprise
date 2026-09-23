@@ -105,6 +105,7 @@ export async function discoverHarnessModels(input: {
       }
       url.href = "https://chatgpt.com/backend-api/codex/models?client_version=0.156.0";
     }
+    const currentDate = new Date().toISOString().slice(0, 10);
     const models = new Map<string, { readonly id: string; readonly name: string }>();
     const cursors = new Set<string>();
     for (let pageIndex = 0; pageIndex < MAX_PAGES; pageIndex++) {
@@ -133,6 +134,17 @@ export async function discoverHarnessModels(input: {
         const model = pat ? { ...entry, id: entry?.slug } : entry;
         if (!isNonEmptyString(model?.id) || /[\s\p{Cc}]/u.test(model.id)) {
           throw new ModelDiscoveryError("invalid_response");
+        }
+        if (!pat && !anthropic && typeof model.shutdown_date === "string") {
+          const shutdownAt = Date.parse(model.shutdown_date);
+          // Only an explicit, valid shutdown date proves expiry; missing/malformed metadata does not.
+          if (
+            Number.isFinite(shutdownAt) &&
+            new Date(shutdownAt).toISOString().slice(0, 10) === model.shutdown_date &&
+            model.shutdown_date <= currentDate
+          ) {
+            continue;
+          }
         }
         if (!models.has(model.id)) {
           models.set(model.id, {

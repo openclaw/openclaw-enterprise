@@ -33,12 +33,16 @@ does not make that link available.
    Select **Start without Preset** to use standard defaults.
 3. Enter a name that is unique within the Namespace. Choose **OpenAI** or
    **Anthropic** under **Model provider**. For OpenAI, choose **OpenAI API key**
-   or **Codex PAT** under **Authentication method**, then enter that credential.
+   or **Service Accounts** under **Authentication method**, then enter that credential.
+   For API keys, use [OpenAI API keys](https://platform.openai.com/api-keys). For Service
+   Accounts, open [OpenAI admin](https://admin.openai.com/), choose your workspace,
+   open **Service accounts**, and create a token with Codex scope. The fields show
+   `sk-…` and `at-…` prefix hints respectively; prefixes do not select the method.
    Anthropic uses an API key. Model controls appear after credential entry. **Load models** queries the selected provider and lets
    you choose the gateway's default model; no model is preselected. Choose a
    text-generation model compatible with your runtime. If the list is empty or
    unavailable, retry or select **Enter model ID manually**.
-   OpenAI API keys support dedicated Codex and embedded OpenClaw; Codex PATs
+   OpenAI API keys support dedicated Codex and embedded OpenClaw; Service Accounts
    require dedicated Codex. Anthropic uses embedded OpenClaw. The form writes the corresponding native
    model configuration. Credentials remain separate from Configuration JSON.
 4. Review the generated Configuration JSON. Changing selections updates model and
@@ -80,13 +84,13 @@ revision. Ordinary draft creation performs the Configuration, Agent, and exact I
 grants as separate browser requests and requires IAM administration permission.
 The key is never put into Configuration JSON, Agent responses, or browser storage.
 A Preset with an existing authentication binding retains that binding; use the
-Agent's Credentials tab to change it after creation. API-key and Codex PAT
+Agent's Credentials tab to change it after creation. API-key and Service Accounts
 Presets also keep their provider fixed, including when editing Configuration
 JSON. Start without a Preset to select a different provider and credential.
 
 Model discovery requires Agent `create` permission in this Namespace. It sends
 the supplied credential to the selected authentication method's official API
-without creating a Secret or saving credentials. Codex PAT discovery validates
+without creating a Secret or saving credentials. Service Accounts token discovery (`codex_pat` in the API) validates
 the account with OpenAI authentication and lists its Codex models. The selector
 determines routing; credential prefixes do not choose an authentication method.
 Changing the provider or method clears the credential and model choice;
@@ -96,7 +100,7 @@ OpenClaw's implicit default does not follow the selected provider.
 
 Discovery runs from the OCC API process. Its network policy must permit HTTPS
 to `api.openai.com:443` for OpenAI API keys, `api.anthropic.com:443` for Anthropic,
-or both `auth.openai.com:443` and `chatgpt.com:443` for Codex PATs.
+or both `auth.openai.com:443` and `chatgpt.com:443` for service account tokens.
 The Helm chart's default-deny policy does not grant these destinations;
 operators must add a destination-scoped API-pod egress policy through their
 cluster's network controls. Standard Kubernetes NetworkPolicy accepts IP CIDRs,

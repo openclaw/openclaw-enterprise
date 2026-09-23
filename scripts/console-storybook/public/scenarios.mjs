@@ -331,7 +331,7 @@ export const scenarios = {
   },
   createCodexPat: {
     group: "Pages/Create Agent",
-    name: "Codex PAT",
+    name: "Service Accounts",
     path: create,
     actions: [
       ...form,
@@ -340,7 +340,7 @@ export const scenarios = {
       { selector: "#provider-api-key", value: "at-storybook-pat" },
     ],
     description:
-      "Explicit Codex PAT authentication requires Dedicated execution and loads the account's Codex models. Switching methods clears the credential and model selection.",
+      "Service Accounts use a workspace token for Dedicated Codex. The form links to OpenAI admin and shows the at- prefix hint. Switching methods clears the credential and model selection.",
   },
   createModels: {
     group: "Pages/Create Agent",
@@ -952,7 +952,7 @@ export const scenarios = {
     description:
       "Create a Dedicated Agent from the no-Preset form after editing IDENTITY.md and clearing USER.md, then inspect the seeded workspace after simulated provisioning.",
     steps: [
-      "Start without Preset, enter a demo Agent name, keep OpenAI and Dedicated, enter a dummy API key or Codex PAT, and choose one of the returned demo models.",
+      "Start without Preset, enter a demo Agent name, keep OpenAI and Dedicated, enter a dummy API key or service account token, and choose one of the returned demo models.",
       "Review AGENTS.md, SOUL.md, IDENTITY.md, and USER.md. Edit IDENTITY.md, leave USER.md empty, and create the Agent.",
       "Wait for automatic provisioning and deployment activation; the Console then opens Workspace files for the returned revision.",
       "Open Workspace files and inspect IDENTITY.md or USER.md to confirm the fixture carried the creation-time file contents into the deployed workspace.",

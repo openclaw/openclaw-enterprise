@@ -1,22 +1,18 @@
 ---
 created: 2026-09-01
 updated: 2026-09-23
-last_updated_session: 01a0cfaa-2b68-7e61-b8ff-a7eb82f1edc5
+last_updated_session: 01a0cf27-71c6-7042-8357-74d1811a2ef8
 ---
 
 # Platform console request flow
 
 ## Overview
 
-Opening `/console/` loads the controller's static browser client, resolves a
-cookie session, and reads authorized resources. This trace follows the Agents
-page through Namespace selection, Agent creation, detail revision selection,
-saved channel draft edits, Agent stopping, and Agent deletion, then covers the Provider branch
-and logout. It stops at rendered state or a submitted API mutation; deletion
-includes reading the Agent until the API confirms it is gone. Rollback and live
-gateway health remain outside the console flow. The
-[console reference](../reference/console.md) owns user-visible behavior; the API
-and IAM retain resource authority.
+Opening `/console/` resolves a cookie session and renders authorized resources.
+This trace follows Namespace selection, Agent creation and editing, runtime
+actions, Providers, and logout. It ends at rendered state or an API mutation;
+deletion additionally confirms absence. The [console reference](../reference/console.md)
+owns user-visible behavior. API and IAM retain resource authority.
 
 ## Entry Points
 
@@ -153,21 +149,14 @@ Installation `administer` precedes the safe startup-summary response. Explicit
 empty configuration is a successful empty list; absent wiring and dependency
 failure return errors.
 
-`apps/controller/src/console/agents/create.mjs:renderCreateAgent` offers OpenAI
-or Anthropic with a matching native model configuration. OpenAI exposes an
-explicit API-key or Codex-PAT method; Anthropic uses API keys. PAT selection locks
-Dedicated execution. The method is retained with saved artifacts for retries.
-It does not discover Installation Providers or assign their identities from the
-native provider selection. The Providers navigation item is hidden.
-Existing Preset bindings remain intact. API-key and PAT Presets keep the provider
-fixed; Configuration JSON with a different provider is rejected before saving.
-Key entry uses the existing Secret API;
-creation retains successful Secret, Configuration, and Agent identities before
-`apps/controller/src/console/agents/secret-access.mjs:ensureSecretOperateBinding`
-grants that Agent access to its exact model Secret and the Secrets staged by the Slack drawer. Known failures retry only pending
-steps. Uncertain writes block another creation attempt; no key is stored in
-Configuration or browser storage. See the [creation reference](../reference/console/create-and-deploy.md)
-for permissions and partial-save recovery.
+`apps/controller/src/console/agents/create.mjs:renderCreateAgent` offers native
+OpenAI and Anthropic configuration. OpenAI supports API keys or **Service Accounts**
+(`codex_pat`); Anthropic supports API keys. Service Accounts locks Dedicated execution.
+Credential hints link to the appropriate token console and show expected prefixes.
+Preset provider bindings remain fixed, and conflicting JSON is rejected before writes.
+These selections do not discover Installation Providers; that navigation item is hidden.
+The [creation reference](../reference/console/create-and-deploy.md) owns permissions
+and partial-save recovery.
 
 The form starts with editable native JSON for the selected execution mode and
 optional Agent-owned plugin selections, without a hardcoded model. After key
@@ -176,8 +165,9 @@ entry, `POST /namespaces/:namespaceId/agents/models` reaches
 Namespace and calls the selected Compute Driver outside a state transaction.
 The bundled `compute/model-discovery.ts` queries fixed native provider URLs with
 bounded responses and pagination, returning only model IDs and labels. The
-explicit `authMethod` selects the API-key or Codex-PAT discovery path. It makes
-no platform writes. Empty or failed discovery permits manual model entry; key
+explicit `authMethod` selects API-key or service-account discovery. OpenAI API-key
+discovery excludes models whose valid `shutdown_date` is today or earlier (UTC).
+Discovery makes no platform writes. Empty or failed discovery permits manual model entry; key
 and provider or authentication-method changes invalidate pending browser results. Model and execution-mode changes update the
 native model and runtime entries while preserving unrelated settings; reset
 restores the selected starter. `configurationTemplate` enables native Control UI
@@ -264,21 +254,12 @@ older view cannot redirect a newer session. Only locally defined reason messages
 and bounded server request IDs enter failure views; backend error text is omitted.
 Global Providers and Namespaces pages remain visibly Installation-wide.
 
-`apps/controller/src/console/agents/deletion.mjs:createAgentDeletion` renders the
-Agent's deletion state. A confirmed deletion sends the existing exact Agent
-`DELETE`; the API owns the `delete` permission and asynchronous cleanup. An
-accepted or uncertain request stays on the detail page so the user can refresh
-the exact Agent. Only a confirmed not-found read returns to the Agents list. A
-denial is shown inline; an uncertain outcome blocks replay until a successful
-refresh. The [Agent reference](../reference/agents.md#deletion) owns cleanup.
-
-The Agent detail view also exposes **Stop Agent** with confirmation and
-**Refresh stop status**. The existing bodyless stop route requires Agent
-`operate` and queues shutdown. The browser reports requested state and selected
-revision metadata; it does not present acceptance as completed runtime shutdown.
-Uncertain results require readback before another stop. Deployment resumes the
-Agent through a new revision. The [detail action flow](platform-console/agent-editing.md#stop-agent)
-traces these requests.
+The [detail action flow](platform-console/agent-editing.md#stop-agent) traces
+confirmed Stop and Delete requests and their exact permission checks. Acceptance
+is not completed shutdown or deletion. Uncertain outcomes block replay until
+readback; only confirmed absence returns to the Agents list. Deployment resumes
+a stopped Agent through a new revision. The [Agent reference](../reference/agents.md#deletion)
+owns asynchronous cleanup.
 
 Logout first hides private state, then calls the existing sign-out endpoint.
 Confirmed success or session inspection proving absence replaces history with
@@ -293,7 +274,7 @@ this client never infers it from a network error.
 The **New revision** detail view exposes **Deploy new revision**. The **Operator-managed
 credentials** option persists `{ "method": "runtime" }` and explains that OCC does
 not validate host credentials. It bypasses only the managed runtime-credential
-metadata gate; the server retains driver compatibility and authorization checks. It rereads the Agent and
+metadata gate. Deployment rereads the Agent and
 Configuration, checks their loaded association and generation, then sends the existing
 bodyless `POST /namespaces/:namespaceId/agents/:agentId/deploy`. The server retains
 its existing authorization and admission checks. The returned admitted revision opens
@@ -329,6 +310,8 @@ refreshes and inspects the Agent and revision history.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 23:50: Describe Service Accounts hints and expired-model filtering; consolidate repeated creation and action details. (01a0cf27-71c6-7042-8357-74d1811a2ef8 - 9e0095c7)
 
 - 2026-09-23 18:48: Keep saved API-key and PAT Presets bound to their provider before Configuration or Agent writes. (01a0cf27-71c6-7042-8357-74d1811a2ef8 - 4da114ac7b11f926d4b774b8d32a09fa136135eb)
 
