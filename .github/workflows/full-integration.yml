@@ -70,7 +70,11 @@ jobs:
             profile: baseline
             timeout: 25
           - lane: postgres
-            title: PostgreSQL
+            title: PostgreSQL Migrations
+            profile: postgres
+            timeout: 25
+          - lane: postgres-application
+            title: PostgreSQL Application
             profile: postgres
             timeout: 25
           - lane: images-packaging
@@ -79,6 +83,14 @@ jobs:
             timeout: 45
           - lane: k3d-fixture-configuration
             title: k3d Fixture and Configuration
+            profile: k3d
+            timeout: 45
+          - lane: k3d-fixture-state
+            title: k3d State and Lifecycle
+            profile: k3d
+            timeout: 45
+          - lane: k3d-fixture-plugins
+            title: k3d Plugin Status
             profile: k3d
             timeout: 45
           - lane: logging-collector
@@ -408,7 +420,7 @@ jobs:
           const lane = process.env.SELECTED_LANE || process.env.LANE;
           const out = { preflight: needs.preflight };
           if (lane === "all") {
-            for (const name of ["checks-baseline", "postgres", "images-packaging", "k3d-fixture-configuration", "logging-collector", "repository-credentials-container", "repository-credentials-platform"]) {
+            for (const name of ["checks-baseline", "postgres", "postgres-application", "images-packaging", "k3d-fixture-configuration", "k3d-fixture-state", "k3d-fixture-plugins", "logging-collector", "repository-credentials-container", "repository-credentials-platform"]) {
               out[name] = { result: needs["pr-safe-same-sha"]?.result ?? "missing" };
             }
           } else if (lane === "logging-collector") {

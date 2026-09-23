@@ -74,7 +74,8 @@
   gap: 0.35rem;
 }
 
-.channel-field input {
+.channel-field input,
+.channel-field select {
   width: 100%;
   padding: 11px 12px;
   border: 1px solid var(--line);

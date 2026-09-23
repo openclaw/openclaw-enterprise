@@ -20,18 +20,24 @@ go to the Agent's gateway; model credentials are configured separately.
   [model authentication](../../reference/agents.md#harness-authentication).
   Embedded execution cannot isolate channel credentials from the Harness.
 - To provision generated credentials, you need `read` and `operate` on the Agent.
-  Saving channel Secrets also requires Secret creation, Configuration update, and
+  Selecting Secrets requires [readable Secret metadata](../../reference/drivers/secret.md#iam)
+  and caller `operate` on each selected Secret. Saving token bindings requires Configuration update and
   [Namespace IAM administration](../../reference/authorization.md#manage-namespace-policy)
-  to grant the Agent access to each exact Secret.
+  to grant the Agent access to each exact Secret. Creating a token Secret also
+  requires Secret creation permission in the Namespace.
 
 ## Connect and verify
 
 1. Open the Agent's new revision in the console and open **Channels**. Enable
    Slack, enter the channel IDs, and leave **Require mention** enabled for this
-   setup. Save. If multiple Agents use this Configuration, the edit also
-   affects their future deployments.
+   setup. For each token menu, select a Namespace Secret or **Create new Secret...**.
+   The modal prefills the token key and accepts its value in a password field.
+   **Create Secret** stores it immediately; **Save configuration** saves the
+   selected bindings. Cancelling the drawer discards selections but keeps any
+   newly created Secrets. If multiple Agents use this Configuration, the edit
+   also affects their future deployments.
 2. Open **Credentials** and select **Provision generated runtime credentials**
-   before the first deployment. Fill any missing Slack app and bot tokens, then select
+   before the first deployment. If tokens are still missing, fill them and select
    **Save channel Secrets**. OCC stores them as Namespace Secrets, grants the
    Agent access, and saves Configuration bindings for gateway delivery. Stored
    credentials confirm storage only; they do not prove Slack accepted them.

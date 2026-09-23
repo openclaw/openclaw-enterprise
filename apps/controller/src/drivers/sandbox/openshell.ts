@@ -130,9 +130,10 @@ function optionalEnumValue(
 
 const DEFAULT_WORKSPACE = "default";
 const DEFAULT_SANDBOX_NAME_PREFIX = "sb";
-const DEFAULT_GATEWAY_PORT = 50051;
+const DEFAULT_GATEWAY_PORT = 8080;
 const OPENSHELL_MAX_SANDBOX_NAME_LENGTH = 19;
 const SERVICE_PRINCIPAL_VOLUME = "openclaw-service-principal";
+const APP_SERVER_PORT_ENVIRONMENT = "APP_SERVER_PORT";
 
 function nonempty(value: unknown, description: string): string {
   if (!isNonEmptyString(value)) {
@@ -259,12 +260,51 @@ function environment(requirements: HarnessWorkloadRequirements): Record<string, 
   for (const entry of requirements.environment) {
     if ("valueFrom" in entry) {
       throw new OpenShellSandboxConfigurationFailure(
-        `OpenShell v0.1.0-pre.5 cannot receive secretKeyRef environment ${entry.name}; upstream Secret projection support is required.`,
+        `OpenShell v0.1.0-pre.7 cannot receive secretKeyRef environment ${entry.name}; upstream Secret projection support is required.`,
       );
     }
     result[nonempty(entry.name, "Environment variable name")] = entry.value;
   }
   return result;
+}
+
+function harnessPort(requirements: HarnessWorkloadRequirements): number {
+  const entry = requirements.environment.find(
+    (candidate) => candidate.name === APP_SERVER_PORT_ENVIRONMENT,
+  );
+  if (entry === undefined || "valueFrom" in entry) {
+    throw new OpenShellSandboxConfigurationFailure(
+      "OpenShell requires a literal APP_SERVER_PORT for create-time service exposure.",
+    );
+  }
+  return port(Number(entry.value), "OpenShell APP_SERVER_PORT");
+}
+
+function requestId(revisionId: string): string {
+  const match = /^rev_([0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})$/.exec(revisionId);
+  if (match === null) {
+    throw new OpenShellSandboxConfigurationFailure(
+      "OpenShell requires an Agent revision ID containing a stable UUID.",
+    );
+  }
+  return match[1]!;
+}
+
+function validateHarnessServiceUrl(value: unknown): void {
+  const endpoint = nonempty(value, "OpenShell Harness service URL");
+  let parsed: URL;
+  try {
+    parsed = new URL(endpoint);
+  } catch {
+    throw new OpenShellSandboxConfigurationFailure(
+      "OpenShell returned an invalid Harness service URL.",
+    );
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new OpenShellSandboxConfigurationFailure(
+      "OpenShell Harness service URL must use HTTP or HTTPS.",
+    );
+  }
 }
 
 function namespaceName(namespace: Readonly<Namespace>): string {
@@ -912,12 +952,14 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     }
     labels(context.requirements.labels, "Harness workload labels");
     const sandbox = this.sandboxRef(context);
+    const targetPort = harnessPort(context.requirements);
     let created;
     try {
       created = await this.gatewayClientForNamespace(sandbox.namespaceName).createSandbox(
         {
           name: sandbox.resourceName,
           workspace: this.options.gateway.workspace ?? DEFAULT_WORKSPACE,
+          requestId: requestId(context.revision.id),
           labels: context.requirements.labels,
           annotations: {
             "openclaw.dev/namespace-id": context.revision.namespaceId,
@@ -925,12 +967,15 @@ export class OpenShellSandboxDriver implements SandboxDriver {
             "openclaw.dev/revision-id": context.revision.id,
           },
           spec: sandboxSpec(this.options, context.requirements),
+          serviceExposures: [{ service: "", targetPort }],
         },
         context.signal,
       );
     } catch (error) {
       if (error instanceof OpenShellSandboxAlreadyExistsError) {
-        return Object.freeze(sandbox);
+        throw new OpenShellSandboxConfigurationFailure(
+          "OpenShell Sandbox already exists without a replayable create-time service URL; remove the stale Sandbox before retrying.",
+        );
       }
       throw error;
     }
@@ -939,6 +984,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "OpenShell returned a different Sandbox name than requested.",
       );
     }
+    validateHarnessServiceUrl(created.serviceUrls[""]);
     return Object.freeze(sandbox);
   }
 

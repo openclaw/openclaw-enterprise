@@ -1,7 +1,9 @@
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +15,7 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import {
   createOpenShellInstallationConfiguration,
   createOpenShellKubernetesFixture,
+  createOpenShellServiceLoopbackLookup,
   openShellAgentName,
   openshellHash as hash,
 } from "../helpers/openshell-kubernetes-real.mjs";
@@ -32,7 +35,7 @@ const openShellSandboxImage = process.env.OCC_TEST_OPENSHELL_SANDBOX_IMAGE;
 const openShellSupervisorImage = process.env.OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE;
 const openShellHelmPath = process.env.OCC_TEST_OPENSHELL_HELM;
 const openShellHelmChart = process.env.OCC_TEST_OPENSHELL_HELM_CHART;
-const openShellChartVersion = process.env.OCC_TEST_OPENSHELL_CHART_VERSION ?? "0.1.0-pre.5";
+const openShellChartVersion = process.env.OCC_TEST_OPENSHELL_CHART_VERSION ?? "0.1.0-pre.7";
 const openShellRuntimeClass = process.env.OCC_TEST_OPENSHELL_RUNTIME_CLASS ?? "openshell-sandbox";
 const providerModel = (process.env.OCC_TEST_OPENAI_MODEL ?? defaultAgentModel).replace(
   /^(?:openai|codex)\//,
@@ -488,6 +491,10 @@ function credentialBridgeResource(context, claimName, subPath) {
                   "mkdir -p /bootstrap/plugin-runtime",
                   `mkdir -p /bootstrap/service-principal/${tokenParent}`,
                   "mkdir -p /workspace-home/.codex",
+                  "chmod 0700 /bootstrap/plugin-runtime /bootstrap/service-principal",
+                  "chmod 0600 /bootstrap/app-server-token /bootstrap/openai-api-key 2>/dev/null || true",
+                  "chmod 0600 /bootstrap/plugin-runtime/runtime.json /bootstrap/plugin-runtime/config.toml 2>/dev/null || true",
+                  `chmod 0600 /bootstrap/service-principal/${servicePrincipalToken.path} 2>/dev/null || true`,
                   'printf "%s" "$APP_SERVER_TOKEN" > /bootstrap/app-server-token',
                   'printf "%s" "$OPENAI_API_KEY" > /bootstrap/openai-api-key',
                   "cp /source-plugin-runtime/runtime.json /bootstrap/plugin-runtime/runtime.json",
@@ -703,15 +710,24 @@ function removeStockUnsupportedTokenProjection(request, requirements) {
   return compatible;
 }
 
-function compatibilityGatewayClient(GrpcOpenShellGatewayClient, endpoint, context) {
+function integrationGatewayClient(
+  GrpcOpenShellGatewayClient,
+  endpoint,
+  context,
+  { enableCompatibilityBridge, observeServiceUrl },
+) {
   const gateway = new GrpcOpenShellGatewayClient({ endpoint });
   return {
     health(signal) {
       return gateway.health(signal);
     },
     async createSandbox(request, signal) {
-      const compatible = removeStockUnsupportedTokenProjection(request, context.requirements);
-      return gateway.createSandbox(compatible, signal);
+      const compatible = enableCompatibilityBridge
+        ? removeStockUnsupportedTokenProjection(request, context.requirements)
+        : request;
+      const created = await gateway.createSandbox(compatible, signal);
+      observeServiceUrl(created.serviceUrls[""]);
+      return created;
     },
     deleteSandbox(request, signal) {
       return gateway.deleteSandbox(request, signal);
@@ -835,6 +851,7 @@ function createIntegrationSandboxDriverFactory(
 ) {
   const gatewayState = new Map();
   const provisioningFailures = new Map();
+  const harnessServiceUrls = new Map();
   const credentialBridges = new Map();
 
   async function stopGatewayForward(namespaceName, expectedState) {
@@ -937,13 +954,19 @@ function createIntegrationSandboxDriverFactory(
       return new OpenShellSandboxDriver(optionsFor(requirements, namespaceName, endpoint), {
         id: selection.id,
         implementation: "openshell",
-        ...(context === undefined || !enableCompatibilityBridges
+        ...(context === undefined
           ? {}
           : {
-              gatewayClient: compatibilityGatewayClient(
+              gatewayClient: integrationGatewayClient(
                 GrpcOpenShellGatewayClient,
                 endpoint,
                 context,
+                {
+                  enableCompatibilityBridge: enableCompatibilityBridges,
+                  observeServiceUrl: (serviceUrl) => {
+                    harnessServiceUrls.set(context.revision.id, serviceUrl);
+                  },
+                },
               ),
             }),
       });
@@ -984,6 +1007,7 @@ function createIntegrationSandboxDriverFactory(
               context.requirements,
               context.namespace.name,
               endpoint,
+              context,
             ).provisionHarness(context);
           }
 
@@ -1011,6 +1035,11 @@ function createIntegrationSandboxDriverFactory(
             provisioning,
           ).provisionHarness(provisioning);
         } catch (error) {
+          if (!provisioningFailures.has(context.revision.id)) {
+            process.stderr.write(
+              `OpenShell first provisioning failure for ${context.revision.id}: ${error.message}\n`,
+            );
+          }
           provisioningFailures.set(context.revision.id, error);
           if (bridge !== undefined) {
             await deleteCredentialJob(operatorKubernetes, context, bridge.metadata.name).catch(
@@ -1083,6 +1112,7 @@ function createIntegrationSandboxDriverFactory(
   };
   createDriver.disposeGatewayForwards = disposeGatewayForwards;
   createDriver.provisioningFailures = provisioningFailures;
+  createDriver.harnessServiceUrls = harnessServiceUrls;
   return createDriver;
 }
 
@@ -1468,6 +1498,8 @@ async function prepareProductionInstallation(
     revision: deployed.data,
     harnessPod,
     sandbox,
+    harnessServiceUrl: createSandboxDriver.harnessServiceUrls.get(deployed.data.id),
+    appServerToken: transport.appServerToken,
   };
 }
 
@@ -1592,16 +1624,29 @@ async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology) 
   const retiredSandboxName = `os-${hash(topology.revision.id, 16)}`;
   // The revision becomes active before the worker finishes retiring its predecessor. Observe the
   // provider resources themselves so the assertion stays at the supported lifecycle boundary.
-  const activeService = await resource(
-    "service",
-    openShellAgentName(topology.agent.id),
-    topology.placement,
-  );
-  assert.deepEqual(activeService.spec.selector, {
+  const expectedActiveSelector = {
     "openclaw.dev/agent": topology.agent.id,
     "openclaw.dev/revision": redeployed.data.id,
     "openclaw.dev/workload-role": "agent",
-  });
+  };
+  const activeService = await waitFor(
+    `Agent Service routing to replacement revision ${redeployed.data.id}`,
+    async () => {
+      const observed = await resource(
+        "service",
+        openShellAgentName(topology.agent.id),
+        topology.placement,
+      );
+      return Object.keys(observed.spec.selector ?? {}).length ===
+        Object.keys(expectedActiveSelector).length &&
+        Object.entries(expectedActiveSelector).every(
+          ([name, value]) => observed.spec.selector?.[name] === value,
+        )
+        ? observed
+        : undefined;
+    },
+  );
+  assert.deepEqual(activeService.spec.selector, expectedActiveSelector);
   const sandboxes = await waitFor(
     `retired OpenShell Sandbox ${retiredSandboxName} deletion`,
     async () => {
@@ -1670,37 +1715,35 @@ async function assertEmbeddedOpenShellFailsClosed(topology) {
   );
 }
 
-async function waitForCodexHarnessEndpoint(topology) {
-  const script = [
-    'const net = require("node:net");',
-    'const socket = net.connect(18790, "127.0.0.1");',
-    "socket.setTimeout(1000);",
-    'socket.once("connect", () => { socket.destroy(); process.exit(0); });',
-    'socket.once("timeout", () => { socket.destroy(); process.exit(1); });',
-    'socket.once("error", () => process.exit(1));',
-  ].join(" ");
-  await waitFor(
-    `Codex Harness loopback endpoint in ${topology.harnessPod.metadata.name}`,
-    async () => {
-      try {
-        await kubectl(
-          "exec",
-          topology.harnessPod.metadata.name,
-          "--namespace",
-          topology.placement,
-          "--container=agent",
-          "--",
-          "node",
-          "-e",
-          script,
-        );
-        return true;
-      } catch {
-        return undefined;
-      }
-    },
-    240_000,
-  );
+async function observeExposedCodexAuthenticationBoundary(serviceUrl, appServerToken) {
+  const url = new URL(serviceUrl);
+  const request = url.protocol === "https:" ? httpsRequest : httpRequest;
+  return await new Promise((resolve, reject) => {
+    const upgrade = request(url, {
+      // Connect through the loopback port-forward without discarding OpenShell's Host routing key.
+      lookup: createOpenShellServiceLoopbackLookup(url.hostname),
+      headers: {
+        authorization: `Bearer ${appServerToken}`,
+        connection: "Upgrade",
+        upgrade: "websocket",
+        "sec-websocket-key": randomBytes(16).toString("base64"),
+        "sec-websocket-version": "13",
+      },
+    });
+    upgrade.setTimeout(2_000, () => {
+      upgrade.destroy(new Error("OpenShell exposed Codex authentication probe timed out."));
+    });
+    upgrade.on("response", (response) => {
+      response.resume();
+      resolve(response.statusCode);
+    });
+    upgrade.on("upgrade", (response, socket) => {
+      socket.destroy();
+      resolve(response.statusCode);
+    });
+    upgrade.on("error", reject);
+    upgrade.end();
+  });
 }
 
 const secretProjectionMode = process.env.OCC_TEST_OPENSHELL_SECRET_PROJECTION ?? "0";
@@ -1723,9 +1766,27 @@ test(
       );
       assert.ok(topology.sandbox.metadata.name);
       process.stderr.write(
-        "OpenShell integration: starting authenticated real in-Sandbox model turn.\n",
+        "OpenShell integration: checking create-time service exposure authentication boundary.\n",
       );
-      await waitForCodexHarnessEndpoint(topology);
+      assert.match(topology.harnessServiceUrl, /^https?:\/\//);
+      // OpenShell pre.7 consumes gateway Authorization and strips it before proxying. A 401 from
+      // the protected Codex endpoint proves the route reaches the real app server without weakening
+      // its bearer-token requirement or mistaking an arbitrary non-5xx gateway response for success.
+      await waitFor("OpenShell create-time Harness service exposure", async () => {
+        try {
+          return (await observeExposedCodexAuthenticationBoundary(
+            topology.harnessServiceUrl,
+            topology.appServerToken,
+          )) === 401
+            ? true
+            : undefined;
+        } catch {
+          return undefined;
+        }
+      });
+      process.stderr.write(
+        "OpenShell integration: create-time route reached protected Harness; starting authenticated real in-Sandbox model turn.\n",
+      );
       const nonce = `OCC-OPENSHELL-${randomUUID()}`;
       const modelTurn = await requestCodexTurnFromOpenShellHarnessPod({
         namespace: topology.placement,

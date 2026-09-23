@@ -1,14 +1,14 @@
 ---
 created: 2026-09-04
-updated: 2026-09-21
-last_updated_session: codex/01a0c179-19f7-7111-8bb4-fc7680da5545
+updated: 2026-09-23
+last_updated_session: codex/01a0ccf5-96e4-7541-9845-c9a6443fa7b2
 ---
 
 # GitHub Actions testing flow
 
 ## Overview
 
-GitHub Actions selects explicit test lanes, prepares disposable resources, runs the real Node test runner, and rejects missing or skipped required coverage. This flow ends at the aggregate check and resource cleanup. A PR check proves its five selected noncredentialed lanes, including the logging collector lane; it does not establish that protected model or service integrations passed.
+GitHub Actions selects explicit test lanes, prepares disposable resources, runs the real Node test runner, and rejects missing or skipped required coverage. This flow ends at the aggregate check and resource cleanup. A PR check proves its ten selected noncredentialed lanes; it does not establish that protected model or service integrations passed.
 
 ## Entry Points
 
@@ -21,7 +21,9 @@ GitHub Actions selects explicit test lanes, prepares disposable resources, runs 
 ```mermaid
 graph TD
   subgraph Actions["GitHub Actions"]
-    A["PR or main event"] --> B["PR-safe jobs"]
+    A["PR or main event"] --> B["Ten PR-safe jobs"]
+    A --> N["Suite audit"]
+    N --> L
     C["Manual integration dispatch"] --> D["Environment protection preflight"]
     D -->|main-only provider or approved other lane| E["Protected jobs"]
     D -->|missing protection| X["Failed check"]
@@ -50,7 +52,9 @@ graph TD
 `.github/workflows/ci.yml:jobs`, `.github/workflows/full-integration.yml:jobs`, and
 `scripts/ci/full-integration-preflight.mjs:validateFullIntegrationPreflight`
 
-The PR workflow uses the event checkout and supplies no external service credentials. Its aggregate requires exactly five lanes: `checks-baseline`, `postgres`, `images-packaging`, `k3d-fixture-configuration`, and `logging-collector`. Full Integration checks configured environment protection and checks out the immutable event SHA. It admits `refs/heads/main` for every lane. Only `k3d-model` may use another branch: preflight requires an exact branch rule in `integration-model`, and GitHub still requires reviewer approval with self-review prevention. Wildcards, tags, and other non-main lanes are rejected. The administrator removes the temporary branch rule after verification. A manual dispatch selects its requested lane or `all`; pushes and merges do not start this workflow. Manual runs share one concurrency group and do not cancel an in-progress run. The provider environment must allow exactly the `main` branch and needs no per-run reviewer approval. Other credentialed environments still require reviewers with self-review prevention. No PR event enters this credentialed workflow. A targeted integration run has a narrower claim than a full inventory run.
+The PR workflow uses the event checkout and supplies no external service credentials. Suite Audit and all ten lanes start independently on ephemeral runners. Kubernetes fixture lanes use `ubuntu-22.04` for bridge netfilter support; other lanes and the audit use `blacksmith-8vcpu-ubuntu-2404`. Its aggregate uses `ubuntu-22.04` and requires a successful audit plus `checks-baseline`, `postgres`, `postgres-application`, `images-packaging`, `k3d-fixture-configuration`, `k3d-fixture-state`, `k3d-fixture-plugins`, `logging-collector`, `repository-credentials-container`, and `repository-credentials-platform`. A failed audit still fails CI Required even when the lanes pass. Full Integration checks configured environment protection and checks out the immutable event SHA. It admits `refs/heads/main` for every lane. Only `k3d-model` may use another branch: preflight requires an exact branch rule in `integration-model`, and GitHub still requires reviewer approval with self-review prevention. Wildcards, tags, and other non-main lanes are rejected. The administrator removes the temporary branch rule after verification. A manual dispatch selects its requested lane or `all`; pushes and merges do not start this workflow. Manual runs share one concurrency group and do not cancel an in-progress run. The provider environment must allow exactly the `main` branch and needs no per-run reviewer approval. Other credentialed environments still require reviewers with self-review prevention. No PR event enters this credentialed workflow. A targeted integration run has a narrower claim than a full inventory run.
+
+PostgreSQL migration and application suites own separate servers. Each of the three Kubernetes fixture files owns a separate cluster and PostgreSQL server. For these Kubernetes fixture lanes, the shared action enables bridge netfilter on the ephemeral runner before creating k3d nodes, which share its kernel. Missing bridge filtering fails setup rather than running with unenforced Pod network policies. The repository credential platform lane uses Blacksmith for its full-image HTTP, PostgreSQL, Unix-control and credential-material proof; NetworkPolicy enforcement remains the fixture lanes' separate responsibility. Lane state and cleanup stay local to its runner; files within each lane remain sequential. The suite map retains one owner per file in both workflow groups.
 
 Both workflows call the shared [run-ci-lane action](../../.github/actions/run-ci-lane/action.yml) after checkout. It owns tool and dependency setup, baseline checks when selected, lane preparation, execution, unconditional cleanup, and sanitized result upload. Callers keep the source revision, timeout, protected environment and explicit credentials.
 
@@ -68,7 +72,7 @@ The provider job selects the shared `blacksmith-8vcpu-ubuntu-2404` runner for di
 
 `scripts/ci/run-tests.mjs:main` and `scripts/ci/reporter.mjs:jsonLinesReporter`
 
-The runner discovers active test files and verifies that the map assigns each file to exactly one lane. Tests with different prerequisites live in separate files. The runner invokes whole files with invocation-scoped environment inputs. A custom Node reporter exposes case names, locations and outcomes; arbitrary test output and credential-bearing error payloads are excluded from published results. Failed provider-test HTTP assertions also retain numeric actual and expected status codes, an allowlisted OCC error code, and the upstream ChatGPT operation and status when available. Plugin-status fixture failures retain an allowlisted readiness or rollout stage. Rollout diagnostics include bounded Pod phases, readiness and scheduling flags, container restart counts and exit codes, and allowlisted reasons. Response bodies, credentials, and identities remain excluded.
+The runner discovers active test files and verifies that the map assigns each file to exactly one lane. Tests with different prerequisites live in separate files. The runner invokes whole files with invocation-scoped environment inputs. A custom Node reporter exposes case names, locations and outcomes; arbitrary test output and credential-bearing error payloads are excluded from published results. Failed provider-test HTTP assertions also retain numeric actual and expected status codes, an allowlisted OCC error code, and the upstream ChatGPT operation and status when available. Denied-traffic failures retain only an allowlisted traffic category, without target addresses or response data. Plugin-status fixture failures retain an allowlisted readiness or rollout stage. Rollout diagnostics include bounded Pod phases, readiness and scheduling flags, container restart counts and exit codes, and allowlisted reasons. Response bodies, credentials, and identities remain excluded.
 
 Required named cases must pass. Every skip or TODO fails the selected lane; there are no counterpart-skip lists or CI name filters. A synthetic file-wrapper success, missing result output, zero executed cases or an interrupted run without final reporter output cannot establish coverage. The runner retains failure, timeout and cleanup outcomes in the lane result.
 
@@ -107,6 +111,8 @@ The aggregate runs after success or failure and checks expected job outcomes plu
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 06:35: Start the audit and required lanes independently on the existing ephemeral Blacksmith pool; split PostgreSQL and Kubernetes fixtures across owned runners and retain the final coverage gate. (01a0ccf5-96e4-7541-9845-c9a6443fa7b2 - 3ac9d07a4d7ede8c4e1c010f598ef67673f97b74)
 
 - 2026-09-21 01:50: Replace earlier lane result artifacts on retry so aggregation reads current evidence. (01a0c179-19f7-7111-8bb4-fc7680da5545 - e836c3f9ec002d91d6f26c6ca49a08345a8c9f4f)
 

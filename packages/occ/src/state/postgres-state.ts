@@ -1381,6 +1381,24 @@ export class PostgresPlatformState implements PlatformStateStore {
       return found === undefined ? undefined : secretFromRow(found);
     };
 
+    const listSecrets = async (namespaceId: string): Promise<readonly Readonly<Secret>[]> =>
+      Object.freeze(
+        rows(
+          (
+            await client.query(
+              `SELECT s.id, s.namespace_id, s.name, s.driver_id,
+                      s.backend_namespace_name, s.backend_name, s.backend_key, s.backend_uid,
+                      s.created_at
+               FROM occ.secrets AS s
+               JOIN occ.namespaces AS n ON n.id = s.namespace_id AND n.deleted_at IS NULL
+               WHERE s.namespace_id = $1
+               ORDER BY s.created_at, s.id`,
+              [namespaceId],
+            )
+          ).rows,
+        ).map(secretFromRow),
+      );
+
     const validateSecretBindingsAvailable = async (
       namespaceId: string,
       bindings: SecretBindings | undefined,
@@ -1514,6 +1532,7 @@ export class PostgresPlatformState implements PlatformStateStore {
 
     const secrets: SecretRepository = {
       findSecret,
+      listSecrets,
       lockSecret: async (namespaceId, secretId) => findSecret(namespaceId, secretId, true),
       createSecret: async (secret) => {
         await this.requireInitialized(context);

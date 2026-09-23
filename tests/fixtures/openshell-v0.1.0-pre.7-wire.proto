@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Independent wire oracle extracted from NVIDIA OpenShell commit
-// 484f0768fc6a0d93e0a2be295c1679aed24e18a9. Keep this fixture pinned to that
+// f8002d19ad2f948abf48bd2f5ca4f8ebd388e3c8. Keep this fixture pinned to that
 // upstream contract; do not derive it from the production client proto.
 syntax = "proto3";
 
@@ -38,6 +38,13 @@ message CreateSandboxRequest {
   map<string, string> labels = 3;
   map<string, string> annotations = 4;
   WorkspaceSelector workspace_scope = 7;
+  string request_id = 8;
+  repeated SandboxServiceExposure service_exposures = 9;
+}
+
+message SandboxServiceExposure {
+  string service = 1;
+  uint32 target_port = 2;
 }
 
 message DeleteSandboxRequest {
@@ -95,6 +102,7 @@ enum NetworkAccessPreset {
 
 message SandboxResponse {
   Sandbox sandbox = 1;
+  map<string, string> service_urls = 2;
 }
 
 message Sandbox {

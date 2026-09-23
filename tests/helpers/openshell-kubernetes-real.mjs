@@ -58,6 +58,26 @@ export function openShellRevisionName(revision) {
   return `${openShellAgentName(revision.agentId)}-rev-${openshellHash(revision.id)}`;
 }
 
+export function createOpenShellServiceLoopbackLookup(serviceHostname) {
+  const expectedHostname = serviceHostname.toLowerCase();
+
+  return (hostname, options, callback) => {
+    if (hostname.toLowerCase() !== expectedHostname) {
+      const error = new Error(`Refusing to resolve unexpected OpenShell hostname ${hostname}.`);
+      error.code = "ENOTFOUND";
+      callback(error);
+      return;
+    }
+
+    const address = { address: "127.0.0.1", family: 4 };
+    if (typeof options === "object" && options.all === true) {
+      callback(null, [address]);
+      return;
+    }
+    callback(null, address.address, address.family);
+  };
+}
+
 export function createOpenShellInstallationConfiguration({
   authentication,
   platformNamespace,
@@ -249,7 +269,7 @@ export function createOpenShellKubernetesFixture({
   openShellRuntimeClass = "openshell-sandbox",
   openShellHelmPath,
   openShellHelmChart,
-  openShellChartVersion = "0.1.0-pre.5",
+  openShellChartVersion = "0.1.0-pre.7",
 }) {
   const base = createRealKubernetesFixture({
     kubeconfigPath,
@@ -793,7 +813,7 @@ export function createOpenShellKubernetesFixture({
     assert.deepEqual(
       [...initCapabilities],
       [],
-      "OpenShell pre.5 must not add capabilities to workload Pod init containers.",
+      "OpenShell pre.7 must not add capabilities to workload Pod init containers.",
     );
     const networkSidecar = pod.spec.containers.find(({ name }) =>
       ["openshell-network", "openshell-supervisor-network"].includes(name),
@@ -801,7 +821,7 @@ export function createOpenShellKubernetesFixture({
     assert.equal(
       networkSidecar,
       undefined,
-      "OpenShell pre.5 must keep its network supervisor outside the workload Pod.",
+      "OpenShell pre.7 must keep its network supervisor outside the workload Pod.",
     );
     const container = compatibilityBridge
       ? pod.spec.containers.find(({ name }) => name === "agent")

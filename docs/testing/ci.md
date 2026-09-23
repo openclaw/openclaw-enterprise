@@ -5,7 +5,7 @@ reported by each workflow.
 
 ## GitHub Actions
 
-Metrics HTTP/persistence coverage belongs to the `postgres` lane, including a
+Metrics HTTP/persistence coverage belongs to the `postgres-application` lane, including a
 separate migrator-role connection for test-only table contention. The
 `logging-collector` lane also runs real Prometheus/Grafana collection and
 dashboard provisioning. See [metrics testing](metrics.md) for local setup.
@@ -25,7 +25,27 @@ are flagged for review and pages above 2,500 fail, except the approved single-pa
 and links must pass. Run `pnpm docs:check-length` for the word-count
 check alone.
 
-The PR workflow runs seven lanes on ephemeral runners: checks/baseline/browser, PostgreSQL, image/packaging, Kubernetes fixture/Configuration, logging collector, `repository-credentials-container`, and `repository-credentials-platform`. The container lane builds separate emitted service/client images and a combined qualification image, then selects controlled provider and separate-container cases; it does not contact a live GitHub installation. The platform lane exercises ordinary Agent repository bindings through HTTP, PostgreSQL, Unix control and Kubernetes using a fixture Harness and controlled repositories; it does not use a model or live GitHub. Full Integration runs through manual dispatch using the immutable event commit. All lanes require `main` except `k3d-model`, which also accepts a branch explicitly allowed by the `integration-model` environment. Environment gates apply only to lanes that declare an environment; `helper-timeout` and standalone `logging-collector` declare none. The ChatGPT `provider-account` lane keeps its main-only credential environment without per-run approval. Other model, routing, Slack, OpenShell, and additional OpenTelemetry lanes require separately approved environments. A missing environment or selected prerequisite fails the run. A PR aggregate is not full credentialed coverage; targeted protected runs also report only their selected lanes.
+Suite Audit and the ten PR lanes start independently on ephemeral runners.
+Kubernetes fixture lanes use `ubuntu-22.04` for bridge netfilter support; other lanes
+and the audit use `blacksmith-8vcpu-ubuntu-2404`. `CI Required` uses `ubuntu-22.04` and
+still requires both the audit and every lane to pass, including result-artifact
+accounting. This avoids serial runner allocation before the test lanes without
+changing test selection or failure handling.
+
+The repository credential platform lane uses Blacksmith and its full delivered
+runtime image. Its proof covers HTTP, PostgreSQL, Unix control and credential
+material inside Kubernetes; NetworkPolicy enforcement is proved separately by
+the Kubernetes fixture lanes on the compatible GitHub runner kernel.
+
+The PR workflow runs ten lanes on ephemeral runners: checks/baseline/browser, PostgreSQL migrations, PostgreSQL application, image/packaging, Kubernetes Compute/Configuration, Kubernetes state/lifecycle, Kubernetes plugin status, logging collector, `repository-credentials-container`, and `repository-credentials-platform`. The container lane builds separate emitted service/client images and a combined qualification image, then selects controlled provider and separate-container cases; it does not contact a live GitHub installation. The platform lane exercises ordinary Agent repository bindings through HTTP, PostgreSQL, Unix control and Kubernetes using a fixture Harness and controlled repositories; it does not use a model or live GitHub. Full Integration runs through manual dispatch using the immutable event commit. All lanes require `main` except `k3d-model`, which also accepts a branch explicitly allowed by the `integration-model` environment. Environment gates apply only to lanes that declare an environment; `helper-timeout` and standalone `logging-collector` declare none. The ChatGPT `provider-account` lane keeps its main-only credential environment without per-run approval. Other model, routing, Slack, OpenShell, and additional OpenTelemetry lanes require separately approved environments. A missing environment or selected prerequisite fails the run. A PR aggregate is not full credentialed coverage; targeted protected runs also report only their selected lanes.
+
+The `postgres` lane owns migration compatibility tests; `postgres-application`
+owns the remaining PostgreSQL files. Each has its own disposable PostgreSQL
+server. Kubernetes fixture files run in `k3d-fixture-configuration`,
+`k3d-fixture-state`, and `k3d-fixture-plugins`, each with independent cluster,
+database, image, and cleanup state. Files still execute sequentially inside
+a lane. The suite audit requires every file to have exactly one owner, and
+both workflow aggregates require all ten lanes.
 
 The `repository-credentials-container` lane builds
 `.build/repository-credentials/{service,client}` using Dockerfiles under
@@ -40,7 +60,12 @@ container isolation and authorized live proof. CI preparation and suite ownershi
 alone establish no result: inspect executed cases and skips at the exact tested
 commit, including whether a pull-request run tested a merge commit.
 
-The Kubernetes fixture lane uses a server and worker node with shared test-owned
+The Kubernetes fixture lanes load the runner kernel's bridge netfilter module and enable
+IPv4 bridge packet filtering before cluster creation. This is required for
+K3s to enforce NetworkPolicies on bridged Pod traffic. Failure to enable it
+fails setup; deny-traffic assertions remain required.
+
+Each Kubernetes fixture lane owns an independent cluster with a server and worker node with shared test-owned
 local-path storage. Preparation registers and verifies the fixture image's digest
 on both nodes and derives the API server's proxy source `/32` from its route to
 the worker Pod network. It supplies that address to the

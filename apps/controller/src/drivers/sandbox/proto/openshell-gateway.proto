@@ -1,4 +1,4 @@
-// Minimal OpenShell v0.1.0-pre.5 gateway surface used by OpenClaw Enterprise.
+// Minimal OpenShell v0.1.0-pre.7 gateway surface used by OpenClaw Enterprise.
 //
 // This intentionally models only the messages needed for lifecycle-safe
 // Sandbox creation and deletion. Field numbers and wire types match the
@@ -192,6 +192,13 @@ message CreateSandboxRequest {
   map<string, string> labels = 3;
   map<string, string> annotations = 4;
   WorkspaceSelector workspace_scope = 7;
+  string request_id = 8;
+  repeated SandboxServiceExposure service_exposures = 9;
+}
+
+message SandboxServiceExposure {
+  string service = 1;
+  uint32 target_port = 2;
 }
 
 message DeleteSandboxRequest {
@@ -207,6 +214,7 @@ message WorkspaceSelector {
 
 message SandboxResponse {
   Sandbox sandbox = 1;
+  map<string, string> service_urls = 2;
 }
 
 message DeleteSandboxResponse {

@@ -20,9 +20,14 @@ export interface OpenShellGatewayClientOptions {
 export interface OpenShellSandboxCreateRequest {
   readonly name: string;
   readonly workspace: string;
+  readonly requestId: string;
   readonly labels: Readonly<Record<string, string>>;
   readonly annotations: Readonly<Record<string, string>>;
   readonly spec: RecordValue;
+  readonly serviceExposures: readonly {
+    readonly service: string;
+    readonly targetPort: number;
+  }[];
 }
 
 export interface OpenShellSandboxDeleteRequest {
@@ -36,6 +41,7 @@ export interface OpenShellSandboxResponse {
   readonly workspace?: string;
   readonly labels: Readonly<Record<string, string>>;
   readonly phase?: string | number;
+  readonly serviceUrls: Readonly<Record<string, string>>;
 }
 
 export interface OpenShellGatewayClient {
@@ -132,6 +138,31 @@ function normalizeEndpoint(endpoint: string): {
     return { target: parsed.host, secure: true };
   }
   throw new OpenShellGatewayFailure("OpenShell gateway endpoint must use http or https.");
+}
+
+function normalizeServiceUrl(value: unknown, endpoint: string): string {
+  let serviceUrl: URL;
+  try {
+    serviceUrl = new URL(nonempty(value, "OpenShell service URL"));
+  } catch {
+    throw new OpenShellGatewayFailure("OpenShell service URL must be a valid URL.");
+  }
+  if (
+    (serviceUrl.protocol !== "http:" && serviceUrl.protocol !== "https:") ||
+    serviceUrl.username.length > 0 ||
+    serviceUrl.password.length > 0 ||
+    serviceUrl.pathname !== "/" ||
+    serviceUrl.search.length > 0 ||
+    serviceUrl.hash.length > 0
+  ) {
+    throw new OpenShellGatewayFailure(
+      "OpenShell service URL must be an HTTP origin without credentials, query, or fragment.",
+    );
+  }
+  const gateway = normalizeEndpoint(endpoint);
+  const gatewayUrl = new URL(`${gateway.secure ? "https" : "http"}://${gateway.target}`);
+  serviceUrl.port = gatewayUrl.port;
+  return serviceUrl.toString();
 }
 
 function toStructValue(value: unknown): Record<string, unknown> {
@@ -254,9 +285,14 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
         {
           name: request.name,
           workspace_scope: { workspace: request.workspace },
+          request_id: request.requestId,
           labels: { ...request.labels },
           annotations: { ...request.annotations },
           spec: request.spec,
+          service_exposures: request.serviceExposures.map(({ service, targetPort }) => ({
+            service,
+            target_port: targetPort,
+          })),
         },
         signal,
       );
@@ -273,6 +309,10 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     if (typeof name !== "string" || name.trim().length === 0) {
       throw new OpenShellGatewayFailure("OpenShell CreateSandbox returned no stable name.");
     }
+    const serviceUrls = asRecord(response.service_urls);
+    if (serviceUrls === undefined) {
+      throw new OpenShellGatewayFailure("OpenShell CreateSandbox returned no service URL map.");
+    }
     return Object.freeze({
       name,
       ...(typeof metadata?.id === "string" && metadata.id.length > 0 ? { id: metadata.id } : {}),
@@ -282,6 +322,14 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       labels: Object.freeze({
         ...(asRecord(metadata?.labels) as Record<string, string> | undefined),
       }),
+      serviceUrls: Object.freeze(
+        Object.fromEntries(
+          Object.entries(serviceUrls).map(([service, value]) => [
+            service,
+            normalizeServiceUrl(value, this.options.endpoint),
+          ]),
+        ),
+      ),
       ...(asRecord(sandbox?.status)?.phase === undefined
         ? {}
         : { phase: asRecord(sandbox?.status)?.phase as string | number }),

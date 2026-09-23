@@ -465,6 +465,7 @@ async function assertDeniedTraffic(description, namespaceName, podName, operatio
     assert.fail(`${description} unexpectedly succeeded`);
   } catch (error) {
     if (error.code === "ERR_ASSERTION") {
+      error.openclawCiDiagnostic = { kind: "network-policy", stage: description };
       throw error;
     }
     assert.equal(error.code, 1, `${description} must be denied by enforced NetworkPolicies`);

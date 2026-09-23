@@ -48,9 +48,15 @@ does not make that link available.
    trusted-proxy settings from the Installation's
    [operator-managed proxy trust](../drivers/kubernetes-compute/networking-and-isolation.md#gateway-authentication).
    Native admin UI still needs its [explicit opt-in configuration](../../guides/deploy/native-admin.md).
-5. If you need Slack, use OpenAI with **Dedicated** execution and its channel
-   card. Channel settings are saved with the Configuration. Provision Slack
-   credentials after creation.
+5. If you need Slack, use OpenAI with **Dedicated** and use its channel card. Each token
+   menu lets you select a readable Namespace Secret or **Create new Secret...**.
+   The modal prefills the binding key and masks the value you enter. Creating a
+   Secret stores it immediately, even if you later cancel Agent creation.
+   **Apply channel settings** stages settings and bindings into the form;
+   cancelling the drawer discards its selections.
+   Channel settings, plugin entries, and selected Secret bindings are saved with
+   the Configuration when you select **Create Agent**. You can also supply Slack
+   credentials from the Agent's **Credentials** tab after creation.
 6. Review **Workspace files**. Each field contains its rendered OpenClaw default.
    Edit any of the four files, keep the text to submit that default, or clear a
    field to create an empty file. The browser submits LF newlines. See
@@ -103,7 +109,7 @@ provider acceptance or runtime readiness. See
 The saves are separate operations. After a successful step, the form retains its
 resource ID and freezes the saved inputs, including the authentication method. Correct a conflicting Agent name or
 restore the required permission, then retry to reuse the saved resources. If the
-Agent was saved but its Secret grant failed, finish the grant on that same Agent.
+Agent was saved but its model or Slack Secret grant failed, select **Retry credential access** to finish grants on that same Agent, or ask an administrator to check the saved Secret grants.
 An uncertain response blocks another creation attempt. Check the displayed saved
 IDs and the Agents list before starting again; give the displayed request ID to
 your operator if the outcome cannot be established. Leaving the form does not
@@ -143,7 +149,7 @@ stored status before explicitly retrying. Already-created Secrets remain in plac
 even when later storage or audit work fails; there is no automatic retry or
 rollback deletion.
 
-For Slack, bound tokens appear as filled password fields using a synthetic mask.
+On the **Credentials** tab, bound Slack tokens appear as filled password fields using a synthetic mask.
 The browser never reads the saved token values. Focus a field to enter a
 replacement; leave it empty to keep its existing binding. Missing tokens remain
 empty and must be supplied before saving. **Save channel Secrets** requires at

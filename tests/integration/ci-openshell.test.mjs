@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { once } from "node:events";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,7 +12,10 @@ import {
   prepareOpenShellClusterBootstrap,
   selectKubectlAsset,
 } from "../../scripts/ci/openshell.mjs";
-import { openShellChartImageValues } from "../helpers/openshell-kubernetes-real.mjs";
+import {
+  createOpenShellServiceLoopbackLookup,
+  openShellChartImageValues,
+} from "../helpers/openshell-kubernetes-real.mjs";
 
 async function fixture(t, prefix = "ci-openshell-test") {
   const root = await mkdtemp(join(tmpdir(), `${prefix}-`));
@@ -69,6 +74,40 @@ test("OpenShell Helm chart image values preserve immutable digests in rendered t
     () => openShellChartImageValues("image", "localhost/example/gateway:local", "0.1.0-pre.5"),
     /immutable OpenShell image digest/,
   );
+});
+
+test("OpenShell host probes retain the exposed hostname while connecting to loopback", async (t) => {
+  const serviceHostname = "default--sb-review.openshell.localhost";
+  let observedHost;
+  // The real integration forwards the OpenShell gateway only to loopback, while routing still
+  // depends on the hostname returned by CreateSandbox.
+  const server = createServer((incoming, response) => {
+    observedHost = incoming.headers.host;
+    response.end("routed");
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const serviceUrl = `http://${serviceHostname}:${address.port}/health`;
+  const response = await new Promise((resolve, reject) => {
+    const probe = request(serviceUrl, {
+      lookup: createOpenShellServiceLoopbackLookup(serviceHostname),
+    });
+    probe.on("response", resolve);
+    probe.on("error", reject);
+    probe.end();
+  });
+  const body = [];
+  for await (const chunk of response) {
+    body.push(chunk);
+  }
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(Buffer.concat(body).toString("utf8"), "routed");
+  assert.equal(observedHost, `${serviceHostname}:${address.port}`);
 });
 
 test("prepareOpenShellClusterBootstrap selects pinned K3s and kubectl with runc", async (t) => {

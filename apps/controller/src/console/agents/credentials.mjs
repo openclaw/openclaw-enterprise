@@ -2,7 +2,7 @@ import { element, button } from "../dom.mjs";
 import { namespacePath } from "./list.mjs";
 import { ensureSecretOperateBinding } from "./secret-access.mjs";
 
-const SLACK_SECRET_BINDINGS = [
+export const SLACK_SECRET_BINDINGS = [
   { key: "SLACK_APP_TOKEN", label: "Slack app token", secretName: "Slack app token" },
   { key: "SLACK_BOT_TOKEN", label: "Slack bot token", secretName: "Slack bot token" },
 ];
@@ -28,7 +28,7 @@ function servicePrincipalId(agent) {
     : null;
 }
 
-function secretIdForBinding(binding) {
+export function secretIdForBinding(binding) {
   const source = binding?.source;
   return source?.kind === "secret" &&
     typeof source.namespaceId === "string" &&
@@ -37,7 +37,7 @@ function secretIdForBinding(binding) {
     : null;
 }
 
-function secretBinding(secret) {
+export function secretBinding(secret) {
   return {
     source: secret.ref,
     delivery: { type: "env" },

@@ -4,6 +4,18 @@ export default { title: "Pages/Create Agent" };
 
 export const CreateStart = { ...story("createStart"), name: "Choose a starting point" };
 export const CreateForm = { ...story("createForm"), name: "Dedicated form" };
+export const CreateSlackSecretMenu = {
+  ...story("createSlackSecretMenu"),
+  name: "Slack Secret menu before Agent exists",
+};
+export const CreateSlackCreateSecretModal = {
+  ...story("createSlackCreateSecretModal"),
+  name: "Create Slack Secret before Agent exists",
+};
+export const CreateSlackSecretStaged = {
+  ...story("createSlackSecretStaged"),
+  name: "Slack Secret bindings staged",
+};
 export const CreateWorkspaceFiles = { ...story("createWorkspaceFiles"), name: "Workspace files" };
 export const CreateEmbedded = { ...story("createEmbedded"), name: "Embedded form" };
 export const CreatePreset = { ...story("createPreset"), name: "Preset variables" };

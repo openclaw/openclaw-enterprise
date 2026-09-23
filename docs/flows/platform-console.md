@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: 2026-09-23
-last_updated_session: codex/01a0cce9-23e3-7072-aa3f-a2e26d2dbf11
+last_updated_session: authoring-run/2516b0a6-7a82-4268-a586-d821679b2a78
 ---
 
 # Platform console request flow
@@ -47,6 +47,9 @@ graph TD
     B -->|authenticated| D["Read readable Namespaces and validate selection"]
     D --> E["Request current page resource"]
     E --> E1["Edit starter JSON and select associations"]
+    E1 --> S1["Select Secret or open creation modal"]
+    S1 -->|select| S3["Stage binding until Apply"]
+    S3 -->|apply| E1
     E --> E2["Select new revision or AgentRevision by URL"]
     E2 --> E3["Save supported channel draft edit"]
     E2 --> E4["Confirm Agent deletion"]
@@ -56,17 +59,20 @@ graph TD
     E --> F["Authenticate and authorize exact scope"]
     F -->|Agents or Namespaces| G["OCC reads and filters by IAM"]
     F -->|Providers and Installation admin| H["Project loaded Provider IDs and types"]
-    E1 --> M1["POST creates Configuration"]
+    S1 -->|create| S2["POST stores Namespace Secret immediately"]
+    S2 --> S3
+    E1 --> M1["POST creates Configuration with staged bindings"]
     M1 -->|returned Configuration ID| M["POST creates Agent draft only"]
+    M --> M2["Grant Agent use of selected Secrets"]
     E2 --> N["GET draft Configuration or immutable revision"]
-    E3 --> O["PATCH Configuration values"]
+    E3 --> O["PATCH Configuration, then grant selected Secret access"]
     E4 --> P["DELETE exact Agent"]
     E5 --> P2["POST exact Agent stop"]
   end
   subgraph Result["Browser result"]
     G --> I["Accept only current navigation response"]
     H --> I
-    M --> I
+    M2 --> I
     N --> I
     O --> I
     P -->|accepted or uncertain| Q["Show status and refresh exact Agent"]
@@ -146,7 +152,7 @@ native provider selection. The Providers navigation item is hidden.
 Existing Preset bindings remain intact. Key entry uses the existing Secret API;
 creation retains successful Secret, Configuration, and Agent identities before
 `apps/controller/src/console/agents/secret-access.mjs:ensureSecretOperateBinding`
-grants that Agent access to its exact Secret. Known failures retry only pending
+grants that Agent access to its exact model Secret and the Secrets staged by the Slack drawer. Known failures retry only pending
 steps. Uncertain writes block another creation attempt; no key is stored in
 Configuration or browser storage. See the [creation reference](../reference/console/create-and-deploy.md)
 for permissions and partial-save recovery.
@@ -167,8 +173,14 @@ with explicit loopback origins on port 18789. Compute Drivers render gateway
 authentication from Installation trust settings; starters supply no gateway token.
 Preset values replace the starter unchanged. These defaults do not configure the
 isolated HTTPS origin required by [OCE native admin access](agent-native-admin.md).
+The Slack menus use the metadata list and creation paths traced in
+[Agent editing](platform-console/agent-editing.md#4-render-draft-revision-or-channels).
+**Apply channel settings** copies the drawer's values and bindings into the
+creation form. Cancel discards the drawer selections, but a Secret created by
+the modal already belongs to the Namespace and remains stored.
+
 Submission parses the JSON object and
-posts `{kind: "agent", values}` to
+posts `{kind: "agent", values, secretBindings}` to
 `POST /namespaces/:namespaceId/configurations`. After that returns its ID,
 `POST /namespaces/:namespaceId/agents` creates the Agent draft with the selected
 plugin map, `initialWorkspaceFiles`, and `workspaceDefaultsId`, then returns to
@@ -176,8 +188,13 @@ the detail URL with `revision=draft`. The form preloads the four rendered native
 defaults and submits every textarea, including unchanged and empty values. OCC
 stages those inputs outside the Agent and Configuration; the
 [workspace setup flow](workspace-files.md) traces application before execution.
-If that second
-write fails, the browser retains the Configuration ID and locks its JSON and
+`apps/controller/src/console/agents/create.mjs:grantConfigurationSecretAccess`
+then uses the returned Agent identity to grant exact Secret `operate` through
+Namespace IAM. These grants are separate writes from Configuration and Agent
+creation; they do not deploy the Agent. A grant failure preserves the saved Agent
+and enables **Retry credential access**, which rereads existing exact grants
+without creating duplicate resources. The saved Agent link also supports manual recovery.
+If the Agent write fails, the browser retains the Configuration ID and locks its JSON and
 execution mode; an explicit Agent retry reuses the saved Configuration. No write
 retries automatically, and creation alone does not admit a revision, validate the
 plugin catalog, or start runtime work.
@@ -294,6 +311,10 @@ refreshes and inspects the Agent and revision history.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 18:35: Reconcile provider credential creation with staged Slack Secret grants and shared retry recovery. (authoring-run/2516b0a6-7a82-4268-a586-d821679b2a78 - ae092fc7c13aad4c637b0238ae2f41ecb2b03219)
+
+- 2026-09-23 08:30: Trace pre-Agent Slack Secret selection and creation, staged Configuration bindings, and Agent Secret grants. (01a0cd92-fd3f-7d83-a51e-f6264ef6be09 - 941edc9f6971a24ae29a74a6ca749b6375e6ec01)
 
 - 2026-09-23 07:45: Preserve provider transport across model/key edits and classify model-discovery failures without exposing upstream responses. (01a0cce9-23e3-7072-aa3f-a2e26d2dbf11 - f292aa623335021e3012a3e94f83fc183f93e2e1)
 

@@ -8,9 +8,9 @@ const require = createRequire(new URL("../../apps/controller/package.json", impo
 const grpc = require("@grpc/grpc-js");
 const loader = require("@grpc/proto-loader");
 
-test("OpenShell client serializes v0.1 workspace scopes and network enums", async () => {
+test("OpenShell client serializes pre.7 create-time service exposure", async () => {
   const proto = await loader.load(
-    join(import.meta.dirname, "../fixtures/openshell-v0.1.0-pre.5-wire.proto"),
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.0-pre.7-wire.proto"),
     { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
   );
   const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
@@ -32,6 +32,9 @@ test("OpenShell client serializes v0.1 workspace scopes and network enums", asyn
             labels: call.request.labels,
           },
         },
+        service_urls: {
+          "": `http://tenant-workspace--${call.request.name}.openshell.localhost:8080/`,
+        },
       });
     },
     DeleteSandbox(call, callback) {
@@ -50,8 +53,10 @@ test("OpenShell client serializes v0.1 workspace scopes and network enums", asyn
     const request = {
       name: "sandbox-wire",
       workspace: "tenant-workspace",
+      requestId: "7dfed2b8-8cef-4513-ab04-020baf3ccbf3",
       labels: { owner: "openclaw" },
       annotations: {},
+      serviceExposures: [{ service: "", targetPort: 18_790 }],
       spec: {
         policy: {
           network_policies: {
@@ -79,6 +84,9 @@ test("OpenShell client serializes v0.1 workspace scopes and network enums", asyn
     );
 
     assert.equal(created.workspace, "tenant-workspace");
+    assert.deepEqual(created.serviceUrls, {
+      "": `http://tenant-workspace--${request.name}.openshell.localhost:${port}/`,
+    });
     assert.deepEqual(createRequests[0].workspace_scope, {
       workspace: "tenant-workspace",
       selection: "workspace",
@@ -87,6 +95,8 @@ test("OpenShell client serializes v0.1 workspace scopes and network enums", asyn
       workspace: "tenant-workspace",
       selection: "workspace",
     });
+    assert.equal(createRequests[0].request_id, request.requestId);
+    assert.deepEqual(createRequests[0].service_exposures, [{ service: "", target_port: 18_790 }]);
     assert.deepEqual(createRequests[0].spec.policy.network_policies.model.endpoints[0], {
       host: "api.openai.com",
       ports: [443],
