@@ -90,11 +90,13 @@ does not provide a policy selector. See [Agent revisions](../guides/topics/agent
 
 ### Stop
 
-There is no Stop button. The stop story shows the current Agent page and calls out
-the bodyless `POST /namespaces/:namespaceId/agents/:agentId/stop` API, which requires
-exact-Agent `operate`. Acceptance queues shutdown; it does not confirm completion.
-Deployment resumes the Agent by creating a new revision. Disabling Slack does not
-stop an Agent, and deleting an Agent is destructive. See
+Open **Stop Agent**, inspect or cancel the confirmation, and confirm the stop.
+The fixture records the requested stopped state. **Refresh stop status** rereads
+that metadata. The story demonstrates the controls and request handling; it does
+not run a Compute Driver or prove live shutdown.
+
+Resume with **Saved draft** → **Deploy saved draft**, creating a new revision.
+Disabling Slack does not stop an Agent. See
 [Stop and resume](../reference/agents/deployment.md#stop-and-resume).
 
 ### Delete

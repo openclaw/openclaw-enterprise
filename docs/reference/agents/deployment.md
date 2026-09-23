@@ -132,6 +132,11 @@ are defined by the [API reference](../api.md).
 
 ## Stop and resume
 
+In the console, open the Agent, select **Stop Agent**, and confirm. Use
+**Refresh stop status** to reread its desired state and selected revision.
+Resume through **Saved draft** → **Deploy saved draft**. See the
+[console controls](../console.md#stop-and-resume-an-agent) for request recovery.
+
 `POST /namespaces/:namespaceId/agents/:agentId/stop` is bodyless and requires
 exact-Agent `operate`. A `202` response means OCC committed `desiredRuntimeState:
 "stopped"` and queued Agent-scoped work; it does not claim Compute has already

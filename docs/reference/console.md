@@ -126,6 +126,22 @@ per-channel mention settings, or unsupported plugin shapes. Inspect unsupported
 settings in the native Configuration view and edit them through the API or
 operator workflow.
 
+## Stop and resume an Agent
+
+Open the Agent, select **Stop Agent**, and confirm after reviewing the effect on
+running work. Stop requires `operate` permission on that exact Agent. It requests
+shutdown while retaining revision history, credentials, gateway state, and
+workspace files.
+
+An accepted request means shutdown was queued. **Refresh stop status** rereads
+the Agent's desired state and selected revision; it does not probe the runtime.
+If the result is uncertain, refresh before retrying. Permission denials remain
+visible, and the console never automatically repeats a stop request.
+
+To resume, open **Saved draft** and select **Deploy saved draft**. This creates a
+new revision. See [Stop and resume](agents/deployment.md#stop-and-resume) for the
+worker lifecycle and preservation guarantees.
+
 ## Delete an Agent
 
 Open the Agent and find **Delete Agent** below the detail tabs. In the

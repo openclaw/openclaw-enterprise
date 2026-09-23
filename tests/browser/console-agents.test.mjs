@@ -8,6 +8,7 @@ import test from "node:test";
 import { chromium } from "playwright";
 
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
+import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
 import {
   WORKSPACE_DEFAULTS,
   WORKSPACE_DEFAULTS_ID,
@@ -143,6 +144,36 @@ function agentDeleteRequests(requests, namespaceId, agentId) {
     "DELETE",
     `/namespaces/${namespaceId}/agents/${encodeURIComponent(agentId)}`,
   );
+}
+
+function agentStopRequests(requests, namespaceId, agentId) {
+  return pathRequests(
+    requests,
+    "POST",
+    `/namespaces/${namespaceId}/agents/${encodeURIComponent(agentId)}/stop`,
+  );
+}
+
+async function createRuntimeAuthFixture(t, namespaceName) {
+  const computeDriver = new SshComputeDriver({
+    ssh: { identityFile: "/tmp/ssh-test-key", knownHostsFile: "/tmp/ssh-test-hosts" },
+    hosts: { runtime: { address: "127.0.0.1", user: "root" } },
+    runtime: {
+      nodePath: "/usr/bin/node",
+      openclawPath: "/opt/openclaw/index.js",
+      user: "openclaw",
+      root: "/tmp/ssh-runtime-test",
+    },
+    network: { gatewayPortRange: { start: 18800, end: 18899 } },
+  });
+  const state = new InMemoryPlatformState();
+  const fixture = await createConsoleAppFixture(t, { computeDriver, state });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace(namespaceName);
+  await state.transact((unit) =>
+    unit.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  return { fixture, namespace, state };
 }
 
 async function optionValues(locator) {
@@ -786,6 +817,238 @@ test("Agent detail preserves admitted revision history while draft edits change 
     (await page.locator("body").textContent()).includes(agent.harnessAuth.source.id),
     false,
   );
+});
+
+test("Agent stop confirmation uses the real API, preserves Agent state, and deploy resumes", async (t) => {
+  const { fixture, namespace, state } = await createRuntimeAuthFixture(t, "Stop success");
+  const agent = await fixture.createAgent(namespace.id, "Stop Candidate", nativeValues("stop"), {
+    harnessAuth: { method: "runtime" },
+  });
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace").pathname +
+      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace").search,
+  );
+  await page.getByRole("heading", { name: "Stop Candidate" }).waitFor();
+  await page.getByRole("heading", { name: "Workspace files", exact: true }).waitFor();
+  requests.length = 0;
+
+  await page.getByRole("button", { name: "Stop Agent" }).click();
+  let dialog = page.getByRole("dialog", { name: "Stop Stop Candidate?" });
+  await dialog
+    .getByText(/Configuration, AgentRevisions, Credentials, and workspace data are retained/i)
+    .waitFor();
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await dialog.waitFor({ state: "hidden" });
+  assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 0);
+  await page.getByRole("button", { name: "Stop Agent" }).click();
+  dialog = page.getByRole("dialog", { name: "Stop Stop Candidate?" });
+  await dialog
+    .getByText(/Configuration, AgentRevisions, Credentials, and workspace data are retained/i)
+    .waitFor();
+  const stopResponse = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/stop` &&
+      response.request().method() === "POST",
+  );
+  await dialog.getByRole("button", { name: "Stop Agent" }).click();
+  const response = await stopResponse;
+  assert.equal(response.status(), 202);
+  const stoppedBody = await response.json();
+  assert.equal(stoppedBody.data.desiredRuntimeState, "stopped");
+  assert.equal(stoppedBody.data.activeRevisionId, active.revision.id);
+
+  await page.getByRole("status").getByText("Stop requested.").waitFor();
+  await page.getByText(/Runtime shutdown completion is not exposed in Console/).waitFor();
+  await page
+    .getByText(
+      `Selected revision ${active.revision.id.slice(0, 12)}…${active.revision.id.slice(-6)}`,
+    )
+    .waitFor();
+  assert.equal(await page.getByRole("button", { name: "Stop Agent" }).isDisabled(), true);
+  assert.deepEqual(
+    agentStopRequests(requests, namespace.id, agent.id).map((request) => [
+      request.method,
+      request.path,
+      request.body,
+    ]),
+    [["POST", `/namespaces/${namespace.id}/agents/${agent.id}/stop`, null]],
+  );
+  const stopped = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  assert.equal(stopped.data.desiredRuntimeState, "stopped");
+  assert.equal(stopped.data.activeRevisionId, active.revision.id);
+  assert.deepEqual(stopped.data.harnessAuth, { method: "runtime" });
+  assert.equal(stopped.data.configurationId, agent.configurationId);
+  // Changing only the requested runtime state must reload dependent panels,
+  // even while the selected revision remains unchanged pending worker shutdown.
+  const stopIndex = requests.findIndex((request) => request.path.endsWith("/stop"));
+  assert.ok(
+    requests.findIndex((request) => request.path.endsWith("/native-admin")) > stopIndex,
+    "native admin status must be reread after stop admission",
+  );
+  const revisions = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${agent.id}/revisions`,
+  );
+  assert.deepEqual(
+    revisions.data.map((revision) => revision.id),
+    [active.revision.id],
+  );
+  await page.getByRole("button", { name: "Workspace files" }).click();
+  await page.getByRole("heading", { name: "Workspace files", exact: true }).waitFor();
+
+  const cleared = await state.transact((unit) =>
+    unit.agents.compareAndClearActiveRevision(namespace.id, agent.id, active.revision.id),
+  );
+  assert.equal(cleared.desiredRuntimeState, "stopped");
+  assert.equal(cleared.activeRevisionId, undefined);
+  await page.getByRole("button", { name: "Refresh stop status" }).click();
+  await page
+    .getByRole("region", { name: "Stop Agent", exact: true })
+    .getByText("No selected revision", { exact: true })
+    .waitFor();
+
+  await page.getByRole("button", { name: "Configuration", exact: true }).click();
+  await page.getByRole("button", { name: "Saved draft", exact: true }).click();
+  await page.getByRole("button", { name: "Deploy saved draft" }).click();
+  await page.waitForURL(/revision=rev_/);
+  const running = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  assert.equal(running.data.desiredRuntimeState, "running");
+  assert.equal(running.data.configurationId, agent.configurationId);
+  assert.deepEqual(running.data.harnessAuth, { method: "runtime" });
+});
+
+test("Agent stop uncertainty requires refresh before another stop request", async (t) => {
+  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Stop uncertainty");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Uncertain Stop Candidate",
+    nativeValues("uncertain-stop"),
+    {
+      harnessAuth: { method: "runtime" },
+    },
+  );
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const stopPath = `/namespaces/${namespace.id}/agents/${agent.id}/stop`;
+  let interceptedStops = 0;
+  await page.route(`**${stopPath}`, async (route, request) => {
+    if (request.method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    interceptedStops += 1;
+    await route.fetch();
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "DEPENDENCY_UNAVAILABLE", message: "masked stop response" },
+        meta: { requestId: "req_00000000-0000-4000-8000-000000503" },
+      }),
+    });
+  });
+
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration").pathname +
+      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration").search,
+  );
+  await page.getByRole("heading", { name: "Uncertain Stop Candidate" }).waitFor();
+  requests.length = 0;
+
+  await page.getByRole("button", { name: "Stop Agent" }).click();
+  await page
+    .getByRole("dialog", { name: "Stop Uncertain Stop Candidate?" })
+    .getByRole("button", { name: "Stop Agent" })
+    .click();
+  await page.getByText("Outcome unknown. Stop may have been accepted.").waitFor();
+  assert.equal(await page.getByRole("button", { name: "Stop Agent" }).isDisabled(), true);
+  assert.equal(interceptedStops, 1);
+  assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 1);
+  const stopped = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  assert.equal(stopped.data.desiredRuntimeState, "stopped");
+
+  const refresh = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}` &&
+      response.request().method() === "GET",
+  );
+  await page.getByRole("button", { name: "Refresh stop status" }).click();
+  assert.equal((await refresh).status(), 200);
+  await page.getByRole("status").getByText("Stop requested.").waitFor();
+  assert.equal(interceptedStops, 1);
+  assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 1);
+});
+
+test("Agent stop denial keeps the Agent running with permission feedback", async (t) => {
+  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Stop denial");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Denied Stop Candidate",
+    nativeValues("stop-denied"),
+    {
+      harnessAuth: { method: "runtime" },
+    },
+  );
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const limited = await fixture.createAccountWithPolicy("agent-stop-denied", (principal) => {
+    fixture.policy.roles.push({
+      id: "role-console-agent-stop-denied",
+      namespaceId: namespace.id,
+      permissions: [
+        { action: "read", resourceKind: "namespace" },
+        { action: "read", resourceKind: "agent" },
+        { action: "read", resourceKind: "configuration" },
+        { action: "read", resourceKind: "agent_revision" },
+      ],
+    });
+    fixture.policy.bindings.push({
+      id: "binding-console-agent-stop-denied",
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: principal.id,
+      roleId: "role-console-agent-stop-denied",
+    });
+  });
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration").pathname +
+      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration").search,
+    limited.credentials,
+  );
+  await page.getByRole("heading", { name: "Denied Stop Candidate" }).waitFor();
+  requests.length = 0;
+
+  await page.getByRole("button", { name: "Stop Agent" }).click();
+  const denied = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/stop` &&
+      response.request().method() === "POST",
+  );
+  await page
+    .getByRole("dialog", { name: "Stop Denied Stop Candidate?" })
+    .getByRole("button", { name: "Stop Agent" })
+    .click();
+  assert.equal((await denied).status(), 403);
+
+  await page.getByText("You do not have permission to stop this Agent").waitFor();
+  assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 1);
+  assert.equal(await page.getByRole("button", { name: "Stop Agent" }).isDisabled(), false);
+  const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  assert.equal(current.data.desiredRuntimeState, "running");
+  assert.equal(current.data.activeRevisionId, active.revision.id);
 });
 
 test("Agent delete confirmation can be canceled without sending a write request", async (t) => {

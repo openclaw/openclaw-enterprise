@@ -11,7 +11,7 @@ last_updated_session: codex/01a0cc48-2eda-7fc2-a19e-096b68fccb7b
 Opening `/console/` loads the controller's static browser client, resolves a
 cookie session, and reads authorized resources. This trace follows the Agents
 page through Namespace selection, Agent creation, detail revision selection,
-saved channel draft edits, and Agent deletion, then covers the Provider branch
+saved channel draft edits, Agent stopping, and Agent deletion, then covers the Provider branch
 and logout. It stops at rendered state or a submitted API mutation; deletion
 includes reading the Agent until the API confirms it is gone. Rollback and live
 gateway health remain outside the console flow. The
@@ -50,6 +50,7 @@ graph TD
     E --> E2["Select saved draft or AgentRevision by URL"]
     E2 --> E3["Save supported channel draft edit"]
     E2 --> E4["Confirm Agent deletion"]
+    E2 --> E5["Confirm Agent stop"]
   end
   subgraph Controller["Controller API"]
     E --> F["Authenticate and authorize exact scope"]
@@ -60,6 +61,7 @@ graph TD
     E2 --> N["GET draft Configuration or immutable revision"]
     E3 --> O["PATCH Configuration values"]
     E4 --> P["DELETE exact Agent"]
+    E5 --> P2["POST exact Agent stop"]
   end
   subgraph Result["Browser result"]
     G --> I["Accept only current navigation response"]
@@ -68,6 +70,8 @@ graph TD
     N --> I
     O --> I
     P -->|accepted or uncertain| Q["Show status and refresh exact Agent"]
+    P2 -->|accepted or uncertain| Q
+    P2 -->|denied| K
     P -->|denied| K
     Q -->|Agent not found| R["Return to Agents list"]
     I --> J["Render list, draft, revision, or channel state"]
@@ -169,7 +173,7 @@ Secret values for these views.
 
 [Console Agent editing and runtime requests](platform-console/agent-editing.md)
 traces draft/revision rendering, channel changes, credential provisioning,
-workspace reads/writes, and Agent deletion. Each request returns through the
+workspace reads/writes, Agent stopping, and Agent deletion. Each request returns through the
 response-ordering checks below.
 
 `apps/controller/src/console/channels/slack.mjs:supportSlack` checks whether the
@@ -213,6 +217,14 @@ accepted or uncertain request stays on the detail page so the user can refresh
 the exact Agent. Only a confirmed not-found read returns to the Agents list. A
 denial is shown inline; an uncertain outcome blocks replay until a successful
 refresh. The [Agent reference](../reference/agents.md#deletion) owns cleanup.
+
+The Agent detail view also exposes **Stop Agent** with confirmation and
+**Refresh stop status**. The existing bodyless stop route requires Agent
+`operate` and queues shutdown. The browser reports requested state and selected
+revision metadata; it does not present acceptance as completed runtime shutdown.
+Uncertain results require readback before another stop. Deployment resumes the
+Agent through a new revision. The [detail action flow](platform-console/agent-editing.md#stop-agent)
+traces these requests.
 
 Logout first hides private state, then calls the existing sign-out endpoint.
 Confirmed success or session inspection proving absence replaces history with
@@ -262,6 +274,7 @@ refreshes and inspects the Agent and revision history.
 
 ## Changelog
 
+- 2026-09-22 20:43: Trace Console stop confirmation, admission, and state refresh. (01a0cc48-2eda-7fc2-a19e-096b68fccb7b - 6adfd148a517e84ae064a8e08438b051f80820fb)
 - 2026-09-22 20:32: Remove the deleted Teams editor from current module ownership. (01a0cc48-2eda-7fc2-a19e-096b68fccb7b - 43776d25c5007e017f7d0ffdca6b06f063afcd37)
 
 - 2026-09-22 04:31: Trace initial workspace inputs separately from Configuration creation and link setup before execution. (01a0c755-0518-7502-a533-64cd7465de15 - f3dbdd41c8f3b49573d1353a4b06ce510ee43a56)

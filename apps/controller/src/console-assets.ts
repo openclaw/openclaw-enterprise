@@ -62,6 +62,10 @@ const CONSOLE_ASSETS = new Map(
       path: new URL("agents/deletion.mjs", CONSOLE_ROOT),
       contentType: "text/javascript; charset=utf-8",
     },
+    "/console/agents/stop.mjs": {
+      path: new URL("agents/stop.mjs", CONSOLE_ROOT),
+      contentType: "text/javascript; charset=utf-8",
+    },
     "/console/agents/native-admin.mjs": {
       path: new URL("agents/native-admin.mjs", CONSOLE_ROOT),
       contentType: "text/javascript; charset=utf-8",

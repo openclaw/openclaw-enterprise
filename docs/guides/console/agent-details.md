@@ -228,6 +228,21 @@ The native UI can change the gateway outside OCE's revision tracking. Use OCE fo
 durable configuration. See [native admin access](../../reference/agent-native-admin.md)
 for permissions and stopped, unavailable, or unsupported states.
 
+## Stop and resume
+
+![Stop confirmation with preserved data and Cancel action](../../assets/console/stop-agent.png)
+
+**Stop Agent** opens a confirmation explaining that shutdown interrupts running
+work but preserves revision history, credentials, gateway state, and workspace
+files. **Cancel** closes it without a write. Confirming requires `operate`
+permission on this Agent, regardless of the revision or tab you are viewing.
+
+An accepted stop requests shutdown; it does not prove that the runtime has
+finished. **Refresh stop status** reads the desired state and selected revision.
+An uncertain result blocks another stop until a successful refresh. To resume,
+open **Saved draft** and select **Deploy saved draft**, which creates a new
+revision. See [Stop and resume](../../reference/agents/deployment.md#stop-and-resume).
+
 ## Delete Agent and error recovery
 
 ![Permanent deletion confirmation with Cancel and delete actions](../../assets/console/delete-agent.png)

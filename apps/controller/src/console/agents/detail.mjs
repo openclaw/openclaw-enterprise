@@ -2,6 +2,7 @@ import { element, button } from "../dom.mjs";
 import { createHarnessAuthFields, harnessAuthDescription } from "./harness-auth.mjs";
 import { renderNativeAdminAccess } from "./native-admin.mjs";
 import { createAgentDeletion } from "./deletion.mjs";
+import { createAgentStop } from "./stop.mjs";
 import { renderChannels } from "../channels.mjs";
 import { renderWorkspaceFiles } from "./workspace.mjs";
 import { displayDate, shortId, namespacePath, link, message } from "./list.mjs";
@@ -184,6 +185,9 @@ export async function renderAgentDetail(context) {
     ),
   );
   const identity = element("p", { className: "resource-id" }, agent.id);
+  const stop = createAgentStop(context, path, agent, showDeleting, () =>
+    context.navigate(target(selected, selectedTab), namespaceId, true),
+  );
   const deletion = createAgentDeletion(context, path, agent, showDeleting);
   function showDeleting() {
     deleting = true;
@@ -226,6 +230,7 @@ export async function renderAgentDetail(context) {
     header,
     identity,
     ...deploymentStatus,
+    stop,
     renderNativeAdminAccess(context, path),
     selector,
     tabs,

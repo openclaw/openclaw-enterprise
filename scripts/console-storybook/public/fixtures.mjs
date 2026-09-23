@@ -100,6 +100,7 @@ export function installFixture(scenario, evidence) {
     namespaceId,
     name: "Research assistant",
     status: scenario.deleting ? "deleting" : "active",
+    desiredRuntimeState: scenario.stopped ? "stopped" : scenario.deployed ? "running" : "stopped",
     configurationId: config.id,
     executionMode: "dedicated",
     harnessAuth: selectedAuth,
@@ -280,6 +281,7 @@ export function installFixture(scenario, evidence) {
             id: nextId("agt"),
             namespaceId,
             status: "active",
+            desiredRuntimeState: "stopped",
             createdAt,
             activeRevisionId: null,
             servicePrincipalId: "identity_demo_created",
@@ -310,9 +312,14 @@ export function installFixture(scenario, evidence) {
           }
           if (method === "DELETE") {
             saved.status = "deleting";
+            saved.desiredRuntimeState = "stopped";
             deleted.add(id);
             return response(saved, 202);
           }
+        }
+        if (suffix === "/stop" && method === "POST") {
+          saved.desiredRuntimeState = "stopped";
+          return response(saved, 202);
         }
         if (suffix === "/native-admin" && method === "GET") {
           return response({
@@ -360,6 +367,7 @@ export function installFixture(scenario, evidence) {
           }
           if (deployment.reads !== undefined && ++deployment.reads > 1) {
             deployment.status = "succeeded";
+            saved.desiredRuntimeState = "running";
             saved.activeRevisionId = deployment.revisionId;
           }
           return response(deployment);

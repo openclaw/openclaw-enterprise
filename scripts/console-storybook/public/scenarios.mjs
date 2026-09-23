@@ -20,7 +20,7 @@ export const scenarios = {
     path: "/console/agents",
     description:
       "Browse pages, component states, and guided Agent workflows. Every preview mounts the production console modules and styles in its own frame. Reset story discards all local changes.",
-    gap: "There is no Stop button; the stop API is available and deployment resumes an Agent. General Configuration JSON editing after creation, model-Secret creation, Namespace provisioning, Preset management, and Provider setup require an API, CLI, or operator workflow. Serving health and model responses require separate runtime verification.",
+    gap: "Stop Agent requests the stopped desired state; deployment resumes an Agent. General Configuration JSON editing after creation, model-Secret creation, Namespace provisioning, Preset management, and Provider setup require an API, CLI, or operator workflow. Serving health and model responses require separate runtime verification.",
   },
   login: {
     group: "Pages/Sign in",
@@ -547,7 +547,7 @@ export const scenarios = {
     path: draft,
     nativeAdmin: "stopped",
     description: "The native-admin panel reports that the Agent must be started.",
-    gap: "The console has no Stop button or dedicated Resume button. Use the stop API; deploying a new revision resumes the Agent.",
+    gap: "Deploying a new revision resumes the Agent; Console does not expose live shutdown completion evidence.",
   },
   nativeUnsupported: {
     group: "Components/Native admin",
@@ -713,12 +713,18 @@ export const scenarios = {
   },
   stopFlow: {
     group: "Flows",
-    name: "Stop an Agent — unavailable",
+    name: "Stop an Agent",
     path: revision,
     deployed: true,
     description:
-      "Inspect the deployed-Agent page to see the current lifecycle controls. No simulated Stop button has been added.",
-    gap: "The console has no Stop action. Use bodyless POST /namespaces/:namespaceId/agents/:agentId/stop with exact-Agent operate permission. A 202 queues shutdown; verify completion separately. Deployment is the resume operation and creates a new revision. Disabling a channel does not stop the Agent; deletion is destructive.",
+      "Open the Stop Agent confirmation and request the stopped desired state while preserving draft, revisions, credentials, and workspace data.",
+    actions: [click("Stop Agent"), click("Stop Agent")],
+    steps: [
+      "Open Stop Agent and review the confirmation copy.",
+      "Confirm Stop Agent. The page reports Stop requested and keeps revision/workspace inspection available.",
+      "Return to Saved draft and Deploy saved draft to request running again.",
+    ],
+    gap: "Stop Agent confirms OCC accepted the stopped desired state and selected revision metadata only. Verify live gateway shutdown outside Console if required. Disabling a channel does not stop the Agent; deletion is destructive.",
   },
   deleteFlow: {
     group: "Flows",

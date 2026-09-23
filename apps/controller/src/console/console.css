@@ -528,25 +528,30 @@ select {
 .revision-selector .resource-id {
   overflow-wrap: anywhere;
 }
-.deletion-note {
+.deletion-note,
+.stop-note {
   border-color: #ead6d0;
 }
-.deletion-note .danger {
+.deletion-note .danger,
+.stop-note .danger {
   color: #a13f34;
   border-color: #a13f34;
 }
-.deletion-note .danger:not(:disabled):hover {
+.deletion-note .danger:not(:disabled):hover,
+.stop-note .danger:not(:disabled):hover {
   background: #a13f34;
   color: #fff;
 }
-.agent-delete-dialog {
+.agent-delete-dialog,
+.agent-stop-dialog {
   width: min(30rem, calc(100vw - 2rem));
   padding: 24px;
   border: 1px solid #ead6d0;
   border-radius: 12px;
   box-shadow: 0 12px 48px rgba(13, 20, 33, 0.24);
 }
-.agent-delete-dialog::backdrop {
+.agent-delete-dialog::backdrop,
+.agent-stop-dialog::backdrop {
   background: rgba(15, 23, 42, 0.4);
 }
 select:focus-visible,
