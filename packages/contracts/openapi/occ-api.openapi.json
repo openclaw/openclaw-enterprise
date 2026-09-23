@@ -2785,6 +2785,12 @@
             },
             "description": "Default Response"
           },
+          "429": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
           "500": {
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }

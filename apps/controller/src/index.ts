@@ -68,6 +68,7 @@ import {
   AuthorizationDeniedError,
   BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
   DependencyUnavailableError,
+  ModelDiscoveryError,
   NamespaceNotEmptyError,
   NamespaceNotReadyError,
   NotImplementedError,
@@ -804,6 +805,34 @@ function isDependencyUnavailable(error: unknown): boolean {
 function requestFailure(error: unknown): RequestFailure {
   if (error instanceof RequestFailure) {
     return error;
+  }
+  if (error instanceof ModelDiscoveryError) {
+    switch (error.reason) {
+      case "credentials_rejected":
+        return failure(
+          400,
+          "MODEL_DISCOVERY_CREDENTIALS_REJECTED",
+          "The provider rejected model discovery. Check the API key and its permission to list models, then retry or enter a model ID manually.",
+        );
+      case "rate_limited":
+        return failure(
+          429,
+          "MODEL_DISCOVERY_RATE_LIMITED",
+          "The provider rate-limited model discovery. Wait and retry, or enter a model ID manually.",
+        );
+      case "invalid_response":
+        return failure(
+          503,
+          "MODEL_DISCOVERY_INVALID_RESPONSE",
+          "The provider returned an invalid model list. Retry or enter a model ID manually.",
+        );
+      case "unavailable":
+        return failure(
+          503,
+          "MODEL_DISCOVERY_UNAVAILABLE",
+          "The provider model service is unavailable. Retry or enter a model ID manually.",
+        );
+    }
   }
   if (error instanceof PresetValidationError) {
     return failure(400, "INVALID_REQUEST", "The supplied Preset template is invalid.");

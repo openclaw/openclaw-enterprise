@@ -23,6 +23,10 @@ export function createApiClient({ lifetime, hasSession, onExpired }) {
     if (!response.ok || payload === null || !Object.hasOwn(payload, "data")) {
       const error = new Error("The request could not be completed.");
       error.status = response.status;
+      const code = payload?.error?.code;
+      if (typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(code)) {
+        error.code = code;
+      }
       const requestId = payload?.meta?.requestId;
       if (
         typeof requestId === "string" &&

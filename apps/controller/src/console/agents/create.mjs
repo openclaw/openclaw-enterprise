@@ -170,6 +170,7 @@ function renderAgentForm(context, rendered) {
   let modelOptions = [];
   let manualModel = !discoverModels;
   let pendingModelSettings;
+  let pendingProviderModel;
   const modelChoice = element(
     "select",
     { id: "agent-model" },
@@ -230,8 +231,16 @@ function renderAgentForm(context, rendered) {
       }
       modelOptions = [];
       manualModel = true;
-      modelStatus.textContent =
-        "Models could not be loaded. Check the API key and retry, or enter a model ID enabled for this key.";
+      const reason = {
+        MODEL_DISCOVERY_CREDENTIALS_REJECTED:
+          "The provider rejected this API key or its permission to list models.",
+        MODEL_DISCOVERY_RATE_LIMITED: "The provider rate limit was reached. Try again later.",
+        MODEL_DISCOVERY_UNAVAILABLE:
+          "The provider could not be reached or is unavailable. Check the server's provider access.",
+        MODEL_DISCOVERY_INVALID_RESPONSE:
+          "The provider returned an unsupported model-list response.",
+      }[error.code];
+      modelStatus.textContent = `${reason ?? "Models could not be loaded. Check the API key and retry."} You can enter a model ID manually.${error.requestId ? ` Request: ${error.requestId}` : ""}`;
     } finally {
       if (context.isCurrent() && generation === discoveryGeneration) {
         modelsLoading = false;
@@ -239,7 +248,7 @@ function renderAgentForm(context, rendered) {
       }
     }
   }
-  function resetModelChoices() {
+  function resetModelChoices(resetTransport = false) {
     discoveryGeneration += 1;
     modelsLoading = false;
     modelOptions = [];
@@ -247,11 +256,11 @@ function renderAgentForm(context, rendered) {
     model.value = "";
     modelChoice.replaceChildren(element("option", { value: "" }, "Load models to choose one"));
     modelStatus.textContent = "";
-    updateModelConfiguration();
+    updateModelConfiguration(resetTransport);
     updateControls();
   }
   if (discoverModels) {
-    apiKey.addEventListener("input", resetModelChoices);
+    apiKey.addEventListener("input", () => resetModelChoices());
     apiKey.addEventListener("change", () => void loadModelChoices());
     modelChoice.addEventListener("change", () => {
       manualModel = false;
@@ -306,12 +315,13 @@ function renderAgentForm(context, rendered) {
       return;
     }
     pendingModelSettings = undefined;
+    pendingProviderModel = undefined;
     configuration.value = currentTemplate();
     configuration.setCustomValidity("");
     feedback.textContent = "";
     renderChannelEditor();
   });
-  function updateModelConfiguration() {
+  function updateModelConfiguration(resetTransport = false) {
     const values = parseObject(configuration);
     if (values === undefined) {
       return;
@@ -322,7 +332,7 @@ function renderAgentForm(context, rendered) {
     const modelSettings = { ...values.agents?.defaults?.models };
     const selectedModel = next.agents?.defaults.model;
     const selectedSettings = {
-      ...(modelSettings[previousModel] ?? pendingModelSettings),
+      ...(modelSettings[selectedModel] ?? modelSettings[previousModel] ?? pendingModelSettings),
       ...(selectedModel ? next.agents.defaults.models[selectedModel] : {}),
     };
     pendingModelSettings = selectedModel ? undefined : selectedSettings;
@@ -343,10 +353,44 @@ function renderAgentForm(context, rendered) {
       },
     };
     const providers = { ...values.models?.providers };
-    delete providers.openai;
-    delete providers.anthropic;
-    delete providers.codex;
-    values.models = { ...values.models, providers: { ...providers, ...next.models?.providers } };
+    const previousId =
+      typeof previousModel === "string"
+        ? previousModel.slice(previousModel.indexOf("/") + 1)
+        : pendingProviderModel;
+    // Keep transport and model metadata while a key edit temporarily clears the selected model.
+    pendingProviderModel = selectedModel || resetTransport ? undefined : previousId;
+    if (resetTransport) {
+      delete providers.openai;
+      delete providers.anthropic;
+      delete providers.codex;
+      Object.assign(providers, next.models?.providers);
+    } else if (selectedModel) {
+      const providerId = mode.value === "dedicated" ? "codex" : nativeProvider.value;
+      const templateProvider = next.models.providers[providerId];
+      const existingProvider = providers[providerId] ?? templateProvider;
+      const existingModels = existingProvider.models ?? [];
+      const selectedId = model.value.trim();
+      if (!existingModels.some((entry) => entry.id === selectedId)) {
+        const previousEntry = existingModels.find((entry) => entry.id === previousId);
+        const selectedEntry = {
+          ...(previousEntry ?? templateProvider.models[0]),
+          id: selectedId,
+          name:
+            previousEntry?.name && previousEntry.name !== previousId
+              ? previousEntry.name
+              : selectedId,
+        };
+        providers[providerId] = {
+          ...existingProvider,
+          models: previousEntry
+            ? existingModels.map((entry) => (entry === previousEntry ? selectedEntry : entry))
+            : [...existingModels, selectedEntry],
+        };
+      } else {
+        providers[providerId] = existingProvider;
+      }
+    }
+    values.models = { ...values.models, providers };
     if (next.plugins) {
       values.plugins = {
         ...values.plugins,
@@ -371,13 +415,13 @@ function renderAgentForm(context, rendered) {
     // A provider change must not send the previous provider's key to a different service.
     apiKey.value = "";
     if (discoverModels) {
-      resetModelChoices();
+      resetModelChoices(true);
     } else {
-      updateModelConfiguration();
+      updateModelConfiguration(true);
     }
   });
-  model.addEventListener("change", updateModelConfiguration);
-  mode.addEventListener("change", updateModelConfiguration);
+  model.addEventListener("change", () => updateModelConfiguration());
+  mode.addEventListener("change", () => updateModelConfiguration(true));
   configuration.addEventListener("input", () => {
     configuration.setCustomValidity("");
     feedback.textContent = "";

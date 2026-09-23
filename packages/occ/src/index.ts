@@ -76,6 +76,7 @@ import {
   AuthorizationDeniedError,
   DependencyUnavailableError,
   DriverSelectionError,
+  ModelDiscoveryError,
   NamespaceNotEmptyError,
   NamespaceNotReadyError,
   NotImplementedError,
@@ -113,6 +114,7 @@ export {
   AuthorizationDeniedError,
   DependencyUnavailableError,
   DriverSelectionError,
+  ModelDiscoveryError,
   NamespaceNotEmptyError,
   NamespaceNotReadyError,
   NotImplementedError,
@@ -2012,8 +2014,10 @@ export class OpenClawController {
     // Discovery performs no platform writes and must not hold a transaction over provider I/O.
     try {
       return await driver.discoverHarnessModels(input);
-    } catch {
-      throw new DependencyUnavailableError("Model discovery failed.");
+    } catch (error) {
+      throw new ModelDiscoveryError(
+        error instanceof ModelDiscoveryError ? error.reason : "unavailable",
+      );
     }
   }
 

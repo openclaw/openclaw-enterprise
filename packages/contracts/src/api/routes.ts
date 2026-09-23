@@ -659,7 +659,12 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: NamespaceParams,
       body: DiscoverAgentModelsBody,
-      response: { 200: AgentModelListResponse, 501: ErrorResponseRef, ...createErrors },
+      response: {
+        200: AgentModelListResponse,
+        429: ErrorResponseRef,
+        501: ErrorResponseRef,
+        ...createErrors,
+      },
     },
   },
   {

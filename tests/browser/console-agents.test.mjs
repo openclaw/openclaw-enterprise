@@ -14,7 +14,7 @@ import {
   WORKSPACE_DEFAULTS_ID,
 } from "../../packages/contracts/src/workspace-defaults.mjs";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
-import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
+import { InMemoryPlatformState, ModelDiscoveryError } from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture, providerFixtures } from "../helpers/console-app.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -707,7 +707,7 @@ test(
 test("Model discovery failure permits an explicit manual model and still saves through the real Agent API", async (t) => {
   const fixture = await createConsoleAppFixture(t, {
     discoverHarnessModels: async () => {
-      throw new Error("Upstream model list unavailable");
+      throw new ModelDiscoveryError("credentials_rejected");
     },
   });
   await fixture.bootstrap();
@@ -719,10 +719,7 @@ test("Model discovery failure permits an explicit manual model and still saves t
   await page.getByLabel("Agent name").fill("Manual recovery Agent");
   await enterManualModel(page, "model-discovery-unavailable-key", "gpt-manual-account-model");
   await page
-    .getByText(
-      "Models could not be loaded. Check the API key and retry, or enter a model ID enabled for this key.",
-      { exact: true },
-    )
+    .getByText("The provider rejected this API key or its permission to list models.")
     .waitFor();
   assert.deepEqual(nonAuthWriteRequests(requests), []);
   const saved = page.waitForResponse(
@@ -1007,11 +1004,52 @@ test("Agent creation preserves unrelated edited JSON across model changes and re
   const custom = nativeValues("manual-edit");
   custom.agents.defaults.models["openai/gpt-4.1"].alias = "Primary assistant";
   custom.agents.defaults.models["openai/gpt-4.1"].params = { temperature: 0.4 };
+  const extraModel = { id: "additional-model", name: "Additional model", contextWindow: 64000 };
+  Object.assign(custom.models.providers.openai, {
+    baseUrl: "https://models.example.test/v1",
+    api: "openai-completions",
+    headers: { "X-Custom-Transport": "enterprise-route" },
+    models: [...custom.models.providers.openai.models, extraModel],
+  });
   const edited = JSON.stringify(custom, null, 2);
   await configuration.fill(edited);
+  const modelInput = page.getByLabel("Model ID", { exact: true });
+  await modelInput.fill("gpt-4.1-updated");
+  await modelInput.press("Tab");
+  const assertCustomTransport = async () => {
+    const provider = JSON.parse(await configuration.inputValue()).models.providers.openai;
+    assert.equal(provider.baseUrl, custom.models.providers.openai.baseUrl);
+    assert.equal(provider.api, custom.models.providers.openai.api);
+    assert.deepEqual(provider.headers, custom.models.providers.openai.headers);
+    assert.deepEqual(
+      provider.models.find((entry) => entry.id === extraModel.id),
+      extraModel,
+    );
+  };
+  await assertCustomTransport();
+  assert.equal(
+    JSON.parse(await configuration.inputValue()).agents.defaults.model,
+    "openai/gpt-4.1-updated",
+  );
+
+  await page.getByLabel("API key", { exact: true }).fill("same-provider-replacement-key");
+  await page.getByLabel("API key", { exact: true }).press("Tab");
+  await modelInput.waitFor();
+  assert.equal(await modelInput.inputValue(), "");
+  await assertCustomTransport();
+  await modelInput.fill("gpt-4.1");
+  await modelInput.press("Tab");
+  await assertCustomTransport();
+
   await mode.selectOption("dedicated");
   const retained = JSON.parse(await configuration.inputValue());
   assert.equal(retained.agents.defaults.model, "codex/gpt-4.1");
+  assert.deepEqual(retained.models.providers.codex, {
+    baseUrl: "http://127.0.0.1:9",
+    api: "openai-responses",
+    models: [{ id: "gpt-4.1", name: "gpt-4.1" }],
+  });
+  assert.equal(retained.models.providers.openai, undefined);
   assert.equal(retained.plugins.entries.knowledge.config.marker, "manual-edit");
   assert.deepEqual(retained.agents.defaults.models["codex/gpt-4.1"], {
     alias: "Primary assistant",
@@ -1038,6 +1076,15 @@ test("Agent creation preserves unrelated edited JSON across model changes and re
       agentRuntime: { id: "codex" },
     },
   );
+  await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
+  await enterManualModel(page, "anthropic-template-key", "claude-template-model");
+  const anthropicTemplate = JSON.parse(await configuration.inputValue());
+  assert.deepEqual(anthropicTemplate.models.providers.anthropic, {
+    baseUrl: "https://api.anthropic.com",
+    api: "anthropic-messages",
+    models: [{ id: "claude-template-model", name: "claude-template-model" }],
+  });
+  assert.equal(anthropicTemplate.models.providers.codex, undefined);
   await page.getByLabel("Agent name").fill("Discarded draft");
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Start over" }).click();

@@ -354,19 +354,67 @@ test("Agent model discovery bounds and redacts provider failures", async (t) => 
   const apiKey = `private-discovery-key-${randomUUID()}`;
   const upstreamDetail = `private-upstream-detail-${randomUUID()}`;
   let oversizedCancelled = false;
+  const credentialsRejected = [
+    400,
+    "MODEL_DISCOVERY_CREDENTIALS_REJECTED",
+    "The provider rejected model discovery. Check the API key and its permission to list models, then retry or enter a model ID manually.",
+  ];
+  const rateLimited = [
+    429,
+    "MODEL_DISCOVERY_RATE_LIMITED",
+    "The provider rate-limited model discovery. Wait and retry, or enter a model ID manually.",
+  ];
+  const unavailable = [
+    503,
+    "MODEL_DISCOVERY_UNAVAILABLE",
+    "The provider model service is unavailable. Retry or enter a model ID manually.",
+  ];
+  const invalidResponse = [
+    503,
+    "MODEL_DISCOVERY_INVALID_RESPONSE",
+    "The provider returned an invalid model list. Retry or enter a model ID manually.",
+  ];
   const scenarios = [
     [
       "rejected API key",
       () => Response.json({ error: `${upstreamDetail} ${apiKey}` }, { status: 401 }),
+      credentialsRejected,
+    ],
+    [
+      "missing Models permission",
+      () => Response.json({ error: `${upstreamDetail} ${apiKey}` }, { status: 403 }),
+      credentialsRejected,
+    ],
+    [
+      "provider rate limit",
+      () => Response.json({ error: `${upstreamDetail} ${apiKey}` }, { status: 429 }),
+      rateLimited,
+    ],
+    [
+      "provider service error",
+      () => Response.json({ error: `${upstreamDetail} ${apiKey}` }, { status: 500 }),
+      unavailable,
     ],
     [
       "transport error",
       () => {
         throw new Error(`${upstreamDetail} ${apiKey}`);
       },
+      unavailable,
     ],
-    ["malformed JSON", () => new Response("{malformed")],
-    ["missing model list", () => Response.json({ message: "not a model list" })],
+    [
+      "provider timeout",
+      () => {
+        throw new DOMException(`${upstreamDetail} ${apiKey}`, "TimeoutError");
+      },
+      unavailable,
+    ],
+    ["malformed JSON", () => new Response(`{${upstreamDetail} ${apiKey}`), invalidResponse],
+    [
+      "missing model list",
+      () => Response.json({ message: `${upstreamDetail} ${apiKey}` }),
+      invalidResponse,
+    ],
     [
       "oversized stream",
       () =>
@@ -380,22 +428,21 @@ test("Agent model discovery bounds and redacts provider failures", async (t) => 
             },
           }),
         ),
+      invalidResponse,
     ],
   ];
-  for (const [name, respond] of scenarios) {
+  for (const [name, respond, [status, code, message]] of scenarios) {
     await t.test(name, async (subtest) => {
       const transport = subtest.mock.method(globalThis, "fetch", respond);
       const failed = await request(
         fixture.app,
         "POST",
         `/namespaces/${namespace.id}/agents/models`,
-        {
-          body: { provider: "openai", apiKey },
-        },
+        { body: { provider: "openai", apiKey } },
       );
-      assert.equal(failed.status, 503);
-      assert.equal(failed.body.error.code, "DEPENDENCY_UNAVAILABLE");
-      assert.equal(failed.body.error.message, "A required platform dependency is unavailable.");
+      assert.equal(failed.status, status);
+      assert.equal(failed.body.error.code, code);
+      assert.equal(failed.body.error.message, message);
       assert.equal(transport.mock.callCount(), 1);
       const exposed = JSON.stringify([failed.body, fixture.auditSink.events]);
       assert.equal(exposed.includes(apiKey), false);

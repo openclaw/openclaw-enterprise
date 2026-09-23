@@ -71,6 +71,12 @@ cluster's network controls. Standard Kubernetes NetworkPolicy accepts IP CIDRs,
 not DNS names, so maintain the provider destinations or use the cluster's FQDN
 policy support. Without this access, use manual model entry.
 
+Discovery failures distinguish rejected credentials or model-list permissions,
+provider rate limits, connectivity failures, and unsupported provider responses.
+The console displays recovery guidance and the request ID, without returning the
+provider's raw response. A model-list permission failure does not determine
+whether that key can run a model; manual entry remains available.
+
 These managed keys require a configured Secret Driver and compatible Compute.
 Kubernetes supports both providers; the current Docker development composition
 has no managed Secret storage or model-key delivery. Saving a key does not prove

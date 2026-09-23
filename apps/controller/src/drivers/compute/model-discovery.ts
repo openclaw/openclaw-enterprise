@@ -1,3 +1,4 @@
+import { ModelDiscoveryError } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
@@ -5,13 +6,20 @@ const MAX_MODELS = 10_000;
 const MAX_PAGES = 10;
 
 async function readModelPage(response: Response): Promise<Record<string, unknown>> {
-  if (!response.ok || Number(response.headers.get("content-length")) > MAX_RESPONSE_BYTES) {
-    await response.body?.cancel();
-    throw new Error("Model response unavailable.");
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => {});
+    if (response.status === 401 || response.status === 403) {
+      throw new ModelDiscoveryError("credentials_rejected");
+    }
+    throw new ModelDiscoveryError(response.status === 429 ? "rate_limited" : "unavailable");
+  }
+  if (Number(response.headers.get("content-length")) > MAX_RESPONSE_BYTES) {
+    await response.body?.cancel().catch(() => {});
+    throw new ModelDiscoveryError("invalid_response");
   }
   const reader = response.body?.getReader();
   if (reader === undefined) {
-    throw new Error("Model response unavailable.");
+    throw new ModelDiscoveryError("invalid_response");
   }
   const chunks: Uint8Array[] = [];
   let bytes = 0;
@@ -23,13 +31,19 @@ async function readModelPage(response: Response): Promise<Record<string, unknown
       }
       bytes += chunk.value.byteLength;
       if (bytes > MAX_RESPONSE_BYTES) {
-        throw new Error("Model response exceeds the discovery limit.");
+        throw new ModelDiscoveryError("invalid_response");
       }
       chunks.push(chunk.value);
     }
-    const page = asRecord(JSON.parse(Buffer.concat(chunks, bytes).toString("utf8")));
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(Buffer.concat(chunks, bytes).toString("utf8"));
+    } catch {
+      throw new ModelDiscoveryError("invalid_response");
+    }
+    const page = asRecord(decoded);
     if (page === undefined || !Array.isArray(page.data)) {
-      throw new Error("Model response is invalid.");
+      throw new ModelDiscoveryError("invalid_response");
     }
     return page;
   } catch (error) {
@@ -46,7 +60,7 @@ export async function discoverHarnessModels(input: {
   readonly apiKey: string;
 }): Promise<readonly { readonly id: string; readonly name: string }[]> {
   if (input.provider !== "openai" && input.provider !== "anthropic") {
-    throw new Error("Model discovery does not support this provider.");
+    throw new ModelDiscoveryError("unavailable");
   }
   try {
     const anthropic = input.provider === "anthropic";
@@ -69,7 +83,7 @@ export async function discoverHarnessModels(input: {
       for (const item of page.data as unknown[]) {
         const model = asRecord(item);
         if (!isNonEmptyString(model?.id) || /[\s\p{Cc}]/u.test(model.id)) {
-          throw new Error("Model response is invalid.");
+          throw new ModelDiscoveryError("invalid_response");
         }
         if (!models.has(model.id)) {
           models.set(model.id, {
@@ -78,7 +92,7 @@ export async function discoverHarnessModels(input: {
           });
         }
         if (models.size > MAX_MODELS) {
-          throw new Error("Model response exceeds the discovery limit.");
+          throw new ModelDiscoveryError("invalid_response");
         }
       }
       if (!anthropic || page.has_more === false) {
@@ -88,14 +102,16 @@ export async function discoverHarnessModels(input: {
       }
       // Anthropic's cursor is the last model ID, never an upstream-provided URL.
       if (page.has_more !== true || !isNonEmptyString(page.last_id) || cursors.has(page.last_id)) {
-        throw new Error("Model pagination is invalid.");
+        throw new ModelDiscoveryError("invalid_response");
       }
       cursors.add(page.last_id);
       url.searchParams.set("after_id", page.last_id);
     }
-    throw new Error("Model response exceeds the discovery limit.");
-  } catch {
+    throw new ModelDiscoveryError("invalid_response");
+  } catch (error) {
     // Never return upstream bodies, request headers, or fetch errors containing credentials.
-    throw new Error("Model discovery failed. Check the API key and try again.");
+    throw new ModelDiscoveryError(
+      error instanceof ModelDiscoveryError ? error.reason : "unavailable",
+    );
   }
 }
