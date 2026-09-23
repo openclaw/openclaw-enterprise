@@ -41,7 +41,7 @@ jobs:
   pr-safe:
     name: ${{ matrix.title }}
     # NetworkPolicy proofs need a runner kernel with bridge netfilter support.
-    runs-on: ${{ startsWith(matrix.lane, 'k3d-fixture-') && 'ubuntu-latest' || 'blacksmith-8vcpu-ubuntu-2404' }}
+    runs-on: ${{ startsWith(matrix.lane, 'k3d-fixture-') && 'ubuntu-22.04' || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
