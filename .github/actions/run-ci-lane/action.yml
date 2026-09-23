@@ -33,6 +33,15 @@ runs:
     - name: Set up CI tools
       shell: bash
       run: bash scripts/ci/setup-tools.sh "${{ inputs.profile }}"
+    - name: Enable Kubernetes bridge packet filtering
+      if: inputs.profile == 'k3d' || inputs.profile == 'full'
+      shell: bash
+      run: |
+        # k3d nodes share the runner kernel; K3s cannot load absent host modules.
+        if [[ ! -d /sys/module/br_netfilter ]]; then
+          sudo modprobe br_netfilter
+        fi
+        sudo sysctl -w net.bridge.bridge-nf-call-iptables=1
     - name: Install dependencies
       shell: bash
       run: pnpm install --frozen-lockfile

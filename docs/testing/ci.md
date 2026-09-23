@@ -54,6 +54,11 @@ container isolation and authorized live proof. CI preparation and suite ownershi
 alone establish no result: inspect executed cases and skips at the exact tested
 commit, including whether a pull-request run tested a merge commit.
 
+Kubernetes jobs load the runner kernel's bridge netfilter module and enable
+IPv4 bridge packet filtering before cluster creation. This is required for
+K3s to enforce NetworkPolicies on bridged Pod traffic. Failure to enable it
+fails setup; deny-traffic assertions remain required.
+
 Each Kubernetes fixture lane owns an independent cluster with a server and worker node with shared test-owned
 local-path storage. Preparation registers and verifies the fixture image's digest
 on both nodes and derives the API server's proxy source `/32` from its route to
