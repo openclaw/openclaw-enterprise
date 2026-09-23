@@ -462,7 +462,7 @@ export const scenarios = {
     name: "Mobile drawer",
     buildRevision: "abcdef1234567890abcdef1234567890abcdef12",
     mobile: true,
-    actions: [click("Open navigation")],
+    actions: [{ selector: '.content [aria-busy="false"]' }, click("Open navigation")],
     description:
       "390px viewport with OCE branding and a simulated OCC revision in the open drawer. Escape or the overlay closes it.",
   },
