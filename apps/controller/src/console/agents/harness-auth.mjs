@@ -8,17 +8,21 @@ export function harnessAuthDescription(binding) {
   if (binding.method === "runtime") {
     return "Operator-managed credentials";
   }
+  if (binding.method === "codex_pat") {
+    return "Codex PAT · Secret configured";
+  }
   return binding.method === "api_key"
     ? "API key · Secret configured"
     : `ChatGPT service account · ${binding.serviceAccountId}`;
 }
 
-export function createHarnessAuthFields(context, binding = null) {
+export function createHarnessAuthFields(context, binding = null, executionMode = "embedded") {
   const method = element(
     "select",
     { id: "harness-auth-method" },
     element("option", { value: "" }, "None"),
     element("option", { value: "api_key" }, "API key"),
+    executionMode === "dedicated" ? element("option", { value: "codex_pat" }, "Codex PAT") : null,
     element("option", { value: "runtime" }, "Operator-managed credentials"),
     element("option", { value: "chatgpt_service_account" }, "ChatGPT service account"),
   );
@@ -29,7 +33,7 @@ export function createHarnessAuthFields(context, binding = null) {
     spellcheck: "false",
     autocomplete: "off",
     placeholder: "sec_…",
-    value: binding?.method === "api_key" ? binding.source.id : "",
+    value: ["api_key", "codex_pat"].includes(binding?.method) ? binding.source.id : "",
   });
   const account = element(
     "select",
@@ -45,10 +49,11 @@ export function createHarnessAuthFields(context, binding = null) {
   let accountsLoaded = false;
   let disabled = false;
   const feedback = element("p", { className: "hint", role: "status" });
+  const secretLabel = element("label", { for: secret.id }, "API key Secret ID");
   const secretField = element(
     "div",
     { className: "form-field" },
-    element("label", { for: secret.id }, "API key Secret ID"),
+    secretLabel,
     secret,
     element(
       "p",
@@ -85,9 +90,12 @@ export function createHarnessAuthFields(context, binding = null) {
   );
   function update() {
     runtimeHint.hidden = method.value !== "runtime";
-    secretField.hidden = method.value !== "api_key";
+    const directSecret = ["api_key", "codex_pat"].includes(method.value);
+    secretField.hidden = !directSecret;
+    secretLabel.textContent =
+      method.value === "codex_pat" ? "Codex PAT Secret ID" : "API key Secret ID";
     accountField.hidden = method.value !== "chatgpt_service_account";
-    secret.required = method.value === "api_key";
+    secret.required = directSecret;
     account.required = method.value === "chatgpt_service_account";
   }
   method.addEventListener("change", update);
@@ -150,7 +158,7 @@ export function createHarnessAuthFields(context, binding = null) {
         throw new Error("Enter an OCC Secret ID.");
       }
       return {
-        method: "api_key",
+        method: method.value,
         source: { kind: "secret", namespaceId: context.namespaceId, id },
       };
     },

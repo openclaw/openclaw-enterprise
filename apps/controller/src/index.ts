@@ -812,7 +812,7 @@ function requestFailure(error: unknown): RequestFailure {
         return failure(
           400,
           "MODEL_DISCOVERY_CREDENTIALS_REJECTED",
-          "The provider rejected model discovery. Check the API key and its permission to list models, then retry or enter a model ID manually.",
+          "The provider rejected model discovery. Check the selected credential and its permission to list models, then retry or enter a model ID manually.",
         );
       case "rate_limited":
         return failure(
@@ -2112,6 +2112,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (operation.operationId === "discoverAgentModels") {
       const models = await controller.discoverAgentModels(context.actorId, namespaceId, {
         provider: body?.provider as string,
+        authMethod: body?.authMethod as "api_key" | "codex_pat",
         apiKey: body?.apiKey as string,
       });
       reply.header("cache-control", "no-store");

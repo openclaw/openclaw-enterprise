@@ -1346,6 +1346,10 @@ if (loginMode === "api_key") {
   if (!nonempty(apiKey) || accessToken !== undefined || workspaceId !== undefined) {
     throw new Error("Codex API-key authentication configuration is invalid.");
   }
+} else if (loginMode === "codex_pat") {
+  if (!nonempty(accessToken) || !accessToken.startsWith("at-") || workspaceId !== undefined || apiKey !== undefined) {
+    throw new Error("Codex PAT authentication configuration is invalid.");
+  }
 } else if (loginMode === "chatgpt_service_account") {
   if (!nonempty(accessToken) || !nonempty(workspaceId) || apiKey !== undefined) {
     throw new Error("Codex service-account authentication configuration is invalid.");
@@ -1369,8 +1373,9 @@ const loginArguments = loginMode === "api_key"
   : [
       "-c",
       "cli_auth_credentials_store=file",
-      "-c",
-      "forced_chatgpt_workspace_id=" + JSON.stringify(workspaceId),
+      ...(loginMode === "chatgpt_service_account" ? [
+        "-c", "forced_chatgpt_workspace_id=" + JSON.stringify(workspaceId),
+      ] : []),
       "login",
       "--with-access-token",
     ];

@@ -199,7 +199,7 @@ export const scenarios = {
     path: create,
     actions: form,
     description:
-      "Choose OpenAI or Anthropic and enter an API key to load model choices. No model is selected by default.",
+      "Choose a provider and authentication method, then enter a credential to load model choices. No model is selected by default.",
   },
   createWorkspaceFiles: {
     group: "Pages/Create Agent",
@@ -244,6 +244,19 @@ export const scenarios = {
     ],
     description:
       "Entering a key loads Anthropic model choices without selecting one. Anthropic uses Embedded OpenClaw execution.",
+  },
+  createCodexPat: {
+    group: "Pages/Create Agent",
+    name: "Codex PAT",
+    path: create,
+    actions: [
+      ...form,
+      { selector: "#execution-mode", value: "embedded" },
+      { selector: "#agent-auth-method", value: "codex_pat" },
+      { selector: "#provider-api-key", value: "at-storybook-pat" },
+    ],
+    description:
+      "Explicit Codex PAT authentication requires Dedicated execution and loads the account's Codex models. Switching methods clears the credential and model selection.",
   },
   createModels: {
     group: "Pages/Create Agent",

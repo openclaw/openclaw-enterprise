@@ -152,6 +152,11 @@ test("preset admission preserves credential structure and literal and default sc
     },
   };
   assert.deepEqual(normalizePresetTemplate(scopedVariable, namespaceId), scopedVariable);
+  const patTemplate = structuredClone(scopedVariable);
+  patTemplate.agent.harnessAuth.method = "codex_pat";
+  assert.deepEqual(normalizePresetTemplate(patTemplate, namespaceId), patTemplate);
+  patTemplate.agent.harnessAuth.source.namespaceId = otherNamespaceId;
+  assert.throws(() => normalizePresetTemplate(patTemplate, namespaceId), PresetValidationError);
 
   // User-chosen map keys must receive the same admission as ordinary names.
   for (const key of ["__proto__", "constructor", "toString"]) {

@@ -258,10 +258,13 @@ export function installFixture(scenario, evidence) {
           scenario.emptyModels
             ? []
             : [
-                { id: `${body.provider}-story-model`, name: `${body.provider} demo model` },
                 {
-                  id: `${body.provider}-story-model-small`,
-                  name: `${body.provider} smaller demo model`,
+                  id: `${body.authMethod === "codex_pat" ? "codex" : body.provider}-story-model`,
+                  name: `${body.authMethod === "codex_pat" ? "Codex" : body.provider} demo model`,
+                },
+                {
+                  id: `${body.authMethod === "codex_pat" ? "codex" : body.provider}-story-model-small`,
+                  name: `${body.authMethod === "codex_pat" ? "Codex" : body.provider} smaller demo model`,
                 },
               ],
         );

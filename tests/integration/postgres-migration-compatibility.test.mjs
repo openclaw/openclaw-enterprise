@@ -1153,6 +1153,7 @@ test(
       [24, "prePresetsMain"],
       [25, "main"],
       [28, "repositoryRetention"],
+      [29, "workspaceSetup"],
     ]) {
       await context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -1259,6 +1260,7 @@ test(
       [25, "main"],
       [27, "repositoryCredentials"],
       [28, "repositoryRetention"],
+      [29, "workspaceSetup"],
     ]) {
       await context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });

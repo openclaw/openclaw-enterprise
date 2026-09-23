@@ -30,14 +30,15 @@ does not make that link available.
    **Use Preset**. The chooser closes and the form opens with editable settings.
    Select **Start without Preset** to use standard defaults.
 3. Enter a name that is unique within the Namespace. Choose **OpenAI** or
-   **Anthropic** under **Model provider**, then enter its **API key**. Model controls
-   appear after key entry. **Load models** queries the selected provider and lets
+   **Anthropic** under **Model provider**. For OpenAI, choose **OpenAI API key**
+   or **Codex PAT** under **Authentication method**, then enter that credential.
+   Anthropic uses an API key. Model controls appear after credential entry. **Load models** queries the selected provider and lets
    you choose the gateway's default model; no model is preselected. Choose a
    text-generation model compatible with your runtime. If the list is empty or
    unavailable, retry or select **Enter model ID manually**.
-   OpenAI supports the existing dedicated Codex and embedded OpenClaw modes;
-   Anthropic uses embedded OpenClaw. The form writes the corresponding native
-   model configuration. API keys remain separate from Configuration JSON.
+   OpenAI API keys support dedicated Codex and embedded OpenClaw; Codex PATs
+   require dedicated Codex. Anthropic uses embedded OpenClaw. The form writes the corresponding native
+   model configuration. Credentials remain separate from Configuration JSON.
 4. Review the generated Configuration JSON. Changing selections updates model and
    runtime entries while preserving unrelated edits; **Reset template** replaces
    your edits. Confirm your Installation
@@ -60,7 +61,7 @@ does not make that link available.
    deployment, use the [live workspace editor](../console.md#edit-workspace-files).
    Pending inputs have no update API; see [workspace recovery](../../guides/topics/workspace-files.md#set-files-when-creating-an-agent).
 
-The key field is masked. Saving creates a Namespace Secret, the Configuration,
+The credential field is masked. Saving creates a Namespace Secret, the Configuration,
 and the Agent, then grants that Agent's service principal `operate` on the exact
 Secret through the existing IAM APIs. This requires Secret creation and IAM
 administration permissions in addition to Agent and Configuration creation.
@@ -69,14 +70,18 @@ A Preset with an existing authentication binding retains that binding; use the
 Agent's Credentials tab to change it after creation.
 
 Model discovery requires Agent `create` permission in this Namespace. It sends
-the supplied key to the selected provider's official model-list API without
-creating a Secret or saving credentials. Changing the provider clears the key;
-changing the key clears the model choice. A returned model is not proof of
+the supplied credential to the selected authentication method's official API
+without creating a Secret or saving credentials. Codex PAT discovery validates
+the account with OpenAI authentication and lists its Codex models. The selector
+determines routing; credential prefixes do not choose an authentication method.
+Changing the provider or method clears the credential and model choice;
+changing the credential clears the model choice. A returned model is not proof of
 runtime compatibility. A model must be selected or entered before saving:
 OpenClaw's implicit default does not follow the selected provider.
 
 Discovery runs from the OCC API process. Its network policy must permit HTTPS
-to `api.openai.com:443` or `api.anthropic.com:443` for the selected provider.
+to `api.openai.com:443` for OpenAI API keys, `api.anthropic.com:443` for Anthropic,
+or both `auth.openai.com:443` and `chatgpt.com:443` for Codex PATs.
 The Helm chart's default-deny policy does not grant these destinations;
 operators must add a destination-scoped API-pod egress policy through their
 cluster's network controls. Standard Kubernetes NetworkPolicy accepts IP CIDRs,
@@ -96,7 +101,7 @@ provider acceptance or runtime readiness. See
 [harness authentication](../agents.md#harness-authentication).
 
 The saves are separate operations. After a successful step, the form retains its
-resource ID and freezes the saved inputs. Correct a conflicting Agent name or
+resource ID and freezes the saved inputs, including the authentication method. Correct a conflicting Agent name or
 restore the required permission, then retry to reuse the saved resources. If the
 Agent was saved but its Secret grant failed, finish the grant on that same Agent.
 An uncertain response blocks another creation attempt. Check the displayed saved

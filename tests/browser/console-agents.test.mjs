@@ -291,7 +291,7 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   const fixture = await createConsoleAppFixture(t, { state, secretDriver });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Agent authoring", { ready: true });
-  const key = "never-visible-model-secret";
+  const key = "at-explicit-api-key-not-auto-detected";
   const values = nativeValues("create", { harnessId: "codex", providerModel: "gpt-5.1" });
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
@@ -304,9 +304,19 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     { value: "openai", text: "OpenAI" },
     { value: "anthropic", text: "Anthropic" },
   ]);
-  await page.getByText("Authentication method: API key", { exact: true }).waitFor();
+  assert.deepEqual(await optionValues(page.getByLabel("Authentication method", { exact: true })), [
+    { value: "api_key", text: "OpenAI API key" },
+    { value: "codex_pat", text: "Codex PAT" },
+  ]);
   const keyInput = page.getByLabel("API key", { exact: true });
   assert.equal(await keyInput.getAttribute("type"), "password");
+  await keyInput.fill("discarded-api-key");
+  await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
+  assert.equal(await page.getByLabel("Codex PAT", { exact: true }).inputValue(), "");
+  assert.equal(await page.getByLabel("Execution mode").isDisabled(), true);
+  assert.equal(await page.getByLabel("Model", { exact: true }).isVisible(), false);
+  await page.getByLabel("Authentication method", { exact: true }).selectOption("api_key");
+  assert.equal(await page.getByLabel("Execution mode").isEnabled(), true);
   await enterManualModel(page, key, "gpt-5.1");
   await page
     .getByText(
@@ -357,10 +367,7 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   assert.equal(created.data.executionMode, "dedicated");
   assert.equal(created.data.providerId, null);
   assert.deepEqual(created.data.harnessAuth, { method: "api_key", source: secret.ref });
-  assert.equal(
-    (await page.locator("body").textContent()).includes("never-visible-model-secret"),
-    false,
-  );
+  assert.equal((await page.locator("body").textContent()).includes(key), false);
   assert.equal(created.data.activeRevisionId, undefined);
   const submittedWorkspace = agentPostRequests(requests, namespace.id)[0].body;
   assert.deepEqual(submittedWorkspace.initialWorkspaceFiles, {
@@ -531,8 +538,16 @@ test("Agent creation discovers available Anthropic models without saving the key
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
+  await page.getByLabel("Codex PAT", { exact: true }).fill("at-discarded-before-anthropic");
   await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
   assert.equal(await page.getByLabel("Execution mode").inputValue(), "embedded");
+  assert.equal(
+    await page.getByLabel("Authentication method", { exact: true }).inputValue(),
+    "api_key",
+  );
+  assert.equal(await page.getByLabel("Authentication method", { exact: true }).isDisabled(), true);
+  assert.equal(await page.getByLabel("API key", { exact: true }).inputValue(), "");
   assert.equal(await page.getByLabel("Execution mode").isDisabled(), true);
   assert.equal(await page.getByLabel("Authentication source").count(), 0);
   assert.equal(await page.getByLabel("Model", { exact: true }).isVisible(), false);
@@ -559,7 +574,7 @@ test("Agent creation discovers available Anthropic models without saving the key
     pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/models`).map(
       ({ body }) => body,
     ),
-    [{ provider: "anthropic", apiKey: "test-anthropic-api-key" }],
+    [{ provider: "anthropic", authMethod: "api_key", apiKey: "test-anthropic-api-key" }],
   );
   await choice.selectOption("claude-account/beta");
   const saved = page.waitForResponse(
@@ -599,11 +614,17 @@ test("Agent creation discovers available Anthropic models without saving the key
 });
 
 test(
-  "Model discovery discards stale key responses and clears choices when the provider changes",
+  "Model discovery discards stale responses after key, auth method, and provider changes",
   { timeout: 30_000 },
   async (t) => {
     let releaseFirst;
     let firstRequested;
+    let methodRefresh = false;
+    let releaseMethod;
+    let methodRequested;
+    const methodRequest = new Promise((resolve) => {
+      methodRequested = resolve;
+    });
     let refresh = false;
     let releaseRefresh;
     let refreshRequested;
@@ -619,6 +640,12 @@ test(
           firstRequested();
           return new Promise((resolve) => {
             releaseFirst = resolve;
+          });
+        }
+        if (apiKey === "second-openai-key" && methodRefresh) {
+          methodRequested();
+          return new Promise((resolve) => {
+            releaseMethod = resolve;
           });
         }
         if (apiKey === "second-openai-key" && refresh) {
@@ -665,6 +692,36 @@ test(
         false,
       );
 
+      // A response from the previous auth method must not repopulate the cleared form.
+      methodRefresh = true;
+      await page.getByRole("button", { name: "Load models", exact: true }).click();
+      await methodRequest;
+      await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
+      const staleMethodResponse = page.waitForResponse(
+        (response) =>
+          response.url().endsWith(`/namespaces/${namespace.id}/agents/models`) &&
+          response.request().postDataJSON()?.apiKey === "second-openai-key",
+      );
+      releaseMethod([{ id: "stale-method-model", name: "Stale API-key model" }]);
+      await (await staleMethodResponse).finished();
+      await page.evaluate(() => new Promise(globalThis.requestAnimationFrame));
+      assert.equal(await page.getByLabel("Provider", { exact: true }).inputValue(), "openai");
+      assert.equal(await page.getByLabel("Codex PAT", { exact: true }).inputValue(), "");
+      assert.equal(await choice.isVisible(), false);
+      assert.equal(
+        (await optionValues(choice)).some(({ value }) => value === "stale-method-model"),
+        false,
+      );
+      assert.equal(
+        JSON.parse(await page.getByLabel("Configuration JSON").inputValue()).agents.defaults.model,
+        undefined,
+      );
+      methodRefresh = false;
+      await page.getByLabel("Authentication method", { exact: true }).selectOption("api_key");
+      await key.fill("second-openai-key");
+      await key.press("Tab");
+      await choice.selectOption("openai-current-model");
+
       // Hold a refresh across a provider switch independently of the key-change fence above.
       refresh = true;
       await page.getByRole("button", { name: "Load models", exact: true }).click();
@@ -704,14 +761,17 @@ test(
           ({ body }) => body,
         ),
         [
-          { provider: "openai", apiKey: "first-openai-key" },
-          { provider: "openai", apiKey: "second-openai-key" },
-          { provider: "openai", apiKey: "second-openai-key" },
-          { provider: "anthropic", apiKey: "current-anthropic-key" },
+          { provider: "openai", authMethod: "api_key", apiKey: "first-openai-key" },
+          { provider: "openai", authMethod: "api_key", apiKey: "second-openai-key" },
+          { provider: "openai", authMethod: "api_key", apiKey: "second-openai-key" },
+          { provider: "openai", authMethod: "api_key", apiKey: "second-openai-key" },
+          { provider: "openai", authMethod: "api_key", apiKey: "second-openai-key" },
+          { provider: "anthropic", authMethod: "api_key", apiKey: "current-anthropic-key" },
         ],
       );
     } finally {
       releaseFirst?.([]);
+      releaseMethod?.([]);
       releaseRefresh?.([]);
     }
   },
@@ -793,11 +853,22 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByRole("button", { name: "Start without Preset" }).click();
-  await enterManualModel(page, "retry-agent-key", "gpt-5.1");
+  await page.getByLabel("Execution mode").selectOption("embedded");
+  await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
+  assert.equal(await page.getByLabel("Execution mode").inputValue(), "dedicated");
+  assert.equal(await page.getByLabel("Execution mode").isDisabled(), true);
+  const credential = page.getByLabel("Codex PAT", { exact: true });
+  await credential.fill("at-browser-pat");
+  await credential.press("Tab");
+  await page.getByLabel("Model ID", { exact: true }).fill("gpt-5.1");
+  await page.getByLabel("Model ID", { exact: true }).press("Tab");
+  assert.deepEqual(
+    pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/models`).at(-1).body,
+    { provider: "openai", authMethod: "codex_pat", apiKey: "at-browser-pat" },
+  );
   requests.length = 0;
   await page.getByLabel("SOUL.md", { exact: true }).fill("# Keep this draft\n");
   await page.getByLabel("Agent name").fill("Retry Agent");
-  await page.getByLabel("Execution mode").selectOption("dedicated");
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
 
   const configurationResponse = page.waitForResponse(
@@ -818,9 +889,10 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
     .waitFor();
   await page.getByText(/conflicts with the saved state/i).waitFor();
   assert.equal(await page.getByLabel("Configuration JSON").isDisabled(), true);
-  assert.equal(await page.getByLabel("API key", { exact: true }).inputValue(), "");
-  assert.equal(await page.getByLabel("API key", { exact: true }).isDisabled(), true);
+  assert.equal(await page.getByLabel("Codex PAT", { exact: true }).inputValue(), "");
+  assert.equal(await page.getByLabel("Codex PAT", { exact: true }).isDisabled(), true);
   assert.equal(await page.getByLabel("Execution mode").isDisabled(), true);
+  assert.equal(await page.getByLabel("Authentication method", { exact: true }).isDisabled(), true);
   assert.equal(await page.getByRole("button", { name: "Reset template" }).isDisabled(), true);
   assert.deepEqual(
     configurationPostRequests(requests, namespace.id).map((request) => request.body),
@@ -849,6 +921,7 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   await page.getByRole("button", { name: "Create Agent" }).click();
   const retried = await (await retryResponse).json();
   assert.equal(retried.data.name, "Retry Agent Corrected");
+  assert.equal(retried.data.harnessAuth.method, "codex_pat");
   assert.equal(retried.data.configurationId, savedConfiguration.data.id);
   assert.equal(retried.data.activeRevisionId, undefined);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
@@ -2325,7 +2398,7 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
           name: "{{ vars.name }}",
           executionMode: "{{ vars.execution }}",
           providerId: providerFixtures[0].id,
-          harnessAuth: { method: "api_key", source: secret.ref },
+          harnessAuth: { method: "codex_pat", source: secret.ref },
           plugins,
         },
         configuration: { values, secretBindings },
@@ -2359,9 +2432,10 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   assert.equal(await page.getByLabel("Preset template").count(), 0);
   assert.equal(await page.getByLabel("Variable: marker", { exact: true }).count(), 0);
   await page
-    .getByText("Preset authentication: API key · Secret configured", { exact: true })
+    .getByText("Preset authentication: Codex PAT · Secret configured", { exact: true })
     .waitFor();
-  assert.equal(await page.getByLabel("API key", { exact: true }).count(), 0);
+  assert.equal(await page.getByLabel("Codex PAT", { exact: true }).count(), 0);
+  assert.equal(await page.getByLabel("Execution mode").isDisabled(), true);
   assert.equal(
     (await page.getByLabel("Configuration JSON", { exact: true }).inputValue()).includes(
       "test-channel-token",
@@ -2437,7 +2511,7 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   assert.equal(created.data.name, "Preset Agent");
   assert.deepEqual(created.data.plugins, plugins);
   assert.equal(created.data.providerId, providerFixtures[0].id);
-  assert.deepEqual(created.data.harnessAuth, { method: "api_key", source: secret.ref });
+  assert.deepEqual(created.data.harnessAuth, { method: "codex_pat", source: secret.ref });
   const saved = await fixture.request(
     "GET",
     `/namespaces/${namespace.id}/configurations/${created.data.configurationId}`,
@@ -2451,6 +2525,22 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
     pathRequests(requests, "GET", `/namespaces/${namespace.id}/presets/${preset.data.id}`).length,
     1,
   );
+
+  await page.waitForURL((url) => url.pathname === `/console/agents/${created.data.id}`);
+  await page.getByRole("button", { name: "Credentials", exact: true }).click();
+  await page.getByLabel("Codex PAT Secret ID").waitFor();
+  assert.equal(await page.getByLabel("Authentication source").inputValue(), "codex_pat");
+  assert.equal(await page.getByLabel("Codex PAT Secret ID").inputValue(), secret.id);
+  const patched = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/agents/${created.data.id}`) &&
+      response.request().method() === "PATCH",
+  );
+  await page.getByRole("button", { name: "Save authentication source", exact: true }).click();
+  assert.deepEqual((await (await patched).json()).data.harnessAuth, {
+    method: "codex_pat",
+    source: secret.ref,
+  });
 
   // A Preset can supply an explicit model while requiring the operator to enter its key.
   await page.waitForURL((url) => url.pathname === `/console/agents/${created.data.id}`);

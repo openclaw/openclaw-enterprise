@@ -1593,14 +1593,14 @@ export class PostgresPlatformState implements PlatformStateStore {
                  JOIN occ.agent_revisions AS r ON r.namespace_id = a.namespace_id
                    AND r.agent_id = a.id AND r.id = a.active_revision_id
                  WHERE a.namespace_id = $1
-                   AND r.admitted_spec #>> '{harness_auth,method}' = 'api_key'
+                   AND r.admitted_spec #>> '{harness_auth,method}' IN ('api_key', 'codex_pat')
                    AND r.admitted_spec #>> '{harness_auth,source,id}' = $2
                ) OR EXISTS (
                  SELECT 1 FROM occ.controller_work AS w
                  JOIN occ.agent_revisions AS r ON r.namespace_id = w.namespace_id
                    AND r.agent_id = w.agent_id AND r.id = w.revision_id
                  WHERE w.namespace_id = $1 AND w.state IN ('queued', 'claimed')
-                   AND r.admitted_spec #>> '{harness_auth,method}' = 'api_key'
+                   AND r.admitted_spec #>> '{harness_auth,method}' IN ('api_key', 'codex_pat')
                    AND r.admitted_spec #>> '{harness_auth,source,id}' = $2
                ) AS present`,
               [namespaceId, secretId],

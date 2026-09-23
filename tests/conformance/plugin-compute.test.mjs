@@ -1643,6 +1643,12 @@ test("Codex runtime gates startup and readiness on a successful native authentic
   const scenarios = [
     { name: "failed login", loginStatus: 1 },
     {
+      name: "PAT uses native access-token login before probe and clears credentials",
+      pat: true,
+      events: [started, assistant, completed],
+      ready: true,
+    },
+    {
       name: "nonfatal advisory followed by completed assistant turn",
       events: [started, advisory, assistant, completed],
       ready: true,
@@ -1703,8 +1709,10 @@ test("Codex runtime gates startup and readiness on a successful native authentic
           process: {
             env: {
               CODEX_HOME: join(directory, "codex"),
-              CODEX_LOGIN_MODE: "api_key",
-              OPENAI_API_KEY: "fixture-api-key",
+              CODEX_LOGIN_MODE: scenario.pat ? "codex_pat" : "api_key",
+              ...(scenario.pat
+                ? { CODEX_ACCESS_TOKEN: "at-fixture-token" }
+                : { OPENAI_API_KEY: "fixture-api-key" }),
               OPENCLAW_HARNESS_MODEL: "codex/gpt-4.1",
               OPENCLAW_AGENT_REVISION_ID: revisionId,
               OPENCLAW_RUNTIME_STATUS_CONTAINER: "agent",
@@ -1741,8 +1749,23 @@ test("Codex runtime gates startup and readiness on a successful native authentic
             }
             if (specifier === "node:child_process") {
               return {
-                spawnSync() {
+                spawnSync(command, args, options) {
                   nativeCalls++;
+                  if (nativeCalls === 1 && scenario.pat) {
+                    assert.equal(command, "codex");
+                    assert.deepEqual(Array.from(args), [
+                      "-c",
+                      "cli_auth_credentials_store=file",
+                      "login",
+                      "--with-access-token",
+                    ]);
+                    assert.equal(options.input, "at-fixture-token");
+                  }
+                  if (nativeCalls === 2) {
+                    assert.equal(sandbox.process.env.CODEX_ACCESS_TOKEN, undefined);
+                    assert.equal(sandbox.process.env.OPENAI_API_KEY, undefined);
+                    assert.equal(sandbox.process.env.CODEX_CHATGPT_WORKSPACE_ID, undefined);
+                  }
                   // Substitute only native process output; execute the production
                   // login/probe parser and readiness control flow unmodified.
                   return nativeCalls === 1

@@ -152,6 +152,7 @@ the console. Use the operator workflow for those Agents.
 | -------------------------------- | --------------------------------------------------------------------------------------------- |
 | **None**                         | No binding; deployment remains blocked.                                                       |
 | **API key**                      | Existing Namespace Secret ID, not the API key value.                                          |
+| **Codex PAT**                    | Existing Namespace Secret ID containing a Codex PAT; available for Dedicated execution.       |
 | **Operator-managed credentials** | Credentials configured on the runtime host; OCC does not validate them.                       |
 | **ChatGPT service account**      | Select an already issued account in this Namespace. This selector does not create an account. |
 

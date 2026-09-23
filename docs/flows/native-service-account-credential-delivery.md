@@ -8,7 +8,7 @@ last_updated_session: codex/01a0cce9-23e3-7072-aa3f-a2e26d2dbf11
 
 ## Overview
 
-An operator stores an OpenAI or Anthropic API key as an OCC Secret or separately issues a
+An operator stores an OpenAI or Anthropic API key, or a Codex PAT, as an OCC Secret or separately issues a
 ChatGPT account credential, then selects that source through Agent `harnessAuth`.
 Deployment freezes the authorized binding; the worker rechecks it and Kubernetes
 renders the credential only into the model-executing workload. This flow ends
@@ -25,7 +25,7 @@ only the method and performs gateway readiness without model authentication.
   `OpenClawController.updateAgent`, and `OpenClawController.deployAgent`.
 - Assumptions: ready Namespace at deployment, same-Namespace source, existing
   Secret value or issued account credential, exact actor permissions, a compatible
-  configured Harness/model, and selected Compute support. API keys also require
+  configured Harness/model, and selected Compute support. Secret-backed credentials also require
   the Agent service principal's exact Secret `operate` at admission and dispatch.
 
 ## Flow
@@ -59,7 +59,7 @@ graph TD
 `authorizeHarnessAuthSource`
 
 Creation omission stores `null`; PATCH omission preserves the binding and explicit
-`null` clears it. API-key sources use stable OCC Secret references. The actor
+`null` clears it. API-key and `codex_pat` sources use stable OCC Secret references; the method remains distinct even for the same Secret. The actor
 needs exact Secret `operate`; a ChatGPT binding needs exact account `read`.
 Namespace locks serialize source reference changes against deletion. Missing or
 foreign sources fail closed. Binding never selects a different model, Provider,
@@ -75,7 +75,7 @@ creates only transport/channel groups and cannot supply model authentication.
 `packages/occ/src/index.ts:OpenClawController.deployAgent`, `admitHarnessAuth`
 
 Deployment requires a nonnull binding, exact Agent `deploy`, and Configuration
-`read`. For a key, OCC checks the actor and Agent principal's Secret `operate`,
+`read`. For a key or PAT, OCC checks the actor and Agent principal's Secret `operate`,
 resolves the backend through the selected Secret Driver, and freezes the stable
 reference and Driver identity. For a ChatGPT account, it verifies the issued
 access-token reference and private Provider, member Driver, and workspace
@@ -105,7 +105,7 @@ For `runtime`, worker Agent/Configuration authorization still runs but credentia
 source authorization and lookup do not. The dispatch context carries only the
 method; SSH does not read the operator credential file or issue a model probe.
 
-For an API key it resolves authoritative backend ownership from OCC state and
+For an API key or PAT it resolves authoritative backend ownership from OCC state and
 passes an ephemeral `ComputeRevisionContext`. It does not call the Secret Driver,
 read the Kubernetes Secret, or rewrite the revision. Physical backend identity
 is checked at API admission. A missing physical Secret/key later prevents workload
@@ -124,7 +124,7 @@ Secret projections and a closed login mode. Embedded OpenClaw receives the key
 in its combined workload as `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, derived
 from the immutable native model Configuration. Admission requires all selected
 models and fallbacks to use the same supported provider. Dedicated Codex receives the key or the directly
-projected account token/workspace; its separate gateway receives neither.
+projected account token/workspace. A direct PAT projects only `CODEX_ACCESS_TOKEN`; its separate gateway receives no model credential.
 Configuration secret bindings remain gateway-only and cannot choose model auth.
 
 The selected Sandbox consumes these already-rendered
@@ -140,7 +140,7 @@ and Kubernetes workload identity remain separate credentials.
 `GATEWAY_RUNTIME_ENTRYPOINT`
 
 Codex consumes explicit `CODEX_LOGIN_MODE`: API-key login receives the key through
-stdin; account login forces the admitted workspace. Missing or conflicting
+stdin; managed account login forces the admitted workspace. Direct PAT login uses `--with-access-token` without a caller-supplied workspace; native whoami validates and hydrates identity. Credential environment variables are deleted before the probe and app-server start. Missing or conflicting
 inputs and failed login prevent app-server startup. A bounded native turn against
 the primary model must then complete successfully. The probe ignores user rules
 and configuration, disables execution and external tools, and applies read-only
@@ -199,6 +199,8 @@ history cannot restore historical Secret values.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 09:00: Extend exact Secret admission, retention and dedicated native login to directly supplied Codex PATs. (01a0cce9-23e3-7072-aa3f-a2e26d2dbf11 - c5524b59)
 
 - 2026-09-23 06:27: Derive API-key credential delivery and startup probing from the selected model provider. (01a0cce9-23e3-7072-aa3f-a2e26d2dbf11 - a8272f4e2760e5ff06dc09c5658f48bea382c790)
 

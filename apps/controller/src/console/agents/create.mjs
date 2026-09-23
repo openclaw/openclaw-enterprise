@@ -108,10 +108,10 @@ function renderAgentForm(context, rendered) {
   if (
     binding != null &&
     (!isObject(binding) ||
-      !["runtime", "api_key", "chatgpt_service_account"].includes(binding.method) ||
+      !["runtime", "api_key", "codex_pat", "chatgpt_service_account"].includes(binding.method) ||
       (binding.method === "chatgpt_service_account" &&
         typeof binding.serviceAccountId !== "string") ||
-      (binding.method === "api_key" &&
+      (["api_key", "codex_pat"].includes(binding.method) &&
         (binding.source?.kind !== "secret" ||
           binding.source.namespaceId !== namespaceId ||
           typeof binding.source.id !== "string")))
@@ -168,6 +168,15 @@ function renderAgentForm(context, rendered) {
     autocomplete: "off",
     spellcheck: "false",
   });
+  const authMethod = element(
+    "select",
+    { id: "agent-auth-method" },
+    element("option", { value: "api_key" }, "OpenAI API key"),
+    element("option", { value: "codex_pat" }, "Codex PAT"),
+  );
+  authMethod.value = binding?.method ?? "api_key";
+  const authMethodField = field("Authentication method", authMethod);
+  const credentialLabel = element("label", { for: apiKey.id }, "API key");
   let discoveryGeneration = 0;
   let modelsLoading = false;
   let modelOptions = [];
@@ -208,7 +217,11 @@ function renderAgentForm(context, rendered) {
     try {
       const choices = await request(`${namespacePath(namespaceId)}/agents/models`, {
         method: "POST",
-        body: { provider: nativeProvider.value, apiKey: apiKey.value },
+        body: {
+          provider: nativeProvider.value,
+          authMethod: authMethod.value,
+          apiKey: apiKey.value,
+        },
       });
       if (!context.isCurrent() || generation !== discoveryGeneration) {
         return;
@@ -223,7 +236,7 @@ function renderAgentForm(context, rendered) {
       updateModelConfiguration();
       modelStatus.textContent = choices.length
         ? "Choose a text-generation model for this Agent."
-        : "No models were returned. Enter a model ID enabled for this API key, or retry loading.";
+        : `No models were returned. Enter a model ID enabled for this ${authMethod.value === "codex_pat" ? "Codex PAT" : "API key"}, or retry loading.`;
     } catch (error) {
       if (!context.isCurrent() || generation !== discoveryGeneration) {
         return;
@@ -235,8 +248,7 @@ function renderAgentForm(context, rendered) {
       modelOptions = [];
       manualModel = true;
       const reason = {
-        MODEL_DISCOVERY_CREDENTIALS_REJECTED:
-          "The provider rejected this API key or its permission to list models.",
+        MODEL_DISCOVERY_CREDENTIALS_REJECTED: `The provider rejected this ${authMethod.value === "codex_pat" ? "Codex PAT" : "API key"} or its permission to list models.`,
         MODEL_DISCOVERY_RATE_LIMITED: "The provider rate limit was reached. Try again later.",
         MODEL_DISCOVERY_UNAVAILABLE:
           "The provider could not be reached or is unavailable. Check the server's provider access.",
@@ -255,7 +267,7 @@ function renderAgentForm(context, rendered) {
     discoveryGeneration += 1;
     modelsLoading = false;
     modelOptions = [];
-    manualModel = false;
+    manualModel = !discoverModels;
     model.value = "";
     modelChoice.replaceChildren(element("option", { value: "" }, "Load models to choose one"));
     modelStatus.textContent = "";
@@ -276,29 +288,34 @@ function renderAgentForm(context, rendered) {
     { className: "harness-auth-fields" },
     element("legend", {}, "Model provider"),
     field("Provider", nativeProvider),
-    element(
-      "p",
-      {},
-      binding
-        ? `Preset authentication: ${harnessAuthDescription(binding)}`
-        : "Authentication method: API key",
-    ),
+    binding
+      ? element("p", {}, `Preset authentication: ${harnessAuthDescription(binding)}`)
+      : authMethodField,
     binding
       ? element(
           "p",
           { className: "hint" },
           "This Preset's saved authentication source is preserved.",
         )
-      : field(
-          "API key",
+      : element(
+          "div",
+          { className: "form-field" },
+          credentialLabel,
           apiKey,
-          "Stored as a Secret for this Agent. The key is never included in Configuration JSON.",
+          element(
+            "p",
+            { className: "hint" },
+            "Stored as a Secret for this Agent. Credentials are never included in Configuration JSON.",
+          ),
         ),
     modelSection,
   );
   name.value = agent.name ?? "";
   mode.value = agent.executionMode ?? "dedicated";
-  if (nativeProvider.value === "anthropic") {
+  if (binding?.method === "codex_pat") {
+    nativeProvider.value = "openai";
+    mode.value = "dedicated";
+  } else if (nativeProvider.value === "anthropic") {
     mode.value = "embedded";
   }
   const currentTemplate = () =>
@@ -417,11 +434,20 @@ function renderAgentForm(context, rendered) {
     }
     // A provider change must not send the previous provider's key to a different service.
     apiKey.value = "";
-    if (discoverModels) {
+    if (!binding) {
+      authMethod.value = "api_key";
       resetModelChoices(true);
     } else {
       updateModelConfiguration(true);
     }
+  });
+  authMethod.addEventListener("change", () => {
+    const changedTopology = authMethod.value === "codex_pat" && mode.value !== "dedicated";
+    if (authMethod.value === "codex_pat") {
+      mode.value = "dedicated";
+    }
+    apiKey.value = "";
+    resetModelChoices(changedTopology);
   });
   model.addEventListener("change", () => updateModelConfiguration());
   mode.addEventListener("change", () => updateModelConfiguration(true));
@@ -432,10 +458,11 @@ function renderAgentForm(context, rendered) {
     const selected = values?.agents?.defaults?.model;
     const ref = typeof selected === "string" ? selected : selected?.primary;
     if (typeof ref === "string" && /^(openai|anthropic|codex)\//.test(ref)) {
-      if (!savedSecret) {
+      if (!savedSecret && binding?.method !== "codex_pat") {
         const selectedProvider = ref.startsWith("anthropic/") ? "anthropic" : "openai";
-        if (selectedProvider !== nativeProvider.value) {
+        if (selectedProvider !== nativeProvider.value && !binding) {
           apiKey.value = "";
+          authMethod.value = "api_key";
           modelOptions = [];
         }
         nativeProvider.value = selectedProvider;
@@ -515,7 +542,7 @@ function renderAgentForm(context, rendered) {
     field(
       "Execution mode",
       mode,
-      "Anthropic uses Embedded execution. Slack requires Dedicated execution with OpenAI.",
+      "Codex PAT requires Dedicated execution. Anthropic uses Embedded execution. Slack requires Dedicated execution with OpenAI.",
     ),
     field(
       "Configuration JSON",
@@ -635,6 +662,7 @@ function renderAgentForm(context, rendered) {
       configuration,
       secretBindings,
       nativeProvider,
+      authMethod,
       model,
       modelChoice,
       mode,
@@ -647,8 +675,14 @@ function renderAgentForm(context, rendered) {
     }
     channelEditor.toggleAttribute("inert", pending || saved || outcomeUnknown);
     channelEditor.setAttribute("aria-busy", pending ? "true" : "false");
-    mode.disabled ||= nativeProvider.value === "anthropic";
-    nativeProvider.disabled ||= Boolean(savedSecret);
+    const usesPat = (binding?.method ?? authMethod.value) === "codex_pat";
+    mode.disabled ||= nativeProvider.value === "anthropic" || usesPat;
+    nativeProvider.disabled ||= Boolean(savedSecret) || binding?.method === "codex_pat";
+    authMethod.disabled ||= Boolean(savedSecret) || nativeProvider.value === "anthropic";
+    authMethod.querySelector('[value="api_key"]').textContent =
+      nativeProvider.value === "anthropic" ? "Anthropic API key" : "OpenAI API key";
+    authMethod.querySelector('[value="codex_pat"]').hidden = nativeProvider.value === "anthropic";
+    credentialLabel.textContent = usesPat ? "Codex PAT" : "API key";
     apiKey.disabled ||= Boolean(savedSecret);
     startOver.disabled = pending || outcomeUnknown || saved || Boolean(savedSecret);
     if (discoverModels) {
@@ -710,7 +744,7 @@ function renderAgentForm(context, rendered) {
     const fallbackPrefixes =
       mode.value === "dedicated" ? ["openai/", "codex/"] : [`${nativeProvider.value}/`];
     if (
-      (!binding || binding.method === "api_key") &&
+      (!binding || ["api_key", "codex_pat"].includes(binding.method)) &&
       Array.isArray(selected?.fallbacks) &&
       selected.fallbacks.some(
         (ref) =>
@@ -720,6 +754,14 @@ function renderAgentForm(context, rendered) {
     ) {
       feedback.textContent =
         "Fallback models must use the selected provider and execution mode. Update the Configuration JSON or reset the template before saving.";
+      return;
+    }
+    if (
+      (binding?.method ?? authMethod.value) === "codex_pat" &&
+      (nativeProvider.value !== "openai" || mode.value !== "dedicated")
+    ) {
+      feedback.textContent =
+        "Codex PAT requires OpenAI with Dedicated execution. Update the Configuration JSON or reset the template before saving.";
       return;
     }
     if (nativeProvider.value === "anthropic" && mode.value !== "embedded") {
@@ -760,7 +802,7 @@ function renderAgentForm(context, rendered) {
         }
         showSavedStatus();
       }
-      body.harnessAuth = binding ?? { method: "api_key", source: savedSecret.ref };
+      body.harnessAuth = binding ?? { method: authMethod.value, source: savedSecret.ref };
       if (!savedConfiguration) {
         mutationStarted = true;
         savedConfiguration = await request(`${namespacePath(namespaceId)}/configurations`, {

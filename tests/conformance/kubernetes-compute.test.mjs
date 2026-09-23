@@ -41,7 +41,7 @@ const apiKeyAuth = {
 function authContext(revision, namespace = kubernetesNamespaceName(tenant.id)) {
   return {
     harnessAuth:
-      revision.harnessAuth.method === "api_key"
+      revision.harnessAuth.method === "api_key" || revision.harnessAuth.method === "codex_pat"
         ? {
             ...revision.harnessAuth,
             backendRef: {
@@ -1864,6 +1864,77 @@ test("dedicated Codex projects the account-owned token and workspace without exp
   assert.equal(gatewayEnvironment.has("SLACK_APP_TOKEN"), false);
   assert.equal(gatewayEnvironment.has("SLACK_BOT_TOKEN"), false);
   assert.equal(gatewayEnvironment.has("MSTEAMS_APP_PASSWORD"), false);
+});
+
+test("direct Codex PAT is confined to the model container and exact admitted Secret", () => {
+  const driver = createKubernetesComputeDriver(options());
+  const namespace = kubernetesNamespaceName(tenant.id);
+  const revision = {
+    namespaceId: tenant.id,
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+    harnessAuth: { ...apiKeyAuth, method: "codex_pat" },
+    configuration: { agents: { defaults: { model: "codex/discovered-model" } } },
+  };
+  driver.validateHarnessAuth(revision.harness, revision.harnessAuth, revision.configuration);
+  const context = authContext(revision, namespace);
+  const prepared = driver.harnessAuthForRevision(revision, context, namespace);
+  const ownership = { namespaceId: tenant.id, agentId: "direct-pat-agent" };
+  for (const role of ["agent", "gateway"]) {
+    const workload = driver.deployment(
+      "direct-pat",
+      ownership,
+      namespace,
+      "runtime:local",
+      "direct-pat",
+      role,
+      {},
+      "info",
+      undefined,
+      false,
+      undefined,
+      role === "agent" ? prepared : undefined,
+    );
+    const env = Object.fromEntries(
+      workload.spec.template.spec.containers[0].env.map((entry) => [entry.name, entry]),
+    );
+    assert.equal(env.OPENAI_API_KEY, undefined);
+    assert.equal(env.CODEX_CHATGPT_WORKSPACE_ID, undefined);
+    if (role === "agent") {
+      assert.equal(env.CODEX_LOGIN_MODE.value, "codex_pat");
+      assert.deepEqual(env.CODEX_ACCESS_TOKEN.valueFrom.secretKeyRef, {
+        name: "occ-model-key",
+        key: "value",
+      });
+    } else {
+      assert.equal(env.CODEX_ACCESS_TOKEN, undefined);
+    }
+  }
+  for (const harnessAuth of [
+    { ...context.harnessAuth, method: "api_key" },
+    { ...context.harnessAuth, secretDriverId: "different-driver" },
+    { ...context.harnessAuth, backendRef: { ...context.harnessAuth.backendRef, uid: "" } },
+  ]) {
+    assert.throws(
+      () => driver.harnessAuthForRevision(revision, { harnessAuth }, namespace),
+      /authentication.*(?:invalid|admitted source)/i,
+    );
+  }
+  assert.throws(
+    () =>
+      driver.validateHarnessAuth(
+        { id: "openclaw", version: "1.0.0", mode: "embedded" },
+        revision.harnessAuth,
+        revision.configuration,
+      ),
+    /incompatible.*topology/i,
+  );
+  assert.throws(
+    () =>
+      driver.validateHarnessAuth(revision.harness, revision.harnessAuth, {
+        agents: { defaults: { model: "anthropic/claude" } },
+      }),
+    /compatible model provider/i,
+  );
 });
 
 test("account-token authentication grants only the exact Codex revision outbound HTTPS", () => {

@@ -138,7 +138,9 @@ empty configuration is a successful empty list; absent wiring and dependency
 failure return errors.
 
 `apps/controller/src/console/agents/create.mjs:renderCreateAgent` offers OpenAI
-or Anthropic with API-key authentication and a matching native model configuration.
+or Anthropic with a matching native model configuration. OpenAI exposes an
+explicit API-key or Codex-PAT method; Anthropic uses API keys. PAT selection locks
+Dedicated execution. The method is retained with saved artifacts for retries.
 It does not discover Installation Providers or assign their identities from the
 native provider selection. The Providers navigation item is hidden.
 Existing Preset bindings remain intact. Key entry uses the existing Secret API;
@@ -155,9 +157,10 @@ entry, `POST /namespaces/:namespaceId/agents/models` reaches
 `OpenClawController.discoverAgentModels`, which authorizes Agent creation in the
 Namespace and calls the selected Compute Driver outside a state transaction.
 The bundled `compute/model-discovery.ts` queries fixed native provider URLs with
-bounded responses and pagination, returning only model IDs and labels. It makes
+bounded responses and pagination, returning only model IDs and labels. The
+explicit `authMethod` selects the API-key or Codex-PAT discovery path. It makes
 no platform writes. Empty or failed discovery permits manual model entry; key
-and provider changes invalidate pending browser results. Model and execution-mode changes update the
+and provider or authentication-method changes invalidate pending browser results. Model and execution-mode changes update the
 native model and runtime entries while preserving unrelated settings; reset
 restores the selected starter. `configurationTemplate` enables native Control UI
 with explicit loopback origins on port 18789. Compute Drivers render gateway

@@ -2003,7 +2003,11 @@ export class OpenClawController {
   async discoverAgentModels(
     principalId: string,
     namespaceId: string,
-    input: { readonly provider: string; readonly apiKey: string },
+    input: {
+      readonly provider: string;
+      readonly authMethod: "api_key" | "codex_pat";
+      readonly apiKey: string;
+    },
   ) {
     await this.authorize(principalId, "create", { kind: "agent", id: namespaceId, namespaceId });
     await this.read((state) => this.exactNamespace(state, namespaceId));
@@ -2943,7 +2947,7 @@ export class OpenClawController {
     if (binding === null || binding.method === "runtime") {
       return;
     }
-    if (binding.method === "api_key") {
+    if (binding.method === "api_key" || binding.method === "codex_pat") {
       if (binding.source.namespaceId !== namespaceId) {
         throw new ScopeViolationError("Harness authentication sources cannot cross Namespaces.");
       }
@@ -2978,7 +2982,7 @@ export class OpenClawController {
     if (binding.method === "runtime") {
       return immutableCopy(binding);
     }
-    if (binding.method === "api_key") {
+    if (binding.method === "api_key" || binding.method === "codex_pat") {
       await this.authorize(agent.servicePrincipalId, "operate", binding.source);
       const source = await state.secrets.lockSecret(agent.namespaceId, binding.source.id);
       if (source === undefined) {

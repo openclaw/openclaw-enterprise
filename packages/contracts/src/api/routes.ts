@@ -653,7 +653,7 @@ export const occApiRoutes = [
     iamAction: "create",
     resourceKind: "agent",
     authorizationTarget: "namespace_collection",
-    summary: "List provider models for Agent creation without storing the supplied API key",
+    summary: "List provider models for Agent creation without storing the supplied credential",
     tags: ["Agents"],
     schema: {
       querystring: EmptyQuery,

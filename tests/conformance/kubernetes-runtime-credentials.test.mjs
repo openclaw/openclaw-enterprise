@@ -569,6 +569,18 @@ test("Codex startup rejects missing, blank, conflicting, and unsupported authent
   const cases = [
     {},
     { CODEX_LOGIN_MODE: "unknown" },
+    { CODEX_LOGIN_MODE: "codex_pat" },
+    { CODEX_LOGIN_MODE: "codex_pat", CODEX_ACCESS_TOKEN: "not-a-pat" },
+    {
+      CODEX_LOGIN_MODE: "codex_pat",
+      CODEX_ACCESS_TOKEN: "at-fixture",
+      CODEX_CHATGPT_WORKSPACE_ID: "caller-account",
+    },
+    {
+      CODEX_LOGIN_MODE: "codex_pat",
+      CODEX_ACCESS_TOKEN: "at-fixture",
+      OPENAI_API_KEY: "other-key",
+    },
     { CODEX_LOGIN_MODE: "api_key" },
     { CODEX_LOGIN_MODE: "api_key", OPENAI_API_KEY: " " },
     {
@@ -608,7 +620,7 @@ test("Codex startup rejects missing, blank, conflicting, and unsupported authent
     assert.equal(child.status, 1);
     assert.match(
       child.stderr,
-      /Codex (?:API-key authentication configuration|service-account authentication configuration|authentication mode) is (?:invalid|missing or unsupported)/,
+      /Codex (?:API-key authentication configuration|PAT authentication configuration|service-account authentication configuration|authentication mode) is (?:invalid|missing or unsupported)/,
     );
     assert.equal(child.stdout, "");
     assert.doesNotMatch(child.stderr, /fixture-key|fixture-token/);

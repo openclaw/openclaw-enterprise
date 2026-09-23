@@ -337,6 +337,12 @@ function prepareHarnessAuth(
       secret(harnessModelAuthentication(configuration).environmentName, resolvedAuth.backendRef),
     );
   } else if (
+    resolvedAuth.method === "codex_pat" &&
+    harness.mode === "dedicated" &&
+    harness.id === "codex"
+  ) {
+    environment.push(secret(CODEX_ACCESS_TOKEN, resolvedAuth.backendRef));
+  } else if (
     resolvedAuth.method === "chatgpt_service_account" &&
     harness.mode === "dedicated" &&
     harness.id === "codex"
@@ -1179,7 +1185,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (
       (!embedded && !dedicated) ||
       !auth ||
-      (auth.method !== "api_key" && auth.method !== "chatgpt_service_account") ||
+      (auth.method !== "api_key" &&
+        auth.method !== "codex_pat" &&
+        auth.method !== "chatgpt_service_account") ||
       (embedded && auth.method !== "api_key")
     ) {
       throw new ConfigurationFailure(
@@ -6139,7 +6147,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         "Harness authentication delivery context is missing or invalid.",
       );
     }
-    if (auth.method === "api_key") {
+    if (auth.method === "api_key" || auth.method === "codex_pat") {
       const { backendRef, ...snapshot } = auth;
       if (
         !isDeepStrictEqual(snapshot, revision.harnessAuth) ||

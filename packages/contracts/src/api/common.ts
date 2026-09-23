@@ -157,6 +157,10 @@ export const HarnessAuthBindingSchema = Type.Union([
     { additionalProperties: false },
   ),
   Type.Object(
+    { method: Type.Literal("codex_pat"), source: SecretReference },
+    { additionalProperties: false },
+  ),
+  Type.Object(
     { method: Type.Literal("chatgpt_service_account"), serviceAccountId: ServiceAccountId },
     { additionalProperties: false },
   ),
@@ -216,6 +220,7 @@ export const AgentRuntimeCredentialsBody = Type.Object({}, { additionalPropertie
 export const DiscoverAgentModelsBody = Type.Object(
   {
     provider: Type.Union([Type.Literal("openai"), Type.Literal("anthropic")]),
+    authMethod: Type.Union([Type.Literal("api_key"), Type.Literal("codex_pat")]),
     apiKey: Type.String({ minLength: 1, maxLength: 8192, pattern: "\\S", writeOnly: true }),
   },
   { additionalProperties: false },

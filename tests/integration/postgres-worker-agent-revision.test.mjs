@@ -22,7 +22,10 @@ import {
   waitFor,
 } from "../helpers/postgres-provider-state.mjs";
 
-async function setup(context, { leaseDurationMs = 30_000, onHealthy, metrics, repoDriver } = {}) {
+async function setup(
+  context,
+  { leaseDurationMs = 30_000, onHealthy, metrics, repoDriver, secretAuthMethod = "api_key" } = {},
+) {
   const [
     { Pool },
     { createControllerWorker },
@@ -126,7 +129,7 @@ async function setup(context, { leaseDurationMs = 30_000, onHealthy, metrics, re
         }),
       );
       harnessAuth = {
-        method: "api_key",
+        method: secretAuthMethod,
         source: { kind: "secret", namespaceId: namespace.id, id: identity.id },
       };
     } else {
@@ -152,7 +155,10 @@ async function setup(context, { leaseDurationMs = 30_000, onHealthy, metrics, re
         createdAt: new Date().toISOString(),
       });
     });
-    if (harnessAuth.method === "api_key" && grantHarnessSecret) {
+    if (
+      (harnessAuth.method === "api_key" || harnessAuth.method === "codex_pat") &&
+      grantHarnessSecret
+    ) {
       await observerPool.query(
         `INSERT INTO occ.iam_access_bindings
           (id, namespace_id, identity_subject_id, group_subject_id, role_id, resource_kind, resource_id)
@@ -4386,87 +4392,96 @@ test(
   },
 );
 
-test(
-  "revision dispatch rechecks Configuration and exact harness Secret grants without backend Secret reads",
-  requiresPostgres,
-  async (context) => {
-    const fixture = await setup(context);
-    const owners = await Promise.all(
-      ["allowed", "configuration-denied", "actor-secret-denied", "agent-secret-ungranted"].map(
-        (name, index) => fixture.agent(name, "embedded", undefined, null, index !== 3),
-      ),
-    );
-    const candidates = await Promise.all(owners.map((owner) => fixture.revision(owner, 1)));
-    // Revoke actor permissions after admission and independently exercise an
-    // Agent lacking its own grant; actor authority never authorizes that Agent.
-    await fixture.observerPool.query(
-      `INSERT INTO occ.iam_restrictions
+for (const secretAuthMethod of ["api_key", "codex_pat"]) {
+  test(
+    `${secretAuthMethod} revision dispatch rechecks Configuration and exact harness Secret grants without backend Secret reads`,
+    requiresPostgres,
+    async (context) => {
+      const fixture = await setup(context, { secretAuthMethod });
+      const owners = await Promise.all(
+        ["allowed", "configuration-denied", "actor-secret-denied", "agent-secret-ungranted"].map(
+          (name, index) =>
+            fixture.agent(
+              name,
+              secretAuthMethod === "codex_pat" ? "dedicated" : "embedded",
+              undefined,
+              null,
+              index !== 3,
+            ),
+        ),
+      );
+      const candidates = await Promise.all(owners.map((owner) => fixture.revision(owner, 1)));
+      // Revoke actor permissions after admission and independently exercise an
+      // Agent lacking its own grant; actor authority never authorizes that Agent.
+      await fixture.observerPool.query(
+        `INSERT INTO occ.iam_restrictions
          (id, namespace_id, action, resource_kind, resource_id, effect)
        VALUES ($1, $2, 'read', 'configuration', $3, 'deny'),
               ($4, $2, 'operate', 'secret', $5, 'deny')`,
-      [
-        `restriction-${randomUUID()}`,
-        fixture.namespace.id,
-        owners[1].configurationId,
-        `restriction-${randomUUID()}`,
-        owners[2].harnessAuth.source.id,
-      ],
-    );
-    const prepared = [];
-    // Production workers have no Secret API permission. Dispatch must project
-    // authoritative OCC metadata without asking the backend owner to read values.
-    fixture.secretDriver.setResolveOverride(() => {
-      throw new Error("Worker cannot read backend Secrets.");
-    });
-    await fixture.start({
-      ...fixture.compute,
-      async prepareRevision(revision, operationContext) {
-        prepared.push({ id: revision.id, operationContext });
-        return fixture.compute.prepareRevision(revision);
-      },
-    });
-    await Promise.all(
-      candidates.map((candidate, index) =>
-        fixture.work(candidate, index === 0 ? "succeeded" : "failed_permanent"),
-      ),
-    );
-    const source = await fixture.state.read((view) =>
-      view.secrets.findSecret(fixture.namespace.id, owners[0].harnessAuth.source.id),
-    );
-    assert.deepEqual(
-      prepared,
-      [
-        {
-          id: candidates[0].id,
-          operationContext: {
-            secretEnvironment: [],
-            harnessAuth: { ...candidates[0].harnessAuth, backendRef: source.backendRef },
-          },
+        [
+          `restriction-${randomUUID()}`,
+          fixture.namespace.id,
+          owners[1].configurationId,
+          `restriction-${randomUUID()}`,
+          owners[2].harnessAuth.source.id,
+        ],
+      );
+      const prepared = [];
+      // Production workers have no Secret API permission. Dispatch must project
+      // authoritative OCC metadata without asking the backend owner to read values.
+      fixture.secretDriver.setResolveOverride(() => {
+        throw new Error("Worker cannot read backend Secrets.");
+      });
+      await fixture.start({
+        ...fixture.compute,
+        async prepareRevision(revision, operationContext) {
+          prepared.push({ id: revision.id, operationContext });
+          return fixture.compute.prepareRevision(revision);
         },
-      ],
-      "only the independently authorized binding reaches Compute, outside gateway environment projections",
-    );
-    const denied = await fixture.observerPool.query(
-      `SELECT details->'__occAuditMetadata'->'authorization' AS authorization
+      });
+      await Promise.all(
+        candidates.map((candidate, index) =>
+          fixture.work(candidate, index === 0 ? "succeeded" : "failed_permanent"),
+        ),
+      );
+      const source = await fixture.state.read((view) =>
+        view.secrets.findSecret(fixture.namespace.id, owners[0].harnessAuth.source.id),
+      );
+      assert.deepEqual(
+        prepared,
+        [
+          {
+            id: candidates[0].id,
+            operationContext: {
+              secretEnvironment: [],
+              harnessAuth: { ...candidates[0].harnessAuth, backendRef: source.backendRef },
+            },
+          },
+        ],
+        "only the independently authorized binding reaches Compute, outside gateway environment projections",
+      );
+      const denied = await fixture.observerPool.query(
+        `SELECT details->'__occAuditMetadata'->'authorization' AS authorization
        FROM occ.audit_events WHERE namespace_id = $1 AND kind = 'authorization_denial'`,
-      [fixture.namespace.id],
-    );
-    const deniedResources = denied.rows
-      .map(
-        ({ authorization }) =>
-          `${authorization.principalId}:${authorization.resource.kind}:${authorization.resource.id}`,
-      )
-      .sort();
-    assert.deepEqual(
-      deniedResources,
-      [
-        `${fixture.actor.id}:configuration:${owners[1].configurationId}`,
-        `${fixture.actor.id}:secret:${owners[2].harnessAuth.source.id}`,
-        `${owners[3].servicePrincipalId}:secret:${owners[3].harnessAuth.source.id}`,
-      ].sort(),
-    );
-  },
-);
+        [fixture.namespace.id],
+      );
+      const deniedResources = denied.rows
+        .map(
+          ({ authorization }) =>
+            `${authorization.principalId}:${authorization.resource.kind}:${authorization.resource.id}`,
+        )
+        .sort();
+      assert.deepEqual(
+        deniedResources,
+        [
+          `${fixture.actor.id}:configuration:${owners[1].configurationId}`,
+          `${fixture.actor.id}:secret:${owners[2].harnessAuth.source.id}`,
+          `${owners[3].servicePrincipalId}:secret:${owners[3].harnessAuth.source.id}`,
+        ].sort(),
+      );
+    },
+  );
+}
 
 test(
   "revision dispatch refuses a different selected Secret Driver before binding or activating the Agent",

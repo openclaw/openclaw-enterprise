@@ -15,6 +15,7 @@ import {
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
 const uuidV4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const identifier = (prefix) => new RegExp(`^${prefix}_${uuidV4}$`);
@@ -191,7 +192,7 @@ async function bootstrapNamespace(fixture) {
   return namespace.data;
 }
 
-async function bootstrapAgent(fixture, values = {}) {
+async function bootstrapAgent(fixture, values = {}, executionMode = "embedded") {
   const namespace = await bootstrapNamespace(fixture);
   const configuration = await request(
     fixture.app,
@@ -202,7 +203,7 @@ async function bootstrapAgent(fixture, values = {}) {
   assert.equal(configuration.status, 201);
 
   const agent = await request(fixture.app, "POST", `/namespaces/${namespace.id}/agents`, {
-    body: { name: "secret-api-agent", configurationId: configuration.data.id },
+    body: { name: "secret-api-agent", configurationId: configuration.data.id, executionMode },
   });
   assert.equal(agent.status, 201);
   return { namespace, configuration: configuration.data, agent: agent.data };
@@ -235,10 +236,26 @@ test("Agent model discovery uses native provider APIs without creating platform 
       last_id: "claude-previous",
     },
     { data: [], has_more: false, last_id: null },
+    { chatgpt_account_id: "verified-account", chatgpt_account_is_fedramp: true },
+    {
+      models: [
+        {
+          slug: "codex-later",
+          display_name: "Later model",
+          visibility: "list",
+          priority: 2,
+          model_messages: { instructions: "omit runtime prompts" },
+        },
+        { slug: "codex-hidden", display_name: "Hidden model", visibility: "hide", priority: 0 },
+        { slug: "codex-dynamic", display_name: "Codex dynamic", visibility: "list", priority: 1 },
+      ],
+    },
   ];
   const transport = t.mock.method(globalThis, "fetch", async () => Response.json(pages.shift()));
   const path = `/namespaces/${namespace.id}/agents/models`;
-  const openai = await request(fixture.app, "POST", path, { body: { provider: "openai", apiKey } });
+  const openai = await request(fixture.app, "POST", path, {
+    body: { provider: "openai", authMethod: "api_key", apiKey },
+  });
   assert.equal(openai.status, 200);
   assert.equal(openai.headers.get("cache-control"), "no-store");
   assert.deepEqual(openai.data, [
@@ -247,7 +264,7 @@ test("Agent model discovery uses native provider APIs without creating platform 
     { id: "z-model", name: "z-model" },
   ]);
   const anthropic = await request(fixture.app, "POST", path, {
-    body: { provider: "anthropic", apiKey },
+    body: { provider: "anthropic", authMethod: "api_key", apiKey },
   });
   assert.equal(anthropic.status, 200);
   assert.deepEqual(anthropic.data, [
@@ -255,10 +272,18 @@ test("Agent model discovery uses native provider APIs without creating platform 
     { id: "claude-previous", name: "Previous Claude" },
   ]);
   const empty = await request(fixture.app, "POST", path, {
-    body: { provider: "anthropic", apiKey },
+    body: { provider: "anthropic", authMethod: "api_key", apiKey },
   });
   assert.equal(empty.status, 200);
   assert.deepEqual(empty.data, []);
+  const pat = await request(fixture.app, "POST", path, {
+    body: { provider: "openai", authMethod: "codex_pat", apiKey: "at-fixture-token" },
+  });
+  assert.equal(pat.status, 200);
+  assert.deepEqual(pat.data, [
+    { id: "codex-dynamic", name: "Codex dynamic" },
+    { id: "codex-later", name: "Later model" },
+  ]);
   const calls = transport.mock.calls.map(({ arguments: args }) => args);
   assert.deepEqual(
     calls.map(([url]) => url),
@@ -267,10 +292,12 @@ test("Agent model discovery uses native provider APIs without creating platform 
       "https://api.anthropic.com/v1/models?limit=1000",
       "https://api.anthropic.com/v1/models?limit=1000&after_id=claude-new",
       "https://api.anthropic.com/v1/models?limit=1000",
+      "https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami",
+      "https://chatgpt.com/backend-api/codex/models?client_version=0.156.0",
     ],
   );
   assert.deepEqual(calls[0][1].headers, { Authorization: `Bearer ${apiKey}` });
-  for (const [, options] of calls.slice(1)) {
+  for (const [, options] of calls.slice(1, 4)) {
     assert.deepEqual(options.headers, { "x-api-key": apiKey, "anthropic-version": "2023-06-01" });
   }
   for (const [, options] of calls) {
@@ -278,6 +305,13 @@ test("Agent model discovery uses native provider APIs without creating platform 
     assert.ok(options.signal instanceof AbortSignal);
   }
   assert.equal(calls[1][1].signal, calls[2][1].signal);
+  assert.deepEqual(calls[4][1].headers, { Authorization: "Bearer at-fixture-token" });
+  assert.deepEqual(calls[5][1].headers, {
+    Authorization: "Bearer at-fixture-token",
+    "ChatGPT-Account-ID": "verified-account",
+    "X-OpenAI-Fedramp": "true",
+  });
+  assert.equal(calls[4][1].signal, calls[5][1].signal);
   assert.deepEqual(fixture.secretDriver.calls, []);
   assert.deepEqual(
     await fixture.controller().transact(async (unit) => ({
@@ -289,6 +323,34 @@ test("Agent model discovery uses native provider APIs without creating platform 
   );
   assert.equal(JSON.stringify([openai.body, anthropic.body, empty.body]).includes(apiKey), false);
   assert.equal(JSON.stringify(fixture.auditSink.events).includes(apiKey), false);
+});
+
+test("Codex PAT discovery rejects invalid identity without falling through to the API-key endpoint", async (t) => {
+  const fixture = await createModelDiscoveryFixture();
+  const namespace = await bootstrapNamespace(fixture);
+  for (const [response, expectedCode] of [
+    [
+      Response.json({ error: "private upstream error" }, { status: 401 }),
+      "MODEL_DISCOVERY_CREDENTIALS_REJECTED",
+    ],
+    [Response.json({ chatgpt_account_id: "unverified" }), "MODEL_DISCOVERY_INVALID_RESPONSE"],
+  ]) {
+    const transport = t.mock.method(globalThis, "fetch", async () => response);
+    const result = await request(fixture.app, "POST", `/namespaces/${namespace.id}/agents/models`, {
+      body: { provider: "openai", authMethod: "codex_pat", apiKey: "at-private-fixture" },
+    });
+    assert.equal(result.body.error.code, expectedCode);
+    assert.equal(transport.mock.callCount(), 1);
+    assert.equal(
+      transport.mock.calls[0].arguments[0],
+      "https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami",
+    );
+    assert.doesNotMatch(
+      JSON.stringify([result.body, fixture.auditSink.events]),
+      /at-private-fixture|private upstream error/,
+    );
+    transport.mock.restore();
+  }
 });
 
 test("Agent model discovery requires namespace Agent-create permission before provider I/O", async (t) => {
@@ -310,7 +372,7 @@ test("Agent model discovery requires namespace Agent-create permission before pr
   const transport = t.mock.method(globalThis, "fetch", async () => Response.json({ data: [] }));
   const apiKey = `denied-discovery-key-${randomUUID()}`;
   const denied = await request(readerApp, "POST", `/namespaces/${namespace.id}/agents/models`, {
-    body: { provider: "openai", apiKey },
+    body: { provider: "openai", authMethod: "api_key", apiKey },
   });
   assert.equal(denied.status, 403);
   assert.equal(denied.body.error.code, "FORBIDDEN");
@@ -329,7 +391,7 @@ test("Agent model discovery requires namespace Agent-create permission before pr
     resourceKind: "agent",
   });
   const granted = await request(readerApp, "POST", `/namespaces/${namespace.id}/agents/models`, {
-    body: { provider: "openai", apiKey },
+    body: { provider: "openai", authMethod: "api_key", apiKey },
   });
   assert.equal(granted.status, 200);
   assert.deepEqual(granted.data, []);
@@ -341,7 +403,7 @@ test("Agent model discovery reports unsupported Compute Drivers without contacti
   const namespace = await bootstrapNamespace(fixture);
   const transport = t.mock.method(globalThis, "fetch", async () => Response.json({ data: [] }));
   const result = await request(fixture.app, "POST", `/namespaces/${namespace.id}/agents/models`, {
-    body: { provider: "openai", apiKey: `unsupported-key-${randomUUID()}` },
+    body: { provider: "openai", authMethod: "api_key", apiKey: `unsupported-key-${randomUUID()}` },
   });
   assert.equal(result.status, 501);
   assert.equal(result.body.error.code, "NOT_IMPLEMENTED");
@@ -357,7 +419,7 @@ test("Agent model discovery bounds and redacts provider failures", async (t) => 
   const credentialsRejected = [
     400,
     "MODEL_DISCOVERY_CREDENTIALS_REJECTED",
-    "The provider rejected model discovery. Check the API key and its permission to list models, then retry or enter a model ID manually.",
+    "The provider rejected model discovery. Check the selected credential and its permission to list models, then retry or enter a model ID manually.",
   ];
   const rateLimited = [
     429,
@@ -438,7 +500,7 @@ test("Agent model discovery bounds and redacts provider failures", async (t) => 
         fixture.app,
         "POST",
         `/namespaces/${namespace.id}/agents/models`,
-        { body: { provider: "openai", apiKey } },
+        { body: { provider: "openai", authMethod: "api_key", apiKey } },
       );
       assert.equal(failed.status, status);
       assert.equal(failed.body.error.code, code);
@@ -663,7 +725,11 @@ test("Secret API denial and storage failures return value-free errors", async ()
 
 // These tests exercise API validation, Native IAM, OCC admission, and state ownership.
 // Passive Secret storage does not establish provider login or model execution proof.
-for (const model of ["openai/gpt-5", "anthropic/claude-sonnet-4-5"]) {
+for (const [model, method, executionMode] of [
+  ["openai/gpt-5", "api_key", "embedded"],
+  ["anthropic/claude-sonnet-4-5", "api_key", "embedded"],
+  ["codex/gpt-5", "codex_pat", "dedicated"],
+]) {
   test(`${model} Harness Secret binding preserves draft semantics, exact delivery grants, and revision source retention`, async () => {
     const harnessAuthDriver = createTestKubernetesComputeDriver("compute-harness-auth");
     const fixture = await createFixture({
@@ -673,15 +739,22 @@ for (const model of ["openai/gpt-5", "anthropic/claude-sonnet-4-5"]) {
         validateHarnessAuth: harnessAuthDriver.validateHarnessAuth.bind(harnessAuthDriver),
       },
     });
-    const { namespace, configuration, agent } = await bootstrapAgent(fixture, {
-      agents: {
-        defaults: {
-          model,
-          models: { [model]: { agentRuntime: { id: "openclaw" } } },
+    let { namespace, configuration, agent } = await bootstrapAgent(
+      fixture,
+      {
+        ...(method === "codex_pat" ? createHarnessConfiguration("codex", "gpt-5") : {}),
+        agents: {
+          defaults: {
+            model,
+            models: {
+              [model]: { agentRuntime: { id: method === "codex_pat" ? "codex" : "openclaw" } },
+            },
+          },
         },
       },
-    });
-    const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+      executionMode,
+    );
+    let path = `/namespaces/${namespace.id}/agents/${agent.id}`;
     assert.equal(agent.harnessAuth, null);
     assert.equal((await request(fixture.app, "POST", `${path}/deploy`)).status, 409);
     const value = `synthetic-harness-key-${randomUUID()}`;
@@ -689,7 +762,22 @@ for (const model of ["openai/gpt-5", "anthropic/claude-sonnet-4-5"]) {
       body: { name: "Harness key", value },
     });
     assert.equal(key.status, 201, JSON.stringify(key.body));
-    const binding = { method: "api_key", source: key.data.ref };
+    const binding = { method, source: key.data.ref };
+    if (method === "codex_pat") {
+      const created = await request(fixture.app, "POST", `/namespaces/${namespace.id}/agents`, {
+        body: {
+          name: "direct-pat-agent",
+          configurationId: configuration.id,
+          executionMode,
+          harnessAuth: binding,
+        },
+      });
+      assert.equal(created.status, 201, JSON.stringify(created.body));
+      assert.deepEqual(created.data.harnessAuth, binding);
+      agent = created.data;
+      path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+    }
+
     const bound = await request(fixture.app, "PATCH", path, {
       body: { configurationId: configuration.id, harnessAuth: binding },
     });

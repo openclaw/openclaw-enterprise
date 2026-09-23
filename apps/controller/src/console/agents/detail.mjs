@@ -688,7 +688,7 @@ export async function renderAgentDetail(context) {
       });
       content.append(channels);
     } else if (selectedTab === "credentials" && draft) {
-      const auth = createHarnessAuthFields(context, agent.harnessAuth);
+      const auth = createHarnessAuthFields(context, agent.harnessAuth, agent.executionMode);
       const feedback = element("p", { role: "status", className: "hint" });
       const save = element(
         "button",

@@ -2089,6 +2089,31 @@
                                   {
                                     "additionalProperties": false,
                                     "properties": {
+                                      "method": { "const": "codex_pat", "type": "string" },
+                                      "source": {
+                                        "additionalProperties": false,
+                                        "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                                        "properties": {
+                                          "id": {
+                                            "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                            "type": "string"
+                                          },
+                                          "kind": { "const": "secret", "type": "string" },
+                                          "namespaceId": {
+                                            "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": ["kind", "namespaceId", "id"],
+                                        "type": "object"
+                                      }
+                                    },
+                                    "required": ["method", "source"],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
                                       "method": {
                                         "const": "chatgpt_service_account",
                                         "type": "string"
@@ -2316,6 +2341,31 @@
                           {
                             "additionalProperties": false,
                             "properties": {
+                              "method": { "const": "codex_pat", "type": "string" },
+                              "source": {
+                                "additionalProperties": false,
+                                "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                                "properties": {
+                                  "id": {
+                                    "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  },
+                                  "kind": { "const": "secret", "type": "string" },
+                                  "namespaceId": {
+                                    "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": ["kind", "namespaceId", "id"],
+                                "type": "object"
+                              }
+                            },
+                            "required": ["method", "source"],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
                               "method": { "const": "chatgpt_service_account", "type": "string" },
                               "serviceAccountId": {
                                 "pattern": "^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -2458,6 +2508,31 @@
                                   "additionalProperties": false,
                                   "properties": {
                                     "method": { "const": "api_key", "type": "string" },
+                                    "source": {
+                                      "additionalProperties": false,
+                                      "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                                      "properties": {
+                                        "id": {
+                                          "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                          "type": "string"
+                                        },
+                                        "kind": { "const": "secret", "type": "string" },
+                                        "namespaceId": {
+                                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                          "type": "string"
+                                        }
+                                      },
+                                      "required": ["kind", "namespaceId", "id"],
+                                      "type": "object"
+                                    }
+                                  },
+                                  "required": ["method", "source"],
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "method": { "const": "codex_pat", "type": "string" },
                                     "source": {
                                       "additionalProperties": false,
                                       "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
@@ -2698,6 +2773,12 @@
                     "type": "string",
                     "writeOnly": true
                   },
+                  "authMethod": {
+                    "anyOf": [
+                      { "const": "api_key", "type": "string" },
+                      { "const": "codex_pat", "type": "string" }
+                    ]
+                  },
                   "provider": {
                     "anyOf": [
                       { "const": "openai", "type": "string" },
@@ -2705,7 +2786,7 @@
                     ]
                   }
                 },
-                "required": ["provider", "apiKey"],
+                "required": ["provider", "authMethod", "apiKey"],
                 "type": "object"
               }
             }
@@ -2814,7 +2895,7 @@
             "description": "Default Response"
           }
         },
-        "summary": "List provider models for Agent creation without storing the supplied API key",
+        "summary": "List provider models for Agent creation without storing the supplied credential",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" }
@@ -2896,6 +2977,31 @@
                                   "additionalProperties": false,
                                   "properties": {
                                     "method": { "const": "api_key", "type": "string" },
+                                    "source": {
+                                      "additionalProperties": false,
+                                      "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                                      "properties": {
+                                        "id": {
+                                          "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                          "type": "string"
+                                        },
+                                        "kind": { "const": "secret", "type": "string" },
+                                        "namespaceId": {
+                                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                          "type": "string"
+                                        }
+                                      },
+                                      "required": ["kind", "namespaceId", "id"],
+                                      "type": "object"
+                                    }
+                                  },
+                                  "required": ["method", "source"],
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "method": { "const": "codex_pat", "type": "string" },
                                     "source": {
                                       "additionalProperties": false,
                                       "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
@@ -3180,6 +3286,31 @@
                                 {
                                   "additionalProperties": false,
                                   "properties": {
+                                    "method": { "const": "codex_pat", "type": "string" },
+                                    "source": {
+                                      "additionalProperties": false,
+                                      "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                                      "properties": {
+                                        "id": {
+                                          "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                          "type": "string"
+                                        },
+                                        "kind": { "const": "secret", "type": "string" },
+                                        "namespaceId": {
+                                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                          "type": "string"
+                                        }
+                                      },
+                                      "required": ["kind", "namespaceId", "id"],
+                                      "type": "object"
+                                    }
+                                  },
+                                  "required": ["method", "source"],
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
                                     "method": {
                                       "const": "chatgpt_service_account",
                                       "type": "string"
@@ -3413,6 +3544,31 @@
                           {
                             "additionalProperties": false,
                             "properties": {
+                              "method": { "const": "codex_pat", "type": "string" },
+                              "source": {
+                                "additionalProperties": false,
+                                "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                                "properties": {
+                                  "id": {
+                                    "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  },
+                                  "kind": { "const": "secret", "type": "string" },
+                                  "namespaceId": {
+                                    "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": ["kind", "namespaceId", "id"],
+                                "type": "object"
+                              }
+                            },
+                            "required": ["method", "source"],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
                               "method": { "const": "chatgpt_service_account", "type": "string" },
                               "serviceAccountId": {
                                 "pattern": "^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -3522,6 +3678,31 @@
                                   "additionalProperties": false,
                                   "properties": {
                                     "method": { "const": "api_key", "type": "string" },
+                                    "source": {
+                                      "additionalProperties": false,
+                                      "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                                      "properties": {
+                                        "id": {
+                                          "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                          "type": "string"
+                                        },
+                                        "kind": { "const": "secret", "type": "string" },
+                                        "namespaceId": {
+                                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                          "type": "string"
+                                        }
+                                      },
+                                      "required": ["kind", "namespaceId", "id"],
+                                      "type": "object"
+                                    }
+                                  },
+                                  "required": ["method", "source"],
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "method": { "const": "codex_pat", "type": "string" },
                                     "source": {
                                       "additionalProperties": false,
                                       "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
@@ -3829,6 +4010,31 @@
                               "additionalProperties": false,
                               "properties": {
                                 "method": { "const": "api_key", "type": "string" },
+                                "source": {
+                                  "additionalProperties": false,
+                                  "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                                  "properties": {
+                                    "id": {
+                                      "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                      "type": "string"
+                                    },
+                                    "kind": { "const": "secret", "type": "string" },
+                                    "namespaceId": {
+                                      "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": ["kind", "namespaceId", "id"],
+                                  "type": "object"
+                                }
+                              },
+                              "required": ["method", "source"],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "method": { "const": "codex_pat", "type": "string" },
                                 "source": {
                                   "additionalProperties": false,
                                   "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
@@ -4506,6 +4712,31 @@
                               {
                                 "additionalProperties": false,
                                 "properties": {
+                                  "method": { "const": "codex_pat", "type": "string" },
+                                  "source": {
+                                    "additionalProperties": false,
+                                    "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                                    "properties": {
+                                      "id": {
+                                        "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "kind": { "const": "secret", "type": "string" },
+                                      "namespaceId": {
+                                        "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": ["kind", "namespaceId", "id"],
+                                    "type": "object"
+                                  }
+                                },
+                                "required": ["method", "source"],
+                                "type": "object"
+                              },
+                              {
+                                "additionalProperties": false,
+                                "properties": {
                                   "method": {
                                     "const": "chatgpt_service_account",
                                     "type": "string"
@@ -4820,6 +5051,31 @@
                               "additionalProperties": false,
                               "properties": {
                                 "method": { "const": "api_key", "type": "string" },
+                                "source": {
+                                  "additionalProperties": false,
+                                  "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                                  "properties": {
+                                    "id": {
+                                      "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                      "type": "string"
+                                    },
+                                    "kind": { "const": "secret", "type": "string" },
+                                    "namespaceId": {
+                                      "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": ["kind", "namespaceId", "id"],
+                                  "type": "object"
+                                }
+                              },
+                              "required": ["method", "source"],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "method": { "const": "codex_pat", "type": "string" },
                                 "source": {
                                   "additionalProperties": false,
                                   "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
@@ -5348,6 +5604,31 @@
                                   "additionalProperties": false,
                                   "properties": {
                                     "method": { "const": "api_key", "type": "string" },
+                                    "source": {
+                                      "additionalProperties": false,
+                                      "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                                      "properties": {
+                                        "id": {
+                                          "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                          "type": "string"
+                                        },
+                                        "kind": { "const": "secret", "type": "string" },
+                                        "namespaceId": {
+                                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                          "type": "string"
+                                        }
+                                      },
+                                      "required": ["kind", "namespaceId", "id"],
+                                      "type": "object"
+                                    }
+                                  },
+                                  "required": ["method", "source"],
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "method": { "const": "codex_pat", "type": "string" },
                                     "source": {
                                       "additionalProperties": false,
                                       "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",

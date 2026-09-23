@@ -5,7 +5,7 @@ const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 const MAX_MODELS = 10_000;
 const MAX_PAGES = 10;
 
-async function readModelPage(response: Response): Promise<Record<string, unknown>> {
+async function readDiscoveryResponse(response: Response): Promise<Record<string, unknown>> {
   if (!response.ok) {
     await response.body?.cancel().catch(() => {});
     if (response.status === 401 || response.status === 403) {
@@ -42,7 +42,7 @@ async function readModelPage(response: Response): Promise<Record<string, unknown
       throw new ModelDiscoveryError("invalid_response");
     }
     const page = asRecord(decoded);
-    if (page === undefined || !Array.isArray(page.data)) {
+    if (page === undefined) {
       throw new ModelDiscoveryError("invalid_response");
     }
     return page;
@@ -54,15 +54,25 @@ async function readModelPage(response: Response): Promise<Record<string, unknown
   }
 }
 
-/** Native API-key discovery; caller credentials never become stored platform state. */
+/** Native credential discovery; caller credentials never become stored platform state. */
 export async function discoverHarnessModels(input: {
   readonly provider: string;
+  readonly authMethod: "api_key" | "codex_pat";
   readonly apiKey: string;
 }): Promise<readonly { readonly id: string; readonly name: string }[]> {
   if (input.provider !== "openai" && input.provider !== "anthropic") {
     throw new ModelDiscoveryError("unavailable");
   }
+  if (
+    input.authMethod === "codex_pat" &&
+    (input.provider !== "openai" || !input.apiKey.startsWith("at-"))
+  ) {
+    // Native --with-access-token interprets other input as an identity JWT, not a PAT.
+    throw new ModelDiscoveryError("credentials_rejected");
+  }
   try {
+    const signal = AbortSignal.timeout(10_000);
+    const pat = input.authMethod === "codex_pat";
     const anthropic = input.provider === "anthropic";
     const url = new URL(
       anthropic ? "https://api.anthropic.com/v1/models" : "https://api.openai.com/v1/models",
@@ -73,15 +83,54 @@ export async function discoverHarnessModels(input: {
     if (anthropic) {
       url.searchParams.set("limit", "1000");
     }
-    const signal = AbortSignal.timeout(10_000);
+    if (pat) {
+      // Codex 0.156 hydrates the account from whoami; callers never supply account authority.
+      const identity = await readDiscoveryResponse(
+        await fetch("https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami", {
+          headers: { ...headers },
+          signal,
+          redirect: "error",
+        }),
+      );
+      if (
+        !isNonEmptyString(identity.chatgpt_account_id) ||
+        /[\s\p{Cc}]/u.test(identity.chatgpt_account_id) ||
+        typeof identity.chatgpt_account_is_fedramp !== "boolean"
+      ) {
+        throw new ModelDiscoveryError("invalid_response");
+      }
+      headers["ChatGPT-Account-ID"] = identity.chatgpt_account_id;
+      if (identity.chatgpt_account_is_fedramp) {
+        headers["X-OpenAI-Fedramp"] = "true";
+      }
+      url.href = "https://chatgpt.com/backend-api/codex/models?client_version=0.156.0";
+    }
     const models = new Map<string, { readonly id: string; readonly name: string }>();
     const cursors = new Set<string>();
     for (let pageIndex = 0; pageIndex < MAX_PAGES; pageIndex++) {
-      const page = await readModelPage(
+      const page = await readDiscoveryResponse(
         await fetch(url.href, { headers, signal, redirect: "error" }),
       );
-      for (const item of page.data as unknown[]) {
-        const model = asRecord(item);
+      const entries = pat ? page.models : page.data;
+      if (!Array.isArray(entries) || entries.length > MAX_MODELS) {
+        throw new ModelDiscoveryError("invalid_response");
+      }
+      if (pat) {
+        entries.sort((left, right) => {
+          const a = asRecord(left)?.priority;
+          const b = asRecord(right)?.priority;
+          if (typeof a !== "number" || typeof b !== "number") {
+            throw new ModelDiscoveryError("invalid_response");
+          }
+          return a - b;
+        });
+      }
+      for (const item of entries) {
+        const entry = asRecord(item);
+        if (pat && entry?.visibility !== "list") {
+          continue;
+        }
+        const model = pat ? { ...entry, id: entry?.slug } : entry;
         if (!isNonEmptyString(model?.id) || /[\s\p{Cc}]/u.test(model.id)) {
           throw new ModelDiscoveryError("invalid_response");
         }
@@ -96,9 +145,10 @@ export async function discoverHarnessModels(input: {
         }
       }
       if (!anthropic || page.has_more === false) {
-        return [...models.values()].sort((left, right) =>
-          left.id < right.id ? -1 : Number(left.id > right.id),
-        );
+        const choices = [...models.values()];
+        return pat
+          ? choices
+          : choices.sort((left, right) => (left.id < right.id ? -1 : Number(left.id > right.id)));
       }
       // Anthropic's cursor is the last model ID, never an upstream-provided URL.
       if (page.has_more !== true || !isNonEmptyString(page.last_id) || cursors.has(page.last_id)) {

@@ -38,7 +38,7 @@
 - [`createAgent`](../api.md#post-namespacesnamespaceidagents): Create a Namespace-owned Agent.
 - [`updateAgent`](../api.md#patch-namespacesnamespaceidagentsagentid): Replace an exact Namespace-owned Agent's editable draft.
 - [`deployAgent`](../api.md#post-namespacesnamespaceidagentsagentiddeploy): Admit an immutable revision from the Agent's saved draft.
-- [`discoverAgentModels`](../api.md#post-namespacesnamespaceidagentsmodels): List provider models for Agent creation without storing the supplied API key.
+- [`discoverAgentModels`](../api.md#post-namespacesnamespaceidagentsmodels): List provider models for Agent creation without storing the supplied credential.
 - [`stopAgent`](../api.md#post-namespacesnamespaceidagentsagentidstop): Stop one Agent while retaining its revision and persistent state.
 - [`getAgentNativeAdmin`](../api.md#get-namespacesnamespaceidagentsagentidnativeadmin): Resolve native admin UI launch availability for one Agent.
 - [`deleteAgent`](../api.md#delete-namespacesnamespaceidagentsagentid): Begin deletion of an exact Namespace-owned Agent and its AgentRevisions.
