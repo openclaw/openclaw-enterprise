@@ -11,6 +11,18 @@ const readyForm = [
   { selector: "#harness-auth-method", value: "runtime" },
 ];
 const account = [{ selector: ".account-toggle", click: true }];
+const createWorkspaceFields = [
+  ...form,
+  { selector: "#agent-name", value: "Workspace seed demo" },
+  { selector: "#harness-auth-method", value: "api_key" },
+  { selector: "#harness-auth-secret", value: "sec_demo_model" },
+  {
+    selector: "#workspace-IDENTITY-md",
+    value:
+      "# IDENTITY.md - Who Am I?\n\n- **Name:** Demo Agent\n- **Creature:** Console familiar\n- **Vibe:** Calm and precise\n- **Emoji:** 🦀\n",
+  },
+  { selector: "#workspace-USER-md", value: "" },
+];
 
 // API failures are injected at the HTTP boundary. The console owns their presentation.
 export const scenarios = {
@@ -186,7 +198,15 @@ export const scenarios = {
     path: create,
     actions: form,
     description:
-      "Name, execution mode, native JSON, authentication, Providers, plugins, Secret bindings, and channel controls.",
+      "Name, execution mode, native JSON, authentication, Providers, plugins, Secret bindings, channel controls, and seeded workspace files.",
+  },
+  createWorkspaceFiles: {
+    group: "Pages/Create Agent",
+    name: "Workspace files",
+    path: create,
+    actions: createWorkspaceFields,
+    description:
+      "The creation form seeds AGENTS.md, SOUL.md, IDENTITY.md, and USER.md before the Agent's first deployment. Clearing a field creates an empty file.",
   },
   createEmbedded: {
     group: "Pages/Create Agent",
@@ -684,15 +704,31 @@ export const scenarios = {
     emptyAgents: true,
     transport: false,
     description:
-      "Interactive walkthrough from Preset selection through draft creation, credential provisioning, and deployment admission. Worker progress is simulated; it is not a live deployment.",
+      "Interactive walkthrough from Preset selection through draft creation, credential provisioning, workspace defaults, and deployment admission. Worker progress is simulated; it is not a live deployment.",
     steps: [
       "Choose Research assistant, fill Variable: name, then Use Preset.",
-      "Review the Configuration and masked pre-existing model Secret reference; click Create Agent.",
+      "Review the Configuration, masked pre-existing model Secret reference, and four seeded workspace files; click Create Agent.",
       "Open Credentials and Provision generated runtime credentials.",
       "Click Deploy new revision. Inspect Deployment status and Refresh deployment to advance the simulated worker, then Refresh the page to read the active revision.",
-      "Use AgentRevision to inspect the immutable snapshot and Workspace files to inspect runtime files.",
+      "Use AgentRevision to inspect the immutable snapshot and Workspace files to inspect runtime files seeded during creation.",
     ],
     gap: "The fixture supplies a ready Namespace, Preset, and model Secret. Set those up outside the console. Verify actual serving health and a model response outside this walkthrough.",
+  },
+  createWorkspaceFlow: {
+    group: "Flows",
+    name: "Create with workspace files",
+    path: create,
+    emptyAgents: true,
+    transport: false,
+    description:
+      "Create an Agent from the no-Preset form after editing IDENTITY.md and clearing USER.md, then deploy and inspect the seeded runtime workspace files.",
+    steps: [
+      "Start without Preset, enter a demo Agent name, choose OpenAI API key, and enter the existing fixture Secret ID sec_demo_model.",
+      "Review AGENTS.md, SOUL.md, IDENTITY.md, and USER.md. Edit IDENTITY.md, leave USER.md empty, and create the Agent.",
+      "Provision generated runtime credentials, then Deploy new revision and Refresh deployment until the simulated worker succeeds. Use the page Refresh button to read the active revision.",
+      "Open Workspace files and inspect IDENTITY.md or USER.md to confirm the fixture carried the creation-time file contents into the deployed workspace.",
+    ],
+    gap: "This Storybook flow proves the UI request body and fixture readback path. It does not prove real gateway filesystem writes or serving health.",
   },
   updateFlow: {
     group: "Flows",
@@ -711,6 +747,43 @@ export const scenarios = {
     ],
     gap: "The detail page has no general JSON/model editor. Use the API or CLI for those draft changes. Slack policy selection is also outside the drawer; existing policies are preserved.",
   },
+  stopConfirm: {
+    group: "Components/Stop Agent",
+    name: "Confirmation",
+    path: revision,
+    deployed: true,
+    actions: [click("Stop Agent")],
+    description: "Confirm stopping the Agent or cancel without changing its requested state.",
+  },
+  stopRequested: {
+    group: "Components/Stop Agent",
+    name: "Stop requested",
+    path: revision,
+    deployed: true,
+    stopped: true,
+    description:
+      "The requested state is stopped. Deployment resumes the Agent; shutdown completion is not exposed here.",
+  },
+  stopDenied: {
+    group: "Components/Stop Agent",
+    name: "Permission denied",
+    path: revision,
+    deployed: true,
+    rules: [{ suffix: "/stop", method: "POST", status: 403 }],
+    actions: [click("Stop Agent"), { selector: ".agent-stop-dialog button.danger", click: true }],
+    description:
+      "An authorization denial keeps the Agent running and explains the required access.",
+  },
+  stopUnknown: {
+    group: "Components/Stop Agent",
+    name: "Outcome unknown",
+    path: revision,
+    deployed: true,
+    rules: [{ suffix: "/stop", method: "POST", status: 503, once: true }],
+    actions: [click("Stop Agent"), { selector: ".agent-stop-dialog button.danger", click: true }],
+    description:
+      "An uncertain stop response requires a status refresh before another stop request.",
+  },
   stopFlow: {
     group: "Flows",
     name: "Stop an Agent",
@@ -718,7 +791,6 @@ export const scenarios = {
     deployed: true,
     description:
       "Open the Stop Agent confirmation and request the stopped desired state while preserving draft, revisions, credentials, and workspace data.",
-    actions: [click("Stop Agent"), click("Stop Agent")],
     steps: [
       "Open Stop Agent and review the confirmation copy.",
       "Confirm Stop Agent. The page reports Stop requested and keeps revision/workspace inspection available.",

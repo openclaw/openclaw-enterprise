@@ -38,6 +38,7 @@ export function installFixture(scenario, evidence) {
   const deployments = new Map();
   const credentials = new Map();
   const files = new Map();
+  const stagedWorkspaceFiles = new Map();
   const roles = [];
   const bindings = [];
   const deleted = new Set();
@@ -117,11 +118,16 @@ export function installFixture(scenario, evidence) {
       namespaceId,
       agentId: owner.id,
       revision,
+      providerId: owner.providerId ?? null,
+      configurationId: configuration.id,
+      configurationKind: configuration.kind,
+      configurationGeneration: configuration.generation,
       createdAt,
       configuration: structuredClone(configuration.values),
       harnessAuth: structuredClone(owner.harnessAuth),
       harness: { id: "codex", version: "demo", mode: owner.executionMode },
       compute: { id: "kubernetes-demo", implementation: "kubernetes" },
+      servicePrincipalId: owner.servicePrincipalId,
     };
   }
   if (scenario.deployed) {
@@ -276,8 +282,13 @@ export function installFixture(scenario, evidence) {
           return response([...agents.values()]);
         }
         if (method === "POST") {
+          const {
+            initialWorkspaceFiles = {},
+            workspaceDefaultsId: _workspaceDefaultsId,
+            ...agentBody
+          } = body;
           const saved = {
-            ...body,
+            ...agentBody,
             id: nextId("agt"),
             namespaceId,
             status: "active",
@@ -287,6 +298,7 @@ export function installFixture(scenario, evidence) {
             servicePrincipalId: "identity_demo_created",
           };
           agents.set(saved.id, saved);
+          stagedWorkspaceFiles.set(saved.id, initialWorkspaceFiles);
           credentials.set(saved.id, { transportConfigured: false });
           return response(saved, 201);
         }
@@ -342,6 +354,11 @@ export function installFixture(scenario, evidence) {
             [...revisions.values()].filter((item) => item.agentId === id).length + 1,
           );
           revisions.set(next.id, next);
+          const stagedFiles = stagedWorkspaceFiles.get(id);
+          for (const [filename, content] of Object.entries(stagedFiles ?? {})) {
+            files.set(`${id}/${filename}`, content);
+          }
+          stagedWorkspaceFiles.delete(id);
           saved.desiredRuntimeState = "running";
           deployments.set(next.id, {
             deploymentId: `dep_${next.id}`,

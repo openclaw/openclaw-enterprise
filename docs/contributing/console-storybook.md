@@ -43,13 +43,14 @@ those states by interacting with the real controls after loading fixture data.
 | Providers               | Configured, empty, and discovery failure.                                                                                                                                                                                                        |
 | Namespaces              | Ready and provisioning, empty, permission denial.                                                                                                                                                                                                |
 | Settings and navigation | Signed-in account and unknown route.                                                                                                                                                                                                             |
-| Create Agent            | Preset selection and variables, no Presets, dedicated and embedded forms, optional discovery denial, invalid JSON, partial save with conflict, unknown save outcome.                                                                             |
+| Create Agent            | Preset selection and variables, no Presets, dedicated and embedded forms, seeded workspace files, optional discovery denial, invalid JSON, partial save with conflict, unknown save outcome.                                                     |
 | Agent detail            | New revision, admitted snapshot, queued or failed deployment, denied deployment, missing Agent, unavailable Configuration and revision history.                                                                                                  |
 | Navigation components   | Account menu, Namespace switcher, mobile drawer.                                                                                                                                                                                                 |
 | Channels                | Unconfigured cards, Slack editor with pairing/open/disabled policies, unsupported Slack shape, read-only snapshot, save conflict.                                                                                                                |
 | Credentials             | Stored and missing metadata, masked Slack tokens, one-token replacement, partially missing tokens, generated credentials locked after admission, metadata failure, missing authentication, operator-managed credentials, issued ChatGPT account. |
 | Native admin            | Available launch, stopped or unsupported runtime, denied panel hidden. The launch target is an explanatory fixture page.                                                                                                                         |
-| Workspace               | Four editable files, undeployed Agent, denied reads, missing file, unknown write outcome.                                                                                                                                                        |
+| Workspace               | Four editable deployed files, undeployed Agent, denied reads, missing file, unknown write outcome.                                                                                                                                               |
+| Stop Agent              | Confirmation, stopped requested state, permission denial, unknown outcome requiring refresh.                                                                                                                                                     |
 | Deletion                | Confirmation, pending cleanup, permission denial, conflict, unknown outcome.                                                                                                                                                                     |
 
 The production UI supplies buttons, forms, tables, badges, notices, JSON views,
@@ -63,10 +64,13 @@ Each flow includes steps above an interactive console frame.
 
 ### Create and deploy
 
-Choose a Preset, fill its variables, review the form, and create the Agent. Open
-Credentials, provision generated runtime credentials, then deploy the saved
-draft. **Refresh deployment** advances the fixture from queued to succeeded. Use the page’s **Refresh** button to reread the Agent’s
-active revision.
+Choose a Preset, fill its variables, review the seeded workspace files, and
+create the Agent. Open Credentials, provision generated runtime credentials,
+then deploy the new revision. **Refresh deployment** advances the fixture from
+queued to succeeded. Use the page’s **Refresh** button to reread the Agent’s
+active revision. A separate flow starts without a Preset, selects the fixture's
+existing API-key Secret reference, edits IDENTITY.md, clears USER.md, and reads
+those files back after deployment.
 That transition demonstrates presentation only; it does not prove a worker ran.
 
 The fixture supplies a ready Namespace, Preset, and model Secret. Namespace
@@ -117,9 +121,10 @@ The isolated tool lives in `scripts/console-storybook/` and has its own manifest
 lockfile, and dependency installation. It uses the same seven-day dependency
 release-age policy as the repository. Root workspace dependencies are unchanged.
 
-- `prepare-assets.mjs` copies the current console assets and its shared Preset
-  renderer into ignored `dist/assets/`. Run the build again after source edits;
-  the development server does not automatically recopy console source files.
+- `prepare-assets.mjs` copies the current console assets and the shared contract
+  modules served by the controller into ignored `dist/assets/`. Run the build
+  again after source edits; the development server does not automatically recopy
+  console source files.
 - `public/scenarios.mjs` owns story descriptions, initial data options, failure
   responses, automatic setup actions, and workflow instructions.
 - `public/fixtures.mjs` intercepts API calls inside the preview. Unconfigured
