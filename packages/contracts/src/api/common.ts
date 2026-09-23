@@ -443,6 +443,10 @@ export const ERROR_CODES = Object.freeze([
   "NOT_IMPLEMENTED",
   "INTERNAL_ERROR",
   "DEPENDENCY_UNAVAILABLE",
+  "MODEL_DISCOVERY_CREDENTIALS_REJECTED",
+  "MODEL_DISCOVERY_RATE_LIMITED",
+  "MODEL_DISCOVERY_UNAVAILABLE",
+  "MODEL_DISCOVERY_INVALID_RESPONSE",
 ] as const);
 
 export const ErrorDetail = Type.Object(
@@ -485,6 +489,10 @@ export const ErrorResponse = Type.Object(
           Type.Literal("NOT_IMPLEMENTED"),
           Type.Literal("INTERNAL_ERROR"),
           Type.Literal("DEPENDENCY_UNAVAILABLE"),
+          Type.Literal("MODEL_DISCOVERY_CREDENTIALS_REJECTED"),
+          Type.Literal("MODEL_DISCOVERY_RATE_LIMITED"),
+          Type.Literal("MODEL_DISCOVERY_UNAVAILABLE"),
+          Type.Literal("MODEL_DISCOVERY_INVALID_RESPONSE"),
         ]),
         message: Type.String({ minLength: 1, maxLength: 256 }),
         details: Type.Optional(Type.Array(ErrorDetail, { maxItems: 32 })),

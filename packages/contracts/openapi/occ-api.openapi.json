@@ -118,7 +118,11 @@
                   { "const": "UNKNOWN_OUTCOME", "type": "string" },
                   { "const": "NOT_IMPLEMENTED", "type": "string" },
                   { "const": "INTERNAL_ERROR", "type": "string" },
-                  { "const": "DEPENDENCY_UNAVAILABLE", "type": "string" }
+                  { "const": "DEPENDENCY_UNAVAILABLE", "type": "string" },
+                  { "const": "MODEL_DISCOVERY_CREDENTIALS_REJECTED", "type": "string" },
+                  { "const": "MODEL_DISCOVERY_RATE_LIMITED", "type": "string" },
+                  { "const": "MODEL_DISCOVERY_UNAVAILABLE", "type": "string" },
+                  { "const": "MODEL_DISCOVERY_INVALID_RESPONSE", "type": "string" }
                 ]
               },
               "details": {
