@@ -1,12 +1,9 @@
 # Configure private Agent workspace routing
 
-Set up private Kubernetes routing so operators can read, create, and replace Agent
-workspace files through the OpenClaw Control Plane (OCC). This is a required
-part of the [Kubernetes setup](../kubernetes-setup.md), for embedded as well as
-dedicated Agents whose workspace files operators manage in the Console. Start with the
-[production installation](production-installation.md) and keep its protected
-Helm values, Installation YAML, and Kubernetes context. On EKS, also complete
-the [strict-mode routing prerequisites](eks.md#enable-console-workspace-files).
+Private routing lets operators manage embedded and dedicated Agent workspace
+files through OCC and the Console. Complete [production installation](production-installation.md),
+retaining its protected Helm values, Installation YAML, and Kubernetes context.
+On EKS, complete the [strict-mode prerequisites](eks.md#enable-console-workspace-files).
 
 This procedure assumes OCC API and worker Pods run in the same Kubernetes
 cluster as the private Envoy Service. The local Compose + k3d helper does not
@@ -17,9 +14,8 @@ to the private Service.
 The production examples enable routing; the chart default is
 `gatewayRouting.enabled: false`. Operators must install the routing controllers,
 create the service-key Secret, and configure Helm and Installation settings.
-The Console's built-in Agent template still uses token authentication: update its
-Configuration with the [native gateway settings](#configure-native-gateway-authentication)
-before deploying. Creating an Agent does not configure these prerequisites.
+Console starters omit Driver-owned authentication. Configure the Installation’s
+[proxy trust](#configure-native-gateway-authentication) before deploying.
 
 ## Runtime prerequisite for separate storage
 
@@ -33,10 +29,8 @@ without routing or an enrollment client before provisioning workloads.
 These prerequisites describe the [Kubernetes Codex implementation](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#shared-contracts-and-the-codex-implementation).
 They do not establish support for a dedicated OpenClaw remote worker.
 
-The production Installation and Helm examples enable routing together. Create
-the service-key Secret and configure native trusted-proxy authentication below
-before creating a dedicated Agent. Direct access remains available for embedded
-Harnesses.
+Before creating a dedicated Agent, configure the service-key Secret and proxy
+trust below. Embedded Harnesses also support direct access.
 
 The runtime Dockerfile's default `2026.9.1` packages do not include this stack.
 Updating the controller alone removes dedicated Gateway workspace mounts without
@@ -47,8 +41,7 @@ enrollment through Envoy and a complete Enterprise task remain unverified.
 ## Agent workspace files
 
 OCC supports four files: `AGENTS.md`, `SOUL.md`, `IDENTITY.md`, and `USER.md`.
-The Kubernetes Compute Driver creates each Agent's HTTPRoute when it provisions
-the gateway. The routes share a private hostname:
+Kubernetes Compute provisions each Agent’s HTTPRoute at a shared private hostname:
 `wss://<hostname>/namespaces/<namespaceId>/agents/<agentId>`. Adding an Agent
 requires neither an endpoint map nor an API restart. See the
 [Envoy routing reference](../../reference/gateway-routing.md) for resource

@@ -259,12 +259,7 @@ export async function createKubernetesFixtureHarnessAuth({ authentication, names
   };
 }
 
-export async function assertGatewayModelTurn({
-  gatewayUrl,
-  gatewayPassword,
-  nonce,
-  secrets = [],
-}) {
+export async function assertGatewayModelTurn({ gatewayUrl, gatewayPassword, nonce, secrets = [] }) {
   assert.ok(gatewayPassword, "Kubernetes model probes require the loopback gateway password.");
   const endpoint = `${gatewayUrl}/v1/chat/completions`;
   const denied = await fetch(endpoint, {
