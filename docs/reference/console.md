@@ -8,7 +8,7 @@ you can access. When the pilot is enabled, trusted operators can open an Agent's
 [native admin UI](#open-the-native-admin-ui). The console does not offer rollback,
 live runtime health, or browser chat through OCE.
 
-For a component-by-component tour with screenshots, see
+For a component-by-component tour, see
 [Understand the Agent detail page](../guides/console/agent-details.md).
 
 For browser deployment instructions, follow [Create and deploy Agents](console/create-and-deploy.md).

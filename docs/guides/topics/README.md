@@ -17,7 +17,7 @@ Enterprise, start with [Concepts](../concepts.md) or
 - [Workspace files](workspace-files.md): edit an active Agent's instruction and
   identity files.
 - [Console walkthrough](../console/agent-details.md): understand each Agent detail
-  control, status, and editing surface with screenshots.
+  control, status, and editing surface.
 - [Troubleshoot](agent-troubleshoot.md): follow a failed deployment, check model
   access, or recover after an uncertain request.
 

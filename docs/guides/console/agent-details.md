@@ -5,15 +5,10 @@ record, credentials, and workspace. This walkthrough explains the page from top
 to bottom, including controls revealed by **New revision**. For initial setup, use
 [Create and deploy Agents](../../reference/console/create-and-deploy.md).
 
-Screenshots show a local demonstration Agent, `ocedemo-1`, captured on September
-22, 2026, using a development preview of the console with read-only access to
-the existing API. Names, IDs, timestamps, and available actions depend on your
-Installation and permissions. The screenshots show stored settings; they are not
-proof that the Agent or its Slack connection is currently healthy.
+Available actions depend on your Installation and permissions. Stored settings
+do not confirm that an Agent or its Slack connection is currently healthy.
 
 ## Navigation and Agent identity
-
-![Agent header, sidebar, and persisted deployment record](../../assets/console/agent-status.png)
 
 | Component                  | What it does                                                                                     |
 | -------------------------- | ------------------------------------------------------------------------------------------------ |
@@ -22,12 +17,10 @@ proof that the Agent or its Slack connection is currently healthy.
 | **Providers**              | Lists configured Providers across the Installation; requires Installation administration access. |
 | **Namespaces**             | Lists the Namespaces you can read.                                                               |
 | Agent name                 | Human-readable name of this Agent.                                                               |
-| **Namespace · default**    | Namespace containing the Agent; `default` is this example's name.                                |
+| **Namespace · name**       | Namespace containing the Agent.                                                                  |
 | **Refresh**                | Reloads the current page's data. It does not restart the Agent.                                  |
-| **Selected revision · v2** | Revision selected by the Agent, which may differ from the snapshot you are viewing.              |
+| **Selected revision · vN** | Revision selected by the Agent, which may differ from the snapshot you are viewing.              |
 | `agt_…`                    | Stable Agent identifier for API calls and support.                                               |
-
-![Account menu with Namespace, Settings, and Logout](../../assets/console/account-menu.png)
 
 The bottom **OpenClaw Enterprise** menu contains **Namespace**, **Settings**,
 and **Logout**. Namespace selection changes your scope; from Agent detail it
@@ -51,16 +44,12 @@ The console has no live serving-health indicator. To establish health, verify
 the installed runtime and a real model or
 channel response using [Agent troubleshooting](../topics/agent-troubleshoot.md).
 
-![Historical v1 deployment failure with model-probe startup evidence](../../assets/console/deployment-failure.png)
-
-The older v1 snapshot retains its failed deployment and model-probe details while
-the Agent selects v2. Browsing that failure does not change the selected revision.
+Historical revisions retain their deployment and startup-failure details.
+Browsing an older revision does not change the selected revision.
 
 <span id="browse-revisions-or-open-the-saved-draft"></span>
 
 ## Browse revisions or open New revision
-
-![Revision selector, history buttons, source Configuration, and snapshot notice](../../assets/console/revision-browser.png)
 
 An **AgentRevision** is an immutable deployment snapshot. A **Configuration** is
 the reusable, mutable input from which a new revision is created.
@@ -78,8 +67,6 @@ the reusable, mutable input from which a new revision is created.
 There is no rollback or redeploy-old-revision button. See
 [Agent Revisions](../topics/agent-revisions.md) for the lifecycle.
 
-![New revision selector, deployment action, and credential metadata notice](../../assets/console/saved-draft.png)
-
 **Deploy new revision** submits the saved Configuration for a new revision. It
 checks freshness and required credential metadata; missing prerequisites or a
 changed draft require correction or refresh. A successful request opens the new
@@ -92,11 +79,9 @@ Browser Back and Forward restore the selected tab. Leaving a tab clears entered 
 
 ## Configuration tab
 
-![Read-only Configuration summary and expanded native JSON](../../assets/console/configuration-snapshot.png)
-
 | Field                                  | Meaning                                                                                                          |
 | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| **Model**                              | Primary model configured for the Agent; here, `codex/gpt-5.5`.                                                   |
+| **Model**                              | Primary model configured for the Agent.                                                                          |
 | **Execution mode**                     | Embedded runs the harness within the gateway; Dedicated runs it separately.                                      |
 | **Provider**                           | Installation-configured Provider associated with this Agent; model credentials come from Harness authentication. |
 | **Harness authentication**             | Saved authentication binding, such as a ChatGPT service account ID. It is not a credential value or login check. |
@@ -112,8 +97,6 @@ See the [Configuration reference](../../reference/configuration.md).
 
 ## Channels tab
 
-![Saved Slack settings and draft editing controls](../../assets/console/channels.png)
-
 The Slack card shows **Not configured**, **Disabled**, or
 **Configured (enabled)** based on saved settings: Socket Mode, selected channels, and allowed users. This is not a
 live connection indicator.
@@ -126,8 +109,6 @@ Dedicated execution; unsupported native settings can make the simple editor
 unavailable.
 
 ### Slack editor
-
-![Slack draft editor with channel IDs, allowed users, mention policy, and credential references](../../assets/console/slack-editor.png)
 
 | Control                                           | Purpose                                                                                                    |
 | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
@@ -152,8 +133,6 @@ the console. Use the operator workflow for those Agents.
 
 ### Harness authentication
 
-![Harness authentication source, issued account selector, and save action](../../assets/console/harness-authentication.png)
-
 **Authentication source** determines how the harness gets model credentials:
 
 | Choice                           | Required input and effect                                                                     |
@@ -168,8 +147,6 @@ The account availability message describes discovery, not model readiness.
 See [harness authentication](../../reference/harness-execution.md#harness-authentication).
 
 ### Runtime and Slack credentials
-
-![Runtime credential metadata and masked saved Slack token fields](../../assets/console/runtime-credentials.png)
 
 | Component                                         | Purpose                                                                                                                 |
 | ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
@@ -192,9 +169,7 @@ attempt; bound fields return to their mask.
 
 ## Workspace files tab
 
-![Live workspace file editor with per-file Reload and Save controls](../../assets/console/workspace-file.png)
-
-The captured workspace read failed: **Workspace access is unavailable** leaves
+**Workspace access is unavailable** leaves
 the editor and Save disabled. The empty box does not mean the file is empty.
 Check gateway access, then use Reload.
 
@@ -224,15 +199,12 @@ requires a successful Reload before retrying. See
 When enabled by the Installation and permitted for your account, **Native admin
 UI** provides **Refresh access** and **Open native admin UI**. The latter opens
 the active gateway in a new tab, even while you view a draft or older revision.
-This panel is absent from the pictured installation.
 
 The native UI can change the gateway outside OCE's revision tracking. Use OCE for
 durable configuration. See [native admin access](../../reference/agent-native-admin.md)
 for permissions and stopped, unavailable, or unsupported states.
 
 ## Stop and resume
-
-![Stop confirmation with preserved data and Cancel action](../../assets/console/stop-agent.png)
 
 **Stop Agent** opens a confirmation explaining that shutdown interrupts running
 work but preserves revision history, credentials, gateway state, and workspace
@@ -247,9 +219,7 @@ revision. See [Stop and resume](../../reference/agents/deployment.md#stop-and-re
 
 ## Delete Agent and error recovery
 
-![Permanent deletion confirmation with Cancel and delete actions](../../assets/console/delete-agent.png)
-
-**Delete Agent** opens this confirmation. **Cancel** closes it without changes.
+**Delete Agent** opens a confirmation dialog. **Cancel** closes it without changes.
 **Permanently delete Agent** irreversibly removes the Agent, revision history,
 and workspace data; Namespace Configurations and Secrets remain. Exact Agent
 `delete` permission is required. Accepted deletion starts asynchronous cleanup;
