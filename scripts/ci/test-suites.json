@@ -337,6 +337,25 @@
       },
       "files": [
         {
+          "path": "tests/integration/postgres-migration-compatibility.test.mjs",
+          "expectedTests": [
+            "Canonical repository-prefix upgrade retains exact attempt cleanup context",
+            "Drizzle generates repository schema migrations without redundant regeneration",
+            "Migration rejects legacy active_runtime state without changing persisted rows",
+            "Migration rejects legacy harness_revision state without changing persisted rows",
+            "Migration rejects legacy harness_account state without changing persisted rows",
+            "Drizzle second migration preserves the applied journal and PostgreSQL schema"
+          ]
+        }
+      ]
+    },
+    "postgres-application": {
+      "prepare": {
+        "postgres": true,
+        "requiresPreparedStateForFile": true
+      },
+      "files": [
+        {
           "path": "tests/integration/postgres-connection-auth.test.mjs",
           "expectedTests": [
             "password authentication preserves the existing pg connection configuration",
@@ -374,17 +393,6 @@
         {
           "path": "tests/integration/postgres-controller-work-targets.test.mjs",
           "expectedTests": ["PostgreSQL controller work requires exactly one complete target shape"]
-        },
-        {
-          "path": "tests/integration/postgres-migration-compatibility.test.mjs",
-          "expectedTests": [
-            "Canonical repository-prefix upgrade retains exact attempt cleanup context",
-            "Drizzle generates repository schema migrations without redundant regeneration",
-            "Migration rejects legacy active_runtime state without changing persisted rows",
-            "Migration rejects legacy harness_revision state without changing persisted rows",
-            "Migration rejects legacy harness_account state without changing persisted rows",
-            "Drizzle second migration preserves the applied journal and PostgreSQL schema"
-          ]
         },
         {
           "path": "tests/integration/postgres-platform-state.test.mjs",
@@ -653,7 +661,25 @@
             "real Kubernetes Drivers safely use and preserve an externally managed tenant namespace",
             "authenticated PostgreSQL OCC API and worker deploy real Agent-owned gateways, Secret bindings, and revisions"
           ]
-        },
+        }
+      ]
+    },
+    "k3d-fixture-state": {
+      "requiredEnv": [
+        "OCC_TEST_KUBERNETES_KUBECONFIG",
+        "OCC_TEST_KUBERNETES_CONTEXT",
+        "OCC_TEST_KUBERNETES_IMAGE",
+        "OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS"
+      ],
+      "env": {
+        "OCC_TEST_KUBERNETES_CONFIGURATION": "1"
+      },
+      "prepare": {
+        "postgres": true,
+        "k3d": true,
+        "requiresPreparedStateForFile": true
+      },
+      "files": [
         {
           "path": "tests/integration/postgres-platform-state-kubernetes.test.mjs",
           "expectedTests": [
@@ -662,7 +688,25 @@
             "independent PostgreSQL API and worker provision isolated Namespaces, activate admitted revisions, and tombstone deletion",
             "PostgreSQL API and worker preserve immutable deployments, stable identities, and tenant isolation"
           ]
-        },
+        }
+      ]
+    },
+    "k3d-fixture-plugins": {
+      "requiredEnv": [
+        "OCC_TEST_KUBERNETES_KUBECONFIG",
+        "OCC_TEST_KUBERNETES_CONTEXT",
+        "OCC_TEST_KUBERNETES_IMAGE",
+        "OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS"
+      ],
+      "env": {
+        "OCC_TEST_KUBERNETES_CONFIGURATION": "1"
+      },
+      "prepare": {
+        "postgres": true,
+        "k3d": true,
+        "requiresPreparedStateForFile": true
+      },
+      "files": [
         {
           "path": "tests/integration/kubernetes-plugin-status-real.test.mjs",
           "expectedTests": [
@@ -1241,8 +1285,11 @@
     "ci": [
       "checks-baseline",
       "postgres",
+      "postgres-application",
       "images-packaging",
       "k3d-fixture-configuration",
+      "k3d-fixture-state",
+      "k3d-fixture-plugins",
       "logging-collector",
       "repository-credentials-container",
       "repository-credentials-platform"
@@ -1250,8 +1297,11 @@
     "full": [
       "checks-baseline",
       "postgres",
+      "postgres-application",
       "images-packaging",
       "k3d-fixture-configuration",
+      "k3d-fixture-state",
+      "k3d-fixture-plugins",
       "docker-model",
       "k3d-model",
       "gateway-routing",

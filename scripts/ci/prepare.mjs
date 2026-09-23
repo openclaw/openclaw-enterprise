@@ -42,6 +42,11 @@ const defaultStatePath = join(
 );
 const laneDefinitions = JSON.parse(readFileSync(testSuitesManifestPath, "utf8")).lanes ?? {};
 const allowedLanes = new Set(Object.keys(laneDefinitions));
+const fixtureLanes = new Set([
+  "k3d-fixture-configuration",
+  "k3d-fixture-state",
+  "k3d-fixture-plugins",
+]);
 
 function laneDefinition(name) {
   return laneDefinitions[name] ?? {};
@@ -667,7 +672,7 @@ async function ensureK3dCluster(statePath, state) {
   }
   await commandAvailable(process.env.OPENCLAW_CI_K3D_BIN ?? "k3d", ["version"]);
   const openShell = state.lane === "openshell";
-  const crossNodePluginStatus = state.lane === "k3d-fixture-configuration";
+  const crossNodePluginStatus = fixtureLanes.has(state.lane);
   if (!openShell) {
     await commandAvailable(process.env.OCC_KUBECTL_BIN ?? "kubectl", ["version", "--client=true"]);
   }
@@ -1481,6 +1486,7 @@ async function prepareLane({ lane, statePath }) {
 
   switch (name) {
     case "postgres":
+    case "postgres-application":
       await ensurePostgresServer(resolvedStatePath, state);
       break;
     case "images-packaging":
@@ -1517,11 +1523,13 @@ async function prepareLane({ lane, statePath }) {
         }),
       );
       break;
-    case "k3d-fixture-configuration": {
+    case "k3d-fixture-configuration":
+    case "k3d-fixture-state":
+    case "k3d-fixture-plugins": {
       await ensurePostgresServer(resolvedStatePath, state);
       const cluster = await ensureK3dCluster(resolvedStatePath, state);
       const fixture = await prepareFixtureImage(resolvedStatePath, state, cluster);
-      // Both fixture tests use the same local-only image. Keep it active on
+      // Fixture suites use the same local-only image. Keep it active on
       // every node so kubelet image garbage collection cannot remove it.
       await pinFixtureImageInK3d(cluster, fixture.image);
       // The suites restart this controller when enabling shared storage. Verify
@@ -1741,7 +1749,7 @@ async function prepareFile({ lane, file, statePath }) {
     env,
     cleanup: async () => {
       try {
-        if (name === "k3d-fixture-configuration") {
+        if (fixtureLanes.has(name)) {
           const cluster = effectiveState.resources.find(
             (resource) => resource.kind === "k3d-cluster",
           );

@@ -8,7 +8,7 @@ last_updated_session: codex/01a0ccf5-96e4-7541-9845-c9a6443fa7b2
 
 ## Overview
 
-GitHub Actions selects explicit test lanes, prepares disposable resources, runs the real Node test runner, and rejects missing or skipped required coverage. This flow ends at the aggregate check and resource cleanup. A PR check proves its seven selected noncredentialed lanes; it does not establish that protected model or service integrations passed.
+GitHub Actions selects explicit test lanes, prepares disposable resources, runs the real Node test runner, and rejects missing or skipped required coverage. This flow ends at the aggregate check and resource cleanup. A PR check proves its ten selected noncredentialed lanes; it does not establish that protected model or service integrations passed.
 
 ## Entry Points
 
@@ -21,7 +21,7 @@ GitHub Actions selects explicit test lanes, prepares disposable resources, runs 
 ```mermaid
 graph TD
   subgraph Actions["GitHub Actions"]
-    A["PR or main event"] --> B["Seven PR-safe jobs"]
+    A["PR or main event"] --> B["Ten PR-safe jobs"]
     A --> N["Suite audit"]
     N --> L
     C["Manual integration dispatch"] --> D["Environment protection preflight"]
@@ -52,7 +52,9 @@ graph TD
 `.github/workflows/ci.yml:jobs`, `.github/workflows/full-integration.yml:jobs`, and
 `scripts/ci/full-integration-preflight.mjs:validateFullIntegrationPreflight`
 
-The PR workflow uses the event checkout and supplies no external service credentials. Suite Audit and all seven lanes start independently on ephemeral `blacksmith-8vcpu-ubuntu-2404` runners. Its aggregate uses the same runner pool and requires a successful audit plus `checks-baseline`, `postgres`, `images-packaging`, `k3d-fixture-configuration`, `logging-collector`, `repository-credentials-container`, and `repository-credentials-platform`. A failed audit still fails CI Required even when the lanes pass. Full Integration checks configured environment protection and checks out the immutable event SHA. It admits `refs/heads/main` for every lane. Only `k3d-model` may use another branch: preflight requires an exact branch rule in `integration-model`, and GitHub still requires reviewer approval with self-review prevention. Wildcards, tags, and other non-main lanes are rejected. The administrator removes the temporary branch rule after verification. A manual dispatch selects its requested lane or `all`; pushes and merges do not start this workflow. Manual runs share one concurrency group and do not cancel an in-progress run. The provider environment must allow exactly the `main` branch and needs no per-run reviewer approval. Other credentialed environments still require reviewers with self-review prevention. No PR event enters this credentialed workflow. A targeted integration run has a narrower claim than a full inventory run.
+The PR workflow uses the event checkout and supplies no external service credentials. Suite Audit and all ten lanes start independently on ephemeral `blacksmith-8vcpu-ubuntu-2404` runners. Its aggregate uses the same runner pool and requires a successful audit plus `checks-baseline`, `postgres`, `postgres-application`, `images-packaging`, `k3d-fixture-configuration`, `k3d-fixture-state`, `k3d-fixture-plugins`, `logging-collector`, `repository-credentials-container`, and `repository-credentials-platform`. A failed audit still fails CI Required even when the lanes pass. Full Integration checks configured environment protection and checks out the immutable event SHA. It admits `refs/heads/main` for every lane. Only `k3d-model` may use another branch: preflight requires an exact branch rule in `integration-model`, and GitHub still requires reviewer approval with self-review prevention. Wildcards, tags, and other non-main lanes are rejected. The administrator removes the temporary branch rule after verification. A manual dispatch selects its requested lane or `all`; pushes and merges do not start this workflow. Manual runs share one concurrency group and do not cancel an in-progress run. The provider environment must allow exactly the `main` branch and needs no per-run reviewer approval. Other credentialed environments still require reviewers with self-review prevention. No PR event enters this credentialed workflow. A targeted integration run has a narrower claim than a full inventory run.
+
+PostgreSQL migration and application suites own separate servers. Each of the three Kubernetes fixture files owns a separate cluster and PostgreSQL server. Lane state and cleanup stay local to its runner; files within each lane remain sequential. The suite map retains one owner per file in both workflow groups.
 
 Both workflows call the shared [run-ci-lane action](../../.github/actions/run-ci-lane/action.yml) after checkout. It owns tool and dependency setup, baseline checks when selected, lane preparation, execution, unconditional cleanup, and sanitized result upload. Callers keep the source revision, timeout, protected environment and explicit credentials.
 
@@ -110,7 +112,7 @@ The aggregate runs after success or failure and checks expected job outcomes plu
 
 ## Changelog
 
-- 2026-09-23 06:35: Start the audit and seven required lanes independently on the existing ephemeral Blacksmith pool; retain the final audit and coverage gate. (01a0ccf5-96e4-7541-9845-c9a6443fa7b2 - 3ac9d07a4d7ede8c4e1c010f598ef67673f97b74)
+- 2026-09-23 06:35: Start the audit and required lanes independently on the existing ephemeral Blacksmith pool; split PostgreSQL and Kubernetes fixtures across owned runners and retain the final coverage gate. (01a0ccf5-96e4-7541-9845-c9a6443fa7b2 - 3ac9d07a4d7ede8c4e1c010f598ef67673f97b74)
 
 - 2026-09-21 01:50: Replace earlier lane result artifacts on retry so aggregation reads current evidence. (01a0c179-19f7-7111-8bb4-fc7680da5545 - e836c3f9ec002d91d6f26c6ca49a08345a8c9f4f)
 
