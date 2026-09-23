@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: 2026-09-23
-last_updated_session: 01a0cd92-fd3f-7d83-a51e-f6264ef6be09
+last_updated_session: 01a0cfaa-2b68-7e61-b8ff-a7eb82f1edc5
 ---
 
 # Platform console request flow
@@ -107,6 +107,14 @@ and detail paths share the shell. Unknown console paths receive the same shell
 with HTTP `404`. The controller sets the HTML, CSS, or JavaScript MIME type and
 a same-origin content security policy. Other routes retain canonical API JSON
 errors. The Dockerfile copies these files into the existing controller image.
+
+`scripts/build-console-metadata.mjs` stamps the console HTML during image build.
+The publisher supplies its checked `source_sha` as `OCC_BUILD_REVISION`, also used
+for the image revision label. Empty metadata stays empty; a nonempty value must
+be a full lowercase Git SHA. `apps/controller/src/console/shell.mjs:renderShell`
+reads that HTML metadata and renders the short hash beside OCE at the top of the
+sidebar, with the full OCC revision in a tooltip. Missing or invalid metadata
+displays **dev** beside OCE. No browser or controller request inspects Git or an Agent gateway version.
 
 ### 2. Resolve the session before private reads
 
@@ -297,6 +305,8 @@ refreshes and inspects the Agent and revision history.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 19:09: Trace image-baked OCC revision metadata and OCE sidebar branding. (01a0cfaa-2b68-7e61-b8ff-a7eb82f1edc5 - 150ec08f059cebc4897b839d8318f7b1e3aba0e3)
 
 - 2026-09-23 08:30: Trace pre-Agent Slack Secret selection and creation, staged Configuration bindings, and Agent Secret grants. (01a0cd92-fd3f-7d83-a51e-f6264ef6be09 - 941edc9f6971a24ae29a74a6ca749b6375e6ec01)
 

@@ -91,7 +91,9 @@ jobs:
           file: ${{ matrix.file }}
           target: ${{ matrix.target }}
           platforms: linux/amd64,linux/arm64
-          build-args: NODE_BASE_IMAGE=${{ env.NODE_BASE_IMAGE }}
+          build-args: |
+            NODE_BASE_IMAGE=${{ env.NODE_BASE_IMAGE }}
+            OCC_BUILD_REVISION=${{ inputs.source_sha }}
           labels: |
             org.opencontainers.image.source=https://github.com/openclaw/openclaw-enterprise
             org.opencontainers.image.revision=${{ inputs.source_sha }}

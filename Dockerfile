@@ -14,6 +14,12 @@ COPY packages/utils/package.json packages/utils/package.json
 RUN --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
     corepack pnpm install --frozen-lockfile --prod --ignore-scripts
 
+FROM dependencies AS console-build
+ARG OCC_BUILD_REVISION=""
+COPY apps/controller/src/console/index.html apps/controller/src/console/index.html
+COPY scripts/build-console-metadata.mjs scripts/build-console-metadata.mjs
+RUN node scripts/build-console-metadata.mjs "$OCC_BUILD_REVISION"
+
 FROM dependencies AS development
 ENV NODE_ENV=development
 WORKDIR /app
@@ -21,6 +27,7 @@ WORKDIR /app
 COPY --chown=node:node package.json pnpm-workspace.yaml ./
 COPY --chown=node:node packages packages
 COPY --chown=node:node apps/controller apps/controller
+COPY --from=console-build --chown=node:node /app/apps/controller/src/console/index.html apps/controller/src/console/index.html
 COPY --chown=node:node migrations migrations
 COPY --chown=node:node scripts scripts
 RUN mkdir -p /app/.development/configurations /var/lib/openclaw/bootstrap \
@@ -49,6 +56,7 @@ COPY --chown=node:node packages/occ/src packages/occ/src
 COPY --chown=node:node packages/utils/package.json packages/utils/package.json
 COPY --chown=node:node packages/utils/src packages/utils/src
 COPY --chown=node:node apps/controller/src apps/controller/src
+COPY --from=console-build --chown=node:node /app/apps/controller/src/console/index.html apps/controller/src/console/index.html
 COPY --chown=node:node migrations/[0-9]*.sql migrations/
 COPY --chown=node:node migrations/meta/_journal.json migrations/meta/_journal.json
 COPY --chown=node:node migrations/meta/canonical-history.json migrations/meta/canonical-history.json

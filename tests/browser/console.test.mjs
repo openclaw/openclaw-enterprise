@@ -219,6 +219,12 @@ test("console browser flow keeps Namespace URL state across global pages and log
   await page.getByText("Beta agent").waitFor();
   assert.match(page.url(), new RegExp(`/console/agents\\?namespace=${beta.id}$`));
   assert.equal(await page.locator("img").count(), 0);
+  assert.equal(await page.locator(".sidebar .brand").textContent(), "OCEdev");
+  assert.equal(await page.locator(".sidebar .brand .occ-version").textContent(), "dev");
+  assert.equal(
+    await page.locator(".occ-version").getAttribute("title"),
+    "OCC build revision unavailable",
+  );
 
   await page.getByRole("link", { name: "Providers" }).click();
   await page.getByRole("heading", { name: "Providers" }).waitFor();
