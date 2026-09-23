@@ -101,7 +101,7 @@ After `deployAgent` returns, provisioning checkpoints `handoff`, marks the recor
 
 `recordFailure` stores a safe error and either retries the queued work or marks it failed after retry exhaustion. Failed work retains pending inputs and receipts for authorized retry; it does not race retry by deleting their backends. `retryAgentProvisioning` only requeues failed, pre-handoff work for the initiating actor after fresh authorization and lifecycle checks. Duplicate retry on pending work returns current status without resetting attempts or admitting another execution.
 
-Stop and delete call `cancelByAgent`, including for already-failed provisioning, permanently disabling retry. Deletion also removes workspace setup immediately. Only cancelled work permits terminal effect cleanup: inspect pending effects, record a receipt for an owned backend, then clean that exact resource. Agent deletion waits until pending effects have settled, quiesced, or been marked safe.
+Stop and delete call `cancelByAgent`, including for already-failed provisioning, permanently disabling retry. Deletion also removes workspace setup immediately. Only cancelled work permits terminal effect cleanup: inspect pending effects, record a receipt for an owned backend, then clean that exact resource. Agent deletion waits until pending effects have settled, quiesced, or been marked safe. Its existing repository-session disposal checks, ownership locks, and lease revalidation still apply before revision removal.
 
 `migrations/0029_agent_provisioning_work.sql` enforces exact ownership, unique `(namespace_id, actor_id, request_id)`, one provisioning record per Agent and Configuration, monotonic phase progress, immutable accepted plans, immutable finalized Configuration generation, and revision IDs only at `handoff`.
 
@@ -128,6 +128,7 @@ Stop and delete call `cancelByAgent`, including for already-failed provisioning,
 
 ## Changelog
 
+- 2026-09-23 02:43: Restored existing repository-session deletion safeguards alongside the provisioning cleanup guard. (Codex/01a0cc7f-028b-7803-acf5-803c3d799d75 - 1e4936f0)
 - 2026-09-23 02:20: Clarified pre-handoff mutation reservations, retained failed-work receipts, and cancellation-owned cleanup. (Codex/01a0cc7f-028b-7803-acf5-803c3d799d75 - a20f0b07)
 - 2026-09-23 01:25: Corrected provisioning effect recovery to use inspect-first recovery and clarified terminal cleanup ownership. (cody/01a0cd23-4e0e-7a92-ab33-32a667859782 - 5886094b)
 - 2026-09-23 00:51: Restored concrete status, exact-create recovery, generation, external-effect, retry, and cleanup details from the accepted spec. (cody/01a0cd23-4e0e-7a92-ab33-32a667859782 - 79ca801d)

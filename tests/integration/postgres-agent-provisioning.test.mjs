@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { chmod, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import pg from "pg";
 
@@ -185,7 +187,7 @@ function createProvisioningSecretDriver(options) {
 }
 
 async function privateBootstrapDirectory(context) {
-  const directory = await mkdtemp("/private/tmp/openclaw-agent-provisioning-bootstrap-");
+  const directory = await mkdtemp(join(tmpdir(), "openclaw-agent-provisioning-bootstrap-"));
   await chmod(directory, 0o700);
   context.after(() => rm(directory, { recursive: true, force: true }));
   return directory;

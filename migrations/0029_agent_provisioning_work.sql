@@ -271,6 +271,12 @@ BEGIN
     RETURN false;
   END IF;
 
+  PERFORM namespace.id FROM occ.namespaces AS namespace
+  WHERE namespace.id = p_namespace_id FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN false;
+  END IF;
+
   SELECT agent.service_principal_id
     INTO v_service_principal_id
   FROM occ.agents AS agent
@@ -283,6 +289,10 @@ BEGIN
     RETURN false;
   END IF;
 
+  PERFORM attempt.admission_id FROM occ.repository_session_attempts AS attempt
+  WHERE attempt.namespace_id = p_namespace_id AND attempt.agent_id = p_agent_id
+  ORDER BY attempt.revision_id, attempt.admission_id FOR UPDATE;
+
   SELECT provisioning.configuration_id
     INTO v_unmaterialized_configuration_id
   FROM occ.agent_provisioning_work AS provisioning
@@ -291,6 +301,23 @@ BEGIN
     AND provisioning.revision_id IS NULL
     AND provisioning.completed_phase IN ('admitted', 'secrets', 'database_setup')
   FOR UPDATE;
+
+  -- Revalidate lease time after every potentially blocking ownership lock.
+  IF NOT EXISTS (
+    SELECT 1 FROM occ.controller_work AS work
+    WHERE work.idempotency_key = p_idempotency_key AND work.claim_token = p_claim_token
+      AND work.state = 'claimed' AND work.lease_expires_at > pg_catalog.clock_timestamp()
+  ) THEN
+    RETURN false;
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM occ.repository_session_attempts AS attempt
+    WHERE attempt.namespace_id = p_namespace_id AND attempt.agent_id = p_agent_id
+      AND attempt.phase <> 'disposed'
+  ) THEN
+    -- NULL is a live claim with outstanding cleanup, distinct from claim loss.
+    RETURN NULL;
+  END IF;
 
   IF EXISTS (
     SELECT 1
@@ -307,6 +334,10 @@ BEGIN
   ) THEN
     RETURN NULL;
   END IF;
+
+  UPDATE occ.repository_session_attempts SET live_revision_id = NULL
+  WHERE namespace_id = p_namespace_id AND agent_id = p_agent_id
+    AND live_revision_id IS NOT NULL;
 
   UPDATE occ.agents
   SET active_revision_id = NULL

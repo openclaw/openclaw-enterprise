@@ -184,7 +184,7 @@ function runtimeDrivers({ computeDriver, configurationDriver, secretDriver }) {
 }
 
 async function privateBootstrapDirectory(context) {
-  const directory = await mkdtemp("/private/tmp/openclaw-kubernetes-provisioning-bootstrap-");
+  const directory = await mkdtemp(join(tmpdir(), "openclaw-kubernetes-provisioning-bootstrap-"));
   await chmod(directory, 0o700);
   context.after(() => rm(directory, { recursive: true, force: true }));
   return directory;
