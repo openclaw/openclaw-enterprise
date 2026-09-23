@@ -158,6 +158,18 @@ Upstream provisioning PR #322 is merged from `8adfd86`. Its new exact Configurat
 create/recovery methods use CP storage too. The import conflict is resolved without
 dropping either workflow. No dependency upgrade or migration code is introduced.
 
+Run 35914598195 tested merge SHA `a0ef7c86bbe26f7b2e01fb4bb2922126fed48269`
+for branch head `d91e9af`: baseline passed 1347 cases and State/Lifecycle passed
+all four. The Fixture/Configuration job initially failed node readiness before
+running tests. Its retry ran all four cases, passing the external-namespace and
+API/worker deployment workflows but exposing two remaining test integration gaps:
+a stale controller Secret-denial assertion and the newly merged provisioning
+fixture's single-target authorization. The fixture now grants both exact targets,
+checks CP Configuration and separately owned transport/password Secrets, and
+cleans up both namespaces. RBAC coverage checks controller access only in granted
+targets and denies both workload identities Secret reads in either target. These
+changes still require a successful real-cluster CI run.
+
 ## Open work and release boundaries
 
 This PR owns [#75](https://github.com/openclaw/openclaw-enterprise/issues/75):

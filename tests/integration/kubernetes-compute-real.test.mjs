@@ -1327,21 +1327,28 @@ test(
     );
 
     const controllerActor = `system:serviceaccount:${platformNamespace}:${controller.account}`;
-    assert.equal(
-      await authorized(owned[0], controllerActor, "get", "secrets"),
-      false,
-      "the controller must not receive broad Secret access",
-    );
-    assert.equal(
-      await authorized(
-        owned[0],
-        `system:serviceaccount:${owned[0]}:${agentName(primaryAgent)}`,
-        "get",
-        "secrets",
-      ),
-      false,
-      "Agent ServiceAccounts must not acquire Kubernetes API privileges",
-    );
+    for (const target of [owned[0], gatewayTargets[0]]) {
+      assert.equal(
+        await authorized(target, controllerActor, "get", "secrets"),
+        true,
+        "the controller needs exact-target access to canonical and delivered Secrets",
+      );
+      for (const [namespace, pod] of [
+        [owned[0], firstPod],
+        [gatewayTargets[0], gatewayPod],
+      ]) {
+        assert.equal(
+          await authorized(
+            target,
+            `system:serviceaccount:${namespace}:${pod.spec.serviceAccountName}`,
+            "get",
+            "secrets",
+          ),
+          false,
+          "neither Harness nor Gateway identities may read Kubernetes Secrets in either target",
+        );
+      }
+    }
 
     const firstAgentAccount = await resource("serviceaccount", agentName(primaryAgent), owned[0]);
     const secondAgentAccount = await resource(
@@ -1393,6 +1400,11 @@ test(
       await authorized(foreignName, controllerActor, "get", "serviceaccounts"),
       false,
       "a namespace-only controller cluster grant must not leak namespaced access across tenants",
+    );
+    assert.equal(
+      await authorized(foreignName, controllerActor, "get", "secrets"),
+      false,
+      "controller Secret access must not extend to a namespace without an explicit grant",
     );
     const denied = await driver.ensureNamespace(foreign);
     assert.deepEqual(denied, {
@@ -1935,6 +1947,10 @@ test(
         runtime: {
           transportSecretPrefix: "transport",
           gatewayStorageClassName: "local-path",
+          gatewayNodeSelector: {
+            "kubernetes.io/hostname": JSON.parse(await kubectl("get", "nodes", "-o", "json"))
+              .items[0].metadata.name,
+          },
         },
       },
       { nodeEnrollment },
@@ -1947,6 +1963,7 @@ test(
             "delete",
             "namespace",
             kubernetesNamespaceName(namespaceId),
+            kubernetesGatewayNamespaceName(namespaceId),
             "--ignore-not-found=true",
             "--wait=true",
           ),
@@ -1959,23 +1976,33 @@ test(
     assert.equal(namespaceResponse.status, 201, JSON.stringify(namespaceResponse.body));
     const namespaceOwner = namespaceResponse.data;
     const placement = kubernetesNamespaceName(namespaceOwner.id);
+    const gatewayPlacement = kubernetesGatewayNamespaceName(namespaceOwner.id);
     context.after(async () => {
-      await kubectl("delete", "namespace", placement, "--ignore-not-found=true", "--wait=true");
+      await kubectl(
+        "delete",
+        "namespace",
+        placement,
+        gatewayPlacement,
+        "--ignore-not-found=true",
+        "--wait=true",
+      );
     });
 
     await fixture.startWorker();
-    await waitFor("worker to create the provisioning tenant Namespace", async () =>
-      (await missing("namespace", placement)) ? undefined : true,
-    );
-    await kubectl(
-      "create",
-      "rolebinding",
-      "openclaw-controller",
-      "--namespace",
-      placement,
-      `--clusterrole=${controller.tenantRole}`,
-      `--serviceaccount=${platformNamespace}:${controller.account}`,
-    );
+    for (const target of [placement, gatewayPlacement]) {
+      await waitFor(`worker to create provisioning namespace ${target}`, async () =>
+        (await missing("namespace", target)) ? undefined : true,
+      );
+      await kubectl(
+        "create",
+        "rolebinding",
+        "openclaw-controller",
+        "--namespace",
+        target,
+        `--clusterrole=${controller.tenantRole}`,
+        `--serviceaccount=${platformNamespace}:${controller.account}`,
+      );
+    }
     await waitFor("provisioning tenant Namespace to become ready", async () => {
       const observed = await fixture.request("GET", `/namespaces/${namespaceOwner.id}`);
       assert.equal(observed.status, 200, JSON.stringify(observed.body));
@@ -2045,7 +2072,7 @@ test(
     const configuration = await resource(
       "configmap",
       kubernetesConfigurationName(revisions.data[0].configurationId),
-      placement,
+      gatewayPlacement,
     );
     assert.equal(
       configuration.metadata.annotations["openclaw.dev/configuration-id"],
@@ -2053,7 +2080,7 @@ test(
     );
     assert.equal(configuration.metadata.annotations["openclaw.dev/configuration-generation"], "1");
 
-    const provisionedSecrets = (await resources("secrets", placement)).filter(
+    const provisionedSecrets = (await resources("secrets", gatewayPlacement)).filter(
       ({ metadata }) =>
         metadata.labels?.["app.kubernetes.io/managed-by"] === "openclaw-enterprise" &&
         metadata.labels?.["openclaw.dev/namespace"] === namespaceOwner.id &&
@@ -2064,12 +2091,31 @@ test(
       2,
       "Console-saved Secrets must be stored through the real Kubernetes Secret Driver",
     );
-    const transport = await resource("secret", `transport-${hash(provisioned.agentId)}`, placement);
+    const transportName = `transport-${hash(provisioned.agentId)}`;
+    const passwordName = `gateway-password-${hash(provisioned.agentId)}`;
+    const transport = await resource("secret", transportName, gatewayPlacement);
+    const password = await resource("secret", passwordName, gatewayPlacement);
     assert.deepEqual(
-      Object.keys(transport.data).sort(),
-      ["app-server-token", "gateway-password"],
-      "runtime transport credentials must be generated before provisioning handoff",
+      Object.keys(transport.data),
+      ["app-server-token"],
+      "the canonical app-server credential must be generated in CP before provisioning handoff",
     );
+    assert.deepEqual(
+      Object.keys(password.data),
+      ["gateway-password"],
+      "the Gateway password must be a separate CP credential",
+    );
+    for (const name of [
+      transportName,
+      passwordName,
+      ...provisionedSecrets.map(({ metadata }) => metadata.name),
+    ]) {
+      assert.equal(
+        await missing("secret", name, placement),
+        true,
+        "canonical credentials must not be stored in the Harness namespace",
+      );
+    }
   },
 );
 
