@@ -19,6 +19,7 @@ export function createTestKubernetesComputeDriver(id) {
       network: {
         dns: { namespace: "kube-system", podLabels: { app: "dns" } },
         gatewayPort: 8080,
+        gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
         gatewayClients: [{ namespace: "controller", podLabels: { app: "controller" } }],
       },
       servicePrincipalCredentials: { mode: "disabled" },

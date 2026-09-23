@@ -569,7 +569,7 @@ test(
     });
 
     // Gateway transport remains operator-owned and separate from the account's model credential.
-    const gatewayToken = await provisionAgentTransportSecret(
+    const gatewayPassword = await provisionAgentTransportSecret(
       directory,
       tenantNamespace,
       agent.data.id,
@@ -676,7 +676,7 @@ test(
     const nonce = `OCC-CHATGPT-SERVICE-ACCOUNT-${randomUUID()}`;
     await assertGatewayModelTurn({
       gatewayUrl: forwarding.url,
-      gatewayToken,
+      gatewayPassword,
       nonce,
       secrets: [accessToken, adminKey],
     });

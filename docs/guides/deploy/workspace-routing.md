@@ -156,34 +156,32 @@ writes or gateway Pod/exec access.
 
 ### Configure native gateway authentication
 
-Set each Agent's native Configuration to trusted-proxy authentication. Add the
-following fields without replacing the model, Harness, or other settings:
+Set the actual Envoy socket source CIDRs in the trusted Installation YAML:
 
 ```yaml
-gateway:
-  trustedProxies:
-    - <actual-proxy-source-cidr>
-  allowRealIpFallback: true
-  auth:
-    mode: trusted-proxy
-    trustedProxy:
-      userHeader: x-occ-identity
-      allowUsers:
-        - occ-workspace-files
-    identityScopes:
-      occ-workspace-files:
-        - operator.admin
+drivers:
+  compute:
+    configuration:
+      network:
+        gatewayTrustedProxyCidrs:
+          - "<actual-proxy-source-cidr>"
 ```
 
-Compute validates the fixed identity header, allowed identity, administrative
-grant, and real-IP fallback, and requires a nonempty `trustedProxies` entry. It
-does not verify that those addresses belong to Envoy. Operators must validate
-the actual proxy source CIDRs and exclude untrusted sources.
-Omit `gateway.auth.token`; Compute rejects it and does not mount the generated
-token in this mode. If you also need password access for a direct loopback
-connection, set `gateway.auth.password` to the environment SecretRef
-`{ source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" }`. Do
-not use a plaintext password. See [Kubernetes gateway credentials](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials)
+Keep the existing network settings alongside this field. Replace the placeholder
+with CIDRs verified for your cluster; there is no production default. Restart
+the API and worker after changing their startup configuration.
+
+Kubernetes Compute renders native trusted-proxy authentication, its fixed
+`x-occ-identity: occ-workspace-files` identity with `operator.admin`, proxy trust,
+and real-IP fallback. Agent Configurations and Presets can omit those fields.
+Remove `gateway.auth.mode: token` and `gateway.auth.token` from existing drafts;
+conflicting tenant trust settings fail deployment. Matching legacy settings are
+accepted. See the [gateway authentication contract](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#gateway-authentication).
+
+For optional operator loopback access, set `gateway.auth.password` to the
+environment SecretRef
+`{ source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" }`.
+Do not use a plaintext password. See [Kubernetes gateway credentials](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials)
 and [verify a model response](../operate/model-verification.md).
 
 Do not require `x-forwarded-for` in native `requiredHeaders`: the route removes
@@ -216,6 +214,12 @@ matching runtime images and full Enterprise runtime verification are still requi
 
 ### Enable routing for existing Namespaces and Agents
 
+The authentication migration applies to every existing Kubernetes Installation,
+including embedded Agents without private routing. The Namespace ingress steps
+below apply when enabling private routing. Existing token-mode Configurations
+cannot deploy under the new Driver until updated; no automatic migration rewrites
+Configurations, Presets, Secrets, or PVCs.
+
 Plan a maintenance window for the gateway restart and Namespace-wide ingress
 change. Preserve Agent IDs, Configuration IDs, PVC/PV identities, workspace
 contents, session IDs, and model/channel credentials. Back up the current native
@@ -228,17 +232,23 @@ Configuration before replacing its values.
    the existing auth/database and routing-key Secrets, generated CA Secrets, and
    prepared bootstrap volume; do not rerun fresh-volume preparation. Restart both
    API and worker to load the new startup configuration. Wait for the private Gateway, certificates, and policy.
-2. For each existing Agent being routed, update its existing native
-   Configuration with the authentication fragment above. Preserve the other
-   values, remove `gateway.auth.token`, and use the environment SecretRef above
-   if you need password access. PATCH the complete updated `values` through the
+2. For every existing Kubernetes Agent, update its existing native Configuration
+   and any reusable Presets: remove `gateway.auth.mode: token` and
+   `gateway.auth.token`, and remove or align explicit proxy trust with the
+   Installation settings. Preserve model, channel, and Harness settings. Use
+   the environment SecretRef above if you need password access. PATCH the complete updated `values` through the
    [Configuration API](../../reference/configuration.md#create-read-update-and-delete), then
    `POST /namespaces/:namespaceId/agents/:agentId/deploy` for the same Agent.
    Retain and poll the returned deployment ID. Do not recreate the Agent or
    retire its current revision before successful cutover: its PVCs belong to
    that Agent and must survive the gateway replacement.
-3. Reconcile existing ready Namespaces as described below. Agent activation
-   alone is not proof that its HTTPRoute is accepted or files are accessible.
+3. Retain the existing transport Secret values, including unused legacy
+   `gateway-token` keys, gateway passwords, and app-server tokens. This migration
+   does not rotate or delete Secrets. Initial credential provisioning is not a
+   migration tool for an Agent with revisions.
+4. If enabling routing, reconcile existing ready Namespaces as described below.
+   Agent activation alone is not proof that its HTTPRoute is accepted or files
+   are accessible.
 
 Namespace provisioning creates the routing attachment label and
 `allow-gateway-ingress` policy. A ready Namespace is skipped by Namespace

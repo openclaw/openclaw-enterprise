@@ -386,6 +386,7 @@ function fixtureComputeConfiguration(overrides = {}) {
     network: {
       dns: { namespace: "kube-system", podLabels: { "k8s-app": "kube-dns" } },
       gatewayPort: 8080,
+      gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
       gatewayClients: [
         { namespace: "default", podLabels: { "app.kubernetes.io/name": "platform-probe" } },
       ],
@@ -619,6 +620,7 @@ test(
       network: {
         dns: { namespace: "kube-system", podLabels: { "k8s-app": "kube-dns" } },
         gatewayPort: 8080,
+        gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
         gatewayClients: [platformPeer],
       },
     });
@@ -1943,7 +1945,9 @@ test(
           mode: "local",
           bind: "loopback",
           controlUi: { enabled: false },
-          auth: { mode: "token", token: "${OPENCLAW_GATEWAY_TOKEN}" },
+          auth: {
+            password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" },
+          },
         },
         logging: { level: "info" },
         agents: {

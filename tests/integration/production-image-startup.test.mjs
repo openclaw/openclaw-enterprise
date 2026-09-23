@@ -79,6 +79,7 @@ function productionInstallation(adminKeyPath) {
           network: {
             dns: workloadPeer("kube-system", { "k8s-app": "kube-dns" }),
             gatewayPort: 8787,
+            gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
             gatewayClients: [
               workloadPeer("openclaw-system", {
                 "app.kubernetes.io/name": "openclaw-enterprise",

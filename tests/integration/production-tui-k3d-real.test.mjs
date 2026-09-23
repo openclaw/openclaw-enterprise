@@ -548,6 +548,9 @@ test(
       // A connectivity demo has no identity wizard; first-run BOOTSTRAP.md would override its nonce prompt.
       const nativeConfiguration = createHarnessConfiguration("openclaw", model);
       nativeConfiguration.agents.defaults.skipBootstrap = true;
+      nativeConfiguration.gateway.auth = {
+        password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" },
+      };
       const agentConfiguration = await api(
         "POST",
         `/namespaces/${namespace.id}/configurations`,
@@ -565,10 +568,11 @@ test(
         201,
       );
       const agentHash = hash(agent.id);
-      const gatewayToken = secret();
+      const gatewayPassword = secret();
+      secrets.push(gatewayPassword);
       await createSecret(
         `openclaw-agent-transport-${agentHash}`,
-        { "gateway-token": gatewayToken, "app-server-token": secret() },
+        { "app-server-token": secret(), "gateway-password": gatewayPassword },
         tenant,
       );
       await createSecret(
@@ -683,7 +687,7 @@ test(
       return { foreignIP, probe };
     }
 
-    const nativeTuiArgv = ({ pod, state, session, message, invalidGatewayToken = false }) => [
+    const nativeTuiArgv = ({ pod, state, session, message, invalidGatewayPassword = false }) => [
       ...kubeArgs,
       "-n",
       tenant,
@@ -697,7 +701,7 @@ test(
       "-u",
       "OPENAI_API_KEY",
       `OPENCLAW_STATE_DIR=${state}`,
-      ...(invalidGatewayToken ? [`OPENCLAW_GATEWAY_TOKEN=invalid-${suffix}`] : []),
+      ...(invalidGatewayPassword ? [`OPENCLAW_GATEWAY_PASSWORD=invalid-${suffix}`] : []),
       "node",
       "/app/openclaw.mjs",
       "tui",
@@ -778,14 +782,14 @@ test(
               state: `/tmp/occ-denied-${suffix}`,
               session: `denied-${suffix}`,
               message: prompt,
-              invalidGatewayToken: true,
+              invalidGatewayPassword: true,
             }),
           ]);
           for (const value of secrets) {
             assert.ok(!output.includes(value), "Denied TUI output leaked a credential");
           }
           assert.equal(JSON.parse(output).denied, true);
-          await record("Fresh-state invalid gateway token rejected");
+          await record("Fresh-state invalid gateway password rejected");
         }
         const first = `TUI_${round}_A_${randomBytes(8).toString("hex")}`;
         const second = `TUI_${round}_B_${randomBytes(8).toString("hex")}`;

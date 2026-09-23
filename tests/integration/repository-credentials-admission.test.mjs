@@ -40,6 +40,7 @@ function kubernetesCompute() {
     network: {
       dns: { namespace: "kube-system", podLabels: { app: "dns" } },
       gatewayPort: 8080,
+      gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
       gatewayClients: [{ namespace: "controller", podLabels: { app: "controller" } }],
       repositoryCredentials: { namespace: "controller", podLabels: { app: "worker" }, port: 8443 },
     },
@@ -166,10 +167,12 @@ async function fixture(
   const namespaceResponse = await initial.request("POST", "/namespaces", { name: "repositories" });
   assert.equal(namespaceResponse.status, 201, JSON.stringify(namespaceResponse));
   const namespace = namespaceResponse.data;
+  const native = createHarnessConfiguration(harness, "gpt-5.1");
+  delete native.gateway.auth;
   const configurationResponse = await initial.request(
     "POST",
     `/namespaces/${namespace.id}/configurations`,
-    { kind: "agent", values: createHarnessConfiguration(harness, "gpt-5.1") },
+    { kind: "agent", values: native },
   );
   assert.equal(configurationResponse.status, 201, JSON.stringify(configurationResponse));
   const configuration = configurationResponse.data;

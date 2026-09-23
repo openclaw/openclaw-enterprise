@@ -800,7 +800,7 @@ test(
     await submitChatTurnWithAssistantProof(nativePage, marker, nativeSocketFrames);
     await nativePage.screenshot({ path: join(artifacts, "stock-ui-chat.png"), fullPage: true });
     await assertNoNativeCredentialLeak(nativePage, [
-      topology.gatewayToken,
+      topology.gatewayPassword,
       topology.workspaceGateway.apiKey,
       process.env.OPENAI_API_KEY,
     ]);

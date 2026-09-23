@@ -83,8 +83,8 @@ See [private Agent gateway routes](../drivers/kubernetes-compute/networking-and-
 for the Compute contract, and the
 [deployment procedure](../../guides/deploy/workspace-routing.md#agent-workspace-files) for Envoy,
 cert-manager, native trusted-proxy configuration, and key/certificate rotation.
-The default token-authenticated native gateway does not enable this path by
-itself. Unsupported Drivers and unavailable endpoints return
+Kubernetes gateway authentication is always trusted-proxy; private routing
+still requires the Installation, Helm, and service-key settings above. Unsupported Drivers and unavailable endpoints return
 `503 DEPENDENCY_UNAVAILABLE`.
 
 Missing, invalid, expired, or revoked sessions or service keys return `401`; an

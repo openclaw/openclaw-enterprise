@@ -5,6 +5,8 @@ import { delimiter, join } from "node:path";
 import test from "node:test";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
+import { createRequire } from "node:module";
+import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { composeConfiguration } from "../helpers/compose.mjs";
 import {
   composeInvocations,
@@ -21,6 +23,10 @@ import {
   runDevUp,
   serviceKey,
 } from "../helpers/dev-up.mjs";
+
+const { loadYaml } = createRequire(new URL("../../apps/controller/package.json", import.meta.url))(
+  "@kubernetes/client-node",
+);
 
 test("dev-up builds the default runtime only when real Compose leaves runtime images unselected", async (t) => {
   const fixture = await createFixture(t);
@@ -676,6 +682,11 @@ test("Kubernetes dev-up authenticates the Installation and cleanup uses its save
     config,
     /gateway: docker.io\/library\/openclaw-enterprise-runtime@sha256:[a-f0-9]{64}/,
   );
+  // A newly bootstrapped local installation must pass the real Compute startup
+  // contract while trusting only Pod loopback, never an assumed cluster CIDR.
+  const compute = loadYaml(config).drivers.compute.configuration;
+  KubernetesComputeDriver.validateConfiguration(compute);
+  assert.deepEqual(compute.network.gatewayTrustedProxyCidrs, ["127.0.0.1/32"]);
   assert.match(config, /transportSecretPrefix: openclaw-agent-transport/);
   assert.doesNotMatch(config, /modelSecretPrefix/);
   const startupCommands = await readJsonLines(fixture.env.SAFETY_LOG);

@@ -63,6 +63,7 @@ test(
       [secretRotationProbe]: false,
       APP_SERVER_TOKEN: true,
       APP_SERVER_URL: true,
+      OPENCLAW_GATEWAY_PASSWORD: true,
       OPENCLAW_GATEWAY_TOKEN: false,
     });
     assert.deepEqual(harnessEnvironment, {
@@ -70,6 +71,7 @@ test(
       [secretRotationProbe]: false,
       APP_SERVER_TOKEN: true,
       APP_SERVER_URL: false,
+      OPENCLAW_GATEWAY_PASSWORD: false,
       OPENCLAW_GATEWAY_TOKEN: false,
     });
     const modelProjection = topology.harnessPod.spec.containers[0].env.find(
@@ -156,7 +158,8 @@ test(
       SECRET_ROTATION_PROBE: false,
       APP_SERVER_TOKEN: false,
       APP_SERVER_URL: false,
-      OPENCLAW_GATEWAY_TOKEN: true,
+      OPENCLAW_GATEWAY_PASSWORD: true,
+      OPENCLAW_GATEWAY_TOKEN: false,
     });
     const modelProjection = topology.gatewayPod.spec.containers[0].env.find(
       ({ name }) => name === "OPENAI_API_KEY",
@@ -213,7 +216,8 @@ test(
       [secretRotationProbe]: true,
       APP_SERVER_TOKEN: false,
       APP_SERVER_URL: false,
-      OPENCLAW_GATEWAY_TOKEN: true,
+      OPENCLAW_GATEWAY_PASSWORD: true,
+      OPENCLAW_GATEWAY_TOKEN: false,
     });
     const modelProjection = topology.gatewayPod.spec.containers[0].env.find(
       ({ name }) => name === "OPENAI_API_KEY",

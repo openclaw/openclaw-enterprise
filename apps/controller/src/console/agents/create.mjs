@@ -42,7 +42,6 @@ function configurationTemplate(mode) {
       mode: "local",
       bind: "lan",
       controlUi: { enabled: false },
-      auth: { mode: "token", token: "${OPENCLAW_GATEWAY_TOKEN}" },
       http: { endpoints: { chatCompletions: { enabled: true } } },
     },
     agents: {

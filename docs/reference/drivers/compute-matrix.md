@@ -22,6 +22,8 @@ are in the [canonical matrix data](../../assets/compute-driver-matrix.json).
 An optional [OpenShell Sandbox Driver](openshell-sandbox.md) can be selected
 with Kubernetes, but stock OpenShell lacks required credential and
 workload-identity projection. It is not a supported Agent deployment path.
+Kubernetes gateway authentication is [trusted-proxy only](kubernetes-compute/networking-and-isolation.md#gateway-authentication),
+with optional loopback password access. Docker and SSH keep their own auth modes.
 For setup, see [Drivers quickstart](selection.md#choose-a-bundled-driver).
 The [Compute Driver contract](compute.md) owns requirements; the
 [platform design](../../design.md) owns the target architecture.

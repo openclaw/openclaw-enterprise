@@ -74,8 +74,8 @@ Follow these pages in order in the same operator shell:
    provision exact-Agent credentials, and deploy an immutable revision.
 3. [Verify the production workload](deploy/production-agents.md#verify-production-workloads).
    Confirm the active revision and require a real model response. The guide
-   distinguishes the token-authenticated TUI from the direct password check
-   available to operators of trusted-proxy gateways.
+   offers a TUI and an HTTP check using the optional loopback password on
+   Kubernetes trusted-proxy gateways.
 
 For ongoing business operation, use [production handoff](deploy/production-handoff.md)
 to record owners, credential renewal, alert response, and recovery decisions.

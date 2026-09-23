@@ -128,6 +128,7 @@ function computeConfiguration({ nodeSelector } = {}) {
     network: {
       dns: { namespace: "kube-system", podLabels: { "k8s-app": "kube-dns" } },
       gatewayPort: 8080,
+      gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
       gatewayClients: [
         { namespace: "default", podLabels: { "app.kubernetes.io/name": "platform-probe" } },
       ],
@@ -244,7 +245,6 @@ async function provisionAgentTransportSecret(namespaceName, agentId) {
   const directory = await mkdtemp(join(tmpdir(), `oce-plugin-transport-${suffix}-`));
   const secrets = {
     "app-server-token": randomBytes(32).toString("hex"),
-    "gateway-token": randomBytes(32).toString("hex"),
     "gateway-password": randomBytes(32).toString("hex"),
   };
 

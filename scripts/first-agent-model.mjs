@@ -32,8 +32,8 @@ const discoveryMessages = {
 };
 
 const probeMessages = {
-  missing_token:
-    "The gateway Pod has no authentication token. Check its Kubernetes Secret and restart the gateway if necessary.",
+  missing_password:
+    "The gateway Pod has no loopback gateway password. Check its Kubernetes Secret and restart the gateway if necessary.",
   missing_provider_key:
     "The gateway container has no OpenAI provider key. Check the Agent's provider Secret and redeploy before retrying.",
   credential_prompt:
@@ -43,7 +43,7 @@ const probeMessages = {
   unauthenticated:
     "The gateway did not reject an unauthenticated request with HTTP 401 or 403. Check gateway authentication before retrying.",
   authorization:
-    "The gateway rejected its own bearer token. Check gateway authentication and the mounted Secret.",
+    "The gateway rejected its loopback password. Check gateway authentication and the mounted Secret.",
   endpoint:
     "The gateway returned HTTP 404. Check that HTTP chat completions are enabled for this Agent's deployed revision.",
   rate_limit:
@@ -165,16 +165,16 @@ async function probeInGateway({ nonce, prompt }) {
   try {
     const providerKey = process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_API_KEY;
-    const token = process.env.OPENCLAW_GATEWAY_TOKEN;
-    if (!token) {
-      emit(failure("missing_token"));
+    const password = process.env.OPENCLAW_GATEWAY_PASSWORD;
+    if (!password) {
+      emit(failure("missing_password"));
       return;
     }
     if (!providerKey) {
       emit(failure("missing_provider_key"));
       return;
     }
-    const credentials = [token, providerKey];
+    const credentials = [password, providerKey];
     if (prompt !== undefined && credentials.some((credential) => prompt.includes(credential))) {
       emit(failure("credential_prompt"));
       return;
@@ -185,7 +185,7 @@ async function probeInGateway({ nonce, prompt }) {
     async function request(content, authorized) {
       const headers = { "content-type": "application/json" };
       if (authorized) {
-        headers.authorization = `Bearer ${token}`;
+        headers.authorization = `Bearer ${password}`;
       }
       try {
         return await fetch(url, {

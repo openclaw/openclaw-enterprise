@@ -50,6 +50,7 @@ accept an explicit `authentication` mode
 (`"inCluster"` or `"kubeconfig"`); approved `images` and immutable-image
 policy; explicit gateway, Agent, and namespace `resources`; exact DNS and
 either private `gatewayRouting` or direct gateway-client `network` peers;
+required `network.gatewayTrustedProxyCidrs`;
 `servicePrincipalCredentials` policy; and an
 explicit production `runtime` containing per-Agent operator-provisioned
 the transport Secret-name prefix and required

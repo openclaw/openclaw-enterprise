@@ -23,7 +23,11 @@ Agent; it does not verify an Agent you create in the console.
    edit the JSON to use another authorized model. Confirm your Installation has
    access to the model you choose. The form requires a JSON
    object. Changing modes updates untouched JSON; use **Reset template** if you
-   want to replace your edits.
+   want to replace your edits. Starter templates omit gateway authentication;
+   Kubernetes Compute renders trusted-proxy settings from the Installation's
+   [operator-managed proxy trust](../drivers/kubernetes-compute/networking-and-isolation.md#gateway-authentication).
+   Native admin UI still needs its [explicit opt-in configuration](../../guides/deploy/native-admin.md);
+   the starter does not enable it.
 4. If you need Slack, use its channel card and select
    **Dedicated**. Channel settings and their plugin entries are saved with the
    Configuration when you select **Create Agent**. You can provision Slack
@@ -75,8 +79,9 @@ bound through the Agent's Configuration. Model credentials are selected
 separately through `harnessAuth`; this form does not accept an OpenAI API key.
 
 Select **Provision generated runtime credentials** to create the transport bundle.
-The server generates independent gateway and app-server transport tokens and a
-local gateway password. The password is projected only when native Configuration
+The Kubernetes Driver generates an app-server transport token and a local
+gateway password. It does not generate a gateway token; Kubernetes gateway
+authentication is trusted-proxy only. The password is projected only when native Configuration
 explicitly selects the supported environment reference; it is never returned by
 the credential API. Provisioning checks for existing Agent runtime Deployments
 before writing credentials so it does not modify values after a runtime has

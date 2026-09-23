@@ -61,6 +61,7 @@ async function fixture() {
     network: {
       dns: { namespace: "kube-system", podLabels: { app: "dns" } },
       gatewayPort: 8080,
+      gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
       gatewayClients: [{ namespace: "controller", podLabels: { app: "controller" } }],
       repositoryCredentials: {
         namespace: "credentials",
@@ -81,6 +82,15 @@ async function fixture() {
     configurationKind: "agent",
     configurationGeneration: 1,
     configuration: {
+      gateway: {
+        trustedProxies: ["127.0.0.1/32"],
+        allowRealIpFallback: true,
+        auth: {
+          mode: "trusted-proxy",
+          trustedProxy: { userHeader: "x-occ-identity", allowUsers: ["occ-workspace-files"] },
+          identityScopes: { "occ-workspace-files": ["operator.admin"] },
+        },
+      },
       agents: { defaults: { model: "openai/gpt-5" } },
       logging: { level: "info", consoleLevel: "info", consoleStyle: "json" },
       diagnostics: { otel: { logs: false } },

@@ -124,6 +124,8 @@ function context(mode) {
 }
 
 function revision(overrides = {}) {
+  const native = createHarnessConfiguration(overrides.harness?.id ?? "codex", "gpt-4.1");
+  delete native.gateway.auth;
   return {
     id: "revision-plugin-compute-1",
     namespaceId: tenant.id,
@@ -132,10 +134,7 @@ function revision(overrides = {}) {
     configurationId: agent.configurationId,
     configurationKind: "agent",
     configurationGeneration: 1,
-    configuration: admitLoggingConfiguration(
-      createHarnessConfiguration(overrides.harness?.id ?? "codex", "gpt-4.1"),
-      "info",
-    ),
+    configuration: admitLoggingConfiguration(native, "info"),
     harnessAuth: {
       method: "api_key",
       source: {
@@ -236,6 +235,7 @@ function kubernetesOptions(overrides = {}) {
     network: {
       dns: { namespace: "kube-system", podLabels: { "k8s-app": "kube-dns" } },
       gatewayPort: 8080,
+      gatewayTrustedProxyCidrs: ["10.42.0.0/16"],
       gatewayClients: [
         { namespace: "openclaw-controller", podLabels: { "app.kubernetes.io/name": "controller" } },
       ],
@@ -1280,7 +1280,7 @@ function dedicatedPluginDriver() {
   return new KubernetesComputeDriver(
     {
       ...configured,
-      network,
+      network: { ...network, gatewayTrustedProxyCidrs: ["10.42.0.0/16"] },
       gatewayRouting: {
         hostname: "agents.example.test",
         gatewayName: "gateway",
@@ -1970,7 +1970,7 @@ test("Codex gateway supervisor exits when the peer Agent plugin failure set chan
       fetch,
       process: {
         env: {
-          APP_SERVER_TOKEN: "base-gateway-token",
+          APP_SERVER_TOKEN: "base-app-server-token",
           APP_SERVER_URL: `ws://127.0.0.1:${peerPort}`,
           HOME: "/home/node",
           OPENCLAW_AGENT_REVISION_ID: revisionId,

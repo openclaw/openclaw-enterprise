@@ -101,7 +101,6 @@ For a local authenticated Agent and TUI trial, build the Kubernetes images above
 then follow [production Agent deployment](production-agents.md) and
 [production TUI verification](production-agents.md#attach-with-the-openclaw-tui) against that disposable cluster.
 Complete the same Secret binding, exact IAM grants, and tenant RoleBindings as
-for a production installation. Choose the verification method that matches the
-gateway's authentication; a token-based TUI command cannot authenticate to a
-gateway in trusted-proxy mode. For the password-based method, see
-[verify a model response](../operate/model-verification.md).
+for a production installation. Both the TUI and the
+[HTTP model response check](../operate/model-verification.md) use an optional
+loopback password alongside the gateway's trusted-proxy authentication.

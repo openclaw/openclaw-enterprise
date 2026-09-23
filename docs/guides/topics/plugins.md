@@ -22,8 +22,8 @@ apply it. A deployment can succeed with a plugin disabled if installation fails
 or, for Codex, the app still needs authentication.
 [Check the deployment warnings](plugins-configure.md#check-the-result), then
 ask the deployed Agent to use the plugin and inspect its tool result. The
-documented tool check needs a token-authenticated gateway; the trusted-proxy
-model check shows only the assistant's reply. Disabling or removing a plugin
+documented TUI tool check needs the optional gateway loopback password; the
+HTTP model check shows only the assistant's reply. Disabling or removing a plugin
 also requires a new deployment and does not interrupt an active turn.
 
 Plugin approval does not grant filesystem access or override the Agent's

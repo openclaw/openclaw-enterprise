@@ -88,6 +88,7 @@ function options(overrides = {}) {
     network: {
       dns: { namespace: "kube-system", podLabels: { "k8s-app": "kube-dns" } },
       gatewayPort: 8080,
+      gatewayTrustedProxyCidrs: ["10.42.0.0/16"],
       gatewayClients: [
         { namespace: "openclaw-controller", podLabels: { "app.kubernetes.io/name": "controller" } },
       ],
@@ -388,7 +389,14 @@ test("dedicated startup initializes Harness plugins before enrolling its workspa
       plugins: { "codex-plugin:example": { enabled: true, approvalMode: "auto" } },
     },
   });
-  revision.configuration = admitLoggingConfiguration(revision.configuration, "info");
+  const operatorSuppliedConfiguration = {
+    ...revision.configuration,
+    gateway: {
+      bind: "lan",
+      auth: { trustedProxy: { requiredHeaders: ["x-real-ip"] } },
+    },
+  };
+  revision.configuration = admitLoggingConfiguration(operatorSuppliedConfiguration, "info");
   const namespace = kubernetesNamespaceName(tenant.id);
   const gatewayName = `gateway-${digest(revision.agentId)}`;
   const agentName = `agent-${digest(revision.agentId)}-rev-${digest(revision.id)}`;
@@ -499,6 +507,27 @@ test("dedicated startup initializes Harness plugins before enrolling its workspa
     save(object);
   };
   assert.equal((await prepare()).ready, false);
+  const renderedConfiguration = JSON.parse(
+    read("ConfigMap", `gateway-${digest(revision.agentId)}-rev-${digest(revision.id)}`).data[
+      "openclaw.json"
+    ],
+  );
+  assert.equal(renderedConfiguration.gateway.bind, "lan");
+  assert.deepEqual(renderedConfiguration.gateway.trustedProxies, ["10.42.0.0/16"]);
+  assert.equal(renderedConfiguration.gateway.allowRealIpFallback, true);
+  assert.deepEqual(renderedConfiguration.gateway.auth, {
+    mode: "trusted-proxy",
+    trustedProxy: {
+      requiredHeaders: ["x-real-ip"],
+      userHeader: "x-occ-identity",
+      allowUsers: ["occ-workspace-files"],
+    },
+    identityScopes: { "occ-workspace-files": ["operator.admin"] },
+  });
+  assert.deepEqual(revision.configuration.gateway, {
+    bind: "lan",
+    auth: { trustedProxy: { requiredHeaders: ["x-real-ip"] } },
+  });
   assert.equal(setupCalls, 0);
   assert.equal(objects.has(key("Deployment", gatewayName)), false);
   assert.ok(
@@ -1172,8 +1201,38 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
   assert.equal(privateNativeAdminPod.initContainers[0].args[0].includes("copyFileSync"), false);
 
   for (const [configuration, expected] of [
+    [{ gateway: null }, /gateway configuration/i],
+    [{ gateway: [] }, /gateway configuration/i],
+    [{ gateway: { auth: null } }, /gateway auth/i],
+    [{ gateway: { auth: [] } }, /gateway auth/i],
     [
-      { gateway: { allowRealIpFallback: true, trustedProxies: ["10.42.0.0/16"] } },
+      {
+        gateway: {
+          auth: {
+            trustedProxy: null,
+          },
+        },
+      },
+      /trustedProxy/i,
+    ],
+    [
+      {
+        gateway: {
+          auth: {
+            identityScopes: null,
+          },
+        },
+      },
+      /identityScopes/i,
+    ],
+    [
+      {
+        gateway: {
+          auth: { mode: "token", token: "${OPENCLAW_GATEWAY_TOKEN}" },
+          allowRealIpFallback: true,
+          trustedProxies: ["10.42.0.0/16"],
+        },
+      },
       /trusted-proxy/i,
     ],
     [
@@ -1256,6 +1315,7 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
             },
             identityScopes: { "occ-workspace-files": ["operator.admin"] },
           },
+          allowRealIpFallback: false,
           trustedProxies: ["10.42.0.0/16"],
         },
       },
@@ -1279,7 +1339,7 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
       /trustedProxies/i,
     ],
   ]) {
-    // Routed native access must be admitted by immutable native configuration, not patched in.
+    // Routed native access must come from the driver-rendered immutable native configuration.
     await assert.rejects(
       driver.prepareRevision({
         ...revision,
@@ -1287,6 +1347,51 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
       }),
       expected,
     );
+  }
+
+  for (const [configuration, expected] of [
+    [
+      { gateway: { auth: { mode: "token", token: "${OPENCLAW_GATEWAY_TOKEN}" } } },
+      /trusted-proxy/i,
+    ],
+    [
+      {
+        gateway: {
+          auth: {
+            mode: "trusted-proxy",
+            token: "legacy-token",
+          },
+        },
+      },
+      /auth\.token/i,
+    ],
+    [
+      {
+        gateway: {
+          auth: {
+            identityScopes: { "occ-workspace-files": ["operator.read"] },
+          },
+        },
+      },
+      /identityScopes/i,
+    ],
+    [{ gateway: { trustedProxies: ["10.99.0.0/16"] } }, /gatewayTrustedProxyCidrs/i],
+  ]) {
+    for (const configure of [options, routedOptions]) {
+      for (const operation of ["prepareRevision", "activateRevision"]) {
+        const failClosed = createKubernetesComputeDriver(configure());
+        const invalid = routedRevision(failClosed, {
+          configuration: { ...revision.configuration, ...configuration },
+        });
+        let clusterTouched = false;
+        failClosed.clients = async () => {
+          clusterTouched = true;
+          throw new Error("cluster touched");
+        };
+        await assert.rejects(failClosed[operation](invalid, authContext(invalid)), expected);
+        assert.equal(clusterTouched, false);
+      }
+    }
   }
 });
 
@@ -1411,6 +1516,7 @@ test("gateway routing startup validation and namespace membership fail closed", 
 });
 
 test("Kubernetes drivers require explicit authentication, images, and production policy", () => {
+  const baseNetwork = options().network;
   for (const [invalid, expected] of [
     [{ authentication: undefined }, /authentication|credential/i],
     [{ authentication: { mode: "kubeconfig", kubeconfigPath, context: "" } }, /context/i],
@@ -1429,6 +1535,20 @@ test("Kubernetes drivers require explicit authentication, images, and production
     [{ images: { gateway: "gateway:local", agent: "", requireImmutableDigest: false } }, /agent/i],
     [{ resources: undefined }, /resource/i],
     [{ network: undefined }, /network/i],
+    [{ network: { ...baseNetwork, gatewayTrustedProxyCidrs: undefined } }, /trusted proxy CIDR/i],
+    [{ network: { ...baseNetwork, gatewayTrustedProxyCidrs: [] } }, /trusted proxy CIDR/i],
+    [{ network: { ...baseNetwork, gatewayTrustedProxyCidrs: ["10.42.0.1/"] } }, /CIDR/i],
+    [{ network: { ...baseNetwork, gatewayTrustedProxyCidrs: ["10.42.0.1/00"] } }, /CIDR/i],
+    [{ network: { ...baseNetwork, gatewayTrustedProxyCidrs: ["10.42.0.1/+0"] } }, /CIDR/i],
+    [{ network: { ...baseNetwork, gatewayTrustedProxyCidrs: ["10.42.0.1/1e1"] } }, /CIDR/i],
+    [
+      { network: { ...baseNetwork, gatewayTrustedProxyCidrs: ["0.0.0.0/0"] } },
+      /cannot trust every source/i,
+    ],
+    [
+      { network: { ...baseNetwork, gatewayTrustedProxyCidrs: ["::/0"] } },
+      /cannot trust every source/i,
+    ],
     [{ servicePrincipalCredentials: undefined }, /credential|projection/i],
   ]) {
     assert.throws(() => createKubernetesComputeDriver(options(invalid)), expected);
@@ -3835,40 +3955,10 @@ test("revision lifecycle rejects another driver or missing identity before clust
     name: "occ-model-key",
     key: "value",
   });
-  assert.deepEqual(environment.OPENCLAW_GATEWAY_TOKEN.valueFrom.secretKeyRef, {
-    name: `transport-${agentHash.slice(0, 12)}`,
-    key: "gateway-token",
-  });
+  assert.equal(environment.OPENCLAW_GATEWAY_TOKEN, undefined);
   assert.equal(environment.HOME.value, "/home/node");
   assert.equal(environment.APP_SERVER_TOKEN, undefined);
   assert.equal(environment.APP_SERVER_URL, undefined);
-
-  const trustedProxyRevision = {
-    ...embeddedRevision,
-    id: "revision-a-embedded-trusted-proxy",
-    configuration: {
-      ...embeddedRevision.configuration,
-      gateway: { ...embeddedRevision.configuration.gateway, auth: { mode: "trusted-proxy" } },
-    },
-  };
-  const trustedProxyGateway = production.deployment(
-    `gateway-${agentHash.slice(0, 12)}-trusted-proxy`,
-    { namespaceId: tenant.id, agentId: revision.agentId },
-    namespace,
-    "openclaw-enterprise/gateway-fixture:local",
-    `agent-${agentHash.slice(0, 12)}`,
-    "gateway",
-    {},
-    production.gatewayConfiguration(trustedProxyRevision).loggingLevel,
-    production.gatewayConfiguration(trustedProxyRevision),
-    true,
-    revision.servicePrincipalId,
-    preparedAuth(production, namespace, true),
-  );
-  const trustedProxyEnvironment = Object.fromEntries(
-    trustedProxyGateway.spec.template.spec.containers[0].env.map((entry) => [entry.name, entry]),
-  );
-  assert.equal(trustedProxyEnvironment.OPENCLAW_GATEWAY_TOKEN, undefined);
 
   const policies = production.agentNetworkPolicies(embeddedRevision, namespace);
   assert.equal(policies.length, 1);
