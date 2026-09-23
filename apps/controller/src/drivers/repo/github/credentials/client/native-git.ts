@@ -10,9 +10,12 @@ import {
 } from "./manifest.ts";
 import { readPrivateFile } from "./private-files.ts";
 
+export { normalizePushRefAllowlist } from "../../../credentials/client-contracts.ts";
+
 interface NativeGitPaths {
   readonly node: string;
   readonly helper: string;
+  readonly hooks?: string;
 }
 
 const installedPaths: NativeGitPaths = {
@@ -26,7 +29,11 @@ const configQuote = (value: string): string =>
   `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("\n", "\\n").replaceAll("\t", "\\t")}"`;
 
 function validatePaths(paths: NativeGitPaths): void {
-  for (const path of [paths.node, paths.helper]) {
+  for (const path of [
+    paths.node,
+    paths.helper,
+    ...(paths.hooks === undefined ? [] : [paths.hooks]),
+  ]) {
     if (
       !isAbsolute(path) ||
       path.length > 4096 ||
@@ -70,6 +77,16 @@ export async function renderNativeGitConfiguration(
   }
   const helper = `!${shellQuote(paths.node)} ${shellQuote(paths.helper)} manifest ${shellQuote(finalRoot)} ${shellQuote(manifest.generation)}`;
   const lines: string[] = [];
+  if (manifest.bindings.some(({ client }) => client.pushRefAllowlist !== undefined)) {
+    lines.push(
+      "[core]",
+      "\thooksPath = " + configQuote(paths.hooks ?? join(dirname(paths.helper), "hooks")),
+      '[oce "repository"]',
+      "\tsession =",
+      "\tmanifestRoot = " + configQuote(finalRoot),
+      "\tgeneration = " + configQuote(manifest.generation),
+    );
+  }
   for (const [host, origin] of [...hosts].sort(([left], [right]) =>
     left < right ? -1 : left > right ? 1 : 0,
   )) {
@@ -138,7 +155,14 @@ export function singleSessionGitConfiguration(
   );
   const helper = `!${shellQuote(process.execPath)} ${shellQuote(helperPath)} ${shellQuote(directory)}`;
   const origin = configuration.client.gatewayOrigin;
+  if (configuration.client.pushRefAllowlist !== undefined && import.meta.url.endsWith(".ts")) {
+    throw new Error("push-policy-requires-packaged-client");
+  }
   return [
+    "oce.repository.session=" + directory,
+    ...(configuration.client.pushRefAllowlist === undefined
+      ? []
+      : ["core.hooksPath=" + join(dirname(helperPath), "hooks")]),
     `url.${origin}/.insteadOf=https://${configuration.client.canonicalApiHost}/`,
     `credential.${origin}.helper=`,
     `credential.${origin}.helper=${helper}`,

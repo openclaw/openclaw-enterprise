@@ -1,7 +1,7 @@
 ---
 created: "2026-09-17"
-updated: "2026-09-21"
-last_updated_session: "authoring-run/7fb656ee-ae7a-45a8-a160-6d73bc5ae25b"
+updated: "2026-09-23"
+last_updated_session: "authoring-run/0dffba8f-d16f-4f90-8fe2-893368f6926a"
 ---
 
 # Repository credential service flow
@@ -173,10 +173,12 @@ to classify target, method, profile and query. All profiles admit upload-pack di
 `git-read` rejects receive-pack, including discovery. Git paths match admitted
 owner/repository case-insensitively with one optional `.git` suffix, then use the
 canonical identity upstream. A literal `.git` repository keeps its suffix.
-Raw-target, endpoint, method, media, query and profile checks remain; API matching
-is unchanged. Only `git-full` admits selected repository metadata, PRs, issues,
-comments, `GET /meta` and `POST /graphql`. Git-only profiles reject all API
-requests before dispatch. GraphQL uses the exact installation-token grant without
+Raw-target, endpoint, method, media, query and profile checks remain. All profiles
+admit selected repository, README, PR, issue and comment reads, `GET /meta` and
+`POST /graphql`. REST writes require the matching profile permission; Reader
+rejects them before dispatch. The shared PR/issue comment routes also rely on
+GitHub's resource authorization. Raw README and diff/patch replies remain bounded
+and bypass JSON rewriting. GraphQL uses the exact installation-token grant without
 field-level or branch-only authorization. GitHub may return permitted public
 information; every GraphQL POST is a possible write.
 
@@ -329,6 +331,8 @@ module closure. Separate-container isolation and live-provider behavior require 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 06:18: Trace accompanying profile-aligned REST permissions, token-bounded GraphQL and bounded raw replies. (authoring-run/0dffba8f-d16f-4f90-8fe2-893368f6926a - a2e94cf8ac2d94306f0701cee5457d1a9797e50a)
 
 - 2026-09-21 07:24: Condense the baseline service trace while retaining credential custody, failure and qualification boundaries. (authoring-run/7fb656ee-ae7a-45a8-a160-6d73bc5ae25b - d2b31887be1d114c9147e2ed6f07c1f38e765c6f)
 

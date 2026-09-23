@@ -324,17 +324,17 @@ export function validHarnessAuthSnapshot(value: HarnessAuthSnapshot, namespaceId
       return normalizeHarnessAuthBinding(value) !== null;
     }
     const binding =
-      value.method === "api_key"
+      value.method === "api_key" || value.method === "codex_pat"
         ? normalizeHarnessAuthBinding({ method: value.method, source: value.source })
         : normalizeHarnessAuthBinding({
             method: value.method,
             serviceAccountId: value.serviceAccountId,
           });
-    if (binding?.method === "api_key") {
+    if (binding?.method === "api_key" || binding?.method === "codex_pat") {
       return (
         Object.keys(value).length === 3 &&
         binding.source.namespaceId === namespaceId &&
-        value.method === "api_key" &&
+        (value.method === "api_key" || value.method === "codex_pat") &&
         isNonEmptyString(value.secretDriverId)
       );
     }
@@ -372,7 +372,8 @@ export function harnessAuthMatches(
   if (binding.method === "runtime") {
     return true;
   }
-  return binding.method === "api_key" && snapshot.method === "api_key"
+  return (binding.method === "api_key" || binding.method === "codex_pat") &&
+    (snapshot.method === "api_key" || snapshot.method === "codex_pat")
     ? binding.source.namespaceId === snapshot.source.namespaceId &&
         binding.source.id === snapshot.source.id
     : binding.method === "chatgpt_service_account" &&
@@ -386,7 +387,7 @@ function harnessSecretReference(
   secretId: string,
 ): boolean {
   return (
-    binding?.method === "api_key" &&
+    (binding?.method === "api_key" || binding?.method === "codex_pat") &&
     binding.source.namespaceId === namespaceId &&
     binding.source.id === secretId
   );
@@ -415,7 +416,7 @@ export async function assertHarnessAuthAvailable(
   if (binding === null || binding.method === "runtime") {
     return;
   }
-  if (binding.method === "api_key") {
+  if (binding.method === "api_key" || binding.method === "codex_pat") {
     if (
       binding.source.namespaceId !== namespaceId ||
       (await state.secrets.findSecret(namespaceId, binding.source.id)) === undefined
@@ -1436,9 +1437,6 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
         agent.namespaceId,
         agent.configurationId,
       );
-      if (Object.hasOwn(agent, "serviceAccountId")) {
-        throw new ScopeViolationError("Legacy Agent authentication selectors are unsupported.");
-      }
       await assertHarnessAuthAvailable(
         { secrets, serviceAccounts },
         agent.namespaceId,

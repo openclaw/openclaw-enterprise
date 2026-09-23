@@ -152,3 +152,9 @@ randomly named monitoring containers. It uses host networking with loopback-only
 listeners to reach a real test API and validates every dashboard query against
 Prometheus. It verifies collection and provisioning, not Compose's namespace
 sharing or live Agent runtime behavior.
+
+The test disables Grafana's startup plugin installation so it uses the plugins
+bundled in the pinned image. Background updates can replace the working
+Prometheus backend with a download that cannot execute from the data tmpfs,
+causing datasource health to fail while Grafana's own health stays ready. The
+test explicitly mounts that directory with `noexec` on both Docker and Podman.

@@ -13,8 +13,8 @@ rejection. The Driver suite exercises the concrete registry, Unix control and
 provider engine. It checks all four public status projections after complete
 private decoding, including false disposal and valid historical revoked/expired
 counts. Runtime-material suites check the closed file set, generation identity
-and actual init-file publication. The private client DTO adds no emitted runtime
-edge outside the GitHub client subtree. Run the relevant source checks with
+and actual init-file publication. The detached client includes the pure private
+client-contract validator alongside the GitHub client modules. Run the source checks with
 prepared dependencies:
 
 ```sh
@@ -67,10 +67,13 @@ model-execution claim.
 
 The assertions cover independently scoped bindings in one Agent, natural clone
 destinations, concurrent real clients, native PR creation and read-only denial.
+With a push-ref policy configured, a mixed-ref push must leave upstream refs
+unchanged and send no receive-pack request. This does not imply denial before
+Git discovery or authentication.
 They also withhold a created admission response until the real PostgreSQL claim
 expires, then check recovery without bearer replay. Additional assertions inspect
 private regular-file modes, retained material after worker replacement, exact
-missing-Secret repair, Git-only API denial and ordinary stop cleanup without
+missing-Secret repair, Reader write denial and ordinary stop cleanup without
 closing a sibling Agent's sessions. The credential service runs in a separate
 child. Graceful restart and joined SIGKILL preserve the HTTP app, worker and
 controlled provider inventories. After the crash, the replacement service rejects

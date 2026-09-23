@@ -88,8 +88,10 @@ test("GitHub driver admits exact REST methods, conservative GraphQL writes and c
   }
   for (const profile of ["git-read", "git-write"]) {
     for (const request of [head("GET", "/repos/fixture/repository"), head("POST", "/graphql")]) {
-      await t.test(`${profile} denies ${request.method} ${request.rawTarget}`, () => {
-        assert.equal(bind(profile).plan(request).kind, "denied");
+      await t.test(`${profile} admits ${request.method} ${request.rawTarget}`, () => {
+        const plan = bind(profile).plan(request);
+        assert.equal(plan.kind, undefined);
+        assert.equal(plan.effect, request.method === "GET" ? "read" : "write");
       });
     }
   }
@@ -110,7 +112,7 @@ test("GitHub driver admits exact REST methods, conservative GraphQL writes and c
     });
   }
 });
-test("pinned gh GraphQL media profile is admitted and reconstructed without widening REST media", async (t) => {
+test("pinned gh JSON media profile is admitted and REST headers are normalized", async (t) => {
   const { bind } = await createGitHubPlanningFixture(t);
   const bound = bind();
   const accept =
@@ -127,11 +129,28 @@ test("pinned gh GraphQL media profile is admitted and reconstructed without wide
   assert.equal(plan.requestHeaders.accept, accept);
   assert.equal(plan.requestHeaders["content-type"], "application/json");
   assert.equal(plan.requestHeaders["graphql-features"], "merge_queue");
-  for (const { name, path, headers } of [
+  const readme = bound.plan(head("GET", "/repos/fixture/repository/readme", { accept }));
+  assert.equal(readme.kind, undefined);
+  assert.equal(readme.requestHeaders.accept, "application/vnd.github+json");
+  assert.equal(readme.responsePolicy.body, "bounded-json");
+  for (const { name, path, headers, method = "POST" } of [
     {
-      name: "GraphQL media on REST",
-      path: "/repos/fixture/repository/issues",
-      headers: { accept },
+      name: "raw repository metadata bypasses JSON credential filtering",
+      method: "GET",
+      path: "/repos/fixture/repository",
+      headers: { accept: "application/vnd.github.v3.raw+json" },
+    },
+    {
+      name: "diff media on issue reads",
+      method: "GET",
+      path: "/repos/fixture/repository/issues/1",
+      headers: { accept: "application/vnd.github.v3.diff" },
+    },
+    {
+      name: "patch media on pull mutations",
+      method: "PATCH",
+      path: "/repos/fixture/repository/pulls/1",
+      headers: { accept: "application/vnd.github.v3.patch" },
     },
     {
       name: "additional XML media",
@@ -150,7 +169,7 @@ test("pinned gh GraphQL media profile is admitted and reconstructed without wide
     },
   ]) {
     await t.test(`denies ${name}`, () => {
-      assert.equal(bind().plan(head("POST", path, headers)).kind, "denied");
+      assert.equal(bind().plan(head(method, path, headers)).kind, "denied");
     });
   }
 });
@@ -379,7 +398,7 @@ test("native repository-ID pagination stays bound to the configured repository a
       assert.equal(headers.link, `<https://credentials.example${canonical}>; rel="next"`);
       assert.equal(bound.plan(head("GET", canonical)).target, canonical);
       assert.equal(bound.plan(head("POST", canonical)).kind, "denied");
-      assert.equal(bind("git-write").plan(head("GET", canonical)).kind, "denied");
+      assert.equal(bind("git-write").plan(head("GET", canonical)).target, canonical);
     });
   }
   // A native ID is response metadata, never an additional caller-selected repository route.

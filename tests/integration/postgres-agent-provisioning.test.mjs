@@ -510,57 +510,76 @@ test(
   },
 );
 
-test(
-  "provisioning worker creates Configuration and Agent from existing Secrets, then hands off one revision",
-  { ...requiresPostgres, timeout: 60_000 },
-  async (context) => {
-    const fixture = await createFixture(context);
-    const namespace = await fixture.bootstrapNamespace();
-    const secrets = await createProvisioningSecrets(fixture, namespace.id);
-    const secretCreateCallCount = fixture.secretDriver.calls.filter(
-      ({ operation }) => operation === "create",
-    ).length;
-    const body = provisioningBody(namespace.id, secrets);
-    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
-      body,
-    });
-    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+for (const authMethod of ["api_key", "codex_pat"]) {
+  test(
+    `${authMethod} provisioning grants existing Secret access and hands off one revision`,
+    { ...requiresPostgres, timeout: 60_000 },
+    async (context) => {
+      const fixture = await createFixture(context);
+      const namespace = await fixture.bootstrapNamespace();
+      const secrets = await createProvisioningSecrets(fixture, namespace.id);
+      const secretCreateCallCount = fixture.secretDriver.calls.filter(
+        ({ operation }) => operation === "create",
+      ).length;
+      const body = provisioningBody(namespace.id, secrets, {
+        harnessAuth: { method: authMethod, source: secretRef(namespace.id, secrets.modelKey.id) },
+      });
+      // Model-only references must obey the same Namespace boundary as channel Secrets.
+      const foreign = structuredClone(body);
+      foreign.harnessAuth.source.namespaceId = `ns_${randomUUID()}`;
+      const denied = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+        body: foreign,
+      });
+      assert.equal(denied.status, 404, JSON.stringify(denied.body));
+      const jobs = await fixture.pool.query(
+        "SELECT work_id FROM occ.agent_provisioning_work WHERE namespace_id = $1",
+        [namespace.id],
+      );
+      assert.equal(jobs.rowCount, 0, "foreign model references must not admit provisioning work");
+      const admitted = await fixture.request(
+        "POST",
+        `/namespaces/${namespace.id}/agents/provision`,
+        {
+          body,
+        },
+      );
+      assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
 
-    await fixture.startWorker();
-    const status = await waitFor("Agent provisioning to succeed", async () => {
-      const observed = await fixture.request("GET", admitted.data.provisioning.url);
-      assert.equal(observed.status, 200, JSON.stringify(observed.body));
-      return observed.data.status === "succeeded" ? observed.data : undefined;
-    });
-    assert.equal(status.status, "succeeded");
-    assert.match(status.agentId, identifier("agt"));
-    assert.match(status.configurationId, identifier("cfg"));
-    fixture.cancelProvisioningAtTeardown(namespace.id, status.agentId);
-    assert.equal(
-      fixture.secretDriver.calls.filter(({ operation }) => operation === "create").length,
-      secretCreateCallCount,
-      "provisioning must reuse Console-created Secrets instead of creating new Secret values",
-    );
+      await fixture.startWorker();
+      const status = await waitFor("Agent provisioning to succeed", async () => {
+        const observed = await fixture.request("GET", admitted.data.provisioning.url);
+        assert.equal(observed.status, 200, JSON.stringify(observed.body));
+        return observed.data.status === "succeeded" ? observed.data : undefined;
+      });
+      assert.equal(status.status, "succeeded");
+      assert.match(status.agentId, identifier("agt"));
+      assert.match(status.configurationId, identifier("cfg"));
+      fixture.cancelProvisioningAtTeardown(namespace.id, status.agentId);
+      assert.equal(
+        fixture.secretDriver.calls.filter(({ operation }) => operation === "create").length,
+        secretCreateCallCount,
+        "provisioning must reuse Console-created Secrets instead of creating new Secret values",
+      );
 
-    const persistedSecrets = await fixture.pool.query(
-      "SELECT id, name FROM occ.secrets WHERE namespace_id = $1 ORDER BY name",
-      [namespace.id],
-    );
-    assert.deepEqual(
-      persistedSecrets.rows.map(({ name }) => name),
-      ["external-service-token", "model-api-key", "slack-bot-token", "slack-signing-secret"],
-    );
-    const grantRoleId = `role_${namespace.id}_agent_secret_operate`;
-    const grantRole = await fixture.pool.query(
-      "SELECT permissions FROM occ.iam_roles WHERE namespace_id = $1 AND id = $2",
-      [namespace.id, grantRoleId],
-    );
-    assert.equal(grantRole.rowCount, 1);
-    assert.deepEqual(grantRole.rows[0].permissions, [
-      { action: "operate", resourceKind: "secret" },
-    ]);
-    const grants = await fixture.pool.query(
-      `SELECT binding.resource_id
+      const persistedSecrets = await fixture.pool.query(
+        "SELECT id, name FROM occ.secrets WHERE namespace_id = $1 ORDER BY name",
+        [namespace.id],
+      );
+      assert.deepEqual(
+        persistedSecrets.rows.map(({ name }) => name),
+        ["external-service-token", "model-api-key", "slack-bot-token", "slack-signing-secret"],
+      );
+      const grantRoleId = `role_${namespace.id}_agent_secret_operate`;
+      const grantRole = await fixture.pool.query(
+        "SELECT permissions FROM occ.iam_roles WHERE namespace_id = $1 AND id = $2",
+        [namespace.id, grantRoleId],
+      );
+      assert.equal(grantRole.rowCount, 1);
+      assert.deepEqual(grantRole.rows[0].permissions, [
+        { action: "operate", resourceKind: "secret" },
+      ]);
+      const grants = await fixture.pool.query(
+        `SELECT binding.resource_id
        FROM occ.iam_access_bindings AS binding
        JOIN occ.agents AS agent
          ON agent.namespace_id = binding.namespace_id
@@ -570,46 +589,48 @@ test(
          AND binding.role_id = $3
          AND binding.resource_kind = 'secret'
        ORDER BY binding.resource_id`,
-      [namespace.id, status.agentId, grantRoleId],
-    );
-    assert.deepEqual(
-      grants.rows.map(({ resource_id: resourceId }) => resourceId),
-      persistedSecrets.rows.map(({ id }) => id).sort(),
-      "provisioning must grant the Agent service principal exact operate access to each referenced Secret",
-    );
-    const configuration = await fixture.pool.query(
-      "SELECT generation, secret_bindings FROM occ.configurations WHERE namespace_id = $1 AND id = $2",
-      [namespace.id, status.configurationId],
-    );
-    assert.equal(configuration.rowCount, 1);
-    assert.equal(Number(configuration.rows[0].generation), 1);
-    assert.deepEqual(Object.keys(configuration.rows[0].secret_bindings).sort(), [
-      "EXTERNAL_SERVICE_TOKEN",
-      "SLACK_BOT_TOKEN",
-      "SLACK_SIGNING_SECRET",
-    ]);
-    const revisions = await fixture.state.read((view) =>
-      view.revisions.listRevisions(namespace.id, status.agentId),
-    );
-    assert.equal(revisions.length, 1);
-    assert.equal(revisions[0].id, status.revisionId);
-    assert.equal(revisions[0].configurationGeneration, 1);
-    assert.equal(revisions[0].harnessAuth.method, "api_key");
-    assert.deepEqual(
-      fixture.computeDriver.calls
-        .filter(({ operation }) => operation === "provisionAgentRuntimeCredentials")
-        .map(({ agentId }) => agentId),
-      [status.agentId],
-    );
+        [namespace.id, status.agentId, grantRoleId],
+      );
+      assert.deepEqual(
+        grants.rows.map(({ resource_id: resourceId }) => resourceId),
+        persistedSecrets.rows.map(({ id }) => id).sort(),
+        "provisioning must grant the Agent service principal exact operate access to each referenced Secret",
+      );
+      const configuration = await fixture.pool.query(
+        "SELECT generation, secret_bindings FROM occ.configurations WHERE namespace_id = $1 AND id = $2",
+        [namespace.id, status.configurationId],
+      );
+      assert.equal(configuration.rowCount, 1);
+      assert.equal(Number(configuration.rows[0].generation), 1);
+      assert.deepEqual(Object.keys(configuration.rows[0].secret_bindings).sort(), [
+        "EXTERNAL_SERVICE_TOKEN",
+        "SLACK_BOT_TOKEN",
+        "SLACK_SIGNING_SECRET",
+      ]);
+      const revisions = await fixture.state.read((view) =>
+        view.revisions.listRevisions(namespace.id, status.agentId),
+      );
+      assert.equal(revisions.length, 1);
+      assert.equal(revisions[0].id, status.revisionId);
+      assert.equal(revisions[0].configurationGeneration, 1);
+      assert.equal(revisions[0].harnessAuth.method, authMethod);
+      assert.deepEqual(revisions[0].harnessAuth.source, body.harnessAuth.source);
+      assert.deepEqual(
+        fixture.computeDriver.calls
+          .filter(({ operation }) => operation === "provisionAgentRuntimeCredentials")
+          .map(({ agentId }) => agentId),
+        [status.agentId],
+      );
 
-    const work = await fixture.pool.query(
-      "SELECT state FROM occ.controller_work WHERE work_kind = 'provisioning' AND namespace_id = $1 AND idempotency_key = $2",
-      [namespace.id, admitted.data.provisioning.workId],
-    );
-    assert.equal(work.rowCount, 1);
-    assert.equal(work.rows[0].state, "succeeded");
-  },
-);
+      const work = await fixture.pool.query(
+        "SELECT state FROM occ.controller_work WHERE work_kind = 'provisioning' AND namespace_id = $1 AND idempotency_key = $2",
+        [namespace.id, admitted.data.provisioning.workId],
+      );
+      assert.equal(work.rowCount, 1);
+      assert.equal(work.rows[0].state, "succeeded");
+    },
+  );
+}
 
 test(
   "queued provisioning leaves existing Secrets but creates no Agent or Configuration before a worker runs",

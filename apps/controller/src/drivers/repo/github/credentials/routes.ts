@@ -57,8 +57,9 @@ function requestHeaders(head: RequestHead, selected: Route): Readonly<Record<str
     headers.accept = head.headers.accept ?? "*/*";
   } else {
     headers.accept =
-      selected.target === "/graphql" && head.headers.accept === nativeGraphqlAccept
-        ? nativeGraphqlAccept
+      selected.rawResponse ||
+      (selected.target === "/graphql" && head.headers.accept === nativeGraphqlAccept)
+        ? head.headers.accept!
         : "application/vnd.github+json";
     headers["x-github-api-version"] = "2026-03-10";
     if (["POST", "PATCH"].includes(head.method)) {
@@ -109,7 +110,7 @@ function planRequest(
       stallMs: options.limits.stallMs,
       connectMs: options.limits.connectMs,
     }),
-    responsePolicy: dependencies.responsePolicy(git, selected.target),
+    responsePolicy: dependencies.responsePolicy(git, selected.target, selected.rawResponse),
   }) as RequestPlan;
 }
 

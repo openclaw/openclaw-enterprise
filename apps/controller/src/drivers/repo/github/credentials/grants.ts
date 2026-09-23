@@ -1,4 +1,6 @@
 import type { AuthorityIdentity, ResolvedGrant } from "../../credentials/backend-contracts.ts";
+import { createHash } from "node:crypto";
+import { githubCapabilityPolicy, permissionsForProfile } from "./profiles.ts";
 import type { GitHubConfiguration, GitHubFactoryOptions } from "./types.ts";
 import { sameAuthority } from "./driver/state.ts";
 
@@ -22,7 +24,16 @@ export function createGrantResolver({ config, gatewayOrigin, selectedBinding }: 
         Object.freeze({
           providerInstanceId: config.providerInstanceId,
           repositoryId: config.repositoryId,
-          grantId: `${config.configVersion}:${profile}`,
+          grantId: `sha256:${createHash("sha256")
+            .update(
+              JSON.stringify({
+                configVersion: config.configVersion,
+                profile,
+                permissions: permissionsForProfile(profile),
+                capabilityPolicy: githubCapabilityPolicy,
+              }),
+            )
+            .digest("hex")}`,
         }),
       client: Object.freeze({
         gatewayOrigin,
@@ -31,6 +42,9 @@ export function createGrantResolver({ config, gatewayOrigin, selectedBinding }: 
         canonicalApiHost: "github.com",
         apiHost: new URL(gatewayOrigin).hostname,
         repository: config.repository,
+        ...(selectedBinding?.pushRefAllowlist === undefined
+          ? {}
+          : { pushRefAllowlist: selectedBinding.pushRefAllowlist }),
       }),
     });
   }

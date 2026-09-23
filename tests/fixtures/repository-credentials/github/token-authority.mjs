@@ -50,9 +50,30 @@ export function createTokenAuthority({
     assert.deepEqual(body.repository_ids.map(String), [String(repositoryId)]);
     const permissions = body.permissions;
     const acceptedPermissions = [
-      { metadata: "read", contents: "read" },
-      { metadata: "read", contents: "write" },
-      { metadata: "read", contents: "write", pull_requests: "write", issues: "write" },
+      {
+        metadata: "read",
+        contents: "read",
+        issues: "read",
+        pull_requests: "read",
+        checks: "read",
+        statuses: "read",
+      },
+      {
+        metadata: "read",
+        contents: "write",
+        issues: "read",
+        pull_requests: "write",
+        checks: "read",
+        statuses: "read",
+      },
+      {
+        metadata: "read",
+        contents: "write",
+        pull_requests: "write",
+        issues: "write",
+        checks: "read",
+        statuses: "read",
+      },
     ];
     assert.ok(
       acceptedPermissions.some(
@@ -65,7 +86,14 @@ export function createTokenAuthority({
     const token = `fixture_access_${randomBytes(24).toString("hex")}`;
     const expires = clock.wallNow() + lifetimeMs;
     const index = tokens.size + 1;
-    tokens.set(token, { index, expires, revoked: false, uses: 0, attempts: 0 });
+    tokens.set(token, {
+      index,
+      expires,
+      revoked: false,
+      uses: 0,
+      attempts: 0,
+      permissions: { ...permissions },
+    });
     issuesOfTokens.push({
       index,
       jwtDigest: createHash("sha256").update(jwt).digest("hex"),
@@ -88,6 +116,7 @@ export function createTokenAuthority({
     issuesOfTokens,
     authenticationAttempts,
     tokenIndex: (authorization) => tokens.get(tokenFrom(authorization))?.index,
+    permissions: (authorization) => tokens.get(tokenFrom(authorization))?.permissions,
     tokenState: () => [...tokens.values()].map((token) => ({ ...token })),
   };
 }

@@ -32,10 +32,12 @@ installation does not grant a person OCC access.
    receiver: deselect webhook **Active**. Follow GitHub's
    [registration procedure](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app).
 2. For this PR workflow, set repository **Contents**, **Pull requests**, and
-   **Issues** to **Read and write**, with **Metadata** at **Read-only**. These are
-   the exact permissions requested by OCE's `git-full` profile, including Issues
-   even if this task only opens a PR. Leave other permissions unselected. For
-   Git-only work, use the narrower [profiles](../../reference/repository-credentials.md#profiles).
+   **Issues** to **Read and write**, with **Metadata**, **Checks** and **Commit
+   statuses** at **Read-only** to support all three
+   [access levels](../../reference/repository-credentials/access-levels.md).
+   OCE narrows each token to its selected level. This PR workflow uses Contributor,
+   so its token requests Issues read, not write. Leave other permissions
+   unselected; workflow editing is not part of these levels.
 3. [Install the App](https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app)
    on the organization and select **Only select repositories**, including the
    intended repository. For an existing installation, have its administrator
@@ -122,7 +124,7 @@ grant. Its create request includes:
 
 ```json
 {
-  "repositoryBindings": [{ "repositoryRef": "application", "profile": "git-full" }]
+  "repositoryBindings": [{ "repositoryRef": "application", "profile": "git-write" }]
 }
 ```
 
@@ -157,13 +159,13 @@ commit, immutable images, Agent/revision IDs, commit SHA, and PR URL without
 credentials. A ready Pod or valid configuration does not prove this workflow;
 repeat the installed check after changing controller/runtime images.
 
-| Symptom                                                 | First check and recovery                                                                                                                                     |
-| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Admission rejected                                      | Compare the actual OCC Namespace ID, repository reference, selected profile, Provider IDs, and immutable registry across API, worker, and service.           |
-| TLS error or connection timeout                         | Check DNS, certificate SAN/public CA, Service 443 → 8443, and effective DNS/HTTPS NetworkPolicies. Keep certificate verification enabled.                    |
-| GitHub access denied                                    | Check installation repository selection, approved App permissions, numeric repository identity, and repository rules. API commands require `git-full`.       |
-| Push or PR response uncertain                           | Inspect GitHub's branch/PR state before retrying; do not blindly repeat a possible write.                                                                    |
-| Session lost after service restart, or deadline reached | Inspect retained cleanup obligations, then explicitly deploy a new authorized revision. Its deployment does not settle earlier cleanup or replay operations. |
+| Symptom                                                 | First check and recovery                                                                                                                                                 |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Admission rejected                                      | Compare the actual OCC Namespace ID, repository reference, selected profile, Provider IDs, and immutable registry across API, worker, and service.                       |
+| TLS error or connection timeout                         | Check DNS, certificate SAN/public CA, Service 443 → 8443, and effective DNS/HTTPS NetworkPolicies. Keep certificate verification enabled.                                |
+| GitHub access denied                                    | Check repository selection, approved App permissions, numeric repository identity, repository rules and the selected access level. Use Contributor for this PR workflow. |
+| Push or PR response uncertain                           | Inspect GitHub's branch/PR state before retrying; do not blindly repeat a possible write.                                                                                |
+| Session lost after service restart, or deadline reached | Inspect retained cleanup obligations, then explicitly deploy a new authorized revision. Its deployment does not settle earlier cleanup or replay operations.             |
 
 When finished, stop the Agent through its normal lifecycle. Confirm runtime
 retirement and [credential cleanup](../../reference/repository-credentials.md#sessions-and-closure);

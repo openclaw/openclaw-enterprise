@@ -61,6 +61,7 @@ export function createGitHubProtocol({
         userAgent: request.headers["user-agent"],
         apiVersion: request.headers["x-github-api-version"],
         graphQLFeatures: request.headers["graphql-features"],
+        accept: request.headers.accept,
         tokenIndex: authority.tokenIndex(request.headers.authorization),
       };
       trace.push(entry);
@@ -111,19 +112,35 @@ export function createGitHubProtocol({
         return;
       }
       if (url.pathname === "/graphql") {
+        entry.query = body.query;
+        entry.variables = body.variables;
         entry.operation = (body.query ?? "").includes("createPullRequest")
           ? "createPullRequest"
           : "query";
       }
       // Commit provider mutations before injecting a lost response, including DELETE.
-      const result = resources.dispatch({ method: request.method, url, body });
+      const result = resources.dispatch({
+        method: request.method,
+        url,
+        body,
+        accept: request.headers.accept,
+        permissions: authority.permissions(request.headers.authorization),
+      });
       if (result.status === 204) {
         if (!disconnect(request, response, url)) {
           response.writeHead(204).end();
         }
         return;
       }
-      json(result.status, result.body, result.headers);
+      if (result.raw !== undefined) {
+        response.writeHead(result.status, {
+          "content-type": "text/plain; charset=utf-8",
+          ...result.headers,
+        });
+        response.end(result.raw);
+      } else {
+        json(result.status, result.body, result.headers);
+      }
     } catch (error) {
       // Keep failure evidence safe: assertion values may include signing input.
       errors.push(error.name);

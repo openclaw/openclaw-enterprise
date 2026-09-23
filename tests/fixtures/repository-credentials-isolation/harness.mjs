@@ -455,6 +455,8 @@ export async function qualifyIsolation(t, { serviceImage, clientImage }) {
       contents: "write",
       pull_requests: "write",
       issues: "write",
+      checks: "read",
+      statuses: "read",
     });
     assert.ok(beforeClose.gitTrace.some((entry) => entry.gitProtocol === "version=2"));
     assert.ok(beforeClose.gitTrace.some((entry) => entry.path.endsWith("/git-receive-pack")));

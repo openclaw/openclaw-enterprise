@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { cp, mkdir, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { appRoot, appExtension, appModule } from "./runtime.mjs";
+import { appRoot, appExtension, appModule, credentialClientPath } from "./runtime.mjs";
 import { cleanEnvironment, run, temporaryDirectory } from "./process.mjs";
 
 const hash = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -55,13 +55,39 @@ export async function createNativeClientMaterial(t, entries, { ca, root } = {}) 
   };
   await writeFile(join(root, "manifest.json"), JSON.stringify(manifest), { mode: 0o600 });
   const helper = join(appRoot, `drivers/repo/github/credentials/client/git-helper.${appExtension}`);
+  let hooks;
+  if (bindings.some(({ client }) => client.pushRefAllowlist !== undefined)) {
+    // Executable test wrappers belong to a separate image stand-in, never to
+    // the private material generation. They run the actual client dispatcher.
+    hooks = await temporaryDirectory(t, "repository-native-hooks-");
+    const names = JSON.parse(
+      await readFile(
+        new URL("../../../deploy/runtime/repository-credentials/hooks.json", import.meta.url),
+        "utf8",
+      ),
+    );
+    const quote = (value) => "'" + value.replaceAll("'", "'\\''") + "'";
+    for (const name of names) {
+      await writeFile(
+        join(hooks, name),
+        "#!/bin/sh\nexec " +
+          quote(process.execPath) +
+          " " +
+          quote(credentialClientPath("hook-dispatch")) +
+          " " +
+          name +
+          ' "$@"\n',
+        { mode: 0o755 },
+      );
+    }
+  }
   const config = await renderNativeGitConfiguration(
     await readRuntimeRepositoryManifest(root),
     root,
-    { node: process.execPath, helper },
+    { node: process.execPath, helper, ...(hooks === undefined ? {} : { hooks }) },
   );
   await writeFile(join(root, "gitconfig"), config, { mode: 0o600 });
-  return { root, manifest, config, helper };
+  return { root, manifest, config, helper, hooks };
 }
 
 /** Execute stock Git with a real native include; gh retains its private session configuration. */

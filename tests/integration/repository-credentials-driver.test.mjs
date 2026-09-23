@@ -10,7 +10,10 @@ import { join } from "node:path";
 import { DependencyUnavailableError, ScopeViolationError } from "../../packages/occ/src/index.ts";
 import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/providers/repository-credentials/control-client.ts";
-import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.mjs";
+import {
+  defaultRegistryRepositories,
+  startRegistryCredentialServiceFixture,
+} from "../fixtures/repository-credentials/registry.mjs";
 
 async function unusedPort() {
   const server = createNetServer();
@@ -82,6 +85,11 @@ test(
   async (t) => {
     const fixture = await startRegistryCredentialServiceFixture(t, {
       autoOpen: false,
+      repositories: defaultRegistryRepositories.map((entry) =>
+        entry.repositoryRef === "repo-b"
+          ? { ...entry, pushRefAllowlist: ["refs/heads/agent/*"] }
+          : entry,
+      ),
       gateway: { listen: `127.0.0.1:${await unusedPort()}` },
     });
     const signal = new AbortController().signal;
@@ -112,6 +120,33 @@ test(
       controlSocket: fixture.config.gateway.controlSocket,
     });
     await client.health(signal);
+    const contributor = driver.resolve({
+      namespaceId: fixture.namespaceId,
+      bindings: [{ repositoryRef: "repo-a" }],
+    }).bindings[0];
+    // This exact registry used to admit the narrower git-write grant under this
+    // digest. The real Driver/control/service join must reject its stale authority
+    // before either repository's provider sees acquisition or exchange traffic.
+    const legacyGrant = "sha256:94c2dc4513de2fa4a6f885c7fd2f857110510100111cb4f4424db6ddf8d37ae5";
+    assert.notEqual(contributor.grant.grantId, legacyGrant);
+    await assert.rejects(
+      driver.open(
+        {
+          namespaceId: fixture.namespaceId,
+          admissionId: `${fixture.clock.wallNow()}-${randomUUID()}`,
+          binding: { ...contributor, grant: { ...contributor.grant, grantId: legacyGrant } },
+          durationSeconds: 3600,
+          deadlineWallMs: fixture.clock.wallNow() + 1800_000,
+        },
+        signal,
+      ),
+      ScopeViolationError,
+    );
+    assert.ok(
+      fixture.repositories.every(
+        (entry) => entry.github.trace.length === 0 && entry.github.issuesOfTokens.length === 0,
+      ),
+    );
     const inputs = resolution.bindings.map((binding) => ({
       namespaceId: fixture.namespaceId,
       admissionId: `${fixture.clock.wallNow()}-${randomUUID()}`,
@@ -139,6 +174,10 @@ test(
         ["bearer", "ca.pem", "client.json", "gh/config.yml", "gh/hosts.yml", "gitconfig"].sort(),
       );
       assert.equal(JSON.parse(result.files["client.json"]).sessionId, result.session.sessionId);
+      assert.deepEqual(
+        JSON.parse(result.files["client.json"]).client.pushRefAllowlist,
+        index === 1 ? ["refs/heads/agent/*"] : undefined,
+      );
       const response = await gateway(fixture, result, fixture.repositories[index].repository);
       assert.equal(response.status, 200, response.body);
       assert.equal(
@@ -162,6 +201,10 @@ test(
     assert.deepEqual(fixture.repositories[0].github.issuesOfTokens[0].permissions, {
       metadata: "read",
       contents: "read",
+      issues: "read",
+      pull_requests: "read",
+      checks: "read",
+      statuses: "read",
     });
     assert.equal(fixture.repositories[1].github.issuesOfTokens.length, 1);
     assert.deepEqual(fixture.repositories[1].github.issuesOfTokens[0].repositoryIds, [74]);
@@ -170,6 +213,8 @@ test(
       contents: "write",
       pull_requests: "write",
       issues: "write",
+      checks: "read",
+      statuses: "read",
     });
     await assert.rejects(
       driver.open({ ...inputs[0], durationSeconds: 3599 }, signal),
@@ -470,6 +515,13 @@ test("Unix control rejects malformed status and preserves authoritative absence 
       },
     };
     assert.deepEqual((await client.open(input, admissionId, signal)).result.client, configuration);
+    for (const policy of [null, "refs/heads/main", ["refs/tags/v1"], ["refs/heads/topic/**"]]) {
+      reply.body.client = { ...configuration, pushRefAllowlist: policy };
+      await assert.rejects(
+        client.open(input, admissionId, signal),
+        (error) => error.retryable === true,
+      );
+    }
     // A username bypasses URL parsing but still crosses the untrusted control-response boundary.
     reply.body.client = { ...configuration, gitUsername: 1 };
     await assert.rejects(

@@ -43,7 +43,7 @@ those states by interacting with the real controls after loading fixture data.
 | Providers               | Configured, empty, and discovery failure.                                                                                                                                                                                                        |
 | Namespaces              | Ready and provisioning, empty, permission denial.                                                                                                                                                                                                |
 | Settings and navigation | Signed-in account and unknown route.                                                                                                                                                                                                             |
-| Create Agent            | Preset selection and variables, no Presets, dedicated and embedded forms, seeded workspace files, optional discovery denial, invalid JSON, partial save with conflict, unknown save outcome.                                                     |
+| Create Agent            | Preset variables, no Presets, OpenAI Codex/OpenClaw and Anthropic OpenClaw harnesses, Service Accounts switching and bound Presets, seeded workspace files, storage/grant denial, invalid JSON, partial save/conflict, unknown save outcome.     |
 | Agent detail            | New revision, native JSON editor, invalid JSON, admitted snapshot, queued or failed deployment, denied deployment, missing Agent, unavailable Configuration and revision history.                                                                |
 | Navigation components   | Account menu, Namespace switcher, mobile drawer, OCE branding, simulated OCC revision, missing development metadata.                                                                                                                             |
 | Channels                | Unconfigured cards, Slack editor with pairing/open/disabled policies, unsupported Slack shape, read-only snapshot, save conflict.                                                                                                                |
@@ -65,17 +65,27 @@ Each flow includes steps above an interactive console frame.
 ### Create and deploy
 
 Choose a Preset, fill its variables, review the seeded workspace files, and
-create the Agent. Open Credentials, provision generated runtime credentials,
-then deploy the new revision. **Refresh deployment** advances the fixture from
-queued to succeeded. Use the page’s **Refresh** button to reread the Agent’s
-active revision. A separate flow starts without a Preset, selects the fixture's
-existing API-key Secret reference, edits IDENTITY.md, clears USER.md, and reads
-those files back after deployment.
-That transition demonstrates presentation only; it does not prove a worker ran.
+create an Agent with the Codex harness. The Console submits its inline Configuration
+and saved Secret references, follows simulated provisioning and deployment
+activation, and opens Workspace files for the returned revision. A separate flow
+starts without a Preset, selects OpenAI with Codex, enters a dummy API key or service account
+token, selects a model, edits IDENTITY.md, and clears USER.md before creation.
+OpenClaw and unsupported-runtime stories retain the draft workflow: provision
+credentials and deploy from Agent detail. These transitions demonstrate
+presentation only; they do not prove a worker ran.
+
+**Choose provider and harness** walks through the OpenAI Codex default, OpenClaw
+selection, Anthropic's OpenClaw-only choice, and switching from an unsaved service account
+token to API-key authentication. Execution mode follows the harness. The saved-token
+Preset story shows why its harness is fixed to Codex.
 
 The fixture supplies a ready Namespace, Preset, and model Secret. Namespace
-provisioning, Preset CRUD, model-Secret creation, and service-account issuance
-have no console pages. The model API-key field takes an existing Secret ID.
+provisioning, Preset CRUD, and service-account issuance have no console pages.
+Create Agent discovers model choices after key entry, with empty-list and error
+states offering manual model entry. Discovery uses synthetic model lists in
+Storybook. Saving stores entered model keys through the existing Secret API and
+grants the new Agent access. The stories simulate those writes; browser/API
+integration tests verify their real route and permission behavior.
 Slack tokens can be saved in Credentials after Agent creation. Teams credentials
 remain operator-managed; the console blocks deployment while Teams is enabled.
 See [Create and deploy in the console](../reference/console/create-and-deploy.md)

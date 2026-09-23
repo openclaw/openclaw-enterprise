@@ -113,6 +113,24 @@ test("credential source boundary rejects new raw capabilities in the real source
 
   const cases = [
     [
+      "shared client metadata cannot acquire network authority",
+      'import { request } from "node:https";',
+      /unreviewed runtime import from node:https/,
+      "drivers/repo/credentials/client-contracts.ts",
+    ],
+    [
+      "the native hook dispatcher cannot open credential files directly",
+      'import { readFile } from "node:fs/promises";',
+      /unreviewed runtime import from node:fs\/promises/,
+      "drivers/repo/github/credentials/client/hook-dispatch.ts",
+    ],
+    [
+      "the native hook dispatcher cannot create a network sender",
+      'import { request } from "node:https";',
+      /unreviewed runtime import from node:https/,
+      "drivers/repo/github/credentials/client/hook-dispatch.ts",
+    ],
+    [
       "configuration composition cannot open files outside the protected reader",
       'import { open } from "node:fs/promises";',
       /unreviewed runtime import from node:fs\/promises/,

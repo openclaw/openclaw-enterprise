@@ -1,13 +1,15 @@
 import type { RequestHead } from "../../../credentials/backend-contracts.ts";
 import type { GitHubProfile } from "../types.ts";
+import { permissionsForProfile } from "../profiles.ts";
 
 export type Route = Readonly<{
   kind: "git-discovery" | "git-fetch" | "git-push" | "api";
   effect: "read" | "write";
   target: string;
+  rawResponse?: boolean;
 }>;
 const resourceNumber = /^[1-9][0-9]{0,14}$/;
-// Native gh 2.100.0 PR discovery and creation use this exact GraphQL media profile.
+// Native gh 2.100.0 uses this JSON media profile for GraphQL and REST reads.
 export const nativeGraphqlAccept =
   "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview";
 const queryValues: Readonly<Record<string, RegExp>> = Object.freeze({
@@ -108,6 +110,8 @@ function classifyGitRoute(
 interface ApiRoutePolicy {
   readonly methods: readonly string[];
   readonly queryParameters: readonly string[];
+  readonly writePermissions?: readonly string[];
+  readonly rawMedia?: readonly string[];
 }
 
 function matchApiRoute(path: string, repository: string): ApiRoutePolicy | undefined {
@@ -122,9 +126,22 @@ function matchApiRoute(path: string, repository: string): ApiRoutePolicy | undef
     return;
   }
   const parts = path.slice(prefix.length + 1).split("/");
+  if (parts.length === 1 && parts[0] === "readme") {
+    return {
+      methods: ["GET"],
+      queryParameters: [],
+      rawMedia: [
+        "application/vnd.github.raw",
+        "application/vnd.github.v3.raw",
+        "application/vnd.github.raw+json",
+        "application/vnd.github.v3.raw+json",
+      ],
+    };
+  }
   if (parts.length === 1 && (parts[0] === "pulls" || parts[0] === "issues")) {
     return {
       methods: ["GET", "POST"],
+      writePermissions: [parts[0] === "pulls" ? "pull_requests" : "issues"],
       queryParameters:
         parts[0] === "pulls"
           ? ["page", "per_page", "state", "head", "base", "sort", "direction"]
@@ -149,7 +166,21 @@ function matchApiRoute(path: string, repository: string): ApiRoutePolicy | undef
     (parts[0] === "pulls" || parts[0] === "issues") &&
     resourceNumber.test(parts[1]!)
   ) {
-    return { methods: ["GET", "PATCH"], queryParameters: [] };
+    return {
+      methods: ["GET", "PATCH"],
+      queryParameters: [],
+      writePermissions: [parts[0] === "pulls" ? "pull_requests" : "issues"],
+      ...(parts[0] === "pulls"
+        ? {
+            rawMedia: [
+              "application/vnd.github.v3.diff",
+              "application/vnd.github.v3.patch",
+              "application/vnd.github.diff",
+              "application/vnd.github.patch",
+            ],
+          }
+        : {}),
+    };
   }
   if (
     parts.length === 3 &&
@@ -157,7 +188,13 @@ function matchApiRoute(path: string, repository: string): ApiRoutePolicy | undef
     resourceNumber.test(parts[1]!) &&
     parts[2] === "comments"
   ) {
-    return { methods: ["GET", "POST"], queryParameters: ["page", "per_page", "since"] };
+    // GitHub uses this route for both issue and PR conversations. Its token
+    // permissions decide whether a Contributor can write to the selected item.
+    return {
+      methods: ["GET", "POST"],
+      queryParameters: ["page", "per_page", "since"],
+      writePermissions: ["issues", "pull_requests"],
+    };
   }
   if (
     parts.length === 3 &&
@@ -165,7 +202,11 @@ function matchApiRoute(path: string, repository: string): ApiRoutePolicy | undef
     parts[1] === "comments" &&
     resourceNumber.test(parts[2]!)
   ) {
-    return { methods: ["GET", "PATCH", "DELETE"], queryParameters: [] };
+    return {
+      methods: ["GET", "PATCH", "DELETE"],
+      queryParameters: [],
+      writePermissions: ["issues", "pull_requests"],
+    };
   }
   return;
 }
@@ -194,11 +235,19 @@ function classifyApiRoute(
   head: RequestHead,
   target: ParsedTarget,
   repository: string,
+  profile: GitHubProfile,
 ): Route | undefined {
   const { raw, path, query } = target;
   const policy = matchApiRoute(path, repository);
   if (!policy || !policy.methods.includes(head.method)) {
     return;
+  }
+  // GraphQL remains token-bounded without inspecting operations, fields or bodies.
+  if (head.method !== "GET" && path !== "/graphql") {
+    const permissions = permissionsForProfile(profile);
+    if (!policy.writePermissions?.some((permission) => permissions[permission] === "write")) {
+      return;
+    }
   }
   if (!allowsQuery(head.method, query, policy.queryParameters)) {
     return;
@@ -212,10 +261,13 @@ function classifyApiRoute(
     return;
   }
   const accept = head.headers.accept;
+  const rawResponse =
+    head.method === "GET" && accept !== undefined && policy.rawMedia?.includes(accept) === true;
   if (
     accept !== undefined &&
     !["*/*", "application/json", "application/vnd.github+json"].includes(accept) &&
-    !(path === "/graphql" && accept === nativeGraphqlAccept)
+    !rawResponse &&
+    accept !== nativeGraphqlAccept
   ) {
     return;
   }
@@ -223,7 +275,12 @@ function classifyApiRoute(
   if (feature !== undefined && (path !== "/graphql" || feature !== "merge_queue")) {
     return;
   }
-  return { kind: "api", effect: head.method === "GET" ? "read" : "write", target: raw };
+  return {
+    kind: "api",
+    effect: head.method === "GET" ? "read" : "write",
+    target: raw,
+    rawResponse,
+  };
 }
 
 export function classifyRoute(
@@ -238,8 +295,8 @@ export function classifyRoute(
   if (git) {
     return git;
   }
-  if (policy.profile !== "git-full" || head.contentEncoding !== "identity") {
+  if (head.contentEncoding !== "identity") {
     return;
   }
-  return classifyApiRoute(head, target, policy.repository);
+  return classifyApiRoute(head, target, policy.repository, policy.profile);
 }

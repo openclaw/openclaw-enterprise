@@ -393,6 +393,8 @@ test("Kubernetes Configuration rejects literal model credentials before writes a
     { models: { providers: { codex: { headers: { Authorization: `Bearer ${sentinel}` } } } } },
     { models: { providers: { openai: { headers: { "x-api-key": sentinel } } } } },
     { env: { OPENAI_API_KEY: sentinel } },
+    { env: { ANTHROPIC_API_KEY: sentinel } },
+    { env: { vars: { ANTHROPIC_AUTH_TOKEN: sentinel } } },
     { env: { vars: { CODEX_ACCESS_TOKEN: sentinel } } },
   ];
   for (const values of valuesWithCredential) {

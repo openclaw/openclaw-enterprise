@@ -4,9 +4,9 @@ Use the [platform console](../console.md) to create an Agent and, for supported
 Dedicated runtimes, start first-time provisioning from the same form. On an
 existing Kubernetes Installation,
 start with [production Agent prerequisites](../../guides/deploy/production-agents.md#prepare-each-namespace):
-you need a ready Namespace and, for an OpenAI API key, an administrator who can
-grant the Agent access to its Secret for ordinary draft deployments. First-time
-provisioning grants access to the accepted Secret references automatically. After deployment, [verify this same
+you need a ready Namespace, configured Secret storage, and permission to
+create Secrets. First-time provisioning grants access to accepted Secret references;
+ordinary draft creation also requires permission to grant the Agent access to its key. After deployment, [verify this same
 Agent and revision](../../guides/deploy/production-agents.md#verify-production-workloads).
 If you are using [Local Setup](../../guides/quickstart.md) instead, the
 [local first-Agent walkthrough](../../guides/first-agent.md) creates a separate
@@ -31,29 +31,41 @@ does not make that link available.
 2. To reuse a [Preset](../presets.md), choose one, fill its variables, and select
    **Use Preset**. The chooser closes and the form opens with editable settings.
    Select **Start without Preset** to use standard defaults.
-3. Enter a name that is unique within the Namespace. Choose an execution mode
-   and review the starter Configuration JSON. Dedicated uses `codex/gpt-6-astra`;
-   embedded uses `openai/gpt-6-astra`. This is the default for new Agents;
-   edit the JSON to use another authorized model. Confirm your Installation has
-   access to the model you choose. The form requires a JSON
-   object. Changing modes updates untouched JSON; use **Reset template** if you
-   want to replace your edits. Starter templates omit gateway authentication;
-   Kubernetes Compute renders trusted-proxy settings from the Installation's
+3. Enter a name that is unique within the Namespace. Choose **OpenAI** or
+   **Anthropic** under **Provider**, then choose **Harness**. OpenAI defaults to
+   **Codex** and also offers **OpenClaw**; Anthropic currently offers only
+   **OpenClaw**. **Execution mode** follows the harness: Dedicated for Codex,
+   Embedded for OpenClaw.
+   With OpenAI and Codex, choose **OpenAI API key** or **Service Accounts** under
+   **Authentication method**. OpenClaw uses the selected provider's API key.
+   For API keys, use [OpenAI API keys](https://platform.openai.com/api-keys). For
+   Service Accounts, open [OpenAI admin](https://admin.openai.com/), choose your
+   workspace, open **Service accounts**, and create a token with Codex scope.
+   The fields show `sk-…` and `at-…` hints; prefixes do not select the method.
+   Enter the credential to show model controls. **Load models** queries the
+   selected provider and lets you choose the gateway's default model; no model
+   is preselected. Choose a text-generation model compatible with your runtime.
+   If the list is empty or unavailable, retry or select **Enter model ID manually**.
+   The form writes the corresponding native model configuration. Credentials
+   remain separate from Configuration JSON.
+4. Review the generated Configuration JSON. Changing selections updates model and
+   runtime entries while preserving unrelated edits; **Reset template** replaces
+   your edits. Confirm your Installation
+   has access to the chosen model. Primary and fallback models must use the same
+   supported provider and Harness.
+   Starter templates omit gateway authentication; Kubernetes Compute renders
+   trusted-proxy settings from the Installation's
    [operator-managed proxy trust](../drivers/kubernetes-compute/networking-and-isolation.md#gateway-authentication).
-   The starter's loopback Control UI origins support direct local access only.
-   The OCE native admin link still needs its [explicit opt-in configuration](../../guides/deploy/native-admin.md),
-   including the derived Agent HTTPS origin.
-4. If you need Slack, select **Dedicated** and use its channel card. Each token
+   Native admin UI still needs its [explicit opt-in configuration](../../guides/deploy/native-admin.md).
+5. If you need Slack, use OpenAI with the **Codex** harness and use its channel card. Each token
    menu lets you select a readable Namespace Secret or **Create new Secret...**.
    The modal prefills the binding key and masks the value you enter. Creating a
    Secret stores it immediately, even if you later cancel Agent creation.
-   **Apply channel settings** stages settings, plugin entries and Secret bindings
-   into the form; cancelling the drawer discards its selections.
-   You can also supply Slack credentials from the Agent's **Credentials** tab
-   after creation.
-5. Choose how the Agent will authenticate to its model. For an API key, save it
-   through the existing Secrets API and enter the returned Secret ID. Ordinary
-   create paths also let you save a draft for later setup.
+   **Apply channel settings** stages settings and bindings into the form;
+   cancelling the drawer discards its selections.
+   Channel settings, plugin entries, and selected Secret bindings are saved with
+   the Configuration when you select **Create Agent**. You can also supply Slack
+   credentials from the Agent's **Credentials** tab after creation.
 6. Review **Workspace files**. Each field contains its rendered OpenClaw default.
    Edit any of the four files, keep the text to submit that default, or clear a
    field to create an empty file. The browser submits LF newlines. See
@@ -62,111 +74,84 @@ does not make that link available.
    request contains inline Configuration, saved Secret references, Agent inputs
    and workspace files. Console follows the returned job while the worker
    creates the Configuration and Agent, provisions runtime credentials and
-   submits the first deployment. It then opens the ordinary Agent deployment
-   view for the returned revision. For
+   submits the first deployment. It waits for deployment activation and opens Workspace files for the returned revision. For
    ordinary create paths, the Console saves the Configuration first and opens a
    draft Agent on **New revision** with no workload yet. After deployment, use
    the [live workspace editor](../console.md#edit-workspace-files). Pending
    inputs have no update API; see [workspace recovery](../../guides/topics/workspace-files.md#set-files-when-creating-an-agent).
 
-| Authentication option            | What you need                                                                                                                                                                                                                             |
-| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **OpenAI API key**               | The ID of an existing [OCC Secret](../drivers/kubernetes-secret.md#create-a-namespace-owned-secret) in this Namespace. You need `operate` on that exact Secret; Secret `read` is not required. Enter the Secret ID, not the key.          |
-| **ChatGPT service account**      | An account in this Namespace that you can read, an already issued credential, the matching Provider, and dedicated execution. The console does not issue the credential for you. Listing Providers requires Installation `administer`.    |
-| **Operator-managed credentials** | An Installation using SSH with embedded OpenClaw. The operator configures the runtime host; OCC does not validate the credentials or model access. See [SSH credentials](../drivers/ssh-compute.md#credentials-and-supported-boundaries). |
+The credential field is masked. Saving creates a Namespace Secret and sends only
+its reference to provisioning. The worker creates the Configuration and Agent,
+grants exact Secret access, provisions runtime credentials, and admits the first
+revision. Ordinary draft creation performs the Configuration, Agent, and exact IAM
+grants as separate browser requests and requires IAM administration permission.
+The key is never put into Configuration JSON, Agent responses, or browser storage.
+A Preset with an existing authentication binding retains that binding; use the
+Agent's Credentials tab to change it after creation. API-key and Service Accounts
+Presets also keep their provider fixed, including when editing Configuration
+JSON. A saved service account token also fixes the harness to Codex. Start without a Preset
+to select a different provider or use OpenClaw with an API key. Presets using
+operator-managed runtime credentials keep the harness fixed to OpenClaw, including
+when changing providers.
 
-The Secret ID input is masked, including when a Preset fills it. Configuration
-summaries show **OpenAI API key · Secret configured** without the ID. The console
-does not resolve Secret values into native Configuration. Slack's Secret modal
-clears entered values after a save attempt. Provisioning receives references only.
+Model discovery requires Agent `create` permission in this Namespace. It sends
+the supplied credential to the selected authentication method's official API
+without creating a Secret or saving credentials. Service Accounts token discovery (`codex_pat` in the API) validates
+the account with OpenAI authentication and lists its Codex models. The selector
+determines routing; credential prefixes do not choose an authentication method.
+Changing the provider selects its default harness and clears the credential and
+model choice. Changing the authentication method also clears the credential and
+model. Switching from Codex to OpenClaw with an unsaved service account token selects API-key
+authentication and clears the token and model; switching harnesses with an API key
+preserves that credential and model. Changing the credential clears the model choice. A returned model is not proof of
+runtime compatibility. A model must be selected or entered before saving:
+OpenClaw's implicit default does not follow the selected provider.
 
-Selecting a credential source does not change the configured model or execution
-mode, or confirm that the provider accepts it. The Agent's own service principal
-also needs `operate` on its API-key Secret. First-time provisioning grants this
-access to accepted Secrets before deploying. For an ordinary draft Agent, ask an
-administrator to [grant it before deploying](../../guides/deploy/production-agents.md#grant-the-agent-access-to-its-model-secret).
-See [harness authentication](../agents.md#harness-authentication) for the full rules.
+Discovery runs from the OCC API process. Its network policy must permit HTTPS
+to `api.openai.com:443` for OpenAI API keys, `api.anthropic.com:443` for Anthropic,
+or both `auth.openai.com:443` and `chatgpt.com:443` for service account tokens.
+The Helm chart's default-deny policy does not grant these destinations;
+operators must add a destination-scoped API-pod egress policy through their
+cluster's network controls. Standard Kubernetes NetworkPolicy accepts IP CIDRs,
+not DNS names, so maintain the provider destinations or use the cluster's FQDN
+policy support. Without this access, use manual model entry.
 
-If saving a Secret succeeds but another save or provisioning fails, the saved
-namespace Secret remains available. Console reuses its reference on retry and
-does not delete it automatically. If a Secret save response is lost, check the
-namespace Secrets before submitting that value again.
+Discovery failures distinguish rejected credentials or model-list permissions,
+provider rate limits, connectivity failures, and unsupported provider responses.
+The console displays recovery guidance and the request ID, without returning the
+provider's raw response. A model-list permission failure does not determine
+whether that key can run a model; manual entry remains available.
 
-If provisioning admission loses its response, **Retry provisioning request**
-resubmits the same request ID and accepted inputs. Once a job is acknowledged,
-Console follows its status URL and can retry a failed job without changing its
-inputs. Successful steps retain their resource IDs; uncertain external writes
-need recovery before that step can run again. Saving a Secret does not prove
-that the provider accepts it or that an integration works.
+These managed keys require a configured Secret Driver and compatible Compute.
+Kubernetes supports both providers; the current Docker development composition
+has no managed Secret storage or model-key delivery. Saving a key does not prove
+provider acceptance or runtime readiness. See
+[harness authentication](../agents.md#harness-authentication).
 
-For ordinary create paths, the Console grants the new Agent `operate` on token
-Secrets selected through the Slack menus using
-[Namespace IAM](../authorization.md#manage-namespace-policy). If a grant fails
-after Agent creation, the form blocks another creation attempt and offers
-**Open Agent Credentials**. The Agent and Configuration remain saved; ask an
-administrator to check exact Secret grants before deploying.
+For ordinary draft creation, saves are separate operations. After a successful step, the form retains its
+resource ID and freezes the saved inputs, including the authentication method. Correct a conflicting Agent name or
+restore the required permission, then retry to reuse the saved resources. If the
+Agent was saved but its model or Slack Secret grant failed, select **Retry credential access** to finish grants on that same Agent, or ask an administrator to check the saved Secret grants.
+An uncertain response blocks another creation attempt. Check the displayed saved
+IDs and the Agents list before starting again; give the displayed request ID to
+your operator if the outcome cannot be established. Leaving the form does not
+remove resources that were already saved.
 
-If the Configuration saves but ordinary Agent creation fails, the form shows its
-ID and keeps its JSON, Secret bindings, and execution mode fixed so you can reuse
-that Configuration. If the response is lost, creation may have succeeded; check
-the Agents list and the saved Configuration before starting again.
-
-## API sequence
-
-First [save each Secret](../drivers/kubernetes-secret.md#create-a-namespace-owned-secret)
-with `POST /namespaces/{namespaceId}/secrets` and keep its returned `data.ref`.
-Then submit `POST /namespaces/{namespaceId}/agents/provision`. This example uses
-a previously saved model credential; replace the example Namespace and Secret
-IDs with the returned reference and generate one stable request ID per submission:
-
-```json
-{
-  "requestId": "req_123e4567-e89b-42d3-a456-426614174002",
-  "name": "Support agent",
-  "executionMode": "dedicated",
-  "configuration": {
-    "kind": "agent",
-    "values": {
-      "agents": {
-        "defaults": {
-          "model": "codex/gpt-6-astra",
-          "models": {
-            "codex/gpt-6-astra": { "agentRuntime": { "id": "codex" } }
-          }
-        }
-      }
-    }
-  },
-  "harnessAuth": {
-    "method": "api_key",
-    "source": {
-      "kind": "secret",
-      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-      "id": "sec_123e4567-e89b-42d3-a456-426614174001"
-    }
-  }
-}
-```
-
-For Slack or another integration, put the saved `data.ref` in the appropriate
-`configuration.secretBindings` entry and configure the corresponding channel.
-The [binding reference](../configuration/secrets.md#secret-bindings) defines the
-shape. No secret values are included in the provisioning request.
-
-HTTP `202` returns `data.provisioning.workId` and `data.provisioning.url`.
-Poll that URL until the job succeeds or fails. Success includes `agentId` and
-`revisionId` and means deployment was submitted; follow ordinary deployment
-status for activation. Use the same request ID for uncertain admission and the
-job's retry endpoint for a known failed job. Neither operation recreates saved
-Secrets. Later deployments use `POST /namespaces/{namespaceId}/agents/{agentId}/deploy`.
+If provisioning admission loses its response, **Retry provisioning request** resubmits
+the same request ID and saved Secret references. An acknowledged job is retried through
+its returned job URL; accepted inputs remain fixed. Secrets saved before a later
+failure remain available and are reused, never deleted automatically. A lost Secret
+save response requires checking existing Namespace Secrets before starting again.
+See the [provisioning flow](../../flows/agent-provisioning.md) for the API sequence.
 
 ## Initial runtime credentials
 
-First-time provisioning creates generated transport credentials before admitting
-the first revision. For ordinary draft Agents, provision generated transport
-credentials before the first deployment and, when Slack is enabled, store its app
-and bot tokens as Namespace Secrets bound through the Agent's Configuration.
-Model credentials are selected separately through `harnessAuth`.
+First-time provisioning creates generated transport credentials automatically.
+For ordinary draft Agents, before the first deployment, provision generated transport credentials
+and, when Slack is enabled, store its app and bot tokens as Namespace Secrets
+bound through the Agent's Configuration. Model credentials are selected
+separately during Agent creation through `harnessAuth`; runtime credential
+provisioning does not change that key.
 
 Select **Provision generated runtime credentials** to create the transport bundle.
 The Kubernetes Driver generates an app-server transport token and a local

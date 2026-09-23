@@ -2,6 +2,7 @@ import { request } from "node:http";
 import { isAbsolute, resolve } from "node:path";
 import type { RepositoryCredentialGrantIdentity } from "@openclaw-enterprise/contracts";
 import type { RepositoryCredentialClientConfiguration } from "../../drivers/repo/credentials/client-contracts.ts";
+import { normalizePushRefAllowlist } from "../../drivers/repo/credentials/client-contracts.ts";
 import type {
   RepositoryCredentialBoundSessionInput,
   RepositoryCredentialSessionResult,
@@ -151,6 +152,8 @@ function status(value: unknown): SessionStatus {
 }
 
 function client(value: unknown): RepositoryCredentialClientConfiguration {
+  const hasPolicy =
+    value !== null && typeof value === "object" && Object.hasOwn(value, "pushRefAllowlist");
   const parsed = object(value, [
     "gatewayOrigin",
     "gitRemote",
@@ -158,6 +161,7 @@ function client(value: unknown): RepositoryCredentialClientConfiguration {
     "canonicalApiHost",
     "apiHost",
     "repository",
+    ...(hasPolicy ? ["pushRefAllowlist"] : []),
   ]);
   const fields: RepositoryCredentialClientConfiguration = {
     gatewayOrigin: identity(parsed.gatewayOrigin),
@@ -166,6 +170,7 @@ function client(value: unknown): RepositoryCredentialClientConfiguration {
     canonicalApiHost: identity(parsed.canonicalApiHost),
     apiHost: identity(parsed.apiHost),
     repository: identity(parsed.repository),
+    ...(hasPolicy ? { pushRefAllowlist: normalizePushRefAllowlist(parsed.pushRefAllowlist) } : {}),
   };
   const origin = new URL(fields.gatewayOrigin);
   const remote = new URL(fields.gitRemote);

@@ -20,9 +20,11 @@ const requiredEntrypoints = [
   "drivers/repo/github/credentials/client/operator.ts",
   "drivers/repo/github/credentials/client/git-helper.ts",
   "drivers/repo/github/credentials/client/native-git.ts",
+  "drivers/repo/github/credentials/client/hook-dispatch.ts",
   "drivers/repo/github/credentials/client/router.ts",
 ];
 const clientDirectory = "drivers/repo/github/credentials/client/";
+const clientContracts = "drivers/repo/credentials/client-contracts.ts";
 const sourceExtensions = new Set([".ts", ".mts", ".cts", ".js", ".mjs", ".cjs", ".tsx", ".jsx"]);
 
 // Adding an I/O owner or member requires security review; see the owning test guide.
@@ -39,6 +41,13 @@ const reviewedImports = {
   },
   "drivers/repo/github/credentials/client/launch.ts": {
     "node:child_process": ["spawn"],
+  },
+  // The image dispatcher inspects native Git configuration and executes the
+  // repository's existing executable hook. It never opens credential material.
+  "drivers/repo/github/credentials/client/hook-dispatch.ts": {
+    "node:child_process": ["spawnSync"],
+    "node:fs": ["constants"],
+    "node:fs/promises": ["access"],
   },
   "drivers/repo/github/credentials/client/manifest.ts": {
     "node:crypto": ["createHash"],
@@ -84,6 +93,8 @@ const reviewedImports = {
     "node:fs/promises": ["open", "stat"],
   },
   "drivers/repo/github/credentials/registry.ts": { "node:crypto": ["createHash"] },
+  // Standalone grants hash only nonsecret configuration/profile policy, never key material.
+  "drivers/repo/github/credentials/grants.ts": { "node:crypto": ["createHash"] },
   "drivers/repo/github/driver.ts": {
     "@openclaw-enterprise/occ": ["DependencyUnavailableError", "ScopeViolationError"],
   },
@@ -157,6 +168,13 @@ const reviewedProcessMembers = {
     "stderr",
   ],
   "drivers/repo/github/credentials/client/manifest.ts": ["getuid"],
+  "drivers/repo/github/credentials/client/hook-dispatch.ts": [
+    "argv",
+    "env",
+    "exitCode",
+    "stderr",
+    "stdin",
+  ],
   "drivers/repo/github/credentials/client/native-git.ts": [
     "argv",
     "execPath",
@@ -324,7 +342,11 @@ function inspectSource(path, root, sources, ast) {
         deny(node, `runtime import has no scanned credential source: ${specifier}`);
         return;
       }
-      if (file.startsWith(clientDirectory) && !target.startsWith(clientDirectory)) {
+      if (
+        file.startsWith(clientDirectory) &&
+        !target.startsWith(clientDirectory) &&
+        target !== clientContracts
+      ) {
         deny(node, `client runtime cannot load service owner ${target}`);
       }
       const consumers = senderConsumers[target];

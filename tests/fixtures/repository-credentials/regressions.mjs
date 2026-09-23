@@ -77,7 +77,8 @@ export function registerCredentialFixtureRegressions() {
         try {
           running = !/\) Z /.test(await readFile(`/proc/${pid}/stat`, "utf8"));
         } catch (error) {
-          if (error.code !== "ENOENT") {
+          // procfs may lose the task during lookup (ENOENT) or the read (ESRCH).
+          if (error.code !== "ENOENT" && error.code !== "ESRCH") {
             throw error;
           }
         }

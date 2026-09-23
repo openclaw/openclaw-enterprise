@@ -144,6 +144,12 @@ if (command === "docker" || command === "podman") {
     const alias = state.aliases?.[node];
     if (equals(args.slice(2), ["ip", "route", "get", "10.42.7.0"])) {
       assert.ok(node.endsWith("-server-0"));
+      // Node readiness can precede Flannel's cross-node route. The first lookup
+      // then selects the container network, which must never become the allowlist.
+      state.routeLookups = (state.routeLookups ?? 0) + 1;
+      if (scenario === "delayed-overlay-route" && state.routeLookups === 1) {
+        finish("10.42.7.0 via 172.19.0.1 dev eth0 src 172.19.0.2\n");
+      }
       finish(scenario === "missing-proxy-source"
         ? "10.42.7.0 dev flannel.1\n"
         : "10.42.7.0 via 10.42.7.0 dev flannel.1 src 10.42.3.0\n");
@@ -329,6 +335,7 @@ throw new Error("Unexpected external command: " + command + " " + JSON.stringify
 for (const { scenario, error } of [
   { scenario: "success" },
   { scenario: "podman-success" },
+  { scenario: "delayed-overlay-route" },
   { scenario: "missing-tag", error: /Unable to find imported OCI manifest digest/ },
   {
     scenario: "missing-alias",

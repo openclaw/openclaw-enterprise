@@ -17,6 +17,7 @@ import {
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
 import { cleanupResourceIds } from "./cleanup.mjs";
 import { prepareGatewayRouting } from "./routing.mjs";
 import { prepareLogging } from "./logging.mjs";
@@ -785,16 +786,28 @@ async function ensureK3dCluster(statePath, state) {
     if (!isIPv4(destination ?? "")) {
       throw new Error("The plugin status worker must have an IPv4 Pod CIDR.");
     }
-    // Cross-node API proxy traffic uses the server's overlay route source, which
-    // can differ from its InternalIP. Admit only that observed address in tests.
-    const route = await execFile(process.env.OCC_DOCKER_BIN ?? "docker", [
-      "exec",
-      `k3d-${cluster}-server-0`,
-      "ip",
-      "route",
-      "get",
-      destination,
-    ]);
+    resource.pluginStatusProxyCidrs = await waitForPluginStatusProxySource(cluster, destination);
+    await verifyFixtureStorage(resource);
+  }
+  await markResourceReady(statePath, state, resource);
+  return resource;
+}
+
+async function waitForPluginStatusProxySource(cluster, destination) {
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline) {
+    const route = await execFile(
+      process.env.OCC_DOCKER_BIN ?? "docker",
+      ["exec", `k3d-${cluster}-server-0`, "ip", "route", "get", destination],
+      { timeoutMs: Math.min(15_000, deadline - Date.now()) },
+    );
+    // These owned clusters use K3s's default Flannel VXLAN backend. Node Ready
+    // can precede its cross-node route; an earlier lookup uses eth0's default
+    // route and would permanently admit the wrong source in NetworkPolicies.
+    if (!/\bdev\s+flannel\.1(?:\s|$)/.test(route.stdout)) {
+      await delay(500);
+      continue;
+    }
     const sources = [...route.stdout.matchAll(/\bsrc\s+(\S+)/g)].map((match) => match[1]);
     if (
       sources.length !== 1 ||
@@ -806,11 +819,9 @@ async function ensureK3dCluster(statePath, state) {
         "Unable to determine the cross-node plugin status proxy source IPv4 address.",
       );
     }
-    resource.pluginStatusProxyCidrs = `${sources[0]}/32`;
-    await verifyFixtureStorage(resource);
+    return `${sources[0]}/32`;
   }
-  await markResourceReady(statePath, state, resource);
-  return resource;
+  throw new Error("Timed out waiting for the cross-node plugin status proxy route on flannel.1.");
 }
 
 async function verifyFixtureStorage(cluster, timeoutSeconds = 120) {

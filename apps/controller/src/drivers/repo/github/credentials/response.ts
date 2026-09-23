@@ -13,6 +13,13 @@ interface ResponsePolicyOptions {
   readonly gatewayOrigin: string;
 }
 
+function responseBody(git: boolean, rawResponse: boolean): ResponsePolicy["body"] {
+  if (git) {
+    return "stream";
+  }
+  return rawResponse ? "bounded-raw" : "bounded-json";
+}
+
 function rewriteHeaders(
   git: boolean,
   status: number,
@@ -57,14 +64,15 @@ function rewriteHeaders(
 export function createResponsePolicy(
   options: ResponsePolicyOptions,
   allowsRoute: (head: RequestHead) => boolean,
-): (git: boolean, target: string) => ResponsePolicy {
+): (git: boolean, target: string, rawResponse?: boolean) => ResponsePolicy {
   const rewriteUrl = createUrlRewriter({ ...options, allowsRoute });
-  return (git, target) =>
+  return (git, target, rawResponse = false) =>
     Object.freeze({
-      body: git ? "stream" : "bounded-json",
-      rewriteJson: git
-        ? undefined
-        : createResourceRewriter(classifyResource(options.repository, target), { rewriteUrl }),
+      body: responseBody(git, rawResponse),
+      rewriteJson:
+        git || rawResponse
+          ? undefined
+          : createResourceRewriter(classifyResource(options.repository, target), { rewriteUrl }),
       headers: (status: number, headers: HeaderFields) =>
         rewriteHeaders(git, status, headers, rewriteUrl),
     });

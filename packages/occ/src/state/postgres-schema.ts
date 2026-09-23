@@ -260,7 +260,7 @@ export const agents = occSchema.table(
     servicePrincipalId: text("service_principal_id").notNull(),
     harnessAuth: jsonb("harness_auth").$type<HarnessAuthBinding>(),
     harnessAuthSecretId: text("harness_auth_secret_id").generatedAlwaysAs(
-      sql`CASE WHEN harness_auth->>'method' = 'api_key' THEN harness_auth #>> '{source,id}' END`,
+      sql`CASE WHEN harness_auth->>'method' IN ('api_key', 'codex_pat') THEN harness_auth #>> '{source,id}' END`,
     ),
     harnessAuthServiceAccountId: text("harness_auth_service_account_id").generatedAlwaysAs(
       sql`CASE WHEN harness_auth->>'method' = 'chatgpt_service_account' THEN harness_auth->>'serviceAccountId' END`,

@@ -151,7 +151,11 @@ export async function startRepositoryPlatformService(context, options = {}) {
     const namespaceId = options.namespaceId ?? "namespace-fixture";
     const providerId = "github-fixture";
     const maximumDurationSeconds = 172800;
-    const definitions = defaultRegistryRepositories;
+    const definitions = defaultRegistryRepositories.map((entry) =>
+      entry.repositoryRef === "repo-a"
+        ? { ...entry, pushRefAllowlist: ["refs/heads/native-feature", "refs/heads/agent/*"] }
+        : entry,
+    );
     const material = await createRegistryMaterial(resources, {
       definitions,
       namespaceId,

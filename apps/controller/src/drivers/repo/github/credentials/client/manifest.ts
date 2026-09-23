@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { readClientConfiguration, type ClientFiles } from "./config.ts";
+import { normalizePushRefAllowlist } from "../../../credentials/client-contracts.ts";
 import { assertPrivateDirectory, readPrivateFile } from "./private-files.ts";
 
 export const repositoryMaterialRoot = "/run/oce/repository-credentials";
@@ -40,6 +41,8 @@ const digest = (value: unknown): string =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
 function readPublicClient(value: unknown): ClientFiles["client"] {
+  const hasPolicy =
+    value !== null && typeof value === "object" && Object.hasOwn(value, "pushRefAllowlist");
   const client = record(value, [
     "gatewayOrigin",
     "gitRemote",
@@ -47,9 +50,17 @@ function readPublicClient(value: unknown): ClientFiles["client"] {
     "canonicalApiHost",
     "apiHost",
     "repository",
+    ...(hasPolicy ? ["pushRefAllowlist"] : []),
   ]);
-  if (!Object.values(client).every((item) => typeof item === "string")) {
+  if (
+    !Object.entries(client).every(
+      ([key, item]) => key === "pushRefAllowlist" || typeof item === "string",
+    )
+  ) {
     throw new Error("invalid-repository-material");
+  }
+  if (hasPolicy) {
+    normalizePushRefAllowlist(client.pushRefAllowlist);
   }
   return Object.freeze(client) as unknown as ClientFiles["client"];
 }
@@ -61,7 +72,8 @@ function clientsAgree(first: ClientFiles["client"], second: ClientFiles["client"
     first.gitUsername === second.gitUsername &&
     first.canonicalApiHost === second.canonicalApiHost &&
     first.apiHost === second.apiHost &&
-    first.repository === second.repository
+    first.repository === second.repository &&
+    JSON.stringify(first.pushRefAllowlist) === JSON.stringify(second.pushRefAllowlist)
   );
 }
 

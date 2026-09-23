@@ -191,7 +191,7 @@ test(
       [],
       [
         "--tmpfs",
-        "/var/lib/grafana:rw,mode=1777",
+        "/var/lib/grafana:rw,noexec,mode=1777",
         "--tmpfs",
         "/var/log/grafana:rw,mode=1777",
         "-e",
@@ -208,6 +208,10 @@ test(
         "GF_ANALYTICS_REPORTING_ENABLED=false",
         "-e",
         "GF_ANALYTICS_CHECK_FOR_UPDATES=false",
+        // Keep the image's bundled plugins. Background updates replace running
+        // backends with downloads that cannot execute from the data tmpfs.
+        "-e",
+        "GF_PLUGINS_PREINSTALL_DISABLED=true",
       ],
     );
     await waitFor(async () => (await fetch(`http://127.0.0.1:${grafanaPort}/api/health`)).ok);

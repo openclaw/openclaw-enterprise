@@ -3,7 +3,7 @@
 Use the browser console at `/console/` on your OCC address to sign in, choose a
 Namespace, create, deploy, and delete Agents, and edit supported Slack
 draft settings. You can also set initial workspace contents and runtime credentials,
-read or replace supported live workspace files, and list the Agents, Providers, and Namespaces
+read or replace supported live workspace files, and list the Agents and Namespaces
 you can access. When the pilot is enabled, trusted operators can open an Agent's
 [native admin UI](#open-the-native-admin-ui). The console does not offer rollback,
 live runtime health, or browser chat through OCE.
@@ -39,15 +39,14 @@ that the build revision is unavailable.
 
 ## Browse and select a Namespace
 
-The sidebar opens **Agents**, **Providers**, or **Namespaces**. **Refresh**
-repeats the current read. Provider and Namespace rows remain read-only collection
-entries.
+The sidebar opens **Agents** or **Namespaces**. **Refresh** repeats the current
+read. Model provider and API-key setup are part of Agent creation; the separate
+Providers tab is hidden. Namespace rows remain read-only collection entries.
 
 | Page       | Scope and permission                                                     |
 | ---------- | ------------------------------------------------------------------------ |
 | Agents     | Selected Namespace; Namespace `read`, then exact Agent `read` filtering. |
 | Namespaces | Installation-wide collection filtered by exact Namespace `read`.         |
-| Providers  | Installation-wide configured inventory; Installation `administer`.       |
 
 Use the bottom **OpenClaw Enterprise** menu for **Namespace**, **Settings**, or
 **Logout**. Settings shows the signed-in account and no configurable settings.
@@ -58,7 +57,7 @@ selection. With no readable Namespaces, Agents explains that provisioning or
 access is needed; global pages remain available.
 
 Switching Namespace from Agent detail or creation returns to the Agents list in
-the new scope. Global pages stay open because Providers and Namespaces remain
+the new scope. Global pages stay open because Namespaces remain
 Installation-wide. The API makes all authorization decisions; the selector does
 not broaden access.
 

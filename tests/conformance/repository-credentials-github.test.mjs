@@ -419,7 +419,14 @@ test("provider transport pins destination and exact issuance scope before receiv
   }
   assert.equal(observations, 1);
   assert.deepEqual(fixture.issuesOfTokens[0].repositoryIds, [73]);
-  assert.deepEqual(fixture.issuesOfTokens[0].permissions, { metadata: "read", contents: "read" });
+  assert.deepEqual(fixture.issuesOfTokens[0].permissions, {
+    metadata: "read",
+    contents: "read",
+    issues: "read",
+    pull_requests: "read",
+    checks: "read",
+    statuses: "read",
+  });
   const revoked = await transport.revoke(token, attempt("retire"), onDispatch);
   try {
     assert.equal(revoked.status, 204);
@@ -469,9 +476,30 @@ test("real HTTPS issuance preserves exact profiles after hour 13 and revokes wit
   assert.deepEqual(
     fixture.issuesOfTokens.map((item) => item.permissions),
     [
-      { metadata: "read", contents: "write" },
-      { metadata: "read", contents: "write", pull_requests: "write", issues: "write" },
-      { metadata: "read", contents: "write", pull_requests: "write", issues: "write" },
+      {
+        metadata: "read",
+        contents: "write",
+        issues: "read",
+        pull_requests: "write",
+        checks: "read",
+        statuses: "read",
+      },
+      {
+        metadata: "read",
+        contents: "write",
+        pull_requests: "write",
+        issues: "write",
+        checks: "read",
+        statuses: "read",
+      },
+      {
+        metadata: "read",
+        contents: "write",
+        pull_requests: "write",
+        issues: "write",
+        checks: "read",
+        statuses: "read",
+      },
     ],
   );
   assert.notEqual(fixture.issuesOfTokens[1].claims.iat, fixture.issuesOfTokens[2].claims.iat);
@@ -572,6 +600,10 @@ test("refused and cancelled observations remain independently captured and token
           body: { ...body, permissions: { ...body.permissions, administration: "write" } },
         };
       }
+      if (mode === "missing-checks") {
+        const { checks: _checks, ...permissions } = body.permissions;
+        return { status, body: { ...body, permissions } };
+      }
       if (mode === "refused") {
         return { status: 403, body };
       }
@@ -604,6 +636,7 @@ test("refused and cancelled observations remain independently captured and token
   });
   for (const { name, selected, expected } of [
     { name: "surplus permissions", selected: "surplus", expected: "rejected" },
+    { name: "missing checks permission", selected: "missing-checks", expected: "rejected" },
     { name: "provider refusal", selected: "refused", expected: "reauthorization-required" },
     { name: "insufficient lifetime", selected: "short", expected: "rejected" },
     { name: "closure during capture", selected: "cancel", expected: "uncertain" },

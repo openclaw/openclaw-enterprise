@@ -23,6 +23,7 @@ export interface GitHubFactoryOptions {
   readonly binding?: Readonly<{
     profile: GitHubProfile;
     identity: RepositoryCredentialGrantIdentity;
+    pushRefAllowlist?: readonly string[];
   }>;
   readonly key: GitHubKeyOwner;
   readonly gatewayOrigin: string;

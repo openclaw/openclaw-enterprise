@@ -100,9 +100,15 @@ repository IDs and canonical names must be unique.
 
 The resolved grant fingerprint covers provider/App/installation identity,
 repository identity, maximum duration, Namespace, its complete allowed-profile
-set and the selected profile. The service independently resolves and compares
+set, optional push-ref policy, selected profile and exact permission contract.
+The service independently resolves and compares
 that fingerprint before admission. A changed policy cannot preserve an older
 grant merely by keeping the same reference.
+
+Each Namespace policy may set an optional
+[`pushRefAllowlist`](repository-credentials/push-ref-guardrail.md) to prevent
+accidental native Git pushes outside selected branches. This is not server-side
+branch authorization.
 
 The selected Driver configuration supplies `controlSocket`,
 `sessionDurationSeconds` and `publicCaPath`; it contains no App key. See
@@ -111,26 +117,17 @@ The selected Driver configuration supplies `controlSocket`,
 
 ### Profiles
 
-| Profile               | Exact requested GitHub permissions                                           | Supported work                                                      |
-| --------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| `git-read`            | `metadata: read`, `contents: read`                                           | Clone, fetch and checkout; no push or API calls                     |
-| `git-write` (default) | `metadata: read`, `contents: write`                                          | Git clone, fetch, checkout and push; no API calls                   |
-| `git-full`            | `metadata: read`, `contents: write`, `pull_requests: write`, `issues: write` | Git plus selected REST, GraphQL and PR, issue and comment workflows |
+Choose **Reader** (`git-read`) for code and issue/PR reads, **Contributor**
+(`git-write`, the API default) for pushes and PR work, or **Collaborator**
+(`git-full`) for issue management too. The configuration values remain unchanged;
+Reader and Contributor now include API access, not just Git.
 
-Every session selects exactly one repository, even when one Agent has several
-bindings. Both Git-only profiles deny all REST and GraphQL calls. `git-read`
-denies push discovery and execution. `git-full` admits selected repository
-metadata, PR, issue and issue-comment routes, `GET /meta` and `POST /graphql`,
-subject to method, query, framing and media-type restrictions. GraphQL uses the
-exact installation-token grant and can also return public information allowed
-by GitHub. There is no per-field or branch-only GraphQL authorization; every
-GraphQL POST is treated as a possible write. The former `read-write` profile has
-no compatibility alias.
-
-Native repository rules still apply. Administration, workflow changes requiring
-additional permissions, Actions, packages, projects, SSH, LFS and unselected
-repositories are outside scope. Missing App permissions fail without widening
-the grant.
+The [access-level reference](repository-credentials/access-levels.md) defines the
+exact permissions, supported commands and GraphQL boundary. Every session selects
+one repository. Writable levels are not a promise that an Agent cannot merge:
+GitHub rules still govern protected branches. Administration, workflow editing,
+Actions control and secrets permissions are not requested. Missing App permissions
+fail without widening the grant.
 
 ### Standalone service inputs
 
@@ -317,8 +314,9 @@ The API launcher requires GitHub CLI **2.100.0**, `GH_HOST=github.com`, a gatewa
 hostname with verified TLS, and HTTPS port 443. Its private `hosts.yml` uses the
 experimental `api_host` routing option and stores only the gateway bearer in
 `oauth_token`. Supported API calls use relative endpoint paths. The launcher
-admits `gh api` and explicit-head `gh pr create`; browser flows, extensions,
-absolute API destinations and arbitrary command compatibility are excluded.
+admits the selected [read and contribution commands](repository-credentials/access-levels.md#supported-commands);
+browser flows, extensions, absolute API destinations and arbitrary command
+compatibility are excluded.
 Response rewriting is limited to validated pagination links and explicitly
 followed resource fields. Native `/repositories/<id>` response URLs must match
 the configured repository ID and are rewritten to its admitted `/repos/OWNER/REPO`

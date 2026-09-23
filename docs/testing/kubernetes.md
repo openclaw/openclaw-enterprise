@@ -70,6 +70,12 @@ cluster behavior.
 The plugin-status fixture tests wait for Driver readiness, a ready gateway Pod,
 and its plugin status before asserting startup or restart results. A later Pod
 status read does not establish that an earlier Driver observation was ready.
+CI preparation first waits up to 120 seconds for the server's route to the worker
+Pod CIDR to use `flannel.1`, then admits that route's source `/32` for API-server
+Pod proxy requests. Node readiness alone can precede this route; selecting the
+container network's default-route source would leave ready Pods unreachable
+through the proxy. An absent overlay route fails preparation before it publishes
+the test environment.
 
 ## Kubernetes model turns and Secrets
 

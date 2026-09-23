@@ -46,7 +46,11 @@ export async function startCredentialServiceFixture(t, options = {}) {
   try {
     const clock = options.clock ?? createControlledClock();
     const tls = await createTlsMaterial(resources);
-    const config = await createServiceConfiguration(resources, options.limits);
+    const configured = await createServiceConfiguration(resources, options.limits);
+    const config =
+      options.gateway === undefined
+        ? configured
+        : { ...configured, gateway: { ...configured.gateway, ...options.gateway } };
     const github = await startGitHubFixture(resources, {
       clock,
       tls,
@@ -93,11 +97,14 @@ export function gatewayRequest(fixture, target, { method = "GET", body, headers 
   return new Promise((resolve, reject) => {
     const encoded = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
     const outgoing = request(
-      `${fixture.config.gateway.publicOrigin}${target}`,
       {
+        hostname: "127.0.0.1",
+        port: fixture.listeners.address.port,
+        path: target,
         method,
         ca: fixture.tls.ca,
         headers: {
+          host: new URL(fixture.config.gateway.publicOrigin).host,
           authorization: `Bearer ${fixture.opened.bearer}`,
           ...(encoded
             ? { "content-type": "application/json", "content-length": encoded.length }

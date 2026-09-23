@@ -44,6 +44,17 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
   }
 }
 
+/** Safe discovery outcomes carry no upstream response, credential, or error cause. */
+export class ModelDiscoveryError extends Error {
+  readonly reason: "credentials_rejected" | "rate_limited" | "unavailable" | "invalid_response";
+
+  constructor(reason: ModelDiscoveryError["reason"]) {
+    super("Model discovery failed.");
+    this.name = "ModelDiscoveryError";
+    this.reason = reason;
+  }
+}
+
 export class ScopeViolationError extends Error {
   constructor(message: string) {
     super(message);

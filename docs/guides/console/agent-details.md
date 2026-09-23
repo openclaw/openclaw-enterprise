@@ -10,17 +10,16 @@ do not confirm that an Agent or its Slack connection is currently healthy.
 
 ## Navigation and Agent identity
 
-| Component                  | What it does                                                                                     |
-| -------------------------- | ------------------------------------------------------------------------------------------------ |
-| **Control Plane**          | Identifies the OpenClaw Control Plane (OCC) console.                                             |
-| **Agents** / **← Agents**  | Opens the Agents list in the selected Namespace.                                                 |
-| **Providers**              | Lists configured Providers across the Installation; requires Installation administration access. |
-| **Namespaces**             | Lists the Namespaces you can read.                                                               |
-| Agent name                 | Human-readable name of this Agent.                                                               |
-| **Namespace · name**       | Namespace containing the Agent.                                                                  |
-| **Refresh**                | Reloads the current page's data. It does not restart the Agent.                                  |
-| **Selected revision · vN** | Revision selected by the Agent, which may differ from the snapshot you are viewing.              |
-| `agt_…`                    | Stable Agent identifier for API calls and support.                                               |
+| Component                  | What it does                                                                        |
+| -------------------------- | ----------------------------------------------------------------------------------- |
+| **Control Plane**          | Identifies the OpenClaw Control Plane (OCC) console.                                |
+| **Agents** / **← Agents**  | Opens the Agents list in the selected Namespace.                                    |
+| **Namespaces**             | Lists the Namespaces you can read.                                                  |
+| Agent name                 | Human-readable name of this Agent.                                                  |
+| **Namespace · name**       | Namespace containing the Agent.                                                     |
+| **Refresh**                | Reloads the current page's data. It does not restart the Agent.                     |
+| **Selected revision · vN** | Revision selected by the Agent, which may differ from the snapshot you are viewing. |
+| `agt_…`                    | Stable Agent identifier for API calls and support.                                  |
 
 The bottom **OpenClaw Enterprise** menu contains **Namespace**, **Settings**,
 and **Logout**. Namespace selection changes your scope; from Agent detail it
@@ -158,12 +157,13 @@ the console. Use the operator workflow for those Agents.
 
 **Authentication source** determines how the harness gets model credentials:
 
-| Choice                           | Required input and effect                                                                     |
-| -------------------------------- | --------------------------------------------------------------------------------------------- |
-| **None**                         | No binding; deployment remains blocked.                                                       |
-| **OpenAI API key**               | Existing Namespace Secret ID, not the API key value.                                          |
-| **Operator-managed credentials** | Credentials configured on the runtime host; OCC does not validate them.                       |
-| **ChatGPT service account**      | Select an already issued account in this Namespace. This selector does not create an account. |
+| Choice                           | Required input and effect                                                                           |
+| -------------------------------- | --------------------------------------------------------------------------------------------------- |
+| **None**                         | No binding; deployment remains blocked.                                                             |
+| **API key**                      | Existing Namespace Secret ID, not the API key value.                                                |
+| **Service Accounts**             | Existing Namespace Secret ID containing a service account token; available for Dedicated execution. |
+| **Operator-managed credentials** | Credentials configured on the runtime host; OCC does not validate them.                             |
+| **ChatGPT service account**      | Select an already issued account in this Namespace. This selector does not create an account.       |
 
 **Save authentication source** saves the Agent binding for a future deployment.
 The account availability message describes discovery, not model readiness.

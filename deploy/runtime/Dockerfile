@@ -16,6 +16,7 @@ COPY packages packages
 COPY apps/controller apps/controller
 COPY scripts/build-repository-credentials.mjs scripts/build-repository-credentials.mjs
 COPY deploy/runtime/repository-credentials/.dockerignore deploy/runtime/repository-credentials/.dockerignore
+COPY deploy/runtime/repository-credentials/hooks.json deploy/runtime/repository-credentials/hooks.json
 RUN corepack pnpm credentials:build
 
 FROM ${NODE_BASE_IMAGE} AS runtime
@@ -58,6 +59,7 @@ RUN chmod -R a+rX /opt/oce/repository-credentials \
     && chmod 0555 /opt/oce/repository-credentials/bin/gh \
     && test -f /opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/router.js \
     && test -f /opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/native-git.js \
+    && test -x /opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/hooks/pre-push \
     && /usr/bin/git config --system --add include.path /run/oce/repository-credentials/gitconfig
 
 RUN npm init -y >/dev/null \

@@ -492,7 +492,8 @@
             "an overdue Agent runtime fails closed without activating its incomplete revision",
             "one worker reconciles embedded OpenClaw and dedicated Codex but rejects unapproved pinned Harnesses",
             "a lost retirement claim preserves the activated replacement and cannot complete stolen work",
-            "revision dispatch rechecks Configuration and exact harness Secret grants without backend Secret reads",
+            "api_key revision dispatch rechecks Configuration and exact harness Secret grants without backend Secret reads",
+            "codex_pat revision dispatch rechecks Configuration and exact harness Secret grants without backend Secret reads",
             "revision dispatch refuses a different selected Secret Driver before binding or activating the Agent",
             "revision dispatch never substitutes a later ChatGPT credential or reconfigured Provider for its admitted snapshot"
           ]
@@ -501,7 +502,8 @@
           "path": "tests/integration/postgres-agent-provisioning.test.mjs",
           "expectedTests": [
             "provisioning API queues one job with existing Secret references and replays only the exact same request",
-            "provisioning worker creates Configuration and Agent from existing Secrets, then hands off one revision",
+            "api_key provisioning grants existing Secret access and hands off one revision",
+            "codex_pat provisioning grants existing Secret access and hands off one revision",
             "queued provisioning leaves existing Secrets but creates no Agent or Configuration before a worker runs",
             "provisioning worker reauthorizes after admission and revoked authority creates no backend effects",
             "failed provisioning can retry through the API and resume without duplicating the Agent",
@@ -1178,7 +1180,7 @@
         {
           "path": "tests/integration/repository-credentials-gh.test.mjs",
           "expectedTests": [
-            "pinned gh uses canonical GitHub identity for REST, pagination and native PR creation"
+            "pinned gh uses canonical GitHub identity for repository, issue and pull-request commands"
           ]
         },
         {

@@ -201,7 +201,7 @@ export function createUpstreamSender(options: UpstreamSenderOptions): ExchangeSe
         await inputDone;
         options.response.writeHead(status, allowed);
         options.response.end();
-      } else if (plan.responsePolicy.body === "bounded-json") {
+      } else if (plan.responsePolicy.body !== "stream") {
         const parts: Buffer[] = [];
         let size = 0;
         for await (const chunk of upstream) {

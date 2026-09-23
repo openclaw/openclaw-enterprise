@@ -102,7 +102,7 @@ export interface ExchangeLimits {
   readonly connectMs: number;
 }
 export interface ResponsePolicy {
-  readonly body: "stream" | "bounded-json";
+  readonly body: "stream" | "bounded-json" | "bounded-raw";
   headers(status: number, headers: HeaderFields): HeaderFields;
   readonly rewriteJson: ((value: JsonValue) => JsonValue) | undefined;
 }

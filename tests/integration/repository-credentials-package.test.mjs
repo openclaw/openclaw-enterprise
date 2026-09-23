@@ -15,7 +15,7 @@ import {
   lstat,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import test from "node:test";
 import { createServer } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
@@ -77,9 +77,19 @@ test(
     assert.ok(
       clientModules
         .filter((path) => path.endsWith(".js"))
-        .every((path) => path.startsWith("drivers/repo/github/credentials/client/")),
+        .every(
+          (path) =>
+            path.startsWith("drivers/repo/github/credentials/client/") ||
+            path === "drivers/repo/credentials/client-contracts.js",
+        ),
     );
     assert.ok(clientModules.includes("drivers/repo/github/credentials/client/router.js"));
+    assert.ok(clientModules.includes("drivers/repo/github/credentials/client/hook-dispatch.js"));
+    assert.equal(
+      (await lstat(join(client, "dist/drivers/repo/github/credentials/client/hooks/pre-push")))
+        .mode & 0o111,
+      0o111,
+    );
     // Delete the emitted workspace and tooling links before starting either runtime.
     await rm(build, { recursive: true, force: true });
     // The detached runtime has no dependency graph or workspace source. Real PEM loading
@@ -253,6 +263,10 @@ test(
       await mkdir(stagingRoot, { mode: 0o700 });
       await mkdir(join(stagingRoot, "sessions"), { mode: 0o700 });
       const metadata = JSON.parse(await readFile(join(sessionDirectory, "client.json"), "utf8"));
+      metadata.client.pushRefAllowlist = ["refs/heads/agent/*"];
+      await writeFile(join(sessionDirectory, "client.json"), JSON.stringify(metadata), {
+        mode: 0o600,
+      });
       const identity = ["project", session.sessionId];
       const directoryName = createHash("sha256").update(JSON.stringify(identity)).digest("hex");
       const generation = createHash("sha256")
@@ -295,6 +309,34 @@ test(
       assert.equal(nativeFilled.status, 0, "detached manifest helper failed");
       assert.ok(nativeFilled.stdout.includes(`password=${bearer}\n`));
       assert.equal(nativeFilled.stderr.includes(bearer), false);
+      // The executable wrappers and their detached imports must work without
+      // the workspace. The full HTTP push is covered by the real-Git suite.
+      const checkout = join(temporary, "git-checkout");
+      assert.equal(spawnSync("/usr/bin/git", ["init", checkout], { encoding: "utf8" }).status, 0);
+      const inputFile = join(temporary, "push-input");
+      const invokeHook = async (ref) => {
+        await writeFile(
+          inputFile,
+          "HEAD " + "1".repeat(40) + " " + ref + " " + "0".repeat(40) + "\n",
+        );
+        return invoke("launch.js", [
+          sessionDirectory,
+          "git",
+          "-C",
+          checkout,
+          "hook",
+          "run",
+          "--to-stdin=" + inputFile,
+          "pre-push",
+          "--",
+          "origin",
+          metadata.client.gitRemote,
+        ]);
+      };
+      assert.equal((await invokeHook("refs/heads/agent/allowed")).status, 0);
+      const deniedPush = await invokeHook("refs/heads/main");
+      assert.equal(deniedPush.status, 1);
+      assert.match(deniedPush.stderr, /repository-push-ref-not-allowed/);
       // An unsupported command must reach the router's public error boundary;
       // a missing router or import cannot satisfy this detached-entrypoint check.
       const rejected = invoke("router.js", ["git", "status"]);
@@ -355,6 +397,7 @@ test("credential artifact builder rejects dependencies outside its emitted closu
     join(emitted, "drivers/repo/github/credentials/client/operator.js"),
     join(emitted, "drivers/repo/github/credentials/client/git-helper.js"),
     join(emitted, "drivers/repo/github/credentials/client/native-git.js"),
+    join(emitted, "drivers/repo/github/credentials/client/hook-dispatch.js"),
     join(emitted, "drivers/repo/github/credentials/client/router.js"),
   ]) {
     await mkdir(join(path, ".."), { recursive: true });
@@ -419,6 +462,9 @@ test("emitted credential Docker contexts contain only staged runtime inputs", as
     join(root, "deploy/runtime/repository-credentials/.dockerignore"),
     "utf8",
   );
+  const hooks = JSON.parse(
+    await readFile(join(root, "deploy/runtime/repository-credentials/hooks.json"), "utf8"),
+  );
   for (const name of ["service", "client"]) {
     const context = join(root, ".build/repository-credentials", name);
     assert.deepEqual((await readdir(context)).sort(), [".dockerignore", "dist", "package.json"]);
@@ -429,7 +475,16 @@ test("emitted credential Docker contexts contain only staged runtime inputs", as
       "the context must contain emitted modules",
     );
     assert.ok(
-      files.every((file) => file.isDirectory() || (file.isFile() && file.name.endsWith(".js"))),
+      files.every(
+        (file) =>
+          file.isDirectory() ||
+          (file.isFile() &&
+            (file.name.endsWith(".js") ||
+              (name === "client" &&
+                hooks.includes(file.name) &&
+                relative(join(context, "dist"), file.parentPath) ===
+                  "drivers/repo/github/credentials/client/hooks"))),
+      ),
       "runtime contexts exclude declarations, source maps, compiler state and linked inputs",
     );
   }

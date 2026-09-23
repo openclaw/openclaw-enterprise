@@ -11,6 +11,7 @@ import {
   CreateIAMAccessBindingBody,
   CreateIAMRoleBody,
   CreateAgentBody,
+  DiscoverAgentModelsBody,
   CreateConfigurationBody,
   CreateNamespaceBody,
   ProvisionAgentBody,
@@ -35,6 +36,7 @@ import {
 } from "./common.ts";
 import {
   AgentListResponse,
+  AgentModelListResponse,
   PresetResponse,
   PresetListResponse,
   AgentDeploymentStatusResponse,
@@ -662,6 +664,28 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: ServiceAccountParams,
       response: { 204: Type.Null(), ...mutationErrors },
+    },
+  },
+  {
+    operationId: "discoverAgentModels",
+    method: "POST",
+    path: "/namespaces/:namespaceId/agents/models",
+    action: "openclaw.agents.models.discover",
+    iamAction: "create",
+    resourceKind: "agent",
+    authorizationTarget: "namespace_collection",
+    summary: "List provider models for Agent creation without storing the supplied credential",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: NamespaceParams,
+      body: DiscoverAgentModelsBody,
+      response: {
+        200: AgentModelListResponse,
+        429: ErrorResponseRef,
+        501: ErrorResponseRef,
+        ...createErrors,
+      },
     },
   },
   {

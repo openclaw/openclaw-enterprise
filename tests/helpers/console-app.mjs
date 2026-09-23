@@ -34,11 +34,13 @@ export const providerFixtures = Object.freeze([
   }),
 ]);
 
-function computeDriver() {
+function computeDriver(discoverHarnessModels = async () => []) {
   const driver = createTestKubernetesComputeDriver("console-compute");
 
   return Object.assign(driver, {
     implementation: "test-memory-lifecycle",
+    // Catalog data is the external Compute boundary; Console/OCC/IAM routes remain real.
+    discoverHarnessModels,
     async ensureNamespace(namespace) {
       return { namespaceId: namespace.id, namespaceReady: true };
     },
@@ -134,7 +136,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     iamDriver,
     auditSink,
     development: { enabled: true, installationId, ...options.development },
-    computeDriver: options.computeDriver ?? computeDriver(),
+    computeDriver: options.computeDriver ?? computeDriver(options.discoverHarnessModels),
     configurationDriver: createTestConfigurationDriver({ id: "console-configuration" }),
     ...(secretDriver === undefined || secretDriver === null ? {} : { secretDriver }),
     ...(publicOrigin === undefined ? {} : { publicOrigin }),

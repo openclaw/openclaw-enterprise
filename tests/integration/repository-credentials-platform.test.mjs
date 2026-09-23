@@ -185,25 +185,54 @@ test(
       "HEAD:refs/heads/native-feature",
     ]);
     assert.equal(await first.git.ref("refs/heads/native-feature"), commit);
+    // One forbidden destination rejects the whole native push before
+    // receive-pack; the real upstream must retain both observed refs.
+    const beforeMain = await first.git.ref("refs/heads/main");
+    const beforeFeature = await first.git.ref("refs/heads/native-feature");
+    const beforeMixed = first.git.trace.length;
     await fixture.tool(
       pod,
-      "gh",
+      "git",
       [
-        "pr",
-        "create",
-        "--head",
-        "native-feature",
-        "--base",
-        "main",
-        "--title",
-        "Platform fixture",
-        "--body",
-        "Repository platform proof",
+        "-C",
+        firstCheckout,
+        "push",
+        "origin",
+        "HEAD:refs/heads/agent/mixed",
+        "HEAD:refs/heads/main",
       ],
-      { cwd: firstCheckout },
+      { expected: "failure" },
     );
-    assert.equal([...first.github.pulls.values()].filter(({ native }) => native).length, 1);
-    assert.equal(second.github.pulls.size, 0);
+    assert.equal(await first.git.ref("refs/heads/main"), beforeMain);
+    assert.equal(await first.git.ref("refs/heads/native-feature"), beforeFeature);
+    assert.equal(
+      (
+        await fixture.tool(pod, "git", [
+          "-C",
+          firstCheckout,
+          "ls-remote",
+          "origin",
+          "refs/heads/agent/mixed",
+        ])
+      ).trim(),
+      "",
+    );
+    assert.equal(
+      first.git.trace.slice(beforeMixed).some(({ path }) => path.endsWith("/git-receive-pack")),
+      false,
+    );
+    // Collaborator can create ordinary issues; the Contributor Agent below
+    // opens the single PR retained by the restart and no-replay assertions.
+    const issue = JSON.parse(
+      await fixture.tool(
+        pod,
+        "gh",
+        ["api", `repos/${first.repository}/issues`, "-X", "POST", "-f", "title=Collaborator issue"],
+        { cwd: firstCheckout },
+      ),
+    );
+    assert.equal(first.github.issues.get(issue.number)?.title, "Collaborator issue");
+    assert.equal(second.github.issues.size, 0);
 
     // A different admitted binding cannot upgrade this read-only repository.
     const secondBefore = second.git.trace.length;
@@ -217,15 +246,23 @@ test(
       second.git.trace.slice(secondBefore).some(({ path }) => path.endsWith("/git-receive-pack")),
       false,
     );
-    const beforeDeniedApi = second.github.trace.length;
     await fixture.tool(pod, "gh", ["api", `repos/${second.repository}`], {
       cwd: secondCheckout,
-      expected: 1,
     });
+    const beforeDeniedApi = second.github.trace.length;
+    await fixture.tool(
+      pod,
+      "gh",
+      ["api", "--method", "POST", `repos/${second.repository}/issues`],
+      {
+        cwd: secondCheckout,
+        expected: 1,
+      },
+    );
     assert.equal(second.github.trace.length, beforeDeniedApi);
 
-    // The default write profile admits Git writes, but still cannot create PRs
-    // or use the REST surface reserved for explicit full access.
+    // Contributor admits selected reads and PR work, while ordinary issue
+    // creation still requires Collaborator authority.
     const writer = await fixture.createAgent([{ repositoryRef: "repo-a", profile: "git-write" }]);
     const writerPath = `/namespaces/${namespace.id}/agents/${writer.id}`;
     const writerRevision = await fixture.request("POST", `${writerPath}/deploy`, undefined, 202);
@@ -238,27 +275,40 @@ test(
     assert.deepEqual(first.github.issuesOfTokens.at(-1).permissions, {
       metadata: "read",
       contents: "write",
+      issues: "read",
+      pull_requests: "write",
+      checks: "read",
+      statuses: "read",
     });
+    await fixture.tool(writerPod, "gh", ["api", `repos/${first.repository}`]);
+    await fixture.tool(writerPod, "gh", [
+      "pr",
+      "create",
+      "--repo",
+      `github.com/${first.repository}`,
+      "--head",
+      "native-feature",
+      "--base",
+      "main",
+      "--title",
+      "Contributor PR",
+      "--body",
+      "Contributor can open pull requests",
+    ]);
+    assert.ok([...first.github.pulls.values()].some((pull) => pull.title === "Contributor PR"));
+    assert.equal([...first.github.pulls.values()].filter(({ native }) => native).length, 1);
+    assert.equal(second.github.pulls.size, 0);
     const writerTrace = first.github.trace.length;
-    await fixture.tool(writerPod, "gh", ["api", `repos/${first.repository}`], {
-      expected: "failure",
-    });
     await fixture.tool(
       writerPod,
       "gh",
       [
-        "pr",
-        "create",
-        "--repo",
-        `github.com/${first.repository}`,
-        "--head",
-        "native-feature",
-        "--base",
-        "main",
-        "--title",
-        "Denied profile",
-        "--body",
-        "Must not reach provider",
+        "api",
+        `repos/${first.repository}/issues`,
+        "-X",
+        "POST",
+        "-f",
+        "title=Denied ordinary issue",
       ],
       { expected: "failure" },
     );

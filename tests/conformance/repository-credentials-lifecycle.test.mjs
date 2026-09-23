@@ -345,9 +345,39 @@ for (const action of ["retire", "finalize"]) {
 }
 
 for (const [profile, permissions] of [
-  ["git-read", { metadata: "read", contents: "read" }],
-  ["git-write", { metadata: "read", contents: "write" }],
-  ["git-full", { metadata: "read", contents: "write", pull_requests: "write", issues: "write" }],
+  [
+    "git-read",
+    {
+      metadata: "read",
+      contents: "read",
+      issues: "read",
+      pull_requests: "read",
+      checks: "read",
+      statuses: "read",
+    },
+  ],
+  [
+    "git-write",
+    {
+      metadata: "read",
+      contents: "write",
+      issues: "read",
+      pull_requests: "write",
+      checks: "read",
+      statuses: "read",
+    },
+  ],
+  [
+    "git-full",
+    {
+      metadata: "read",
+      contents: "write",
+      pull_requests: "write",
+      issues: "write",
+      checks: "read",
+      statuses: "read",
+    },
+  ],
 ]) {
   test(`GitHub ${profile} replaces after hour 13 and repeatedly each hour through the real common owner`, async (t) => {
     const resources = createResourceScope();

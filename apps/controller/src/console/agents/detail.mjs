@@ -8,10 +8,10 @@ import { renderWorkspaceFiles } from "./workspace.mjs";
 import { displayDate, shortId, namespacePath, link, message } from "./list.mjs";
 import {
   createRuntimeCredentialsPanel,
-  ensureSecretOperateBinding,
   hasRequiredRuntimeCredentials,
   runtimeCredentialBlockReason,
 } from "./credentials.mjs";
+import { ensureSecretOperateBinding } from "./secret-access.mjs";
 
 function errorPanel(error, context, retry) {
   if (error.status === 401) {
@@ -723,7 +723,7 @@ export async function renderAgentDetail(context) {
       });
       content.append(channels);
     } else if (selectedTab === "credentials" && draft) {
-      const auth = createHarnessAuthFields(context, agent.harnessAuth);
+      const auth = createHarnessAuthFields(context, agent.harnessAuth, agent.executionMode);
       const feedback = element("p", { role: "status", className: "hint" });
       const save = element(
         "button",

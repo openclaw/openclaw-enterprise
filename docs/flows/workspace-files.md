@@ -1,27 +1,25 @@
 ---
 created: 2026-08-31
-updated: 2026-09-22
-last_updated_session: authoring-run/ffffed03-0b85-4984-990e-aa0705a91645
+updated: 2026-09-23
+last_updated_session: 01a0cf27-71c6-7042-8357-74d1811a2ef8
 ---
 
 # Agent Workspace Files Flow
 
 ## Overview
 
-An authenticated caller supplies initial `AGENTS.md`, `SOUL.md`, `IDENTITY.md`,
-and `USER.md` contents at Agent creation. OCC stages those inputs privately;
-Compute initializes the exact Agent's durable workspace before first execution.
-After activation, OCC discards staged bytes and retains completion metadata.
+At Agent creation, an authenticated caller supplies `AGENTS.md`, `SOUL.md`,
+`IDENTITY.md`, and `USER.md`. OCC stages these privately; Compute initializes
+the Agent's durable workspace before execution. Activation replaces staged
+contents with completion metadata.
 
-A later read or edit authorizes the exact active Agent, derives its private
-endpoint through Compute, and sends one native file RPC through Envoy Gateway.
-This flow ends at setup completion or the bounded live-file response; model
-execution and general revision activation belong to adjacent flows.
+Later reads and edits authorize the exact active Agent, resolve its private
+endpoint through Compute, and send one native file RPC through Envoy Gateway.
+This flow ends at setup completion or the bounded file response.
 
-The dedicated path in this flow uses the Kubernetes Codex implementation.
-See [shared contracts and the Codex implementation](../reference/drivers/kubernetes-compute/storage-and-credentials.md#shared-contracts-and-the-codex-implementation)
-for the boundary between workspace capabilities and its launcher, paths and
-app-server settings. Dedicated OpenClaw worker execution remains pending.
+Dedicated execution uses Kubernetes Codex; see
+[workspace and launcher boundaries](../reference/drivers/kubernetes-compute/storage-and-credentials.md#shared-contracts-and-the-codex-implementation).
+Dedicated OpenClaw worker execution remains pending.
 
 ## Entry Points
 
@@ -31,12 +29,10 @@ app-server settings. Dedicated OpenClaw worker execution remains pending.
 - `packages/occ/src/index.ts:createAgent` authorizes creation and persists private
   setup state; `apps/controller/src/worker.ts` passes it to Compute on deployment.
 
-For live file access, the Kubernetes worker must have provisioned the Agent's private HTTPRoute and
-native gateway. Installation operators enable the shared Envoy Gateway,
-native trust, and network restrictions described in
-[deployment](../guides/deploy/workspace-routing.md#agent-workspace-files). The
-[routing reference](../reference/gateway-routing.md) owns the current transport
-and credential contract.
+Live access requires the Agent's private HTTPRoute and native gateway.
+Operators configure Envoy Gateway, native trust, and network restrictions through
+[deployment](../guides/deploy/workspace-routing.md#agent-workspace-files); see the
+[routing contract](../reference/gateway-routing.md) for transport and credentials.
 By default, the chart requests a private CA and listener certificate from
 cert-manager and uses a derived Service DNS hostname. Operators can provide
 an existing issuer and explicit hostname instead.
@@ -110,10 +106,11 @@ instead of writing outside the Agent's managed storage. Provider-owned Sandbox
 startup cannot carry this init container and rejects workspace setup rather than
 dropping initialization.
 
-The runner checks the exact setup identity and workspace path, rejects links
-and conflicting files, and verifies OpenClaw `2026.9.1` and the optional rendered
-template digest. With no completion marker it runs native `setup` without
-starting the gateway, preserving native initialization such as Git creation.
+The runner validates setup identity, workspace path, and the OpenClaw manifest;
+it rejects links and conflicting files. The optional preview digest must match
+installed templates, independently of package version. Changed templates block
+pending setup. Without a completion marker, native `setup --baseline` must
+succeed, including Git initialization, without starting the gateway.
 It atomically replaces supplied files, including empty strings, only if the
 existing value is absent, stock, or already submitted. It runs native setup
 again so native `BOOTSTRAP.md` lifecycle sees the submitted profile, verifies
@@ -321,6 +318,10 @@ replays it. The native client closes in the operation's cleanup path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 19:22: Condense setup prose within the documentation length budget. (01a0cf27-71c6-7042-8357-74d1811a2ef8 - 6c6c3e4308946e7e66d656fb553da4dd5177f2c4)
+
+- 2026-09-23 17:23: Check installed template identity independently of the OpenClaw package release; retain native setup and replay guards. (authoring-run/94dba260-c3e1-421a-876a-1159e514db05 - 63ceabdbba3528553a9c5f04d7c57831bb8cb6eb)
 
 - 2026-09-22 21:24: Render Kubernetes operator proxy trust and retain optional loopback passwords. (authoring-run/ffffed03-0b85-4984-990e-aa0705a91645 - cbf1851308a2db398820ae9e1000f57837703ace)
 - Kubernetes Compute uses trusted proxy for native gateway authentication. (NOT_IN_SPEC)

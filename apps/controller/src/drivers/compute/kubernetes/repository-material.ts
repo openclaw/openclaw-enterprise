@@ -5,6 +5,7 @@ import type {
   RepositoryCredentialSessionFiles,
 } from "@openclaw-enterprise/contracts";
 import type { RepositoryCredentialClientConfiguration } from "../../repo/credentials/client-contracts.ts";
+import { normalizePushRefAllowlist } from "../../repo/credentials/client-contracts.ts";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { REPOSITORY_MATERIAL_INIT_ENTRYPOINT } from "./repository-material-init.ts";
@@ -112,7 +113,8 @@ function clientField(value: unknown): string {
 
 function validateClient(value: unknown): RepositoryCredentialClientConfiguration {
   const input = record(value);
-  if (Object.keys(input).length !== 6) {
+  const hasPolicy = Object.hasOwn(input, "pushRefAllowlist");
+  if (Object.keys(input).length !== (hasPolicy ? 7 : 6)) {
     return invalid();
   }
   const client: RepositoryCredentialClientConfiguration = {
@@ -122,6 +124,7 @@ function validateClient(value: unknown): RepositoryCredentialClientConfiguration
     canonicalApiHost: clientField(input.canonicalApiHost),
     apiHost: clientField(input.apiHost),
     repository: clientField(input.repository),
+    ...(hasPolicy ? { pushRefAllowlist: normalizePushRefAllowlist(input.pushRefAllowlist) } : {}),
   };
   let origin: URL;
   let remote: URL;

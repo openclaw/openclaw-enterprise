@@ -30,6 +30,7 @@ const client = {
   canonicalApiHost: "github.com",
   apiHost: "credentials.example.test",
   repository: "example/project",
+  pushRefAllowlist: ["refs/heads/agent/*"],
 };
 
 let nativeClientImport;
@@ -95,7 +96,7 @@ async function projectionFixture(t, { count = 1 } = {}) {
   const sourceRoot = join(root, "projection");
   const targetRoot = join(root, "output", "private");
   await mkdir(sourceRoot);
-  await mkdir(dirname(targetRoot));
+  await mkdir(dirname(targetRoot), { mode: 0o700 });
   const bindings = Array.from({ length: count }, (_, index) => {
     const sessionId = `session_material_${index}`;
     return {
@@ -200,6 +201,11 @@ test("the actual repository init process turns projected Secrets into private ru
     `\n!'/usr/local/bin/node' '/opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/git-helper.js' manifest '/run/oce/repository-credentials' '${fixture.descriptor.manifest.generation}'\n`,
   );
   const nativeConfig = await readFile(gitconfig, "utf8");
+  assert.equal(
+    setting("core.hooksPath").trim(),
+    "/opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/hooks",
+  );
+  assert.equal(setting("oce.repository.manifestRoot").trim(), "/run/oce/repository-credentials");
   for (const [index, binding] of fixture.descriptor.manifest.bindings.entries()) {
     const directory = join(fixture.targetRoot, "sessions", basename(binding.directory));
     for (const name of ["", "gh"]) {
@@ -287,6 +293,16 @@ test("repository init refuses session identity drift in the projected client doc
   assert.notEqual(result.status, 0);
   assert.equal(result.stdout, "");
   assert.equal(result.stderr.includes(fixture.bindings[0].files.bearer), false);
+});
+
+test("repository init refuses drift in the selected push-ref policy", async (t) => {
+  const fixture = await projectionFixture(t);
+  const binding = fixture.descriptor.manifest.bindings[0];
+  binding.client = { ...binding.client, pushRefAllowlist: ["refs/heads/main"] };
+  const result = fixture.run();
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, "Repository credential material initialization failed.\n");
+  await assert.rejects(lstat(fixture.targetRoot), { code: "ENOENT" });
 });
 
 for (const [name, corrupt] of [

@@ -107,7 +107,11 @@ function validateCredentials(template: PresetTemplate, namespaceId: string) {
     isRecord(value) &&
     ((hasFields(auth, ["method"]) && scalar(auth.method, value.method, Type.Literal("runtime"))) ||
       (hasFields(auth, ["method", "source"]) &&
-        scalar(auth.method, value.method, Type.Literal("api_key")) &&
+        scalar(
+          auth.method,
+          value.method,
+          Type.Union([Type.Literal("api_key"), Type.Literal("codex_pat")]),
+        ) &&
         reference(auth.source, value.source)) ||
       (hasFields(auth, ["method", "serviceAccountId"]) &&
         scalar(auth.method, value.method, Type.Literal("chatgpt_service_account")) &&

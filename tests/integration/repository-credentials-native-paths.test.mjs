@@ -164,6 +164,10 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD !== "1") {
       assert.deepEqual(fixture.github.issuesOfTokens[0].permissions, {
         metadata: "read",
         contents: "write",
+        issues: "read",
+        pull_requests: "write",
+        checks: "read",
+        statuses: "read",
       });
     });
 

@@ -1,14 +1,14 @@
 ---
 created: "2026-09-23"
 updated: "2026-09-23"
-last_updated_session: "Codex/01a0cc7f-028b-7803-acf5-803c3d799d75"
+last_updated_session: "Codex/01a0cf27-71c6-7042-8357-74d1811a2ef8"
 ---
 
 # Agent provisioning flow
 
 ## Overview
 
-Console saves new Slack token Secrets from the channel setup modal through the existing Secrets API, then sends inline Configuration and ordinary Secret references to the provisioning API. API-key model authentication selects an existing Secret reference. OCC queues setup work without creating placeholder resources. A worker creates the Configuration and Agent, grants the Agent access to accepted Secrets, provisions trusted-proxy runtime credentials, and admits the first deployment.
+Console saves new Slack token Secrets from the channel setup modal through the existing Secrets API, then sends inline Configuration and ordinary Secret references to the provisioning API. Model authentication discovers models from an entered API key or service account token, then saves the credential as a Secret before provisioning. Presets retain their existing Secret binding. OCC queues setup work without creating placeholder resources. A worker creates the Configuration and Agent, grants the Agent access to accepted Secrets, provisions trusted-proxy runtime credentials, and admits the first deployment.
 
 This flow ends at deployment submission. The [controller worker](controller-worker.md) and [Harness execution topology](harness-execution-topology.md) own activation, runtime failures and later deployments.
 
@@ -48,11 +48,11 @@ graph TD
 
 `apps/controller/src/console/agents/create.mjs:renderCreateAgent`
 
-The Slack channel setup modal sends each new token to ordinary `POST /namespaces/:namespaceId/secrets` immediately, before an Agent exists. It clears entered values after the save attempt. Applying channel settings stages the returned references and environment bindings in the form. Cancelling the drawer discards its selections but retains created namespace Secrets. API-key model authentication uses an existing Secret ID. A lost Secret-save response needs recovery rather than automatic repetition.
+The Slack channel setup modal sends each new token to ordinary `POST /namespaces/:namespaceId/secrets` immediately, before an Agent exists. It clears entered values after the save attempt. Applying channel settings stages the returned references and environment bindings in the form. Cancelling the drawer discards its selections but retains created namespace Secrets. Model discovery uses the entered API key or service account token without saving it. Create Agent saves that credential as an ordinary Namespace Secret, clears the input, and reuses its returned reference for provisioning retries. Bound Presets retain their credential and provider. A lost Secret-save response needs recovery rather than automatic repetition.
 
 Create Agent sends the parsed inline Configuration, ordinary Secret bindings, model-auth references, supported Agent options and a stable request ID. The provisioning worker owns exact Secret grants; Slack has no special worker path. After an uncertain admission response, the Console resends the same request ID and accepted inputs, without resaving acknowledged Secrets.
 
-On ordinary draft creation paths, Console creates the Configuration and Agent, then grants access to the selected Slack Secrets. A grant failure retains the saved Agent and offers its Credentials view instead of repeating creation.
+On ordinary draft creation paths, Console creates the Configuration and Agent, then grants access to the selected Slack Secrets. A grant failure retains the saved Agent and offers Retry credential access on that Agent, without repeating creation.
 
 ### 2. OCC admits one job
 
@@ -74,7 +74,7 @@ The Compute Driver prepares runtime credentials through the existing credential 
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-The job admits one first revision and records its ID. Provisioning reports success at this handoff, and Console opens the existing deployment view for the returned Agent and revision. Ordinary revision reconciliation owns startup, activation and runtime failure. Later deployments use the regular Deploy API.
+The job admits one first revision and records its ID. Provisioning reports success at this handoff. Console then follows deployment status until activation and opens Workspace files for the returned Agent and revision. Ordinary revision reconciliation owns startup, activation and runtime failure. Later deployments use the regular Deploy API.
 
 ### 5. Failures preserve useful outputs
 
@@ -105,6 +105,8 @@ While initialization owns an Agent, conflicting edits and manual deployment are 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 21:00: Integrate provider model discovery and saved API-key/PAT references with canonical Dedicated provisioning and deployment activation. (Codex/01a0cf27-71c6-7042-8357-74d1811a2ef8 - fb711b49)
 
 - 2026-09-23 11:20: Reused the channel setup Secret modal and preserved ordinary-create grant recovery when rebasing onto PR #323. (Codex/01a0cc7f-028b-7803-acf5-803c3d799d75 - f2dd1d3f)
 

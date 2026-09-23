@@ -26,6 +26,7 @@ export function createGitHubRegistryDriverFactory(
       repository: GitHubRepositoryRegistration;
       profile: GitHubProfile;
       identity: RepositoryCredentialGrantIdentity;
+      pushRefAllowlist?: readonly string[];
     }>
   >();
   const factories = new Map<string, GitHubDriverFactory>();
@@ -37,7 +38,14 @@ export function createGitHubRegistryDriverFactory(
           repositoryRef: repository.repositoryRef,
           profile,
         });
-        grants.set(identityKey(grant), { repository, profile, identity: grant });
+        grants.set(identityKey(grant), {
+          repository,
+          profile,
+          identity: grant,
+          ...(policy.pushRefAllowlist === undefined
+            ? {}
+            : { pushRefAllowlist: policy.pushRefAllowlist }),
+        });
       }
     }
   }
@@ -57,7 +65,13 @@ export function createGitHubRegistryDriverFactory(
         ...(options.trustedEndpoints === undefined
           ? {}
           : { trustedEndpoints: options.trustedEndpoints }),
-        binding: { profile: grant.profile, identity: grant.identity },
+        binding: {
+          profile: grant.profile,
+          identity: grant.identity,
+          ...(grant.pushRefAllowlist === undefined
+            ? {}
+            : { pushRefAllowlist: grant.pushRefAllowlist }),
+        },
         configuration: {
           kind: "github-app",
           providerInstanceId: registry.providerInstanceId,

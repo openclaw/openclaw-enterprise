@@ -1,9 +1,8 @@
 # Agents
 
-An Agent is an AI workload that you name, configure, and deploy inside a
-[Namespace](namespaces.md). Each Agent has its own identity, revision history,
-and, once deployed, gateway. It cannot use another Namespace's resources
-through its own permissions.
+An Agent is a named AI workload in a [Namespace](namespaces.md), with its own
+identity, revision history, and deployed gateway. Its permissions do not grant
+access to another Namespace's resources.
 
 Use a [Preset](presets.md) to copy reusable launch settings into a new Agent draft.
 
@@ -12,23 +11,11 @@ existing Agent, see [Compute](../guides/topics/agent-compute.md) for execution
 choices, [Agent Revisions](../guides/topics/agent-revisions.md) for changes, or
 [Troubleshoot](../guides/topics/agent-troubleshoot.md) if a deployment stalls.
 
-```text
-Namespace: support
-├── Agent: ticket-triage
-│   ├── Service principal: unique to ticket-triage
-│   └── Gateway: unique to deployed ticket-triage
-└── Agent: customer-help
-    ├── Service principal: unique to customer-help
-    └── Gateway: unique to deployed customer-help
-```
-
 Creating an Agent saves its identity and exact Namespace-owned Configuration
 reference with an `active` lifecycle status and a `stopped` desired runtime
 state. No workload or model starts, and no revision is created, until an
-authorized caller requests deployment. Deployment records an immutable revision
-and queues the work to start it. Stopping an Agent ends execution and routing
-but keeps its revision history and persistent state. A later deployment creates
-a new revision.
+authorized caller requests deployment. See [identity and deployment](#identity-and-deployment)
+for revision, execution, and stop behavior.
 
 ## Supported operations
 
@@ -108,8 +95,9 @@ resolve to a configured Provider. No default is inferred. The nullable reference
 is returned on both Agent and AgentRevision responses.
 
 The Provider reference is independent of native model names and Harness
-selection. An Agent using an OpenAI API key does not need a Provider. An
-issued account token requires the matching Provider and account when deployment
+selection. An Agent using an OpenAI or Anthropic API key, or a directly supplied
+service account token, does not need a Provider. An OCE-issued ChatGPT account
+token requires the matching Provider and account when deployment
 is requested and again before startup; see [Provider deployment checks](providers.md#agent-association-and-immutable-deployment).
 Creating an Agent does not create a provider account or issue credentials.
 
@@ -133,6 +121,12 @@ A managed source must belong to the Agent's exact Namespace:
 }
 ```
 
+See [supported providers and topologies](harness-execution.md#harness-authentication).
+
+For a directly supplied service account token stored in an OCC Secret, use the same
+`source` with `"method": "codex_pat"`. Console labels this source **Service Accounts**.
+It requires dedicated Codex; no managed account is created.
+
 For an already issued ChatGPT account credential, use
 `{ "method": "chatgpt_service_account", "serviceAccountId": "sa_123e4567-e89b-42d3-a456-426614174000" }`.
 This requires dedicated Codex and the account's matching `providerId`. Binding
@@ -145,19 +139,16 @@ Configuration authorization, topology checks, and process readiness remain
 required. No credential-source permission is needed because OCC owns no source.
 Kubernetes and Docker reject this method. See [SSH credentials](drivers/ssh-compute.md#credentials-and-supported-boundaries).
 
-API-key binding requires the actor's exact Secret `operate`. Deployment also
+API-key and service account token bindings require the actor's exact Secret `operate`. Deployment also
 requires the Agent service principal's exact Secret `operate`. ChatGPT binding
 requires the actor's exact account `read`, including the current account when
 replacing or clearing a binding. There is no implied account grant for the Agent
 principal. Each consumer of a shared source is authorized independently.
 
-A deployment freezes the binding and, for managed methods, resolved reference metadata.
-A `runtime` snapshot contains only its method. Operator changes to host credentials
-can affect an existing revision without redeployment; readiness does not prove model access. Dispatch
-reauthorizes the admitted actor and required Agent grants, and checks source
-ownership again. Public responses expose safe references only. Backend Secret
-names, provider workspace IDs, upstream identities, and credential values remain
-private. Changing a draft requires a later explicit deployment. See
+Deployment freezes binding references; dispatch rechecks source ownership and actor/Agent grants.
+Public responses omit credential values and private backend/account metadata. Draft
+changes require deployment. A `runtime` snapshot records only its method: host
+credential changes can affect existing revisions, and readiness does not prove model access. See
 [credential delivery](harness-execution.md#harness-authentication) and
 [Secret consumption grants](drivers/kubernetes-secret.md#bind-a-secret-to-gateway-environment).
 
@@ -277,9 +268,8 @@ An Agent belongs to the Namespace in its creation URL. The controller assigns
 that ownership; request bodies cannot select a different Namespace or
 Installation.
 
-Names are unique within one Namespace. Two different Namespaces can each own an
-Agent with the same name, but neither can read or operate the other's Agent
-without its own scoped permissions.
+Names are unique within each Namespace. Cross-Namespace access requires
+separate scoped permissions.
 
 You can create an Agent while its Namespace is still `provisioning`. A failed
 or deleting Namespace rejects new Agents.
@@ -349,9 +339,7 @@ each deployed Agent still owns its own gateway and stable service principal.
 ## Current limitations
 
 The public API has no revision mutation/deletion or explicit rollback endpoint.
-Editing a Configuration or Agent does not update a running workload; a new
-deployment is required. Stop retains Agent-owned persistent data and does not
-destroy credentials. Brokered model credentials and controller API
+Brokered model credentials and controller API
 authentication for Agent service principals remain unavailable. The optional
 [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires bundled
 Kubernetes Compute and dedicated Codex. Stock OpenShell cannot provide all the
@@ -370,8 +358,8 @@ planning a deployment. Other sandbox execution combinations are rejected.
 - `404`: An associated service account does not belong to the Agent's Namespace.
 - `409 RESOURCE_CONFLICT`: Harness authentication is missing, the selected
   account has no issued access token, or its Provider binding or topology is incompatible.
-- `400 INVALID_REQUEST`: A removed top-level `serviceAccountId` or runtime
-  `modelApiKey` selector is supplied. Use `harnessAuth` explicitly.
+- `400 INVALID_REQUEST`: A runtime `modelApiKey` selector is supplied. Use
+  `harnessAuth` explicitly.
 - `409 RESOURCE_CONFLICT`: Another Agent already uses that name in the same
   Namespace, the Namespace cannot accept new Agents, or a stopping Agent cannot
   accept the requested mutation.
@@ -408,6 +396,8 @@ planning a deployment. Other sandbox execution combinations are rejected.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23: Removed top-level `Agent.serviceAccountId` checks; use `harnessAuth`. (NOT_IN_SPEC)
 
 - 2026-09-01 08:47: Document nullable providerId selection, immutable revision association, and managed binding admission. (01a05d97-f2b0-71d0-bfc3-01ee7d6d58f9 - b079c4b755ef336a9c65bb4eb737e3aedbfdaa7d)
 

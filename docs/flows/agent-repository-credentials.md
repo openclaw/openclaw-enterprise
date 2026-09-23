@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
-updated: "2026-09-21"
-last_updated_session: "authoring-run/7ba8b1a5-628b-45f2-9ec9-25ce904b82d9"
+updated: "2026-09-23"
+last_updated_session: "authoring-run/fca0cd1e-2248-4139-aae8-d12423b5667e"
 ---
 
 # Agent repository credential flow
@@ -60,7 +60,10 @@ graph TD
   Refuse --> Close
   Compute --> Pod["<b>Private generation</b><br/>Init files, replace Pod"]
   Pod --> Command["<b>Git or gh command</b><br/>Pin target and session"]
-  Command --> Gateway["<b>HTTPS gateway</b><br/>Exact repository/profile"]
+  Command -->|Other requests| Gateway["<b>HTTPS gateway</b><br/>Exact repository/profile"]
+  Command -->|Managed push with policy| PushRefs["<b>Native pre-push</b><br/>Check destination refs"]
+  PushRefs -->|Allowed| Gateway
+  PushRefs -->|Denied| PushDenied["<b>Reject whole push</b><br/>No ref update"]
   Pod -->|Durable maintenance| Worker
   Pod -->|Stop or retire| Close
   Close -->|Unavailable or pending| Queue["<b>Durable cleanup</b><br/>Retry without new admission"]
@@ -75,7 +78,7 @@ graph TD
   classDef condition fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
   class API,Revision,Attempt,Queue state
   class Worker,Service,New,Retained,Compute,Pod,Command,Gateway,Close,Done,Delete,Finalize operation
-  class Recover,Repair,Refuse,Wait condition
+  class Recover,Repair,Refuse,Wait,PushRefs,PushDenied condition
 ```
 
 ## Execution Trace
@@ -87,13 +90,16 @@ uses `resolveRepositoryBindings` after existing authorization. The public input
 contains distinct opaque references and optional profiles, not provider tokens
 or caller-selected grant identities. The concrete
 `apps/controller/src/drivers/repo/github/driver.ts:GitHubRepoDriver.resolve`
-uses local registry policy and defaults an omitted profile to `git-write`.
+uses local registry policy and defaults an omitted profile to Contributor
+(`git-write`).
 It performs no control-socket or GitHub call.
 
 `apps/controller/src/drivers/repo/github/credentials/registry.ts:resolveGitHubRepositoryBinding`
 requires the exact Namespace/reference/profile combination. Its fingerprint
 binds provider/App/installation/repository identity, duration policy and the
-Namespace's complete profile policy. The same registry supports several
+Namespace's complete profile policy, exact permissions and normalized push-ref
+allowlist, if set.
+The same registry supports several
 repositories under one App installation, with one grant per selected binding.
 OCC stores normalized selections on the Agent; an update's omitted array
 preserves them and an empty array clears future selection.
@@ -210,11 +216,31 @@ identity, hooks and aliases. Native overrides and additional credential helpers
 remain possible; there is no whole-command preflight or egress confinement.
 See the [routing limits](../reference/repository-credentials.md#client-routing-and-limits).
 
+For a binding with `pushRefAllowlist`, the preparer selects image-owned hooks.
+`apps/controller/src/drivers/repo/github/credentials/client/hook-dispatch.ts:checkPush`
+matches the actual push destination and binding, then checks every destination
+ref from Git's pre-push input. Destination matching normalizes trailing slashes
+and checks a supplied username after selecting the binding, preserving duplicate
+grant ambiguity. A denied ref stops the whole push before ref
+updates, though discovery may already have contacted the service. The dispatcher
+then passes the original arguments and input to the repository's ordinary hook.
+Other hooks also resolve through Git's common directory. `commonDirectory` uses
+Git's supplied directory environment during initialization before `HEAD` exists;
+linked worktrees still resolve their shared directory through Git. Custom hook paths and
+API writes remain outside this [best-effort guardrail](../reference/repository-credentials/push-ref-guardrail.md).
+
 `apps/controller/src/drivers/repo/github/credentials/client/router.ts:routeRepositoryClient`
 routes only supported `gh` commands. It selects from explicit targets or effective
 Git remotes and pins the generation, reference and session for Git children.
 Its API environment selects private `gh` configuration while preserving normal HOME.
 Concurrent commands do not mutate shared repository-selection state.
+
+`apps/controller/src/drivers/repo/github/credentials/profiles.ts` owns the exact
+Reader, Contributor and Collaborator permission maps. The GitHub route classifier
+admits selected REST operations for that profile and token-bounded GraphQL for
+all three. Every GraphQL POST remains a possible write; Reader's token, not a
+query parser, enforces its read-only grant. See
+[access levels](../reference/repository-credentials/access-levels.md).
 
 The [service exchange flow](repository-credentials.md#4-reserve-acquire-and-dispatch)
 then enforces the bearer, immutable repository/profile, capacity and deadlines.
@@ -308,6 +334,12 @@ State/worker, real-client, installed/runtime and live-provider checks.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 08:16: Trace accompanying initialization-safe hook delegation and equivalent native HTTPS destination matching. (authoring-run/fca0cd1e-2248-4139-aae8-d12423b5667e - 45c4cf5584b631c9ae5018c56a579d4bafa79ca5)
+
+- 2026-09-23 06:18: Trace the accompanying access-level permissions and grant fingerprint changes. (authoring-run/0dffba8f-d16f-4f90-8fe2-893368f6926a - a2e94cf8ac2d94306f0701cee5457d1a9797e50a)
+
+- 2026-09-23 04:15: Trace the accompanying optional push-ref guardrail and ordinary hook delegation. (48c7cd3a-4677-44e0-b710-c39ada9d4f48 - cbf1851308a2db398820ae9e1000f57837703ace)
 
 - 2026-09-21 17:15: Distinguish pending disposal from irrecoverable session loss in the accompanying worker correction. (authoring-run/7ba8b1a5-628b-45f2-9ec9-25ce904b82d9 - 47995c58a5f9d267040e510110ca28ffa3d3a226)
 

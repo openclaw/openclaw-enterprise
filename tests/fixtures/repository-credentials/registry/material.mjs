@@ -33,6 +33,9 @@ export async function createRegistryMaterial(
           {
             namespaceId,
             profiles: entry.profiles ?? ["git-read", "git-write", "git-full"],
+            ...(entry.pushRefAllowlist === undefined
+              ? {}
+              : { pushRefAllowlist: entry.pushRefAllowlist }),
           },
         ],
       })),

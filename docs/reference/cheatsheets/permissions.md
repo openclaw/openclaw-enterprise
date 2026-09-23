@@ -51,6 +51,8 @@ needs its principal’s own grants; it does not inherit the issuer’s. See
 
 ## Additional checks
 
+- Model discovery for Agent creation requires `agent:create` in the exact
+  Namespace. The supplied API key or service account token is used transiently; no resource is created.
 - [Create](../api.md#post-namespacesnamespaceidagents), [update](../api.md#patch-namespacesnamespaceidagentsagentid), and
   [deploy an Agent](../api.md#post-namespacesnamespaceidagentsagentiddeploy) also
   require `configuration:read`, `service_account:read` for current or new

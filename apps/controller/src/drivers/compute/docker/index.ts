@@ -23,6 +23,7 @@ import {
   workspaceSetupVerifier,
 } from "../workspace-setup-runtime.ts";
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
+import { discoverHarnessModels } from "../model-discovery.ts";
 import { currentComputeAbortSignal, withComputeAbortSignal } from "../operation-context.ts";
 import {
   AGENT_READINESS_ENTRYPOINT,
@@ -333,6 +334,8 @@ function dockerLoggingAddress(value: string | undefined): string | undefined {
 }
 
 export class DockerComputeDriver implements ComputeDriver {
+  readonly discoverHarnessModels = discoverHarnessModels;
+
   readonly id = DRIVER_ID;
   readonly capability = "compute" as const;
   readonly supportsWorkspaceSetup = true as const;

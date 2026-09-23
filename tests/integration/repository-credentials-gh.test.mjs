@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
+import {
+  createNativeClientMaterial,
+  runPinnedClients,
+} from "../fixtures/repository-credentials/clients.mjs";
 import { appRoot, appExtension } from "../fixtures/repository-credentials/runtime.mjs";
 import { cleanEnvironment, run } from "../fixtures/repository-credentials/process.mjs";
 import {
@@ -12,7 +15,7 @@ import {
 import { exerciseGit, exerciseGh } from "../fixtures/repository-credentials/workflows.mjs";
 import { runInFixtureContainer } from "../fixtures/repository-credentials/container.mjs";
 
-test("pinned gh uses canonical GitHub identity for REST, pagination and native PR creation", async (t) => {
+test("pinned gh uses canonical GitHub identity for repository, issue and pull-request commands", async (t) => {
   if (await runInFixtureContainer(t, "tests/integration/repository-credentials-gh.test.mjs")) {
     return;
   }
@@ -126,6 +129,84 @@ test("pinned gh uses canonical GitHub identity for REST, pagination and native P
   assert.ok(
     [...fixture.github.pulls.values()].some((pull) => pull.title === "Routed native child"),
   );
+  const routedGh = async (args) => {
+    const result = await run(process.execPath, [router, "gh", ...args], {
+      cwd: checkout,
+      env: cleanEnvironment({ HOME: client.directory, OCE_REPOSITORY_REF: "fixture" }),
+      allowFailure: true,
+    });
+    assert.equal(result.code, 0, `gh ${args.slice(0, 2).join(" ")}: ${result.stderr}`);
+    return result;
+  };
+  const pull = [...fixture.github.pulls.values()].find(
+    (value) => value.title === "Routed native child",
+  );
+  // Exercise actual pinned gh commands, including their GraphQL requests and
+  // raw REST response media, through the same router delivered to Agents.
+  const repository = JSON.parse(
+    (await routedGh(["repo", "view", "FiXtUrE/RePoSiToRy", "--json", "nameWithOwner"])).stdout,
+  );
+  assert.equal(repository.nameWithOwner, "fixture/repository");
+  const overview = await routedGh(["repo", "view"]);
+  assert.match(overview.stdout, /fixture\/repository/);
+  assert.match(overview.stdout, /Fixture README/);
+  for (const [kind, resource] of [
+    ["issue", fixture.github.issues.get(issue.number)],
+    ["pr", pull],
+  ]) {
+    const listed = JSON.parse(
+      (await routedGh([kind, "list", "--state", "all", "--limit", "101", "--json", "number,title"]))
+        .stdout,
+    );
+    assert.ok(listed.some(({ number }) => number === resource.number));
+    const viewed = JSON.parse(
+      (await routedGh([kind, "view", String(resource.number), "--json", "number,title"])).stdout,
+    );
+    assert.equal(viewed.number, resource.number);
+    assert.equal(viewed.title, resource.title);
+    assert.match((await routedGh([kind, "view", String(resource.number)])).stdout, /title:/);
+    const body = `Native ${kind} comment`;
+    await routedGh([kind, "comment", String(resource.number), "--body", body]);
+    assert.ok([...fixture.github.comments.values()].some((comment) => comment.body === body));
+    assert.match(
+      (await routedGh([kind, "view", String(resource.number), "--comments"])).stdout,
+      new RegExp(body),
+    );
+  }
+  const created = await routedGh([
+    "issue",
+    "create",
+    "--title",
+    "Native issue",
+    "--body",
+    "Created by pinned gh",
+  ]);
+  assert.match(created.stdout, /https:\/\/github\.com\/fixture\/repository\/issues\/\d+/);
+  assert.ok([...fixture.github.issues.values()].some((value) => value.title === "Native issue"));
+  const checks = JSON.parse(
+    (await routedGh(["pr", "checks", String(pull.number), "--json", "name,state"])).stdout,
+  );
+  assert.ok(checks.some(({ name, state }) => name === "fixture-check" && state === "SUCCESS"));
+  assert.match(
+    (await routedGh(["pr", "checks", String(pull.number), "--required"])).stdout,
+    /fixture-check/,
+  );
+  for (const flags of [[], ["--patch"], ["--name-only"]]) {
+    const diff = await routedGh(["pr", "diff", String(pull.number), ...flags]);
+    assert.match(diff.stdout, /README\.md/);
+  }
+  assert.ok(
+    fixture.github.trace.some(
+      ({ target, accept }) =>
+        target === `/repos/fixture/repository/pulls/${pull.number}` && /diff/.test(accept ?? ""),
+    ),
+  );
+  assert.ok(
+    fixture.github.trace.some(
+      ({ target, accept }) =>
+        target === `/repos/fixture/repository/pulls/${pull.number}` && /patch/.test(accept ?? ""),
+    ),
+  );
   const pinned = JSON.stringify([
     material.manifest.generation,
     "fixture",
@@ -158,6 +239,88 @@ test("pinned gh uses canonical GitHub identity for REST, pagination and native P
 
 // The host case runs this entire file in the container, including this fault case.
 if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD === "1") {
+  test("native gh reads and writes follow each selected access level", async (t) => {
+    for (const profile of ["git-read", "git-write", "git-full"]) {
+      await t.test(profile, async (t) => {
+        const fixture = await startCredentialServiceFixture(t, { profile });
+        const client = await runPinnedClients(t, fixture);
+        // These provider-owned records predate the selected Agent session.
+        // The real client must read them before attempting its own mutations.
+        const issue = {
+          id: 50,
+          node_id: "I_50",
+          number: 50,
+          title: "Existing issue",
+          body: "",
+          state: "open",
+          html_url: "https://github.com/fixture/repository/issues/50",
+        };
+        const pull = {
+          id: 51,
+          node_id: "PR_51",
+          number: 51,
+          title: "Existing pull",
+          body: "",
+          state: "open",
+          html_url: "https://github.com/fixture/repository/pull/51",
+          head: { ref: "existing-branch" },
+          base: { ref: "main" },
+        };
+        fixture.github.issues.set(issue.number, issue);
+        fixture.github.pulls.set(pull.number, pull);
+        for (const [kind, resource] of [
+          ["issue", issue],
+          ["pr", pull],
+        ]) {
+          const read = JSON.parse(
+            (await client.gh([kind, "view", String(resource.number), "--json", "number,title"]))
+              .stdout,
+          );
+          assert.equal(read.title, resource.title);
+          const commented = await client.gh(
+            [kind, "comment", String(resource.number), "--body", `${profile} ${kind} comment`],
+            { allowFailure: true },
+          );
+          const writable = profile === "git-full" || (kind === "pr" && profile === "git-write");
+          assert.equal(
+            commented.code === 0,
+            writable,
+            `${profile} ${kind} comment: ${commented.stderr}`,
+          );
+          if (!writable) {
+            assert.match(commented.stderr, /Resource not accessible by integration/);
+          }
+          assert.equal(
+            [...fixture.github.comments.values()].some(
+              ({ body }) => body === `${profile} ${kind} comment`,
+            ),
+            writable,
+          );
+        }
+        const created = await client.gh(
+          ["issue", "create", "--title", "New issue", "--body", "Native creation"],
+          { allowFailure: true },
+        );
+        assert.equal(created.code === 0, profile === "git-full", created.stderr);
+        if (profile !== "git-full") {
+          assert.match(created.stderr, /Resource not accessible by integration/);
+        }
+        assert.equal(
+          [...fixture.github.issues.values()].some(({ title }) => title === "New issue"),
+          profile === "git-full",
+        );
+        const checked = await client.gh(["pr", "checks", "51", "--json", "name,state"], {
+          allowFailure: true,
+        });
+        assert.equal(checked.code, 0, checked.stderr);
+        const checks = JSON.parse(checked.stdout);
+        assert.ok(checks.some(({ name }) => name === "fixture-check"));
+        assert.match((await client.gh(["pr", "diff", "51"])).stdout, /README\.md/);
+        assert.equal(fixture.github.errors.length, 0);
+      });
+    }
+  });
+
   test("uncertain API POST, PATCH and DELETE requests are sent once", async (t) => {
     const fixture = await startCredentialServiceFixture(t);
     const prefix = "/repos/fixture/repository";

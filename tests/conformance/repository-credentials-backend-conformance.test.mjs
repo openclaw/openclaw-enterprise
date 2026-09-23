@@ -135,7 +135,7 @@ test("second backend uses the production HTTPS sender and distinct native authen
     clock,
     accepted: upstream.accepted,
   });
-  const { service } = await startServiceListeners(resources, {
+  const { service, listeners } = await startServiceListeners(resources, {
     config,
     tls: upstream.tls,
     factory,
@@ -143,7 +143,7 @@ test("second backend uses the production HTTPS sender and distinct native authen
     upstreamOrigins: [upstream.origin],
   });
   const opened = service.open({ durationSeconds: 86400, profile: "git-write" });
-  const fixture = { config, opened, tls: upstream.tls };
+  const fixture = { config, opened, listeners, tls: upstream.tls };
   const headers = {
     authorization: `Bearer ${opened.bearer}`,
     cookie: "repository-credentials-probe=nonsecret",
@@ -191,7 +191,7 @@ test("drain-before rotation waits for a streamed upstream write and preserves th
     operationMs: 60000,
     controls: { observe: (event) => observations.push(event) },
   });
-  const { service } = await startServiceListeners(resources, {
+  const { service, listeners } = await startServiceListeners(resources, {
     config,
     tls: upstream.tls,
     factory,
@@ -200,7 +200,7 @@ test("drain-before rotation waits for a streamed upstream write and preserves th
   });
   resources.after(release);
   const opened = service.open({ durationSeconds: 86400, profile: "git-write" });
-  const fixture = { config, opened, tls: upstream.tls };
+  const fixture = { config, opened, listeners, tls: upstream.tls };
   const body = Buffer.concat([Buffer.alloc(256, "a"), Buffer.alloc(256, "b")]);
   let outgoing;
   let completed = false;

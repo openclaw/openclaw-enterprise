@@ -40,7 +40,7 @@ function resources() {
     configurationId,
     providerId: null,
     harnessAuth: null,
-    executionMode: "embedded",
+    executionMode: "dedicated",
     servicePrincipalId: `service-agent-${randomUUID()}`,
     createdAt,
   };
@@ -149,17 +149,16 @@ function revisionFor(agent, configuration, storedSecret, revisionNumber = 1) {
     configurationGeneration: configuration.generation,
     providerId: null,
     harnessAuth: {
-      method: "api_key",
+      method: "codex_pat",
       source: { kind: "secret", namespaceId: agent.namespaceId, id: storedSecret.id },
       secretDriverId: storedSecret.driverId,
     },
-    configuration: { models: { providers: { openai: {} } } },
-    harness: { id: "openclaw", version: "1.0.0", mode: agent.executionMode },
+    configuration: { models: { providers: { codex: {} } } },
+    harness: { id: "codex", version: "1.0.0", mode: agent.executionMode },
     compute: { id: "compute-test", implementation: "deterministic-test" },
     servicePrincipalId: agent.servicePrincipalId,
     createdAt: new Date().toISOString(),
     secretDriverId: "kubernetes-secret",
-    secretBindings: bindingFor(storedSecret),
   };
 }
 
@@ -306,6 +305,7 @@ async function exerciseRepository(store) {
     );
   });
 
+  // Service account token references must retain sources without ordinary environment bindings.
   const revisionSecret = secret(namespace.id);
   const activeSecret = secret(namespace.id);
   let activeRevisionId;
@@ -313,12 +313,19 @@ async function exerciseRepository(store) {
     await state.secrets.createSecret(revisionSecret);
     await state.secrets.createSecret(activeSecret);
     await state.agents.updateConfiguration(namespace.id, agent.id, configuration.id, undefined, {
-      method: "api_key",
+      method: "codex_pat",
       source: bindingValue(revisionSecret).source,
     });
-    const revision = await state.revisions.createRevision(
-      revisionFor(agent, { ...configuration, generation: 3 }, revisionSecret, 1),
+    const snapshot = revisionFor(agent, { ...configuration, generation: 3 }, revisionSecret, 1);
+    await assert.rejects(
+      state.revisions.createRevision({
+        ...snapshot,
+        harnessAuth: { ...snapshot.harnessAuth, method: "api_key" },
+      }),
+      { name: "ScopeViolationError" },
     );
+    const revision = await state.revisions.createRevision(snapshot);
+    assert.equal(revision.harnessAuth.method, "codex_pat");
     await state.agents.updateConfiguration(
       namespace.id,
       agent.id,
@@ -337,7 +344,7 @@ async function exerciseRepository(store) {
     assert.equal(await state.secrets.hasReferences(namespace.id, revisionSecret.id), true);
 
     await state.agents.updateConfiguration(namespace.id, agent.id, configuration.id, undefined, {
-      method: "api_key",
+      method: "codex_pat",
       source: bindingValue(activeSecret).source,
     });
     const activeRevision = await state.revisions.createRevision(
@@ -360,7 +367,7 @@ async function exerciseRepository(store) {
 
   await store.transact(async (state) => {
     await state.agents.updateConfiguration(namespace.id, agent.id, configuration.id, undefined, {
-      method: "api_key",
+      method: "codex_pat",
       source: bindingValue(secondSharedSecret).source,
     });
     const replacementRevision = await state.revisions.createRevision(
@@ -402,6 +409,29 @@ test(
     const store = new PostgresPlatformState(pool);
 
     const { namespace, agent, configuration, revisionSecret } = await exerciseRepository(store);
+    const storedAuth = await pool.query(
+      "SELECT harness_auth, harness_auth_secret_id FROM occ.agents WHERE namespace_id = $1 AND id = $2",
+      [namespace.id, agent.id],
+    );
+    assert.equal(storedAuth.rows[0].harness_auth.method, "codex_pat");
+    assert.equal(
+      storedAuth.rows[0].harness_auth_secret_id,
+      storedAuth.rows[0].harness_auth.source.id,
+    );
+    await assert.rejects(
+      pool.query(
+        "UPDATE occ.agents SET harness_auth = $3::jsonb WHERE namespace_id = $1 AND id = $2",
+        [
+          namespace.id,
+          agent.id,
+          JSON.stringify({
+            method: "codex_pat",
+            source: { kind: "secret", namespaceId: namespace.id, id: identifier("sec") },
+          }),
+        ],
+      ),
+      { code: "23503" },
+    );
     const sqlSecret = secret(namespace.id, `sql-key-${randomUUID()}`);
 
     await store.transact((state) => state.secrets.createSecret(sqlSecret));
@@ -517,14 +547,12 @@ test(
            completed_at = clock_timestamp(),
            reason_code = 'REVISION_ACTIVATED',
            updated_at = clock_timestamp()
-       FROM occ.agent_revisions AS revision,
-            jsonb_each(COALESCE(revision.admitted_spec->'secret_bindings', '{}'::jsonb))
-              AS binding(env, value)
+       FROM occ.agent_revisions AS revision
        WHERE work.namespace_id = $1
          AND work.revision_id = revision.id
          AND revision.namespace_id = $1
-         AND binding.value #>> '{source,namespaceId}' = $1
-         AND binding.value #>> '{source,id}' = $2`,
+         AND revision.admitted_spec #>> '{harness_auth,source,namespaceId}' = $1
+         AND revision.admitted_spec #>> '{harness_auth,source,id}' = $2`,
       [namespace.id, revisionSecret.id],
     );
     await store.transact(async (state) => {

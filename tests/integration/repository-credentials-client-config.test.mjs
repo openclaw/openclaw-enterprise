@@ -17,6 +17,7 @@ import test from "node:test";
 import { createServer } from "node:https";
 import { createServer as createHttpServer } from "node:http";
 import { once } from "node:events";
+import { connect } from "node:net";
 import {
   writeClientConfiguration,
   encodeRepositoryCredentialSessionFiles,
@@ -27,8 +28,10 @@ import {
 } from "../../apps/controller/src/drivers/repo/github/credentials/client/native-git.ts";
 import { readRuntimeRepositoryManifest } from "../../apps/controller/src/drivers/repo/github/credentials/client/manifest.ts";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
+import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.mjs";
 import {
   cleanEnvironment,
+  listen,
   run,
   temporaryDirectory,
 } from "../fixtures/repository-credentials/process.mjs";
@@ -61,6 +64,20 @@ const gitEnvironment = (root, extra = {}) => {
 const git = (root, args, input, extra) =>
   run("/usr/bin/git", args, { env: gitEnvironment(root, extra), input, allowFailure: true });
 
+test("push-ref policies use the existing complete client metadata size limit", () => {
+  const encode = (rules) =>
+    encodeRepositoryCredentialSessionFiles({
+      ...opened,
+      client: { ...opened.client, pushRefAllowlist: rules },
+    });
+  const rules = Array.from(
+    { length: 40 },
+    (_, index) => `refs/heads/${"topic/".repeat(45)}${index}`,
+  );
+  assert.equal(JSON.parse(encode(rules)["client.json"]).client.pushRefAllowlist.length, 40);
+  assert.throws(() => encode([...rules, ...rules]), /client-configuration-too-large/);
+});
+
 // The actual credential protocol protects endpoint authority, independent of Git command spelling.
 test("generated native configuration selects exact endpoint authority through stock Git", async (t) => {
   const material = await createNativeClientMaterial(t, [{ opened, repositoryRef: "project" }]);
@@ -71,7 +88,12 @@ test("generated native configuration selects exact endpoint authority through st
       0o600,
     );
   }
-  for (const path of ["example/project", "EXAMPLE/PrOjEcT.git", "example/project.git"]) {
+  for (const path of [
+    "example/project",
+    "EXAMPLE/PrOjEcT.git",
+    "example/project.git",
+    "example/project.git/",
+  ]) {
     const result = await git(material.root, ["credential", "fill"], protocol(path));
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stdout.includes(`password=${opened.bearer}\n`), true);
@@ -235,7 +257,13 @@ test("same-origin trust and canonical host conflicts prevent native configuratio
   );
   const material = await createNativeClientMaterial(t, [{ opened, repositoryRef: "project" }]);
   // Shell quoting and Git config quoting are independent; run the emitted helper from a quoted path.
-  const quotedDirectory = join(material.root, "client 'quoted'");
+  const quotedRoot = join(material.root, "client 'quoted'");
+  const quotedDirectory = join(quotedRoot, "github/credentials/client");
+  await mkdir(join(quotedRoot, "credentials"), { recursive: true });
+  await cp(
+    resolve("apps/controller/src/drivers/repo/credentials/client-contracts.ts"),
+    join(quotedRoot, "credentials/client-contracts.ts"),
+  );
   await cp(resolve("apps/controller/src/drivers/repo/github/credentials/client"), quotedDirectory, {
     recursive: true,
   });
@@ -453,3 +481,182 @@ test("operator rejects unsafe or conflicting bound request files before admissio
   await symlink(requestPath, alias);
   refused(await invoke(alias));
 });
+
+test(
+  "native push policy protects every destination and preserves common-directory hooks",
+  { timeout: 60000 },
+  async (t) => {
+    const reservation = createHttpServer();
+    reservation.listen(0, "127.0.0.1");
+    await once(reservation, "listening");
+    const port = reservation.address().port;
+    await new Promise((done) => reservation.close(done));
+    const origin = "https://localhost";
+    const fixture = await startRegistryCredentialServiceFixture(t, {
+      gateway: { listen: "127.0.0.1:" + port, publicOrigin: origin },
+      repositories: [
+        {
+          repositoryRef: "guarded",
+          repositoryId: "73",
+          repository: "fixture/repository",
+          pushRefAllowlist: ["refs/heads/exact", "refs/heads/agent/*"],
+        },
+        {
+          repositoryRef: "denied",
+          repositoryId: "74",
+          repository: "fixture/other",
+          pushRefAllowlist: [],
+        },
+        { repositoryRef: "ordinary", repositoryId: "75", repository: "fixture/ordinary" },
+      ],
+    });
+    const material = await createNativeClientMaterial(
+      t,
+      fixture.repositories.map((entry) => ({
+        opened: entry.opened,
+        repositoryRef: entry.repositoryRef,
+        publicCa: fixture.tls.ca,
+      })),
+    );
+    const work = await temporaryDirectory(t);
+    // Preserve the service's canonical HTTPS origin while tunneling stock Git to
+    // its ephemeral loopback listener. TLS, authentication and Git RPC remain real.
+    const proxy = createHttpServer();
+    proxy.on("connect", (request, socket, head) => {
+      if (request.url !== "localhost:443") {
+        socket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
+        return;
+      }
+      const upstream = connect(port, "127.0.0.1", () => {
+        socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+        upstream.write(head);
+        socket.pipe(upstream).pipe(socket);
+      });
+      socket.on("error", () => upstream.destroy());
+      socket.on("close", () => upstream.destroy());
+      upstream.on("error", () => socket.destroy());
+    });
+    const proxyOrigin = (await listen(t, proxy)).replace("https:", "http:");
+    const env = gitEnvironment(material.root, { https_proxy: proxyOrigin });
+    const invoke = (args, options = {}) =>
+      run("/usr/bin/git", args, { env, cwd: work, ...options });
+    const guarded = fixture.byRef.get("guarded");
+    const snapshot = async () =>
+      (
+        await run("/usr/bin/git", ["for-each-ref", "--format=%(refname) %(objectname)"], {
+          cwd: guarded.git.bare,
+        })
+      ).stdout;
+    await invoke(["clone", "https://github.com/fixture/repository.git", "checkout"]);
+    const checkout = join(work, "checkout");
+    await invoke(["-C", checkout, "config", "user.name", "Native fixture"]);
+    await invoke(["-C", checkout, "config", "user.email", "fixture@example.test"]);
+    const marker = join(work, "pre-commit");
+    const pushedInput = join(work, "pre-push");
+    const pushedArguments = join(work, "pre-push-arguments");
+    await writeFile(
+      join(checkout, ".git/hooks/pre-commit"),
+      "#!/bin/sh\nprintf 'called\\n' >> '" + marker + "'\n",
+      { mode: 0o755 },
+    );
+    await writeFile(
+      join(checkout, ".git/hooks/pre-push"),
+      "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + pushedArguments + "'\ncat > '" + pushedInput + "'\n",
+      { mode: 0o755 },
+    );
+    await invoke(["-C", checkout, "commit", "--allow-empty", "-m", "Ordinary checkout commit"]);
+    assert.equal(await readFile(marker, "utf8"), "called\n");
+    const linked = join(work, "linked");
+    await invoke(["-C", checkout, "worktree", "add", "--detach", linked]);
+    await invoke(["-C", linked, "commit", "--allow-empty", "-m", "Linked worktree commit"]);
+    assert.equal(await readFile(marker, "utf8"), "called\ncalled\n");
+    const head = (await invoke(["-C", linked, "rev-parse", "HEAD"])).stdout.trim();
+    await invoke(["-C", linked, "push", "origin", "HEAD:refs/heads/exact"]);
+    assert.equal(await guarded.git.ref("refs/heads/exact"), head);
+    assert.equal(
+      await readFile(pushedArguments, "utf8"),
+      "origin\nhttps://localhost/fixture/repository.git\n",
+    );
+    assert.equal(
+      await readFile(pushedInput, "utf8"),
+      "HEAD " + head + " refs/heads/exact " + "0".repeat(40) + "\n",
+    );
+    await invoke(["-C", linked, "push", "origin", "+HEAD:refs/heads/agent/one"]);
+    assert.equal(await guarded.git.ref("refs/heads/agent/one"), head);
+    // Equivalent native HTTPS spellings retain the same allowlist decision.
+    for (const [index, destination] of [
+      "https://github.com/fixture/repository.git/",
+      "https://github.com/fixture/repository/",
+      "https://gateway-session@localhost/fixture/repository.git",
+      "https://gateway-session@localhost/fixture/repository.git/",
+    ].entries()) {
+      const ref = `refs/heads/agent/spelling-${index}`;
+      await invoke(["-C", linked, "push", destination, "HEAD:" + ref]);
+      assert.equal(await guarded.git.ref(ref), head);
+      const before = await snapshot();
+      const trace = guarded.git.trace.length;
+      const denied = await invoke(["-C", linked, "push", destination, "HEAD:refs/heads/main"], {
+        allowFailure: true,
+      });
+      assert.notEqual(denied.code, 0);
+      assert.match(denied.stderr, /repository-push-ref-not-allowed/);
+      assert.equal(await snapshot(), before);
+      assert.equal(
+        guarded.git.trace.slice(trace).some(({ path }) => path.endsWith("/git-receive-pack")),
+        false,
+      );
+    }
+    for (const refs of [
+      ["HEAD:refs/heads/agent/mixed", "HEAD:refs/heads/main"],
+      ["HEAD:refs/tags/v1"],
+      [":refs/heads/main"],
+      ["HEAD:refs/heads/agents/outside"],
+    ]) {
+      const before = await snapshot();
+      const trace = guarded.git.trace.length;
+      const result = await invoke(["-C", linked, "push", "origin", ...refs], {
+        allowFailure: true,
+      });
+      assert.notEqual(result.code, 0);
+      assert.match(result.stderr, /repository-push-ref-not-allowed/);
+      assert.equal(await snapshot(), before);
+      assert.equal(
+        guarded.git.trace.slice(trace).some(({ path }) => path.endsWith("/git-receive-pack")),
+        false,
+      );
+    }
+    await invoke(["-C", linked, "push", "origin", ":refs/heads/agent/one"]);
+    assert.equal(
+      (await invoke(["-C", linked, "ls-remote", "origin", "refs/heads/agent/one"])).stdout,
+      "",
+    );
+    const denied = await invoke(
+      ["-C", linked, "push", "https://github.com/fixture/other.git", "HEAD:refs/heads/agent/one"],
+      { allowFailure: true },
+    );
+    assert.notEqual(denied.code, 0);
+    assert.match(denied.stderr, /repository-push-ref-not-allowed/);
+    await invoke([
+      "-C",
+      linked,
+      "push",
+      "https://github.com/fixture/ordinary.git",
+      "HEAD:refs/heads/ordinary",
+    ]);
+    assert.equal(await fixture.byRef.get("ordinary").git.ref("refs/heads/ordinary"), head);
+    await writeFile(join(checkout, ".git/hooks/pre-push"), "#!/bin/sh\nexit 7\n", {
+      mode: 0o755,
+    });
+    const beforeVeto = await snapshot();
+    const vetoTrace = guarded.git.trace.length;
+    const vetoed = await invoke(["-C", linked, "push", "origin", "HEAD:refs/heads/agent/vetoed"], {
+      allowFailure: true,
+    });
+    assert.notEqual(vetoed.code, 0);
+    assert.equal(await snapshot(), beforeVeto);
+    assert.equal(
+      guarded.git.trace.slice(vetoTrace).some(({ path }) => path.endsWith("/git-receive-pack")),
+      false,
+    );
+  },
+);

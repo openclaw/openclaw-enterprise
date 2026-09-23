@@ -216,8 +216,8 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
   function renderShell(feature, state) {
     ({ session, namespaces, namespaceId } = state);
     const nav = element("nav", { className: "nav", "aria-label": "Main navigation" });
-    const icons = { agents: "◇", providers: "◈", namespaces: "▤" };
-    for (const name of ["agents", "providers", "namespaces"]) {
+    const icons = { agents: "◇", namespaces: "▤" };
+    for (const name of ["agents", "namespaces"]) {
       const link = element(
         "a",
         { href: pageUrl(name), ...(feature === name ? { "aria-current": "page" } : {}) },

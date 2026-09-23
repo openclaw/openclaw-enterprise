@@ -15,6 +15,7 @@ import {
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
 const uuidV4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const identifier = (prefix) => new RegExp(`^${prefix}_${uuidV4}$`);
@@ -171,10 +172,10 @@ async function request(app, method, pathname, options = {}) {
   if (body !== undefined) {
     assert.match(body.meta?.requestId ?? "", identifier("req"));
   }
-  return { status: response.status, body, data: body?.data };
+  return { status: response.status, headers: response.headers, body, data: body?.data };
 }
 
-async function bootstrapAgent(fixture, values = {}) {
+async function bootstrapNamespace(fixture) {
   const bootstrapped = await request(fixture.app, "POST", "/installation/bootstrap", {
     body: { name: "Secret API installation" },
   });
@@ -188,20 +189,361 @@ async function bootstrapAgent(fixture, values = {}) {
     .controller()
     .handleNamespaceLifecycle(fixture.principal.id, namespace.data.id, "ready");
 
+  return namespace.data;
+}
+
+async function bootstrapAgent(fixture, values = {}, executionMode = "embedded") {
+  const namespace = await bootstrapNamespace(fixture);
   const configuration = await request(
     fixture.app,
     "POST",
-    `/namespaces/${namespace.data.id}/configurations`,
+    `/namespaces/${namespace.id}/configurations`,
     { body: { kind: "agent", values } },
   );
   assert.equal(configuration.status, 201);
 
-  const agent = await request(fixture.app, "POST", `/namespaces/${namespace.data.id}/agents`, {
-    body: { name: "secret-api-agent", configurationId: configuration.data.id },
+  const agent = await request(fixture.app, "POST", `/namespaces/${namespace.id}/agents`, {
+    body: { name: "secret-api-agent", configurationId: configuration.data.id, executionMode },
   });
   assert.equal(agent.status, 201);
-  return { namespace: namespace.data, configuration: configuration.data, agent: agent.data };
+  return { namespace, configuration: configuration.data, agent: agent.data };
 }
+
+function createModelDiscoveryFixture() {
+  const native = createTestKubernetesComputeDriver("compute-model-discovery");
+  return createFixture({
+    computeDriver: {
+      ...createTestComputeDriver(),
+      discoverHarnessModels: native.discoverHarnessModels,
+    },
+  });
+}
+
+test("Agent model discovery uses native provider APIs without creating platform resources", async (t) => {
+  const fixture = await createModelDiscoveryFixture();
+  const namespace = await bootstrapNamespace(fixture);
+  const apiKey = `model-discovery-key-${randomUUID()}`;
+  const pages = [
+    { data: [{ id: "z-model" }, { id: "embedding-model" }, { id: "ft:model/custom" }] },
+    {
+      data: [{ id: "claude-new", display_name: "New Claude" }],
+      has_more: true,
+      last_id: "claude-new",
+    },
+    {
+      data: [{ id: "claude-previous", display_name: "Previous Claude" }],
+      has_more: false,
+      last_id: "claude-previous",
+    },
+    { data: [], has_more: false, last_id: null },
+    { chatgpt_account_id: "verified-account", chatgpt_account_is_fedramp: true },
+    {
+      models: [
+        {
+          slug: "codex-later",
+          display_name: "Later model",
+          visibility: "list",
+          priority: 2,
+          model_messages: { instructions: "omit runtime prompts" },
+        },
+        { slug: "codex-hidden", display_name: "Hidden model", visibility: "hide", priority: 0 },
+        { slug: "codex-dynamic", display_name: "Codex dynamic", visibility: "list", priority: 1 },
+      ],
+    },
+  ];
+  const transport = t.mock.method(globalThis, "fetch", async () => Response.json(pages.shift()));
+  const path = `/namespaces/${namespace.id}/agents/models`;
+  const openai = await request(fixture.app, "POST", path, {
+    body: { provider: "openai", authMethod: "api_key", apiKey },
+  });
+  assert.equal(openai.status, 200);
+  assert.equal(openai.headers.get("cache-control"), "no-store");
+  assert.deepEqual(openai.data, [
+    { id: "embedding-model", name: "embedding-model" },
+    { id: "ft:model/custom", name: "ft:model/custom" },
+    { id: "z-model", name: "z-model" },
+  ]);
+  const anthropic = await request(fixture.app, "POST", path, {
+    body: { provider: "anthropic", authMethod: "api_key", apiKey },
+  });
+  assert.equal(anthropic.status, 200);
+  assert.deepEqual(anthropic.data, [
+    { id: "claude-new", name: "New Claude" },
+    { id: "claude-previous", name: "Previous Claude" },
+  ]);
+  const empty = await request(fixture.app, "POST", path, {
+    body: { provider: "anthropic", authMethod: "api_key", apiKey },
+  });
+  assert.equal(empty.status, 200);
+  assert.deepEqual(empty.data, []);
+  const pat = await request(fixture.app, "POST", path, {
+    body: { provider: "openai", authMethod: "codex_pat", apiKey: "at-fixture-token" },
+  });
+  assert.equal(pat.status, 200);
+  assert.deepEqual(pat.data, [
+    { id: "codex-dynamic", name: "Codex dynamic" },
+    { id: "codex-later", name: "Later model" },
+  ]);
+  const calls = transport.mock.calls.map(({ arguments: args }) => args);
+  assert.deepEqual(
+    calls.map(([url]) => url),
+    [
+      "https://api.openai.com/v1/models",
+      "https://api.anthropic.com/v1/models?limit=1000",
+      "https://api.anthropic.com/v1/models?limit=1000&after_id=claude-new",
+      "https://api.anthropic.com/v1/models?limit=1000",
+      "https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami",
+      "https://chatgpt.com/backend-api/codex/models?client_version=0.156.0",
+    ],
+  );
+  assert.deepEqual(calls[0][1].headers, { Authorization: `Bearer ${apiKey}` });
+  for (const [, options] of calls.slice(1, 4)) {
+    assert.deepEqual(options.headers, { "x-api-key": apiKey, "anthropic-version": "2023-06-01" });
+  }
+  for (const [, options] of calls) {
+    assert.equal(options.redirect, "error");
+    assert.ok(options.signal instanceof AbortSignal);
+  }
+  assert.equal(calls[1][1].signal, calls[2][1].signal);
+  assert.deepEqual(calls[4][1].headers, { Authorization: "Bearer at-fixture-token" });
+  assert.deepEqual(calls[5][1].headers, {
+    Authorization: "Bearer at-fixture-token",
+    "ChatGPT-Account-ID": "verified-account",
+    "X-OpenAI-Fedramp": "true",
+  });
+  assert.equal(calls[4][1].signal, calls[5][1].signal);
+  assert.deepEqual(fixture.secretDriver.calls, []);
+  assert.deepEqual(
+    await fixture.controller().transact(async (unit) => ({
+      agents: await unit.namespaces.hasAgents(namespace.id),
+      configurations: await unit.namespaces.hasConfigurations(namespace.id),
+      secrets: await unit.namespaces.hasSecrets(namespace.id),
+    })),
+    { agents: false, configurations: false, secrets: false },
+  );
+  assert.equal(JSON.stringify([openai.body, anthropic.body, empty.body]).includes(apiKey), false);
+  assert.equal(JSON.stringify(fixture.auditSink.events).includes(apiKey), false);
+});
+
+test("OpenAI API-key model discovery excludes models whose shutdown date has arrived", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2030-04-15T23:59:59Z") });
+  const fixture = await createModelDiscoveryFixture();
+  const namespace = await bootstrapNamespace(fixture);
+  // OpenAI's optional shutdown_date is a calendar date, independent of model age or ID.
+  t.mock.method(globalThis, "fetch", async () =>
+    Response.json({
+      data: [
+        { id: "past-shutdown", shutdown_date: "2030-04-14" },
+        { id: "today-shutdown", shutdown_date: "2030-04-15" },
+        { id: "future-shutdown", shutdown_date: "2030-04-16" },
+        { id: "invalid-date", shutdown_date: "2030-02-30" },
+        { id: "invalid-type", shutdown_date: 1 },
+        { id: "null-shutdown", shutdown_date: null },
+        { id: "unspecified-shutdown", created: 1 },
+      ],
+    }),
+  );
+  const result = await request(fixture.app, "POST", `/namespaces/${namespace.id}/agents/models`, {
+    body: { provider: "openai", authMethod: "api_key", apiKey: "synthetic-discovery-key" },
+  });
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.data, [
+    { id: "future-shutdown", name: "future-shutdown" },
+    { id: "invalid-date", name: "invalid-date" },
+    { id: "invalid-type", name: "invalid-type" },
+    { id: "null-shutdown", name: "null-shutdown" },
+    { id: "unspecified-shutdown", name: "unspecified-shutdown" },
+  ]);
+});
+
+test("Service account token discovery rejects invalid identity without falling through to the API-key endpoint", async (t) => {
+  const fixture = await createModelDiscoveryFixture();
+  const namespace = await bootstrapNamespace(fixture);
+  for (const [response, expectedCode] of [
+    [
+      Response.json({ error: "private upstream error" }, { status: 401 }),
+      "MODEL_DISCOVERY_CREDENTIALS_REJECTED",
+    ],
+    [Response.json({ chatgpt_account_id: "unverified" }), "MODEL_DISCOVERY_INVALID_RESPONSE"],
+  ]) {
+    const transport = t.mock.method(globalThis, "fetch", async () => response);
+    const result = await request(fixture.app, "POST", `/namespaces/${namespace.id}/agents/models`, {
+      body: { provider: "openai", authMethod: "codex_pat", apiKey: "at-private-fixture" },
+    });
+    assert.equal(result.body.error.code, expectedCode);
+    assert.equal(transport.mock.callCount(), 1);
+    assert.equal(
+      transport.mock.calls[0].arguments[0],
+      "https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami",
+    );
+    assert.doesNotMatch(
+      JSON.stringify([result.body, fixture.auditSink.events]),
+      /at-private-fixture|private upstream error/,
+    );
+    transport.mock.restore();
+  }
+});
+
+test("Agent model discovery requires namespace Agent-create permission before provider I/O", async (t) => {
+  const fixture = await createModelDiscoveryFixture();
+  const namespace = await bootstrapNamespace(fixture);
+  const { principal: reader, app: readerApp } = await fixture.createPrincipal("model-reader");
+  fixture.state.roles.push({
+    id: "role-model-reader",
+    namespaceId: namespace.id,
+    permissions: [{ action: "read", resourceKind: "namespace" }],
+  });
+  fixture.state.bindings.push({
+    id: "binding-model-reader",
+    namespaceId: namespace.id,
+    subjectKind: "identity",
+    subjectId: reader.id,
+    roleId: "role-model-reader",
+  });
+  const transport = t.mock.method(globalThis, "fetch", async () => Response.json({ data: [] }));
+  const apiKey = `denied-discovery-key-${randomUUID()}`;
+  const denied = await request(readerApp, "POST", `/namespaces/${namespace.id}/agents/models`, {
+    body: { provider: "openai", authMethod: "api_key", apiKey },
+  });
+  assert.equal(denied.status, 403);
+  assert.equal(denied.body.error.code, "FORBIDDEN");
+  assert.equal(transport.mock.callCount(), 0);
+  const denial = fixture.auditSink.events.at(-1);
+  assert.equal(denial.kind, "authorization_denial");
+  assert.deepEqual(denial.authorization, {
+    principalId: reader.id,
+    action: "create",
+    resource: { kind: "agent", id: namespace.id, namespaceId: namespace.id },
+  });
+  assert.equal(JSON.stringify([denied.body, denial]).includes(apiKey), false);
+
+  fixture.state.roles[fixture.state.roles.length - 1].permissions.push({
+    action: "create",
+    resourceKind: "agent",
+  });
+  const granted = await request(readerApp, "POST", `/namespaces/${namespace.id}/agents/models`, {
+    body: { provider: "openai", authMethod: "api_key", apiKey },
+  });
+  assert.equal(granted.status, 200);
+  assert.deepEqual(granted.data, []);
+  assert.equal(transport.mock.callCount(), 1);
+});
+
+test("Agent model discovery reports unsupported Compute Drivers without contacting a provider", async (t) => {
+  const fixture = await createFixture();
+  const namespace = await bootstrapNamespace(fixture);
+  const transport = t.mock.method(globalThis, "fetch", async () => Response.json({ data: [] }));
+  const result = await request(fixture.app, "POST", `/namespaces/${namespace.id}/agents/models`, {
+    body: { provider: "openai", authMethod: "api_key", apiKey: `unsupported-key-${randomUUID()}` },
+  });
+  assert.equal(result.status, 501);
+  assert.equal(result.body.error.code, "NOT_IMPLEMENTED");
+  assert.equal(transport.mock.callCount(), 0);
+});
+
+test("Agent model discovery bounds and redacts provider failures", async (t) => {
+  const fixture = await createModelDiscoveryFixture();
+  const namespace = await bootstrapNamespace(fixture);
+  const apiKey = `private-discovery-key-${randomUUID()}`;
+  const upstreamDetail = `private-upstream-detail-${randomUUID()}`;
+  let oversizedCancelled = false;
+  const credentialsRejected = [
+    400,
+    "MODEL_DISCOVERY_CREDENTIALS_REJECTED",
+    "The provider rejected model discovery. Check the selected credential and its permission to list models, then retry or enter a model ID manually.",
+  ];
+  const rateLimited = [
+    429,
+    "MODEL_DISCOVERY_RATE_LIMITED",
+    "The provider rate-limited model discovery. Wait and retry, or enter a model ID manually.",
+  ];
+  const unavailable = [
+    503,
+    "MODEL_DISCOVERY_UNAVAILABLE",
+    "The provider model service is unavailable. Retry or enter a model ID manually.",
+  ];
+  const invalidResponse = [
+    503,
+    "MODEL_DISCOVERY_INVALID_RESPONSE",
+    "The provider returned an invalid model list. Retry or enter a model ID manually.",
+  ];
+  const scenarios = [
+    [
+      "rejected API key",
+      () => Response.json({ error: `${upstreamDetail} ${apiKey}` }, { status: 401 }),
+      credentialsRejected,
+    ],
+    [
+      "missing Models permission",
+      () => Response.json({ error: `${upstreamDetail} ${apiKey}` }, { status: 403 }),
+      credentialsRejected,
+    ],
+    [
+      "provider rate limit",
+      () => Response.json({ error: `${upstreamDetail} ${apiKey}` }, { status: 429 }),
+      rateLimited,
+    ],
+    [
+      "provider service error",
+      () => Response.json({ error: `${upstreamDetail} ${apiKey}` }, { status: 500 }),
+      unavailable,
+    ],
+    [
+      "transport error",
+      () => {
+        throw new Error(`${upstreamDetail} ${apiKey}`);
+      },
+      unavailable,
+    ],
+    [
+      "provider timeout",
+      () => {
+        throw new DOMException(`${upstreamDetail} ${apiKey}`, "TimeoutError");
+      },
+      unavailable,
+    ],
+    ["malformed JSON", () => new Response(`{${upstreamDetail} ${apiKey}`), invalidResponse],
+    [
+      "missing model list",
+      () => Response.json({ message: `${upstreamDetail} ${apiKey}` }),
+      invalidResponse,
+    ],
+    [
+      "oversized stream",
+      () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new Uint8Array(4 * 1024 * 1024 + 1));
+            },
+            cancel() {
+              oversizedCancelled = true;
+            },
+          }),
+        ),
+      invalidResponse,
+    ],
+  ];
+  for (const [name, respond, [status, code, message]] of scenarios) {
+    await t.test(name, async (subtest) => {
+      const transport = subtest.mock.method(globalThis, "fetch", respond);
+      const failed = await request(
+        fixture.app,
+        "POST",
+        `/namespaces/${namespace.id}/agents/models`,
+        { body: { provider: "openai", authMethod: "api_key", apiKey } },
+      );
+      assert.equal(failed.status, status);
+      assert.equal(failed.body.error.code, code);
+      assert.equal(failed.body.error.message, message);
+      assert.equal(transport.mock.callCount(), 1);
+      const exposed = JSON.stringify([failed.body, fixture.auditSink.events]);
+      assert.equal(exposed.includes(apiKey), false);
+      assert.equal(exposed.includes(upstreamDetail), false);
+    });
+  }
+  assert.equal(oversizedCancelled, true);
+});
 
 test("Secret API stores values through the selected driver and returns metadata only", async () => {
   const fixture = await createFixture();
@@ -456,101 +798,129 @@ test("Secret API denial and storage failures return value-free errors", async ()
 
 // These tests exercise API validation, Native IAM, OCC admission, and state ownership.
 // Passive Secret storage does not establish provider login or model execution proof.
-test("Harness Secret binding preserves draft semantics, exact delivery grants, and revision source retention", async () => {
-  const harnessAuthDriver = createTestKubernetesComputeDriver("compute-harness-auth");
-  const fixture = await createFixture({
-    recordOperations: true,
-    computeDriver: {
-      ...createTestComputeDriver(),
-      validateHarnessAuth: harnessAuthDriver.validateHarnessAuth.bind(harnessAuthDriver),
-    },
-  });
-  const { namespace, configuration, agent } = await bootstrapAgent(fixture, {
-    agents: {
-      defaults: {
-        model: "openai/gpt-5",
-        models: { "openai/gpt-5": { agentRuntime: { id: "openclaw" } } },
+for (const [model, method, executionMode] of [
+  ["openai/gpt-5", "api_key", "embedded"],
+  ["anthropic/claude-sonnet-4-5", "api_key", "embedded"],
+  ["codex/gpt-5", "codex_pat", "dedicated"],
+]) {
+  test(`${model} Harness Secret binding preserves draft semantics, exact delivery grants, and revision source retention`, async () => {
+    const harnessAuthDriver = createTestKubernetesComputeDriver("compute-harness-auth");
+    const fixture = await createFixture({
+      recordOperations: true,
+      computeDriver: {
+        ...createTestComputeDriver(),
+        validateHarnessAuth: harnessAuthDriver.validateHarnessAuth.bind(harnessAuthDriver),
       },
-    },
+    });
+    let { namespace, configuration, agent } = await bootstrapAgent(
+      fixture,
+      {
+        ...(method === "codex_pat" ? createHarnessConfiguration("codex", "gpt-5") : {}),
+        agents: {
+          defaults: {
+            model,
+            models: {
+              [model]: { agentRuntime: { id: method === "codex_pat" ? "codex" : "openclaw" } },
+            },
+          },
+        },
+      },
+      executionMode,
+    );
+    let path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+    assert.equal(agent.harnessAuth, null);
+    assert.equal((await request(fixture.app, "POST", `${path}/deploy`)).status, 409);
+    const value = `synthetic-harness-key-${randomUUID()}`;
+    const key = await request(fixture.app, "POST", `/namespaces/${namespace.id}/secrets`, {
+      body: { name: "Harness key", value },
+    });
+    assert.equal(key.status, 201, JSON.stringify(key.body));
+    const binding = { method, source: key.data.ref };
+    if (method === "codex_pat") {
+      const created = await request(fixture.app, "POST", `/namespaces/${namespace.id}/agents`, {
+        body: {
+          name: "direct-pat-agent",
+          configurationId: configuration.id,
+          executionMode,
+          harnessAuth: binding,
+        },
+      });
+      assert.equal(created.status, 201, JSON.stringify(created.body));
+      assert.deepEqual(created.data.harnessAuth, binding);
+      agent = created.data;
+      path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+    }
+
+    const bound = await request(fixture.app, "PATCH", path, {
+      body: { configurationId: configuration.id, harnessAuth: binding },
+    });
+    assert.equal(bound.status, 200);
+    assert.deepEqual(bound.data.harnessAuth, binding);
+    const unchanged = await request(fixture.app, "PATCH", path, {
+      body: { configurationId: configuration.id },
+    });
+    assert.deepEqual(unchanged.data.harnessAuth, binding);
+    assert.equal(
+      (await request(fixture.app, "DELETE", `/namespaces/${namespace.id}/secrets/${key.data.id}`))
+        .status,
+      409,
+    );
+    // Administrative rights on the actor do not give the Agent permission to receive a key.
+    const denied = await request(fixture.app, "POST", `${path}/deploy`);
+    assert.equal(denied.status, 403);
+    const { servicePrincipalId } = await fixture
+      .controller()
+      .getAgent(fixture.principal.id, namespace.id, agent.id);
+    fixture.state.identities.push({
+      kind: "service_principal",
+      id: servicePrincipalId,
+      namespaceId: namespace.id,
+    });
+    fixture.state.roles.push({
+      id: "harness-key-delivery",
+      namespaceId: namespace.id,
+      permissions: [{ action: "operate", resourceKind: "secret" }],
+    });
+    fixture.state.bindings.push({
+      id: "harness-key-delivery",
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: servicePrincipalId,
+      roleId: "harness-key-delivery",
+      resourceKind: "secret",
+      resourceId: key.data.id,
+    });
+    const admitted = await request(fixture.app, "POST", `${path}/deploy`);
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    assert.deepEqual(admitted.data.harnessAuth, binding);
+    const internal = await fixture
+      .controller()
+      .getRevision(fixture.principal.id, namespace.id, agent.id, admitted.data.id);
+    assert.deepEqual(internal.harnessAuth, { ...binding, secretDriverId: fixture.secretDriver.id });
+    assert.equal(JSON.stringify(admitted.body).includes("secretDriverId"), false);
+    assert.equal(JSON.stringify(admitted.body).includes(value), false);
+    const cleared = await request(fixture.app, "PATCH", path, {
+      body: { configurationId: configuration.id, harnessAuth: null },
+    });
+    assert.equal(cleared.status, 200);
+    assert.equal(cleared.data.harnessAuth, null);
+    assert.deepEqual(
+      (
+        await fixture
+          .controller()
+          .getRevision(fixture.principal.id, namespace.id, agent.id, admitted.data.id)
+      ).harnessAuth,
+      internal.harnessAuth,
+    );
+    // Pending revision ownership outlives the current draft binding.
+    assert.equal(
+      (await request(fixture.app, "DELETE", `/namespaces/${namespace.id}/secrets/${key.data.id}`))
+        .status,
+      409,
+    );
+    assert.equal(JSON.stringify(fixture.auditSink.events).includes(value), false);
   });
-  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
-  assert.equal(agent.harnessAuth, null);
-  assert.equal((await request(fixture.app, "POST", `${path}/deploy`)).status, 409);
-  const value = `synthetic-harness-key-${randomUUID()}`;
-  const key = await request(fixture.app, "POST", `/namespaces/${namespace.id}/secrets`, {
-    body: { name: "Harness key", value },
-  });
-  assert.equal(key.status, 201, JSON.stringify(key.body));
-  const binding = { method: "api_key", source: key.data.ref };
-  const bound = await request(fixture.app, "PATCH", path, {
-    body: { configurationId: configuration.id, harnessAuth: binding },
-  });
-  assert.equal(bound.status, 200);
-  assert.deepEqual(bound.data.harnessAuth, binding);
-  const unchanged = await request(fixture.app, "PATCH", path, {
-    body: { configurationId: configuration.id },
-  });
-  assert.deepEqual(unchanged.data.harnessAuth, binding);
-  assert.equal(
-    (await request(fixture.app, "DELETE", `/namespaces/${namespace.id}/secrets/${key.data.id}`))
-      .status,
-    409,
-  );
-  // Administrative rights on the actor do not give the Agent permission to receive a key.
-  const denied = await request(fixture.app, "POST", `${path}/deploy`);
-  assert.equal(denied.status, 403);
-  const { servicePrincipalId } = await fixture
-    .controller()
-    .getAgent(fixture.principal.id, namespace.id, agent.id);
-  fixture.state.identities.push({
-    kind: "service_principal",
-    id: servicePrincipalId,
-    namespaceId: namespace.id,
-  });
-  fixture.state.roles.push({
-    id: "harness-key-delivery",
-    namespaceId: namespace.id,
-    permissions: [{ action: "operate", resourceKind: "secret" }],
-  });
-  fixture.state.bindings.push({
-    id: "harness-key-delivery",
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: servicePrincipalId,
-    roleId: "harness-key-delivery",
-    resourceKind: "secret",
-    resourceId: key.data.id,
-  });
-  const admitted = await request(fixture.app, "POST", `${path}/deploy`);
-  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
-  assert.deepEqual(admitted.data.harnessAuth, binding);
-  const internal = await fixture
-    .controller()
-    .getRevision(fixture.principal.id, namespace.id, agent.id, admitted.data.id);
-  assert.deepEqual(internal.harnessAuth, { ...binding, secretDriverId: fixture.secretDriver.id });
-  assert.equal(JSON.stringify(admitted.body).includes("secretDriverId"), false);
-  assert.equal(JSON.stringify(admitted.body).includes(value), false);
-  const cleared = await request(fixture.app, "PATCH", path, {
-    body: { configurationId: configuration.id, harnessAuth: null },
-  });
-  assert.equal(cleared.status, 200);
-  assert.equal(cleared.data.harnessAuth, null);
-  assert.deepEqual(
-    (
-      await fixture
-        .controller()
-        .getRevision(fixture.principal.id, namespace.id, agent.id, admitted.data.id)
-    ).harnessAuth,
-    internal.harnessAuth,
-  );
-  // Pending revision ownership outlives the current draft binding.
-  assert.equal(
-    (await request(fixture.app, "DELETE", `/namespaces/${namespace.id}/secrets/${key.data.id}`))
-      .status,
-    409,
-  );
-  assert.equal(JSON.stringify(fixture.auditSink.events).includes(value), false);
-});
+}
 
 test("Changing Harness Secret bindings requires grants on both removed and replacement sources", async () => {
   const fixture = await createFixture();
@@ -680,18 +1050,20 @@ test("Harness source admission rejects foreign references and superseded model s
     },
   });
   assert.equal(malformed.status, 400);
-  assert.equal(
-    (
-      await request(fixture.app, "POST", `/namespaces/${namespace.id}/configurations`, {
-        body: {
-          kind: "agent",
-          values: {},
-          secretBindings: { OPENAI_API_KEY: { source: localKey.data.ref } },
-        },
-      })
-    ).status,
-    404,
-  );
+  for (const destination of ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]) {
+    assert.equal(
+      (
+        await request(fixture.app, "POST", `/namespaces/${namespace.id}/configurations`, {
+          body: {
+            kind: "agent",
+            values: {},
+            secretBindings: { [destination]: { source: localKey.data.ref } },
+          },
+        })
+      ).status,
+      404,
+    );
+  }
   assert.equal(
     (
       await request(fixture.app, "POST", `${path}/runtime-credentials`, {

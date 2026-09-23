@@ -37,6 +37,16 @@ const RuntimeFailureIdentifier = Type.String({
   pattern: "^[A-Za-z0-9._~:@-]{1,64}$",
 });
 
+export const AgentModelListResponse = Type.Object(
+  {
+    data: Type.Array(
+      Type.Object({ id: Type.String(), name: Type.String() }, { additionalProperties: false }),
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);
+
 const RuntimeEvidenceTimestamp = Type.String({
   format: "date-time",
   pattern:

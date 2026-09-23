@@ -21,6 +21,15 @@ The [shared contracts](../../../packages/contracts/src/index.ts) define the type
 Every `ComputeDriver` has an `id`,
 an `implementation`, and `capability: "compute"`.
 
+The optional `discoverHarnessModels({provider, apiKey})` method returns native
+model IDs and names for Agent setup without persisting credentials. OCC checks
+Agent creation authority before calling it. Bundled Kubernetes and Docker use
+the official OpenAI and Anthropic model-list APIs with bounded requests and no
+redirects. Discovery does not provision runtime credentials or establish model
+compatibility; unsupported or unavailable discovery permits manual model entry.
+The call runs in the OCC API process and requires its egress access to the
+selected provider; see [Agent setup](../console/create-and-deploy.md).
+
 ### Core lifecycle operations
 
 | Required method                       | What it does                                                                                                                                                                                                                                                        |

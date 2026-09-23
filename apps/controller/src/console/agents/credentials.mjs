@@ -1,5 +1,6 @@
 import { element, button } from "../dom.mjs";
 import { namespacePath } from "./list.mjs";
+import { ensureSecretOperateBinding } from "./secret-access.mjs";
 
 export const SLACK_SECRET_BINDINGS = [
   { key: "SLACK_APP_TOKEN", label: "Slack app token", secretName: "Slack app token" },
@@ -112,64 +113,6 @@ function credentialError(error, mutation = false) {
     text = "Credential metadata unavailable. Refresh status before trying again.";
   }
   return text + (error.requestId ? ` Request ID: ${error.requestId}` : "");
-}
-
-function roleHasSecretOperatePermission(role) {
-  return (
-    Array.isArray(role?.permissions) &&
-    role.permissions.length === 1 &&
-    role.permissions[0]?.action === "operate" &&
-    role.permissions[0]?.resourceKind === "secret"
-  );
-}
-
-async function secretOperateRole(context) {
-  const rolesPath = `${namespacePath(context.namespaceId)}/iam/roles`;
-  const roles = await context.request(rolesPath);
-  const existing = Array.isArray(roles) ? roles.find(roleHasSecretOperatePermission) : null;
-  if (existing) {
-    return existing;
-  }
-  return context.request(rolesPath, {
-    method: "POST",
-    body: {
-      name: "Agent Secret operate",
-      permissions: [{ action: "operate", resourceKind: "secret" }],
-    },
-  });
-}
-
-export async function ensureSecretOperateBinding(context, agent, secret) {
-  const principal = servicePrincipalId(agent);
-  if (principal === null) {
-    throw new Error("The API did not return this Agent's service principal.");
-  }
-  const role = await secretOperateRole(context);
-  const bindingsPath = `${namespacePath(context.namespaceId)}/iam/access-bindings`;
-  const bindings = await context.request(bindingsPath);
-  if (
-    Array.isArray(bindings) &&
-    bindings.some(
-      (binding) =>
-        binding?.subjectKind === "identity" &&
-        binding?.subjectId === principal &&
-        binding?.roleId === role.id &&
-        binding?.resourceKind === "secret" &&
-        binding?.resourceId === secret.id,
-    )
-  ) {
-    return;
-  }
-  await context.request(bindingsPath, {
-    method: "POST",
-    body: {
-      subjectKind: "identity",
-      subjectId: principal,
-      roleId: role.id,
-      resourceKind: "secret",
-      resourceId: secret.id,
-    },
-  });
 }
 
 async function storeChannelSecret(context, state, binding, value) {

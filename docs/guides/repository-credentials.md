@@ -2,8 +2,8 @@
 
 Create and deploy an Agent with approved repository references, then use ordinary
 `git` and `gh` commands. The runtime receives gateway session material; GitHub
-credentials remain in the service. Review the
-[profiles](../reference/repository-credentials.md#profiles) before selecting `git-full`.
+credentials remain in the service. Choose an
+[access level](../reference/repository-credentials/access-levels.md) for the task.
 
 For a team GitHub App, start with the [team runbook](repository-credentials/team-runbook.md)
 for App registration, copyable configuration, a first draft PR, and cleanup.
@@ -87,7 +87,7 @@ body = {
             "id": os.environ["HARNESS_SECRET_ID"],
         },
     },
-    "repositoryBindings": [{"repositoryRef": "application", "profile": "git-full"}],
+    "repositoryBindings": [{"repositoryRef": "application", "profile": "git-write"}],
 }
 with open("agent.json", "w") as output:
     json.dump(body, output)
@@ -97,7 +97,9 @@ AGENT_ID="$(printf '%s' "$AGENT_RESPONSE" | python3 -c 'import json,sys; print(j
 export AGENT_ID
 ```
 
-Select `git-read` for read-only work, or omit `profile` for default `git-write`.
+Select Reader (`git-read`) for read-only work, Contributor (`git-write`) for
+pushes and PRs, or Collaborator (`git-full`) for issue management too. Omitting
+`profile` selects Contributor.
 Add distinct approved references to the array for more repositories. API
 creation uses `POST /namespaces/$NAMESPACE_ID/agents`; the CLI returns the
 unwrapped Agent. Bindings confer no model access: before deploying, complete the
@@ -157,14 +159,19 @@ selects an admitted binding from the effective HTTPS host and repository path.
 `OCE_REPOSITORY_REF=application` selects among bindings for the same repository;
 it does not override the network destination. Concurrent commands can use
 different bindings without changing shared selection state. Local Git settings,
-identity, hooks and aliases keep their normal behavior. See
+identity, hooks and aliases keep their normal behavior. To prevent accidental
+branch pushes, configure the optional
+[push-ref guardrail](../reference/repository-credentials/push-ref-guardrail.md).
+See
 [native routing limits](../reference/repository-credentials.md#client-routing-and-limits)
 for configuration overrides and credential retention.
 
 The `gh` router selects from an explicit target or effective Git remotes. Ambiguous
 implicit targets require an explicit repository. `gh api` accepts supported relative
 paths such as `repos/example/project/pulls/1`; absolute API URLs are refused.
-API operations require `git-full`.
+Reader supports selected API reads. Contributor adds PR writes; Collaborator
+adds ordinary issue writes. Both writable levels can permit GraphQL merges,
+subject to GitHub rules.
 
 Inspect the actual remote commit and PR to confirm completion. If a push or
 mutation has an uncertain response, inspect remote state before repeating it.
@@ -228,8 +235,8 @@ outside the Agent's filesystem mounts.
 
 Keep duration within `maximumDurationSeconds` and select an `allowedProfiles`
 entry. Omitting `--profile` uses the configured default, `git-write` here.
-Use `git-read` when push is unnecessary. The example selects `git-full` for
-PR, issue and comment operations; both Git-only profiles deny API calls.
+Use Reader (`git-read`) for reads and Contributor (`git-write`) for pushes and
+PR work. The example selects Collaborator (`git-full`) for issue management too.
 
 The output directory must not exist, and its parent must be owned and mode 0700. The command writes private
 files atomically and prints the session identifier, deadline and directory,
@@ -273,7 +280,8 @@ Git keeps its normal configuration, hooks and worktrees. These native settings
 are overridable defaults, so operators remain responsible for inherited URL
 credentials and configuration overrides.
 
-API commands require a `git-full` session. The launcher checks that the
+Choose a session with the [access level](../reference/repository-credentials/access-levels.md)
+required by the operation. The launcher checks that the
 executable is exactly `gh` 2.100.0. Create a
 request body file in the working directory, then use relative API paths:
 

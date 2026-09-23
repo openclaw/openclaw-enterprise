@@ -7,6 +7,10 @@ import { gzipSync } from "node:zlib";
 import { appModule } from "../fixtures/repository-credentials/runtime.mjs";
 import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
 import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.mjs";
+import {
+  gatewayRequest,
+  startCredentialServiceFixture,
+} from "../fixtures/repository-credentials/service.mjs";
 
 const { inspectRequestHead } = await appModule("drivers/repo/credentials/transport/request");
 const { createUpstreamSender } = await appModule("drivers/repo/credentials/transport/upstream");
@@ -40,6 +44,164 @@ const exchange = (port, path, body = Buffer.alloc(0), headers = {}) =>
     outgoing.on("error", reject);
     outgoing.end(body);
   });
+
+test(
+  "gateway profiles preserve Reader reads, Contributor PR work and Collaborator issue work",
+  { timeout: 20000 },
+  async (t) => {
+    const fixture = await startCredentialServiceFixture(t, {
+      profile: "git-write",
+      gateway: { listen: "127.0.0.1:0" },
+    });
+    const reader = {
+      ...fixture,
+      opened: fixture.service.open({ durationSeconds: 3600, profile: "git-read" }),
+    };
+    const collaborator = {
+      ...fixture,
+      opened: fixture.service.open({ durationSeconds: 3600, profile: "git-full" }),
+    };
+    const path = "/repos/fixture/repository";
+
+    // Cold policy rejection must happen before token issuance or provider dispatch.
+    for (const [target, options] of [
+      [
+        `${path}/pulls`,
+        { method: "POST", body: { title: "refused", head: "topic", base: "main" } },
+      ],
+      [`${path}/issues`, { method: "POST", body: { title: "refused" } }],
+      [`${path}/issues/1/comments`, { method: "POST", body: { body: "refused" } }],
+      ["/repos/other/repository", {}],
+    ]) {
+      assert.equal((await gatewayRequest(reader, target, options)).status, 400);
+    }
+    assert.deepEqual(fixture.github.trace, []);
+    assert.deepEqual(fixture.github.issuesOfTokens, []);
+
+    const metadata = await gatewayRequest(reader, path);
+    assert.equal(metadata.status, 200);
+    assert.equal(JSON.parse(metadata.body).full_name, "fixture/repository");
+    const readme = await gatewayRequest(reader, `${path}/readme`, {
+      headers: { accept: "application/vnd.github.v3.raw+json" },
+    });
+    assert.equal(readme.status, 200);
+    assert.match(readme.body, /Fixture README/);
+    assert.equal(Number(readme.headers["content-length"]), Buffer.byteLength(readme.body));
+    assert.equal((await gatewayRequest(reader, `${path}/issues`)).status, 200);
+    assert.equal((await gatewayRequest(reader, `${path}/pulls`)).status, 200);
+    const graphRead = await gatewayRequest(reader, "/graphql", {
+      method: "POST",
+      body: { query: "query { viewer { login } }" },
+    });
+    assert.equal(graphRead.status, 200);
+    assert.equal(JSON.parse(graphRead.body).data.viewer.login, "fixture-bot");
+
+    const pull = await gatewayRequest(fixture, `${path}/pulls`, {
+      method: "POST",
+      body: { title: "Contributor change", head: "topic", base: "main" },
+    });
+    assert.equal(pull.status, 201);
+    const number = JSON.parse(pull.body).number;
+    assert.equal(fixture.github.pulls.get(number).title, "Contributor change");
+    assert.equal(
+      (
+        await gatewayRequest(fixture, `${path}/pulls/${number}`, {
+          method: "PATCH",
+          body: { title: "Updated change" },
+        })
+      ).status,
+      200,
+    );
+    const discussion = await gatewayRequest(fixture, `${path}/issues/${number}/comments`, {
+      method: "POST",
+      body: { body: "PR discussion" },
+    });
+    assert.equal(discussion.status, 201);
+    assert.equal(fixture.github.comments.size, 1);
+    for (const media of ["application/vnd.github.v3.diff", "application/vnd.github.v3.patch"]) {
+      const diff = await gatewayRequest(reader, `${path}/pulls/${number}`, {
+        headers: { accept: media },
+      });
+      assert.equal(diff.status, 200);
+      assert.match(diff.body, /diff --git a\/README.md b\/README.md/);
+      assert.equal(fixture.github.trace.at(-1).accept, media);
+    }
+
+    const created = await gatewayRequest(collaborator, `${path}/issues`, {
+      method: "POST",
+      body: { title: "Collaborator issue" },
+    });
+    assert.equal(created.status, 201);
+    const issue = JSON.parse(created.body).number;
+    const before = fixture.github.trace.length;
+    for (const [target, options] of [
+      [`${path}/issues`, { method: "POST", body: { title: "refused" } }],
+      [`${path}/issues/${issue}`, { method: "PATCH", body: { title: "refused" } }],
+    ]) {
+      assert.equal((await gatewayRequest(fixture, target, options)).status, 400);
+    }
+    assert.equal(fixture.github.trace.length, before);
+    assert.equal(fixture.github.issues.get(issue).title, "Collaborator issue");
+
+    // Shared conversation routes defer issue-versus-PR authority to the provider token.
+    // This controlled provider models its refusal; it is not live GitHub qualification.
+    const ordinaryComment = await gatewayRequest(fixture, `${path}/issues/${issue}/comments`, {
+      method: "POST",
+      body: { body: "refused ordinary issue discussion" },
+    });
+    assert.equal(ordinaryComment.status, 403);
+    assert.equal(fixture.github.comments.size, 1);
+    assert.equal(
+      (
+        await gatewayRequest(collaborator, `${path}/issues/${issue}/comments`, {
+          method: "POST",
+          body: { body: "Issue discussion" },
+        })
+      ).status,
+      201,
+    );
+
+    // Even Reader GraphQL is dispatched once as a possible write; no query inspection
+    // or replay is introduced when the provider response disappears.
+    fixture.github.disconnectAfterMutation("POST", "/graphql");
+    const graphBefore = fixture.github.trace.length;
+    const lost = await gatewayRequest(reader, "/graphql", {
+      method: "POST",
+      body: { query: "query { viewer { login } }" },
+    });
+    assert.equal(lost.status, 502);
+    assert.equal(fixture.github.trace.length, graphBefore + 1);
+    assert.equal(fixture.github.issuesOfTokens.length, 3);
+    assert.ok(
+      fixture.github.issuesOfTokens.every(
+        (token) => token.repositoryIds.length === 1 && token.repositoryIds[0] === 73,
+      ),
+    );
+    assert.deepEqual(fixture.github.errors, []);
+  },
+);
+
+test(
+  "gateway buffers raw README responses within the API response bound",
+  { timeout: 15000 },
+  async (t) => {
+    const fixture = await startCredentialServiceFixture(t, {
+      profile: "git-read",
+      gateway: { listen: "127.0.0.1:0" },
+      limits: { apiResponseBytes: 16 },
+    });
+    const response = await gatewayRequest(fixture, "/repos/fixture/repository/readme", {
+      headers: { accept: "application/vnd.github.v3.raw+json" },
+    });
+    assert.equal(response.status, 502);
+    assert.doesNotMatch(response.body, /Fixture README/);
+    assert.equal(
+      fixture.github.trace.filter((entry) => entry.target.endsWith("/readme")).length,
+      1,
+    );
+    assert.deepEqual(fixture.github.errors, []);
+  },
+);
 
 // These cases exercise actual HTTP parsers, TLS sockets and the production sender.
 // Session lease ownership and provider route decisions are covered by composed tests.

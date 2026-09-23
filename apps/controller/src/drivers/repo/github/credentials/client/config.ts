@@ -2,6 +2,7 @@ import { lstat, mkdir, mkdtemp, open, rename, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { RepositoryCredentialSessionFiles } from "@openclaw-enterprise/contracts";
 import type { RepositoryCredentialClientConfiguration } from "../../../credentials/client-contracts.ts";
+import { normalizePushRefAllowlist } from "../../../credentials/client-contracts.ts";
 import type { RepositoryCredentialSessionResult } from "../../../credentials/service-contracts.ts";
 import { assertPrivateDirectory, readPrivateFile } from "./private-files.ts";
 
@@ -13,6 +14,9 @@ export interface ClientFiles {
 }
 
 function validateClient(client: RepositoryCredentialClientConfiguration): void {
+  if (Object.hasOwn(client, "pushRefAllowlist")) {
+    normalizePushRefAllowlist(client.pushRefAllowlist);
+  }
   const origin = new URL(client.gatewayOrigin);
   const remote = new URL(client.gitRemote);
   if (
@@ -62,9 +66,14 @@ export function encodeRepositoryCredentialSessionFiles(
     client: opened.client,
     hasPublicCa: publicCa !== undefined,
   };
+  const clientJson = JSON.stringify(files) + "\n";
+  // Apply the existing reader limit to the complete document, not individual rules.
+  if (Buffer.byteLength(clientJson) > 16 * 1024) {
+    throw new Error("client-configuration-too-large");
+  }
   return {
     bearer: opened.bearer,
-    "client.json": JSON.stringify(files) + "\n",
+    "client.json": clientJson,
     gitconfig:
       "[credential]\n\thelper =\n\tuseHttpPath = true\n[http]\n\tfollowRedirects = false\n\tsslVerify = true\n",
     "gh/hosts.yml": `${JSON.stringify(opened.client.canonicalApiHost)}:\n  api_host: ${JSON.stringify(opened.client.apiHost)}\n  git_protocol: https\n  oauth_token: ${JSON.stringify(opened.bearer)}\n`,

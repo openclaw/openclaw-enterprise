@@ -123,7 +123,9 @@ function main() {
       }
       packageRoot = path.dirname(packageRoot);
     }
-    if (manifest?.version !== "2026.9.1") fail();
+    // The saved preview must match the installed templates, independently of the
+    // package release. Native setup below still must succeed before completion.
+    if (manifest === undefined) fail();
     const templates = names.map((name) => [name, renderTemplate(fs.readFileSync(
       path.join(packageRoot, "docs", "reference", "templates", name), "utf8"))]);
     const defaultsId = createHash("sha256").update(JSON.stringify(templates)).digest("hex");

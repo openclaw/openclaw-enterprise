@@ -79,6 +79,7 @@ import {
   AuthorizationDeniedError,
   DependencyUnavailableError,
   DriverSelectionError,
+  ModelDiscoveryError,
   NamespaceNotEmptyError,
   NamespaceNotReadyError,
   NotImplementedError,
@@ -139,6 +140,7 @@ export {
   AuthorizationDeniedError,
   DependencyUnavailableError,
   DriverSelectionError,
+  ModelDiscoveryError,
   NamespaceNotEmptyError,
   NamespaceNotReadyError,
   NotImplementedError,
@@ -2476,6 +2478,31 @@ export class OpenClawController {
     });
   }
 
+  async discoverAgentModels(
+    principalId: string,
+    namespaceId: string,
+    input: {
+      readonly provider: string;
+      readonly authMethod: "api_key" | "codex_pat";
+      readonly apiKey: string;
+    },
+  ) {
+    await this.authorize(principalId, "create", { kind: "agent", id: namespaceId, namespaceId });
+    await this.read((state) => this.exactNamespace(state, namespaceId));
+    const driver = this.selectedDriver("compute");
+    if (!driver.discoverHarnessModels) {
+      throw new NotImplementedError("Model discovery is unavailable. Enter a model ID manually.");
+    }
+    // Discovery performs no platform writes and must not hold a transaction over provider I/O.
+    try {
+      return await driver.discoverHarnessModels(input);
+    } catch (error) {
+      throw new ModelDiscoveryError(
+        error instanceof ModelDiscoveryError ? error.reason : "unavailable",
+      );
+    }
+  }
+
   async createAgent(principalId: string, input: CreateAgentInput): Promise<Readonly<Agent>> {
     if (!validName(input.name)) {
       throw new ScopeViolationError("The Agent name is invalid.");
@@ -2491,7 +2518,6 @@ export class OpenClawController {
     } catch {
       throw new ScopeViolationError("The initial workspace setup input is invalid.");
     }
-    this.rejectLegacyAgentAuth(input);
     const harnessAuth = this.harnessAuthBinding(input.harnessAuth ?? null);
     const executionMode = input.executionMode ?? "embedded";
     if (!validExecutionMode(executionMode)) {
@@ -2574,7 +2600,6 @@ export class OpenClawController {
     if (!isNonEmptyString(input.configurationId)) {
       throw new ScopeViolationError("The exact Agent Configuration identity is missing.");
     }
-    this.rejectLegacyAgentAuth(input);
     const requestedAuth =
       input.harnessAuth === undefined ? undefined : this.harnessAuthBinding(input.harnessAuth);
     if (input.executionMode !== undefined && !validExecutionMode(input.executionMode)) {
@@ -2613,7 +2638,6 @@ export class OpenClawController {
       }
       await this.guardAgentProvisioning(state, namespace.id, agent.id);
       await this.guardProvisioningConfiguration(state, namespace.id, input.configurationId);
-      this.rejectLegacyAgentAuth(agent);
       const previousAuth = this.harnessAuthBinding(agent.harnessAuth);
       await this.authorizeHarnessAuthSource(state, principalId, namespace.id, previousAuth);
       if (requestedAuth !== undefined) {
@@ -2695,7 +2719,6 @@ export class OpenClawController {
           "The selected Sandbox Driver supports only dedicated Harness execution.",
         );
       }
-      this.rejectLegacyAgentAuth(lockedAgent);
       const harnessAuth = await this.admitHarnessAuth(state, principalId, lockedAgent);
       await this.authorize(principalId, "read", {
         kind: "configuration",
@@ -3387,14 +3410,6 @@ export class OpenClawController {
     return Object.freeze([...secrets.values()]);
   }
 
-  private rejectLegacyAgentAuth(value: object): void {
-    if (Object.hasOwn(value, "serviceAccountId")) {
-      throw new ScopeViolationError(
-        "Agent.serviceAccountId is no longer supported; select harnessAuth explicitly.",
-      );
-    }
-  }
-
   private harnessAuthBinding(value: unknown): HarnessAuthBinding | null {
     try {
       return normalizeHarnessAuthBinding(value);
@@ -3413,7 +3428,7 @@ export class OpenClawController {
     if (binding === null || binding.method === "runtime") {
       return;
     }
-    if (binding.method === "api_key") {
+    if (binding.method === "api_key" || binding.method === "codex_pat") {
       if (binding.source.namespaceId !== namespaceId) {
         throw new ScopeViolationError("Harness authentication sources cannot cross Namespaces.");
       }
@@ -3512,9 +3527,12 @@ export class OpenClawController {
     if (record.agentId !== undefined && agent === undefined) {
       throw new ScopeViolationError("The provisioning Agent is unavailable.");
     }
-    const secretDriver = binding.method === "api_key" ? this.secretDriver() : undefined;
+    const secretDriver =
+      binding.method === "api_key" || binding.method === "codex_pat"
+        ? this.secretDriver()
+        : undefined;
     const auth: HarnessAuthSnapshot =
-      binding.method === "api_key"
+      binding.method === "api_key" || binding.method === "codex_pat"
         ? { ...binding, secretDriverId: secretDriver!.id }
         : agent === undefined
           ? await this.serviceAccountHarnessAuthSnapshot(state, namespaceId, providerId, binding)
@@ -4044,7 +4062,7 @@ export class OpenClawController {
     for (const binding of Object.values(input.secretBindings ?? {})) {
       ids.add(binding.source.id);
     }
-    if (input.harnessAuth?.method === "api_key") {
+    if (input.harnessAuth?.method === "api_key" || input.harnessAuth?.method === "codex_pat") {
       ids.add(input.harnessAuth.source.id);
     }
     const secrets: Secret[] = [];
@@ -4139,7 +4157,7 @@ export class OpenClawController {
     for (const binding of Object.values(bindings ?? {})) {
       await this.authorizeProvisioningSecretSource(state, principalId, namespaceId, binding.source);
     }
-    if (harnessAuth?.method === "api_key") {
+    if (harnessAuth?.method === "api_key" || harnessAuth?.method === "codex_pat") {
       await this.authorizeProvisioningSecretSource(
         state,
         principalId,
@@ -4221,7 +4239,7 @@ export class OpenClawController {
     if (binding.method === "runtime") {
       return immutableCopy(binding);
     }
-    if (binding.method === "api_key") {
+    if (binding.method === "api_key" || binding.method === "codex_pat") {
       await this.authorize(agent.servicePrincipalId, "operate", binding.source);
       const source = await state.secrets.lockSecret(agent.namespaceId, binding.source.id);
       if (source === undefined) {

@@ -23,12 +23,16 @@ test("real Git clones, fetches, switches and pushes using the cold gateway helpe
   assert.deepEqual(fixture.github.issuesOfTokens[0].permissions, {
     metadata: "read",
     contents: "write",
+    issues: "read",
+    pull_requests: "write",
+    checks: "read",
+    statuses: "read",
   });
 });
 
 // The host case runs every acceptance and fault case in the container.
 if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD === "1") {
-  test("git-read clones, fetches and checks out while denying pushes and API access", async (t) => {
+  test("git-read clones, fetches and checks out while denying pushes and REST writes", async (t) => {
     const fixture = await startCredentialServiceFixture(t, { profile: "git-read" });
     const gitPath = new URL(fixture.opened.client.gitRemote).pathname;
     const gitAuthorization = `Basic ${Buffer.from(
@@ -51,9 +55,7 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD === "1") {
           },
         },
       ],
-      ["/repos/fixture/repository", {}],
       ["/repos/fixture/repository/issues", { method: "POST", body: { title: "Denied issue" } }],
-      ["/graphql", { method: "POST", body: { query: "query { viewer { login } }" } }],
     ]) {
       assert.equal((await gatewayRequest(fixture, target, options)).status, 400);
       assert.equal(fixture.github.issuesOfTokens.length, 0);
@@ -81,7 +83,21 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD === "1") {
     assert.deepEqual(fixture.github.issuesOfTokens[0].permissions, {
       metadata: "read",
       contents: "read",
+      issues: "read",
+      pull_requests: "read",
+      checks: "read",
+      statuses: "read",
     });
+    assert.equal((await gatewayRequest(fixture, "/repos/fixture/repository")).status, 200);
+    assert.equal(
+      (
+        await gatewayRequest(fixture, "/graphql", {
+          method: "POST",
+          body: { query: "query { viewer { login } }" },
+        })
+      ).status,
+      200,
+    );
     const beforeGit = fixture.git.trace.length;
     const beforeApi = fixture.github.trace.length;
     const beforeAuthentication = fixture.github.authenticationAttempts.length;
@@ -137,6 +153,10 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD === "1") {
     assert.deepEqual(fixture.github.issuesOfTokens[0].permissions, {
       metadata: "read",
       contents: "write",
+      issues: "read",
+      pull_requests: "write",
+      checks: "read",
+      statuses: "read",
     });
   });
 

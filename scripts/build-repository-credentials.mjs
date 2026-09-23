@@ -1,4 +1,4 @@
-import { cp, lstat, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, lstat, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { isBuiltin } from "node:module";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +8,7 @@ const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const emittedRoot = await realpath(join(repositoryRoot, "apps/controller/dist"));
 const artifactRoot = join(repositoryRoot, ".build/repository-credentials");
 const clientRoot = join(emittedRoot, "drivers/repo/github/credentials/client");
+const clientContracts = join(emittedRoot, "drivers/repo/credentials/client-contracts.js");
 
 function contained(root, path) {
   const suffix = relative(root, path);
@@ -78,7 +79,7 @@ async function closure(name, entrypoints) {
     }
     if (
       !contained(emittedRoot, path) ||
-      (name === "client" && !contained(clientRoot, path)) ||
+      (name === "client" && !contained(clientRoot, path) && path !== clientContracts) ||
       !path.endsWith(".js") ||
       !(await lstat(path)).isFile() ||
       (await realpath(path)) !== path
@@ -114,7 +115,7 @@ const service = await closure("service", [
 ]);
 const client = await closure(
   "client",
-  ["launch", "operator", "git-helper", "native-git", "router"].map(
+  ["launch", "operator", "git-helper", "native-git", "router", "hook-dispatch"].map(
     (name) => `drivers/repo/github/credentials/client/${name}.js`,
   ),
 );
@@ -135,6 +136,30 @@ async function stage(name, files) {
     join(repositoryRoot, "deploy/runtime/repository-credentials/.dockerignore"),
     join(destination, ".dockerignore"),
   );
+  if (name === "client") {
+    const hooks = JSON.parse(
+      await readFile(
+        join(repositoryRoot, "deploy/runtime/repository-credentials/hooks.json"),
+        "utf8",
+      ),
+    );
+    if (
+      !Array.isArray(hooks) ||
+      hooks.some((hook) => typeof hook !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(hook))
+    ) {
+      throw new Error("Invalid native Git hook inventory");
+    }
+    const directory = join(destination, "dist/drivers/repo/github/credentials/client/hooks");
+    await mkdir(directory, { recursive: true });
+    for (const hook of hooks) {
+      await writeFile(
+        join(directory, hook),
+        '#!/bin/sh\nexec node "$(dirname "$0")/../hook-dispatch.js" ' + hook + ' "$@"\n',
+        { mode: 0o755 },
+      );
+      await chmod(join(directory, hook), 0o755);
+    }
+  }
 }
 
 await stage("service", service);

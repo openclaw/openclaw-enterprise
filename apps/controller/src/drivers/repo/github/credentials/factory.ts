@@ -1,6 +1,7 @@
 import type { RepositoryBackend } from "../../credentials/backend-contracts.ts";
 import { createGitHubDriver } from "./driver.ts";
 import { snapshotBinding } from "../../credentials/sessions.ts";
+import { normalizePushRefAllowlist } from "../../credentials/client-contracts.ts";
 import { validateGitHubConfiguration } from "./config.ts";
 import { createProviderTransport } from "./provider-transport.ts";
 import { permissionsForProfile } from "./profiles.ts";
@@ -23,6 +24,9 @@ export function createGitHubDriverFactory(options: GitHubFactoryOptions): GitHub
     Object.freeze({
       profile: options.binding.profile,
       identity: snapshotBinding(options.binding.identity),
+      ...(options.binding.pushRefAllowlist === undefined
+        ? {}
+        : { pushRefAllowlist: normalizePushRefAllowlist(options.binding.pushRefAllowlist) }),
     });
   if (selectedBinding) {
     permissionsForProfile(selectedBinding.profile);
@@ -49,7 +53,10 @@ export function createGitHubDriverFactory(options: GitHubFactoryOptions): GitHub
     });
   const unauthenticatedPolicy = policy("git-write");
   const authentication = createGatewayAuthentication({
-    isGitRoute: (head) => unauthenticatedPolicy.route(head) !== undefined,
+    isGitRoute: (head) => {
+      const route = unauthenticatedPolicy.route(head);
+      return route !== undefined && route.kind !== "api";
+    },
   });
   return Object.freeze<GitHubDriverFactory>({
     trustedUpstreamOrigins: new Set([apiOrigin, gitOrigin]),

@@ -349,7 +349,7 @@ test(
     });
     assert.equal(opened.status, 201);
     assert.equal(opened.body.session.state, "OPEN");
-    assert.equal(opened.body.session.binding.grantId, "1:git-write");
+    assert.match(opened.body.session.binding.grantId, /^sha256:[a-f0-9]{64}$/);
     assert.ok(opened.body.bearer.length >= 43);
     const id = opened.body.session.sessionId;
     const status = await control(config.gateway.controlSocket, "GET", `/v1/sessions/${id}`);
