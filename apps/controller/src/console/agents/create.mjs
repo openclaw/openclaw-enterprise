@@ -392,6 +392,9 @@ function renderAgentForm(context, rendered) {
           modelOptions = [];
         }
         nativeProvider.value = selectedProvider;
+        if (selectedProvider === "anthropic") {
+          mode.value = "embedded";
+        }
       }
       model.value = ref.slice(ref.indexOf("/") + 1);
       if (discoverModels) {

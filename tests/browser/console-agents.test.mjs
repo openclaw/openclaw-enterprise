@@ -2245,6 +2245,16 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   await native.fill(JSON.stringify(changedProvider));
   assert.equal(await page.getByLabel("Provider", { exact: true }).inputValue(), "openai");
   assert.equal(await presetKey.inputValue(), "");
+  const mode = page.getByLabel("Execution mode");
+  await mode.selectOption("dedicated");
+  await presetKey.fill("preset-dedicated-openai-key");
+  const anthropicConfiguration = JSON.parse(await native.inputValue());
+  anthropicConfiguration.agents.defaults.model = "anthropic/claude-account-model";
+  await native.fill(JSON.stringify(anthropicConfiguration));
+  assert.equal(await page.getByLabel("Provider", { exact: true }).inputValue(), "anthropic");
+  assert.equal(await mode.inputValue(), "embedded");
+  assert.equal(await mode.isDisabled(), true);
+  assert.equal(await presetKey.inputValue(), "");
   assert.equal(
     pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/models`).length,
     0,
