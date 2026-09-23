@@ -22,7 +22,7 @@ env:
 jobs:
   audit:
     name: Suite Audit
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -40,8 +40,7 @@ jobs:
 
   pr-safe:
     name: ${{ matrix.title }}
-    runs-on: ubuntu-24.04
-    needs: audit
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
@@ -96,7 +95,7 @@ jobs:
 
   ci-required:
     name: CI Required
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     needs:
       - audit
       - pr-safe

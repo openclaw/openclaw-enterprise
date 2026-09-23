@@ -25,6 +25,12 @@ are flagged for review and pages above 2,500 fail, except the approved single-pa
 and links must pass. Run `pnpm docs:check-length` for the word-count
 check alone.
 
+Suite Audit and the seven PR lanes start independently on ephemeral eight-core
+Ubuntu 24.04 Blacksmith runners. `CI Required` uses the same runner pool and
+still requires both the audit and every lane to pass, including result-artifact
+accounting. This avoids serial runner allocation before the test lanes without
+changing test selection or failure handling.
+
 The PR workflow runs seven lanes on ephemeral runners: checks/baseline/browser, PostgreSQL, image/packaging, Kubernetes fixture/Configuration, logging collector, `repository-credentials-container`, and `repository-credentials-platform`. The container lane builds separate emitted service/client images and a combined qualification image, then selects controlled provider and separate-container cases; it does not contact a live GitHub installation. The platform lane exercises ordinary Agent repository bindings through HTTP, PostgreSQL, Unix control and Kubernetes using a fixture Harness and controlled repositories; it does not use a model or live GitHub. Full Integration runs through manual dispatch using the immutable event commit. All lanes require `main` except `k3d-model`, which also accepts a branch explicitly allowed by the `integration-model` environment. Environment gates apply only to lanes that declare an environment; `helper-timeout` and standalone `logging-collector` declare none. The ChatGPT `provider-account` lane keeps its main-only credential environment without per-run approval. Other model, routing, Slack, OpenShell, and additional OpenTelemetry lanes require separately approved environments. A missing environment or selected prerequisite fails the run. A PR aggregate is not full credentialed coverage; targeted protected runs also report only their selected lanes.
 
 The `repository-credentials-container` lane builds
