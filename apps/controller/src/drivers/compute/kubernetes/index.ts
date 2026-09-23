@@ -66,6 +66,7 @@ import {
   workspaceSetupVerifier,
 } from "../workspace-setup-runtime.ts";
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
+import { discoverHarnessModels } from "../model-discovery.ts";
 import { currentComputeAbortSignal, withComputeAbortSignal } from "../operation-context.ts";
 import type { GatewayNodeEnrollment } from "../../../gateway/node-enrollment-client.ts";
 import {
@@ -729,6 +730,8 @@ function harnessModelAuthentication(configuration: OpenClawConfigurationDocument
 }
 
 export class KubernetesComputeDriver implements ComputeDriver {
+  readonly discoverHarnessModels = discoverHarnessModels;
+
   static readonly configurationSchema = Object.freeze({
     type: "object",
     required: ["authentication", "images", "resources", "network", "servicePrincipalCredentials"],

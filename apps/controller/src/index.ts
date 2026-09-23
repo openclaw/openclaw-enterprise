@@ -2080,6 +2080,16 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
+    if (operation.operationId === "discoverAgentModels") {
+      const models = await controller.discoverAgentModels(context.actorId, namespaceId, {
+        provider: body?.provider as string,
+        apiKey: body?.apiKey as string,
+      });
+      reply.header("cache-control", "no-store");
+      reply.send({ data: models, meta: { requestId: request.id } });
+      return;
+    }
+
     if (operation.operationId === "createConfiguration") {
       const configuration = await controller.transact(async (unit) => {
         const created = await controller!.createConfiguration(context.actorId, {

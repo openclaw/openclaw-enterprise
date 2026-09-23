@@ -857,6 +857,11 @@ export interface ComputeDriver extends Driver {
   readonly runtimeLogging?: "platform" | "driver";
   readonly activationOrder?: "beforeCommit" | "afterCommit";
   readonly maintenanceIntervalMs?: number;
+  /** Read-only native model discovery; supplied credentials must never be persisted. */
+  discoverHarnessModels?(input: {
+    readonly provider: string;
+    readonly apiKey: string;
+  }): Promise<readonly { readonly id: string; readonly name: string }[]>;
   validateHarnessAuth?(
     harness: RevisionHarnessDescriptor,
     auth: HarnessAuthSnapshot,

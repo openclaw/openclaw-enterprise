@@ -253,6 +253,19 @@ export function installFixture(scenario, evidence) {
       if (resource === "presets/pre_00000000-0000-4000-8000-000000000001" && method === "GET") {
         return response(preset);
       }
+      if (resource === "agents/models" && method === "POST") {
+        return response(
+          scenario.emptyModels
+            ? []
+            : [
+                { id: `${body.provider}-story-model`, name: `${body.provider} demo model` },
+                {
+                  id: `${body.provider}-story-model-small`,
+                  name: `${body.provider} smaller demo model`,
+                },
+              ],
+        );
+      }
       if (resource === "configurations" && method === "POST") {
         const saved = {
           ...body,

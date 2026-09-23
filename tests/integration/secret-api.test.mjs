@@ -171,10 +171,10 @@ async function request(app, method, pathname, options = {}) {
   if (body !== undefined) {
     assert.match(body.meta?.requestId ?? "", identifier("req"));
   }
-  return { status: response.status, body, data: body?.data };
+  return { status: response.status, headers: response.headers, body, data: body?.data };
 }
 
-async function bootstrapAgent(fixture, values = {}) {
+async function bootstrapNamespace(fixture) {
   const bootstrapped = await request(fixture.app, "POST", "/installation/bootstrap", {
     body: { name: "Secret API installation" },
   });
@@ -188,20 +188,222 @@ async function bootstrapAgent(fixture, values = {}) {
     .controller()
     .handleNamespaceLifecycle(fixture.principal.id, namespace.data.id, "ready");
 
+  return namespace.data;
+}
+
+async function bootstrapAgent(fixture, values = {}) {
+  const namespace = await bootstrapNamespace(fixture);
   const configuration = await request(
     fixture.app,
     "POST",
-    `/namespaces/${namespace.data.id}/configurations`,
+    `/namespaces/${namespace.id}/configurations`,
     { body: { kind: "agent", values } },
   );
   assert.equal(configuration.status, 201);
 
-  const agent = await request(fixture.app, "POST", `/namespaces/${namespace.data.id}/agents`, {
+  const agent = await request(fixture.app, "POST", `/namespaces/${namespace.id}/agents`, {
     body: { name: "secret-api-agent", configurationId: configuration.data.id },
   });
   assert.equal(agent.status, 201);
-  return { namespace: namespace.data, configuration: configuration.data, agent: agent.data };
+  return { namespace, configuration: configuration.data, agent: agent.data };
 }
+
+function createModelDiscoveryFixture() {
+  const native = createTestKubernetesComputeDriver("compute-model-discovery");
+  return createFixture({
+    computeDriver: {
+      ...createTestComputeDriver(),
+      discoverHarnessModels: native.discoverHarnessModels,
+    },
+  });
+}
+
+test("Agent model discovery uses native provider APIs without creating platform resources", async (t) => {
+  const fixture = await createModelDiscoveryFixture();
+  const namespace = await bootstrapNamespace(fixture);
+  const apiKey = `model-discovery-key-${randomUUID()}`;
+  const pages = [
+    { data: [{ id: "z-model" }, { id: "embedding-model" }, { id: "ft:model/custom" }] },
+    {
+      data: [{ id: "claude-new", display_name: "New Claude" }],
+      has_more: true,
+      last_id: "claude-new",
+    },
+    {
+      data: [{ id: "claude-previous", display_name: "Previous Claude" }],
+      has_more: false,
+      last_id: "claude-previous",
+    },
+    { data: [], has_more: false, last_id: null },
+  ];
+  const transport = t.mock.method(globalThis, "fetch", async () => Response.json(pages.shift()));
+  const path = `/namespaces/${namespace.id}/agents/models`;
+  const openai = await request(fixture.app, "POST", path, { body: { provider: "openai", apiKey } });
+  assert.equal(openai.status, 200);
+  assert.equal(openai.headers.get("cache-control"), "no-store");
+  assert.deepEqual(openai.data, [
+    { id: "embedding-model", name: "embedding-model" },
+    { id: "ft:model/custom", name: "ft:model/custom" },
+    { id: "z-model", name: "z-model" },
+  ]);
+  const anthropic = await request(fixture.app, "POST", path, {
+    body: { provider: "anthropic", apiKey },
+  });
+  assert.equal(anthropic.status, 200);
+  assert.deepEqual(anthropic.data, [
+    { id: "claude-new", name: "New Claude" },
+    { id: "claude-previous", name: "Previous Claude" },
+  ]);
+  const empty = await request(fixture.app, "POST", path, {
+    body: { provider: "anthropic", apiKey },
+  });
+  assert.equal(empty.status, 200);
+  assert.deepEqual(empty.data, []);
+  const calls = transport.mock.calls.map(({ arguments: args }) => args);
+  assert.deepEqual(
+    calls.map(([url]) => url),
+    [
+      "https://api.openai.com/v1/models",
+      "https://api.anthropic.com/v1/models?limit=1000",
+      "https://api.anthropic.com/v1/models?limit=1000&after_id=claude-new",
+      "https://api.anthropic.com/v1/models?limit=1000",
+    ],
+  );
+  assert.deepEqual(calls[0][1].headers, { Authorization: `Bearer ${apiKey}` });
+  for (const [, options] of calls.slice(1)) {
+    assert.deepEqual(options.headers, { "x-api-key": apiKey, "anthropic-version": "2023-06-01" });
+  }
+  for (const [, options] of calls) {
+    assert.equal(options.redirect, "error");
+    assert.ok(options.signal instanceof AbortSignal);
+  }
+  assert.equal(calls[1][1].signal, calls[2][1].signal);
+  assert.deepEqual(fixture.secretDriver.calls, []);
+  assert.deepEqual(
+    await fixture.controller().transact(async (unit) => ({
+      agents: await unit.namespaces.hasAgents(namespace.id),
+      configurations: await unit.namespaces.hasConfigurations(namespace.id),
+      secrets: await unit.namespaces.hasSecrets(namespace.id),
+    })),
+    { agents: false, configurations: false, secrets: false },
+  );
+  assert.equal(JSON.stringify([openai.body, anthropic.body, empty.body]).includes(apiKey), false);
+  assert.equal(JSON.stringify(fixture.auditSink.events).includes(apiKey), false);
+});
+
+test("Agent model discovery requires namespace Agent-create permission before provider I/O", async (t) => {
+  const fixture = await createModelDiscoveryFixture();
+  const namespace = await bootstrapNamespace(fixture);
+  const { principal: reader, app: readerApp } = await fixture.createPrincipal("model-reader");
+  fixture.state.roles.push({
+    id: "role-model-reader",
+    namespaceId: namespace.id,
+    permissions: [{ action: "read", resourceKind: "namespace" }],
+  });
+  fixture.state.bindings.push({
+    id: "binding-model-reader",
+    namespaceId: namespace.id,
+    subjectKind: "identity",
+    subjectId: reader.id,
+    roleId: "role-model-reader",
+  });
+  const transport = t.mock.method(globalThis, "fetch", async () => Response.json({ data: [] }));
+  const apiKey = `denied-discovery-key-${randomUUID()}`;
+  const denied = await request(readerApp, "POST", `/namespaces/${namespace.id}/agents/models`, {
+    body: { provider: "openai", apiKey },
+  });
+  assert.equal(denied.status, 403);
+  assert.equal(denied.body.error.code, "FORBIDDEN");
+  assert.equal(transport.mock.callCount(), 0);
+  const denial = fixture.auditSink.events.at(-1);
+  assert.equal(denial.kind, "authorization_denial");
+  assert.deepEqual(denial.authorization, {
+    principalId: reader.id,
+    action: "create",
+    resource: { kind: "agent", id: namespace.id, namespaceId: namespace.id },
+  });
+  assert.equal(JSON.stringify([denied.body, denial]).includes(apiKey), false);
+
+  fixture.state.roles[fixture.state.roles.length - 1].permissions.push({
+    action: "create",
+    resourceKind: "agent",
+  });
+  const granted = await request(readerApp, "POST", `/namespaces/${namespace.id}/agents/models`, {
+    body: { provider: "openai", apiKey },
+  });
+  assert.equal(granted.status, 200);
+  assert.deepEqual(granted.data, []);
+  assert.equal(transport.mock.callCount(), 1);
+});
+
+test("Agent model discovery reports unsupported Compute Drivers without contacting a provider", async (t) => {
+  const fixture = await createFixture();
+  const namespace = await bootstrapNamespace(fixture);
+  const transport = t.mock.method(globalThis, "fetch", async () => Response.json({ data: [] }));
+  const result = await request(fixture.app, "POST", `/namespaces/${namespace.id}/agents/models`, {
+    body: { provider: "openai", apiKey: `unsupported-key-${randomUUID()}` },
+  });
+  assert.equal(result.status, 501);
+  assert.equal(result.body.error.code, "NOT_IMPLEMENTED");
+  assert.equal(transport.mock.callCount(), 0);
+});
+
+test("Agent model discovery bounds and redacts provider failures", async (t) => {
+  const fixture = await createModelDiscoveryFixture();
+  const namespace = await bootstrapNamespace(fixture);
+  const apiKey = `private-discovery-key-${randomUUID()}`;
+  const upstreamDetail = `private-upstream-detail-${randomUUID()}`;
+  let oversizedCancelled = false;
+  const scenarios = [
+    [
+      "rejected API key",
+      () => Response.json({ error: `${upstreamDetail} ${apiKey}` }, { status: 401 }),
+    ],
+    [
+      "transport error",
+      () => {
+        throw new Error(`${upstreamDetail} ${apiKey}`);
+      },
+    ],
+    ["malformed JSON", () => new Response("{malformed")],
+    ["missing model list", () => Response.json({ message: "not a model list" })],
+    [
+      "oversized stream",
+      () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new Uint8Array(4 * 1024 * 1024 + 1));
+            },
+            cancel() {
+              oversizedCancelled = true;
+            },
+          }),
+        ),
+    ],
+  ];
+  for (const [name, respond] of scenarios) {
+    await t.test(name, async (subtest) => {
+      const transport = subtest.mock.method(globalThis, "fetch", respond);
+      const failed = await request(
+        fixture.app,
+        "POST",
+        `/namespaces/${namespace.id}/agents/models`,
+        {
+          body: { provider: "openai", apiKey },
+        },
+      );
+      assert.equal(failed.status, 503);
+      assert.equal(failed.body.error.code, "DEPENDENCY_UNAVAILABLE");
+      assert.equal(failed.body.error.message, "A required platform dependency is unavailable.");
+      assert.equal(transport.mock.callCount(), 1);
+      const exposed = JSON.stringify([failed.body, fixture.auditSink.events]);
+      assert.equal(exposed.includes(apiKey), false);
+      assert.equal(exposed.includes(upstreamDetail), false);
+    });
+  }
+  assert.equal(oversizedCancelled, true);
+});
 
 test("Secret API stores values through the selected driver and returns metadata only", async () => {
   const fixture = await createFixture();

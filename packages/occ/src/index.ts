@@ -1998,6 +1998,25 @@ export class OpenClawController {
     });
   }
 
+  async discoverAgentModels(
+    principalId: string,
+    namespaceId: string,
+    input: { readonly provider: string; readonly apiKey: string },
+  ) {
+    await this.authorize(principalId, "create", { kind: "agent", id: namespaceId, namespaceId });
+    await this.read((state) => this.exactNamespace(state, namespaceId));
+    const driver = this.selectedDriver("compute");
+    if (!driver.discoverHarnessModels) {
+      throw new NotImplementedError("Model discovery is unavailable. Enter a model ID manually.");
+    }
+    // Discovery performs no platform writes and must not hold a transaction over provider I/O.
+    try {
+      return await driver.discoverHarnessModels(input);
+    } catch {
+      throw new DependencyUnavailableError("Model discovery failed.");
+    }
+  }
+
   async createAgent(principalId: string, input: CreateAgentInput): Promise<Readonly<Agent>> {
     if (!validName(input.name)) {
       throw new ScopeViolationError("The Agent name is invalid.");

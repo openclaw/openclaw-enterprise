@@ -9,12 +9,14 @@ const readyForm = [
   ...form,
   { selector: "#agent-name", value: "Research assistant" },
   { selector: "#provider-api-key", value: "storybook-model-api-key" },
+  { selector: "#agent-model", value: "openai-story-model" },
 ];
 const account = [{ selector: ".account-toggle", click: true }];
 const createWorkspaceFields = [
   ...form,
   { selector: "#agent-name", value: "Workspace seed demo" },
   { selector: "#provider-api-key", value: "storybook-model-api-key" },
+  { selector: "#agent-model", value: "openai-story-model" },
   {
     selector: "#workspace-IDENTITY-md",
     value:
@@ -197,7 +199,7 @@ export const scenarios = {
     path: create,
     actions: form,
     description:
-      "Choose OpenAI or Anthropic, enter an API key and model, then review execution mode, native JSON, plugins, channels, and workspace files.",
+      "Choose OpenAI or Anthropic and enter an API key to load model choices. No model is selected by default.",
   },
   createWorkspaceFiles: {
     group: "Pages/Create Agent",
@@ -235,9 +237,45 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "Anthropic API key",
     path: create,
-    actions: [...form, { selector: "#model-provider", value: "anthropic" }],
+    actions: [
+      ...form,
+      { selector: "#model-provider", value: "anthropic" },
+      { selector: "#provider-api-key", value: "storybook-anthropic-key" },
+    ],
     description:
-      "Anthropic uses Embedded OpenClaw execution. Its API key is stored separately from native model Configuration.",
+      "Entering a key loads Anthropic model choices without selecting one. Anthropic uses Embedded OpenClaw execution.",
+  },
+  createModels: {
+    group: "Pages/Create Agent",
+    name: "Choose an available model",
+    path: create,
+    actions: [...form, { selector: "#provider-api-key", value: "storybook-model-api-key" }],
+    description:
+      "The model dropdown appears after key entry and starts with an unselected placeholder.",
+  },
+  createModelsEmpty: {
+    group: "Pages/Create Agent",
+    name: "No model choices",
+    path: create,
+    emptyModels: true,
+    actions: [...form, { selector: "#provider-api-key", value: "storybook-model-api-key" }],
+    description:
+      "An empty list allows an explicit model ID or a retry; no default model is invented.",
+  },
+  createModelsUnavailable: {
+    group: "Pages/Create Agent",
+    name: "Model discovery unavailable",
+    path: create,
+    actions: [...form, { selector: "#provider-api-key", value: "storybook-model-api-key" }],
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/models",
+        method: "POST",
+        status: 503,
+      },
+    ],
+    description:
+      "A discovery failure keeps the key private and lets the user retry or enter a known model ID.",
   },
   createSecretDenied: {
     group: "Pages/Create Agent",
@@ -750,7 +788,7 @@ export const scenarios = {
     description:
       "Create an Agent from the no-Preset form after editing IDENTITY.md and clearing USER.md, then deploy and inspect the seeded runtime workspace files.",
     steps: [
-      "Start without Preset, enter a demo Agent name, choose OpenAI or Anthropic, and enter a dummy API key.",
+      "Start without Preset, enter a demo Agent name, choose OpenAI or Anthropic, enter a dummy API key, and choose one of the returned demo models.",
       "Review AGENTS.md, SOUL.md, IDENTITY.md, and USER.md. Edit IDENTITY.md, leave USER.md empty, and create the Agent.",
       "Provision generated runtime credentials, then Deploy new revision and Refresh deployment until the simulated worker succeeds. Use the page Refresh button to read the active revision.",
       "Open Workspace files and inspect IDENTITY.md or USER.md to confirm the fixture carried the creation-time file contents into the deployed workspace.",

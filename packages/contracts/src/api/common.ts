@@ -189,7 +189,7 @@ export const SecretBindings = Type.Record(
   {
     maxProperties: 64,
     description:
-      'Optional Secret binding map. Keys are destination environment variable names; at most 64 bindings are accepted. Each value must contain `source.kind`, `source.namespaceId`, and `source.id`, and may contain `delivery.type: "env"`. Admission rejects reserved or process-control destinations such as `OPENCLAW_*`, `CODEX_*`, `OPENAI_*`, `OCC_*`, `KUBERNETES_*`, `PATH`, `HOME`, and proxy variables. Model authentication belongs to Agent.harnessAuth.',
+      'Optional Secret binding map. Keys are destination environment variable names; at most 64 bindings are accepted. Each value must contain `source.kind`, `source.namespaceId`, and `source.id`, and may contain `delivery.type: "env"`. Admission rejects reserved or process-control destinations such as `OPENCLAW_*`, `CODEX_*`, `OPENAI_*`, `ANTHROPIC_*`, `OCC_*`, `KUBERNETES_*`, `PATH`, `HOME`, and proxy variables. Model authentication belongs to Agent.harnessAuth.',
   },
 );
 
@@ -212,6 +212,14 @@ export const UpdateSecretBody = Type.Object(
 );
 
 export const AgentRuntimeCredentialsBody = Type.Object({}, { additionalProperties: false });
+
+export const DiscoverAgentModelsBody = Type.Object(
+  {
+    provider: Type.Union([Type.Literal("openai"), Type.Literal("anthropic")]),
+    apiKey: Type.String({ minLength: 1, maxLength: 8192, pattern: "\\S", writeOnly: true }),
+  },
+  { additionalProperties: false },
+);
 
 export const PermissionActionSchema = Type.Union([
   Type.Literal("create"),

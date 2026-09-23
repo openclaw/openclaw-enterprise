@@ -150,8 +150,14 @@ Configuration or browser storage. See the [creation reference](../reference/cons
 for permissions and partial-save recovery.
 
 The form starts with editable native JSON for the selected execution mode and
-optional Agent-owned plugin selections. `apps/controller/src/console/agents/starter-model.mjs`
-selects the shared OpenAI default. Model and execution-mode changes update the
+optional Agent-owned plugin selections, without a hardcoded model. After key
+entry, `POST /namespaces/:namespaceId/agents/models` reaches
+`OpenClawController.discoverAgentModels`, which authorizes Agent creation in the
+Namespace and calls the selected Compute Driver outside a state transaction.
+The bundled `compute/model-discovery.ts` queries fixed native provider URLs with
+bounded responses and pagination, returning only model IDs and labels. It makes
+no platform writes. Empty or failed discovery permits manual model entry; key
+and provider changes invalidate pending browser results. Model and execution-mode changes update the
 native model and runtime entries while preserving unrelated settings; reset
 restores the selected starter. Submission parses the JSON object and
 posts `{kind: "agent", values}` to
@@ -280,6 +286,8 @@ refreshes and inspects the Agent and revision history.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 07:20: Discover API-key model choices during Agent creation without saving credentials or selecting a hardcoded model. (01a0cce9-23e3-7072-aa3f-a2e26d2dbf11 - 553423dd2419ec19d2d71a2d1f8de75839a1642b)
 
 - 2026-09-23 06:27: Move two-provider API-key setup into Agent creation using existing Secret and IAM operations. (01a0cce9-23e3-7072-aa3f-a2e26d2dbf11 - a8272f4e2760e5ff06dc09c5658f48bea382c790)
 

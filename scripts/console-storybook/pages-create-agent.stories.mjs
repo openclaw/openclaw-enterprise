@@ -9,6 +9,12 @@ export const CreateEmbedded = { ...story("createEmbedded"), name: "Embedded form
 export const CreatePreset = { ...story("createPreset"), name: "Preset variables" };
 export const CreateNoPresets = { ...story("createNoPresets"), name: "No Presets" };
 export const CreateAnthropic = { ...story("createAnthropic"), name: "Anthropic API key" };
+export const CreateModels = { ...story("createModels"), name: "Choose an available model" };
+export const CreateModelsEmpty = { ...story("createModelsEmpty"), name: "No model choices" };
+export const CreateModelsUnavailable = {
+  ...story("createModelsUnavailable"),
+  name: "Model discovery unavailable",
+};
 export const CreateSecretDenied = {
   ...story("createSecretDenied"),
   name: "API key storage denied",

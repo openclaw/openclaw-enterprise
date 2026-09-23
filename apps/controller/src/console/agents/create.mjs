@@ -3,7 +3,6 @@ import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../workspace-defaults
 import { harnessAuthDescription } from "./harness-auth.mjs";
 import { ensureSecretOperateBinding } from "./secret-access.mjs";
 import { createPresetFields } from "./presets.mjs";
-import { defaultAgentModel } from "./starter-model.mjs";
 import { renderChannels } from "../channels.mjs";
 import { link, message, namespacePath } from "./list.mjs";
 
@@ -42,13 +41,17 @@ function configurationTemplate(mode, nativeProvider, providerModel) {
       auth: { mode: "token", token: "${OPENCLAW_GATEWAY_TOKEN}" },
       http: { endpoints: { chatCompletions: { enabled: true } } },
     },
-    agents: {
-      defaults: {
-        model: modelReference,
-        models: { [modelReference]: { agentRuntime: { id: harnessId } } },
-      },
-    },
-    models: { providers: provider },
+    ...(providerModel
+      ? {
+          agents: {
+            defaults: {
+              model: modelReference,
+              models: { [modelReference]: { agentRuntime: { id: harnessId } } },
+            },
+          },
+          models: { providers: provider },
+        }
+      : {}),
     ...(harnessId === "codex"
       ? {
           // Codex model transport must use its authenticated app server, never direct HTTP.
@@ -148,13 +151,14 @@ function renderAgentForm(context, rendered) {
     element("option", { value: "anthropic" }, "Anthropic"),
   );
   nativeProvider.value = initialModel?.startsWith("anthropic/") ? "anthropic" : "openai";
+  const discoverModels = !binding && typeof initialModel !== "string";
   const model = element("input", {
-    id: "agent-model",
-    required: true,
+    id: discoverModels ? "agent-model-manual" : "agent-model",
+    required: !discoverModels,
     autocomplete: "off",
-    pattern: "[^\\/\\s]+",
+    pattern: "\\S+",
   });
-  model.value = initialModel?.split("/").slice(1).join("/") || defaultAgentModel;
+  model.value = initialModel?.split("/").slice(1).join("/") || "";
   const apiKey = element("input", {
     id: "provider-api-key",
     type: "password",
@@ -162,6 +166,100 @@ function renderAgentForm(context, rendered) {
     autocomplete: "off",
     spellcheck: "false",
   });
+  let discoveryGeneration = 0;
+  let modelsLoading = false;
+  let modelOptions = [];
+  let manualModel = !discoverModels;
+  let pendingModelSettings;
+  const modelChoice = element(
+    "select",
+    { id: "agent-model" },
+    element("option", { value: "" }, "Load models to choose one"),
+  );
+  const modelStatus = element("p", { className: "hint", role: "status" });
+  const loadModels = button("Load models", () => void loadModelChoices());
+  const enterModel = button("Enter model ID manually", () => {
+    manualModel = true;
+    model.value = "";
+    modelChoice.value = "";
+    updateModelConfiguration();
+    updateControls();
+    model.focus();
+  });
+  const modelField = field("Model ID", model, "Enter the model ID enabled for your API account.");
+  const choiceField = field("Model", modelChoice);
+  const modelSection = element(
+    "section",
+    { className: "model-selection", hidden: discoverModels },
+    ...(discoverModels ? [loadModels, choiceField, enterModel, modelStatus] : []),
+    modelField,
+  );
+  async function loadModelChoices() {
+    if (!discoverModels || !apiKey.value.trim() || savedSecret || pending || modelsLoading) {
+      return;
+    }
+    const generation = ++discoveryGeneration;
+    modelsLoading = true;
+    modelStatus.textContent = "Loading available models…";
+    updateControls();
+    try {
+      const choices = await request(`${namespacePath(namespaceId)}/agents/models`, {
+        method: "POST",
+        body: { provider: nativeProvider.value, apiKey: apiKey.value },
+      });
+      if (!context.isCurrent() || generation !== discoveryGeneration) {
+        return;
+      }
+      modelOptions = choices;
+      modelChoice.replaceChildren(
+        element("option", { value: "" }, "Choose a model"),
+        ...choices.map((item) => element("option", { value: item.id }, item.name)),
+      );
+      manualModel = choices.length === 0;
+      model.value = "";
+      updateModelConfiguration();
+      modelStatus.textContent = choices.length
+        ? "Choose a text-generation model for this Agent."
+        : "No models were returned. Enter a model ID enabled for this API key, or retry loading.";
+    } catch (error) {
+      if (!context.isCurrent() || generation !== discoveryGeneration) {
+        return;
+      }
+      if (error.status === 401) {
+        context.onExpired();
+        return;
+      }
+      modelOptions = [];
+      manualModel = true;
+      modelStatus.textContent =
+        "Models could not be loaded. Check the API key and retry, or enter a model ID enabled for this key.";
+    } finally {
+      if (context.isCurrent() && generation === discoveryGeneration) {
+        modelsLoading = false;
+        updateControls();
+      }
+    }
+  }
+  function resetModelChoices() {
+    discoveryGeneration += 1;
+    modelsLoading = false;
+    modelOptions = [];
+    manualModel = false;
+    model.value = "";
+    modelChoice.replaceChildren(element("option", { value: "" }, "Load models to choose one"));
+    modelStatus.textContent = "";
+    updateModelConfiguration();
+    updateControls();
+  }
+  if (discoverModels) {
+    apiKey.addEventListener("input", resetModelChoices);
+    apiKey.addEventListener("change", () => void loadModelChoices());
+    modelChoice.addEventListener("change", () => {
+      manualModel = false;
+      model.value = modelChoice.value;
+      updateModelConfiguration();
+    });
+  }
   const authSection = element(
     "fieldset",
     { className: "harness-auth-fields" },
@@ -185,7 +283,7 @@ function renderAgentForm(context, rendered) {
           apiKey,
           "Stored as a Secret for this Agent. The key is never included in Configuration JSON.",
         ),
-    field("Model", model, "Enter the model ID available to your API account."),
+    modelSection,
   );
   name.value = agent.name ?? "";
   mode.value = agent.executionMode ?? "dedicated";
@@ -208,6 +306,7 @@ function renderAgentForm(context, rendered) {
     if (!confirmDiscard()) {
       return;
     }
+    pendingModelSettings = undefined;
     configuration.value = currentTemplate();
     configuration.setCustomValidity("");
     feedback.textContent = "";
@@ -222,27 +321,33 @@ function renderAgentForm(context, rendered) {
     const previous = values.agents?.defaults?.model;
     const previousModel = typeof previous === "string" ? previous : previous?.primary;
     const modelSettings = { ...values.agents?.defaults?.models };
+    const selectedModel = next.agents?.defaults.model;
     const selectedSettings = {
-      ...modelSettings[previousModel],
-      ...next.agents.defaults.models[next.agents.defaults.model],
+      ...(modelSettings[previousModel] ?? pendingModelSettings),
+      ...(selectedModel ? next.agents.defaults.models[selectedModel] : {}),
     };
+    pendingModelSettings = selectedModel ? undefined : selectedSettings;
     delete modelSettings[previousModel];
+    const nextModel =
+      typeof previous === "object" && previous !== null
+        ? { ...previous, primary: selectedModel }
+        : selectedModel;
     values.agents = {
       ...values.agents,
       defaults: {
         ...values.agents?.defaults,
-        model:
-          typeof previous === "object" && previous !== null
-            ? { ...previous, primary: next.agents.defaults.model }
-            : next.agents.defaults.model,
-        models: { ...modelSettings, [next.agents.defaults.model]: selectedSettings },
+        model: nextModel,
+        models: {
+          ...modelSettings,
+          ...(selectedModel ? { [selectedModel]: selectedSettings } : {}),
+        },
       },
     };
     const providers = { ...values.models?.providers };
     delete providers.openai;
     delete providers.anthropic;
     delete providers.codex;
-    values.models = { ...values.models, providers: { ...providers, ...next.models.providers } };
+    values.models = { ...values.models, providers: { ...providers, ...next.models?.providers } };
     if (next.plugins) {
       values.plugins = {
         ...values.plugins,
@@ -261,11 +366,16 @@ function renderAgentForm(context, rendered) {
     renderChannelEditor();
   }
   nativeProvider.addEventListener("change", () => {
-    model.value = nativeProvider.value === "anthropic" ? "claude-sonnet-4-6" : defaultAgentModel;
     if (nativeProvider.value === "anthropic") {
       mode.value = "embedded";
     }
-    updateModelConfiguration();
+    // A provider change must not send the previous provider's key to a different service.
+    apiKey.value = "";
+    if (discoverModels) {
+      resetModelChoices();
+    } else {
+      updateModelConfiguration();
+    }
   });
   model.addEventListener("change", updateModelConfiguration);
   mode.addEventListener("change", updateModelConfiguration);
@@ -277,9 +387,20 @@ function renderAgentForm(context, rendered) {
     const ref = typeof selected === "string" ? selected : selected?.primary;
     if (typeof ref === "string" && /^(openai|anthropic|codex)\//.test(ref)) {
       if (!savedSecret) {
-        nativeProvider.value = ref.startsWith("anthropic/") ? "anthropic" : "openai";
+        const selectedProvider = ref.startsWith("anthropic/") ? "anthropic" : "openai";
+        if (selectedProvider !== nativeProvider.value) {
+          apiKey.value = "";
+          modelOptions = [];
+        }
+        nativeProvider.value = selectedProvider;
       }
       model.value = ref.slice(ref.indexOf("/") + 1);
+      if (discoverModels) {
+        discoveryGeneration += 1;
+        modelsLoading = false;
+        manualModel = true;
+        modelChoice.value = "";
+      }
     }
     renderChannelEditor();
   });
@@ -461,7 +582,15 @@ function renderAgentForm(context, rendered) {
       node.disabled = pending || Boolean(savedAgent) || outcomeUnknown;
     }
     // Unsaved Agent fields remain editable after a known rejection; reuse the saved Configuration.
-    for (const node of [configuration, secretBindings, nativeProvider, model, mode, reset]) {
+    for (const node of [
+      configuration,
+      secretBindings,
+      nativeProvider,
+      model,
+      modelChoice,
+      mode,
+      reset,
+    ]) {
       node.disabled ||= Boolean(savedConfiguration);
     }
     for (const node of actions.querySelectorAll("button")) {
@@ -473,7 +602,18 @@ function renderAgentForm(context, rendered) {
     nativeProvider.disabled ||= Boolean(savedSecret);
     apiKey.disabled ||= Boolean(savedSecret);
     startOver.disabled = pending || outcomeUnknown || saved || Boolean(savedSecret);
-    submit.disabled = pending || outcomeUnknown;
+    if (discoverModels) {
+      modelSection.hidden = !apiKey.value.trim() && !savedSecret;
+      choiceField.hidden = manualModel;
+      modelField.hidden = !manualModel;
+      model.required = manualModel && !modelSection.hidden;
+      modelChoice.required = !manualModel && !modelSection.hidden && modelOptions.length > 0;
+      model.disabled ||= modelsLoading;
+      modelChoice.disabled ||= modelsLoading || modelOptions.length === 0;
+      loadModels.disabled ||= modelsLoading || Boolean(savedSecret) || !apiKey.value.trim();
+      enterModel.disabled ||= modelsLoading || Boolean(savedConfiguration);
+    }
+    submit.disabled = pending || outcomeUnknown || modelsLoading;
     submit.textContent = savedAgent ? "Retry credential access" : "Create Agent";
   };
   function showSavedStatus() {
@@ -503,6 +643,11 @@ function renderAgentForm(context, rendered) {
     const desiredPlugins = parseObject(plugins, true);
     const bindings = parseObject(secretBindings, true);
     if (values === undefined || desiredPlugins === undefined || bindings === undefined) {
+      return;
+    }
+    if (!model.value.trim()) {
+      feedback.textContent =
+        "Choose an available model or enter a model ID before creating the Agent.";
       return;
     }
     const selected = values.agents?.defaults?.model;

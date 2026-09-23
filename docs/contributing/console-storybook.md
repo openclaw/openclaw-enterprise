@@ -75,7 +75,9 @@ That transition demonstrates presentation only; it does not prove a worker ran.
 
 The fixture supplies a ready Namespace, Preset, and model Secret. Namespace
 provisioning, Preset CRUD, and service-account issuance have no console pages.
-Create Agent stores entered model keys through the existing Secret API and
+Create Agent discovers model choices after key entry, with empty-list and error
+states offering manual model entry. Discovery uses synthetic model lists in
+Storybook. Saving stores entered model keys through the existing Secret API and
 grants the new Agent access. The stories simulate those writes; browser/API
 integration tests verify their real route and permission behavior.
 Slack tokens can be saved in Credentials after Agent creation. Teams credentials
