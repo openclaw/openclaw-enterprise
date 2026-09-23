@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
 updated: 2026-09-22
-last_updated_session: codex/01a0cc48-2eda-7fc2-a19e-096b68fccb7b
+last_updated_session: 01a0ccc0-00fa-7173-ab45-f7a5fb55b3b6
 ---
 
 # Console Agent editing and runtime requests
@@ -57,8 +57,25 @@ Configuration referenced by the Agent. `revision=<id>` reads that immutable
 snapshot. The Selected revision badge is derived from `activeRevisionId`; the
 newest revision and the viewed snapshot can both differ from that pointer.
 The revision view reads persisted deployment status and startup failures; it
-does not render a live serving-health indicator. Revision snapshots are read-only and do not expose rollback, edit, deploy, or live-health controls.
+does not render a live serving-health indicator. Revision snapshots are read-only;
+**Edit current Configuration** navigates to the current draft without copying
+historical values. Snapshots do not expose rollback, deploy, or live-health controls.
 Stopping and deletion apply to the Agent itself, regardless of the viewed revision or tab.
+
+In the draft Configuration tab, **Edit Configuration** opens the native JSON
+editor. It accepts an object and submits only `{ values }` to the existing exact
+Namespace Configuration PATCH route, retaining omitted `secretBindings`. Before
+writing, the browser rereads the Agent and Configuration and rejects a changed
+Configuration ID or generation. This is a preflight check, not an atomic
+compare-and-swap: a write can still race after the reads. The API retains
+Configuration authorization and generation ownership.
+
+A successful save reloads the draft; admitted snapshots and active revision
+selection remain unchanged. Invalid input, denied writes, and stale drafts retain
+editor text. An uncertain mutation outcome blocks another save until successful
+readback. Unsaved or unresolved edits block deployment of the old saved values and tab or revision
+navigation until save, cancel, or the required reload resolves them.
+Saving and deploying remain separate explicit actions.
 
 `apps/controller/src/console/channels.mjs:renderChannels` renders supported
 Slack channel settings in **New revision** only. Slack uses fixed unresolved
@@ -207,6 +224,8 @@ subsequent worker cleanup and the Namespace-owned resources it preserves.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-22 23:30: Trace native Configuration draft editing, save checks, and immutable snapshot navigation. (01a0ccc0-00fa-7173-ab45-f7a5fb55b3b6 - 0dabaafb97326254e5ae173491be014aaa6388c6)
 
 - 2026-09-22 20:56: Rename the deployment-facing Console view to New revision. (01a0cc48-2eda-7fc2-a19e-096b68fccb7b - 081bccfcf3f5b114588dde1b42a0deb07f326017)
 

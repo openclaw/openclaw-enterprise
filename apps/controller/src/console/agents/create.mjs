@@ -37,7 +37,10 @@ function configurationTemplate(mode, nativeProvider, providerModel) {
     gateway: {
       mode: "local",
       bind: "lan",
-      controlUi: { enabled: false },
+      controlUi: {
+        enabled: true,
+        allowedOrigins: ["http://127.0.0.1:18789", "http://localhost:18789"],
+      },
       http: { endpoints: { chatCompletions: { enabled: true } } },
     },
     ...(providerModel

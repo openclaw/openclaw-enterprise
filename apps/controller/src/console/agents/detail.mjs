@@ -48,6 +48,10 @@ function nativeDocument(values, label) {
   );
 }
 
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 function deploymentFailure(error) {
   if (!error) {
     return element("p", { className: "muted" }, "No persisted startup failure.");
@@ -171,7 +175,13 @@ export async function renderAgentDetail(context) {
   let selectedTab = tabsForSelection.includes(tab) ? tab : "configuration";
   const target = (revision = selected, tab = selectedTab) =>
     `agents/${agentId}?revision=${encodeURIComponent(revision)}&tab=${tab}`;
-  const change = (revision, tab) => context.navigate(target(revision, tab));
+  const change = (revision, tab) => {
+    if (draftEditorBlocksNavigation()) {
+      showDraftEditorNavigationBlock();
+      return;
+    }
+    context.navigate(target(revision, tab));
+  };
   const header = element(
     "div",
     { className: "agent-toolbar" },
@@ -200,6 +210,25 @@ export async function renderAgentDetail(context) {
   }
   const selector = element("section", { className: "agent-card revision-selector" });
   const content = element("div");
+  const tabControls = new Map();
+  const revisionControls = new Map();
+  let draftEditorNavigationBlock = null;
+  let showDraftEditorNavigationBlock = () => {};
+  function draftEditorBlocksNavigation() {
+    return selected === "draft" && selectedTab === "configuration" && draftEditorNavigationBlock;
+  }
+  function trackRevisionControl(control) {
+    revisionControls.set(control, control.disabled);
+  }
+  function updateNavigationControls() {
+    const blocked = Boolean(draftEditorBlocksNavigation());
+    for (const [id, control] of tabControls) {
+      control.disabled = blocked && id !== selectedTab;
+    }
+    for (const [control, originallyDisabled] of revisionControls) {
+      control.disabled = blocked || originallyDisabled;
+    }
+  }
   const tabs = element("nav", {
     className: "agent-tabs",
     "aria-label": "Agent configuration views",
@@ -210,19 +239,24 @@ export async function renderAgentDetail(context) {
     ...(selected === "draft" ? [["credentials", "Credentials"]] : []),
     ["workspace", "Workspace files"],
   ]) {
-    tabs.append(
-      button(
-        label,
-        () => {
-          if (id !== selectedTab) {
-            change(selected, id);
-          }
-        },
-        {
-          ...(id === selectedTab ? { "aria-current": "page" } : {}),
-        },
-      ),
+    const control = button(
+      label,
+      () => {
+        if (id === selectedTab) {
+          return;
+        }
+        if (draftEditorBlocksNavigation()) {
+          showDraftEditorNavigationBlock();
+          return;
+        }
+        change(selected, id);
+      },
+      {
+        ...(id === selectedTab ? { "aria-current": "page" } : {}),
+      },
     );
+    tabControls.set(id, control);
+    tabs.append(control);
   }
   const deploymentStatus =
     selected === "draft" ? [] : [createDeploymentStatusPanel(context, path, selected)];
@@ -289,12 +323,31 @@ export async function renderAgentDetail(context) {
       );
     }
     chooser.value = selected;
-    chooser.addEventListener("change", () => change(chooser.value));
+    chooser.addEventListener("change", () => {
+      const nextRevision = chooser.value;
+      if (draftEditorBlocksNavigation()) {
+        chooser.value = selected;
+        showDraftEditorNavigationBlock();
+        return;
+      }
+      change(nextRevision);
+    });
+    trackRevisionControl(chooser);
     const position = revisions.findIndex((revision) => revision.id === selected);
     const older = button("Older revision", () => change(revisions[position + 1].id));
     older.disabled = position < 0 || position >= revisions.length - 1;
+    trackRevisionControl(older);
     const newer = button("Newer revision", () => change(revisions[position - 1].id));
     newer.disabled = position <= 0;
+    trackRevisionControl(newer);
+    const newRevision = button("New revision", () => change("draft"));
+    trackRevisionControl(newRevision);
+    const currentRevision = agent.activeRevisionId
+      ? button("View current revision", () => change(agent.activeRevisionId))
+      : null;
+    if (currentRevision) {
+      trackRevisionControl(currentRevision);
+    }
     selector.append(
       ...[
         element(
@@ -315,10 +368,8 @@ export async function renderAgentDetail(context) {
           { className: "form-actions" },
           selected !== "draft" && revisions.length > 1 ? older : null,
           selected !== "draft" && revisions.length > 1 ? newer : null,
-          selected !== "draft" ? button("New revision", () => change("draft")) : null,
-          agent.activeRevisionId && selected !== agent.activeRevisionId
-            ? button("View selected revision", () => change(agent.activeRevisionId))
-            : null,
+          selected !== "draft" ? newRevision : null,
+          agent.activeRevisionId && selected !== agent.activeRevisionId ? currentRevision : null,
         ),
       ].filter(Boolean),
     );
@@ -348,6 +399,12 @@ export async function renderAgentDetail(context) {
     let deploy;
     let deployPending = false;
     let deployStatus;
+    const draftEditorState = {
+      dirty: false,
+      saving: false,
+      outcomeUnknown: false,
+      reloadRequired: false,
+    };
     const runtimeAuth = agent.harnessAuth?.method === "runtime";
     const credentials =
       draft && !runtimeAuth
@@ -372,11 +429,24 @@ export async function renderAgentDetail(context) {
       }
       deploy.disabled =
         deployPending ||
+        draftEditorState.dirty ||
+        draftEditorState.saving ||
+        draftEditorState.outcomeUnknown ||
+        draftEditorState.reloadRequired ||
         !agent.harnessAuth ||
         revisionResult.status !== "fulfilled" ||
         (!runtimeAuth && !credentials?.canDeploy());
       if (!deployPending) {
-        if (revisionResult.status !== "fulfilled") {
+        if (draftEditorState.outcomeUnknown) {
+          deployStatus.textContent =
+            "Refresh this draft before deploying because the last Configuration save outcome is unknown.";
+        } else if (draftEditorState.reloadRequired) {
+          deployStatus.textContent = "Reload this draft before deploying.";
+        } else if (draftEditorState.saving) {
+          deployStatus.textContent = "Wait for Configuration save to finish before deploying.";
+        } else if (draftEditorState.dirty) {
+          deployStatus.textContent = "Save or cancel Configuration edits before deploying.";
+        } else if (revisionResult.status !== "fulfilled") {
           deployStatus.textContent =
             "Revision history is required before deploying this new revision.";
         } else if (runtimeAuth) {
@@ -489,6 +559,20 @@ export async function renderAgentDetail(context) {
       draft,
       executionMode,
       credentials,
+      setDraftEditorState(nextState) {
+        Object.assign(draftEditorState, nextState);
+        draftEditorNavigationBlock = draftEditorState.outcomeUnknown
+          ? "Outcome unknown. Reload this draft before leaving the editor."
+          : draftEditorState.reloadRequired
+            ? "Reload this draft before leaving the editor."
+            : draftEditorState.saving
+              ? "Wait for Configuration save to finish before leaving the editor."
+              : draftEditorState.dirty
+                ? "Save or cancel Configuration edits before leaving this tab."
+                : null;
+        updateNavigationControls();
+        updateDeployControls();
+      },
     };
   }
 
@@ -686,14 +770,241 @@ export async function renderAgentDetail(context) {
           { className: "agent-card" },
           element("h2", {}, draft ? "Configuration draft" : "Configuration snapshot"),
           summary(values, details),
-          nativeDocument(
-            values,
-            draft ? "View native Configuration" : "View admitted native configuration",
-          ),
+          draft
+            ? renderDraftConfigurationEditor(context, data)
+            : element(
+                "div",
+                {},
+                element(
+                  "div",
+                  { className: "form-actions" },
+                  button("Edit current Configuration", () => change("draft", "configuration")),
+                ),
+                nativeDocument(values, "View admitted native configuration"),
+              ),
         ),
       );
     }
   }
+
+  function renderDraftConfigurationEditor(context, data) {
+    const { snapshot, values, setDraftEditorState } = data;
+    const container = element("div", { className: "configuration-draft-editor" });
+    let editing = false;
+    let pending = false;
+    let outcomeUnknown = false;
+    let reloadRequired = false;
+    const initialText = JSON.stringify(values, null, 2);
+    const editor = element("textarea", {
+      id: "configuration-json",
+      name: "configuration",
+      required: "",
+      rows: "18",
+      className: "configuration-editor",
+      spellcheck: "false",
+      "aria-describedby": "configuration-json-hint",
+    });
+    editor.value = initialText;
+    const feedback = element("p", { className: "hint", role: "status" });
+    let feedbackLocked = false;
+    const edit = button("Edit Configuration", () => {
+      editing = true;
+      render();
+    });
+    const save = button("Save Configuration", () => void saveConfiguration(), {
+      className: "primary",
+    });
+    const cancel = button("Cancel", () => {
+      editing = false;
+      editor.value = initialText;
+      editor.setCustomValidity("");
+      feedback.textContent = "";
+      reloadRequired = false;
+      setDraftEditorState({
+        dirty: false,
+        saving: false,
+        outcomeUnknown: false,
+        reloadRequired: false,
+      });
+      render();
+    });
+    const reload = button("Reload draft", () => {
+      context.navigate(target("draft", "configuration"), namespaceId, true);
+    });
+
+    function currentDirty() {
+      return editor.value !== initialText;
+    }
+
+    function parseEditor(reportInvalid = false) {
+      try {
+        const parsed = JSON.parse(editor.value);
+        if (!isPlainObject(parsed)) {
+          throw new Error();
+        }
+        return parsed;
+      } catch {
+        if (reportInvalid) {
+          editor.setCustomValidity("Enter a valid JSON object.");
+          editor.reportValidity();
+          feedback.textContent = "Enter a valid Configuration JSON object.";
+          feedbackLocked = true;
+        }
+        return undefined;
+      }
+    }
+
+    function updateState() {
+      const dirty = editing && currentDirty();
+      setDraftEditorState({
+        dirty,
+        saving: pending,
+        outcomeUnknown,
+        reloadRequired,
+      });
+      save.disabled = pending || outcomeUnknown || reloadRequired || !dirty;
+      cancel.disabled = pending || outcomeUnknown || reloadRequired;
+      edit.disabled = pending || outcomeUnknown;
+      editor.readOnly = pending || outcomeUnknown || reloadRequired;
+      if (outcomeUnknown) {
+        feedback.textContent =
+          "Outcome unknown. Configuration may have been saved. Reload this draft before saving again.";
+        feedbackLocked = true;
+      } else if (reloadRequired) {
+        if (!feedbackLocked) {
+          feedback.textContent = "Reload this draft before saving again.";
+        }
+        feedbackLocked = true;
+      } else if (pending) {
+        if (!feedbackLocked) {
+          feedback.textContent = "Checking Configuration…";
+        }
+      } else if (dirty) {
+        if (!feedbackLocked) {
+          feedback.textContent = "Save or cancel these Configuration edits before deploying.";
+        }
+      } else if (!pending && editing) {
+        if (!feedbackLocked) {
+          feedback.textContent = "No Configuration changes to save.";
+        }
+      }
+    }
+
+    editor.addEventListener("input", () => {
+      editor.setCustomValidity("");
+      feedback.textContent = "";
+      feedbackLocked = false;
+      reloadRequired = false;
+      updateState();
+    });
+    showDraftEditorNavigationBlock = () => {
+      if (draftEditorNavigationBlock) {
+        feedback.textContent = draftEditorNavigationBlock;
+        feedbackLocked = true;
+      }
+    };
+
+    async function saveConfiguration() {
+      if (pending || outcomeUnknown || !currentDirty()) {
+        return;
+      }
+      const nextValues = parseEditor(true);
+      if (nextValues === undefined) {
+        updateState();
+        return;
+      }
+      pending = true;
+      feedback.textContent = "Checking Configuration…";
+      feedbackLocked = true;
+      updateState();
+      let mutationStarted = false;
+      try {
+        const [freshAgent, freshConfig] = await Promise.all([
+          request(path),
+          request(
+            `${namespacePath(namespaceId)}/configurations/${encodeURIComponent(snapshot.id)}`,
+          ),
+        ]);
+        if (!context.isCurrent()) {
+          return;
+        }
+        if (
+          freshAgent.configurationId !== snapshot.id ||
+          freshConfig.generation !== snapshot.generation
+        ) {
+          feedback.textContent =
+            "The saved Configuration changed while you were editing. Reload this draft before saving.";
+          feedbackLocked = true;
+          reloadRequired = true;
+          return;
+        }
+        mutationStarted = true;
+        await request(
+          `${namespacePath(namespaceId)}/configurations/${encodeURIComponent(snapshot.id)}`,
+          {
+            method: "PATCH",
+            body: { values: nextValues },
+          },
+        );
+        if (context.isCurrent()) {
+          context.navigate(target("draft", "configuration"), namespaceId, true);
+        }
+      } catch (error) {
+        if (!context.isCurrent()) {
+          return;
+        }
+        if (error.status === 401) {
+          context.onExpired();
+          return;
+        }
+        feedback.textContent = message(error, mutationStarted);
+        feedbackLocked = true;
+        outcomeUnknown = mutationStarted && ![400, 403, 404, 409, 429].includes(error.status);
+      } finally {
+        if (context.isCurrent()) {
+          pending = false;
+          updateState();
+          render();
+        }
+      }
+    }
+
+    function render() {
+      if (!editing) {
+        container.replaceChildren(
+          element("div", { className: "form-actions" }, edit),
+          nativeDocument(values, "View native Configuration"),
+        );
+        return;
+      }
+      updateState();
+      container.replaceChildren(
+        element(
+          "div",
+          { className: "form-field" },
+          element("label", { for: "configuration-json" }, "Configuration JSON"),
+          editor,
+          element(
+            "p",
+            { className: "hint", id: "configuration-json-hint" },
+            "Edit native JSON values for future deployments. Secret bindings are preserved separately.",
+          ),
+        ),
+        element(
+          "div",
+          { className: "form-actions" },
+          save,
+          cancel,
+          outcomeUnknown || reloadRequired ? reload : null,
+        ),
+        feedback,
+      );
+    }
+
+    render();
+    return container;
+  }
+
   view.append(deletion);
   context.setTabNavigation((next) => {
     const nextRevision = next.searchParams.get("revision") ?? agent.activeRevisionId ?? "draft";
@@ -705,9 +1016,20 @@ export async function renderAgentDetail(context) {
       deleting ||
       next.pathname !== url.pathname ||
       next.searchParams.get("namespace") !== namespaceId ||
-      nextRevision !== selected ||
-      nextTab === selectedTab
+      (nextRevision === selected && nextTab === selectedTab)
     ) {
+      return false;
+    }
+    if (draftEditorBlocksNavigation()) {
+      history.replaceState(
+        history.state,
+        "",
+        context.pageUrl(target(selected, selectedTab), namespaceId),
+      );
+      showDraftEditorNavigationBlock();
+      return true;
+    }
+    if (nextRevision !== selected) {
       return false;
     }
     selectedTab = nextTab;

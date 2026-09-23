@@ -58,7 +58,7 @@ the reusable, mutable input from which a new revision is created.
 | **AgentRevision** dropdown                | Selects the new revision or a historical snapshot to inspect. Revision entries include version, creation time, and whether the Agent selects them. |
 | **Older revision** / **Newer revision**   | Browses history; disabled at the corresponding end. Browsing does not activate a revision.                                                         |
 | **New revision**                          | Opens the current Configuration and supported editing controls.                                                                                    |
-| **View selected revision**                | Returns to the snapshot currently selected by the Agent.                                                                                           |
+| **View current revision**                 | Returns to the snapshot currently selected by the Agent.                                                                                           |
 | `rev_…`                                   | Identifies the viewed immutable revision.                                                                                                          |
 | **Source Configuration … · generation N** | Identifies the Configuration and generation captured for that revision. The draft instead shows its current generation.                            |
 | Read-only snapshot notice                 | Explains whether the viewed revision is selected and that its admitted settings cannot be edited.                                                  |
@@ -89,10 +89,24 @@ Browser Back and Forward restore the selected tab. Leaving a tab clears entered 
 | **Compute**                            | Revision's Compute Driver identifier and implementation.                                                         |
 | **View admitted native configuration** | Expands the revision's formatted native JSON. The draft uses **View native Configuration**.                      |
 
-**Configuration draft** summarizes the saved values; it is not a general JSON,
-model, Provider, or execution-mode editor. Supported edits are exposed through
-Channels and Credentials. Use the API or operator workflow for other changes.
-See the [Configuration reference](../../reference/configuration.md).
+In **New revision**, select **Edit Configuration** to edit the native JSON,
+including model and gateway settings. **Save Configuration** requires a JSON
+object and updates the saved draft; **Cancel** discards unsaved edits. On an
+admitted snapshot, **Edit current Configuration** opens the current draft, not
+a copy of the historical snapshot.
+
+Save does not deploy or change existing AgentRevisions. Select **Deploy new
+revision** after saving to apply the new values. Deployment, tab switching, and revision navigation are blocked while edits are unsaved, a save is
+pending, or a stale or unknown result requires reload. Other Agents sharing this
+Configuration also use the updated values on their next deployment.
+
+The editor preserves existing Secret bindings and checks for a changed
+Configuration or Agent association before saving. A stale draft requires reload;
+this preflight cannot prevent another write racing with the save. If the outcome
+is unknown, inspect the saved Configuration through a successful reload before
+saving again. Invalid JSON and failed saves retain the text for correction.
+Provider, execution mode, and Harness authentication are Agent fields, not native
+Configuration JSON. See the [Configuration reference](../../reference/configuration.md).
 
 ## Channels tab
 

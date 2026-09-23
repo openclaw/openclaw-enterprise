@@ -5,10 +5,11 @@ authenticated API access. Prepare [standard Kubernetes](kubernetes.md) or
 [Amazon EKS](eks.md) and complete the [production prerequisites](../deploy.md#production-prerequisites)
 first. Workspace access is required: install the
 [routing prerequisites](workspace-routing.md#requirements), provide a GatewayClass,
-and keep routing enabled in both example files.
+and keep routing enabled in both example files. Control UI is enabled in the
+production values; complete [native admin prerequisites](native-admin.md#requirements).
 
-Run the commands from the repository root in one shell; retain its
-exports and protected files for [Agent deployment](production-agents.md).
+Run from the repository root; retain this shell and protected files for
+[Agent deployment](production-agents.md).
 
 ## Use published images
 
@@ -36,9 +37,8 @@ export CONTROLLER_IMAGE='ghcr.io/openclaw/openclaw-enterprise-controller@sha256:
 export RUNTIME_IMAGE='ghcr.io/openclaw/openclaw-enterprise-runtime@sha256:792f0ffe88ec9f935b55c36f41ee646a828e3d83df21427cf7955a5beef52460'
 ```
 
-The controller image serves the API, worker, migration, and bootstrap. Use the
-same runtime image for both gateways and Agents. These digest references select
-the tested bytes; do not substitute `latest` or a bootstrap marker tag.
+Use the controller image for API, worker, migration, and bootstrap, and one
+runtime image for gateways and Agents. Keep the tested digest references.
 
 For Kubernetes, configure approved cluster/node pull credentials for **both
 control-plane and tenant Pods**. Local `docker login` does not authenticate
@@ -104,9 +104,8 @@ export CONTROLLER_IMAGE="$OCC_IMAGE_REPOSITORY/controller@$CONTROLLER_DIGEST"
 export RUNTIME_IMAGE="$OCC_IMAGE_REPOSITORY/runtime@$RUNTIME_DIGEST"
 ```
 
-Continue only after both builds and digest lookups succeed. Keep these exports
-for the YAML configuration below; Kubernetes requires digest references, not
-tags. For private registries, configure cluster/node pull credentials for both
+Continue after both builds and digest lookups succeed; retain the exported
+digests for YAML configuration. For private registries, configure cluster/node pull credentials for both
 control-plane and tenant Pods; `docker login` only authenticates your builder.
 
 ## Configure the Installation
@@ -168,7 +167,9 @@ Edit the protected YAML copies before provisioning anything:
 - `$OCC_INPUT_DIRECTORY/values.yaml`: set `images.controller`,
   `auth.baseUrl`, `bootstrap.adminEmail`, `database.cidrs`, `cluster.cidrs`,
   `controlPlane.nodeSelector`, `database.caSecretName`, `dns`, `api.clients`, and
-  `bootstrap.password.claimName`. Keep `gatewayRouting.enabled: true`, set
+  `bootstrap.password.claimName`. Configure `agentNativeAdmin` domains and ingress
+  through [native admin setup](native-admin.md#steps), retaining `enabled: true`.
+  Keep `gatewayRouting.enabled: true`, set
   `gatewayRouting.gatewayClassName` to your GatewayClass, and retain the example
   Secret names and keys; otherwise update the Secret creation commands below.
 - `$OCC_INPUT_DIRECTORY/installation.yaml`: set `occ.cluster`, `logging.level`,
@@ -188,8 +189,8 @@ Edit the protected YAML copies before provisioning anything:
 - `$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml`: set the bootstrap PVC name,
   namespace, size, and protected `storageClassName` for the cluster.
 
-Validate the configured copies, render the Helm chart, and derive the helper
-image from the same Helm values file:
+Require all checks below, including Helm rendering, to pass before provisioning.
+API startup also validates shared-cookie domain compatibility:
 
 ```bash
 yq e -e '.images.controller | test("@sha256:[a-f0-9]{64}$")' \
@@ -199,7 +200,7 @@ yq e -e '.auth.baseUrl != "" and .bootstrap.adminEmail != "" and
   (.controlPlane.nodeSelector | length > 0) and
   (.api.clients | length > 0) and .gatewayRouting.enabled == true and
   .gatewayRouting.gatewayClassName != "" and
-  .gatewayRouting.apiKeySecretName != ""' \
+  .gatewayRouting.apiKeySecretName != "" and .agentNativeAdmin.enabled == true' \
   "$OCC_INPUT_DIRECTORY/values.yaml" >/dev/null
 yq e -e '.drivers.compute.configuration.images.requireImmutableDigest == true and
   (.drivers.compute.configuration.images.gateway | test("@sha256:[a-f0-9]{64}$")) and

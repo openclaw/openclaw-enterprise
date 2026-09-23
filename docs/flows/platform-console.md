@@ -159,7 +159,12 @@ bounded responses and pagination, returning only model IDs and labels. It makes
 no platform writes. Empty or failed discovery permits manual model entry; key
 and provider changes invalidate pending browser results. Model and execution-mode changes update the
 native model and runtime entries while preserving unrelated settings; reset
-restores the selected starter. Submission parses the JSON object and
+restores the selected starter. `configurationTemplate` enables native Control UI
+with explicit loopback origins on port 18789. Compute Drivers render gateway
+authentication from Installation trust settings; starters supply no gateway token.
+Preset values replace the starter unchanged. These defaults do not configure the
+isolated HTTPS origin required by [OCE native admin access](agent-native-admin.md).
+Submission parses the JSON object and
 posts `{kind: "agent", values}` to
 `POST /namespaces/:namespaceId/configurations`. After that returns its ID,
 `POST /namespaces/:namespaceId/agents` creates the Agent draft with the selected
@@ -292,6 +297,8 @@ refreshes and inspects the Agent and revision history.
 - 2026-09-23 07:20: Discover API-key model choices during Agent creation without saving credentials or selecting a hardcoded model. (01a0cce9-23e3-7072-aa3f-a2e26d2dbf11 - 553423dd2419ec19d2d71a2d1f8de75839a1642b)
 
 - 2026-09-23 06:27: Move two-provider API-key setup into Agent creation using existing Secret and IAM operations. (01a0cce9-23e3-7072-aa3f-a2e26d2dbf11 - a8272f4e2760e5ff06dc09c5658f48bea382c790)
+
+- 2026-09-22 23:19: Enable native Control UI in Console starters with explicit loopback origins; preserve Preset and edited configuration. (01a0ccc0-00fa-7173-ab45-f7a5fb55b3b6 - 6d23cef977270fdf8ced6ea54ac8e1302cf8acd6)
 
 - 2026-09-22 20:56: Rename the deployment-facing Console view to New revision. (01a0cc48-2eda-7fc2-a19e-096b68fccb7b - 081bccfcf3f5b114588dde1b42a0deb07f326017)
 

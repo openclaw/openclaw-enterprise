@@ -68,6 +68,11 @@ is the Kubernetes namespace created by the driver during
 
 ## Configure the Agent runtime
 
+Both examples enable Control UI. Their explicit loopback origins allow the first
+revision to start without trusting an arbitrary browser host. After deployment,
+[finish Control UI access](#open-control-ui) by adding this Agent's exact HTTPS
+origin. Loopback origins alone do not enable the OCE native admin link.
+
 Complete [private routing](workspace-routing.md#configure-private-routing) first.
 Configure verified Envoy source CIDRs in the trusted Installation YAML before
 deploying either example. Kubernetes Compute renders native trusted-proxy
@@ -89,6 +94,13 @@ cat > configuration.json <<'JSON'
     "gateway": {
       "mode": "local",
       "bind": "lan",
+      "controlUi": {
+        "enabled": true,
+        "allowedOrigins": [
+          "http://127.0.0.1:18789",
+          "http://localhost:18789"
+        ]
+      },
       "auth": {
         "password": {
           "source": "env",
@@ -150,7 +162,11 @@ cat > configuration.json <<'JSON'
       "mode": "local",
       "bind": "lan",
       "controlUi": {
-        "enabled": false
+        "enabled": true,
+        "allowedOrigins": [
+          "http://127.0.0.1:18789",
+          "http://localhost:18789"
+        ]
       },
       "auth": {
         "password": {
@@ -386,6 +402,20 @@ file is a separate result: the file API can create or replace a file, but cannot
 delete it. Verify access before creating a missing file. See [workspace-file errors](../../reference/agents.md#workspace-files).
 Do not treat this setup as complete merely because a revision is active or
 credentials are stored. Keep model verification as a separate check below.
+
+## Open Control UI
+
+Complete [native admin setup](native-admin.md#steps) for the Installation, then
+[configure this Agent's origin](native-admin.md#configure-each-agent) using an
+OCE browser session with exact Agent `administer` permission. The first active
+revision makes its stable origin discoverable; copy that origin into
+`gateway.controlUi.allowedOrigins`, save the Configuration, and deploy a new
+revision. Do not use a wildcard, the Console origin, or host-header fallback.
+
+On the Agent detail page, select **Refresh access** in **Native admin UI**.
+Expect **available**, open **Open native admin UI**, and verify the native
+Control UI loads on the returned Agent HTTPS host. Model verification below is
+separate from this browser-access check.
 
 ## Verify production workloads
 
