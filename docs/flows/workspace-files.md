@@ -1,7 +1,7 @@
 ---
 created: 2026-08-31
-updated: 2026-09-22
-last_updated_session: authoring-run/ffffed03-0b85-4984-990e-aa0705a91645
+updated: 2026-09-23
+last_updated_session: authoring-run/94dba260-c3e1-421a-876a-1159e514db05
 ---
 
 # Agent Workspace Files Flow
@@ -111,8 +111,11 @@ startup cannot carry this init container and rejects workspace setup rather than
 dropping initialization.
 
 The runner checks the exact setup identity and workspace path, rejects links
-and conflicting files, and verifies OpenClaw `2026.9.1` and the optional rendered
-template digest. With no completion marker it runs native `setup` without
+and conflicting files, and requires an OpenClaw package manifest. The optional
+saved preview digest must match the actual installed templates, even when the
+package release differs from the Console's `2026.9.1` template baseline. A runtime
+upgrade that changes those templates still blocks pending setup. With no
+completion marker it requires successful native `setup --baseline` without
 starting the gateway, preserving native initialization such as Git creation.
 It atomically replaces supplied files, including empty strings, only if the
 existing value is absent, stock, or already submitted. It runs native setup
@@ -321,6 +324,8 @@ replays it. The native client closes in the operation's cleanup path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 17:23: Check installed template identity independently of the OpenClaw package release; retain native setup and replay guards. (authoring-run/94dba260-c3e1-421a-876a-1159e514db05 - 63ceabdbba3528553a9c5f04d7c57831bb8cb6eb)
 
 - 2026-09-22 21:24: Render Kubernetes operator proxy trust and retain optional loopback passwords. (authoring-run/ffffed03-0b85-4984-990e-aa0705a91645 - cbf1851308a2db398820ae9e1000f57837703ace)
 - Kubernetes Compute uses trusted proxy for native gateway authentication. (NOT_IN_SPEC)
