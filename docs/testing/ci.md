@@ -10,7 +10,14 @@ separate migrator-role connection for test-only table contention. The
 `logging-collector` lane also runs real Prometheus/Grafana collection and
 dashboard provisioning. See [metrics testing](metrics.md) for local setup.
 
-The [suite map](../../scripts/ci/test-suites.json) assigns each active test file to exactly one lane, with its required inputs and preparation resources. Check its coverage after adding or renaming tests:
+The [suite index](../../scripts/ci/test-suites.json) holds ordered lane references
+and coverage groups. Each `scripts/ci/test-suites/<lane>.json` owns that lane's
+test files, required inputs, environment, and preparation resources. Edit the
+owning lane file when adding or renaming tests; update the index when adding a
+lane or changing a group. The shared
+[loader](../../scripts/ci/test-suites.mjs) assembles these definitions for the
+runner and preparation tools. Check that every active test file has exactly one
+lane owner:
 
 ```sh
 node scripts/ci/run-tests.mjs audit

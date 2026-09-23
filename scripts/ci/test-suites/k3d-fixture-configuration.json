@@ -1,0 +1,27 @@
+{
+  "requiredEnv": [
+    "OCC_TEST_KUBERNETES_KUBECONFIG",
+    "OCC_TEST_KUBERNETES_CONTEXT",
+    "OCC_TEST_KUBERNETES_IMAGE",
+    "OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS"
+  ],
+  "env": {
+    "OCC_TEST_KUBERNETES_CONFIGURATION": "1"
+  },
+  "prepare": {
+    "postgres": true,
+    "k3d": true,
+    "requiresPreparedStateForFile": true
+  },
+  "files": [
+    {
+      "path": "tests/integration/kubernetes-compute-real.test.mjs",
+      "expectedTests": [
+        "real Kubernetes Compute Driver owns isolated Agent gateways, identities, revisions, and deletion",
+        "real Kubernetes Drivers safely use and preserve an externally managed tenant namespace",
+        "provisioning API and worker hand off a dedicated Agent with real Kubernetes fixture storage",
+        "authenticated PostgreSQL OCC API and worker deploy real Agent-owned gateways, Secret bindings, and revisions"
+      ]
+    }
+  ]
+}

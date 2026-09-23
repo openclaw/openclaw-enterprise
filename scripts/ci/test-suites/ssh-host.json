@@ -1,0 +1,20 @@
+{
+  "env": {
+    "OCC_TEST_SSH_REAL": "1"
+  },
+  "requiredEnv": [
+    "OCC_TEST_SSH_ADDRESS",
+    "OCC_TEST_SSH_PORT",
+    "OCC_TEST_SSH_USER",
+    "OCC_TEST_SSH_IDENTITY_FILE",
+    "OCC_TEST_SSH_KNOWN_HOSTS_FILE",
+    "OCC_TEST_SSH_NODE_PATH",
+    "OCC_TEST_SSH_OPENCLAW_PATH",
+    "OCC_TEST_SSH_RUNTIME_USER"
+  ],
+  "files": [
+    {
+      "path": "tests/integration/ssh-compute-real.test.mjs"
+    }
+  ]
+}

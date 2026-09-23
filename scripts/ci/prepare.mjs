@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
 import { createServer, isIPv4 } from "node:net";
 import {
   chmod,
@@ -18,6 +17,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
+import { loadTestSuites } from "./test-suites.mjs";
 import { cleanupResourceIds } from "./cleanup.mjs";
 import { prepareGatewayRouting } from "./routing.mjs";
 import { prepareLogging } from "./logging.mjs";
@@ -41,7 +41,7 @@ const defaultStatePath = join(
   process.env.RUNNER_TEMP ?? tmpdir(),
   "openclaw-enterprise-ci-state.json",
 );
-const laneDefinitions = JSON.parse(readFileSync(testSuitesManifestPath, "utf8")).lanes ?? {};
+const laneDefinitions = loadTestSuites(testSuitesManifestPath).lanes ?? {};
 const allowedLanes = new Set(Object.keys(laneDefinitions));
 const fixtureLanes = new Set([
   "k3d-fixture-configuration",

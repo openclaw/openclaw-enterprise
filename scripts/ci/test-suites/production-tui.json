@@ -1,0 +1,39 @@
+{
+  "requiredEnv": [
+    "OPENAI_API_KEY",
+    "OCC_TEST_OPENAI_MODEL",
+    "OCC_TEST_KUBERNETES_KUBECONFIG",
+    "OCC_TEST_KUBERNETES_CONTEXT",
+    "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE",
+    "OCC_TEST_KUBERNETES_RUNTIME_IMAGE",
+    "OCC_TEST_PRODUCTION_POSTGRES_IMAGE",
+    "OCC_TEST_PRODUCTION_NODE_IMAGE",
+    "OCC_TEST_OTEL_LOGS_JSONL"
+  ],
+  "env": {
+    "OCC_TEST_PRODUCTION_TUI_REAL": "1",
+    "OCC_TEST_OTEL_LOGS": "1"
+  },
+  "prepare": {
+    "postgres": true,
+    "k3d": true,
+    "requiresPreparedStateForFile": true,
+    "requireEnv": [
+      "OPENAI_API_KEY",
+      "OCC_TEST_OPENAI_MODEL",
+      "NODE_BASE_IMAGE",
+      "OCC_TEST_PRODUCTION_POSTGRES_IMAGE",
+      "OCC_TEST_PRODUCTION_NODE_IMAGE"
+    ],
+    "nodeBaseImage": true,
+    "immutableEnvImages": ["OCC_TEST_PRODUCTION_POSTGRES_IMAGE", "OCC_TEST_PRODUCTION_NODE_IMAGE"]
+  },
+  "files": [
+    {
+      "path": "tests/integration/production-tui-k3d-real.test.mjs",
+      "expectedTests": [
+        "Helm production installation supports interactive TUI and revision cutover"
+      ]
+    }
+  ]
+}

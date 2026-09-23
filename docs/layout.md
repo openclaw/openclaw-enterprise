@@ -79,7 +79,7 @@ See the [Agent repository flow](flows/agent-repository-credentials.md).
 | `Dockerfile`, `compose*.yaml`                            | Controller image and local stack definitions or overlays.                                      |
 | `migrations/`, `drizzle.config.ts`                       | Database migrations and Drizzle tooling configuration.                                         |
 | `scripts/`                                               | Build, bootstrap, migration, generation, and maintenance commands.                             |
-| `scripts/ci/`, `.github/workflows/`                      | CI execution helpers and workflow definitions.                                                 |
+| `scripts/ci/`, `.github/workflows/`                      | CI execution helpers and workflows; `scripts/ci/test-suites/` owns lane definitions.           |
 | `.agents/skills/`                                        | Repository-owned development workflows; see the [skills catalog](testing/developer-skills.md). |
 | `.githooks/`                                             | Managed Git hooks; installation is described in [Contributing](../CONTRIBUTING.md).            |
 | `tests/conformance/`                                     | Platform and Driver contract checks.                                                           |
