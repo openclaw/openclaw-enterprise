@@ -1597,8 +1597,7 @@ test("Agent detail retries failed first-time provisioning and keeps exact revisi
   await login(
     page,
     fixture,
-    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").pathname +
-      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").search,
+    `/console/agents/${agent.id}?namespace=${namespace.id}&tab=configuration`,
   );
   await page.getByRole("heading", { name: "Failed provisioning Agent" }).waitFor();
   const provisioningPanel = page.locator("section.deployment-status").filter({
