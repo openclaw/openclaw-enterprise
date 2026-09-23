@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   KubernetesSecretDriver,
   SecretBackendUnavailableError,
+  SecretConflictError,
   SecretOwnershipError,
   SecretValidationError,
 } from "../../apps/controller/src/drivers/secret/kubernetes/index.ts";
@@ -27,6 +28,7 @@ function kubernetesNamespaceName(namespaceId) {
 class FakeCoreV1Api {
   namespaces = new Map();
   secrets = new Map();
+  creates = 0;
   reads = 0;
   deletes = [];
   readSecretFailureCodes = [];
@@ -66,6 +68,7 @@ class FakeCoreV1Api {
   }
 
   async createNamespacedSecret({ namespace, body }) {
+    this.creates += 1;
     const key = `${namespace}/${body.metadata.name}`;
     if (this.secrets.has(key)) {
       throw Object.assign(new Error("conflict"), { code: 409 });
@@ -239,6 +242,43 @@ test("kubernetes-secret-driver stores, verifies, updates, resolves, and deletes 
     backendRef: { ...backendRef, uid: updated.metadata.uid },
     createdAt: new Date().toISOString(),
   });
+});
+
+test("kubernetes-secret-driver inspects only the exact Secret identity and value", async () => {
+  const client = new FakeCoreV1Api();
+  const nsId = namespaceId();
+  const namespace = client.addNamespace(nsId);
+  const driver = driverWithClient(client);
+  const identity = { id: secretId(), namespaceId: nsId, name: "model-key" };
+
+  const backendRef = await driver.createExact({ identity, value: "stored-value" });
+  assert.match(backendRef.name, /^secret-[a-f0-9]{12}-[a-f0-9]{12}$/);
+  assert.deepEqual(await driver.inspectExact({ identity, value: "stored-value" }), backendRef);
+  assert.equal(client.creates, 1);
+  assert.equal(client.secrets.size, 1);
+  assert.equal(client.secrets.has(`${namespace}/${backendRef.name}`), true);
+  assert.equal(
+    await driver.inspectExact({
+      identity: { id: secretId(), namespaceId: nsId, name: "missing" },
+      value: "stored-value",
+    }),
+    undefined,
+  );
+
+  await assert.rejects(
+    () => driver.createExact({ identity, value: "changed-value" }),
+    SecretConflictError,
+  );
+  await assert.rejects(
+    () => driver.inspectExact({ identity, value: "changed-value" }),
+    SecretConflictError,
+  );
+  const stored = client.secrets.get(`${namespace}/${backendRef.name}`);
+  stored.metadata.annotations["openclaw.dev/secret-id"] = secretId();
+  await assert.rejects(
+    () => driver.inspectExact({ identity, value: "stored-value" }),
+    SecretConflictError,
+  );
 });
 
 test("kubernetes-secret-driver fails closed on missing placement, invalid values, and foreign backends", async () => {

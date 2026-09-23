@@ -5,6 +5,7 @@ import {
   loadOperationalLoggingConfiguration,
   loadStartupConfigurationSnapshot,
 } from "./composition/installation-config.ts";
+import { loadProvisioningInputProtector } from "./composition/provisioning-inputs.ts";
 import { createOccLogger, createWorkerLogEmitter, emitOccLogEvent } from "./logging.ts";
 import { createControllerWorker } from "./worker.ts";
 import { PostgresMetricsSnapshot } from "@openclaw-enterprise/occ";
@@ -86,6 +87,7 @@ try {
   startupConfiguration = await loadStartupConfigurationSnapshot({ mode });
   logging = startupConfiguration.logging;
   logger = createOccLogger({ component: "occ-worker", level: logging.level });
+  const provisioningInputProtector = await loadProvisioningInputProtector();
   readinessPath = process.env.OCC_WORKER_READINESS_PATH;
   if (readinessPath !== undefined) {
     if (!readinessPath.startsWith("/")) {
@@ -132,6 +134,7 @@ try {
     mode,
     ...options,
     emit: createWorkerLogEmitter(logger),
+    ...(provisioningInputProtector === undefined ? {} : { provisioningInputProtector }),
     ...(drivers === undefined ? { computeDriver } : { drivers }),
     ...(readinessPath === undefined
       ? {}

@@ -13,23 +13,42 @@ export function harnessAuthDescription(binding) {
     : `ChatGPT service account · ${binding.serviceAccountId}`;
 }
 
-export function createHarnessAuthFields(context, binding = null) {
+export function createHarnessAuthFields(context, binding = null, options = {}) {
+  const provisioningSecretOption =
+    options.allowProvisioningSecret === true
+      ? element("option", { value: "api_key_provisioning" }, "OpenAI API key from new Secret")
+      : null;
   const method = element(
     "select",
     { id: "harness-auth-method" },
     element("option", { value: "" }, "None"),
     element("option", { value: "api_key" }, "OpenAI API key"),
+    provisioningSecretOption,
     element("option", { value: "runtime" }, "Operator-managed credentials"),
     element("option", { value: "chatgpt_service_account" }, "ChatGPT service account"),
   );
-  method.value = binding?.method ?? "";
+  method.value =
+    binding?.method === "api_key" && binding.source?.kind === "provisioning-secret"
+      ? "api_key_provisioning"
+      : (binding?.method ?? "");
   const secret = element("input", {
     id: "harness-auth-secret",
     type: "password",
     spellcheck: "false",
     autocomplete: "off",
     placeholder: "sec_…",
-    value: binding?.method === "api_key" ? binding.source.id : "",
+    value:
+      binding?.method === "api_key" && binding.source?.kind === "secret" ? binding.source.id : "",
+  });
+  const provisioningSecret = element("input", {
+    id: "harness-auth-provisioning-secret",
+    spellcheck: "false",
+    autocomplete: "off",
+    placeholder: "MODEL_API_KEY",
+    value:
+      binding?.method === "api_key" && binding.source?.kind === "provisioning-secret"
+        ? binding.source.name
+        : "",
   });
   const account = element(
     "select",
@@ -62,6 +81,17 @@ export function createHarnessAuthFields(context, binding = null) {
     element("label", { for: account.id }, "Issued ChatGPT service account"),
     account,
   );
+  const provisioningSecretField = element(
+    "div",
+    { className: "form-field" },
+    element("label", { for: provisioningSecret.id }, "New OpenAI API key Secret name"),
+    provisioningSecret,
+    element(
+      "p",
+      { className: "hint" },
+      "Use the name of an item in New Secrets. The value is submitted only with provisioning.",
+    ),
+  );
   const runtimeHint = element(
     "p",
     { className: "hint" },
@@ -74,6 +104,7 @@ export function createHarnessAuthFields(context, binding = null) {
     element("label", { for: method.id }, "Authentication source"),
     method,
     secretField,
+    provisioningSecretField,
     accountField,
     runtimeHint,
     feedback,
@@ -86,8 +117,10 @@ export function createHarnessAuthFields(context, binding = null) {
   function update() {
     runtimeHint.hidden = method.value !== "runtime";
     secretField.hidden = method.value !== "api_key";
+    provisioningSecretField.hidden = method.value !== "api_key_provisioning";
     accountField.hidden = method.value !== "chatgpt_service_account";
     secret.required = method.value === "api_key";
+    provisioningSecret.required = method.value === "api_key_provisioning";
     account.required = method.value === "chatgpt_service_account";
   }
   method.addEventListener("change", update);
@@ -130,7 +163,20 @@ export function createHarnessAuthFields(context, binding = null) {
       disabled = value;
       method.disabled = value;
       secret.disabled = value;
+      provisioningSecret.disabled = value;
       account.disabled = value || !accountsLoaded;
+    },
+    setProvisioningSecretAllowed(value) {
+      if (!provisioningSecretOption) {
+        return;
+      }
+      provisioningSecretOption.disabled = !value;
+      provisioningSecretOption.hidden = !value;
+      if (!value && method.value === "api_key_provisioning") {
+        method.value = "";
+        provisioningSecret.value = "";
+      }
+      update();
     },
     async readBinding() {
       if (!method.value) {
@@ -144,6 +190,16 @@ export function createHarnessAuthFields(context, binding = null) {
           throw new Error("Select an issued ChatGPT service account.");
         }
         return { method: "chatgpt_service_account", serviceAccountId: account.value };
+      }
+      if (method.value === "api_key_provisioning") {
+        const name = provisioningSecret.value.trim();
+        if (!name) {
+          throw new Error("Enter a new Secret name.");
+        }
+        return {
+          method: "api_key",
+          source: { kind: "provisioning-secret", name },
+        };
       }
       const id = secret.value.trim();
       if (!id) {

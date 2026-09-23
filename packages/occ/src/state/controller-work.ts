@@ -7,6 +7,8 @@ export type { RuntimeFailureEvidence } from "@openclaw-enterprise/contracts";
 
 export type ControllerWorkState = "queued" | "claimed" | "succeeded" | "failed_permanent";
 
+export type ControllerWorkKind = "lifecycle" | "provisioning";
+
 export type DeploymentStatus = "queued" | "running" | "succeeded" | "failed";
 
 export interface DeploymentStatusError {
@@ -30,13 +32,14 @@ export interface PluginDeploymentWarning {
 }
 
 export interface ControllerWork {
+  readonly kind: ControllerWorkKind;
   readonly idempotencyKey: string;
   readonly namespaceId: string;
   readonly agentId?: string;
   readonly revisionId?: string;
   readonly actorId: string;
   readonly namespaceTarget?: "ready" | "deleted";
-  readonly agentTarget?: "stopped" | "deleted";
+  readonly agentTarget?: "stopped" | "deleted" | "provisioned";
   readonly state: ControllerWorkState;
   readonly availableAt: Date;
   readonly attemptCount: number;
@@ -56,13 +59,14 @@ export interface ClaimedWork extends ControllerWork {
 }
 
 export interface EnqueueWork {
+  readonly kind?: ControllerWorkKind;
   readonly idempotencyKey: string;
   readonly namespaceId: string;
   readonly agentId?: string;
   readonly revisionId?: string;
   readonly actorId: string;
   readonly namespaceTarget?: "ready" | "deleted";
-  readonly agentTarget?: "stopped" | "deleted";
+  readonly agentTarget?: "stopped" | "deleted" | "provisioned";
   readonly availableAt?: Date | string;
 }
 

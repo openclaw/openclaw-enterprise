@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  ConfigurationConflictError,
   KubernetesConfigurationDriver,
   kubernetesConfigurationName,
 } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
@@ -37,6 +38,74 @@ const configuration = {
 
 function createDriver(authentication = { mode: "inCluster" }) {
   return new KubernetesConfigurationDriver({ authentication });
+}
+
+function physicalNamespaceName(id) {
+  const slug =
+    id
+      .toLowerCase()
+      .replace(/[^a-z0-9-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 46)
+      .replace(/-+$/g, "") || "ns";
+  return `oce-${slug}-${createHash("sha256").update(id).digest("hex").slice(0, 12)}`;
+}
+
+class FakeConfigurationCoreV1Api {
+  namespaces = new Map();
+  configMaps = new Map();
+  creates = 0;
+
+  addNamespace(id) {
+    const name = physicalNamespaceName(id);
+    this.namespaces.set(name, {
+      metadata: {
+        name,
+        labels: {
+          "app.kubernetes.io/managed-by": "openclaw-enterprise",
+          "openclaw.dev/namespace": id,
+        },
+        annotations: { "openclaw.dev/namespace-id": id },
+      },
+      status: { phase: "Active" },
+    });
+    return name;
+  }
+
+  async listNamespace({ labelSelector }) {
+    const [, requestedNamespaceId] = labelSelector.split("=");
+    return {
+      items: [...this.namespaces.values()].filter(
+        ({ metadata }) => metadata.labels?.["openclaw.dev/namespace"] === requestedNamespaceId,
+      ),
+    };
+  }
+
+  async createNamespacedConfigMap({ namespace, body }) {
+    this.creates += 1;
+    const key = `${namespace}/${body.metadata.name}`;
+    if (this.configMaps.has(key)) {
+      throw Object.assign(new Error("conflict"), { code: 409 });
+    }
+    const stored = {
+      ...structuredClone(body),
+      metadata: {
+        ...body.metadata,
+        uid: `uid-${this.configMaps.size + 1}`,
+        resourceVersion: "1",
+      },
+    };
+    this.configMaps.set(key, stored);
+    return structuredClone(stored);
+  }
+
+  async readNamespacedConfigMap({ namespace, name }) {
+    const stored = this.configMaps.get(`${namespace}/${name}`);
+    if (stored === undefined) {
+      throw Object.assign(new Error("missing ConfigMap"), { code: 404 });
+    }
+    return structuredClone(stored);
+  }
 }
 
 test("Kubernetes configuration implementations expose a closed preconstruction schema", () => {
@@ -211,6 +280,43 @@ test("ConfigMaps contain exactly one native document and preserve real ownership
       reason,
     );
   }
+});
+
+test("Kubernetes Configuration inspectExact recovers only the exact Configuration", async () => {
+  const client = new FakeConfigurationCoreV1Api();
+  const namespace = client.addNamespace(namespaceId);
+  const driver = createDriver();
+  driver.client = Promise.resolve(client);
+
+  const created = await driver.createExact(configuration);
+  assert.deepEqual(await driver.inspectExact(configuration), created);
+  assert.equal(client.creates, 1);
+  assert.equal(client.configMaps.size, 1);
+  await assert.rejects(() => driver.createExact(configuration), ConfigurationConflictError);
+  assert.equal(
+    await driver.inspectExact({
+      ...configuration,
+      id: "cfg_00000000-0000-4000-8000-000000000099",
+    }),
+    undefined,
+  );
+
+  const stored = client.configMaps.get(
+    `${namespace}/${kubernetesConfigurationName(configuration.id)}`,
+  );
+  stored.data["openclaw.json"] = JSON.stringify({
+    plugins: configuration.values.plugins,
+    agents: configuration.values.agents,
+    secrets: configuration.values.secrets,
+    models: configuration.values.models,
+  });
+  assert.deepEqual(await driver.inspectExact(configuration), created);
+
+  stored.data["openclaw.json"] = JSON.stringify({
+    ...configuration.values,
+    agents: { defaults: { sandbox: { mode: "networking" } } },
+  });
+  await assert.rejects(() => driver.inspectExact(configuration), ConfigurationConflictError);
 });
 
 test("configuration operations reject invalid references before reading Kubernetes credentials", async () => {

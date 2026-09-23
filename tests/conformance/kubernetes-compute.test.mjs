@@ -1445,6 +1445,83 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
   assert.doesNotThrow(() => multiProxyDriver.gatewayConfiguration(multiProxyRevision));
 });
 
+test("agent provisioning validation reuses native trusted-proxy admission before cluster access", () => {
+  const driver = createKubernetesComputeDriver(routedOptions());
+  const revision = routedRevision(driver);
+  assert.deepEqual(driver.agentProvisioning.executionModes, ["dedicated"]);
+
+  assert.doesNotThrow(() =>
+    driver.validateAgentProvisioning({
+      executionMode: "dedicated",
+      configuration: revision.configuration,
+    }),
+  );
+  assert.throws(
+    () =>
+      driver.validateAgentProvisioning({
+        executionMode: "embedded",
+        configuration: revision.configuration,
+      }),
+    /dedicated execution mode/i,
+  );
+
+  for (const [configuration, expected] of [
+    [{ gateway: { auth: { mode: "oauth" } } }, /trusted-proxy/i],
+    [
+      {
+        gateway: {
+          auth: {
+            mode: "trusted-proxy",
+            unsupportedField: true,
+          },
+        },
+      },
+      /unsupported field unsupportedField/i,
+    ],
+    [
+      {
+        gateway: {
+          auth: {
+            identityScopes: { "occ-workspace-files": ["operator.read"] },
+          },
+        },
+      },
+      /identityScopes/i,
+    ],
+    [{ gateway: { trustedProxies: ["10.99.0.0/16"] } }, /gatewayTrustedProxyCidrs/i],
+  ]) {
+    const failClosed = createKubernetesComputeDriver(routedOptions());
+    let clusterTouched = false;
+    failClosed.clients = async () => {
+      clusterTouched = true;
+      throw new Error("cluster touched");
+    };
+    assert.throws(
+      () =>
+        failClosed.validateAgentProvisioning({
+          executionMode: "dedicated",
+          configuration: { ...revision.configuration, ...configuration },
+        }),
+      expected,
+    );
+    assert.equal(clusterTouched, false);
+  }
+
+  const missingRouting = createKubernetesComputeDriver(
+    options({
+      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+    }),
+  );
+  assert.throws(
+    () =>
+      missingRouting.validateAgentProvisioning({
+        executionMode: "dedicated",
+        configuration: revision.configuration,
+      }),
+    /gateway routing and node enrollment/i,
+  );
+});
+
 test("gateway routing startup validation and namespace membership fail closed", async () => {
   for (const envoyHttpsTargetPort of [0, -1, 65536, 443.5, "10443"]) {
     assert.throws(

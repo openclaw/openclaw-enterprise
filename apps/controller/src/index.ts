@@ -35,6 +35,7 @@ import {
   occApiRoutes,
   type AccessBinding,
   type Agent,
+  type ProvisionAgentBody,
   type AgentRevision,
   type AgentRuntimeCredentialsBody,
   type AuditEvent,
@@ -74,6 +75,8 @@ import {
   ResourceConflictError,
   ScopeViolationError,
   type DeploymentStatusResult,
+  type AgentProvisioningProgress,
+  type ProvisionAgentInput,
   type HarnessResolver,
   type OpenClawController,
 } from "@openclaw-enterprise/occ";
@@ -205,7 +208,11 @@ interface RequiredPermission {
   readonly resourceKind: ResourceKind;
   readonly scope: "requested" | "installation" | "namespace" | "each_returned" | "request_body";
   readonly condition?:
-    "associated_service_account" | "existing_namespace" | "bound_secret" | "iam_binding_target";
+    | "associated_service_account"
+    | "existing_namespace"
+    | "bound_secret"
+    | "iam_binding_target"
+    | "provisioning_secret";
 }
 
 interface DocumentedFastifySchema extends FastifySchema {
@@ -409,7 +416,10 @@ function operationTarget(
   if (secretId && namespaceId) {
     return { kind: "secret", id: secretId, namespaceId };
   }
-  if (operation.operationId === "createAgent" && namespaceId) {
+  if (
+    (operation.operationId === "createAgent" || operation.operationId === "provisionAgent") &&
+    namespaceId
+  ) {
     return { kind: "agent", id: namespaceId, namespaceId };
   }
   if (operation.operationId === "getAgentRevision" && namespaceId && revisionId) {
@@ -517,13 +527,40 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
   }
 
   if (
+    operation.operationId === "provisionAgent" ||
     operation.operationId === "createAgent" ||
     operation.operationId === "updateAgent" ||
     operation.operationId === "deployAgent"
   ) {
     return [
-      { ...permission, scope: operation.operationId === "createAgent" ? "namespace" : "requested" },
-      { action: "read", resourceKind: "configuration", scope: "requested" },
+      {
+        ...permission,
+        scope:
+          operation.operationId === "createAgent" || operation.operationId === "provisionAgent"
+            ? "namespace"
+            : "requested",
+      },
+      ...(operation.operationId === "provisionAgent"
+        ? [
+            {
+              action: "create" as const,
+              resourceKind: "configuration" as const,
+              scope: "namespace" as const,
+            },
+            {
+              action: "create" as const,
+              resourceKind: "secret" as const,
+              scope: "namespace" as const,
+              condition: "provisioning_secret" as const,
+            },
+          ]
+        : [
+            {
+              action: "read" as const,
+              resourceKind: "configuration" as const,
+              scope: "requested" as const,
+            },
+          ]),
       {
         action: "read",
         resourceKind: "service_account",
@@ -597,6 +634,9 @@ function permissionDescription(
         return `Requires ${action} permission on the ${name} when selecting an existing Kubernetes namespace.`;
       }
       if (condition === "bound_secret") {
+        if (operation?.operationId === "provisionAgent") {
+          return `Requires ${action} permission on each existing ${name} reference supplied in provisioning inputs.`;
+        }
         if (operation?.operationId === "createConfiguration") {
           return `Requires ${action} permission on each ${name} supplied in request body Secret bindings.`;
         }
@@ -604,6 +644,9 @@ function permissionDescription(
           return `Requires ${action} permission on each ${name} bound by the resulting Configuration.`;
         }
         return `Requires ${action} permission on each bound ${name} when Secret bindings are present or selected.`;
+      }
+      if (condition === "provisioning_secret") {
+        return `Requires ${action} permission for ${name} resources when provisioning creates submitted Secrets.`;
       }
       if (condition === "iam_binding_target") {
         return `Requires ${action} permission on the request body ${name} when the AccessBinding targets that resource kind.`;
@@ -657,6 +700,27 @@ function clientIAMAccessBinding(binding: Readonly<AccessBinding>): Record<string
   };
 }
 
+function clientInstallation(
+  installation: Readonly<Installation>,
+  computeDriver: Readonly<ComputeDriver> | undefined,
+): Record<string, unknown> {
+  const agentProvisioning = computeDriver?.agentProvisioning;
+  return {
+    id: installation.id,
+    name: installation.name,
+    createdAt: installation.createdAt,
+    ...(agentProvisioning === undefined
+      ? {}
+      : {
+          capabilities: {
+            agentProvisioning: {
+              executionModes: [...agentProvisioning.executionModes],
+            },
+          },
+        }),
+  };
+}
+
 function clientAgent(agent: Readonly<Agent>): Record<string, unknown> {
   return {
     id: agent.id,
@@ -675,6 +739,26 @@ function clientAgent(agent: Readonly<Agent>): Record<string, unknown> {
     desiredRuntimeState: agent.desiredRuntimeState,
     status: agent.status,
     createdAt: agent.createdAt,
+  };
+}
+
+function agentProvisioningUrl(namespaceId: string, agentId: string): string {
+  return `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(agentId)}/provisioning`;
+}
+
+function clientAgentProvisioning(
+  provisioning: Readonly<AgentProvisioningProgress>,
+  namespaceId: string,
+  agentId: string,
+): Record<string, unknown> {
+  return {
+    status: provisioning.status,
+    phase: provisioning.phase,
+    attemptCount: provisioning.attemptCount,
+    updatedAt: provisioning.updatedAt,
+    ...(provisioning.revisionId === undefined ? {} : { revisionId: provisioning.revisionId }),
+    url: provisioning.url ?? agentProvisioningUrl(namespaceId, agentId),
+    ...(provisioning.error === undefined ? {} : { error: provisioning.error }),
   };
 }
 
@@ -1989,7 +2073,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           );
         });
         controller = created;
-        reply.status(201).send({ data: created.installation, meta: { requestId: request.id } });
+        reply.status(201).send({
+          data: clientInstallation(created.installation, options.computeDriver),
+          meta: { requestId: request.id },
+        });
         return;
       } finally {
         bootstrapping = false;
@@ -2002,7 +2089,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
     if (operation.operationId === "getInstallation") {
       reply.send({
-        data: await controller.getInstallation(context.actorId),
+        data: clientInstallation(
+          await controller.getInstallation(context.actorId),
+          options.computeDriver,
+        ),
         meta: { requestId: request.id },
       });
       return;
@@ -2549,6 +2639,87 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
+    if (operation.operationId === "provisionAgent") {
+      const provisionBody = body as unknown as ProvisionAgentBody;
+      try {
+        normalizeInitialWorkspaceFiles(provisionBody.initialWorkspaceFiles);
+      } catch {
+        throw failure(
+          400,
+          "INVALID_REQUEST",
+          "Initial workspace files must use the four allowed names and valid Unicode without NUL, within 16 KiB per file.",
+        );
+      }
+      if (
+        provisionBody.workspaceDefaultsId !== undefined &&
+        provisionBody.workspaceDefaultsId !== WORKSPACE_DEFAULTS_ID
+      ) {
+        throw failure(
+          409,
+          "RESOURCE_CONFLICT",
+          "Workspace defaults changed. Reload the create form before submitting.",
+        );
+      }
+      const result = await controller.transact(async (unit) => {
+        const provisioned = await controller!.provisionAgent(context.actorId, {
+          requestId: provisionBody.requestId,
+          namespaceId,
+          name: provisionBody.name,
+          configuration: provisionBody.configuration as ProvisionAgentInput["configuration"],
+          ...(provisionBody.secrets === undefined ? {} : { secrets: provisionBody.secrets }),
+          ...(provisionBody.initialWorkspaceFiles === undefined
+            ? {}
+            : {
+                initialWorkspaceFiles: provisionBody.initialWorkspaceFiles as InitialWorkspaceFiles,
+              }),
+          ...(provisionBody.workspaceDefaultsId === undefined
+            ? {}
+            : { workspaceDefaultsId: provisionBody.workspaceDefaultsId }),
+          ...(provisionBody.providerId === undefined
+            ? {}
+            : { providerId: provisionBody.providerId }),
+          ...(provisionBody.executionMode === undefined
+            ? {}
+            : { executionMode: provisionBody.executionMode as HarnessExecutionMode }),
+          ...(provisionBody.harnessAuth === undefined
+            ? {}
+            : {
+                harnessAuth: provisionBody.harnessAuth as NonNullable<
+                  ProvisionAgentInput["harnessAuth"]
+                >,
+              }),
+          ...(provisionBody.plugins === undefined
+            ? {}
+            : { plugins: provisionBody.plugins as never }),
+          ...(provisionBody.repositoryBindings === undefined
+            ? {}
+            : {
+                repositoryBindings:
+                  provisionBody.repositoryBindings as readonly RepositoryBindingRequest[],
+              }),
+        });
+        await unit.audit.append(
+          event(
+            operation,
+            request,
+            { kind: "agent", id: provisioned.agent.id, namespaceId },
+            "mutation",
+            context,
+          ),
+        );
+        return {
+          agent: clientAgent(provisioned.agent),
+          provisioning: clientAgentProvisioning(
+            provisioned.provisioning,
+            namespaceId,
+            provisioned.agent.id,
+          ),
+        };
+      });
+      reply.status(202).send({ data: result, meta: { requestId: request.id } });
+      return;
+    }
+
     if (operation.operationId === "createAgent") {
       try {
         normalizeInitialWorkspaceFiles(body?.initialWorkspaceFiles);
@@ -2624,6 +2795,44 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (operation.operationId === "getAgent") {
       reply.send({
         data: clientAgent(await controller.getAgent(context.actorId, namespaceId, agentId)),
+        meta: { requestId: request.id },
+      });
+      return;
+    }
+
+    if (operation.operationId === "getAgentProvisioning") {
+      const provisioned = await controller.getAgentProvisioning(
+        context.actorId,
+        namespaceId,
+        agentId,
+      );
+      reply.send({
+        data: clientAgentProvisioning(provisioned.provisioning, namespaceId, agentId),
+        meta: { requestId: request.id },
+      });
+      return;
+    }
+
+    if (operation.operationId === "retryAgentProvisioning") {
+      const provisioning = await controller.transact(async (unit) => {
+        const retried = await controller!.retryAgentProvisioning(
+          context.actorId,
+          namespaceId,
+          agentId,
+        );
+        await unit.audit.append(
+          event(
+            operation,
+            request,
+            { kind: "agent", id: agentId, namespaceId },
+            "mutation",
+            context,
+          ),
+        );
+        return retried.provisioning;
+      });
+      reply.status(202).send({
+        data: clientAgentProvisioning(provisioning, namespaceId, agentId),
         meta: { requestId: request.id },
       });
       return;
@@ -3609,7 +3818,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         url: operation.path,
         ...(operation.operationId === "putAgentWorkspaceFile"
           ? { bodyLimit: WORKSPACE_FILE_BODY_LIMIT }
-          : operation.operationId === "createAgent"
+          : operation.operationId === "createAgent" || operation.operationId === "provisionAgent"
             ? { bodyLimit: options.maxBodyBytes ?? AGENT_CREATE_BODY_LIMIT }
             : {}),
         schema,

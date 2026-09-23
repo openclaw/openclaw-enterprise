@@ -105,6 +105,17 @@ spec:
             items:
               - key: {{ $.Values.installation.key }}
                 path: installation.yaml
+        {{- if $.Values.provisioning.keys.secretName }}
+        {{- if or (eq $.Values.provisioning.keys.secretName $.Values.installation.secretName) (eq $.Values.provisioning.keys.secretName $.Values.database.secretName) (eq $.Values.provisioning.keys.secretName $.Values.auth.secretName) }}
+        {{- fail "provisioning.keys.secretName must use a dedicated Secret" }}
+        {{- end }}
+        - name: provisioning-keys
+          secret:
+            secretName: {{ $.Values.provisioning.keys.secretName | quote }}
+            items:
+              - key: {{ $.Values.provisioning.keys.key | quote }}
+                path: keyring.json
+        {{- end }}
         {{- if $.Values.database.caSecretName }}
         - name: database-ca
           secret:
@@ -174,6 +185,10 @@ spec:
             {{- end }}
             - name: OCC_CONFIG_PATH
               value: /etc/openclaw/installation/installation.yaml
+            {{- if $.Values.provisioning.keys.secretName }}
+            - name: OCC_PROVISIONING_KEYS_PATH
+              value: {{ printf "%s/keyring.json" $.Values.provisioning.keys.mountPath | quote }}
+            {{- end }}
             {{- include "openclaw.secretEnv" (dict "name" "OCC_DATABASE_URL" "secretName" $.Values.database.secretName "key" $.Values.database.appUrlKey) | nindent 12 }}
             {{- if $.Values.gatewayRouting.enabled }}
             - name: OCC_GATEWAY_API_KEY_PATH
@@ -232,6 +247,11 @@ spec:
             - name: installation-startup
               mountPath: /etc/openclaw/installation
               readOnly: true
+            {{- if $.Values.provisioning.keys.secretName }}
+            - name: provisioning-keys
+              mountPath: {{ $.Values.provisioning.keys.mountPath | quote }}
+              readOnly: true
+            {{- end }}
             {{- if $.Values.database.caSecretName }}
             - name: database-ca
               mountPath: {{ $.Values.database.caMountPath | quote }}

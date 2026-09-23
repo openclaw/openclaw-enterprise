@@ -10,6 +10,7 @@ import type {
   AuthorizationRequest,
   ComputeDriver,
   PluginDeploymentWarning,
+  PluginDriver,
   ComputeReadiness,
   RepoDriver,
   RepositoryCredentialMaterialRef,
@@ -38,14 +39,18 @@ import {
 import {
   PostgresPlatformState,
   PostgresWorkQueue,
+  OpenClawController,
   WorkClaimLostError,
   isRepositoryCleanupWork,
   isRepositoryRuntimeRetirementWork,
+  provisioningDeletionDisposition,
+  type AgentProvisioningRecord,
   type ClaimedWork,
   type PlatformUnitOfWork,
   type PostgresPool,
   type PostgresQueryClient,
   type PostgresWorkQueueOptions,
+  type ProvisioningInputProtector,
   validateRuntimeFailureEvidence,
 } from "@openclaw-enterprise/occ";
 import {
@@ -63,6 +68,7 @@ import {
 } from "./worker/repository-credentials.ts";
 
 export interface ControllerWorkerOptions {
+  readonly provisioningInputProtector?: ProvisioningInputProtector;
   readonly metrics?: OccMetrics;
   readonly pool: PostgresPool & PostgresQueryClient;
   readonly mode?: "development" | "production";
@@ -359,6 +365,10 @@ export class ControllerWorker {
   private readonly iamDriverId: string;
   private readonly iam: IAMDriver;
   private readonly secretDriverId: string | undefined;
+  private readonly configuredServiceAccountDriverId: string | undefined;
+  private readonly secretDriver: SecretDriver | undefined;
+  private readonly provisioningInputProtector: ProvisioningInputProtector | undefined;
+  private provisioningController: OpenClawController | undefined;
   private readonly sandbox: SandboxDriver | undefined;
   private readonly providers: readonly ProviderDefinition[];
   private readonly providerMap: ReadonlyMap<string, ProviderDefinition>;
@@ -369,6 +379,7 @@ export class ControllerWorker {
   private readonly convergenceTimeoutMs: number;
   private readonly maintenanceIntervalMs: number | undefined;
   private readonly repoDriver: RepoDriver | undefined;
+  private readonly pluginDriver: PluginDriver | undefined;
   private readonly repositoryCredentials: RepositoryCredentialLifecycle;
   private readonly mode: "development" | "production";
   private readonly emit: (event: Readonly<Record<string, unknown>>) => void;
@@ -382,6 +393,7 @@ export class ControllerWorker {
 
   constructor(options: ControllerWorkerOptions) {
     this.metrics = options.metrics;
+    this.provisioningInputProtector = options.provisioningInputProtector;
     this.mode = options.mode ?? "development";
     if (this.mode !== "development" && this.mode !== "production") {
       throw new Error("The controller worker mode must be development or production.");
@@ -394,6 +406,7 @@ export class ControllerWorker {
       "Worker convergence timeout",
     );
     const drivers = options.drivers;
+    this.configuredServiceAccountDriverId = drivers?.installation.drivers.service_account?.id;
     if (this.mode === "production" && drivers === undefined) {
       throw new Error("Production controller workers require Installation startup configuration.");
     }
@@ -428,6 +441,7 @@ export class ControllerWorker {
     }
     this.compute = computeDriver;
     const selectedSecretDriver = drivers?.secretDriver;
+    this.secretDriver = selectedSecretDriver;
     const selectedSecretConfiguration = drivers?.installation.drivers.secret;
     this.secretDriverId = selectedSecretDriver?.id ?? selectedSecretConfiguration?.id;
     if (selectedSecretConfiguration !== undefined) {
@@ -470,6 +484,7 @@ export class ControllerWorker {
       });
     this.onHealthy = options.onHealthy;
     this.repoDriver = drivers?.repoDriver;
+    this.pluginDriver = drivers?.pluginDriver;
     if (this.repoDriver !== undefined) {
       const driver = this.repoDriver;
       if (
@@ -503,6 +518,31 @@ export class ControllerWorker {
     this.installation = installation;
     validatePersistedNativeIAMState(await this.loadIAMState());
     this.attachLifecycleDrivers(this.iam);
+    const provisioning = new OpenClawController(installation, {
+      state: this.state,
+      providers: this.providers,
+      recordOperations: true,
+      ...(this.configuredServiceAccountDriverId === undefined
+        ? {}
+        : { configuredServiceAccountDriverId: this.configuredServiceAccountDriverId }),
+      ...(this.provisioningInputProtector === undefined
+        ? {}
+        : { provisioningInputProtector: this.provisioningInputProtector }),
+    });
+    for (const driver of [
+      this.iam,
+      this.compute,
+      this.configuration,
+      this.secretDriver,
+      this.sandbox,
+      this.repoDriver,
+      this.pluginDriver,
+    ]) {
+      if (driver !== undefined) {
+        provisioning.registerDriver(driver);
+      }
+    }
+    this.provisioningController = provisioning;
     if (this.mode === "production") {
       const compute = this.compute;
       if (typeof compute.preflight === "function") {
@@ -554,7 +594,9 @@ export class ControllerWorker {
             throw error;
           } finally {
             let kind: WorkKind = "namespace_ensure";
-            if (claim.agentTarget === "deleted") {
+            if (claim.kind === "provisioning") {
+              kind = "agent_provisioning";
+            } else if (claim.agentTarget === "deleted") {
               kind = "agent_delete";
             } else if (claim.agentTarget === "stopped") {
               kind = "agent_stop";
@@ -963,6 +1005,10 @@ export class ControllerWorker {
   }
 
   private async process(claim: ClaimedWork): Promise<void> {
+    if (claim.kind === "provisioning") {
+      await this.processAgentProvisioning(claim);
+      return;
+    }
     if (isRepositoryCleanupWork(claim)) {
       await this.processRepositoryCleanup(claim);
       return;
@@ -1010,6 +1056,26 @@ export class ControllerWorker {
     await this.finalize(claim, namespace, result);
   }
 
+  private async processAgentProvisioning(claim: ClaimedWork): Promise<void> {
+    const controller = this.provisioningController;
+    if (controller === undefined) {
+      throw new Error("The provisioning controller is unavailable.");
+    }
+    const result = await controller.processAgentProvisioning(claim, resolveApprovedHarness, {
+      runEffect: (operation) => this.withClaimHeartbeat(claim, operation),
+    });
+    this.passOutcome = result.outcome === "succeeded" ? "success" : result.outcome;
+    this.emit({
+      event: "worker.completed",
+      ...workLogFields(claim),
+      namespaceId: claim.namespaceId,
+      agentId: claim.agentId,
+      outcome: this.passOutcome,
+      code: result.outcome === "succeeded" ? "PROVISIONING_HANDED_OFF" : result.code,
+      ...(result.outcome === "succeeded" ? { revisionId: result.revisionId } : {}),
+    });
+  }
+
   private async processAgentStop(claim: ClaimedWork): Promise<void> {
     let result: AgentStopDispatchResult;
     try {
@@ -1042,9 +1108,13 @@ export class ControllerWorker {
         const agent = await view.agents.findAgent(claim.namespaceId, claim.agentId!);
         const namespace = await view.namespaces.findNamespace(claim.namespaceId);
         const revisions = await view.revisions.listRevisions(claim.namespaceId, claim.agentId!);
-        return { namespace, agent, revisions };
+        const provisioning =
+          agent === undefined
+            ? undefined
+            : await view.provisioning.findByAgent(claim.namespaceId, claim.agentId!);
+        return { namespace, agent, revisions, provisioning };
       });
-      const { namespace, agent, revisions } = resources;
+      const { namespace, agent, revisions, provisioning } = resources;
       if (
         namespace === undefined ||
         agent === undefined ||
@@ -1063,6 +1133,22 @@ export class ControllerWorker {
           agent,
         });
         return;
+      }
+      const provisioningDisposition = provisioningDeletionDisposition(provisioning);
+      if (provisioningDisposition.action === "cleanup-uncommitted") {
+        const cleaned = await this.cleanupTerminalProvisioningEffect(claim, provisioning!);
+        if (!cleaned) {
+          result = { outcome: "retry", code: "PROVISIONING_CLEANUP_PENDING", agent };
+          await this.finalizeAgentStop(claim, result);
+          return;
+        }
+      } else if (provisioningDisposition.action === "cleanup-pending") {
+        const cleaned = await this.cleanupTerminalProvisioningEffect(claim, provisioning!);
+        if (!cleaned) {
+          result = { outcome: "retry", code: "PROVISIONING_CLEANUP_PENDING", agent };
+          await this.finalizeAgentStop(claim, result);
+          return;
+        }
       }
       const active = revisions.find((revision) => revision.id === agent.activeRevisionId);
       if (agent.activeRevisionId !== undefined && active === undefined) {
@@ -1190,9 +1276,13 @@ export class ControllerWorker {
           agent === undefined
             ? []
             : await view.revisions.listRevisions(claim.namespaceId, claim.agentId!);
-        return { namespace, agent, revisions };
+        const provisioning =
+          agent === undefined
+            ? undefined
+            : await view.provisioning.findByAgent(claim.namespaceId, claim.agentId!);
+        return { namespace, agent, revisions, provisioning };
       });
-      const { namespace, agent, revisions } = resources;
+      const { namespace, agent, revisions, provisioning } = resources;
       if (namespace === undefined || agent === undefined) {
         await this.finalizeAgentDeletion(claim, {
           outcome: "permanent",
@@ -1261,6 +1351,39 @@ export class ControllerWorker {
         });
         return;
       }
+      const provisioningDisposition = provisioningDeletionDisposition(provisioning);
+      if (provisioningDisposition.action === "delete-unmaterialized") {
+        await this.cleanupUncommittedProvisioning(claim);
+      } else if (provisioningDisposition.action === "cleanup-uncommitted") {
+        const cleaned = await this.provisioningController!.cleanupProvisioningEffectReceipt(
+          provisioning!,
+          { runEffect: (operation) => this.withClaimHeartbeat(claim, operation) },
+        );
+        if (!cleaned) {
+          await this.cancelProvisioningForDeletion(claim, provisioningDisposition.reason);
+          await this.finalizeAgentDeletion(claim, {
+            outcome: "success",
+            code: "PROVISIONING_CLEANUP_PENDING",
+            namespace,
+            agent,
+            revisions,
+          });
+          return;
+        }
+      } else if (provisioningDisposition.action === "cleanup-pending") {
+        const cleaned = await this.cleanupTerminalProvisioningEffect(claim, provisioning!);
+        if (!cleaned) {
+          await this.cancelProvisioningForDeletion(claim, provisioningDisposition.reason);
+          await this.finalizeAgentDeletion(claim, {
+            outcome: "success",
+            code: "PROVISIONING_CLEANUP_PENDING",
+            namespace,
+            agent,
+            revisions,
+          });
+          return;
+        }
+      }
       if (revisions.length > 0 && this.compute.bindAgent !== undefined) {
         await this.withClaimHeartbeat(claim, async () => {
           await this.compute.bindAgent!({ namespace, agent });
@@ -1289,6 +1412,49 @@ export class ControllerWorker {
       result = { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
     }
     await this.finalizeAgentDeletion(claim, result);
+  }
+
+  private async cleanupUncommittedProvisioning(claim: ClaimedWork): Promise<void> {
+    if (claim.agentId === undefined) {
+      throw new Error("The worker Agent deletion context is unavailable.");
+    }
+    await this.state.transactWithQueue(async (unit, queue) => {
+      if ((await queue.heartbeat(claim)) === undefined) {
+        throw new WorkClaimLostError();
+      }
+      await unit.provisioning.cancelByAgent(claim.namespaceId, claim.agentId!, {
+        code: "AGENT_DELETING",
+        message: "Agent deletion cancelled uncommitted provisioning.",
+      });
+    }, this.queueOptions);
+  }
+
+  private async cleanupTerminalProvisioningEffect(
+    claim: ClaimedWork,
+    provisioning: Readonly<AgentProvisioningRecord>,
+  ): Promise<boolean> {
+    const controller = this.provisioningController;
+    if (controller === undefined) {
+      throw new Error("The provisioning controller is unavailable.");
+    }
+    return controller.recoverTerminalProvisioningEffectCleanup(provisioning, {
+      runEffect: (operation) => this.withClaimHeartbeat(claim, operation),
+    });
+  }
+
+  private async cancelProvisioningForDeletion(claim: ClaimedWork, reason: string): Promise<void> {
+    if (claim.agentId === undefined) {
+      throw new Error("The worker Agent deletion context is unavailable.");
+    }
+    await this.state.transactWithQueue(async (unit, queue) => {
+      if ((await queue.heartbeat(claim)) === undefined) {
+        throw new WorkClaimLostError();
+      }
+      await unit.provisioning.cancelByAgent(claim.namespaceId, claim.agentId!, {
+        code: "PROVISIONING_CLEANUP_PENDING",
+        message: `Agent deletion is waiting for provisioning cleanup: ${reason}.`,
+      });
+    }, this.queueOptions);
   }
 
   private async authorizeAgentDeletion(

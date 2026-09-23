@@ -28,6 +28,20 @@ const createWorkspaceFields = [
   },
   { selector: "#workspace-USER-md", value: "" },
 ];
+const createProvisioningSecrets = [
+  ...form,
+  { selector: "#agent-name", value: "Slack research assistant" },
+  { selector: "#harness-auth-method", value: "api_key_provisioning" },
+  { selector: "#harness-auth-provisioning-secret", value: "MODEL_API_KEY" },
+  { selector: "#provisioning-secret-name-0", value: "MODEL_API_KEY" },
+  { selector: "#provisioning-secret-value-0", value: "demo-model-key" },
+  click("Add Secret"),
+  { selector: "#provisioning-secret-name-1", value: "SLACK_APP_TOKEN" },
+  { selector: "#provisioning-secret-value-1", value: "demo-app-token" },
+  click("Add Secret"),
+  { selector: "#provisioning-secret-name-2", value: "SLACK_BOT_TOKEN" },
+  { selector: "#provisioning-secret-value-2", value: "demo-bot-token" },
+];
 
 // API failures are injected at the HTTP boundary. The console owns their presentation.
 export const scenarios = {
@@ -203,7 +217,24 @@ export const scenarios = {
     path: create,
     actions: form,
     description:
-      "Name, execution mode, native JSON, authentication, Providers, plugins, Secret bindings, channel controls, and seeded workspace files.",
+      "Name, execution mode, inline native JSON, request-local Secrets, authentication, Providers, plugins, Secret bindings, channel controls, and seeded workspace files.",
+  },
+  createProvisioningSecrets: {
+    group: "Pages/Create Agent",
+    name: "Provisioning with new Secrets",
+    path: create,
+    actions: createProvisioningSecrets,
+    description:
+      "Dedicated creation can submit generic Secret values with request-local references. Values are cleared after the provision request is accepted.",
+  },
+  createUnsupportedProvisioning: {
+    group: "Pages/Create Agent",
+    name: "Unsupported provisioning",
+    path: create,
+    unsupportedProvisioning: true,
+    actions: readyForm,
+    description:
+      "When the runtime does not advertise first-time Agent provisioning, Dedicated creation saves a draft Configuration and Agent for later deployment.",
   },
   createSlackSecretMenu: {
     group: "Pages/Create Agent",
@@ -301,11 +332,11 @@ export const scenarios = {
   },
   createConflict: {
     group: "Pages/Create Agent",
-    name: "Partial save and conflict",
+    name: "Provisioning conflict",
     path: create,
     rules: [
       {
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents",
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/provision",
         method: "POST",
         status: 409,
         once: true,
@@ -313,22 +344,22 @@ export const scenarios = {
     ],
     actions: [...readyForm, click("Create Agent")],
     description:
-      "Configuration saves but Agent creation conflicts. Edit the name and retry; the form reuses the saved Configuration.",
+      "Provisioning admission conflicts before any separate Configuration save. Edit the request and retry from the same draft.",
   },
   createUnknown: {
     group: "Pages/Create Agent",
-    name: "Save outcome unknown",
+    name: "Provisioning outcome unknown",
     path: create,
     rules: [
       {
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents",
-        method: "POST",
+        suffix: "/provisioning",
+        method: "GET",
         status: 503,
       },
     ],
     actions: [...readyForm, click("Create Agent")],
     description:
-      "An uncertain write outcome disables unsafe repeat submission. Refresh and inspect saved state.",
+      "The create request was accepted, but provisioning status is temporarily unavailable. Refresh and inspect saved state.",
   },
   draft: {
     group: "Pages/Agent detail",

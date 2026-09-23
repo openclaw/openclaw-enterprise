@@ -1,24 +1,34 @@
 import { sha256Hex } from "../../packages/utils/src/index.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { randomBytes, randomUUID } from "node:crypto";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
+import pg from "pg";
+import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
+import {
+  PostgresPlatformState,
+  createProvisioningInputProtector,
+} from "../../packages/occ/src/index.ts";
+import { composePostgresDevelopment } from "../../apps/controller/src/composition/development-postgres.ts";
+import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import {
   admitLoggingConfiguration,
   WORKSPACE_DEFAULTS_ID,
 } from "../../packages/contracts/src/index.ts";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import {
   configureExistingK3dLocalPathSharedFileSystem,
   createKubernetesFixtureHarnessAuth,
   validateExplicitK3dLoopbackContext,
 } from "../helpers/kubernetes-real.mjs";
-
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 
 const execute = promisify(execFile);
@@ -92,6 +102,196 @@ async function waitFor(description, operation, timeoutMs = 120_000) {
     await delay(500);
   }
   assert.fail(`Timed out waiting for ${description}.`);
+}
+
+function createProvisioningProtector() {
+  return createProvisioningInputProtector({
+    primaryKeyId: "k8s-test-v1",
+    keys: [{ id: "k8s-test-v1", material: randomBytes(32).toString("base64url") }],
+  });
+}
+
+function provisioningRequestBody() {
+  return {
+    requestId: `req_${randomUUID()}`,
+    name: `Kubernetes provisioned ${randomUUID().slice(0, 8)}`,
+    executionMode: "dedicated",
+    configuration: {
+      kind: "agent",
+      values: {
+        gateway: { controlUi: { enabled: false } },
+        agents: { defaults: { model: "codex/gpt-6-astra" } },
+        channels: { slack: { enabled: true, botTokenEnv: "SLACK_BOT_TOKEN" } },
+      },
+      secretBindings: {
+        SLACK_BOT_TOKEN: {
+          source: { kind: "provisioning-secret", name: "slack-bot-token" },
+        },
+      },
+    },
+    harnessAuth: {
+      method: "api_key",
+      source: { kind: "provisioning-secret", name: "model-api-key" },
+    },
+    secrets: [
+      { name: "model-api-key", value: `model-key-${randomUUID()}` },
+      { name: "slack-bot-token", value: `xoxb-${randomUUID()}` },
+    ],
+  };
+}
+
+function runtimeDrivers({ computeDriver, configurationDriver, secretDriver }) {
+  return {
+    installation: {
+      occ: { cluster: "kubernetes-agent-provisioning" },
+      logging: {},
+      provider: [],
+      drivers: {
+        iam: { id: "native-iam", implementation: "native", configuration: {} },
+        compute: {
+          id: computeDriver.id,
+          implementation: computeDriver.implementation,
+          configuration: {},
+        },
+        configuration: {
+          id: configurationDriver.id,
+          implementation: configurationDriver.implementation,
+          configuration: {},
+        },
+        secret: {
+          id: secretDriver.id,
+          implementation: secretDriver.implementation,
+          configuration: {},
+        },
+      },
+    },
+    computeDriver,
+    configurationDriver,
+    secretDriver,
+    createIAMDriver: (state) =>
+      new NativeIAMDriver(state, { id: "native-iam", implementation: "native" }),
+  };
+}
+
+function createProvisioningConfigurationDriver(options) {
+  const driver = createTestConfigurationDriver(options);
+  driver.createExact = (configuration) => driver.create(configuration);
+  return driver;
+}
+
+function createProvisioningSecretDriver(options) {
+  const driver = createTestSecretDriver(options);
+  driver.createExact = ({ identity, value }) => driver.create(identity, value);
+  return driver;
+}
+
+async function privateBootstrapDirectory(context) {
+  const directory = await mkdtemp("/private/tmp/openclaw-kubernetes-provisioning-bootstrap-");
+  await chmod(directory, 0o700);
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  return directory;
+}
+
+async function createProvisioningApiFixture(context, computeDriver) {
+  const pool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
+  const workerPool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
+  const state = new PostgresPlatformState(pool);
+  const existingInstallation = await state.loadInstallation();
+  const authSecret = "kubernetes-integration-auth-secret-32-bytes";
+  const authBaseURL = "http://127.0.0.1";
+  const credentials = {
+    email: "admin-kubernetes-integration@example.test",
+    password: "kubernetes-integration-admin-password",
+  };
+  if (existingInstallation === undefined) {
+    await ensureDevelopmentBootstrap(context, {
+      databaseUrl,
+      directory: await privateBootstrapDirectory(context),
+      email: credentials.email,
+      password: credentials.password,
+      authSecret,
+      authBaseURL,
+      installationName: "OpenClaw Kubernetes integration",
+      environment: { PATH: process.env.PATH },
+    });
+  }
+  const configurationDriver = createProvisioningConfigurationDriver({
+    id: "configuration-kubernetes-provisioning",
+  });
+  const secretDriver = createProvisioningSecretDriver({ id: "secret-kubernetes-provisioning" });
+  const protector = createProvisioningProtector();
+  let worker;
+  const drivers = runtimeDrivers({ computeDriver, configurationDriver, secretDriver });
+  const app = await composePostgresDevelopment(
+    {
+      mode: "development",
+      host: "127.0.0.1",
+      databaseUrl,
+      authSecret,
+      authBaseURL,
+      provisioningInputProtector: protector,
+    },
+    drivers,
+  );
+  const session = await signInToControllerApp(app, credentials);
+  context.after(async () => {
+    await stopWorker();
+    await app.close?.();
+    await workerPool.end();
+    await pool.end();
+  });
+
+  async function request(method, path, body) {
+    const response = await app.inject({
+      method,
+      url: path,
+      headers: {
+        ...authenticatedHeaders(session),
+        ...(body === undefined ? {} : { "content-type": "application/json" }),
+        ...(method === "GET" ? {} : { origin: "http://127.0.0.1" }),
+        host: "127.0.0.1",
+      },
+      remoteAddress: "127.0.0.1",
+      ...(body === undefined ? {} : { payload: JSON.stringify(body) }),
+    });
+    const text = response.body;
+    const payload = text.length === 0 ? undefined : JSON.parse(text);
+    return {
+      status: response.statusCode,
+      body: payload,
+      data: payload?.data,
+      error: payload?.error,
+    };
+  }
+
+  async function startWorker() {
+    assert.equal(worker, undefined, "the fixture worker is already running");
+    worker = createControllerWorker({
+      pool: workerPool,
+      drivers,
+      provisioningInputProtector: protector,
+      pollIntervalMs: 25,
+      leaseDurationMs: 30_000,
+      maxAttempts: 3,
+      emit: () => {},
+    });
+    await worker.start();
+  }
+
+  async function stopWorker() {
+    if (worker === undefined) {
+      return;
+    }
+    const current = worker;
+    worker = undefined;
+    await current.stop();
+  }
+
+  return {
+    request,
+    startWorker,
+    stopWorker,
+  };
 }
 
 async function assertKubernetesFixtureAvailable() {
@@ -1615,6 +1815,104 @@ test(
       namespaceId: cleanupOwner.id,
       namespaceDeleted: true,
     });
+  },
+);
+
+test(
+  "provisioning API and worker create a dedicated Agent gateway through the real Kubernetes driver",
+  { ...requiresKubernetesAndPostgres, timeout: 360_000 },
+  async (context) => {
+    await assertKubernetesFixtureAvailable();
+    await configureExistingK3dLocalPathSharedFileSystem({ kubeconfigPath, kubernetesContext });
+    const installationId = `ins_${randomUUID()}`;
+    const platformNamespace = `oce-provisioning-${hash(installationId)}`;
+    await kubectl("create", "namespace", platformNamespace);
+    context.after(async () => {
+      await kubectl(
+        "delete",
+        "namespace",
+        platformNamespace,
+        "--ignore-not-found=true",
+        "--wait=true",
+      );
+    });
+    const controller = await createScopedController(context, installationId, platformNamespace);
+    const { driver, kubernetesNamespaceName } = await createDriver({
+      authentication: controller.authentication,
+      network: {
+        dns: { namespace: "kube-system", podLabels: { "k8s-app": "kube-dns" } },
+        gatewayPort: 8080,
+        gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
+        gatewayClients: [
+          {
+            namespace: platformNamespace,
+            podLabels: { "app.kubernetes.io/name": "platform-probe" },
+          },
+        ],
+      },
+    });
+    const fixture = await createProvisioningApiFixture(context, driver);
+    const namespaceResponse = await fixture.request("POST", "/namespaces", {
+      name: `k8s-provision-${randomUUID().slice(0, 8)}`,
+    });
+    assert.equal(namespaceResponse.status, 201, JSON.stringify(namespaceResponse.body));
+    const namespaceOwner = namespaceResponse.data;
+    const placement = kubernetesNamespaceName(namespaceOwner.id);
+    context.after(async () => {
+      await kubectl("delete", "namespace", placement, "--ignore-not-found=true", "--wait=true");
+    });
+
+    assert.equal((await driver.ensureNamespace(namespaceOwner)).namespaceReady, false);
+    await kubectl(
+      "create",
+      "rolebinding",
+      "openclaw-controller",
+      "--namespace",
+      placement,
+      `--clusterrole=${controller.tenantRole}`,
+      `--serviceaccount=${platformNamespace}:${controller.account}`,
+    );
+    await waitFor("provisioning tenant Namespace to become ready", async () => {
+      const observation = await driver.ensureNamespace(namespaceOwner);
+      return observation.namespaceReady ? observation : undefined;
+    });
+    await fixture.startWorker();
+    await waitFor("API Namespace provisioning status to become ready", async () => {
+      const observed = await fixture.request("GET", `/namespaces/${namespaceOwner.id}`);
+      assert.equal(observed.status, 200, JSON.stringify(observed.body));
+      return observed.data.status === "ready" ? observed.data : undefined;
+    });
+    await fixture.stopWorker();
+
+    const body = provisioningRequestBody();
+    const admitted = await fixture.request(
+      "POST",
+      `/namespaces/${namespaceOwner.id}/agents/provision`,
+      body,
+    );
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    await fixture.startWorker();
+    await waitFor("Kubernetes provisioning to succeed", async () => {
+      const observed = await fixture.request(
+        "GET",
+        `/namespaces/${namespaceOwner.id}/agents/${admitted.data.agent.id}/provisioning`,
+      );
+      assert.equal(observed.status, 200, JSON.stringify(observed.body));
+      return observed.data.status === "succeeded" ? observed.data : undefined;
+    });
+
+    const gateway = await assertReadyGateway(placement, admitted.data.agent.id, namespaceOwner.id);
+    assert.equal(
+      gateway.spec.template.spec.containers[0].env.some(({ name }) => name === "SLACK_BOT_TOKEN"),
+      true,
+      "generic provisioning Secret bindings must reach the gateway environment",
+    );
+    const revisions = await fixture.request(
+      "GET",
+      `/namespaces/${namespaceOwner.id}/agents/${admitted.data.agent.id}/revisions`,
+    );
+    assert.equal(revisions.status, 200, JSON.stringify(revisions.body));
+    assert.equal(revisions.data.length, 1);
   },
 );
 

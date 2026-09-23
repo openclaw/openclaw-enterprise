@@ -150,6 +150,20 @@ export const SecretReference = Type.Object(
   },
 );
 
+export const ProvisioningSecretReference = Type.Object(
+  {
+    kind: Type.Literal("provisioning-secret"),
+    name: Name,
+  },
+  {
+    additionalProperties: false,
+    description:
+      'Request-local reference to a Secret value supplied in the same provisioning request. Shape: `{ "kind": "provisioning-secret", "name": "slack-bot-token" }`.',
+  },
+);
+
+export const ProvisioningSecretSource = Type.Union([SecretReference, ProvisioningSecretReference]);
+
 export const HarnessAuthBindingSchema = Type.Union([
   Type.Object({ method: Type.Literal("runtime") }, { additionalProperties: false }),
   Type.Object(
@@ -176,6 +190,29 @@ export const SecretBinding = Type.Object(
     additionalProperties: false,
     description:
       'Maps one destination environment variable to one exact Secret reference. Optional `delivery` defaults to `{ "type": "env" }` during admission.',
+  },
+);
+
+export const ProvisioningSecretBinding = Type.Object(
+  { source: ProvisioningSecretSource, delivery: Type.Optional(SecretDelivery) },
+  {
+    additionalProperties: false,
+    description:
+      "Maps one destination environment variable to either an existing Secret or a request-local provisioning Secret. Local references resolve to committed OCC Secret IDs before deployment.",
+  },
+);
+
+export const ProvisioningSecretBindings = Type.Record(
+  Type.String({
+    minLength: 1,
+    maxLength: 253,
+    pattern: "^[A-Za-z_][A-Za-z0-9_]*$",
+  }),
+  ProvisioningSecretBinding,
+  {
+    maxProperties: 64,
+    description:
+      "Optional Secret binding map for Agent provisioning. Existing references use exact Secret IDs; request-local references must name entries in the request `secrets` array.",
   },
 );
 
@@ -212,6 +249,18 @@ export const UpdateSecretBody = Type.Object(
 );
 
 export const AgentRuntimeCredentialsBody = Type.Object({}, { additionalProperties: false });
+
+export const ProvisionAgentHarnessAuthBindingSchema = Type.Union([
+  Type.Object({ method: Type.Literal("runtime") }, { additionalProperties: false }),
+  Type.Object(
+    { method: Type.Literal("api_key"), source: ProvisioningSecretSource },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    { method: Type.Literal("chatgpt_service_account"), serviceAccountId: ServiceAccountId },
+    { additionalProperties: false },
+  ),
+]);
 
 export const PermissionActionSchema = Type.Union([
   Type.Literal("create"),
@@ -365,6 +414,40 @@ export const CreateAgentBody = Type.Object(
     configurationId: ConfigurationId,
     providerId: Type.Optional(Type.Union([ProviderId, Type.Null()])),
     harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
+    executionMode: Type.Optional(HarnessExecutionModeSchema),
+    plugins: Type.Optional(Type.Ref("PluginDesiredState")),
+    repositoryBindings: Type.Optional(RepositoryBindingRequestsSchema),
+  },
+  { additionalProperties: false },
+);
+
+export const ProvisionAgentConfigurationBody = Type.Object(
+  {
+    kind: ConfigurationKindSchema,
+    values: ConfigurationValues,
+    secretBindings: Type.Optional(ProvisioningSecretBindings),
+  },
+  { additionalProperties: false },
+);
+
+export const ProvisionAgentSecretBody = Type.Object(
+  {
+    name: Name,
+    value: SecretValue,
+  },
+  { additionalProperties: false },
+);
+
+export const ProvisionAgentBody = Type.Object(
+  {
+    requestId: RequestId,
+    initialWorkspaceFiles: Type.Optional(CreateAgentBody.properties.initialWorkspaceFiles),
+    workspaceDefaultsId: Type.Optional(CreateAgentBody.properties.workspaceDefaultsId),
+    name: Name,
+    configuration: ProvisionAgentConfigurationBody,
+    secrets: Type.Optional(Type.Array(ProvisionAgentSecretBody, { maxItems: 64 })),
+    providerId: Type.Optional(Type.Union([ProviderId, Type.Null()])),
+    harnessAuth: Type.Optional(Type.Union([ProvisionAgentHarnessAuthBindingSchema, Type.Null()])),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     repositoryBindings: Type.Optional(RepositoryBindingRequestsSchema),
@@ -533,6 +616,7 @@ export type UpdateServiceAccountCredentialBody = Type.Static<
   typeof UpdateServiceAccountCredentialBody
 >;
 export type CreateAgentBody = Type.Static<typeof CreateAgentBody>;
+export type ProvisionAgentBody = Type.Static<typeof ProvisionAgentBody>;
 export type UpdateAgentBody = Type.Static<typeof UpdateAgentBody>;
 export type UpdateWorkspaceFileBody = Type.Static<typeof UpdateWorkspaceFileBody>;
 export type ErrorDetail = Type.Static<typeof ErrorDetail>;

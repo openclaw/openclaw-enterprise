@@ -838,6 +838,7 @@ export class NativeIAMDriver implements IAMDriver {
   readonly id: string;
   readonly capability = "iam" as const;
   readonly implementation: string;
+  readonly namespacePolicyTransaction = "platform-unit-of-work" as const;
   private readonly state: NativeIAMStateStore;
 
   constructor(state: NativeIAMStateStore, options: NativeIAMDriverOptions = {}) {

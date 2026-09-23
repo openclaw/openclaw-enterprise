@@ -52,6 +52,14 @@
           "path": "tests/conformance/platform-state-memory.test.mjs"
         },
         {
+          "path": "tests/conformance/provisioning-inputs.test.mjs",
+          "expectedTests": [
+            "provisioning inputs seal values and bind them to the provisioning context",
+            "provisioning input fingerprints support exact replay across key rotation",
+            "provisioning inputs fail closed when a retained key is unavailable"
+          ]
+        },
+        {
           "path": "tests/conformance/presets.test.mjs"
         },
         {
@@ -498,6 +506,17 @@
           ]
         },
         {
+          "path": "tests/integration/postgres-agent-provisioning.test.mjs",
+          "expectedTests": [
+            "provisioning API protects inline secrets, admits one stopped Agent, and replays only the exact same request",
+            "provisioning worker creates generic Secrets, finalizes Configuration, provisions transport, and hands off one revision",
+            "provisioning cancellation stops before backend effects and leaves truthful status",
+            "provisioning worker reauthorizes after admission and revoked authority creates no backend effects",
+            "failed provisioning can retry through the API and resume without duplicating the Agent",
+            "cancelled provisioning with a settled Secret receipt cleans up the exact backend"
+          ]
+        },
+        {
           "path": "tests/integration/postgres-worker-stale-claim.test.mjs",
           "expectedTests": [
             "a worker that loses its claim during Compute cannot publish Namespace status, lifecycle audit, or completion"
@@ -662,6 +681,7 @@
           "expectedTests": [
             "real Kubernetes Compute Driver owns isolated Agent gateways, identities, revisions, and deletion",
             "real Kubernetes Drivers safely use and preserve an externally managed tenant namespace",
+            "provisioning API and worker create a dedicated Agent gateway through the real Kubernetes driver",
             "authenticated PostgreSQL OCC API and worker deploy real Agent-owned gateways, Secret bindings, and revisions"
           ]
         }

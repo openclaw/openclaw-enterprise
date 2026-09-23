@@ -31,6 +31,7 @@ import type {
   AgentRevision,
   AgentRuntimeCredentialsInput,
   AgentRuntimeCredentialStatus,
+  ComputeAgentProvisioningInput,
   ComputeDriver,
   ComputeAgentBinding,
   ComputeReadiness,
@@ -872,6 +873,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
   readonly capability = "compute" as const;
   readonly implementation: string;
   readonly supportsWorkspaceSetup = true as const;
+  readonly agentProvisioning = Object.freeze({
+    executionModes: Object.freeze(["dedicated"] as const),
+  });
   private readonly options: KubernetesComputeDriverOptions;
   private readonly sandboxDriver: SandboxDriver | undefined;
   private readonly nodeEnrollment: GatewayNodeEnrollment | undefined;
@@ -1147,6 +1151,19 @@ export class KubernetesComputeDriver implements ComputeDriver {
         "Repository credentials require a configured embedded OpenClaw Kubernetes runtime without a SandboxDriver.",
       );
     }
+  }
+
+  validateAgentProvisioning(input: ComputeAgentProvisioningInput): void {
+    if (input.executionMode !== "dedicated") {
+      throw new ConfigurationFailure(
+        "Kubernetes Agent provisioning supports only dedicated execution mode.",
+      );
+    }
+    const configuration = this.kubernetesGatewayConfigurationDocument(input.configuration);
+    this.verifyGatewayRoutingConfiguration({
+      configuration,
+      harness: { id: "codex", version: "provisioning", mode: "dedicated" },
+    });
   }
 
   validateHarnessAuth(
@@ -5236,7 +5253,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
     )}.${routing.envoyNamespace}.svc`;
   }
 
-  private verifyGatewayRoutingConfiguration(revision: AgentRevision): void {
+  private verifyGatewayRoutingConfiguration(
+    revision: Pick<AgentRevision, "configuration" | "harness">,
+  ): void {
     if (
       this.options.runtime !== undefined &&
       revision.harness.mode === "dedicated" &&

@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import type { CoreV1Api, V1ObjectMeta, V1Secret } from "@kubernetes/client-node";
 import type {
+  ExactSecretCreateInput,
   JSONSchema,
   Secret,
   SecretBackendRef,
@@ -69,6 +70,10 @@ function required(value: unknown, description: string): string {
 
 function kubernetesSecretName(identity: SecretIdentity): string {
   return `secret-${sha256Hex(identity.namespaceId, 12)}-${sha256Hex(identity.id, 12)}-${sha256Hex(randomUUID(), 12)}`;
+}
+
+function kubernetesExactSecretName(identity: SecretIdentity): string {
+  return `secret-${sha256Hex(identity.namespaceId, 12)}-${sha256Hex(identity.id, 12)}`;
 }
 
 function validateIdentity(identity: SecretIdentity): void {
@@ -284,6 +289,64 @@ export class KubernetesSecretDriver implements SecretDriver {
       { mutating: true },
     );
     return this.checkedBackendRef(observed, identity, namespace);
+  }
+
+  async createExact(input: ExactSecretCreateInput): Promise<SecretBackendRef> {
+    validateIdentity(input.identity);
+    validateValue(input.value);
+    const client = await this.core();
+    const namespace = await this.readyNamespace(client, input.identity.namespaceId);
+    const name = kubernetesExactSecretName(input.identity);
+    const observed = await this.request(
+      () =>
+        client.createNamespacedSecret({
+          namespace,
+          body: this.manifest(input.identity, namespace, name, input.value),
+        }),
+      "create",
+      { mutating: true },
+    );
+    return this.checkedBackendRef(observed, input.identity, namespace);
+  }
+
+  async inspectExact(input: ExactSecretCreateInput): Promise<SecretBackendRef | undefined> {
+    validateIdentity(input.identity);
+    validateValue(input.value);
+    const client = await this.core();
+    const namespace = await this.readyNamespace(client, input.identity.namespaceId);
+    const name = kubernetesExactSecretName(input.identity);
+    let existing: V1Secret;
+    try {
+      existing = await this.request(() => client.readNamespacedSecret({ namespace, name }), "read");
+    } catch (error) {
+      if (error instanceof SecretBackendMissingError) {
+        return undefined;
+      }
+      throw error;
+    }
+    try {
+      const backendRef = this.checkedBackendRef(existing, input.identity, namespace);
+      const encoded = asRecord(existing.data)?.[SECRET_KEY];
+      if (
+        typeof encoded !== "string" ||
+        Buffer.from(encoded, "base64").toString("utf8") !== input.value
+      ) {
+        throw new SecretConflictError(
+          "The existing Kubernetes Secret does not match the requested protected value.",
+        );
+      }
+      return backendRef;
+    } catch (error) {
+      if (error instanceof SecretConflictError) {
+        throw error;
+      }
+      if (error instanceof SecretOwnershipError) {
+        throw new SecretConflictError(
+          "The existing Kubernetes Secret does not match the requested protected identity.",
+        );
+      }
+      throw error;
+    }
   }
 
   async update(secret: Secret, value: string): Promise<void> {

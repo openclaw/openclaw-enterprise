@@ -561,7 +561,7 @@ export const slack = {
   id: "slack",
   name: "Slack",
   description: "Socket Mode with channel and user settings.",
-  setup: "Use the Agent Credentials tab after creation for SLACK_APP_TOKEN and SLACK_BOT_TOKEN.",
+  setup: "Provide SLACK_APP_TOKEN and SLACK_BOT_TOKEN through Secret bindings before deployment.",
   plugin: "slack",
   support: supportSlack,
   updatedValues: updatedSlack,

@@ -79,6 +79,12 @@ repositoryCredentials:
   publicCaKey: ca.crt
   upstreamCidrs: []
 
+provisioning:
+  keys:
+    secretName: ""
+    key: keyring.json
+    mountPath: /etc/openclaw/provisioning-keys
+
 gatewayRouting:
   enabled: false
   # Empty derives the private Envoy Service DNS name:

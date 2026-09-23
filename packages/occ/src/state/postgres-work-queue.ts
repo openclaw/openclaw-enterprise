@@ -8,6 +8,7 @@ import {
   validateSuccessResultData,
   type ClaimedWork,
   type ControllerWork,
+  type ControllerWorkKind,
   type ControllerWorkState,
   type EnqueueWork,
   type PermanentFailure,
@@ -59,13 +60,14 @@ export interface PostgresWorkQueueOptions {
 }
 
 interface WorkRow {
+  readonly work_kind: ControllerWorkKind | null;
   readonly idempotency_key: string;
   readonly namespace_id: string;
   readonly agent_id: string | null;
   readonly revision_id: string | null;
   readonly actor_id: string;
   readonly namespace_target: "ready" | "deleted" | null;
-  readonly agent_target: "stopped" | "deleted" | null;
+  readonly agent_target: "stopped" | "deleted" | "provisioned" | null;
   readonly state: ControllerWorkState;
   readonly available_at: Date | string;
   readonly attempt_count: number;
@@ -291,6 +293,7 @@ function asRow(value: unknown): WorkRow {
 function asWork(value: unknown): ControllerWork {
   const row = asRow(value);
   return Object.freeze({
+    kind: row.work_kind ?? "lifecycle",
     idempotencyKey: row.idempotency_key,
     namespaceId: row.namespace_id,
     ...(row.agent_id === null ? {} : { agentId: row.agent_id }),
@@ -408,6 +411,10 @@ export class PostgresWorkQueue {
 
   async enqueue(input: EnqueueWork): Promise<ControllerWork> {
     const idempotencyKey = nonempty(input.idempotencyKey, "Controller work idempotency key");
+    const kind = input.kind ?? "lifecycle";
+    if (kind !== "lifecycle" && kind !== "provisioning") {
+      throw new ScopeViolationError("Controller work requires a supported kind.");
+    }
     if (idempotencyKey.length > 512) {
       throw new ScopeViolationError("The controller work idempotency key exceeds 512 characters.");
     }
@@ -432,34 +439,42 @@ export class PostgresWorkQueue {
     const namespaceTarget = input.namespaceTarget ?? null;
     const agentTarget = input.agentTarget ?? null;
     if (
-      (agentId === null &&
+      kind === "lifecycle" &&
+      ((agentId === null &&
         (revisionId !== null ||
           (namespaceTarget !== "ready" && namespaceTarget !== "deleted") ||
           agentTarget !== null)) ||
-      (agentId !== null &&
-        revisionId === null &&
-        (namespaceTarget !== null || (agentTarget !== "stopped" && agentTarget !== "deleted"))) ||
-      (revisionId !== null && (namespaceTarget !== null || agentTarget !== null))
+        (agentId !== null &&
+          revisionId === null &&
+          (namespaceTarget !== null || (agentTarget !== "stopped" && agentTarget !== "deleted"))) ||
+        (revisionId !== null && (namespaceTarget !== null || agentTarget !== null)))
     ) {
       throw new ScopeViolationError(
         "Controller work requires one exact Namespace, Agent, or revision target shape.",
       );
     }
+    if (
+      kind === "provisioning" &&
+      (agentId === null || revisionId !== null || namespaceTarget !== null || agentTarget !== null)
+    ) {
+      throw new ScopeViolationError("Provisioning work requires one exact Agent target.");
+    }
     const availableAt = input.availableAt === undefined ? null : asDate(input.availableAt);
 
     const inserted = await this.client.query(
       `INSERT INTO occ.controller_work (
-         idempotency_key, namespace_id, agent_id, revision_id, actor_id, namespace_target,
+         work_kind, idempotency_key, namespace_id, agent_id, revision_id, actor_id, namespace_target,
          agent_target,
          state, available_at, attempt_count, created_at, updated_at
        ) VALUES (
-         $1, $2, $3, $4, $5, $6, $7,
-         'queued', COALESCE($8::timestamptz, clock_timestamp()), 0,
+         $1, $2, $3, $4, $5, $6, $7, $8,
+         'queued', COALESCE($9::timestamptz, clock_timestamp()), 0,
          clock_timestamp(), clock_timestamp()
        )
        ON CONFLICT (idempotency_key) DO NOTHING
        RETURNING *`,
       [
+        kind,
         idempotencyKey,
         namespaceId,
         agentId,
@@ -480,12 +495,22 @@ export class PostgresWorkQueue {
           namespace_id IS DISTINCT FROM $2::text
           OR agent_id IS DISTINCT FROM $3::text
           OR revision_id IS DISTINCT FROM $4::text
-          OR actor_id IS DISTINCT FROM $5::text AS owner_conflict,
-          namespace_target IS DISTINCT FROM $6::text
-          OR agent_target IS DISTINCT FROM $7::text AS target_conflict
+          OR actor_id IS DISTINCT FROM $5::text
+          OR work_kind IS DISTINCT FROM $6::text AS owner_conflict,
+          namespace_target IS DISTINCT FROM $7::text
+          OR agent_target IS DISTINCT FROM $8::text AS target_conflict
        FROM occ.controller_work
        WHERE idempotency_key = $1`,
-      [idempotencyKey, namespaceId, agentId, revisionId, actorId, namespaceTarget, agentTarget],
+      [
+        idempotencyKey,
+        namespaceId,
+        agentId,
+        revisionId,
+        actorId,
+        kind,
+        namespaceTarget,
+        agentTarget,
+      ],
     );
     const row = existing.rows[0];
     if (row === undefined) {

@@ -39,5 +39,11 @@ export function createPlatformReadView(
       "listRevisionAttempts",
       "listNamespaceAttempts",
     ]),
+    provisioning: bindRepository(repositories.provisioning, lifetime, [
+      "findByWorkId",
+      "findByAgent",
+      "findByConfiguration",
+      "findByRequest",
+    ]),
   });
 }

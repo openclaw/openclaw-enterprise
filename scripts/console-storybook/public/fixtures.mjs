@@ -36,6 +36,7 @@ export function installFixture(scenario, evidence) {
   const agents = new Map();
   const revisions = new Map();
   const deployments = new Map();
+  const provisioning = new Map();
   const credentials = new Map();
   const files = new Map();
   const secrets = new Map();
@@ -242,6 +243,16 @@ export function installFixture(scenario, evidence) {
       signedIn = false;
       return response({});
     }
+    if (path === "/installation" && method === "GET") {
+      return response({
+        id: "ins_00000000-0000-4000-8000-000000000001",
+        name: "Demo installation",
+        createdAt,
+        ...(scenario.unsupportedProvisioning === true
+          ? {}
+          : { capabilities: { agentProvisioning: { executionModes: ["dedicated"] } } }),
+      });
+    }
     if (path === "/namespaces" && method === "GET") {
       return response(namespaces);
     }
@@ -313,6 +324,66 @@ export function installFixture(scenario, evidence) {
           return response(saved, 201);
         }
       }
+      if (resource === "agents/provision" && method === "POST") {
+        const {
+          configuration,
+          initialWorkspaceFiles = {},
+          workspaceDefaultsId: _workspaceDefaultsId,
+          requestId,
+          secrets: _secrets = [],
+          ...agentBody
+        } = body;
+        const savedConfig = {
+          ...configuration,
+          id: nextId("cfg"),
+          namespaceId,
+          generation: configuration?.secretBindings ? 2 : 1,
+          createdAt,
+        };
+        configs.set(savedConfig.id, savedConfig);
+        const saved = {
+          ...agentBody,
+          id: nextId("agt"),
+          namespaceId,
+          configurationId: savedConfig.id,
+          status: "active",
+          desiredRuntimeState: "running",
+          createdAt,
+          activeRevisionId: null,
+          servicePrincipalId: "identity_demo_provisioned",
+        };
+        agents.set(saved.id, saved);
+        credentials.set(saved.id, { transportConfigured: true });
+        for (const [filename, content] of Object.entries(initialWorkspaceFiles)) {
+          files.set(`${saved.id}/${filename}`, content);
+        }
+        const revision = snapshot(saved, nextId("rev"), 1);
+        revisions.set(revision.id, revision);
+        deployments.set(revision.id, {
+          deploymentId: `dep_${revision.id}`,
+          revisionId: revision.id,
+          status: "queued",
+          reads: 0,
+          error: null,
+        });
+        provisioning.set(saved.id, {
+          requestId,
+          reads: 0,
+          status: scenario.provisioningStatus ?? "queued",
+          revisionId: revision.id,
+          url: `/namespaces/${namespaceId}/agents/${saved.id}/provisioning`,
+        });
+        return response(
+          {
+            agent: saved,
+            provisioning: {
+              status: scenario.provisioningStatus ?? "queued",
+              url: `/namespaces/${namespaceId}/agents/${saved.id}/provisioning`,
+            },
+          },
+          202,
+        );
+      }
       const agentMatch = resource.match(/^agents\/([^/]+)(.*)$/);
       if (agentMatch) {
         const [, id, suffix] = agentMatch;
@@ -356,6 +427,44 @@ export function installFixture(scenario, evidence) {
           if (["GET", "POST"].includes(method)) {
             return response(credentials.get(id) ?? { transportConfigured: true });
           }
+        }
+        if (suffix === "/provisioning" && method === "GET") {
+          const current = provisioning.get(id);
+          if (!current) {
+            return error(404);
+          }
+          current.reads += 1;
+          if (current.status !== "failed") {
+            current.status = current.reads > 1 ? "succeeded" : "running";
+          }
+          return response({
+            status: current.status,
+            url: current.url,
+            ...(current.status === "failed"
+              ? {
+                  error: {
+                    code: "PROVISIONING_FAILED",
+                    message: "The worker could not finish provisioning.",
+                  },
+                }
+              : { revisionId: current.revisionId }),
+          });
+        }
+        if (suffix === "/provisioning/retry" && method === "POST") {
+          const current = provisioning.get(id);
+          if (!current) {
+            return error(404);
+          }
+          current.status = "queued";
+          current.reads = 0;
+          return response(
+            {
+              status: current.status,
+              url: current.url,
+              revisionId: current.revisionId,
+            },
+            202,
+          );
         }
         if (suffix === "/deploy" && method === "POST") {
           const next = snapshot(
