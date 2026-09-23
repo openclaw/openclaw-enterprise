@@ -5,7 +5,7 @@ reported by each workflow.
 
 ## GitHub Actions
 
-Metrics HTTP/persistence coverage belongs to the `postgres` lane, including a
+Metrics HTTP/persistence coverage belongs to the `postgres-application` lane, including a
 separate migrator-role connection for test-only table contention. The
 `logging-collector` lane also runs real Prometheus/Grafana collection and
 dashboard provisioning. See [metrics testing](metrics.md) for local setup.
@@ -25,10 +25,11 @@ are flagged for review and pages above 2,500 fail, except the approved single-pa
 and links must pass. Run `pnpm docs:check-length` for the word-count
 check alone.
 
-Suite Audit and the ten PR lanes start independently on ephemeral runners.
+Suite Audit, the shared runtime build, and eight PR lanes start independently on ephemeral runners.
+Image/packaging and repository-credentials-platform start after the runtime build.
 Kubernetes lanes use `ubuntu-latest` for bridge netfilter support; other lanes
 and the audit use `blacksmith-8vcpu-ubuntu-2404`. `CI Required` uses Blacksmith and
-still requires both the audit and every lane to pass, including result-artifact
+still requires the audit, runtime build, and every lane to pass, including result-artifact
 accounting. This avoids serial runner allocation before the test lanes without
 changing test selection or failure handling.
 

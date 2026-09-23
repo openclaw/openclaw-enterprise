@@ -585,6 +585,7 @@
         {
           "path": "tests/integration/runtime-image-startup.test.mjs",
           "expectedTests": [
+            "CI runtime archive rejects a different source, altered bytes, and a different image identity",
             "runtime image gateway ignores inherited OPENCLAW_LOG_LEVEL in favor of native configuration",
             "runtime image starts an embedded OpenClaw gateway with the Docker driver entrypoint",
             "runtime image discovers the bundled Codex plugin from a fresh gateway home",

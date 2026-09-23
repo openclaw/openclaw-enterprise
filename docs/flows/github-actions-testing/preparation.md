@@ -10,7 +10,7 @@ Prepare the resources for the already-selected source revision and test lane. Se
 
 The preparation CLI records run-owned resources in a private state file before creating them. GitHub Actions passes that file under `RUNNER_TEMP`; it is available to later steps in the same job and is not uploaded as an artifact. Database tests receive a fresh migrated database per file and use the limited application role. Failure and Kubernetes database names satisfy the existing test admission guards. An ordinary cluster lane selects an explicit loopback k3d context and asks the pinned k3d binary to resolve its current `v1.35` K3s image. After node readiness, preparation reads the real server version and rejects a cluster outside the Kubernetes 1.35 family. OpenShell retains its separately pinned K3s image. External images are pulled by their approved registry digest and exported for the selected platform; built and external images receive a run-owned reference at the imported platform manifest digest. Preparation records the original source image and checks Kubernetes CRI resolution before passing the immutable runtime reference to tests. Preparation failures still enter job cleanup.
 
-For the Kubernetes fixture lane, `scripts/ci/prepare.mjs` creates one server and one worker with a shared task-owned local-path mount. It reads the worker Pod CIDR and the server route to that network, validates the route source, and exports its single-address `/32` as `OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS`. Image preparation registers and checks the imported digest alias on both nodes. A minimal DaemonSet keeps that local-only image active on each node for the lane so kubelet image garbage collection cannot remove it between fixture tests. The DaemonSet exposes no Service and is removed with the disposable cluster. The status suite schedules the runtime on the worker so a node-local bypass cannot conceal a missing proxy ingress rule.
+For each Kubernetes fixture lane, `scripts/ci/prepare.mjs` creates one server and one worker with a shared task-owned local-path mount. It reads the worker Pod CIDR and the server route to that network, validates the route source, and exports its single-address `/32` as `OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS`. Image preparation registers and checks the imported digest alias on both nodes. A minimal DaemonSet keeps that local-only image active on each node for the lane so kubelet image garbage collection cannot remove it between fixture tests. The DaemonSet exposes no Service and is removed with the disposable cluster. The status suite schedules the runtime on the worker so a node-local bypass cannot conceal a missing proxy ingress rule.
 
 Preparation checks the storage controller before fixture setup, then restarts it
 after image registration and requires the replacement to become ready before
@@ -18,6 +18,17 @@ publishing test inputs. Per-file cleanup repeats the health check while preservi
 database cleanup. Failures report bounded storage-controller logs, Pod scheduling
 conditions, and node pressure/taints outside the sanitized test reporter; they do
 not include tenant workloads or complete Pod specifications.
+
+Automatic CI builds the full `deploy/runtime/Dockerfile` once on Blacksmith using
+`scripts/ci/runtime-image.mjs`. It exports the immutable Docker image ID, archive
+SHA-256 and checked-out workflow commit in the same-run `ci-runtime-image`
+artifact. Image/packaging and repository-credentials-platform download it;
+preparation verifies checkout, source, archive checksum and loaded image identity
+before assigning a lane-owned tag. Invalid input fails setup. Both lanes retain
+their original tests, and the platform lane still builds its final-runtime fixture
+and verifies the imported Kubernetes digest. The artifact is retained for one day
+and is not a release or cross-run cache. Manual Full Integration and local runs
+continue to build their own images when no artifact is selected.
 
 The runtime image recipe pins compatible OpenClaw, Codex-plugin and Slack-plugin releases together with the Codex app-server version required by the plugin. Image startup smoke verifies fresh-home plugin loading, actual app-server initialization, and nested Codex home ownership for generated images and credential files before credentialed tests. Routing additionally requires the Gateway identity-scope contract; embedded continuity requires outgoing media to remain visible through history and artifact APIs across Pod replacement. A successful image build alone establishes none of those live outcomes.
 

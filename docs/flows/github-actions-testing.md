@@ -21,7 +21,10 @@ GitHub Actions selects explicit test lanes, prepares disposable resources, runs 
 ```mermaid
 graph TD
   subgraph Actions["GitHub Actions"]
-    A["PR or main event"] --> B["Ten PR-safe jobs"]
+    A["PR or main event"] --> B["Eight PR-safe jobs"]
+    A --> R["Build full runtime image"]
+    R --> S["Two runtime consumer jobs"]
+    R --> L
     A --> N["Suite audit"]
     N --> L
     C["Manual integration dispatch"] --> D["Environment protection preflight"]
@@ -30,6 +33,7 @@ graph TD
   end
   subgraph Runner["Disposable job runner"]
     B --> F["Prepare lane resources"]
+    S --> F
     E --> F
     F -->|prepared| G["Prepare file prerequisites"]
     G --> H["Node tests and structured reporter"]
@@ -52,7 +56,7 @@ graph TD
 `.github/workflows/ci.yml:jobs`, `.github/workflows/full-integration.yml:jobs`, and
 `scripts/ci/full-integration-preflight.mjs:validateFullIntegrationPreflight`
 
-The PR workflow uses the event checkout and supplies no external service credentials. Suite Audit and all ten lanes start independently on ephemeral runners. Kubernetes lanes use `ubuntu-latest` for bridge netfilter support; other lanes and the audit use `blacksmith-8vcpu-ubuntu-2404`. Its aggregate uses Blacksmith and requires a successful audit plus `checks-baseline`, `postgres`, `postgres-application`, `images-packaging`, `k3d-fixture-configuration`, `k3d-fixture-state`, `k3d-fixture-plugins`, `logging-collector`, `repository-credentials-container`, and `repository-credentials-platform`. A failed audit still fails CI Required even when the lanes pass. Full Integration checks configured environment protection and checks out the immutable event SHA. It admits `refs/heads/main` for every lane. Only `k3d-model` may use another branch: preflight requires an exact branch rule in `integration-model`, and GitHub still requires reviewer approval with self-review prevention. Wildcards, tags, and other non-main lanes are rejected. The administrator removes the temporary branch rule after verification. A manual dispatch selects its requested lane or `all`; pushes and merges do not start this workflow. Manual runs share one concurrency group and do not cancel an in-progress run. The provider environment must allow exactly the `main` branch and needs no per-run reviewer approval. Other credentialed environments still require reviewers with self-review prevention. No PR event enters this credentialed workflow. A targeted integration run has a narrower claim than a full inventory run.
+The PR workflow uses the event checkout and supplies no external service credentials. Suite Audit, the shared runtime build, and eight lanes start independently on ephemeral runners. Image/packaging and repository-credentials-platform start after the runtime build. Kubernetes lanes use `ubuntu-latest` for bridge netfilter support; other lanes and the audit use `blacksmith-8vcpu-ubuntu-2404`. Its aggregate uses Blacksmith and requires a successful audit and runtime build plus `checks-baseline`, `postgres`, `postgres-application`, `images-packaging`, `k3d-fixture-configuration`, `k3d-fixture-state`, `k3d-fixture-plugins`, `logging-collector`, `repository-credentials-container`, and `repository-credentials-platform`. A failed audit still fails CI Required even when the lanes pass. Full Integration checks configured environment protection and checks out the immutable event SHA. It admits `refs/heads/main` for every lane. Only `k3d-model` may use another branch: preflight requires an exact branch rule in `integration-model`, and GitHub still requires reviewer approval with self-review prevention. Wildcards, tags, and other non-main lanes are rejected. The administrator removes the temporary branch rule after verification. A manual dispatch selects its requested lane or `all`; pushes and merges do not start this workflow. Manual runs share one concurrency group and do not cancel an in-progress run. The provider environment must allow exactly the `main` branch and needs no per-run reviewer approval. Other credentialed environments still require reviewers with self-review prevention. No PR event enters this credentialed workflow. A targeted integration run has a narrower claim than a full inventory run.
 
 PostgreSQL migration and application suites own separate servers. Each of the three Kubernetes fixture files owns a separate cluster and PostgreSQL server. For these automatic Kubernetes lanes, the shared action enables bridge netfilter on the ephemeral runner before creating k3d nodes, which share its kernel. Missing bridge filtering fails setup rather than running with unenforced Pod network policies. Lane state and cleanup stay local to its runner; files within each lane remain sequential. The suite map retains one owner per file in both workflow groups.
 
@@ -111,6 +115,8 @@ The aggregate runs after success or failure and checks expected job outcomes plu
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23: Build the complete runtime once per CI run and admit its same-source archive in both image consumers; retain separate tests and cluster ownership. (01a0ccf5-96e4-7541-9845-c9a6443fa7b2 - e3b18421182ef12123f84d23a379a2f65a749d7b)
 
 - 2026-09-23 06:35: Start the audit and required lanes independently on the existing ephemeral Blacksmith pool; split PostgreSQL and Kubernetes fixtures across owned runners and retain the final coverage gate. (01a0ccf5-96e4-7541-9845-c9a6443fa7b2 - 3ac9d07a4d7ede8c4e1c010f598ef67673f97b74)
 

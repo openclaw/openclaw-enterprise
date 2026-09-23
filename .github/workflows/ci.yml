@@ -59,10 +59,6 @@ jobs:
             title: PostgreSQL Application
             profile: postgres
             timeout: 25
-          - lane: images-packaging
-            title: Images and Packaging
-            profile: images
-            timeout: 45
           - lane: k3d-fixture-configuration
             title: k3d Fixture and Configuration
             profile: k3d
@@ -83,10 +79,6 @@ jobs:
             title: Repository Credentials
             profile: images
             timeout: 40
-          - lane: repository-credentials-platform
-            title: Repository Credentials Platform
-            profile: k3d
-            timeout: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -106,12 +98,67 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  runtime-image:
+    name: Build Shared Runtime Image
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Build and export full runtime from this commit
+        run: node scripts/ci/runtime-image.mjs "$RUNNER_TEMP/runtime-image"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ci-runtime-image
+          path: |
+            ${{ runner.temp }}/runtime-image/runtime.tar
+            ${{ runner.temp }}/runtime-image/metadata.json
+          compression-level: 1
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 1
+
+  runtime-consumers:
+    name: ${{ matrix.title }}
+    needs: runtime-image
+    runs-on: ${{ matrix.profile == 'k3d' && 'ubuntu-latest' || 'blacksmith-8vcpu-ubuntu-2404' }}
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: images-packaging
+            title: Images and Packaging
+            profile: images
+            timeout: 45
+          - lane: repository-credentials-platform
+            title: Repository Credentials Platform
+            profile: k3d
+            timeout: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: ${{ matrix.lane }}
+          profile: ${{ matrix.profile }}
+          node-version: ${{ env.NODE_VERSION }}
+          artifact-prefix: ci-results
+          runtime-image-artifact: ci-runtime-image
+
   ci-required:
     name: CI Required
     runs-on: blacksmith-8vcpu-ubuntu-2404
     needs:
       - audit
       - pr-safe
+      - runtime-image
+      - runtime-consumers
     if: always()
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -133,9 +180,10 @@ jobs:
           const fs = require("fs");
           const needs = JSON.parse(process.env.NEEDS_JSON);
           const lanes = ["checks-baseline", "postgres", "postgres-application", "images-packaging", "k3d-fixture-configuration", "k3d-fixture-state", "k3d-fixture-plugins", "logging-collector", "repository-credentials-container", "repository-credentials-platform"];
-          const expanded = { audit: needs.audit };
+          const expanded = { audit: needs.audit, "runtime-image": needs["runtime-image"] };
           for (const lane of lanes) {
-            expanded[lane] = { result: needs["pr-safe"]?.result ?? "missing" };
+            const job = ["images-packaging", "repository-credentials-platform"].includes(lane) ? "runtime-consumers" : "pr-safe";
+            expanded[lane] = { result: needs[job]?.result ?? "missing" };
           }
           fs.writeFileSync(`${process.env.RUNNER_TEMP}/needs.json`, JSON.stringify(expanded));
           NODE

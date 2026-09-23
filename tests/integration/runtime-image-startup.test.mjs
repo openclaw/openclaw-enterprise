@@ -2,7 +2,7 @@ import { defaultAgentModel } from "../../apps/controller/src/console/agents/star
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -15,6 +15,8 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+
+import { loadRuntimeImage, saveRuntimeImage } from "../../scripts/ci/runtime-image.mjs";
 
 const execute = promisify(execFile);
 const docker = process.env.OCC_DOCKER_BIN ?? "docker";
@@ -739,5 +741,53 @@ test(
     assertGatewayModelLog(entries, `codex/${runtimeImageModel}`);
     await assertDedicatedRuntimeAssets(containerName);
     assertNoPackagingFailure(logs);
+  },
+);
+
+test(
+  "CI runtime archive rejects a different source, altered bytes, and a different image identity",
+  imageTestOptions,
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "oce-runtime-archive-"));
+    let imageId;
+    t.after(async () => {
+      try {
+        if (imageId) {
+          await execute(docker, ["image", "rm", "--force", imageId]);
+        }
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    });
+    // A real, uniquely owned image exercises Docker save/load without copying
+    // the multi-gigabyte delivered runtime again just to test artifact admission.
+    await writeFile(join(directory, "proof"), randomBytes(32).toString("hex"));
+    await writeFile(join(directory, "Dockerfile"), "FROM scratch\nCOPY proof /proof\n");
+    await execute(docker, [
+      "build",
+      "--builder",
+      "default",
+      "--load",
+      "--iidfile",
+      join(directory, "id"),
+      directory,
+    ]);
+    imageId = (await readFile(join(directory, "id"), "utf8")).trim();
+    const sourceSha = "a".repeat(40);
+    await saveRuntimeImage(directory, imageId, sourceSha);
+    await execute(docker, ["image", "rm", imageId]);
+    await assert.rejects(loadRuntimeImage(directory, "b".repeat(40)), /source does not match/);
+    await assert.rejects(execute(docker, ["image", "inspect", imageId]));
+    assert.equal(await loadRuntimeImage(directory, sourceSha), imageId);
+    const metadataPath = join(directory, "metadata.json");
+    const metadata = JSON.parse(await readFile(metadataPath, "utf8"));
+    await writeFile(
+      metadataPath,
+      JSON.stringify({ ...metadata, imageId: `sha256:${"0".repeat(64)}` }),
+    );
+    await assert.rejects(loadRuntimeImage(directory, sourceSha), /recorded image identity/);
+    await writeFile(metadataPath, JSON.stringify(metadata));
+    await appendFile(join(directory, "runtime.tar"), "corrupt");
+    await assert.rejects(loadRuntimeImage(directory, sourceSha), /checksum mismatch/);
   },
 );

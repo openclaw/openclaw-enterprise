@@ -17,6 +17,7 @@ import {
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { loadRuntimeImage } from "./runtime-image.mjs";
 import { cleanupResourceIds } from "./cleanup.mjs";
 import { prepareGatewayRouting } from "./routing.mjs";
 import { prepareLogging } from "./logging.mjs";
@@ -645,16 +646,32 @@ async function buildRuntimeImages(
     const resource = addResource(state, "image-tag", { name: tag, owner: state.prefix });
     resources.push(resource);
     await writeState(statePath, state);
-    await execFile(process.env.OCC_DOCKER_BIN ?? "docker", [
-      "build",
-      ...(localStore ? ["--builder", "default", "--load"] : []),
-      "--pull=false",
-      "-f",
-      runtimeDockerfile,
-      "-t",
-      tag,
-      repositoryRoot,
-    ]);
+    const artifact = process.env.OPENCLAW_CI_RUNTIME_IMAGE_DIR;
+    if (artifact) {
+      if (!["images-packaging", "repository-credentials-platform"].includes(state.lane)) {
+        throw new Error(
+          "Shared runtime images are only supported by the automatic image consumers.",
+        );
+      }
+      const { stdout } = await execFile("git", ["rev-parse", "HEAD"]);
+      const sourceSha = stdout.trim();
+      if (sourceSha !== process.env.GITHUB_SHA) {
+        throw new Error("Runtime image consumer checkout must match the workflow commit.");
+      }
+      const imageId = await loadRuntimeImage(artifact, sourceSha);
+      await execFile(process.env.OCC_DOCKER_BIN ?? "docker", ["tag", imageId, tag]);
+    } else {
+      await execFile(process.env.OCC_DOCKER_BIN ?? "docker", [
+        "build",
+        ...(localStore ? ["--builder", "default", "--load"] : []),
+        "--pull=false",
+        "-f",
+        runtimeDockerfile,
+        "-t",
+        tag,
+        repositoryRoot,
+      ]);
+    }
     await markResourceReady(statePath, state, resource);
     env.OCC_TEST_RUNTIME_IMAGE = tag;
     env.OCC_DOCKER_RUNTIME_IMAGE = tag;
