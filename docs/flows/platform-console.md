@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-09-22
-last_updated_session: codex/01a0cc48-2eda-7fc2-a19e-096b68fccb7b
+updated: 2026-09-23
+last_updated_session: codex/01a0cce9-23e3-7072-aa3f-a2e26d2dbf11
 ---
 
 # Platform console request flow
@@ -137,17 +137,23 @@ Installation `administer` precedes the safe startup-summary response. Explicit
 empty configuration is a successful empty list; absent wiring and dependency
 failure return errors.
 
-`apps/controller/src/console/agents/create.mjs:renderCreateAgent` loads Provider discovery
-and `GET /namespaces/:namespaceId/service-accounts` into optional select lists.
-The latter requires Namespace read and filters each account by exact read access.
-Provider selection does not filter service accounts. A failed list read
-shows a field-level error and retains the unset association option.
+`apps/controller/src/console/agents/create.mjs:renderCreateAgent` offers OpenAI
+or Anthropic with API-key authentication and a matching native model configuration.
+It does not discover Installation Providers or assign their identities from the
+native provider selection. The Providers navigation item is hidden.
+Existing Preset bindings remain intact. Key entry uses the existing Secret API;
+creation retains successful Secret, Configuration, and Agent identities before
+`apps/controller/src/console/agents/secret-access.mjs:ensureSecretOperateBinding`
+grants that Agent access to its exact Secret. Known failures retry only pending
+steps. Uncertain writes block another creation attempt; no key is stored in
+Configuration or browser storage. See the [creation reference](../reference/console/create-and-deploy.md)
+for permissions and partial-save recovery.
 
 The form starts with editable native JSON for the selected execution mode and
 optional Agent-owned plugin selections. `apps/controller/src/console/agents/starter-model.mjs`
-selects the shared first-party default: `codex/gpt-6-astra` for dedicated or
-`openai/gpt-6-astra` for embedded. A mode change preserves edited JSON; reset
-restores the selected mode’s starter. Submission parses the JSON object and
+selects the shared OpenAI default. Model and execution-mode changes update the
+native model and runtime entries while preserving unrelated settings; reset
+restores the selected starter. Submission parses the JSON object and
 posts `{kind: "agent", values}` to
 `POST /namespaces/:namespaceId/configurations`. After that returns its ID,
 `POST /namespaces/:namespaceId/agents` creates the Agent draft with the selected
@@ -163,8 +169,7 @@ retries automatically, and creation alone does not admit a revision, validate th
 plugin catalog, or start runtime work.
 
 `apps/controller/src/console/agents/harness-auth.mjs:createHarnessAuthFields`
-masks the Secret ID input on creation and in the Credentials editor, including
-Preset-prefilled values. `harnessAuthDescription` reports a configured Secret
+masks the existing Secret ID input in the Credentials editor. `harnessAuthDescription` reports a configured Secret
 without displaying its ID in either draft or revision summaries. Native
 Configuration displays unresolved references; the console does not fetch
 Secret values for these views.
@@ -275,6 +280,8 @@ refreshes and inspects the Agent and revision history.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 06:27: Move two-provider API-key setup into Agent creation using existing Secret and IAM operations. (01a0cce9-23e3-7072-aa3f-a2e26d2dbf11 - a8272f4e2760e5ff06dc09c5658f48bea382c790)
 
 - 2026-09-22 20:56: Rename the deployment-facing Console view to New revision. (01a0cc48-2eda-7fc2-a19e-096b68fccb7b - 081bccfcf3f5b114588dde1b42a0deb07f326017)
 

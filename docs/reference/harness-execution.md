@@ -81,11 +81,11 @@ queue guarantees.
 The Agent's [harnessAuth binding](agents.md#harness-authentication) is the sole
 model-auth selector. Kubernetes supports these combinations:
 
-| Binding                      | Topology          | Credential consumer                                             |
-| ---------------------------- | ----------------- | --------------------------------------------------------------- |
-| `api_key` with an OCC Secret | Embedded OpenClaw | Combined gateway/Harness receives `OPENAI_API_KEY`.             |
-| `api_key` with an OCC Secret | Dedicated Codex   | Only Codex receives `OPENAI_API_KEY` and logs in through stdin. |
-| `chatgpt_service_account`    | Dedicated Codex   | Only Codex receives the account token and forced workspace.     |
+| Binding                      | Topology          | Credential consumer                                                                                               |
+| ---------------------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `api_key` with an OCC Secret | Embedded OpenClaw | Combined gateway/Harness receives `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, selected by its native model provider. |
+| `api_key` with an OCC Secret | Dedicated Codex   | Only Codex receives `OPENAI_API_KEY` and logs in through stdin.                                                   |
+| `chatgpt_service_account`    | Dedicated Codex   | Only Codex receives the account token and forced workspace.                                                       |
 
 Kubernetes workload rendering prepares one explicit login mode and exact Secret
 projections. The selected Sandbox consumes the same already-rendered workload
@@ -124,7 +124,7 @@ These startup checks make provider requests and may incur model usage charges.
 They do not verify access to every other configured model or guarantee continued validity
 after upstream revocation. Embedded probe transport configuration must use
 literal metadata rather than additional environment or Secret references. The
-canonical `OPENAI_API_KEY` authentication alias remains supported, and unrelated
+canonical `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` alias for the selected provider remains supported, and unrelated
 gateway/channel configuration bindings remain separate.
 
 The revision freezes the admitted source reference, not historical Secret bytes.

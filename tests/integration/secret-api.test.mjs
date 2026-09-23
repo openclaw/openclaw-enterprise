@@ -414,101 +414,103 @@ test("Secret API denial and storage failures return value-free errors", async ()
 
 // These tests exercise API validation, Native IAM, OCC admission, and state ownership.
 // Passive Secret storage does not establish provider login or model execution proof.
-test("Harness Secret binding preserves draft semantics, exact delivery grants, and revision source retention", async () => {
-  const harnessAuthDriver = createTestKubernetesComputeDriver("compute-harness-auth");
-  const fixture = await createFixture({
-    recordOperations: true,
-    computeDriver: {
-      ...createTestComputeDriver(),
-      validateHarnessAuth: harnessAuthDriver.validateHarnessAuth.bind(harnessAuthDriver),
-    },
-  });
-  const { namespace, configuration, agent } = await bootstrapAgent(fixture, {
-    agents: {
-      defaults: {
-        model: "openai/gpt-5",
-        models: { "openai/gpt-5": { agentRuntime: { id: "openclaw" } } },
+for (const model of ["openai/gpt-5", "anthropic/claude-sonnet-4-5"]) {
+  test(`${model} Harness Secret binding preserves draft semantics, exact delivery grants, and revision source retention`, async () => {
+    const harnessAuthDriver = createTestKubernetesComputeDriver("compute-harness-auth");
+    const fixture = await createFixture({
+      recordOperations: true,
+      computeDriver: {
+        ...createTestComputeDriver(),
+        validateHarnessAuth: harnessAuthDriver.validateHarnessAuth.bind(harnessAuthDriver),
       },
-    },
+    });
+    const { namespace, configuration, agent } = await bootstrapAgent(fixture, {
+      agents: {
+        defaults: {
+          model,
+          models: { [model]: { agentRuntime: { id: "openclaw" } } },
+        },
+      },
+    });
+    const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+    assert.equal(agent.harnessAuth, null);
+    assert.equal((await request(fixture.app, "POST", `${path}/deploy`)).status, 409);
+    const value = `synthetic-harness-key-${randomUUID()}`;
+    const key = await request(fixture.app, "POST", `/namespaces/${namespace.id}/secrets`, {
+      body: { name: "Harness key", value },
+    });
+    assert.equal(key.status, 201, JSON.stringify(key.body));
+    const binding = { method: "api_key", source: key.data.ref };
+    const bound = await request(fixture.app, "PATCH", path, {
+      body: { configurationId: configuration.id, harnessAuth: binding },
+    });
+    assert.equal(bound.status, 200);
+    assert.deepEqual(bound.data.harnessAuth, binding);
+    const unchanged = await request(fixture.app, "PATCH", path, {
+      body: { configurationId: configuration.id },
+    });
+    assert.deepEqual(unchanged.data.harnessAuth, binding);
+    assert.equal(
+      (await request(fixture.app, "DELETE", `/namespaces/${namespace.id}/secrets/${key.data.id}`))
+        .status,
+      409,
+    );
+    // Administrative rights on the actor do not give the Agent permission to receive a key.
+    const denied = await request(fixture.app, "POST", `${path}/deploy`);
+    assert.equal(denied.status, 403);
+    const { servicePrincipalId } = await fixture
+      .controller()
+      .getAgent(fixture.principal.id, namespace.id, agent.id);
+    fixture.state.identities.push({
+      kind: "service_principal",
+      id: servicePrincipalId,
+      namespaceId: namespace.id,
+    });
+    fixture.state.roles.push({
+      id: "harness-key-delivery",
+      namespaceId: namespace.id,
+      permissions: [{ action: "operate", resourceKind: "secret" }],
+    });
+    fixture.state.bindings.push({
+      id: "harness-key-delivery",
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: servicePrincipalId,
+      roleId: "harness-key-delivery",
+      resourceKind: "secret",
+      resourceId: key.data.id,
+    });
+    const admitted = await request(fixture.app, "POST", `${path}/deploy`);
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    assert.deepEqual(admitted.data.harnessAuth, binding);
+    const internal = await fixture
+      .controller()
+      .getRevision(fixture.principal.id, namespace.id, agent.id, admitted.data.id);
+    assert.deepEqual(internal.harnessAuth, { ...binding, secretDriverId: fixture.secretDriver.id });
+    assert.equal(JSON.stringify(admitted.body).includes("secretDriverId"), false);
+    assert.equal(JSON.stringify(admitted.body).includes(value), false);
+    const cleared = await request(fixture.app, "PATCH", path, {
+      body: { configurationId: configuration.id, harnessAuth: null },
+    });
+    assert.equal(cleared.status, 200);
+    assert.equal(cleared.data.harnessAuth, null);
+    assert.deepEqual(
+      (
+        await fixture
+          .controller()
+          .getRevision(fixture.principal.id, namespace.id, agent.id, admitted.data.id)
+      ).harnessAuth,
+      internal.harnessAuth,
+    );
+    // Pending revision ownership outlives the current draft binding.
+    assert.equal(
+      (await request(fixture.app, "DELETE", `/namespaces/${namespace.id}/secrets/${key.data.id}`))
+        .status,
+      409,
+    );
+    assert.equal(JSON.stringify(fixture.auditSink.events).includes(value), false);
   });
-  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
-  assert.equal(agent.harnessAuth, null);
-  assert.equal((await request(fixture.app, "POST", `${path}/deploy`)).status, 409);
-  const value = `synthetic-harness-key-${randomUUID()}`;
-  const key = await request(fixture.app, "POST", `/namespaces/${namespace.id}/secrets`, {
-    body: { name: "Harness key", value },
-  });
-  assert.equal(key.status, 201, JSON.stringify(key.body));
-  const binding = { method: "api_key", source: key.data.ref };
-  const bound = await request(fixture.app, "PATCH", path, {
-    body: { configurationId: configuration.id, harnessAuth: binding },
-  });
-  assert.equal(bound.status, 200);
-  assert.deepEqual(bound.data.harnessAuth, binding);
-  const unchanged = await request(fixture.app, "PATCH", path, {
-    body: { configurationId: configuration.id },
-  });
-  assert.deepEqual(unchanged.data.harnessAuth, binding);
-  assert.equal(
-    (await request(fixture.app, "DELETE", `/namespaces/${namespace.id}/secrets/${key.data.id}`))
-      .status,
-    409,
-  );
-  // Administrative rights on the actor do not give the Agent permission to receive a key.
-  const denied = await request(fixture.app, "POST", `${path}/deploy`);
-  assert.equal(denied.status, 403);
-  const { servicePrincipalId } = await fixture
-    .controller()
-    .getAgent(fixture.principal.id, namespace.id, agent.id);
-  fixture.state.identities.push({
-    kind: "service_principal",
-    id: servicePrincipalId,
-    namespaceId: namespace.id,
-  });
-  fixture.state.roles.push({
-    id: "harness-key-delivery",
-    namespaceId: namespace.id,
-    permissions: [{ action: "operate", resourceKind: "secret" }],
-  });
-  fixture.state.bindings.push({
-    id: "harness-key-delivery",
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: servicePrincipalId,
-    roleId: "harness-key-delivery",
-    resourceKind: "secret",
-    resourceId: key.data.id,
-  });
-  const admitted = await request(fixture.app, "POST", `${path}/deploy`);
-  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
-  assert.deepEqual(admitted.data.harnessAuth, binding);
-  const internal = await fixture
-    .controller()
-    .getRevision(fixture.principal.id, namespace.id, agent.id, admitted.data.id);
-  assert.deepEqual(internal.harnessAuth, { ...binding, secretDriverId: fixture.secretDriver.id });
-  assert.equal(JSON.stringify(admitted.body).includes("secretDriverId"), false);
-  assert.equal(JSON.stringify(admitted.body).includes(value), false);
-  const cleared = await request(fixture.app, "PATCH", path, {
-    body: { configurationId: configuration.id, harnessAuth: null },
-  });
-  assert.equal(cleared.status, 200);
-  assert.equal(cleared.data.harnessAuth, null);
-  assert.deepEqual(
-    (
-      await fixture
-        .controller()
-        .getRevision(fixture.principal.id, namespace.id, agent.id, admitted.data.id)
-    ).harnessAuth,
-    internal.harnessAuth,
-  );
-  // Pending revision ownership outlives the current draft binding.
-  assert.equal(
-    (await request(fixture.app, "DELETE", `/namespaces/${namespace.id}/secrets/${key.data.id}`))
-      .status,
-    409,
-  );
-  assert.equal(JSON.stringify(fixture.auditSink.events).includes(value), false);
-});
+}
 
 test("Changing Harness Secret bindings requires grants on both removed and replacement sources", async () => {
   const fixture = await createFixture();
@@ -638,18 +640,20 @@ test("Harness source admission rejects foreign references and superseded model s
     },
   });
   assert.equal(malformed.status, 400);
-  assert.equal(
-    (
-      await request(fixture.app, "POST", `/namespaces/${namespace.id}/configurations`, {
-        body: {
-          kind: "agent",
-          values: {},
-          secretBindings: { OPENAI_API_KEY: { source: localKey.data.ref } },
-        },
-      })
-    ).status,
-    404,
-  );
+  for (const destination of ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]) {
+    assert.equal(
+      (
+        await request(fixture.app, "POST", `/namespaces/${namespace.id}/configurations`, {
+          body: {
+            kind: "agent",
+            values: {},
+            secretBindings: { [destination]: { source: localKey.data.ref } },
+          },
+        })
+      ).status,
+      404,
+    );
+  }
   assert.equal(
     (
       await request(fixture.app, "POST", `${path}/runtime-credentials`, {

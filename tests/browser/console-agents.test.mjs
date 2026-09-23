@@ -13,11 +13,13 @@ import {
   WORKSPACE_DEFAULTS,
   WORKSPACE_DEFAULTS_ID,
 } from "../../packages/contracts/src/workspace-defaults.mjs";
+import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture, providerFixtures } from "../helpers/console-app.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 
 async function artifactDirectory(t) {
   const configured = process.env.OCC_TEST_CONSOLE_ARTIFACT_DIR;
@@ -182,24 +184,6 @@ async function optionValues(locator) {
   );
 }
 
-async function seedServiceAccount(state, namespaceId, name, issued = true) {
-  return state.transact((unit) =>
-    unit.serviceAccounts.createServiceAccount({
-      id: `sa_${randomUUID()}`,
-      namespaceId,
-      name,
-      ...(issued
-        ? {
-            credential: {
-              kind: "access_token",
-              secretRef: { name: "issued-credential", key: "token" },
-            },
-          }
-        : {}),
-    }),
-  );
-}
-
 function nativeAdminComputeDriver(endpoint) {
   const driver = createTestKubernetesComputeDriver("console-native-admin-compute");
 
@@ -274,28 +258,14 @@ function nativeAdminValues(marker, origin) {
   };
 }
 
-test("Agent creation saves native Configuration JSON and a draft Agent without admitting a revision", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
+test("Agent creation stores its API key separately, grants exact access, and saves a draft without a revision", async (t) => {
+  const audit = new InMemoryAuditSink();
+  const state = new InMemoryPlatformState({ auditSink: audit });
+  const secretDriver = createTestSecretDriver();
+  const fixture = await createConsoleAppFixture(t, { state, secretDriver });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Agent authoring", { ready: true });
-  const secret = await fixture.createSecret(
-    namespace.id,
-    "Existing model credential",
-    "never-visible-model-secret",
-  );
-  // Selecting an exact Secret requires operate, not permission to read its metadata.
-  fixture.policy.restrictions.push({
-    id: "deny-harness-secret-read",
-    namespaceId: namespace.id,
-    resourceKind: "secret",
-    resourceId: secret.id,
-    action: "read",
-    effect: "deny",
-  });
-  assert.equal(
-    (await fixture.request("GET", `/namespaces/${namespace.id}/secrets/${secret.id}`)).status,
-    403,
-  );
+  const key = "never-visible-model-secret";
   const values = nativeValues("create", { harnessId: "codex", providerModel: "gpt-5.1" });
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
@@ -303,11 +273,15 @@ test("Agent creation saves native Configuration JSON and a draft Agent without a
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByRole("button", { name: "Start without Preset" }).click();
-  await page.getByText("Choose an installed Provider.").waitFor();
-  await page.getByLabel("Authentication source").selectOption("api_key");
-  const secretInput = page.getByLabel("OpenAI API key Secret ID");
-  assert.equal(await secretInput.getAttribute("type"), "password");
-  await secretInput.fill(secret.id);
+  assert.equal(await page.getByRole("link", { name: "Providers", exact: true }).count(), 0);
+  assert.deepEqual(await optionValues(page.getByLabel("Provider", { exact: true })), [
+    { value: "openai", text: "OpenAI" },
+    { value: "anthropic", text: "Anthropic" },
+  ]);
+  await page.getByText("Authentication method: API key", { exact: true }).waitFor();
+  const keyInput = page.getByLabel("API key", { exact: true });
+  assert.equal(await keyInput.getAttribute("type"), "password");
+  await keyInput.fill(key);
   for (const [filename, content] of Object.entries(WORKSPACE_DEFAULTS)) {
     assert.equal(await page.getByLabel(filename, { exact: true }).inputValue(), content);
   }
@@ -315,10 +289,15 @@ test("Agent creation saves native Configuration JSON and a draft Agent without a
   const customIdentity = "# Identity\r\n<em>Workspace author</em>\r\n";
   await page.getByLabel("IDENTITY.md", { exact: true }).fill(customIdentity);
   await page.getByLabel("USER.md", { exact: true }).fill("");
-  await page.getByLabel("Agent name").fill("Console-created Agent");
+  await page.getByLabel("Agent name").fill("A".repeat(200));
   await page.getByLabel("Execution mode").selectOption("dedicated");
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
 
+  const secretResponse = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/secrets` &&
+      response.request().method() === "POST",
+  );
   const configurationResponse = page.waitForResponse(
     (response) =>
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/configurations` &&
@@ -330,10 +309,17 @@ test("Agent creation saves native Configuration JSON and a draft Agent without a
       response.request().method() === "POST",
   );
   await page.getByRole("button", { name: "Create Agent" }).click();
+  const secret = (await (await secretResponse).json()).data;
   const configuration = await (await configurationResponse).json();
   const created = await (await createResponse).json();
+  assert.equal(secretDriver.valueFor(secret), key);
+  assert.equal(secretDriver.calls.filter((call) => call.operation === "create").length, 1);
+  for (const payload of [secret, configuration, created]) {
+    assert.equal(JSON.stringify(payload).includes(key), false);
+  }
   assert.equal(configuration.data.kind, "agent");
   assert.deepEqual(configuration.data.values, values);
+  assert.equal(created.data.name, "A".repeat(200));
   assert.equal(created.data.namespaceId, namespace.id);
   assert.equal(created.data.configurationId, configuration.data.id);
   assert.equal(created.data.executionMode, "dedicated");
@@ -369,7 +355,7 @@ test("Agent creation saves native Configuration JSON and a draft Agent without a
   const visibleConfiguration = await page.locator("body").textContent();
   assert.equal(visibleConfiguration.includes(secret.id), false);
   assert.equal(visibleConfiguration.includes("never-visible-model-secret"), false);
-  await page.getByText("OpenAI API key · Secret configured", { exact: true }).waitFor();
+  await page.getByText("API key · Secret configured", { exact: true }).waitFor();
 
   const savedConfiguration = await fixture.request(
     "GET",
@@ -385,14 +371,39 @@ test("Agent creation saves native Configuration JSON and a draft Agent without a
   assert.deepEqual(
     nonAuthWriteRequests(requests).map((request) => [request.method, request.path]),
     [
+      ["POST", `/namespaces/${namespace.id}/secrets`],
       ["POST", `/namespaces/${namespace.id}/configurations`],
       ["POST", `/namespaces/${namespace.id}/agents`],
+      ["POST", `/namespaces/${namespace.id}/iam/roles`],
+      ["POST", `/namespaces/${namespace.id}/iam/access-bindings`],
     ],
   );
   assert.deepEqual(configurationPostRequests(requests, namespace.id)[0].body, {
     kind: "agent",
     values,
   });
+
+  const roles = await fixture.request("GET", `/namespaces/${namespace.id}/iam/roles`);
+  const access = await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`);
+  assert.equal(roles.status, 200);
+  assert.equal(access.status, 200);
+  assert.equal(roles.data.length, 1);
+  assert.deepEqual(roles.data[0].permissions, [{ action: "operate", resourceKind: "secret" }]);
+  assert.deepEqual(
+    access.data.map(({ id, ...binding }) => binding),
+    [
+      {
+        namespaceId: namespace.id,
+        subjectKind: "identity",
+        subjectId: created.data.servicePrincipalId,
+        roleId: roles.data[0].id,
+        resourceKind: "secret",
+        resourceId: secret.id,
+      },
+    ],
+  );
+  assert.ok(audit.events.some((event) => event.resource.id === created.data.id));
+  assert.equal(JSON.stringify(audit.events).includes(key), false);
 
   // The server still enforces the exact source grant when the form is saved.
   fixture.policy.restrictions.push({
@@ -404,7 +415,7 @@ test("Agent creation saves native Configuration JSON and a draft Agent without a
     effect: "deny",
   });
   await page.getByRole("button", { name: "Credentials", exact: true }).click();
-  const savedSecretInput = page.getByLabel("OpenAI API key Secret ID");
+  const savedSecretInput = page.getByLabel("API key Secret ID");
   assert.equal(await savedSecretInput.getAttribute("type"), "password");
   assert.equal(await savedSecretInput.inputValue(), secret.id);
   const deniedBinding = page.waitForResponse(
@@ -431,7 +442,7 @@ test("Agent creation saves native Configuration JSON and a draft Agent without a
   await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByRole("button", { name: "Start without Preset" }).click();
-  await page.getByText("Choose an installed Provider.").waitFor();
+  await page.getByLabel("API key", { exact: true }).fill("denied-agent-key");
   await page.getByLabel("Agent name").fill("Denied Agent");
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
   const deniedResponse = page.waitForResponse(
@@ -457,6 +468,7 @@ test("Agent creation rejects non-object native Configuration JSON before any wri
   await page.getByRole("button", { name: "Start without Preset" }).click();
   requests.length = 0;
 
+  await page.getByLabel("API key", { exact: true }).fill("unused-invalid-config-key");
   await page.getByLabel("Agent name").fill("Broken Agent");
   await page.getByLabel("Configuration JSON").fill("[]");
   await page.getByRole("button", { name: "Create Agent" }).click();
@@ -468,118 +480,82 @@ test("Agent creation rejects non-object native Configuration JSON before any wri
   assert.deepEqual(nonAuthWriteRequests(requests), []);
 });
 
-test("Agent creation renders provider and service account choices and saves selected associations", async (t) => {
-  const state = new InMemoryPlatformState();
-  const fixture = await createConsoleAppFixture(t, { state });
+test("Agent creation selects Anthropic API key without discovering installed Providers or service accounts", async (t) => {
+  const fixture = await createConsoleAppFixture(t, { providerSummaries: undefined });
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Dropdown choices", { ready: true });
-  const firstAccount = await seedServiceAccount(state, namespace.id, "Console Primary Account");
-  const secondAccount = await seedServiceAccount(
-    state,
-    namespace.id,
-    "Console Unissued Account",
-    false,
-  );
-  const values = nativeValues("dropdown", { harnessId: "codex", providerModel: "gpt-5.1" });
+  const namespace = await fixture.createNamespace("Anthropic authoring", { ready: true });
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
-
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByRole("button", { name: "Start without Preset" }).click();
-  const provider = page.getByLabel("Provider (optional)");
-  await page.getByLabel("Authentication source").selectOption("chatgpt_service_account");
-  const account = page.getByLabel("Issued ChatGPT service account");
-  await page.getByText("Choose an installed Provider.").waitFor();
-  await page.getByText("Issued accounts in this Namespace are available.").waitFor();
-  assert.equal(await provider.isDisabled(), false);
-  assert.equal(await account.isDisabled(), false);
-
-  const providerOptions = await optionValues(provider);
-  assert.ok(providerOptions.some((option) => option.value === ""));
-  assert.ok(providerOptions.some((option) => option.value === providerFixtures[0].id));
-  const accountOptions = await optionValues(account);
-  assert.ok(accountOptions.some((option) => option.value === ""));
-  assert.ok(accountOptions.some((option) => option.value === firstAccount.id));
-  assert.equal(
-    accountOptions.some((option) => option.value === secondAccount.id),
-    false,
-  );
-  assert.equal(JSON.stringify(accountOptions).includes("workspaceId"), false);
-  assert.equal(JSON.stringify(accountOptions).includes("providerId"), false);
-
-  await provider.selectOption(providerFixtures[0].id);
-  const accountOptionsAfterProviderSelection = await optionValues(account);
-  assert.ok(
-    accountOptionsAfterProviderSelection.some((option) => option.value === firstAccount.id),
-    "provider selection must not hide independently readable service accounts",
-  );
-
-  await page.getByLabel("Agent name").fill("Associated Agent");
-  await account.selectOption(firstAccount.id);
-  await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
-  const createResponse = page.waitForResponse(
+  await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
+  assert.equal(await page.getByLabel("Execution mode").inputValue(), "embedded");
+  assert.equal(await page.getByLabel("Execution mode").isDisabled(), true);
+  assert.equal(await page.getByLabel("Authentication source").count(), 0);
+  await page.getByLabel("Agent name").fill("Anthropic Agent");
+  await page.getByLabel("Model", { exact: true }).fill("claude-sonnet-4-6");
+  await page.getByLabel("API key", { exact: true }).fill("test-anthropic-api-key");
+  const saved = page.waitForResponse(
     (response) =>
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
       response.request().method() === "POST",
   );
   await page.getByRole("button", { name: "Create Agent" }).click();
-  const created = await (await createResponse).json();
-
-  assert.equal(created.data.providerId, providerFixtures[0].id);
-  assert.deepEqual(created.data.harnessAuth, {
-    method: "chatgpt_service_account",
-    serviceAccountId: firstAccount.id,
-  });
-  assert.equal(created.data.activeRevisionId, undefined);
-  assert.deepEqual(agentPostRequests(requests, namespace.id).at(-1).body, {
-    name: "Associated Agent",
-    executionMode: "dedicated",
-    initialWorkspaceFiles: WORKSPACE_DEFAULTS,
-    workspaceDefaultsId: WORKSPACE_DEFAULTS_ID,
-    providerId: providerFixtures[0].id,
-    harnessAuth: { method: "chatgpt_service_account", serviceAccountId: firstAccount.id },
-    configurationId: created.data.configurationId,
-  });
-  const savedConfiguration = await fixture.request(
+  const response = await saved;
+  assert.equal(response.status(), 201);
+  const agent = (await response.json()).data;
+  await page.waitForURL((url) => url.pathname === `/console/agents/${agent.id}`);
+  assert.equal(agent.executionMode, "embedded");
+  assert.equal(agent.providerId, null);
+  assert.equal(agent.harnessAuth.method, "api_key");
+  const configuration = await fixture.request(
     "GET",
-    `/namespaces/${namespace.id}/configurations/${created.data.configurationId}`,
+    `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
   );
-  assert.deepEqual(savedConfiguration.data.values, values);
-  const listedAccount = await fixture.request(
-    "GET",
-    `/namespaces/${namespace.id}/service-accounts/${firstAccount.id}`,
+  assert.equal(configuration.data.values.agents.defaults.model, "anthropic/claude-sonnet-4-6");
+  assert.deepEqual(configuration.data.values.models.providers.anthropic, {
+    baseUrl: "https://api.anthropic.com",
+    api: "anthropic-messages",
+    models: [{ id: "claude-sonnet-4-6", name: "claude-sonnet-4-6" }],
+  });
+  assert.equal(
+    configuration.data.values.agents.defaults.models["anthropic/claude-sonnet-4-6"].agentRuntime.id,
+    "openclaw",
   );
-  assert.equal(Object.hasOwn(listedAccount.data, "providerId"), false);
-  assert.deepEqual(listedAccount.data.credential, { kind: "access_token" });
-  assert.doesNotMatch(
-    JSON.stringify(listedAccount.data),
-    /issued-credential|secretRef|workspaceId/,
+  assert.equal(pathRequests(requests, "GET", "/providers").length, 0);
+  assert.equal(
+    pathRequests(requests, "GET", `/namespaces/${namespace.id}/service-accounts`).length,
+    0,
   );
+  assert.equal(JSON.stringify(configuration.data).includes("test-anthropic-api-key"), false);
 });
 
-test("Agent creation leaves optional lists disabled when discovery is inaccessible", async (t) => {
-  const fixture = await createConsoleAppFixture(t, { providerSummaries: undefined });
+test("Agent creation reports unavailable Secret storage before creating Configuration or Agent", async (t) => {
+  const fixture = await createConsoleAppFixture(t, { secretDriver: null });
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Unavailable lists", { ready: true });
+  const namespace = await fixture.createNamespace("Missing Secret storage", { ready: true });
   const { page } = await newPage(t, fixture);
-  const serviceAccounts = `**/namespaces/${namespace.id}/service-accounts`;
-  await page.route(serviceAccounts, async (route) => {
-    await route.abort("failed");
-  });
-
+  const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByRole("button", { name: "Start without Preset" }).click();
-  await page.getByText(/Providers unavailable\./).waitFor();
-  await page.getByText(/Service accounts unavailable\./).waitFor();
-  assert.equal(await page.getByLabel("Provider (optional)").isDisabled(), true);
-  assert.equal(await page.getByLabel("Issued ChatGPT service account").isDisabled(), true);
-  assert.equal(await page.getByLabel("Provider (optional)").inputValue(), "");
-  assert.equal(await page.getByLabel("Issued ChatGPT service account").inputValue(), "");
+  await page.getByLabel("Agent name").fill("Unavailable Agent");
+  await page.getByLabel("API key", { exact: true }).fill("unused-no-driver-key");
+  const failed = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/secrets` &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  assert.equal((await failed).status(), 503);
+  await page
+    .getByRole("alert")
+    .filter({ hasText: /unavailable|unknown|configured/i })
+    .waitFor();
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
+  assert.equal(agentPostRequests(requests, namespace.id).length, 0);
 });
 
-test("Agent creation reuses the saved Configuration after an Agent creation conflict", async (t) => {
+test("Agent creation reuses its saved Secret and Configuration after an Agent creation conflict", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Partial save retry", { ready: true });
@@ -591,7 +567,7 @@ test("Agent creation reuses the saved Configuration after an Agent creation conf
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByRole("button", { name: "Start without Preset" }).click();
-  await page.getByText("Choose an installed Provider.").waitFor();
+  await page.getByLabel("API key", { exact: true }).fill("retry-agent-key");
   requests.length = 0;
   await page.getByLabel("SOUL.md", { exact: true }).fill("# Keep this draft\n");
   await page.getByLabel("Agent name").fill("Retry Agent");
@@ -611,9 +587,13 @@ test("Agent creation reuses the saved Configuration after an Agent creation conf
   await page.getByRole("button", { name: "Create Agent" }).click();
   const savedConfiguration = await (await configurationResponse).json();
   assert.equal((await deniedAgentResponse).status(), 409);
-  await page.getByText(`Configuration saved: ${savedConfiguration.data.id}.`).waitFor();
+  await page
+    .getByText(`Configuration saved: ${savedConfiguration.data.id}.`, { exact: false })
+    .waitFor();
   await page.getByText(/conflicts with the saved state/i).waitFor();
-  assert.equal(await page.getByLabel("Configuration JSON").evaluate((node) => node.readOnly), true);
+  assert.equal(await page.getByLabel("Configuration JSON").isDisabled(), true);
+  assert.equal(await page.getByLabel("API key", { exact: true }).inputValue(), "");
+  assert.equal(await page.getByLabel("API key", { exact: true }).isDisabled(), true);
   assert.equal(await page.getByLabel("Execution mode").isDisabled(), true);
   assert.equal(await page.getByRole("button", { name: "Reset template" }).isDisabled(), true);
   assert.deepEqual(
@@ -625,6 +605,14 @@ test("Agent creation reuses the saved Configuration after an Agent creation conf
   assert.equal(
     await page.getByLabel("SOUL.md", { exact: true }).inputValue(),
     "# Keep this draft\n",
+  );
+  assert.equal(await page.getByLabel("SOUL.md", { exact: true }).isEnabled(), true);
+  assert.equal(await page.getByLabel("Plugin selections JSON").isEnabled(), true);
+  await page.getByLabel("SOUL.md", { exact: true }).fill("# Corrected draft\n");
+  await page.getByLabel("Plugin selections JSON").fill(
+    JSON.stringify({
+      "occ-plugin:diffs": { enabled: true, approvalMode: "always" },
+    }),
   );
   await page.getByLabel("Agent name").fill("Retry Agent Corrected");
   const retryResponse = page.waitForResponse(
@@ -638,14 +626,141 @@ test("Agent creation reuses the saved Configuration after an Agent creation conf
   assert.equal(retried.data.configurationId, savedConfiguration.data.id);
   assert.equal(retried.data.activeRevisionId, undefined);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
+  assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 1);
   assert.equal(agentPostRequests(requests, namespace.id).length, 2);
-  for (const request of agentPostRequests(requests, namespace.id)) {
-    assert.equal(request.body.initialWorkspaceFiles["SOUL.md"], "# Keep this draft\n");
+  assert.deepEqual(
+    agentPostRequests(requests, namespace.id)[0].body.harnessAuth,
+    retried.data.harnessAuth,
+  );
+  const attempts = agentPostRequests(requests, namespace.id);
+  assert.equal(attempts[0].body.initialWorkspaceFiles["SOUL.md"], "# Keep this draft\n");
+  assert.equal(attempts[1].body.initialWorkspaceFiles["SOUL.md"], "# Corrected draft\n");
+  assert.deepEqual(retried.data.plugins, {
+    "occ-plugin:diffs": { enabled: true, approvalMode: "always" },
+  });
+  for (const request of attempts) {
     assert.equal(request.body.workspaceDefaultsId, WORKSPACE_DEFAULTS_ID);
   }
 });
 
-test("Agent creation preserves edited JSON across mode changes and resets to the selected template", async (t) => {
+test("Agent creation retries a denied credential grant without duplicating its saved resources", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  const installation = await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Credential grant retry", { ready: true });
+  fixture.policy.restrictions.push({
+    id: "deny-credential-grant",
+    resourceKind: "installation",
+    resourceId: installation.id,
+    action: "administer",
+    effect: "deny",
+  });
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name").fill("Grant retry Agent");
+  await page.getByLabel("API key", { exact: true }).fill("grant-retry-key");
+  const created = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  const response = await created;
+  assert.equal(response.status(), 201);
+  const agent = (await response.json()).data;
+  await page
+    .getByRole("alert")
+    .filter({ hasText: /Agent was created, but credential access is not confirmed/ })
+    .waitFor();
+  assert.match(
+    await page.getByRole("link", { name: "Open saved Agent" }).getAttribute("href"),
+    new RegExp(agent.id),
+  );
+  assert.equal(await page.getByLabel("Agent name").isDisabled(), true);
+  const bindingPath = `/namespaces/${namespace.id}/iam/access-bindings`;
+  assert.equal(pathRequests(requests, "POST", bindingPath).length, 0);
+  fixture.policy.restrictions.splice(
+    fixture.policy.restrictions.findIndex((item) => item.id === "deny-credential-grant"),
+    1,
+  );
+
+  // The binding is really committed; only its response is lost before the browser sees it.
+  await page.route(`**${bindingPath}`, async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    const response = await route.fetch();
+    assert.equal(response.status(), 201);
+    await route.abort("failed");
+  });
+  await page.getByRole("button", { name: "Retry credential access" }).click();
+  await page
+    .getByRole("alert")
+    .filter({ hasText: /credential access is not confirmed.*interrupted/ })
+    .waitFor();
+  await page.unroute(`**${bindingPath}`);
+  await page.getByRole("button", { name: "Retry credential access" }).click();
+  await page.waitForURL((url) => url.pathname === `/console/agents/${agent.id}`);
+  const bindings = await fixture.request("GET", bindingPath);
+  assert.equal(bindings.status, 200);
+  assert.equal(bindings.data.length, 1);
+  assert.equal(bindings.data[0].subjectId, agent.servicePrincipalId);
+  assert.equal(bindings.data[0].resourceId, agent.harnessAuth.source.id);
+  assert.equal(pathRequests(requests, "POST", bindingPath).length, 1);
+  assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/iam/roles`).length, 1);
+  assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 1);
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
+  assert.equal(agentPostRequests(requests, namespace.id).length, 1);
+});
+
+for (const collection of ["secrets", "configurations", "agents"]) {
+  test(`Agent creation blocks duplicate writes after losing the committed ${collection} response`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace(`Uncertain ${collection}`, { ready: true });
+    const { page } = await newPage(t, fixture);
+    const requests = apiRequests(page, fixture.origin);
+    const path = `/namespaces/${namespace.id}/${collection}`;
+    let committed;
+    await page.route(`**${path}`, async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.continue();
+        return;
+      }
+      const response = await route.fetch();
+      assert.equal(response.status(), 201);
+      committed = (await response.json()).data;
+      await route.abort("failed");
+    });
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByRole("button", { name: "Start without Preset" }).click();
+    await page.getByLabel("Agent name").fill(`Uncertain ${collection} Agent`);
+    await page.getByLabel("API key", { exact: true }).fill("uncertain-artifact-key");
+    await page.getByRole("button", { name: "Create Agent" }).click();
+    await page
+      .getByRole("alert")
+      .filter({ hasText: /Outcome unknown/ })
+      .waitFor();
+    assert.ok(committed?.id);
+    assert.equal((await fixture.request("GET", `${path}/${committed.id}`)).status, 200);
+    assert.equal(await page.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
+    assert.equal(await page.getByRole("button", { name: "Start over" }).isDisabled(), true);
+    // Even programmatic form resubmission must respect the unknown-commit boundary.
+    await page.locator("#create-agent-form").evaluate((form) => form.requestSubmit());
+    assert.equal(pathRequests(requests, "POST", path).length, 1);
+    const sequence = ["secrets", "configurations", "agents"];
+    for (const later of sequence.slice(sequence.indexOf(collection) + 1)) {
+      assert.equal(
+        pathRequests(requests, "POST", `/namespaces/${namespace.id}/${later}`).length,
+        0,
+      );
+    }
+  });
+}
+
+test("Agent creation preserves unrelated edited JSON across model changes and resets to the selected template", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Template edits", { ready: true });
@@ -669,17 +784,27 @@ test("Agent creation preserves edited JSON across mode changes and resets to the
   assert.deepEqual(embeddedTemplate.models.providers.openai.models, [
     { id: "gpt-6-astra", name: "gpt-6-astra" },
   ]);
-  assert.equal(Object.hasOwn(embeddedTemplate, "plugins"), false);
+  assert.equal(embeddedTemplate.plugins?.entries?.codex, undefined);
 
-  const edited = JSON.stringify(nativeValues("manual-edit"), null, 2);
+  const custom = nativeValues("manual-edit");
+  custom.agents.defaults.models["openai/gpt-4.1"].alias = "Primary assistant";
+  custom.agents.defaults.models["openai/gpt-4.1"].params = { temperature: 0.4 };
+  const edited = JSON.stringify(custom, null, 2);
   await configuration.fill(edited);
   await mode.selectOption("dedicated");
-  assert.equal(await configuration.inputValue(), edited);
+  const retained = JSON.parse(await configuration.inputValue());
+  assert.equal(retained.agents.defaults.model, "codex/gpt-4.1");
+  assert.equal(retained.plugins.entries.knowledge.config.marker, "manual-edit");
+  assert.deepEqual(retained.agents.defaults.models["codex/gpt-4.1"], {
+    alias: "Primary assistant",
+    params: { temperature: 0.4 },
+    agentRuntime: { id: "codex" },
+  });
 
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Reset template" }).click();
   const resetTemplate = JSON.parse(await configuration.inputValue());
-  assert.equal(resetTemplate.agents.defaults.model, "codex/gpt-6-astra");
+  assert.equal(resetTemplate.agents.defaults.model, "codex/gpt-4.1");
   assert.ok(resetTemplate.plugins.entries.codex);
   await page.getByLabel("Agent name").fill("Discarded draft");
   page.once("dialog", (dialog) => dialog.accept());
@@ -687,6 +812,64 @@ test("Agent creation preserves edited JSON across mode changes and resets to the
   await page.getByRole("button", { name: "Start without Preset" }).click();
   assert.equal(await page.getByLabel("Agent name").inputValue(), "");
   assert.deepEqual(JSON.parse(await configuration.inputValue()), dedicatedTemplate);
+});
+
+test("Agent creation blocks an incompatible fallback after changing provider until the configuration is corrected", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Provider fallback change", { ready: true });
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Execution mode").selectOption("embedded");
+  const configuration = page.getByLabel("Configuration JSON");
+  const values = JSON.parse(await configuration.inputValue());
+  values.agents.defaults.model = {
+    primary: "openai/gpt-6-astra",
+    fallbacks: ["openai/gpt-4.1"],
+  };
+  await configuration.fill(JSON.stringify(values));
+  await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
+  assert.deepEqual(JSON.parse(await configuration.inputValue()).agents.defaults.model, {
+    primary: "anthropic/claude-sonnet-4-6",
+    fallbacks: ["openai/gpt-4.1"],
+  });
+  await page.getByLabel("Agent name").fill("Corrected fallback Agent");
+  await page.getByLabel("API key", { exact: true }).fill("test-fallback-anthropic-key");
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  await page
+    .getByRole("alert")
+    .filter({ hasText: /fallback.*provider|provider.*fallback/i })
+    .waitFor();
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+
+  // A provider change preserves edited fallbacks; resetting is an explicit correction.
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Reset template" }).click();
+  assert.equal(
+    JSON.parse(await configuration.inputValue()).agents.defaults.model,
+    "anthropic/claude-sonnet-4-6",
+  );
+  const saved = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  const response = await saved;
+  assert.equal(response.status(), 201);
+  const agent = (await response.json()).data;
+  await page.waitForURL((url) => url.pathname === `/console/agents/${agent.id}`);
+  assert.equal(agent.executionMode, "embedded");
+  const persisted = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+  );
+  assert.equal(persisted.data.values.agents.defaults.model, "anthropic/claude-sonnet-4-6");
+  assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 1);
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
+  assert.equal(agentPostRequests(requests, namespace.id).length, 1);
 });
 
 test("Agent creation saves the default model for both harnesses without changing an explicit selection", async (t) => {
@@ -704,6 +887,7 @@ test("Agent creation saves the default model for both harnesses without changing
     await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
     await page.getByRole("heading", { name: "Create Agent" }).waitFor();
     await page.getByRole("button", { name: "Start without Preset" }).click();
+    await page.getByLabel("API key", { exact: true }).fill(`test-${mode}-${selectedModel}-key`);
     await page.getByLabel("Agent name").fill(`${mode}-${selectedModel}`);
     await page.getByLabel("Execution mode").selectOption(mode);
     if (selectedModel !== "gpt-6-astra") {
@@ -812,7 +996,7 @@ test("Agent detail preserves admitted revision history while draft edits change 
   const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
   assert.equal(current.data.harnessAuth, null);
   await page.getByLabel("AgentRevision").selectOption(first.revision.id);
-  await page.getByText("OpenAI API key · Secret configured", { exact: true }).waitFor();
+  await page.getByText("API key · Secret configured", { exact: true }).waitFor();
   assert.equal(
     (await page.locator("body").textContent()).includes(agent.harnessAuth.source.id),
     false,
@@ -1703,9 +1887,10 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   await page.getByLabel("Agent name", { exact: true }).waitFor();
   assert.equal(await page.getByLabel("Preset template").count(), 0);
   assert.equal(await page.getByLabel("Variable: marker", { exact: true }).count(), 0);
-  const presetSecretInput = page.getByLabel("OpenAI API key Secret ID");
-  assert.equal(await presetSecretInput.getAttribute("type"), "password");
-  assert.equal(await presetSecretInput.inputValue(), secret.id);
+  await page
+    .getByText("Preset authentication: API key · Secret configured", { exact: true })
+    .waitFor();
+  assert.equal(await page.getByLabel("API key", { exact: true }).count(), 0);
   assert.equal(
     (await page.getByLabel("Configuration JSON", { exact: true }).inputValue()).includes(
       "test-channel-token",
@@ -1763,10 +1948,7 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   assert.equal((await conflict).status(), 409);
   await page.getByText(/conflicts with the saved state/).waitFor();
   assert.equal(await page.getByRole("button", { name: "Start over" }).isDisabled(), true);
-  assert.equal(
-    await page.getByLabel("Secret bindings JSON").evaluate((node) => node.readOnly),
-    true,
-  );
+  assert.equal(await page.getByLabel("Secret bindings JSON").isDisabled(), true);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
   await page.getByLabel("Agent name", { exact: true }).fill("Preset Agent");
   const createdResponse = page.waitForResponse(
@@ -1889,7 +2071,7 @@ test("Agent tabs replace only their content and preserve surrounding panels and 
   }
   assert.ok(Math.abs((await page.evaluate(() => globalThis.scrollY)) - top) < 2);
   await page.getByRole("button", { name: "Credentials", exact: true }).click();
-  const secret = page.getByLabel("OpenAI API key Secret ID");
+  const secret = page.getByLabel("API key Secret ID");
   await secret.waitFor();
   const secretElement = await secret.elementHandle();
   await page.getByRole("button", { name: "Workspace files", exact: true }).click();
@@ -1901,7 +2083,7 @@ test("Agent tabs replace only their content and preserve surrounding panels and 
   assert.equal(await secretElement.evaluate((node) => node.value), "");
   assert.equal(await secretElement.evaluate((node) => node.isConnected), false);
   await page.goBack();
-  await page.getByLabel("OpenAI API key Secret ID").waitFor();
+  await page.getByLabel("API key Secret ID").waitFor();
   assert.equal(new URL(page.url()).searchParams.get("tab"), "credentials");
   await page.goForward();
   await page.getByRole("heading", { name: "Workspace files", exact: true }).waitFor();

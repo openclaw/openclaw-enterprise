@@ -3,7 +3,10 @@ import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createRequire } from "node:module";
+import { runInNewContext } from "node:vm";
 import test from "node:test";
+import { GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import {
   createKubernetesComputeDriver,
@@ -2100,7 +2103,8 @@ test("Kubernetes cached runtime failure evidence is native-only and readiness-pa
   );
 });
 
-test("embedded replacement cuts over an unready shared gateway and waits for actual startup readiness", async () => {
+async function exerciseEmbeddedReplacement({ providerId, model, environmentName, api, baseUrl }) {
+  const modelRef = `${providerId}/${model}`;
   const driver = createKubernetesComputeDriver(
     routedOptions({
       runtime: {
@@ -2134,7 +2138,7 @@ test("embedded replacement cuts over an unready shared gateway and waits for act
     id: "revision-embedded-recovery-bad",
     revision: 7,
     configuration: {
-      agents: { defaults: { model: "openai/gpt-5" } },
+      agents: { defaults: { model: modelRef } },
       logging: {
         level: "info",
         consoleLevel: "info",
@@ -2162,17 +2166,17 @@ test("embedded replacement cuts over an unready shared gateway and waits for act
     configuration: {
       agents: {
         defaults: {
-          model: "openai/gpt-5",
-          models: { "openai/gpt-5": { alias: "Selected model", params: { temperature: 0.2 } } },
+          model: modelRef,
+          models: { [modelRef]: { alias: "Selected model", params: { temperature: 0.2 } } },
         },
       },
       models: {
         providers: {
-          openai: {
-            baseUrl: "https://api.openai.com/v1",
-            api: "openai-responses",
-            apiKey: "${OPENAI_API_KEY}",
-            models: [{ id: "gpt-5", name: "Selected GPT", contextWindow: 128000, maxTokens: 8192 }],
+          [providerId]: {
+            baseUrl,
+            api,
+            apiKey: `\${${environmentName}}`,
+            models: [{ id: model, name: "Selected model", contextWindow: 128000, maxTokens: 8192 }],
           },
         },
       },
@@ -2236,7 +2240,7 @@ test("embedded replacement cuts over an unready shared gateway and waits for act
       driver.gatewayConfiguration(oldRevision),
       true,
       oldRevision.servicePrincipalId,
-      preparedAuth(driver, namespace, true),
+      driver.harnessAuthForRevision(oldRevision, authContext(oldRevision), namespace),
     ),
     metadata: {
       ...driver.deployment(
@@ -2251,7 +2255,7 @@ test("embedded replacement cuts over an unready shared gateway and waits for act
         driver.gatewayConfiguration(oldRevision),
         true,
         oldRevision.servicePrincipalId,
-        preparedAuth(driver, namespace, true),
+        driver.harnessAuthForRevision(oldRevision, authContext(oldRevision), namespace),
       ).metadata,
       generation: 2,
     },
@@ -2441,22 +2445,27 @@ test("embedded replacement cuts over an unready shared gateway and waits for act
   const gatewayEnvironment = Object.fromEntries(
     replaced.spec.template.spec.containers[0].env.map((entry) => [entry.name, entry]),
   );
-  assert.equal(gatewayEnvironment.OPENCLAW_HARNESS_MODEL.value, "openai/gpt-5");
-  assert.deepEqual(gatewayEnvironment.OPENAI_API_KEY.valueFrom.secretKeyRef, {
+  assert.equal(gatewayEnvironment.OPENCLAW_HARNESS_MODEL.value, modelRef);
+  assert.equal(gatewayEnvironment.OPENCLAW_HARNESS_PROVIDER.value, providerId);
+  assert.equal(gatewayEnvironment.OPENCLAW_HARNESS_CREDENTIAL_ENV.value, environmentName);
+  const otherEnvironment = providerId === "openai" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
+  assert.equal(gatewayEnvironment[otherEnvironment], undefined);
+  assert.deepEqual(gatewayEnvironment[environmentName].valueFrom.secretKeyRef, {
     name: "occ-model-key",
     key: "value",
   });
   const probeConfiguration = JSON.parse(gatewayEnvironment.OPENCLAW_HARNESS_PROBE_CONFIG.value);
-  assert.equal(probeConfiguration.agents.defaults.model, "openai/gpt-5");
+  assert.equal(probeConfiguration.agents.defaults.model, modelRef);
   assert.deepEqual(probeConfiguration.agents.defaults.models, {
-    "openai/gpt-5": {
+    [modelRef]: {
       alias: "Selected model",
       params: { temperature: 0.2 },
       agentRuntime: { id: "openclaw" },
     },
   });
-  const { apiKey: _alias, ...expectedProvider } = replacement.configuration.models.providers.openai;
-  assert.deepEqual(probeConfiguration.models.providers.openai, expectedProvider);
+  const { apiKey: _alias, ...expectedProvider } =
+    replacement.configuration.models.providers[providerId];
+  assert.deepEqual(probeConfiguration.models.providers[providerId], expectedProvider);
   for (const section of ["gateway", "channels", "plugins", "auth", "env", "secrets"]) {
     assert.equal(
       probeConfiguration[section],
@@ -2508,6 +2517,210 @@ test("embedded replacement cuts over an unready shared gateway and waits for act
     replaced.spec.template.spec.containers[0].command,
     "initial and replacement gateways execute the same native startup validation",
   );
+}
+
+test("embedded replacement cuts over an unready shared gateway and waits for actual startup readiness", async (t) => {
+  for (const scenario of [
+    {
+      providerId: "openai",
+      model: "gpt-5",
+      environmentName: "OPENAI_API_KEY",
+      api: "openai-responses",
+      baseUrl: "https://api.openai.com/v1",
+    },
+    {
+      providerId: "anthropic",
+      model: "claude-sonnet-4-5",
+      environmentName: "ANTHROPIC_API_KEY",
+      api: "anthropic-messages",
+      baseUrl: "https://api.anthropic.com",
+    },
+  ]) {
+    await t.test(scenario.providerId, () => exerciseEmbeddedReplacement(scenario));
+  }
+});
+
+test("Anthropic API-key admission binds every embedded model to the canonical credential", () => {
+  const driver = createKubernetesComputeDriver(options());
+  const embedded = { id: "openclaw", version: "1.0.0", mode: "embedded" };
+  const model = "anthropic/claude-sonnet-4-5";
+  const configuration = {
+    agents: { defaults: { model: { primary: model, fallbacks: ["anthropic/claude-haiku-4-5"] } } },
+    secrets: { providers: { model: { source: "env", allowlist: ["ANTHROPIC_API_KEY"] } } },
+  };
+  for (const apiKey of [
+    undefined,
+    "${ANTHROPIC_API_KEY}",
+    { source: "env", provider: "model", id: "ANTHROPIC_API_KEY" },
+  ]) {
+    assert.doesNotThrow(() =>
+      driver.validateHarnessAuth(embedded, apiKeyAuth, {
+        ...configuration,
+        models: { providers: { anthropic: { apiKey } } },
+      }),
+    );
+  }
+  for (const apiKey of [
+    "plaintext-fixture",
+    "${OPENAI_API_KEY}",
+    "${ANTHROPIC_AUTH_TOKEN}",
+    { source: "env", provider: "model", id: "OPENAI_API_KEY" },
+  ]) {
+    assert.throws(
+      () =>
+        driver.validateHarnessAuth(embedded, apiKeyAuth, {
+          ...configuration,
+          models: { providers: { anthropic: { apiKey } } },
+        }),
+      /credentials must use.*binding/i,
+    );
+  }
+  for (const conflicting of [
+    { env: { ANTHROPIC_API_KEY: "fixture" } },
+    { env: { vars: { ANTHROPIC_AUTH_TOKEN: "fixture" } } },
+    { auth: { profiles: { alternate: { provider: "anthropic", mode: "token" } } } },
+    { models: { providers: { anthropic: { headers: { "x-api-key": "fixture" } } } } },
+    {
+      models: {
+        providers: {
+          anthropic: { models: [{ id: "claude-sonnet-4-5", headers: { "x-api-key": "fixture" } }] },
+        },
+      },
+    },
+  ]) {
+    assert.throws(
+      () => driver.validateHarnessAuth(embedded, apiKeyAuth, { ...configuration, ...conflicting }),
+      /credentials must use.*binding/i,
+    );
+  }
+  for (const selection of [
+    { primary: model, fallbacks: ["openai/gpt-5"] },
+    { primary: "openai/gpt-5", fallbacks: [model] },
+    "codex/gpt-5",
+    "ollama/llama3.2",
+  ]) {
+    assert.throws(
+      () =>
+        driver.validateHarnessAuth(embedded, apiKeyAuth, {
+          agents: { defaults: { model: selection } },
+        }),
+      /compatible model provider/i,
+    );
+  }
+  assert.throws(
+    () =>
+      driver.validateHarnessAuth(
+        { id: "codex", version: "1.0.0", mode: "dedicated" },
+        apiKeyAuth,
+        configuration,
+      ),
+    /compatible model provider/i,
+  );
+});
+
+test("embedded startup probes its selected provider before starting the gateway", async (t) => {
+  const nodeRequire = createRequire(import.meta.url);
+  for (const [provider, model, credentialName] of [
+    ["openai", "gpt-5", "OPENAI_API_KEY"],
+    ["anthropic", "claude-sonnet-4-5", "ANTHROPIC_API_KEY"],
+  ]) {
+    for (const accepted of [true, false]) {
+      await t.test(`${provider}: ${accepted ? "accepted" : "wrong provider result"}`, async () => {
+        const driver = createKubernetesComputeDriver(options());
+        const candidate = {
+          namespaceId: tenant.id,
+          harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+          harnessAuth: apiKeyAuth,
+          configuration: { agents: { defaults: { model: `${provider}/${model}` } } },
+        };
+        const prepared = driver.harnessAuthForRevision(
+          candidate,
+          authContext(candidate),
+          kubernetesNamespaceName(tenant.id),
+        );
+        const files = new Map();
+        const calls = [];
+        const errors = [];
+        let started = false;
+        let held = false;
+        // Stub native process I/O only: execute the complete generated startup
+        // program and its real probe result validation, without claiming a model turn.
+        runInNewContext(GATEWAY_RUNTIME_ENTRYPOINT, {
+          Buffer,
+          JSON,
+          URL,
+          console: { error: (value) => errors.push(value) },
+          process: {
+            env: Object.fromEntries(
+              prepared.environment.map((entry) => [entry.name, entry.value ?? "fixture-model-key"]),
+            ),
+            on() {},
+          },
+          setInterval() {
+            held = true;
+          },
+          require(specifier) {
+            if (specifier === "node:fs") {
+              return {
+                mkdirSync() {},
+                mkdtempSync() {
+                  return "/isolated-probe";
+                },
+                writeFileSync(path, value) {
+                  files.set(path, value);
+                },
+                rmSync() {},
+              };
+            }
+            if (specifier === "node:child_process") {
+              return {
+                spawnSync(command, args, options) {
+                  calls.push({ command, args: Array.from(args), environment: { ...options.env } });
+                  return {
+                    status: 0,
+                    stdout: JSON.stringify({
+                      auth: {
+                        probes: {
+                          results: [
+                            {
+                              provider: accepted ? provider : "another-provider",
+                              model: `${provider}/${model}`,
+                              source: "env",
+                              status: "ok",
+                            },
+                          ],
+                        },
+                      },
+                    }),
+                  };
+                },
+                spawn() {
+                  started = true;
+                  return { on() {} };
+                },
+              };
+            }
+            return nodeRequire(specifier);
+          },
+        });
+        await Promise.resolve();
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].args[calls[0].args.indexOf("--probe-provider") + 1], provider);
+        assert.equal(calls[0].environment[credentialName], "fixture-model-key");
+        assert.equal(
+          calls[0].environment[provider === "openai" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"],
+          undefined,
+        );
+        assert.equal(
+          JSON.parse(files.get("/isolated-probe/openclaw.json")).agents.defaults.model,
+          `${provider}/${model}`,
+        );
+        assert.equal(started, accepted);
+        assert.equal(held, !accepted);
+        assert.deepEqual(errors, accepted ? [] : ["Harness model authentication probe failed."]);
+      });
+    }
+  }
 });
 
 test("SDK resource requirements still require explicit CPU and memory requests and limits", () => {

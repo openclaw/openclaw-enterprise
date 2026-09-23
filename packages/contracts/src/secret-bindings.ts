@@ -27,7 +27,7 @@ export function isAllowedSecretBindingDestination(name: string): boolean {
     /^[A-Za-z_][A-Za-z0-9_]{0,252}$/.test(name) &&
     !reserved.test(name) &&
     !controlNames.has(name.toUpperCase()) &&
-    !name.toUpperCase().startsWith("OPENAI_")
+    !/^(?:OPENAI_|ANTHROPIC_)/i.test(name)
   );
 }
 

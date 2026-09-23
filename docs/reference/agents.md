@@ -108,7 +108,7 @@ resolve to a configured Provider. No default is inferred. The nullable reference
 is returned on both Agent and AgentRevision responses.
 
 The Provider reference is independent of native model names and Harness
-selection. An Agent using an OpenAI API key does not need a Provider. An
+selection. An Agent using an OpenAI or Anthropic API key does not need a Provider. An
 issued account token requires the matching Provider and account when deployment
 is requested and again before startup; see [Provider deployment checks](providers.md#agent-association-and-immutable-deployment).
 Creating an Agent does not create a provider account or issue credentials.
@@ -132,6 +132,8 @@ A managed source must belong to the Agent's exact Namespace:
   }
 }
 ```
+
+See [supported providers and topologies](harness-execution.md#harness-authentication).
 
 For an already issued ChatGPT account credential, use
 `{ "method": "chatgpt_service_account", "serviceAccountId": "sa_123e4567-e89b-42d3-a456-426614174000" }`.

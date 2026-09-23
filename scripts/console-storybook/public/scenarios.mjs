@@ -8,14 +8,13 @@ const form = [click("Start without Preset")];
 const readyForm = [
   ...form,
   { selector: "#agent-name", value: "Research assistant" },
-  { selector: "#harness-auth-method", value: "runtime" },
+  { selector: "#provider-api-key", value: "storybook-model-api-key" },
 ];
 const account = [{ selector: ".account-toggle", click: true }];
 const createWorkspaceFields = [
   ...form,
   { selector: "#agent-name", value: "Workspace seed demo" },
-  { selector: "#harness-auth-method", value: "api_key" },
-  { selector: "#harness-auth-secret", value: "sec_demo_model" },
+  { selector: "#provider-api-key", value: "storybook-model-api-key" },
   {
     selector: "#workspace-IDENTITY-md",
     value:
@@ -32,7 +31,7 @@ export const scenarios = {
     path: "/console/agents",
     description:
       "Browse pages, component states, and guided Agent workflows. Every preview mounts the production console modules and styles in its own frame. Reset story discards all local changes.",
-    gap: "Stop Agent requests the stopped desired state; deployment resumes an Agent. General Configuration JSON editing after creation, model-Secret creation, Namespace provisioning, Preset management, and Provider setup require an API, CLI, or operator workflow. Serving health and model responses require separate runtime verification.",
+    gap: "Stop Agent requests the stopped desired state; deployment resumes an Agent. General Configuration JSON editing after creation, Namespace provisioning, Preset management, and installed Provider setup require an API, CLI, or operator workflow. Serving health and model responses require separate runtime verification.",
   },
   login: {
     group: "Pages/Sign in",
@@ -198,7 +197,7 @@ export const scenarios = {
     path: create,
     actions: form,
     description:
-      "Name, execution mode, native JSON, authentication, Providers, plugins, Secret bindings, channel controls, and seeded workspace files.",
+      "Choose OpenAI or Anthropic, enter an API key and model, then review execution mode, native JSON, plugins, channels, and workspace files.",
   },
   createWorkspaceFiles: {
     group: "Pages/Create Agent",
@@ -232,16 +231,44 @@ export const scenarios = {
     emptyPresets: true,
     description: "Creation remains available without a Preset.",
   },
-  createDiscoveryError: {
+  createAnthropic: {
     group: "Pages/Create Agent",
-    name: "Optional discovery denied",
+    name: "Anthropic API key",
     path: create,
-    actions: form,
+    actions: [...form, { selector: "#model-provider", value: "anthropic" }],
+    description:
+      "Anthropic uses Embedded OpenClaw execution. Its API key is stored separately from native model Configuration.",
+  },
+  createSecretDenied: {
+    group: "Pages/Create Agent",
+    name: "API key storage denied",
+    path: create,
+    actions: [...readyForm, click("Create Agent")],
     rules: [
-      { path: "/providers", status: 403 },
-      { path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/service-accounts", status: 403 },
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets",
+        method: "POST",
+        status: 403,
+      },
     ],
-    description: "Unavailable Provider and service-account lists do not hide the Agent form.",
+    description:
+      "A rejected Secret write keeps the form available and does not create a Configuration or Agent.",
+  },
+  createGrantDenied: {
+    group: "Pages/Create Agent",
+    name: "Credential access retry",
+    path: create,
+    actions: [...readyForm, click("Create Agent")],
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/iam/access-bindings",
+        method: "POST",
+        status: 403,
+        once: true,
+      },
+    ],
+    description:
+      "The Agent is saved but its Secret grant failed. Retry credential access reuses the same Agent and Secret.",
   },
   createInvalid: {
     group: "Pages/Create Agent",
@@ -268,7 +295,7 @@ export const scenarios = {
     ],
     actions: [...readyForm, click("Create Agent")],
     description:
-      "Configuration saves but Agent creation conflicts. Edit the name and retry; the form reuses the saved Configuration.",
+      "The API key Secret and Configuration save but Agent creation conflicts. Edit the name and retry; the form reuses the saved resources.",
   },
   createUnknown: {
     group: "Pages/Create Agent",
@@ -723,7 +750,7 @@ export const scenarios = {
     description:
       "Create an Agent from the no-Preset form after editing IDENTITY.md and clearing USER.md, then deploy and inspect the seeded runtime workspace files.",
     steps: [
-      "Start without Preset, enter a demo Agent name, choose OpenAI API key, and enter the existing fixture Secret ID sec_demo_model.",
+      "Start without Preset, enter a demo Agent name, choose OpenAI or Anthropic, and enter a dummy API key.",
       "Review AGENTS.md, SOUL.md, IDENTITY.md, and USER.md. Edit IDENTITY.md, leave USER.md empty, and create the Agent.",
       "Provision generated runtime credentials, then Deploy new revision and Refresh deployment until the simulated worker succeeds. Use the page Refresh button to read the active revision.",
       "Open Workspace files and inspect IDENTITY.md or USER.md to confirm the fixture carried the creation-time file contents into the deployed workspace.",

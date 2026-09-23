@@ -3,8 +3,8 @@
 Use the [platform console](../console.md) to create an Agent, prepare its
 credentials, and request deployment. On an existing Kubernetes Installation,
 start with [production Agent prerequisites](../../guides/deploy/production-agents.md#prepare-each-namespace):
-you need a ready Namespace and, for an OpenAI API key, an administrator who can
-grant the Agent access to its Secret. After deployment, [verify this same
+you need a ready Namespace, configured Secret storage, and permission to
+create Secrets and grant the Agent access to its key. After deployment, [verify this same
 Agent and revision](../../guides/deploy/production-agents.md#verify-production-workloads).
 If you are using [Local Setup](../../guides/quickstart.md) instead, the
 [local first-Agent walkthrough](../../guides/first-agent.md) creates a separate
@@ -17,20 +17,19 @@ Agent; it does not verify an Agent you create in the console.
 2. To reuse a [Preset](../presets.md), choose one, fill its variables, and select
    **Use Preset**. The chooser closes and the form opens with editable settings.
    Select **Start without Preset** to use standard defaults.
-3. Enter a name that is unique within the Namespace. Choose an execution mode
-   and review the starter Configuration JSON. Dedicated uses `codex/gpt-6-astra`;
-   embedded uses `openai/gpt-6-astra`. This is the default for new Agents;
-   edit the JSON to use another authorized model. Confirm your Installation has
-   access to the model you choose. The form requires a JSON
-   object. Changing modes updates untouched JSON; use **Reset template** if you
-   want to replace your edits.
-4. If you need Slack, use its channel card and select
-   **Dedicated**. Channel settings and their plugin entries are saved with the
-   Configuration when you select **Create Agent**. You can provision Slack
-   credentials in the console after creation.
-5. Choose how the Agent will authenticate to its model. Use one of the options
-   below, or choose **None** to save a draft and select a method later. A draft
-   without a compatible method cannot be deployed.
+3. Enter a name that is unique within the Namespace. Choose **OpenAI** or
+   **Anthropic** under **Model provider**, enter its **API key**, and choose a model.
+   OpenAI supports the existing dedicated Codex and embedded OpenClaw modes;
+   Anthropic uses embedded OpenClaw. The form writes the corresponding native
+   model configuration. API keys remain separate from Configuration JSON.
+4. Review the generated Configuration JSON. Changing selections updates model and
+   runtime entries while preserving unrelated edits; **Reset template** replaces
+   your edits. Confirm your Installation
+   has access to the chosen model. Primary and fallback models must use the same
+   supported provider and Harness.
+5. If you need Slack, use OpenAI with **Dedicated** execution and its channel
+   card. Channel settings are saved with the Configuration. Provision Slack
+   credentials after creation.
 6. Review **Workspace files**. Each field contains its rendered OpenClaw default.
    Edit any of the four files, keep the text to submit that default, or clear a
    field to create an empty file. The browser submits LF newlines. See
@@ -41,38 +40,36 @@ Agent; it does not verify an Agent you create in the console.
    deployment, use the [live workspace editor](../console.md#edit-workspace-files).
    Pending inputs have no update API; see [workspace recovery](../../guides/topics/workspace-files.md#set-files-when-creating-an-agent).
 
-| Authentication option            | What you need                                                                                                                                                                                                                             |
-| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **OpenAI API key**               | The ID of an existing [OCC Secret](../drivers/kubernetes-secret.md#create-a-namespace-owned-secret) in this Namespace. You need `operate` on that exact Secret; Secret `read` is not required. Enter the Secret ID, not the key.          |
-| **ChatGPT service account**      | An account in this Namespace that you can read, an already issued credential, the matching Provider, and dedicated execution. The console does not issue the credential for you. Listing Providers requires Installation `administer`.    |
-| **Operator-managed credentials** | An Installation using SSH with embedded OpenClaw. The operator configures the runtime host; OCC does not validate the credentials or model access. See [SSH credentials](../drivers/ssh-compute.md#credentials-and-supported-boundaries). |
+The key field is masked. Saving creates a Namespace Secret, the Configuration,
+and the Agent, then grants that Agent's service principal `operate` on the exact
+Secret through the existing IAM APIs. This requires Secret creation and IAM
+administration permissions in addition to Agent and Configuration creation.
+The key is never put into Configuration JSON, Agent responses, or browser storage.
+A Preset with an existing authentication binding retains that binding; use the
+Agent's Credentials tab to change it after creation.
 
-The Secret ID input is masked, including when a Preset fills it. Configuration
-summaries show **OpenAI API key · Secret configured** without the ID. The console
-does not resolve Secret values into native Configuration.
+These managed keys require a configured Secret Driver and compatible Compute.
+Kubernetes supports both providers; the current Docker development composition
+has no managed Secret storage or model-key delivery. Saving a key does not prove
+provider acceptance or runtime readiness. See
+[harness authentication](../agents.md#harness-authentication).
 
-Selecting a credential source does not change the configured model or execution
-mode, or confirm that the provider accepts it. For API-key deployments, the
-Agent's own service principal also needs `operate` on that Secret; ask an
-administrator to [grant it before deploying](../../guides/deploy/production-agents.md#grant-the-agent-access-to-its-model-secret).
-See [harness authentication](../agents.md#harness-authentication) for the full rules.
-
-If the Configuration saves but Agent creation fails, the form shows its ID and
-keeps its JSON, Secret bindings, and execution mode fixed. Correct the Agent name or selections and
-retry to reuse that Configuration. The two saves are separate; a failed Agent
-save does not remove the Configuration. If a response is lost, the save may have
-succeeded. The form disables further creation until you leave or refresh it.
-Check the **Agents** list and, if the form showed a Configuration ID, the
-[exact Configuration](../configuration.md#create-read-update-and-delete) before
-starting again. If you cannot determine the outcome, give the displayed request
-ID, if available, to your operator.
+The saves are separate operations. After a successful step, the form retains its
+resource ID and freezes the saved inputs. Correct a conflicting Agent name or
+restore the required permission, then retry to reuse the saved resources. If the
+Agent was saved but its Secret grant failed, finish the grant on that same Agent.
+An uncertain response blocks another creation attempt. Check the displayed saved
+IDs and the Agents list before starting again; give the displayed request ID to
+your operator if the outcome cannot be established. Leaving the form does not
+remove resources that were already saved.
 
 ## Initial runtime credentials
 
 Before an Agent's first deployment, provision generated transport credentials
 and, when Slack is enabled, store its app and bot tokens as Namespace Secrets
 bound through the Agent's Configuration. Model credentials are selected
-separately through `harnessAuth`; this form does not accept an OpenAI API key.
+separately during Agent creation through `harnessAuth`; runtime credential
+provisioning does not change that key.
 
 Select **Provision generated runtime credentials** to create the transport bundle.
 The server generates independent gateway and app-server transport tokens and a

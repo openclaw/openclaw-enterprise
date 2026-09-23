@@ -1,6 +1,7 @@
 import { element, button } from "../dom.mjs";
 import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../workspace-defaults.mjs";
-import { createHarnessAuthFields } from "./harness-auth.mjs";
+import { harnessAuthDescription } from "./harness-auth.mjs";
+import { ensureSecretOperateBinding } from "./secret-access.mjs";
 import { createPresetFields } from "./presets.mjs";
 import { defaultAgentModel } from "./starter-model.mjs";
 import { renderChannels } from "../channels.mjs";
@@ -16,26 +17,22 @@ function field(label, input, hint) {
   );
 }
 
-function configurationTemplate(mode) {
+function configurationTemplate(mode, nativeProvider, providerModel) {
   const harnessId = mode === "dedicated" ? "codex" : "openclaw";
-  const providerModel = defaultAgentModel;
-  const modelReference = `${harnessId === "codex" ? "codex" : "openai"}/${providerModel}`;
-  const provider =
-    harnessId === "codex"
-      ? {
-          codex: {
-            baseUrl: "http://127.0.0.1:9",
-            api: "openai-responses",
-            models: [{ id: providerModel, name: providerModel }],
-          },
-        }
-      : {
-          openai: {
-            baseUrl: "https://api.openai.com/v1",
-            api: "openai-responses",
-            models: [{ id: providerModel, name: providerModel }],
-          },
-        };
+  const providerId = harnessId === "codex" ? "codex" : nativeProvider;
+  const modelReference = `${providerId}/${providerModel}`;
+  let baseUrl =
+    nativeProvider === "anthropic" ? "https://api.anthropic.com" : "https://api.openai.com/v1";
+  if (harnessId === "codex") {
+    baseUrl = "http://127.0.0.1:9";
+  }
+  const provider = {
+    [providerId]: {
+      baseUrl,
+      api: nativeProvider === "anthropic" ? "anthropic-messages" : "openai-responses",
+      models: [{ id: providerModel, name: providerModel }],
+    },
+  };
 
   return {
     gateway: {
@@ -142,12 +139,68 @@ function renderAgentForm(context, rendered) {
     spellcheck: "false",
     "aria-describedby": "configuration-json-hint",
   });
+  const primary = rendered.configuration?.values?.agents?.defaults?.model;
+  const initialModel = typeof primary === "string" ? primary : primary?.primary;
+  const nativeProvider = element(
+    "select",
+    { id: "model-provider" },
+    element("option", { value: "openai" }, "OpenAI"),
+    element("option", { value: "anthropic" }, "Anthropic"),
+  );
+  nativeProvider.value = initialModel?.startsWith("anthropic/") ? "anthropic" : "openai";
+  const model = element("input", {
+    id: "agent-model",
+    required: true,
+    autocomplete: "off",
+    pattern: "[^\\/\\s]+",
+  });
+  model.value = initialModel?.split("/").slice(1).join("/") || defaultAgentModel;
+  const apiKey = element("input", {
+    id: "provider-api-key",
+    type: "password",
+    required: !binding,
+    autocomplete: "off",
+    spellcheck: "false",
+  });
+  const authSection = element(
+    "fieldset",
+    { className: "harness-auth-fields" },
+    element("legend", {}, "Model provider"),
+    field("Provider", nativeProvider),
+    element(
+      "p",
+      {},
+      binding
+        ? `Preset authentication: ${harnessAuthDescription(binding)}`
+        : "Authentication method: API key",
+    ),
+    binding
+      ? element(
+          "p",
+          { className: "hint" },
+          "This Preset's saved authentication source is preserved.",
+        )
+      : field(
+          "API key",
+          apiKey,
+          "Stored as a Secret for this Agent. The key is never included in Configuration JSON.",
+        ),
+    field("Model", model, "Enter the model ID available to your API account."),
+  );
   name.value = agent.name ?? "";
   mode.value = agent.executionMode ?? "dedicated";
-  let template = JSON.stringify(configurationTemplate(mode.value), null, 2);
+  if (nativeProvider.value === "anthropic") {
+    mode.value = "embedded";
+  }
+  const currentTemplate = () =>
+    JSON.stringify(
+      configurationTemplate(mode.value, nativeProvider.value, model.value.trim()),
+      null,
+      2,
+    );
   configuration.value =
     rendered.configuration?.values === undefined
-      ? template
+      ? currentTemplate()
       : JSON.stringify(rendered.configuration.values, null, 2);
   let edited = false;
   const confirmDiscard = () => !edited || window.confirm("Discard your edited launch settings?");
@@ -155,38 +208,82 @@ function renderAgentForm(context, rendered) {
     if (!confirmDiscard()) {
       return;
     }
-    template = JSON.stringify(configurationTemplate(mode.value), null, 2);
-    configuration.value = template;
+    configuration.value = currentTemplate();
     configuration.setCustomValidity("");
     feedback.textContent = "";
     renderChannelEditor();
   });
-  mode.addEventListener("change", () => {
-    const untouched = configuration.value === template;
-    template = JSON.stringify(configurationTemplate(mode.value), null, 2);
-    if (untouched) {
-      configuration.value = template;
+  function updateModelConfiguration() {
+    const values = parseObject(configuration);
+    if (values === undefined) {
+      return;
     }
+    const next = configurationTemplate(mode.value, nativeProvider.value, model.value.trim());
+    const previous = values.agents?.defaults?.model;
+    const previousModel = typeof previous === "string" ? previous : previous?.primary;
+    const modelSettings = { ...values.agents?.defaults?.models };
+    const selectedSettings = {
+      ...modelSettings[previousModel],
+      ...next.agents.defaults.models[next.agents.defaults.model],
+    };
+    delete modelSettings[previousModel];
+    values.agents = {
+      ...values.agents,
+      defaults: {
+        ...values.agents?.defaults,
+        model:
+          typeof previous === "object" && previous !== null
+            ? { ...previous, primary: next.agents.defaults.model }
+            : next.agents.defaults.model,
+        models: { ...modelSettings, [next.agents.defaults.model]: selectedSettings },
+      },
+    };
+    const providers = { ...values.models?.providers };
+    delete providers.openai;
+    delete providers.anthropic;
+    delete providers.codex;
+    values.models = { ...values.models, providers: { ...providers, ...next.models.providers } };
+    if (next.plugins) {
+      values.plugins = {
+        ...values.plugins,
+        allow: [...new Set([...(values.plugins?.allow ?? []), ...next.plugins.allow])],
+        entries: { ...values.plugins?.entries, ...next.plugins.entries },
+      };
+    } else if (values.plugins?.entries?.codex) {
+      delete values.plugins.entries.codex;
+      if (Array.isArray(values.plugins.allow)) {
+        values.plugins.allow = values.plugins.allow.filter((id) => id !== "codex");
+      }
+    }
+    configuration.value = JSON.stringify(values, null, 2);
+    configuration.setCustomValidity("");
     feedback.textContent = "";
     renderChannelEditor();
+  }
+  nativeProvider.addEventListener("change", () => {
+    model.value = nativeProvider.value === "anthropic" ? "claude-sonnet-4-6" : defaultAgentModel;
+    if (nativeProvider.value === "anthropic") {
+      mode.value = "embedded";
+    }
+    updateModelConfiguration();
   });
+  model.addEventListener("change", updateModelConfiguration);
+  mode.addEventListener("change", updateModelConfiguration);
   configuration.addEventListener("input", () => {
     configuration.setCustomValidity("");
     feedback.textContent = "";
+    const values = parseObject(configuration);
+    const selected = values?.agents?.defaults?.model;
+    const ref = typeof selected === "string" ? selected : selected?.primary;
+    if (typeof ref === "string" && /^(openai|anthropic|codex)\//.test(ref)) {
+      if (!savedSecret) {
+        nativeProvider.value = ref.startsWith("anthropic/") ? "anthropic" : "openai";
+      }
+      model.value = ref.slice(ref.indexOf("/") + 1);
+    }
     renderChannelEditor();
   });
 
-  const provider = element(
-    "select",
-    { id: "provider-id", disabled: true },
-    element("option", { value: "" }, "None"),
-  );
-  const providerId = agent.providerId ?? "";
-  if (providerId) {
-    provider.append(element("option", { value: providerId }, providerId));
-    provider.value = providerId;
-  }
-  const auth = createHarnessAuthFields(context, agent.harnessAuth ?? null);
   const plugins = element("textarea", { id: "agent-plugins", rows: "4", spellcheck: "false" });
   plugins.value = JSON.stringify(agent.plugins ?? {}, null, 2);
   const secretBindings = element("textarea", {
@@ -215,11 +312,11 @@ function renderAgentForm(context, rendered) {
     ),
     ...workspaceInputs.map(([filename, input]) => field(filename, input)),
   );
-  const providerStatus = element("p", { className: "hint", role: "status" }, "Loading Providers…");
-  let providersLoaded = false;
   let pending = false;
   let outcomeUnknown = false;
+  let savedSecret;
   let savedConfiguration;
+  let savedAgent;
   const feedback = element("p", { className: "error", role: "alert" });
   const savedStatus = element("p", { className: "hint", role: "status" });
   const submit = element(
@@ -244,18 +341,16 @@ function renderAgentForm(context, rendered) {
     "form",
     { id: formId, className: "agent-form agent-card" },
     field("Agent name", name, "Unique within this Namespace."),
+    authSection,
     field(
       "Execution mode",
       mode,
-      "Slack requires Dedicated execution. Changing the mode keeps any edited JSON; use Reset template to start again.",
+      "Anthropic uses Embedded execution. Slack requires Dedicated execution with OpenAI.",
     ),
-    field("Provider (optional)", provider),
-    providerStatus,
-    auth.section,
     field(
       "Configuration JSON",
       configuration,
-      "Starter template applied. Edit the sample model and settings before saving. After creation, use the Agent Credentials tab for transport and Slack credentials.",
+      "Provider and model selections update this JSON. After creation, use the Agent Credentials tab for transport and Slack credentials.",
     ),
     reset,
     field(
@@ -361,50 +456,44 @@ function renderAgentForm(context, rendered) {
     updateControls();
   }
   const updateControls = () => {
-    for (const root of [form, actions]) {
-      for (const node of root.querySelectorAll("button, input, select, textarea")) {
-        node.disabled = pending;
-      }
+    const saved = Boolean(savedConfiguration || savedAgent);
+    for (const node of form.querySelectorAll("button, input, select, textarea")) {
+      node.disabled = pending || Boolean(savedAgent) || outcomeUnknown;
     }
-    channelEditor.toggleAttribute("inert", pending);
+    // Unsaved Agent fields remain editable after a known rejection; reuse the saved Configuration.
+    for (const node of [configuration, secretBindings, nativeProvider, model, mode, reset]) {
+      node.disabled ||= Boolean(savedConfiguration);
+    }
+    for (const node of actions.querySelectorAll("button")) {
+      node.disabled = pending;
+    }
+    channelEditor.toggleAttribute("inert", pending || saved || outcomeUnknown);
     channelEditor.setAttribute("aria-busy", pending ? "true" : "false");
-    provider.disabled = pending || !providersLoaded;
-    auth.setDisabled(pending);
-    reset.disabled = pending || Boolean(savedConfiguration);
-    startOver.disabled = pending || outcomeUnknown || Boolean(savedConfiguration);
-    mode.disabled = pending || Boolean(savedConfiguration);
-    configuration.readOnly = Boolean(savedConfiguration);
-    secretBindings.readOnly = Boolean(savedConfiguration);
+    mode.disabled ||= nativeProvider.value === "anthropic";
+    nativeProvider.disabled ||= Boolean(savedSecret);
+    apiKey.disabled ||= Boolean(savedSecret);
+    startOver.disabled = pending || outcomeUnknown || saved || Boolean(savedSecret);
     submit.disabled = pending || outcomeUnknown;
+    submit.textContent = savedAgent ? "Retry credential access" : "Create Agent";
   };
+  function showSavedStatus() {
+    savedStatus.replaceChildren(
+      ...[
+        [
+          savedSecret ? `Secret saved: ${savedSecret.id}.` : "",
+          savedConfiguration ? `Configuration saved: ${savedConfiguration.id}.` : "",
+          savedAgent ? `Agent saved: ${savedAgent.id}.` : "",
+          "Retries reuse these resources. Saved provider and Configuration settings are fixed.",
+        ]
+          .filter(Boolean)
+          .join(" "),
+        savedAgent
+          ? link(" Open saved Agent", `agents/${savedAgent.id}?revision=draft`, context)
+          : null,
+      ].filter(Boolean),
+    );
+  }
   renderChannelEditor();
-  request("/providers")
-    .then((items) => {
-      if (!context.isCurrent()) {
-        return;
-      }
-      const modelProviders = items.filter((item) => item.type === "chatgpt");
-      provider.append(
-        ...modelProviders
-          .filter((item) => item.id !== providerId)
-          .map((item) => element("option", { value: item.id }, `${item.id} · ${item.type}`)),
-      );
-      providersLoaded = true;
-      providerStatus.textContent = modelProviders.length
-        ? "Choose an installed Provider."
-        : "No Providers configured.";
-      updateControls();
-    })
-    .catch((error) => {
-      if (!context.isCurrent()) {
-        return;
-      }
-      if (error.status === 401) {
-        context.onExpired();
-      } else {
-        providerStatus.textContent = `Providers unavailable. ${message(error)} You can continue with None.`;
-      }
-    });
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (pending || outcomeUnknown || !form.reportValidity()) {
@@ -414,6 +503,34 @@ function renderAgentForm(context, rendered) {
     const desiredPlugins = parseObject(plugins, true);
     const bindings = parseObject(secretBindings, true);
     if (values === undefined || desiredPlugins === undefined || bindings === undefined) {
+      return;
+    }
+    const selected = values.agents?.defaults?.model;
+    const primaryModel = typeof selected === "string" ? selected : selected?.primary;
+    const prefix = mode.value === "dedicated" ? "codex" : nativeProvider.value;
+    if (!binding && primaryModel !== `${prefix}/${model.value.trim()}`) {
+      feedback.textContent =
+        "Configuration must use the selected provider and model. Update the JSON or reset the template before saving.";
+      return;
+    }
+    const fallbackPrefixes =
+      mode.value === "dedicated" ? ["openai/", "codex/"] : [`${nativeProvider.value}/`];
+    if (
+      (!binding || binding.method === "api_key") &&
+      Array.isArray(selected?.fallbacks) &&
+      selected.fallbacks.some(
+        (ref) =>
+          typeof ref !== "string" ||
+          !fallbackPrefixes.some((value) => ref.startsWith(value) && ref.length > value.length),
+      )
+    ) {
+      feedback.textContent =
+        "Fallback models must use the selected provider and execution mode. Update the Configuration JSON or reset the template before saving.";
+      return;
+    }
+    if (nativeProvider.value === "anthropic" && mode.value !== "embedded") {
+      feedback.textContent =
+        "Anthropic requires Embedded execution. Update the execution mode or choose OpenAI.";
       return;
     }
     if (mode.value === "embedded" && hasEnabledChannel(values)) {
@@ -429,19 +546,29 @@ function renderAgentForm(context, rendered) {
       ),
       workspaceDefaultsId: WORKSPACE_DEFAULTS_ID,
       ...(Object.keys(desiredPlugins).length ? { plugins: desiredPlugins } : {}),
-      ...(provider.value ? { providerId: provider.value } : {}),
+      ...(agent.providerId ? { providerId: agent.providerId } : {}),
     };
     pending = true;
     updateControls();
     feedback.textContent = "";
     let mutationStarted = false;
     try {
-      body.harnessAuth = await auth.readBinding();
-      if (!context.isCurrent()) {
-        return;
+      if (!binding && !savedSecret) {
+        mutationStarted = true;
+        savedSecret = await request(`${namespacePath(namespaceId)}/secrets`, {
+          method: "POST",
+          body: { name: body.name, value: apiKey.value },
+        });
+        apiKey.value = "";
+        apiKey.required = false;
+        if (!context.isCurrent()) {
+          return;
+        }
+        showSavedStatus();
       }
-      mutationStarted = true;
+      body.harnessAuth = binding ?? { method: "api_key", source: savedSecret.ref };
       if (!savedConfiguration) {
+        mutationStarted = true;
         savedConfiguration = await request(`${namespacePath(namespaceId)}/configurations`, {
           method: "POST",
           body: {
@@ -453,15 +580,27 @@ function renderAgentForm(context, rendered) {
         if (!context.isCurrent()) {
           return;
         }
-        savedStatus.textContent = `Configuration saved: ${savedConfiguration.id}. Its JSON, Secret bindings, and execution mode are now fixed for this form; retrying Agent creation will reuse it.`;
+        showSavedStatus();
         renderChannelEditor();
       }
-      const created = await request(`${namespacePath(namespaceId)}/agents`, {
-        method: "POST",
-        body: { ...body, configurationId: savedConfiguration.id },
-      });
+      if (!savedAgent) {
+        mutationStarted = true;
+        savedAgent = await request(`${namespacePath(namespaceId)}/agents`, {
+          method: "POST",
+          body: { ...body, configurationId: savedConfiguration.id },
+        });
+        if (!context.isCurrent()) {
+          return;
+        }
+        showSavedStatus();
+      }
+      if (savedSecret) {
+        // Grant retries first reread exact bindings, so an uncertain grant never recreates the Agent.
+        mutationStarted = false;
+        await ensureSecretOperateBinding(context, savedAgent, savedSecret);
+      }
       if (context.isCurrent()) {
-        context.navigate(`agents/${created.id}?revision=draft`);
+        context.navigate(`agents/${savedAgent.id}?revision=draft`);
       }
     } catch (error) {
       if (!context.isCurrent()) {
@@ -471,8 +610,9 @@ function renderAgentForm(context, rendered) {
         context.onExpired();
         return;
       }
-      const detail =
-        error.status === 409 && savedConfiguration
+      const detail = savedAgent
+        ? `The Agent was created, but credential access is not confirmed. ${message(error)} Retry credential access, or open the saved Agent and ask an administrator to grant it access to Secret ${savedSecret.id}.`
+        : error.status === 409 && savedConfiguration
           ? "Agent creation conflicts with the saved state. Check the Agent name and selections, then try again."
           : message(error, mutationStarted);
       outcomeUnknown = mutationStarted && ![400, 403, 404, 409, 429].includes(error.status);

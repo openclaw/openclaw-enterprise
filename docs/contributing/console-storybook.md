@@ -43,7 +43,7 @@ those states by interacting with the real controls after loading fixture data.
 | Providers               | Configured, empty, and discovery failure.                                                                                                                                                                                                        |
 | Namespaces              | Ready and provisioning, empty, permission denial.                                                                                                                                                                                                |
 | Settings and navigation | Signed-in account and unknown route.                                                                                                                                                                                                             |
-| Create Agent            | Preset selection and variables, no Presets, dedicated and embedded forms, seeded workspace files, optional discovery denial, invalid JSON, partial save with conflict, unknown save outcome.                                                     |
+| Create Agent            | Preset selection and variables, no Presets, dedicated and embedded forms, seeded workspace files, OpenAI and Anthropic key entry, storage and grant denial, invalid JSON, partial save with conflict, unknown save outcome.                      |
 | Agent detail            | New revision, admitted snapshot, queued or failed deployment, denied deployment, missing Agent, unavailable Configuration and revision history.                                                                                                  |
 | Navigation components   | Account menu, Namespace switcher, mobile drawer.                                                                                                                                                                                                 |
 | Channels                | Unconfigured cards, Slack editor with pairing/open/disabled policies, unsupported Slack shape, read-only snapshot, save conflict.                                                                                                                |
@@ -69,13 +69,15 @@ create the Agent. Open Credentials, provision generated runtime credentials,
 then deploy the new revision. **Refresh deployment** advances the fixture from
 queued to succeeded. Use the page’s **Refresh** button to reread the Agent’s
 active revision. A separate flow starts without a Preset, selects the fixture's
-existing API-key Secret reference, edits IDENTITY.md, clears USER.md, and reads
+provider and API key, edits IDENTITY.md, clears USER.md, and reads
 those files back after deployment.
 That transition demonstrates presentation only; it does not prove a worker ran.
 
 The fixture supplies a ready Namespace, Preset, and model Secret. Namespace
-provisioning, Preset CRUD, model-Secret creation, and service-account issuance
-have no console pages. The model API-key field takes an existing Secret ID.
+provisioning, Preset CRUD, and service-account issuance have no console pages.
+Create Agent stores entered model keys through the existing Secret API and
+grants the new Agent access. The stories simulate those writes; browser/API
+integration tests verify their real route and permission behavior.
 Slack tokens can be saved in Credentials after Agent creation. Teams credentials
 remain operator-managed; the console blocks deployment while Teams is enabled.
 See [Create and deploy in the console](../reference/console/create-and-deploy.md)

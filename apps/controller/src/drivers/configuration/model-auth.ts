@@ -45,7 +45,14 @@ export function validateModelCredentialReferences(values: OpenClawConfigurationD
   const env = asRecord(values.env);
   for (const settings of [env, asRecord(env?.vars)]) {
     for (const [name, value] of Object.entries(settings ?? {})) {
-      if (name === "OPENAI_API_KEY" || name === "CODEX_ACCESS_TOKEN") {
+      if (
+        [
+          "OPENAI_API_KEY",
+          "ANTHROPIC_API_KEY",
+          "ANTHROPIC_AUTH_TOKEN",
+          "CODEX_ACCESS_TOKEN",
+        ].includes(name)
+      ) {
         validateReference(value);
       }
     }

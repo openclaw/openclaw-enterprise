@@ -220,7 +220,8 @@ test("console browser flow keeps Namespace URL state across global pages and log
   assert.match(page.url(), new RegExp(`/console/agents\\?namespace=${beta.id}$`));
   assert.equal(await page.locator("img").count(), 0);
 
-  await page.getByRole("link", { name: "Providers" }).click();
+  assert.equal(await page.getByRole("link", { name: "Providers", exact: true }).count(), 0);
+  await page.goto(`${fixture.origin}/console/providers?namespace=${beta.id}`);
   await page.getByRole("heading", { name: "Providers" }).waitFor();
   assert.match(page.url(), new RegExp(`/console/providers\\?namespace=${beta.id}$`));
   await page.getByText("openai-primary").waitFor();

@@ -9,7 +9,7 @@ export function harnessAuthDescription(binding) {
     return "Operator-managed credentials";
   }
   return binding.method === "api_key"
-    ? "OpenAI API key · Secret configured"
+    ? "API key · Secret configured"
     : `ChatGPT service account · ${binding.serviceAccountId}`;
 }
 
@@ -18,7 +18,7 @@ export function createHarnessAuthFields(context, binding = null) {
     "select",
     { id: "harness-auth-method" },
     element("option", { value: "" }, "None"),
-    element("option", { value: "api_key" }, "OpenAI API key"),
+    element("option", { value: "api_key" }, "API key"),
     element("option", { value: "runtime" }, "Operator-managed credentials"),
     element("option", { value: "chatgpt_service_account" }, "ChatGPT service account"),
   );
@@ -48,7 +48,7 @@ export function createHarnessAuthFields(context, binding = null) {
   const secretField = element(
     "div",
     { className: "form-field" },
-    element("label", { for: secret.id }, "OpenAI API key Secret ID"),
+    element("label", { for: secret.id }, "API key Secret ID"),
     secret,
     element(
       "p",

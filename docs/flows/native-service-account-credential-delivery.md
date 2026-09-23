@@ -1,14 +1,14 @@
 ---
 created: 2026-08-24
-updated: 2026-09-17
-last_updated_session: codex/01a0acbf-4d5a-7413-9411-dce911f3ad23
+updated: 2026-09-23
+last_updated_session: codex/01a0cce9-23e3-7072-aa3f-a2e26d2dbf11
 ---
 
 # Harness Authentication Binding Flow
 
 ## Overview
 
-An operator stores an OpenAI API key as an OCC Secret or separately issues a
+An operator stores an OpenAI or Anthropic API key as an OCC Secret or separately issues a
 ChatGPT account credential, then selects that source through Agent `harnessAuth`.
 Deployment freezes the authorized binding; the worker rechecks it and Kubernetes
 renders the credential only into the model-executing workload. This flow ends
@@ -121,7 +121,9 @@ sources; drafts, active revisions, and pending deployments block source deletion
 
 One internal workload-rendering step converts validated references to supported
 Secret projections and a closed login mode. Embedded OpenClaw receives the key
-in its combined workload. Dedicated Codex receives the key or the directly
+in its combined workload as `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, derived
+from the immutable native model Configuration. Admission requires all selected
+models and fallbacks to use the same supported provider. Dedicated Codex receives the key or the directly
 projected account token/workspace; its separate gateway receives neither.
 Configuration secret bindings remain gateway-only and cannot choose model auth.
 
@@ -145,7 +147,7 @@ and configuration, disables execution and external tools, and applies read-only
 filesystem policy without approval grants. Tool events fail the probe. Login
 state remains in the bounded ephemeral home.
 
-Embedded OpenClaw consumes its native OpenAI key and runs one bounded native
+Embedded OpenClaw consumes the selected provider's native API key and runs one bounded native
 primary-model probe in the actual gateway startup, with tools and fallback
 disabled. Its 16-token output limit meets the provider's minimum request size.
 Initial and replacement deployments use this same startup path. For replacement,
@@ -197,6 +199,8 @@ history cannot restore historical Secret values.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 06:27: Derive API-key credential delivery and startup probing from the selected model provider. (01a0cce9-23e3-7072-aa3f-a2e26d2dbf11 - a8272f4e2760e5ff06dc09c5658f48bea382c790)
 
 - 2026-09-17 19:14: Add runtime binding admission and worker behavior without managed source delivery. (01a0acbf-4d5a-7413-9411-dce911f3ad23 - b8cabaf9a49e069a7668ccf88b9e71a7484227b7)
 
