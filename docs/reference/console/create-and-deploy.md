@@ -13,11 +13,10 @@ Agent; it does not verify an Agent you create in the console.
 ## Create an Agent
 
 The Embedded and Dedicated starters enable native Control UI with explicit
-`http://127.0.0.1:18789` and `http://localhost:18789` browser origins. Gateway token
-authentication and device pairing remain required. For direct access, forward
-local port 18789 to the Agent gateway's configured port through a loopback-only
-tunnel or port-forward. Changing the local browser port requires updating
-`gateway.controlUi.allowedOrigins`. Do not expose the gateway publicly.
+`http://127.0.0.1:18789` and `http://localhost:18789` browser origins. Compute
+Drivers render gateway authentication from the configured Installation trust
+boundary; the starter does not supply a gateway token. Loopback origins alone
+do not enable the OCE native admin link. Do not expose the gateway publicly.
 Presets and edited Configuration JSON retain their chosen settings.
 
 For the OCE **Open native admin UI** link, complete

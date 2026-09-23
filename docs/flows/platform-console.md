@@ -148,10 +148,10 @@ optional Agent-owned plugin selections. `apps/controller/src/console/agents/star
 selects the shared first-party default: `codex/gpt-6-astra` for dedicated or
 `openai/gpt-6-astra` for embedded. A mode change preserves edited JSON; reset
 restores the selected mode’s starter. `configurationTemplate` enables native
-Control UI for both modes with explicit loopback origins on port 18789, preserving
-token authentication and device pairing. Rendered Preset values replace the
-starter unchanged. These defaults do not configure the isolated HTTPS origin or
-trusted-proxy identity required by [OCE native admin access](agent-native-admin.md).
+Control UI for both modes with explicit loopback origins on port 18789. Compute
+Drivers render gateway authentication from Installation trust settings; starters
+do not supply a gateway token. Rendered Preset values replace the starter
+unchanged. These defaults do not configure the isolated HTTPS origin required by [OCE native admin access](agent-native-admin.md).
 Submission parses the JSON object and
 posts `{kind: "agent", values}` to
 `POST /namespaces/:namespaceId/configurations`. After that returns its ID,
