@@ -109,11 +109,18 @@ preserving unsaved inputs. Secret values are never read back.
 Saving channels first rereads the Agent and Configuration, then checks that the
 Agent still references the same Configuration generation. The subsequent PATCH
 sends `{ values: updatedValues }`, adding `secretBindings` only when selections
-changed. It preserves unrelated bindings. Before that PATCH,
+changed. It preserves unrelated bindings. If that PATCH is rejected, no new
+Secret grant is written for the staged channel selection.
+
+After the PATCH succeeds,
 `apps/controller/src/console/agents/credentials.mjs:ensureSecretOperateBinding` grants the Agent's service
-principal access to selected Secrets through the Namespace IAM API. Grants and
-Configuration updates are separate writes; a failed PATCH does not remove
-grants or newly created Secrets. The preflight reads do not prevent a later concurrent write.
+principal access to the final selected Secrets through the Namespace IAM API.
+Grants and Configuration updates are separate writes. If the grant write fails,
+the Configuration remains saved. The detail view drops its cached snapshot so
+Agent Credentials rereads the saved bindings for inspection, then reports that a
+Namespace administrator must grant the Agent access to the saved Secret. It does
+not retry the rejected operation as a fresh channel save. Newly created Secrets remain Namespace-owned even when the drawer is
+cancelled or a later save fails. The preflight reads do not prevent a later concurrent write.
 An interrupted or unavailable PATCH reply keeps the result unknown and blocks
 another channel write until Refresh. Draft channel disablement changes only
 Configuration values; it does not stop a running Agent. The

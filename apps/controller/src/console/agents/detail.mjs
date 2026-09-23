@@ -647,6 +647,7 @@ export async function renderAgentDetail(context) {
         },
         onSave: async (updatedValues, options = {}) => {
           let mutationStarted = false;
+          let configurationSaved = false;
           try {
             const [freshAgent, freshConfig] = await Promise.all([
               request(path),
@@ -667,11 +668,6 @@ export async function renderAgentDetail(context) {
             }
             mutationStarted = true;
             const nextSecretBindings = options.secretBindings;
-            if (options.changedSecrets !== undefined) {
-              for (const secret of options.changedSecrets) {
-                await ensureSecretOperateBinding(context, freshAgent, secret);
-              }
-            }
             await request(
               `${namespacePath(namespaceId)}/configurations/${encodeURIComponent(snapshot.id)}`,
               {
@@ -684,6 +680,20 @@ export async function renderAgentDetail(context) {
                 },
               },
             );
+            configurationSaved = true;
+            details = null;
+            try {
+              if (options.changedSecrets !== undefined) {
+                for (const secret of options.changedSecrets) {
+                  await ensureSecretOperateBinding(context, freshAgent, secret);
+                }
+              }
+            } catch (error) {
+              error.message =
+                "Configuration saved, but Secret access grants could not be confirmed. Open Agent Credentials to inspect saved bindings, then ask a Namespace administrator to grant this Agent access to the saved Secret.";
+              error.outcomeUnknown = true;
+              throw error;
+            }
             if (context.isCurrent()) {
               change("draft", "channels");
             }
@@ -700,10 +710,13 @@ export async function renderAgentDetail(context) {
               error.name === "TimeoutError" ||
               error.name === "TypeError"
             ) {
-              error.message = message(error, mutationStarted);
+              if (!configurationSaved) {
+                error.message = message(error, mutationStarted);
+              }
             }
             error.outcomeUnknown =
-              mutationStarted && ![400, 403, 404, 409, 429].includes(error.status);
+              error.outcomeUnknown ??
+              (mutationStarted && ![400, 403, 404, 409, 429].includes(error.status));
             throw error;
           }
         },

@@ -65,7 +65,7 @@ graph TD
     M1 -->|returned Configuration ID| M["POST creates Agent draft only"]
     M --> M2["Grant Agent use of selected Secrets"]
     E2 --> N["GET draft Configuration or immutable revision"]
-    E3 --> O["Grant Agent Secret access and PATCH Configuration"]
+    E3 --> O["PATCH Configuration, then grant selected Secret access"]
     E4 --> P["DELETE exact Agent"]
     E5 --> P2["POST exact Agent stop"]
   end

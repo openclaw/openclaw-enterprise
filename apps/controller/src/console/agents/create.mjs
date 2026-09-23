@@ -259,7 +259,7 @@ function renderAgentForm(context, rendered) {
     field(
       "Configuration JSON",
       configuration,
-      "Starter template applied. Edit the sample model and settings before saving. After creation, use the Agent Credentials tab for transport and Slack credentials.",
+      "Starter template applied. Edit the sample model and settings before saving. Slack token Secrets can be selected or created from the channel editor.",
     ),
     reset,
     field(
@@ -353,7 +353,8 @@ function renderAgentForm(context, rendered) {
           "Stage Slack settings into this Configuration JSON. They are saved when you create the Agent.",
         drawerNotice:
           "Channel and Secret binding settings apply to this form’s Configuration JSON.",
-        drawerFootnote: "These settings are not persisted until you create the Agent.",
+        drawerFootnote:
+          "Channel settings and selected bindings are not persisted until you create the Agent. Secrets created from the modal are stored immediately in the Namespace.",
         saveLabel: "Apply channel settings",
         readOnlyDescription:
           "This saved initial Configuration is fixed for this create form. Retrying Agent creation will reuse these channel settings.",
@@ -504,7 +505,7 @@ function renderAgentForm(context, rendered) {
         feedback.replaceChildren(
           "Agent created, but Secret access grants could not be confirmed. ",
           link("Open Agent Credentials", target, context),
-          " to inspect and retry credential setup.",
+          " to inspect saved bindings, then ask a Namespace administrator to grant this Agent access to the saved Secret.",
           error.requestId ? ` Request ID: ${error.requestId}` : "",
         );
         return;
