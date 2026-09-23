@@ -7,7 +7,19 @@ export const CredentialsMissing = {
   ...story("credentialsMissing"),
   name: "Missing generated credentials",
 };
-export const CredentialsSlack = { ...story("credentialsSlack"), name: "Slack token entry" };
+export const CredentialsSlack = { ...story("credentialsSlack"), name: "Slack tokens missing" };
+export const CredentialsSlackStored = {
+  ...story("credentialsSlackStored"),
+  name: "Slack tokens stored",
+};
+export const CredentialsSlackReplacement = {
+  ...story("credentialsSlackReplacement"),
+  name: "Slack token replacement",
+};
+export const CredentialsSlackPartial = {
+  ...story("credentialsSlackPartial"),
+  name: "One Slack token missing",
+};
 export const CredentialsLocked = {
   ...story("credentialsLocked"),
   name: "Generated credentials locked",

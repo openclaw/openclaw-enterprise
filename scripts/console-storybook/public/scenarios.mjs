@@ -414,7 +414,7 @@ export const scenarios = {
     group: "Components/Channels",
     name: "Not configured",
     path: `${draft}&tab=channels`,
-    description: "Configure Slack or Microsoft Teams from the supported channel cards.",
+    description: "Configure Slack from the supported channel card.",
   },
   channelsReadOnly: {
     group: "Components/Channels",
@@ -439,15 +439,6 @@ export const scenarios = {
     actions: [click("Edit Slack"), click("Save configuration")],
     description: "A rejected Configuration write keeps the drawer and feedback visible.",
   },
-  teams: {
-    group: "Components/Channels",
-    name: "Microsoft Teams editor",
-    path: `${draft}&tab=channels`,
-    actions: [click("Configure Microsoft Teams")],
-    description:
-      "Teams channel settings and references. Runtime credentials remain operator-managed.",
-    gap: "The Credentials tab cannot provision or validate Teams credentials. Console deployment is blocked while Teams is enabled.",
-  },
   credentials: {
     group: "Components/Credentials",
     name: "Stored",
@@ -464,12 +455,38 @@ export const scenarios = {
   },
   credentialsSlack: {
     group: "Components/Credentials",
-    name: "Slack token entry",
+    name: "Slack tokens missing",
     path: `${draft}&tab=credentials`,
     slack: true,
     slackBindings: false,
     description:
-      "Password inputs store Slack tokens as Namespace Secrets and bind them to the Agent.",
+      "Both Slack token slots are empty and required before a Slack-enabled draft can deploy.",
+  },
+  credentialsSlackStored: {
+    group: "Components/Credentials",
+    name: "Slack tokens stored",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    description:
+      "Synthetic masks show existing Secret bindings. The console does not retrieve stored token values.",
+  },
+  credentialsSlackReplacement: {
+    group: "Components/Credentials",
+    name: "Slack token replacement",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    actions: [{ selector: "#runtime-slack-app-token", value: "xapp-replacement-preview" }],
+    description:
+      "Only fields with entered replacements are saved. Empty stored fields preserve their existing Secret binding.",
+  },
+  credentialsSlackPartial: {
+    group: "Components/Credentials",
+    name: "One Slack token missing",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    slackBindings: "app",
+    description:
+      "The app token is already bound and masked; the missing bot token remains empty and required.",
   },
   credentialsLocked: {
     group: "Components/Credentials",

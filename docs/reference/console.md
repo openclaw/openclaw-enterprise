@@ -1,12 +1,15 @@
 # Platform console
 
 Use the browser console at `/console/` on your OCC address to sign in, choose a
-Namespace, create, deploy, and delete Agents, and edit supported Slack or Microsoft Teams
+Namespace, create, deploy, and delete Agents, and edit supported Slack
 draft settings. You can also set initial workspace contents and runtime credentials,
 read or replace supported live workspace files, and list the Agents, Providers, and Namespaces
 you can access. When the pilot is enabled, trusted operators can open an Agent's
 [native admin UI](#open-the-native-admin-ui). The console does not offer rollback,
 live runtime health, or browser chat through OCE.
+
+For a component-by-component tour with screenshots, see
+[Understand the Agent detail page](../guides/console/agent-details.md).
 
 For browser deployment instructions, follow [Create and deploy Agents](console/create-and-deploy.md).
 See the [deployment guide](../guides/deploy.md) for operator procedures and
@@ -82,16 +85,17 @@ newest admitted revision nor the viewed snapshot must match it.
 
 Read-only AgentRevision snapshots cannot be edited, rolled back, redeployed, or
 used as a live-health check. Activation means the revision was admitted and
-selected by OCC; the console has no live gateway health API and always shows
-**Serving status unavailable**. Follow the
+selected by OCC. The console displays persisted deployment and startup evidence,
+not live gateway health. Follow the
 [deployment guide](../guides/deploy/production-agents.md#configure-the-agent-runtime) and
 [Agent deployment reference](agents/deployment.md#revisions-and-deployment) for the
 installed runtime.
 
-The Channels tab edits Slack and Microsoft Teams settings on the saved
-Configuration draft. Teams is incomplete: the console cannot deploy a
-Teams-enabled draft, and configuring it does not provide the public Bot
-Framework endpoint the integration requires. Saving patches only `values`, so
+The Channels tab edits Slack settings on the saved Configuration draft.
+Microsoft Teams has no console editor: its credentials and Bot Framework ingress
+require operator setup, and the console cannot deploy a Teams-enabled draft.
+Existing Teams settings remain visible in the native Configuration JSON.
+Saving Slack settings patches only `values`, so
 the backend retains existing `secretBindings`. An existing plugin allowlist is
 extended; an omitted allowlist stays omitted. Because a Configuration can be
 shared by multiple Agents, channel edits can affect future deployments of other
@@ -105,19 +109,16 @@ These are separate reads; a later concurrent change can still race the PATCH.
 Refresh before retrying a conflict or uncertain save. An unconfirmed PATCH shows
 **Outcome unknown**, closes the editor, and disables channel writes until
 Refresh loads current saved state. The write may have succeeded; there is no
-automatic replay. **Disable Slack** and **Disable Microsoft Teams** edit only the
-draft. They do not disable access, stop execution, or change an admitted
-revision.
+automatic replay. **Disable Slack** edits only the draft. It does not disable
+access, stop execution, or change an admitted revision.
 
 Slack editing preserves existing direct-message and channel policies, including
 pairing, open, disabled, and omitted policies. It also preserves per-channel user
 restrictions. New Slack configurations use allowlist policies. **Allowed user
 IDs** edits `allowFrom`; the existing policy determines how those entries affect
 access. The editor does not change the policy when saving channel settings. Slack Socket Mode uses fixed
-unresolved references to `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN`; Microsoft
-Teams uses application ID, tenant ID, require-mention, and `MSTEAMS_APP_PASSWORD`.
-Both integrations require dedicated execution and Kubernetes runtime projection.
-Teams also requires Bot Framework ingress.
+unresolved references to `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN`.
+Slack requires dedicated execution and Kubernetes runtime projection.
 
 The simple editor may reject native channel documents it cannot round-trip,
 including non-Socket Slack settings, non-standard credential references, mixed

@@ -1321,13 +1321,7 @@ test("Channel drawer saves channel edits without exposing Secret values or dropp
   await page.getByRole("button", { name: "Save configuration" }).click();
   await page.getByText(/Configuration .*generation 2/).waitFor();
   await expectNoText(page, secretValue);
-
-  await page.getByRole("button", { name: "Edit Microsoft Teams" }).click();
-  await page.getByLabel("Application (client) ID").fill("22222222-2222-4222-8222-222222222222");
-  await page.getByLabel("Directory (tenant) ID").fill("33333333-3333-4333-8333-333333333333");
-  await page.getByRole("button", { name: "Save configuration" }).click();
-  await page.getByText(/Configuration .*generation 3/).waitFor();
-  await expectNoText(page, secretValue);
+  assert.equal(await page.getByRole("button", { name: /Microsoft Teams/ }).count(), 0);
 
   const configuration = await fixture.request(
     "GET",
@@ -1353,11 +1347,11 @@ test("Channel drawer saves channel edits without exposing Secret values or dropp
   assert.deepEqual(configuration.data.values.channels.slack.allowFrom, ["UNEW123"]);
   assert.equal(
     configuration.data.values.channels.msteams.appId,
-    "22222222-2222-4222-8222-222222222222",
+    "00000000-0000-4000-8000-000000000000",
   );
   assert.equal(
     configuration.data.values.channels.msteams.tenantId,
-    "33333333-3333-4333-8333-333333333333",
+    "11111111-1111-4111-8111-111111111111",
   );
   assert.deepEqual(configuration.data.values.channels.msteams.appPassword, {
     source: "env",
@@ -1615,7 +1609,7 @@ test("Agent tabs replace only their content and preserve surrounding panels and 
   const requests = apiRequests(page, fixture.origin);
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
   await login(page, fixture, url.pathname + url.search);
-  await page.getByRole("heading", { name: "Editable Configuration", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "Configuration draft", exact: true }).waitFor();
   await page.getByRole("button", { name: "Channels", exact: true }).scrollIntoViewIfNeeded();
   const panels = await page
     .locator("h1, .agent-toolbar, .native-admin-access, .revision-selector, .agent-tabs")

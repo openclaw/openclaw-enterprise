@@ -78,10 +78,6 @@ const CONSOLE_ASSETS = new Map(
       path: new URL("channels/slack.mjs", CONSOLE_ROOT),
       contentType: "text/javascript; charset=utf-8",
     },
-    "/console/channels/teams.mjs": {
-      path: new URL("channels/teams.mjs", CONSOLE_ROOT),
-      contentType: "text/javascript; charset=utf-8",
-    },
     "/console/channels/shared-ui.mjs": {
       path: new URL("channels/shared-ui.mjs", CONSOLE_ROOT),
       contentType: "text/javascript; charset=utf-8",

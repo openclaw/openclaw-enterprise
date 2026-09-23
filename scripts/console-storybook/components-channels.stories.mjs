@@ -10,4 +10,3 @@ export const SlackUnsupported = { ...story("slackUnsupported"), name: "Slack uns
 export const ChannelsEmpty = { ...story("channelsEmpty"), name: "Not configured" };
 export const ChannelsReadOnly = { ...story("channelsReadOnly"), name: "Revision read only" };
 export const ChannelConflict = { ...story("channelConflict"), name: "Save conflict" };
-export const Teams = { ...story("teams"), name: "Microsoft Teams editor" };

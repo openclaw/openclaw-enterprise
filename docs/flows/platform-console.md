@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: 2026-09-22
-last_updated_session: codex/01a0c73a-cdc5-7e81-8c14-f1b59251894f
+last_updated_session: codex/01a0cc48-2eda-7fc2-a19e-096b68fccb7b
 ---
 
 # Platform console request flow
@@ -27,8 +27,8 @@ and IAM retain resource authority.
   generation and abort state; `navigation.mjs` owns safe return paths and history;
   `shell.mjs` owns shared navigation and collection rendering.
 - Capability pages: `apps/controller/src/console/agents/{list,create,detail}.mjs`
-  own Agent views, while `channels/{slack,teams,shared-ui}.mjs` own provider forms
-  and their shared editor. Existing `agents.mjs` and `channels.mjs` compose these
+  own Agent views, while `channels/{slack,shared-ui}.mjs` own the Slack form
+  and its shared editor. Existing `agents.mjs` and `channels.mjs` compose these
   modules through their current entrypoints.
 - HTTP: `apps/controller/src/index.ts:createFastifyApp`.
 - Startup: `apps/controller/src/composition/production.ts:composeProduction`
@@ -261,6 +261,8 @@ refreshes and inspects the Agent and revision history.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-22 20:32: Remove the deleted Teams editor from current module ownership. (01a0cc48-2eda-7fc2-a19e-096b68fccb7b - 43776d25c5007e017f7d0ffdca6b06f063afcd37)
 
 - 2026-09-22 04:31: Trace initial workspace inputs separately from Configuration creation and link setup before execution. (01a0c755-0518-7502-a533-64cd7465de15 - f3dbdd41c8f3b49573d1353a4b06ce510ee43a56)
 

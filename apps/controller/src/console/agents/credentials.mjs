@@ -5,6 +5,7 @@ const SLACK_SECRET_BINDINGS = [
   { key: "SLACK_APP_TOKEN", label: "Slack app token", secretName: "Slack app token" },
   { key: "SLACK_BOT_TOKEN", label: "Slack bot token", secretName: "Slack bot token" },
 ];
+const SECRET_MASK = "••••••••";
 
 function slackEnabled(values) {
   const slack = values?.channels?.slack;
@@ -48,9 +49,15 @@ function hasSlackBindings(configuration) {
   );
 }
 
+function slackBindingState(configuration, binding) {
+  return secretIdForBinding(configuration?.secretBindings?.[binding.key]) === null
+    ? "missing"
+    : "bound";
+}
+
 export function runtimeCredentialBlockReason(values) {
   return teamsEnabled(values)
-    ? "Microsoft Teams credentials and readiness are operator-managed and cannot be confirmed by this Credentials tab. Use the operator deployment workflow for Teams, or disable Teams to deploy here."
+    ? "Microsoft Teams credentials and readiness are operator-managed and cannot be confirmed by this Credentials tab. Use the operator deployment workflow for Teams, or disable Teams through the Configuration API to deploy here."
     : null;
 }
 
@@ -366,22 +373,7 @@ export function createRuntimeCredentialsPanel({
       return null;
     }
     const formId = "runtime-channel-secrets-form";
-    const appToken = element("input", {
-      id: "runtime-slack-app-token",
-      name: "runtime-slack-app-token",
-      type: "password",
-      autocomplete: "off",
-      disabled: !canEnterChannelCredentials(),
-      "aria-describedby": "runtime-slack-app-token-hint",
-    });
-    const botToken = element("input", {
-      id: "runtime-slack-bot-token",
-      name: "runtime-slack-bot-token",
-      type: "password",
-      autocomplete: "off",
-      disabled: !canEnterChannelCredentials(),
-      "aria-describedby": "runtime-slack-bot-token-hint",
-    });
+    const fields = new Map();
     const status = element("p", { className: "hint", role: "status" });
     const error = element(
       "p",
@@ -393,55 +385,106 @@ export function createRuntimeCredentialsPanel({
       { type: "submit", form: formId, className: "primary" },
       "Save channel Secrets",
     );
-    const updateControls = () => {
-      const appEntered = appToken.value.length > 0;
-      const botEntered = botToken.value.length > 0;
-      const partial = appEntered !== botEntered;
-      const existingBound = hasSlackBindings(state.configuration);
-      appToken.setCustomValidity(partial ? "Enter both Slack tokens." : "");
-      botToken.setCustomValidity(partial ? "Enter both Slack tokens." : "");
-      save.disabled =
-        state.saving ||
-        !canEnterChannelCredentials() ||
-        state.outcomeUnknown ||
-        partial ||
-        (!existingBound && (!appEntered || !botEntered)) ||
-        (existingBound && !appEntered && !botEntered);
-    };
-    for (const input of [appToken, botToken]) {
+    function createTokenField(binding) {
+      const initial = slackBindingState(state.configuration, binding);
+      const input = element("input", {
+        id: `runtime-${binding.key.toLowerCase().replaceAll("_", "-")}`,
+        name: `runtime-${binding.key.toLowerCase().replaceAll("_", "-")}`,
+        type: "password",
+        autocomplete: "off",
+        disabled: !canEnterChannelCredentials(),
+        "aria-describedby": `runtime-${binding.key.toLowerCase().replaceAll("_", "-")}-hint`,
+        ...(initial === "missing" ? { required: "" } : {}),
+      });
+      const hint = element("p", {
+        id: `runtime-${binding.key.toLowerCase().replaceAll("_", "-")}-hint`,
+        className: "hint",
+      });
+      const field = { binding, input, hint, initial, mode: initial };
+      fields.set(binding.key, field);
+
+      function renderField() {
+        if (field.mode === "bound") {
+          input.value = SECRET_MASK;
+          input.required = false;
+          hint.textContent =
+            "Stored Secret binding is present. Focus to enter a replacement; leaving it empty preserves the stored Secret.";
+        } else if (field.mode === "editing-bound") {
+          input.required = false;
+          hint.textContent =
+            "Enter a replacement token, or leave this field empty to keep the stored Secret.";
+        } else if (field.mode === "replacement") {
+          input.required = true;
+          hint.textContent =
+            field.initial === "bound"
+              ? "Replacement token will update the stored Secret. The current value is never read."
+              : "Replacement token will be stored as a Namespace Secret.";
+        } else {
+          input.required = true;
+          hint.textContent = "Required before Slack-enabled drafts can deploy.";
+        }
+      }
+
+      input.addEventListener("focus", () => {
+        if (field.mode === "bound") {
+          field.mode = "editing-bound";
+          input.value = "";
+          renderField();
+          updateControls();
+        }
+      });
       input.addEventListener("input", () => {
         state.saveError = null;
         state.saveMessage = "";
         error.textContent = "";
         status.textContent = "";
+        if (input.value.length > 0 && input.value !== SECRET_MASK) {
+          field.mode = "replacement";
+        } else if (field.initial === "bound") {
+          field.mode = input.value === SECRET_MASK ? "bound" : "editing-bound";
+        } else {
+          field.mode = "missing";
+        }
+        renderField();
         updateControls();
       });
+      input.addEventListener("blur", () => {
+        if (field.initial === "bound" && input.value.length === 0) {
+          field.mode = "bound";
+          renderField();
+          updateControls();
+        }
+      });
+      renderField();
+      return element(
+        "div",
+        { className: "form-field" },
+        element("label", { for: input.id }, binding.label),
+        input,
+        hint,
+      );
     }
+    const updateControls = () => {
+      const fieldList = [...fields.values()];
+      const replacements = fieldList.filter((field) => field.mode === "replacement");
+      const missing = fieldList.filter((field) => field.mode === "missing");
+      for (const field of fieldList) {
+        field.input.disabled = state.saving || !canEnterChannelCredentials();
+        field.input.setCustomValidity(
+          field.mode === "missing" ? `${field.binding.label} is required.` : "",
+        );
+      }
+      save.disabled =
+        state.saving ||
+        !canEnterChannelCredentials() ||
+        state.outcomeUnknown ||
+        missing.length > 0 ||
+        replacements.length === 0;
+    };
     const form = element(
       "form",
       { id: formId, className: "credential-form" },
-      element(
-        "div",
-        { className: "form-field" },
-        element("label", { for: appToken.id }, "Slack app token"),
-        appToken,
-        element(
-          "p",
-          { id: "runtime-slack-app-token-hint", className: "hint" },
-          "Stored as a Namespace Secret and delivered to the runtime gateway.",
-        ),
-      ),
-      element(
-        "div",
-        { className: "form-field" },
-        element("label", { for: botToken.id }, "Slack bot token"),
-        botToken,
-        element(
-          "p",
-          { id: "runtime-slack-bot-token-hint", className: "hint" },
-          "Stored as a Namespace Secret and delivered to the runtime gateway.",
-        ),
-      ),
+      ...SLACK_SECRET_BINDINGS.map((binding) => createTokenField(binding)),
       status,
       error,
       element("div", { className: "form-actions" }, save),
@@ -454,13 +497,15 @@ export function createRuntimeCredentialsPanel({
       if (!form.reportValidity()) {
         return;
       }
-      const valuesByKey = new Map([
-        ["SLACK_APP_TOKEN", appToken.value],
-        ["SLACK_BOT_TOKEN", botToken.value],
-      ]);
-      if ([...valuesByKey.values()].some((value) => value.length === 0)) {
+      const replacements = [...fields.values()].filter((field) => field.mode === "replacement");
+      const missing = [...fields.values()].filter((field) => field.mode === "missing");
+      if (missing.length > 0 || replacements.length === 0) {
         return;
       }
+      const replacementWrites = replacements.map(({ binding, input }) => ({
+        binding,
+        value: input.value,
+      }));
       state.saving = true;
       state.saveError = null;
       state.saveMessage = "";
@@ -470,14 +515,9 @@ export function createRuntimeCredentialsPanel({
       let mutationStarted = false;
       try {
         const bindings = { ...(state.configuration.secretBindings ?? {}) };
-        for (const binding of SLACK_SECRET_BINDINGS) {
+        for (const { binding, value } of replacementWrites) {
           mutationStarted = true;
-          const secret = await storeChannelSecret(
-            context,
-            state,
-            binding,
-            valuesByKey.get(binding.key),
-          );
+          const secret = await storeChannelSecret(context, state, binding, value);
           await ensureSecretOperateBinding(context, state.agent, secret);
           bindings[binding.key] = secretBinding(secret);
         }
@@ -513,8 +553,9 @@ export function createRuntimeCredentialsPanel({
         status.textContent = "";
         error.textContent = credentialError(cause, true);
       } finally {
-        appToken.value = "";
-        botToken.value = "";
+        for (const field of fields.values()) {
+          field.input.value = "";
+        }
         if (context.isCurrent()) {
           state.saving = false;
           updateControls();

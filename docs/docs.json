@@ -99,6 +99,10 @@
                     "label": "Console"
                   },
                   {
+                    "page": "guides/console/agent-details",
+                    "label": "Console Walkthrough"
+                  },
+                  {
                     "page": "reference/console/create-and-deploy",
                     "label": "Create and Deploy in the Console"
                   },

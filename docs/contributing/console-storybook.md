@@ -36,21 +36,21 @@ or change access to the documentation site.
 The sidebar contains these groups. Stories with open dialogs or errors reach
 those states by interacting with the real controls after loading fixture data.
 
-| Group                   | Coverage                                                                                                                                                                                          |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Sign in                 | Signed out, rejected login, expired session, session-read failure, loading, unconfirmed logout.                                                                                                   |
-| Agents                  | Populated and empty collections, no search matches, inaccessible Namespace, no readable Namespaces, permission denial, read failure, loading.                                                     |
-| Providers               | Configured, empty, and discovery failure.                                                                                                                                                         |
-| Namespaces              | Ready and provisioning, empty, permission denial.                                                                                                                                                 |
-| Settings and navigation | Signed-in account and unknown route.                                                                                                                                                              |
-| Create Agent            | Preset selection and variables, no Presets, dedicated and embedded forms, optional discovery denial, invalid JSON, partial save with conflict, unknown save outcome.                              |
-| Agent detail            | Saved draft, admitted snapshot, queued or failed deployment, denied deployment, missing Agent, unavailable Configuration and revision history.                                                    |
-| Navigation components   | Account menu, Namespace switcher, mobile drawer.                                                                                                                                                  |
-| Channels                | Unconfigured cards, Slack editor with pairing/open/disabled policies, unsupported Slack shape, read-only snapshot, save conflict, Microsoft Teams editor.                                         |
-| Credentials             | Stored and missing metadata, Slack password inputs, generated credentials locked after admission, metadata failure, missing authentication, operator-managed credentials, issued ChatGPT account. |
-| Native admin            | Available launch, stopped or unsupported runtime, denied panel hidden. The launch target is an explanatory fixture page.                                                                          |
-| Workspace               | Four editable files, undeployed Agent, denied reads, missing file, unknown write outcome.                                                                                                         |
-| Deletion                | Confirmation, pending cleanup, permission denial, conflict, unknown outcome.                                                                                                                      |
+| Group                   | Coverage                                                                                                                                                                                                                                         |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Sign in                 | Signed out, rejected login, expired session, session-read failure, loading, unconfirmed logout.                                                                                                                                                  |
+| Agents                  | Populated and empty collections, no search matches, inaccessible Namespace, no readable Namespaces, permission denial, read failure, loading.                                                                                                    |
+| Providers               | Configured, empty, and discovery failure.                                                                                                                                                                                                        |
+| Namespaces              | Ready and provisioning, empty, permission denial.                                                                                                                                                                                                |
+| Settings and navigation | Signed-in account and unknown route.                                                                                                                                                                                                             |
+| Create Agent            | Preset selection and variables, no Presets, dedicated and embedded forms, optional discovery denial, invalid JSON, partial save with conflict, unknown save outcome.                                                                             |
+| Agent detail            | Saved draft, admitted snapshot, queued or failed deployment, denied deployment, missing Agent, unavailable Configuration and revision history.                                                                                                   |
+| Navigation components   | Account menu, Namespace switcher, mobile drawer.                                                                                                                                                                                                 |
+| Channels                | Unconfigured cards, Slack editor with pairing/open/disabled policies, unsupported Slack shape, read-only snapshot, save conflict.                                                                                                                |
+| Credentials             | Stored and missing metadata, masked Slack tokens, one-token replacement, partially missing tokens, generated credentials locked after admission, metadata failure, missing authentication, operator-managed credentials, issued ChatGPT account. |
+| Native admin            | Available launch, stopped or unsupported runtime, denied panel hidden. The launch target is an explanatory fixture page.                                                                                                                         |
+| Workspace               | Four editable files, undeployed Agent, denied reads, missing file, unknown write outcome.                                                                                                                                                        |
+| Deletion                | Confirmation, pending cleanup, permission denial, conflict, unknown outcome.                                                                                                                                                                     |
 
 The production UI supplies buttons, forms, tables, badges, notices, JSON views,
 revision controls, and dialogs inside these stories. Storybook does not duplicate
@@ -107,8 +107,7 @@ and Secrets remain and require separate management. See
 [Agent deletion](../reference/agents.md#deletion).
 
 Serving health, completed routing cutover, real shutdown, channel delivery, and
-model responses require runtime verification outside Storybook. The console's
-serving-status notice remains visible in previews.
+model responses require runtime verification outside Storybook. The console displays persisted deployment status without a live serving-health indicator.
 
 ## Maintain coverage
 

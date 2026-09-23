@@ -31,10 +31,12 @@ go to the Agent's gateway; model credentials are configured separately.
    setup. Save. If multiple Agents use this Configuration, the edit also
    affects their future deployments.
 2. Open **Credentials** and select **Provision generated runtime credentials**
-   before the first deployment. Enter the Slack app and bot tokens, then select
+   before the first deployment. Fill any missing Slack app and bot tokens, then select
    **Save channel Secrets**. OCC stores them as Namespace Secrets, grants the
    Agent access, and saves Configuration bindings for gateway delivery. Stored
    credentials confirm storage only; they do not prove Slack accepted them.
+   Bound tokens show a synthetic password mask. To replace one token, edit that
+   field and leave the other unchanged; its stored value is preserved.
 3. Select **Deploy saved draft** to apply the saved bindings. After a channel
    draft or Secret value change, explicitly redeploy each consumer. Follow
    [Secret updates](../../reference/drivers/kubernetes-secret.md#update-and-redeploy)

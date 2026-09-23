@@ -38,10 +38,12 @@ GET /namespaces/:namespaceId/agents/:agentId/deployments/:revisionId
 For Kubernetes workload problems, operators can use the
 [Compute failure checks](../../reference/drivers/kubernetes-compute.md#failure-conditions).
 
-## The console says “Serving status unavailable”
+<span id="the-console-says-serving-status-unavailable"></span>
 
-The console always shows this message; it has no live gateway-health or chat
-view. **Selected revision** means the control plane selected that revision. It
+## Verify runtime health after deployment
+
+The console displays persisted deployment status; it has no live gateway-health
+or chat view. **Selected revision** means the control plane selected that revision. It
 cannot tell you whether the model still accepts the credential or can answer.
 Use [Deploy your first Agent](../first-agent.md) to verify your local setup or
 ask an operator to [verify a production workload](../deploy/production-agents.md#verify-production-workloads).

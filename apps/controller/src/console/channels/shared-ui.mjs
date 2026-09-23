@@ -320,7 +320,7 @@ function openDrawer(section, state, provider) {
       "p",
       { className: "notice", role: "status" },
       state.copy.drawerNotice ??
-        "Saved draft. Changes affect future deployments using this Configuration. Use the Credentials tab for supported OpenAI and Slack credentials before first deploy. Microsoft Teams credentials remain operator-managed.",
+        "Saved draft. Changes affect future deployments using this Configuration. Use the Credentials tab for supported OpenAI and Slack credentials before first deploy.",
     ),
     enabled,
   );
@@ -405,9 +405,9 @@ export function renderChannelSection(
             { className: "muted" },
             readOnly
               ? (copy.readOnlyDescription ??
-                  "Live connection status unavailable. These are the viewed AgentRevision’s immutable channel settings.")
+                  "These are the viewed AgentRevision’s immutable channel settings.")
               : (copy.editableDescription ??
-                  "Live connection status unavailable. Save and Disable update only the shared Configuration draft. They do not stop or disable a running Agent or change admitted revisions."),
+                  "Save and Disable update only the shared Configuration draft. They do not stop or disable a running Agent or change admitted revisions."),
           ),
         ),
       ),

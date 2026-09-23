@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-09-21
-last_updated_session: codex/01a0c76f-2534-7991-932a-345782408759
+updated: 2026-09-22
+last_updated_session: codex/01a0cc48-2eda-7fc2-a19e-096b68fccb7b
 ---
 
 # Console Agent editing and runtime requests
@@ -53,15 +53,16 @@ Configuration or the selected AgentRevision. `revision=draft` reads the current
 Configuration referenced by the Agent. `revision=<id>` reads that immutable
 snapshot. The Selected revision badge is derived from `activeRevisionId`; the
 newest revision and the viewed snapshot can both differ from that pointer.
-Serving status stays explicitly unavailable because these API responses provide
-no serving observation. Revision snapshots
-are read-only and do not expose rollback, edit, deploy, or live-health controls.
+The revision view reads persisted deployment status and startup failures; it
+does not render a live serving-health indicator. Revision snapshots are read-only and do not expose rollback, edit, deploy, or live-health controls.
 Deletion applies to the Agent itself, regardless of the viewed revision or tab.
 
 `apps/controller/src/console/channels.mjs:renderChannels` renders supported
-Slack and Microsoft Teams channel settings for the saved draft only. Slack uses
-fixed unresolved `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN` environment references;
-Teams uses fixed unresolved `MSTEAMS_APP_PASSWORD`. The editor requires
+Slack channel settings for the saved draft only. Slack uses fixed unresolved
+`SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN` environment references. Existing native
+Teams settings remain in Configuration JSON, with no card or editor. The
+deployment guard still refuses Teams-enabled drafts because Console credential
+readiness cannot be established for them. The Slack editor requires
 dedicated execution for enabled channels and may refuse native documents that it
 cannot round-trip, including non-Socket Slack settings, non-standard credential
 references, mixed Slack mention settings, and unsupported plugin shapes.
@@ -88,8 +89,7 @@ state before submitting deployment. API authorization and selected-driver
 compatibility checks remain authoritative.
 
 For managed authentication methods, the saved draft reads metadata from the exact Agent's `runtime-credentials`
-endpoint. The console sends masked model and Slack inputs only on explicit
-submission and clears them afterward. The response reports stored groups, not
+endpoint. The response reports stored groups, not
 provider validity or runtime health; an uncertain response requires a status
 refresh before retrying.
 
@@ -100,6 +100,20 @@ Kubernetes creates only missing whole Secrets, generates transport tokens on the
 server, and preserves existing matching groups on retry. Neither Configuration
 nor the audit event receives credential bytes. External Secret creation cannot
 be rolled back by a failed database transaction, so errors require readback.
+
+Slack fields separately derive bound state from Configuration `secretBindings`.
+Each bound field renders a synthetic password mask, never a saved Secret value.
+Focusing the field clears the mask for replacement; an empty bound field keeps
+its existing binding. The save gate requires at least one entered replacement
+and either an existing binding or replacement for both token slots.
+
+On explicit submission, the browser skips unchanged slots. For each replacement,
+`storeChannelSecret` creates or updates the Namespace Secret and
+`ensureSecretOperateBinding` grants the Agent access. The Configuration PATCH
+preserves other bindings and incorporates the written Secret references. These
+are separate writes; uncertain outcomes block another save until refresh. The
+mask never enters the write set. Entered values clear after an attempt or panel
+teardown; masks are recreated from bound metadata.
 
 ### 6. Read and replace live workspace files
 
@@ -164,4 +178,7 @@ subsequent worker cleanup and the Namespace-owned resources it preserves.
 
 ## Changelog
 
+- 2026-09-22 20:35: Trace metadata-derived Slack token masks and replacement-only Secret writes. (01a0cc48-2eda-7fc2-a19e-096b68fccb7b - 43776d25c5007e017f7d0ffdca6b06f063afcd37)
+- 2026-09-22 20:23: Align Agent editing with supported Console controls. (01a0cc48-2eda-7fc2-a19e-096b68fccb7b - 43776d25c5007e017f7d0ffdca6b06f063afcd37)
+- 2026-09-22 20:23: Remove the placeholder serving-status banner and unsupported Teams editor; retain deployment evidence and the Teams deployment guard. (01a0cc48-2eda-7fc2-a19e-096b68fccb7b - 43776d25c5007e017f7d0ffdca6b06f063afcd37) (NOT_IN_SPEC)
 - 2026-09-21 21:46: Trace Agent deletion, readback, and recovery from denied or uncertain requests. (01a0c76f-2534-7991-932a-345782408759 - b61c3cae6c35e28db4153eaee9b477e8f5637894)

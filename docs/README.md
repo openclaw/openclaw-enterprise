@@ -32,6 +32,9 @@ For application metrics, see the [OCC metrics contract](reference/metrics.md),
 
 For repository access, see the [repository credential setup](guides/repository-credentials.md) and [credential lifecycle reference](reference/repository-credentials.md). Contributors can follow the [Agent repository flow](flows/agent-repository-credentials.md), [credential flow](flows/repository-credentials.md), [configuration flow](flows/repository-credential-configuration.md), and [test guide](testing/repository-credentials.md).
 
+For a screenshot tour of the Agent page, see the
+[Console walkthrough](guides/console/agent-details.md).
+
 Trusted operators can use the [Agent native admin UI](reference/agent-native-admin.md) pilot to open the stock OpenClaw UI through OCC.
 
 <a id="platform-developer-guide"></a>

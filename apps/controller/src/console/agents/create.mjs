@@ -247,7 +247,7 @@ function renderAgentForm(context, rendered) {
     field(
       "Execution mode",
       mode,
-      "Slack and Microsoft Teams require Dedicated execution. Changing the mode keeps any edited JSON; use Reset template to start again.",
+      "Slack requires Dedicated execution. Changing the mode keeps any edited JSON; use Reset template to start again.",
     ),
     field("Provider (optional)", provider),
     providerStatus,
@@ -255,7 +255,7 @@ function renderAgentForm(context, rendered) {
     field(
       "Configuration JSON",
       configuration,
-      "Starter template applied. Edit the sample model and settings before saving. After creation, use the Agent Credentials tab for transport and Slack credentials. Microsoft Teams credentials remain operator-managed.",
+      "Starter template applied. Edit the sample model and settings before saving. After creation, use the Agent Credentials tab for transport and Slack credentials.",
     ),
     reset,
     field(
@@ -326,9 +326,9 @@ function renderAgentForm(context, rendered) {
       readOnly: Boolean(savedConfiguration),
       copy: {
         editableDescription:
-          "Stage Slack and Microsoft Teams settings into this Configuration JSON. They are saved when you create the Agent.",
+          "Stage Slack settings into this Configuration JSON. They are saved when you create the Agent.",
         drawerNotice:
-          "Channel settings apply to this form’s Configuration JSON. After creation, use the Agent Credentials tab for Slack credentials. Microsoft Teams credentials remain operator-managed.",
+          "Channel settings apply to this form’s Configuration JSON. After creation, use the Agent Credentials tab for Slack credentials.",
         drawerFootnote: "These settings are not persisted until you create the Agent.",
         saveLabel: "Apply channel settings",
         readOnlyDescription:

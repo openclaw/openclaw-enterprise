@@ -220,23 +220,11 @@ export async function renderAgentDetail(context) {
       ),
     );
   }
-  // TODO: consume authenticated serving observations when the lifecycle status API ships.
-  const serving = element(
-    "section",
-    { className: "agent-card", "aria-label": "Serving observation" },
-    element("h2", {}, "Serving status unavailable"),
-    element(
-      "p",
-      { className: "muted" },
-      "The API supplies no serving observation. Selecting or admitting a revision does not confirm runtime health, completed cutover, or shutdown. An operator must verify the installed runtime separately.",
-    ),
-  );
   const deploymentStatus =
     selected === "draft" ? [] : [createDeploymentStatusPanel(context, path, selected)];
   view.replaceChildren(
     header,
     identity,
-    serving,
     ...deploymentStatus,
     renderNativeAdminAccess(context, path),
     selector,
@@ -690,7 +678,7 @@ export async function renderAgentDetail(context) {
         element(
           "section",
           { className: "agent-card" },
-          element("h2", {}, draft ? "Editable Configuration" : "Configuration snapshot"),
+          element("h2", {}, draft ? "Configuration draft" : "Configuration snapshot"),
           summary(values, details),
           nativeDocument(
             values,
