@@ -27,7 +27,7 @@ check alone.
 
 Suite Audit and the ten PR lanes start independently on ephemeral runners.
 Kubernetes fixture lanes use `ubuntu-22.04` for bridge netfilter support; other lanes
-and the audit use `blacksmith-8vcpu-ubuntu-2404`. `CI Required` uses Blacksmith and
+and the audit use `blacksmith-8vcpu-ubuntu-2404`. `CI Required` uses `ubuntu-22.04` and
 still requires both the audit and every lane to pass, including result-artifact
 accounting. This avoids serial runner allocation before the test lanes without
 changing test selection or failure handling.

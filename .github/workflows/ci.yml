@@ -108,7 +108,7 @@ jobs:
 
   ci-required:
     name: CI Required
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: ubuntu-22.04
     needs:
       - audit
       - pr-safe
