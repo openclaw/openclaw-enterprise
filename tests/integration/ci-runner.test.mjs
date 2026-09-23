@@ -829,6 +829,18 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
       "}",
       `for (const { name, diagnostic } of ${JSON.stringify([
         {
+          name: "allowlisted denied traffic diagnostic",
+          diagnostic: {
+            kind: "network-policy",
+            stage: "Agent outbound platform traffic",
+            target: secret,
+          },
+        },
+        {
+          name: "rejects unsafe denied traffic diagnostic",
+          diagnostic: { kind: "network-policy", stage: secret },
+        },
+        {
           name: "allowlisted repository platform setup diagnostic",
           diagnostic: {
             kind: "repository-platform-setup",
@@ -961,6 +973,17 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
   });
   const unsafeStage = summary.files[0].tests.find((entry) => entry.name === "unsafe plugin stage");
   assert.equal(unsafeStage.error.diagnostic, undefined);
+  const deniedTraffic = summary.files[0].tests.find(
+    (entry) => entry.name === "allowlisted denied traffic diagnostic",
+  );
+  assert.deepEqual(deniedTraffic.error.diagnostic, {
+    kind: "network-policy",
+    stage: "Agent outbound platform traffic",
+  });
+  const unsafeTraffic = summary.files[0].tests.find(
+    (entry) => entry.name === "rejects unsafe denied traffic diagnostic",
+  );
+  assert.equal(unsafeTraffic.error.diagnostic, undefined);
   const setupFailure = summary.files[0].tests.find(
     (entry) => entry.name === "allowlisted repository platform setup diagnostic",
   );

@@ -268,6 +268,18 @@ function failureDiagnostic(error) {
   if (!isRecord(diagnostic)) {
     return undefined;
   }
+  if (diagnostic.kind === "network-policy") {
+    return [
+      "Agent outbound platform traffic",
+      "Agent outbound Kubernetes API traffic",
+      "Agent outbound cloud metadata traffic",
+      "cross-tenant Agent traffic",
+      "same-tenant Agent-to-Agent traffic",
+      "gateway-to-candidate Agent traffic",
+    ].includes(diagnostic.stage)
+      ? { kind: "network-policy", stage: diagnostic.stage }
+      : undefined;
+  }
   if (diagnostic.kind === "kubernetes-plugin-status") {
     return ["ready-status", "warning-status", "initial-rollout", "warning-rollout"].includes(
       diagnostic.stage,
