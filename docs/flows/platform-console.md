@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: 2026-09-23
-last_updated_session: 01a0cf27-71c6-7042-8357-74d1811a2ef8
+last_updated_session: 01a0cfaa-2b68-7e61-b8ff-a7eb82f1edc5
 ---
 
 # Platform console request flow
@@ -61,9 +61,11 @@ graph TD
     F -->|Providers and Installation admin| H["Project loaded Provider IDs and types"]
     S1 -->|create| S2["POST stores Namespace Secret immediately"]
     S2 --> S3
-    E1 --> M1["POST creates Configuration with staged bindings"]
+    E1 -->|ordinary draft| M1["POST creates Configuration with staged bindings"]
+    E1 -->|supported Dedicated runtime| M3["POST queues provisioning with inline Configuration"]
+    M3 --> M4["Worker creates resources, grants and first deployment"]
     M1 -->|returned Configuration ID| M["POST creates Agent draft only"]
-    M --> M2["Grant Agent use of selected Secrets"]
+    M --> M2["Console grants Agent use of selected Secrets"]
     E2 --> N["GET draft Configuration or immutable revision"]
     E3 --> O["PATCH Configuration, then grant selected Secret access"]
     E4 --> P["DELETE exact Agent"]
@@ -107,6 +109,14 @@ and detail paths share the shell. Unknown console paths receive the same shell
 with HTTP `404`. The controller sets the HTML, CSS, or JavaScript MIME type and
 a same-origin content security policy. Other routes retain canonical API JSON
 errors. The Dockerfile copies these files into the existing controller image.
+
+`scripts/build-console-metadata.mjs` stamps the console HTML during image build.
+The publisher supplies its checked `source_sha` as `OCC_BUILD_REVISION`, also used
+for the image revision label. Empty metadata stays empty; a nonempty value must
+be a full lowercase Git SHA. `apps/controller/src/console/shell.mjs:renderShell`
+reads that HTML metadata and renders the short hash beside OCE at the top of the
+sidebar, with the full OCC revision in a tooltip. Missing or invalid metadata
+displays **dev** beside OCE. No browser or controller request inspects Git or an Agent gateway version.
 
 ### 2. Resolve the session before private reads
 
@@ -181,8 +191,14 @@ The Slack menus use the metadata list and creation paths traced in
 creation form. Cancel discards the drawer selections, but a Secret created by
 the modal already belongs to the Namespace and remains stored.
 
-Submission parses the JSON object and
-posts `{kind: "agent", values, secretBindings}` to
+For supported Dedicated runtimes, submission sends the inline Configuration and
+ordinary Secret references to the [provisioning API](agent-provisioning.md).
+Console polls the accepted job before an Agent exists, then opens the returned
+Agent revision. The worker creates resources and exact Secret grants before
+admitting deployment; Console does not duplicate those grants.
+
+Ordinary draft creation parses the JSON object and posts
+`{kind: "agent", values, secretBindings}` to
 `POST /namespaces/:namespaceId/configurations`. After that returns its ID,
 `POST /namespaces/:namespaceId/agents` creates the Agent draft with the selected
 plugin map, `initialWorkspaceFiles`, and `workspaceDefaultsId`, then returns to
@@ -198,7 +214,7 @@ and enables **Retry credential access**, which rereads existing exact grants
 without creating duplicate resources. The saved Agent link also supports manual recovery.
 If the Agent write fails, the browser retains the Configuration ID and locks its JSON and
 execution mode; an explicit Agent retry reuses the saved Configuration. No write
-retries automatically, and creation alone does not admit a revision, validate the
+retries automatically, and ordinary draft creation alone does not admit a revision, validate the
 plugin catalog, or start runtime work.
 
 `apps/controller/src/console/agents/harness-auth.mjs:createHarnessAuthFields`
@@ -317,6 +333,9 @@ refreshes and inspects the Agent and revision history.
 - 2026-09-23 18:48: Keep saved API-key and PAT Presets bound to their provider before Configuration or Agent writes. (01a0cf27-71c6-7042-8357-74d1811a2ef8 - 4da114ac7b11f926d4b774b8d32a09fa136135eb)
 
 - 2026-09-23 18:35: Reconcile provider credential creation with staged Slack Secret grants and shared retry recovery. (authoring-run/2516b0a6-7a82-4268-a586-d821679b2a78 - ae092fc7c13aad4c637b0238ae2f41ecb2b03219)
+- 2026-09-23 19:09: Trace image-baked OCC revision metadata and OCE sidebar branding. (01a0cfaa-2b68-7e61-b8ff-a7eb82f1edc5 - 150ec08f059cebc4897b839d8318f7b1e3aba0e3)
+
+- 2026-09-23 11:20: Distinguished worker-owned first-time provisioning and Secret grants from ordinary Console draft creation. (01a0cc7f-028b-7803-acf5-803c3d799d75 - f2dd1d3f)
 
 - 2026-09-23 08:30: Trace pre-Agent Slack Secret selection and creation, staged Configuration bindings, and Agent Secret grants. (01a0cd92-fd3f-7d83-a51e-f6264ef6be09 - 941edc9f6971a24ae29a74a6ca749b6375e6ec01)
 

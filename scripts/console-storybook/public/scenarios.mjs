@@ -29,6 +29,15 @@ const createWorkspaceFields = [
   },
   { selector: "#workspace-USER-md", value: "" },
 ];
+const createProvisioningSecrets = [
+  ...readyForm,
+  { selector: "#agent-name", value: "Slack research assistant" },
+  click("Configure Slack"),
+  { selector: "#slack-secret-slack-app-token", value: "sec_demo_slack_app_token" },
+  ...createSlackBotSecret,
+  { selector: "#slack-channel-ids", value: "CDEMO123" },
+  click("Apply channel settings"),
+];
 
 // API failures are injected at the HTTP boundary. The console owns their presentation.
 export const scenarios = {
@@ -204,7 +213,24 @@ export const scenarios = {
     path: create,
     actions: form,
     description:
-      "Choose a provider and authentication method, then enter a credential to load model choices. No model is selected by default.",
+      "Choose a provider and authentication method, enter a credential, and load model choices before provisioning. No model is selected by default.",
+  },
+  createProvisioningSecrets: {
+    group: "Pages/Create Agent",
+    name: "Provisioning with Slack Secret refs",
+    path: create,
+    actions: createProvisioningSecrets,
+    description:
+      "Dedicated creation submits provisioning with inline Configuration and Secret references prepared through the channel modal.",
+  },
+  createUnsupportedProvisioning: {
+    group: "Pages/Create Agent",
+    name: "Unsupported provisioning",
+    path: create,
+    unsupportedProvisioning: true,
+    actions: readyForm,
+    description:
+      "When the runtime does not advertise first-time Agent provisioning, Dedicated creation saves a draft Configuration and Agent for later deployment.",
   },
   createSlackSecretMenu: {
     group: "Pages/Create Agent",
@@ -364,6 +390,7 @@ export const scenarios = {
       "A rejected Secret write keeps the form available and does not create a Configuration or Agent.",
   },
   createGrantDenied: {
+    unsupportedProvisioning: true,
     group: "Pages/Create Agent",
     name: "Credential access retry",
     path: create,
@@ -392,11 +419,11 @@ export const scenarios = {
   },
   createConflict: {
     group: "Pages/Create Agent",
-    name: "Partial save and conflict",
+    name: "Provisioning conflict",
     path: create,
     rules: [
       {
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents",
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/provision",
         method: "POST",
         status: 409,
         once: true,
@@ -404,22 +431,22 @@ export const scenarios = {
     ],
     actions: [...readyForm, click("Create Agent")],
     description:
-      "The API key Secret and Configuration save but Agent creation conflicts. Edit the name and retry; the form reuses the saved resources.",
+      "Provisioning admission conflicts before any separate Configuration save. Edit the request and retry from the same draft.",
   },
   createUnknown: {
     group: "Pages/Create Agent",
-    name: "Save outcome unknown",
+    name: "Provisioning outcome unknown",
     path: create,
     rules: [
       {
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents",
-        method: "POST",
+        prefix: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/provision/",
+        method: "GET",
         status: 503,
       },
     ],
     actions: [...readyForm, click("Create Agent")],
     description:
-      "An uncertain write outcome disables unsafe repeat submission. Refresh and inspect saved state.",
+      "The create request was accepted, but provisioning status is temporarily unavailable. Refresh and inspect saved state.",
   },
   draft: {
     group: "Pages/Agent detail",
@@ -522,6 +549,19 @@ export const scenarios = {
     actions: [click("Deploy new revision")],
     description: "A rejected deployment reports failure and re-enables the action.",
   },
+  buildRevision: {
+    group: "Components/Navigation",
+    name: "OCC build revision",
+    buildRevision: "abcdef1234567890abcdef1234567890abcdef12",
+    description:
+      "OCE branding with an adjacent eight-character OCC commit. Hover the version for the full hash. This revision is simulated.",
+  },
+  developmentBuild: {
+    group: "Components/Navigation",
+    name: "OCC development build",
+    description:
+      "OCE branding with an adjacent dev label when OCC build metadata is unavailable. No checkout or gateway revision is inferred.",
+  },
   menu: {
     group: "Components/Navigation",
     name: "Account menu",
@@ -538,9 +578,11 @@ export const scenarios = {
   mobile: {
     group: "Components/Navigation",
     name: "Mobile drawer",
+    buildRevision: "abcdef1234567890abcdef1234567890abcdef12",
     mobile: true,
-    actions: [click("Open navigation")],
-    description: "390px viewport with the navigation drawer open. Escape or the overlay closes it.",
+    actions: [{ selector: '.content [aria-busy="false"]' }, click("Open navigation")],
+    description:
+      "390px viewport with the simulated OCC revision beside OCE in the open drawer. Escape or the overlay closes it.",
   },
   slack: {
     group: "Components/Channels",
@@ -892,12 +934,11 @@ export const scenarios = {
     emptyAgents: true,
     transport: false,
     description:
-      "Interactive walkthrough from Preset selection through draft creation, credential provisioning, workspace defaults, and deployment admission. Worker progress is simulated; it is not a live deployment.",
+      "Interactive walkthrough from Preset selection through first-time provisioning and deployment activation. Worker progress is simulated; it is not a live deployment.",
     steps: [
       "Choose Research assistant, fill Variable: name, then Use Preset.",
       "Review the Configuration, masked pre-existing model Secret reference, and four seeded workspace files; click Create Agent.",
-      "Open Credentials and Provision generated runtime credentials.",
-      "Click Deploy new revision. Inspect Deployment status and Refresh deployment to advance the simulated worker, then Refresh the page to read the active revision.",
+      "Wait for the simulated provisioning and deployment to finish; the Console opens Workspace files for the admitted revision.",
       "Use AgentRevision to inspect the immutable snapshot and Workspace files to inspect runtime files seeded during creation.",
     ],
     gap: "The fixture supplies a ready Namespace, Preset, and model Secret. Set those up outside the console. Verify actual serving health and a model response outside this walkthrough.",
@@ -909,11 +950,11 @@ export const scenarios = {
     emptyAgents: true,
     transport: false,
     description:
-      "Create an Agent from the no-Preset form after editing IDENTITY.md and clearing USER.md, then deploy and inspect the seeded runtime workspace files.",
+      "Create a Dedicated Agent from the no-Preset form after editing IDENTITY.md and clearing USER.md, then inspect the seeded workspace after simulated provisioning.",
     steps: [
-      "Start without Preset, enter a demo Agent name, choose OpenAI or Anthropic, enter a dummy API key, and choose one of the returned demo models.",
+      "Start without Preset, enter a demo Agent name, keep OpenAI and Dedicated, enter a dummy API key or Codex PAT, and choose one of the returned demo models.",
       "Review AGENTS.md, SOUL.md, IDENTITY.md, and USER.md. Edit IDENTITY.md, leave USER.md empty, and create the Agent.",
-      "Provision generated runtime credentials, then Deploy new revision and Refresh deployment until the simulated worker succeeds. Use the page Refresh button to read the active revision.",
+      "Wait for automatic provisioning and deployment activation; the Console then opens Workspace files for the returned revision.",
       "Open Workspace files and inspect IDENTITY.md or USER.md to confirm the fixture carried the creation-time file contents into the deployed workspace.",
     ],
     gap: "This Storybook flow proves the UI request body and fixture readback path. It does not prove real gateway filesystem writes or serving health.",
@@ -925,9 +966,8 @@ export const scenarios = {
     emptyAgents: true,
     transport: false,
     actions: [
-      ...form,
+      ...readyForm,
       { selector: "#agent-name", value: "Slack launch demo" },
-      { selector: "#harness-auth-method", value: "runtime" },
       click("Configure Slack"),
       { selector: "#slack-channel-ids", value: "CDEMO123" },
       { selector: "#slack-secret-slack-app-token", value: "sec_demo_slack_app_token" },

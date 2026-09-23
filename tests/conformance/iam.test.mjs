@@ -249,6 +249,7 @@ test("the native IAM implementation exposes a closed pre-construction configurat
   );
   assert.equal(driver.id, "iam-configured");
   assert.equal(driver.implementation, "native");
+  assert.equal(driver.namespacePolicyTransaction, "platform-unit-of-work");
 });
 
 test("the IAM Driver resolves only explicitly provisioned issuer and subject identities", async () => {

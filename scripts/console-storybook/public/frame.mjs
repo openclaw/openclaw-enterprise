@@ -9,6 +9,11 @@ if (!scenario) {
 const evidence = { id, requests: [], unhandled: [], ready: false, error: null };
 window.__consoleStory = evidence;
 installFixture(scenario, evidence);
+// Simulated build metadata; deployed images bake this meta tag into their HTML.
+const buildRevision = document.createElement("meta");
+buildRevision.name = "occ-build-revision";
+buildRevision.content = scenario.buildRevision ?? "";
+document.head.append(buildRevision);
 history.replaceState(
   null,
   "",

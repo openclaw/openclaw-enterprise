@@ -1,5 +1,11 @@
-import { asRecord, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
+import {
+  asRecord,
+  isNonEmptyString,
+  numericErrorStatus,
+  sha256Hex,
+} from "@openclaw-enterprise/utils";
 import { isAbsolute } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import type { CoreV1Api, V1ConfigMap } from "@kubernetes/client-node";
 import type {
   Configuration,
@@ -10,6 +16,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { ConfigurationValidationError, validateModelCredentialReferences } from "../model-auth.ts";
 import { resolveKubernetesNamespace } from "../../compute/kubernetes/index.ts";
+import { ResourceConflictError } from "@openclaw-enterprise/occ";
 
 type KubernetesAuthentication =
   | { readonly mode: "inCluster" }
@@ -26,6 +33,7 @@ interface KubernetesConfigurationDriverSelection {
 
 export { ConfigurationValidationError } from "../model-auth.ts";
 export class ConfigurationOwnershipError extends Error {}
+export class ConfigurationConflictError extends ResourceConflictError {}
 
 const MANAGER = "openclaw-enterprise";
 const IMPLEMENTATION = "occ/kubernetes-configmap";
@@ -210,6 +218,54 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
       body: this.manifest(configuration, namespace),
     });
     return this.checkedConfiguration(observed, configuration, namespace);
+  }
+
+  async createExact(configuration: Configuration): Promise<Configuration> {
+    await this.validate(configuration);
+    const client = await this.core();
+    const { name: namespace } = await resolveKubernetesNamespace(client, configuration.namespaceId);
+    try {
+      const observed = await client.createNamespacedConfigMap({
+        namespace,
+        body: this.manifest(configuration, namespace),
+      });
+      return this.checkedConfiguration(observed, configuration, namespace);
+    } catch (error) {
+      if (numericErrorStatus(error) === 409) {
+        throw new ConfigurationConflictError("The Kubernetes ConfigMap create conflicted.");
+      }
+      throw error;
+    }
+  }
+
+  async inspectExact(configuration: Configuration): Promise<Configuration | undefined> {
+    await this.validate(configuration);
+    const client = await this.core();
+    const { name: namespace } = await resolveKubernetesNamespace(client, configuration.namespaceId);
+    let recovered: Configuration;
+    try {
+      const observed = await client.readNamespacedConfigMap({
+        name: kubernetesConfigurationName(configuration.id),
+        namespace,
+      });
+      recovered = await this.checkedConfiguration(observed, configuration, namespace);
+    } catch (error) {
+      if (numericErrorStatus(error) === 404) {
+        return undefined;
+      }
+      if (error instanceof ConfigurationOwnershipError) {
+        throw new ConfigurationConflictError(
+          "Existing ConfigMap does not match the requested Configuration identity.",
+        );
+      }
+      throw error;
+    }
+    if (!isDeepStrictEqual(recovered.values, configuration.values)) {
+      throw new ConfigurationConflictError(
+        "Existing ConfigMap does not match the requested Configuration values.",
+      );
+    }
+    return recovered;
   }
 
   async read(reference: ConfigurationReference): Promise<Configuration> {

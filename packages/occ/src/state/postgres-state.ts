@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+
 import { RepositoryTransactionLifetime } from "../ports/transaction.ts";
 import { bindRepository } from "../ports/repository-factory.ts";
 import { bindPlatformUnitOfWork } from "../ports/platform-unit-of-work.ts";
@@ -63,15 +65,31 @@ import type {
   ServiceAccountRepository,
 } from "./platform-state.ts";
 import {
+  copyProvisioningRecord,
+  phaseAtLeast,
+  validateProvisioningCheckpoint,
+  validateProvisioningCreate,
+  validateProvisioningEffectSettlement,
+  validateProvisioningFailure,
+  validateProvisioningReplay,
+  type AgentProvisioningCheckpoint,
+  type AgentProvisioningEffectSettlement,
+  type AgentProvisioningFailure,
+  type AgentProvisioningRecord,
+  type CreateAgentProvisioningRecord,
+} from "./agent-provisioning.ts";
+import {
   assertHarnessAuthAvailable,
   harnessAuthMatches,
   validHarnessAuthSnapshot,
 } from "./platform-state.ts";
 import {
+  WorkClaimLostError,
   PostgresWorkQueue,
   type PostgresQueryClient,
   type PostgresWorkQueueOptions,
 } from "./postgres-work-queue.ts";
+import { beginProvisioningEffectProgress } from "../provisioning-effects.ts";
 
 type PostgresRow = Record<string, unknown>;
 
@@ -97,6 +115,7 @@ export interface PersistedNativeIAMState {
 
 export interface PostgresPlatformStateOptions {
   readonly bootstrapNativeIAM?: PersistedNativeIAMState;
+  readonly workQueue?: PostgresWorkQueueOptions;
 }
 
 export interface PersistedNativeIAMPrincipalSeed {
@@ -583,6 +602,115 @@ function auditFromRow(row: PostgresRow, installationId: string): Readonly<AuditE
   });
 }
 
+function timestampDate(row: PostgresRow, key: string): Date {
+  return new Date(timestamp(row, key));
+}
+
+function provisioningRecordFromRow(row: PostgresRow): Readonly<AgentProvisioningRecord> {
+  const status = text(row, "status");
+  if (
+    status !== "queued" &&
+    status !== "running" &&
+    status !== "failed" &&
+    status !== "succeeded" &&
+    status !== "cancelled"
+  ) {
+    throw new DependencyUnavailableError("Persisted Agent provisioning status is invalid.");
+  }
+  const completedPhase = text(row, "completed_phase");
+  if (
+    completedPhase !== "admitted" &&
+    completedPhase !== "configuration" &&
+    completedPhase !== "transport" &&
+    completedPhase !== "handoff"
+  ) {
+    throw new DependencyUnavailableError("Persisted Agent provisioning phase is invalid.");
+  }
+  const agentId = optionalText(row, "agent_id");
+  const configurationId = optionalText(row, "configuration_id");
+  return copyProvisioningRecord({
+    workId: text(row, "work_id"),
+    namespaceId: text(row, "namespace_id"),
+    ...(agentId === undefined ? {} : { agentId }),
+    ...(configurationId === undefined ? {} : { configurationId }),
+    actorId: text(row, "actor_id"),
+    requestId: text(row, "request_id"),
+    requestFingerprint: text(row, "request_fingerprint"),
+    status,
+    completedPhase,
+    ...(row.revision_id === null || row.revision_id === undefined
+      ? {}
+      : { revisionId: text(row, "revision_id") }),
+    plan: jsonObject(row.plan),
+    progress: jsonObject(row.progress),
+    createdAt: timestampDate(row, "created_at"),
+    updatedAt: timestampDate(row, "updated_at"),
+  });
+}
+
+function pendingEffect(value: Readonly<Record<string, unknown>>): unknown {
+  return value.pendingEffect;
+}
+
+function effectReceipt(value: Readonly<Record<string, unknown>>): unknown {
+  return value.effectReceipt;
+}
+
+function recordValue(value: unknown): Readonly<Record<string, unknown>> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Readonly<Record<string, unknown>>)
+    : undefined;
+}
+
+function pendingEffectMatchesReceipt(progress: Readonly<Record<string, unknown>>): boolean {
+  const pending = recordValue(pendingEffect(progress));
+  const receipt = recordValue(effectReceipt(progress));
+  if (pending === undefined || receipt === undefined) {
+    return false;
+  }
+  return (
+    (pending.kind === "configuration" || pending.kind === "transport") &&
+    typeof pending.owner === "string" &&
+    pending.owner.length > 0 &&
+    typeof pending.targetId === "string" &&
+    pending.targetId.length > 0 &&
+    pending.kind === receipt.kind &&
+    pending.owner === receipt.owner &&
+    pending.targetId === receipt.targetId
+  );
+}
+
+function pendingEffectChanged(
+  current: Readonly<Record<string, unknown>>,
+  next: AgentProvisioningCheckpoint,
+): boolean {
+  if (next.progress === undefined) {
+    return false;
+  }
+  const currentPending = pendingEffect(current);
+  const nextPending = pendingEffect(next.progress);
+  if (currentPending !== undefined && nextPending === undefined) {
+    return !pendingEffectMatchesReceipt(current);
+  }
+  return (
+    currentPending !== undefined &&
+    nextPending !== undefined &&
+    !isDeepStrictEqual(currentPending, nextPending)
+  );
+}
+
+function validateProvisioningProgressStep(
+  current: Readonly<AgentProvisioningRecord>,
+  next: AgentProvisioningCheckpoint,
+): void {
+  if (!phaseAtLeast(next.completedPhase, current.completedPhase)) {
+    throw new ScopeViolationError("Agent provisioning checkpoints cannot move backward.");
+  }
+  if (pendingEffectChanged(current.progress, next)) {
+    throw new ScopeViolationError("Agent provisioning pending effects cannot be replaced.");
+  }
+}
+
 function permissions(value: unknown): readonly Permission[] {
   const parsed = typeof value === "string" ? (JSON.parse(value) as unknown) : value;
   if (!Array.isArray(parsed)) {
@@ -611,11 +739,13 @@ function permissions(value: unknown): readonly Permission[] {
 export class PostgresPlatformState implements PlatformStateStore {
   readonly auditSink: PlatformAuditSink;
   private readonly pool: PostgresPool;
+  private readonly queueOptions: PostgresWorkQueueOptions;
   private bootstrapNativeIAM: PersistedNativeIAMState | undefined;
   private readonly contexts = new WeakMap<PlatformUnitOfWork, TransactionContext>();
 
   constructor(pool: PostgresPool, options: PostgresPlatformStateOptions = {}) {
     this.pool = pool;
+    this.queueOptions = Object.freeze({ ...(options.workQueue ?? {}) });
     this.bootstrapNativeIAM = options.bootstrapNativeIAM;
     this.auditSink = {
       append: async (event) => this.transact(async (state) => state.audit.append(event)),
@@ -916,10 +1046,11 @@ export class PostgresPlatformState implements PlatformStateStore {
     ) => Promise<T>,
     options: PostgresWorkQueueOptions = {},
   ): Promise<T> {
+    const queueOptions = { ...this.queueOptions, ...options };
     return this.execute(false, async (state, context) =>
       work(
         state,
-        bindRepository(new PostgresWorkQueue(context.client, options), context.lifetime, [
+        bindRepository(new PostgresWorkQueue(context.client, queueOptions), context.lifetime, [
           "enqueue",
           "enqueueRepositoryCleanup",
           "claim",
@@ -1095,7 +1226,7 @@ export class PostgresPlatformState implements PlatformStateStore {
 
   private repositories(context: TransactionContext): PlatformUnitOfWork {
     const { client } = context;
-    const queue = new PostgresWorkQueue(client);
+    const queue = new PostgresWorkQueue(client, this.queueOptions);
 
     const installations: InstallationRepository = {
       findInstallation: async (installationId) => {
@@ -2422,6 +2553,612 @@ export class PostgresPlatformState implements PlatformStateStore {
       revisions,
       iamPolicy,
       repositorySessions: postgresRepositorySessions(client),
+      provisioning: {
+        findByWorkId: async (workId) => {
+          const found = rows(
+            (
+              await client.query("SELECT * FROM occ.agent_provisioning_work WHERE work_id = $1", [
+                workId,
+              ])
+            ).rows,
+          );
+          return found[0] === undefined ? undefined : provisioningRecordFromRow(found[0]);
+        },
+        hasPendingNamespaceProvisioning: async (namespaceId) => {
+          const found = await client.query(
+            `SELECT 1
+             FROM occ.agent_provisioning_work AS provisioning
+             JOIN occ.controller_work AS work
+               ON work.idempotency_key = provisioning.work_id
+             WHERE provisioning.namespace_id = $1
+               AND (
+                 provisioning.progress ? 'pendingEffect'
+                 OR provisioning.progress ? 'effectReceipt'
+                 OR provisioning.status IN ('queued', 'running')
+                 OR work.state IN ('queued', 'claimed')
+               )
+             LIMIT 1`,
+            [namespaceId],
+          );
+          return (found.rowCount ?? 0) > 0;
+        },
+        findByAgent: async (namespaceId, agentId) => {
+          const found = rows(
+            (
+              await client.query(
+                `SELECT * FROM occ.agent_provisioning_work
+                 WHERE namespace_id = $1 AND agent_id = $2`,
+                [namespaceId, agentId],
+              )
+            ).rows,
+          );
+          return found[0] === undefined ? undefined : provisioningRecordFromRow(found[0]);
+        },
+        findByConfiguration: async (namespaceId, configurationId) => {
+          const found = rows(
+            (
+              await client.query(
+                `SELECT * FROM occ.agent_provisioning_work
+                 WHERE namespace_id = $1 AND configuration_id = $2`,
+                [namespaceId, configurationId],
+              )
+            ).rows,
+          );
+          return found[0] === undefined ? undefined : provisioningRecordFromRow(found[0]);
+        },
+        findByRequest: async (namespaceId, actorId, requestId) => {
+          const found = rows(
+            (
+              await client.query(
+                `SELECT * FROM occ.agent_provisioning_work
+                 WHERE namespace_id = $1 AND actor_id = $2 AND request_id = $3`,
+                [namespaceId, actorId, requestId],
+              )
+            ).rows,
+          );
+          return found[0] === undefined ? undefined : provisioningRecordFromRow(found[0]);
+        },
+        create: async (input: CreateAgentProvisioningRecord) => {
+          const record = validateProvisioningCreate(input);
+          await this.requireInitialized(context);
+          await queue.enqueue({
+            kind: "provisioning",
+            idempotencyKey: record.workId,
+            namespaceId: record.namespaceId,
+            actorId: record.actorId,
+          });
+          const inserted = rows(
+            (
+              await client.query(
+                `INSERT INTO occ.agent_provisioning_work (
+                   work_id, namespace_id, actor_id, request_id, request_fingerprint,
+                   status, completed_phase, plan, progress, created_at, updated_at
+                 )
+                 SELECT work.idempotency_key, work.namespace_id, work.actor_id, $3::text,
+                   $4::text, 'queued', 'admitted', $5::jsonb, '{}'::jsonb,
+                   clock_timestamp(), clock_timestamp()
+                 FROM occ.controller_work AS work
+                 WHERE work.idempotency_key = $1
+                   AND work.work_kind = 'provisioning'
+                   AND work.namespace_id = $2
+                   AND work.agent_id IS NULL
+                   AND work.actor_id = $6
+                   AND work.revision_id IS NULL
+                   AND work.namespace_target IS NULL
+                   AND work.agent_target IS NULL
+                 ON CONFLICT (namespace_id, actor_id, request_id) DO NOTHING
+                 RETURNING *`,
+                [
+                  record.workId,
+                  record.namespaceId,
+                  record.requestId,
+                  record.requestFingerprint,
+                  JSON.stringify(record.plan),
+                  record.actorId,
+                ],
+              )
+            ).rows,
+          );
+          if (inserted[0] !== undefined) {
+            return Object.freeze({
+              record: provisioningRecordFromRow(inserted[0]),
+              replayed: false,
+            });
+          }
+          const existing = await this.repositories(context).provisioning.findByRequest(
+            record.namespaceId,
+            record.actorId,
+            record.requestId,
+          );
+          if (existing === undefined) {
+            throw new ResourceConflictError(
+              "The Agent provisioning work could not be reserved with its accepted plan.",
+            );
+          }
+          validateProvisioningReplay(existing, record);
+          return Object.freeze({ record: existing, replayed: true });
+        },
+        beginEffect: async (claim, effect) => {
+          const current = await this.repositories(context).provisioning.findByWorkId(
+            claim.idempotencyKey,
+          );
+          if (current === undefined) {
+            throw new ResourceConflictError("The Agent provisioning record is unavailable.");
+          }
+          const progress = beginProvisioningEffectProgress(current, effect);
+          const updated = rows(
+            (
+              await client.query(
+                `WITH owner AS MATERIALIZED (
+                   SELECT work.*
+                   FROM occ.controller_work AS work
+                   JOIN occ.agent_provisioning_work AS provisioning
+                     ON provisioning.work_id = work.idempotency_key
+                   WHERE provisioning.work_id = $1
+                     AND work.work_kind = 'provisioning'
+                     AND work.namespace_id = provisioning.namespace_id
+                     AND work.agent_id IS NULL
+                     AND work.actor_id = provisioning.actor_id
+                     AND work.revision_id IS NULL
+                     AND work.namespace_target IS NULL
+                     AND work.agent_target IS NULL
+                     AND work.state = 'claimed'
+                     AND work.claim_token = $2::uuid
+                     AND work.lease_expires_at > clock_timestamp()
+                   FOR UPDATE OF work
+                 ), updated_provisioning AS (
+                   UPDATE occ.agent_provisioning_work AS provisioning
+                   SET status = 'running',
+                       progress = $3::jsonb,
+                       updated_at = clock_timestamp()
+                   FROM owner
+                   WHERE provisioning.work_id = owner.idempotency_key
+                     AND provisioning.status NOT IN ('failed', 'succeeded', 'cancelled')
+                     AND NOT (provisioning.progress ? 'pendingEffect')
+                     AND NOT (provisioning.progress ? 'effectReceipt')
+                   RETURNING provisioning.*
+                 )
+                 SELECT * FROM updated_provisioning`,
+                [claim.idempotencyKey, claim.claimToken, JSON.stringify(progress)],
+              )
+            ).rows,
+          );
+          if (updated[0] === undefined) {
+            throw new WorkClaimLostError();
+          }
+          return provisioningRecordFromRow(updated[0]);
+        },
+        checkpoint: async (claim, checkpoint: AgentProvisioningCheckpoint) => {
+          const next = validateProvisioningCheckpoint(checkpoint);
+          const current = await this.repositories(context).provisioning.findByWorkId(
+            claim.idempotencyKey,
+          );
+          if (current === undefined) {
+            throw new ResourceConflictError("The Agent provisioning record is unavailable.");
+          }
+          validateProvisioningProgressStep(current, next);
+          if (next.status === "failed" || next.status === "cancelled") {
+            throw new ScopeViolationError(
+              "Agent provisioning terminal failures must use their lifecycle repository methods.",
+            );
+          }
+          if (
+            next.status === "succeeded" &&
+            (next.completedPhase !== "handoff" || next.revisionId === undefined)
+          ) {
+            throw new ScopeViolationError(
+              "Agent provisioning success requires the exact handoff revision.",
+            );
+          }
+          if (
+            current.status === "cancelled" ||
+            current.status === "failed" ||
+            current.status === "succeeded"
+          ) {
+            throw new ScopeViolationError(
+              "Terminal Agent provisioning work cannot be checkpointed.",
+            );
+          }
+          const updated = rows(
+            (
+              await client.query(
+                `WITH owner AS MATERIALIZED (
+                   SELECT work.*
+                   FROM occ.controller_work AS work
+                   JOIN occ.agent_provisioning_work AS provisioning
+                     ON provisioning.work_id = work.idempotency_key
+	                   WHERE provisioning.work_id = $1
+	                     AND work.work_kind = 'provisioning'
+	                     AND work.namespace_id = provisioning.namespace_id
+		                     AND work.agent_id IS NULL
+	                     AND work.actor_id = provisioning.actor_id
+	                     AND work.revision_id IS NULL
+	                     AND work.namespace_target IS NULL
+	                     AND work.agent_target IS NULL
+	                     AND work.state = 'claimed'
+	                     AND work.claim_token = $2::uuid
+	                     AND work.lease_expires_at > clock_timestamp()
+                   FOR UPDATE OF work
+                 ), updated_provisioning AS (
+                   UPDATE occ.agent_provisioning_work AS provisioning
+                   SET completed_phase = $3::text,
+                       status = COALESCE($4::text, provisioning.status),
+                       agent_id = COALESCE($5::text, provisioning.agent_id),
+                       configuration_id = COALESCE($6::text, provisioning.configuration_id),
+                       revision_id = COALESCE($7::text, provisioning.revision_id),
+                       progress = COALESCE($8::jsonb, provisioning.progress),
+                       updated_at = clock_timestamp()
+                   FROM owner
+	                   WHERE provisioning.work_id = owner.idempotency_key
+	                     AND provisioning.status NOT IN ('failed', 'succeeded', 'cancelled')
+	                     AND provisioning.progress = $9::jsonb
+	                   RETURNING provisioning.*
+	                 ), completed_work AS (
+                   UPDATE occ.controller_work AS work
+                   SET state = 'succeeded',
+                       claim_token = NULL,
+                       lease_expires_at = NULL,
+                       completed_at = clock_timestamp(),
+                       reason_code = 'PROVISIONING_HANDOFF',
+                       result_data = NULL,
+                       updated_at = clock_timestamp()
+                   WHERE $4::text = 'succeeded'
+                     AND $3::text = 'handoff'
+                     AND work.idempotency_key = $1
+                     AND EXISTS (SELECT 1 FROM updated_provisioning)
+                   RETURNING work.idempotency_key
+                 )
+                 SELECT * FROM updated_provisioning`,
+                [
+                  claim.idempotencyKey,
+                  claim.claimToken,
+                  next.completedPhase,
+                  next.status ?? null,
+                  next.agentId ?? null,
+                  next.configurationId ?? null,
+                  next.revisionId ?? null,
+                  next.progress === undefined ? null : JSON.stringify(next.progress),
+                  JSON.stringify(current.progress),
+                ],
+              )
+            ).rows,
+          );
+          if (updated[0] === undefined) {
+            throw new WorkClaimLostError();
+          }
+          return provisioningRecordFromRow(updated[0]);
+        },
+        recordFailure: async (
+          claim,
+          checkpoint: AgentProvisioningCheckpoint,
+          failure: AgentProvisioningFailure,
+        ) => {
+          const next = validateProvisioningCheckpoint(checkpoint);
+          const failed = validateProvisioningFailure(failure);
+          if (next.status === "succeeded" || next.status === "cancelled") {
+            throw new ScopeViolationError(
+              "Agent provisioning failure cannot record success or cancellation.",
+            );
+          }
+          const current = await this.repositories(context).provisioning.findByWorkId(
+            claim.idempotencyKey,
+          );
+          if (current === undefined) {
+            throw new ResourceConflictError("The Agent provisioning record is unavailable.");
+          }
+          validateProvisioningProgressStep(current, next);
+          if (
+            current.status === "cancelled" ||
+            current.status === "failed" ||
+            current.status === "succeeded"
+          ) {
+            throw new ScopeViolationError("Terminal Agent provisioning work cannot fail again.");
+          }
+          const checkpointed = rows(
+            (
+              await client.query(
+                `WITH owner AS MATERIALIZED (
+	                   SELECT work.*
+	                   FROM occ.controller_work AS work
+	                   JOIN occ.agent_provisioning_work AS provisioning
+	                     ON provisioning.work_id = work.idempotency_key
+	                   WHERE provisioning.work_id = $1
+	                     AND work.work_kind = 'provisioning'
+	                     AND work.namespace_id = provisioning.namespace_id
+		                     AND work.agent_id IS NULL
+	                     AND work.actor_id = provisioning.actor_id
+	                     AND work.revision_id IS NULL
+	                     AND work.namespace_target IS NULL
+	                     AND work.agent_target IS NULL
+	                     AND work.state = 'claimed'
+	                     AND work.claim_token = $2::uuid
+	                     AND work.lease_expires_at > clock_timestamp()
+	                   FOR UPDATE OF work
+	                 ), updated_provisioning AS (
+	                   UPDATE occ.agent_provisioning_work AS provisioning
+	                   SET completed_phase = $3::text,
+	                       status = CASE
+		                         WHEN $10::text = 'permanent' THEN 'failed'
+		                         ELSE 'running'
+		                       END,
+		                       agent_id = COALESCE($4::text, provisioning.agent_id),
+		                       configuration_id = COALESCE($5::text, provisioning.configuration_id),
+		                       revision_id = COALESCE($6::text, provisioning.revision_id),
+		                       progress = COALESCE($7::jsonb, provisioning.progress) ||
+		                         jsonb_build_object(
+		                           'error',
+		                           jsonb_build_object('code', $8::text, 'message', $9::text)
+		                         ),
+		                       updated_at = clock_timestamp()
+	                   FROM owner
+	                   WHERE provisioning.work_id = owner.idempotency_key
+	                     AND provisioning.status NOT IN ('failed', 'succeeded', 'cancelled')
+	                     AND provisioning.progress = $11::jsonb
+	                   RETURNING provisioning.*
+	                 )
+	                 SELECT * FROM updated_provisioning`,
+                [
+                  claim.idempotencyKey,
+                  claim.claimToken,
+                  next.completedPhase,
+                  next.agentId ?? null,
+                  next.configurationId ?? null,
+                  next.revisionId ?? null,
+                  next.progress === undefined ? null : JSON.stringify(next.progress),
+                  failed.code,
+                  failed.message,
+                  failed.disposition,
+                  JSON.stringify(current.progress),
+                ],
+              )
+            ).rows,
+          );
+          if (checkpointed[0] === undefined) {
+            throw new WorkClaimLostError();
+          }
+          if (failed.disposition === "permanent") {
+            await queue.fail(claim, { code: failed.code });
+            return provisioningRecordFromRow(checkpointed[0]);
+          }
+          await queue.retry(claim, { code: failed.code });
+          const work = await queue.findWork(claim.idempotencyKey);
+          if (work?.state !== "failed_permanent") {
+            return provisioningRecordFromRow(checkpointed[0]);
+          }
+          const terminal = rows(
+            (
+              await client.query(
+                `SELECT * FROM occ.agent_provisioning_work
+                 WHERE work_id = $1 AND status = 'failed'`,
+                [claim.idempotencyKey],
+              )
+            ).rows,
+          );
+          if (terminal[0] === undefined) {
+            throw new ResourceConflictError(
+              "The Agent provisioning retry exhaustion was not recorded.",
+            );
+          }
+          return provisioningRecordFromRow(terminal[0]);
+        },
+        settleEffect: async (workId: string, input: AgentProvisioningEffectSettlement) => {
+          const settlement = validateProvisioningEffectSettlement(input);
+          const receiptJson = JSON.stringify(settlement);
+          const settled = rows(
+            (
+              await client.query(
+                `WITH matched AS MATERIALIZED (
+                   SELECT provisioning.*
+                   FROM occ.agent_provisioning_work AS provisioning
+                   WHERE provisioning.work_id = $1
+                     AND provisioning.progress -> 'pendingEffect' ->> 'kind' = $2
+                     AND provisioning.progress -> 'pendingEffect' ->> 'owner' = $3
+                     AND provisioning.progress -> 'pendingEffect' ->> 'targetId' = $4
+	                   FOR UPDATE
+	                 ), updated_provisioning AS (
+	                   UPDATE occ.agent_provisioning_work AS provisioning
+	                   SET progress = provisioning.progress ||
+	                         jsonb_build_object('effectReceipt', $5::jsonb),
+	                       updated_at = clock_timestamp()
+                   FROM matched
+                   WHERE provisioning.work_id = matched.work_id
+                     AND (
+                       NOT (provisioning.progress ? 'effectReceipt')
+	                       OR provisioning.progress -> 'effectReceipt' = $5::jsonb
+                     )
+                   RETURNING provisioning.*
+                 )
+                 SELECT * FROM updated_provisioning`,
+                [workId, settlement.kind, settlement.owner, settlement.targetId, receiptJson],
+              )
+            ).rows,
+          );
+          if (settled[0] === undefined) {
+            throw new ResourceConflictError(
+              "The Agent provisioning effect settlement does not match.",
+            );
+          }
+          return provisioningRecordFromRow(settled[0]);
+        },
+        cancel: async (claim, error) => {
+          const code = typeof error.code === "string" ? error.code : "";
+          const message = typeof error.message === "string" ? error.message : "";
+          if (code.length === 0 || message.length === 0) {
+            throw new ScopeViolationError(
+              "Agent provisioning cancellation requires a safe reason.",
+            );
+          }
+          const cancelled = rows(
+            (
+              await client.query(
+                `WITH owner AS MATERIALIZED (
+                   SELECT work.*
+                   FROM occ.controller_work AS work
+                   JOIN occ.agent_provisioning_work AS provisioning
+                     ON provisioning.work_id = work.idempotency_key
+                   WHERE provisioning.work_id = $1
+	                     AND work.work_kind = 'provisioning'
+	                     AND work.namespace_id = provisioning.namespace_id
+		                     AND work.agent_id IS NULL
+	                     AND work.actor_id = provisioning.actor_id
+	                     AND work.revision_id IS NULL
+	                     AND work.namespace_target IS NULL
+	                     AND work.agent_target IS NULL
+	                     AND work.state = 'claimed'
+	                     AND work.claim_token = $2::uuid
+	                     AND work.lease_expires_at > clock_timestamp()
+                   FOR UPDATE OF work
+                 ), updated_provisioning AS (
+	                   UPDATE occ.agent_provisioning_work AS provisioning
+		                   SET status = 'cancelled',
+		                       progress = provisioning.progress || jsonb_build_object(
+		                         'error', jsonb_build_object('code', $3::text, 'message', $4::text)
+		                       ),
+		                       updated_at = clock_timestamp()
+	                   FROM owner
+	                   WHERE provisioning.work_id = owner.idempotency_key
+	                     AND provisioning.status NOT IN ('failed', 'succeeded', 'cancelled')
+	                   RETURNING provisioning.*
+                 ), completed_work AS (
+                   UPDATE occ.controller_work AS work
+                   SET state = 'failed_permanent',
+                       claim_token = NULL,
+                       lease_expires_at = NULL,
+                       completed_at = clock_timestamp(),
+                       reason_code = 'PROVISIONING_CANCELLED',
+                       result_data = NULL,
+                       updated_at = clock_timestamp()
+                   WHERE work.idempotency_key = $1
+                     AND EXISTS (SELECT 1 FROM updated_provisioning)
+                   RETURNING work.idempotency_key
+                 )
+                 SELECT * FROM updated_provisioning`,
+                [claim.idempotencyKey, claim.claimToken, code, message],
+              )
+            ).rows,
+          );
+          if (cancelled[0] === undefined) {
+            throw new WorkClaimLostError();
+          }
+          return provisioningRecordFromRow(cancelled[0]);
+        },
+        cancelByAgent: async (namespaceId, agentId, error) => {
+          const code = typeof error.code === "string" ? error.code : "";
+          const message = typeof error.message === "string" ? error.message : "";
+          if (code.length === 0 || message.length === 0) {
+            throw new ScopeViolationError(
+              "Agent provisioning cancellation requires a safe reason.",
+            );
+          }
+          const cancelled = rows(
+            (
+              await client.query(
+                `WITH owner AS MATERIALIZED (
+                   SELECT work.*
+                   FROM occ.controller_work AS work
+                   JOIN occ.agent_provisioning_work AS provisioning
+                     ON provisioning.work_id = work.idempotency_key
+                   WHERE provisioning.namespace_id = $1
+	                     AND provisioning.agent_id = $2
+	                     AND provisioning.status NOT IN ('cancelled', 'succeeded')
+	                     AND provisioning.revision_id IS NULL
+	                     AND work.work_kind = 'provisioning'
+	                     AND work.namespace_id = provisioning.namespace_id
+		                     AND work.agent_id IS NULL
+	                     AND work.actor_id = provisioning.actor_id
+	                     AND work.revision_id IS NULL
+	                     AND work.namespace_target IS NULL
+	                     AND work.agent_target IS NULL
+	                     AND work.state IN ('queued', 'claimed', 'failed_permanent')
+	                   FOR UPDATE OF work
+	                 ), updated_provisioning AS (
+	                   UPDATE occ.agent_provisioning_work AS provisioning
+		                   SET status = 'cancelled',
+		                       progress = provisioning.progress || jsonb_build_object(
+		                         'error', jsonb_build_object('code', $3::text, 'message', $4::text)
+		                       ),
+		                       updated_at = clock_timestamp()
+                   FROM owner
+                   WHERE provisioning.work_id = owner.idempotency_key
+                   RETURNING provisioning.*
+                 ), completed_work AS (
+                   UPDATE occ.controller_work AS work
+                   SET state = 'failed_permanent',
+                       claim_token = NULL,
+                       lease_expires_at = NULL,
+                       completed_at = clock_timestamp(),
+                       reason_code = 'PROVISIONING_CANCELLED',
+                       result_data = NULL,
+                       updated_at = clock_timestamp()
+                   FROM owner
+                   WHERE work.idempotency_key = owner.idempotency_key
+                     AND EXISTS (SELECT 1 FROM updated_provisioning)
+                   RETURNING work.idempotency_key
+                 )
+                 SELECT * FROM updated_provisioning`,
+                [namespaceId, agentId, code, message],
+              )
+            ).rows,
+          );
+          return cancelled[0] === undefined ? undefined : provisioningRecordFromRow(cancelled[0]);
+        },
+        retryByWorkId: async (namespaceId, workId, actorId) => {
+          const retried = rows(
+            (
+              await client.query(
+                `WITH owner AS MATERIALIZED (
+                   SELECT work.*
+                   FROM occ.controller_work AS work
+                   JOIN occ.agent_provisioning_work AS provisioning
+                     ON provisioning.work_id = work.idempotency_key
+                   WHERE provisioning.namespace_id = $1
+                     AND provisioning.work_id = $2
+                     AND provisioning.actor_id = $3
+	                     AND provisioning.status = 'failed'
+	                     AND provisioning.revision_id IS NULL
+	                     AND work.work_kind = 'provisioning'
+	                     AND work.namespace_id = provisioning.namespace_id
+		                     AND work.agent_id IS NULL
+	                     AND work.actor_id = provisioning.actor_id
+	                     AND work.revision_id IS NULL
+	                     AND work.namespace_target IS NULL
+	                     AND work.agent_target IS NULL
+	                     AND work.state = 'failed_permanent'
+	                   FOR UPDATE OF work
+                 ), updated_provisioning AS (
+                   UPDATE occ.agent_provisioning_work AS provisioning
+                   SET status = 'queued',
+                       updated_at = clock_timestamp()
+                   FROM owner
+                   WHERE provisioning.work_id = owner.idempotency_key
+                   RETURNING provisioning.*
+                 ), queued_work AS (
+                   UPDATE occ.controller_work AS work
+                   SET state = 'queued',
+                       attempt_count = 0,
+                       available_at = clock_timestamp(),
+                       claim_token = NULL,
+                       lease_expires_at = NULL,
+                       completed_at = NULL,
+                       reason_code = NULL,
+                       result_data = NULL,
+                       updated_at = clock_timestamp()
+                   FROM owner
+                   WHERE work.idempotency_key = owner.idempotency_key
+                     AND EXISTS (SELECT 1 FROM updated_provisioning)
+                   RETURNING work.idempotency_key
+                 )
+                 SELECT * FROM updated_provisioning`,
+                [namespaceId, workId, actorId],
+              )
+            ).rows,
+          );
+          if (retried[0] === undefined) {
+            throw new ResourceConflictError("The Agent provisioning work is not retryable.");
+          }
+          return provisioningRecordFromRow(retried[0]);
+        },
+      },
       audit: {
         append: async (event) => {
           await this.requireInstallation(context, event.installationId);
@@ -2542,7 +3279,9 @@ export class PostgresPlatformState implements PlatformStateStore {
               await client.query(
                 `SELECT idempotency_key, namespace_id, agent_id, revision_id, actor_id,
                         namespace_target, agent_target
-                 FROM occ.controller_work ORDER BY created_at, idempotency_key`,
+                 FROM occ.controller_work
+                 WHERE work_kind = 'lifecycle'
+                 ORDER BY created_at, idempotency_key`,
               )
             ).rows,
           );

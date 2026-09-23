@@ -171,14 +171,14 @@ See [harness authentication](../../reference/harness-execution.md#harness-authen
 
 ### Runtime and Slack credentials
 
-| Component                                         | Purpose                                                                                                                 |
-| ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| **Generated runtime credentials: Stored/Missing** | Reports stored connection-credential metadata.                                                                          |
-| **Slack app token / bot token: Bound/Missing**    | Reports saved Secret references, not whether Slack accepts the tokens.                                                  |
-| **Refresh status**                                | Reloads credential metadata.                                                                                            |
-| **Provision generated runtime credentials**       | Provisions initial connection credentials. Locked after the first revision; not a rotation action.                      |
-| **Slack app token** / **Slack bot token** inputs  | Bound tokens show a synthetic mask. Focus to replace; leave empty to keep a bound token. Missing tokens need a value.   |
-| **Save channel Secrets**                          | Stores Namespace Secrets, grants the Agent access, and updates Configuration bindings. Deploy explicitly to apply them. |
+| Component                                         | Purpose                                                                                                                                                                       |
+| ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Generated runtime credentials: Stored/Missing** | Reports stored connection-credential metadata. First-time provisioning creates these before the first revision; ordinary draft Agents may still need the manual action below. |
+| **Slack app token / bot token: Bound/Missing**    | Reports saved Secret references, not whether Slack accepts the tokens.                                                                                                        |
+| **Refresh status**                                | Reloads credential metadata.                                                                                                                                                  |
+| **Provision generated runtime credentials**       | Provisions initial connection credentials for ordinary draft Agents. Locked after the first revision; not a rotation action.                                                  |
+| **Slack app token** / **Slack bot token** inputs  | Bound tokens show a synthetic mask. Focus to replace; leave empty to keep a bound token. Missing tokens need a value.                                                         |
+| **Save channel Secrets**                          | Stores Namespace Secrets, grants the Agent access, and updates Configuration bindings. Deploy explicitly to apply them.                                                       |
 
 Runtime controls apply to managed authentication. Provisioning requires Agent
 `read` and `operate`; saving channel Secrets additionally requires Secret,

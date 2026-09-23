@@ -45,7 +45,7 @@ those states by interacting with the real controls after loading fixture data.
 | Settings and navigation | Signed-in account and unknown route.                                                                                                                                                                                                             |
 | Create Agent            | Preset selection and variables, no Presets, dedicated and embedded forms, seeded workspace files, OpenAI and Anthropic key entry, storage and grant denial, invalid JSON, partial save with conflict, unknown save outcome.                      |
 | Agent detail            | New revision, native JSON editor, invalid JSON, admitted snapshot, queued or failed deployment, denied deployment, missing Agent, unavailable Configuration and revision history.                                                                |
-| Navigation components   | Account menu, Namespace switcher, mobile drawer.                                                                                                                                                                                                 |
+| Navigation components   | Account menu, Namespace switcher, mobile drawer, OCE branding, simulated OCC revision, missing development metadata.                                                                                                                             |
 | Channels                | Unconfigured cards, Slack editor with pairing/open/disabled policies, unsupported Slack shape, read-only snapshot, save conflict.                                                                                                                |
 | Credentials             | Stored and missing metadata, masked Slack tokens, one-token replacement, partially missing tokens, generated credentials locked after admission, metadata failure, missing authentication, operator-managed credentials, issued ChatGPT account. |
 | Native admin            | Available launch, stopped or unsupported runtime, denied panel hidden. The launch target is an explanatory fixture page.                                                                                                                         |
@@ -65,13 +65,13 @@ Each flow includes steps above an interactive console frame.
 ### Create and deploy
 
 Choose a Preset, fill its variables, review the seeded workspace files, and
-create the Agent. Open Credentials, provision generated runtime credentials,
-then deploy the new revision. **Refresh deployment** advances the fixture from
-queued to succeeded. Use the page’s **Refresh** button to reread the Agent’s
-active revision. A separate flow starts without a Preset, selects the fixture's
-provider and API key, edits IDENTITY.md, clears USER.md, and reads
-those files back after deployment.
-That transition demonstrates presentation only; it does not prove a worker ran.
+create a Dedicated Agent. The Console submits its inline Configuration and saved
+Secret references, follows simulated provisioning and deployment activation, and
+opens Workspace files for the returned revision. A separate flow starts without
+a Preset, enters a dummy OpenAI API key or Codex PAT, selects a model, edits
+IDENTITY.md, and clears USER.md before creation. Embedded and unsupported-runtime
+stories retain the draft workflow: provision credentials and deploy from Agent detail.
+These transitions demonstrate presentation only; they do not prove a worker ran.
 
 The fixture supplies a ready Namespace, Preset, and model Secret. Namespace
 provisioning, Preset CRUD, and service-account issuance have no console pages.

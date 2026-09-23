@@ -818,6 +818,7 @@ export const auditEvents = occSchema.table(
 export const controllerWork = occSchema.table(
   "controller_work",
   {
+    workKind: text("work_kind").notNull().default("lifecycle"),
     idempotencyKey: text("idempotency_key").primaryKey(),
     namespaceId: text("namespace_id")
       .notNull()
@@ -855,6 +856,7 @@ export const controllerWork = occSchema.table(
     })
       .onUpdate("restrict")
       .onDelete("no action"),
+    check("controller_work_kind_valid", sql`${table.workKind} IN ('lifecycle', 'provisioning')`),
     check(
       "controller_work_idempotency_key_length",
       sql`char_length(${table.idempotencyKey}) BETWEEN 1 AND 512`,
@@ -871,16 +873,19 @@ export const controllerWork = occSchema.table(
     check(
       "controller_work_namespace_target_valid",
       sql`(
-        (${table.agentId} IS NULL AND ${table.revisionId} IS NULL
+        (${table.workKind} = 'lifecycle' AND ${table.agentId} IS NULL AND ${table.revisionId} IS NULL
           AND ${table.namespaceTarget} IS NOT NULL
           AND ${table.namespaceTarget} IN ('ready', 'deleted')
           AND ${table.agentTarget} IS NULL)
-        OR (${table.agentId} IS NOT NULL AND ${table.revisionId} IS NULL
+        OR (${table.workKind} = 'lifecycle' AND ${table.agentId} IS NOT NULL AND ${table.revisionId} IS NULL
           AND ${table.namespaceTarget} IS NULL
           AND ${table.agentTarget} IS NOT NULL
           AND ${table.agentTarget} IN ('stopped', 'deleted'))
-        OR (${table.agentId} IS NOT NULL AND ${table.revisionId} IS NOT NULL
+        OR (${table.workKind} = 'lifecycle' AND ${table.agentId} IS NOT NULL AND ${table.revisionId} IS NOT NULL
           AND ${table.namespaceTarget} IS NULL AND ${table.agentTarget} IS NULL)
+        OR (${table.workKind} = 'provisioning' AND ${table.agentId} IS NULL
+          AND ${table.revisionId} IS NULL AND ${table.namespaceTarget} IS NULL
+          AND ${table.agentTarget} IS NULL)
       )`,
     ),
     check(
@@ -968,6 +973,92 @@ export const controllerWork = occSchema.table(
     uniqueIndex("controller_work_one_claim_per_resource")
       .on(sql`COALESCE(${table.agentId}, ${table.namespaceId})`)
       .where(sql`${table.state} = 'claimed'`),
+  ],
+);
+
+export const agentProvisioningWork = occSchema.table(
+  "agent_provisioning_work",
+  {
+    workId: text("work_id").primaryKey(),
+    namespaceId: text("namespace_id").notNull(),
+    agentId: text("agent_id"),
+    configurationId: text("configuration_id"),
+    actorId: text("actor_id").notNull(),
+    requestId: text("request_id").notNull(),
+    requestFingerprint: text("request_fingerprint").notNull(),
+    status: text("status").notNull(),
+    completedPhase: text("completed_phase").notNull(),
+    revisionId: text("revision_id"),
+    plan: jsonb("plan").$type<Record<string, unknown>>().notNull(),
+    progress: jsonb("progress").$type<Record<string, unknown>>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    foreignKey({
+      name: "agent_provisioning_work_work_owner",
+      columns: [table.workId],
+      foreignColumns: [controllerWork.idempotencyKey],
+    })
+      .onUpdate("restrict")
+      .onDelete("cascade"),
+    foreignKey({
+      name: "agent_provisioning_work_agent_owner",
+      columns: [table.namespaceId, table.agentId],
+      foreignColumns: [agents.namespaceId, agents.id],
+    })
+      .onUpdate("restrict")
+      .onDelete("restrict"),
+    foreignKey({
+      name: "agent_provisioning_work_configuration_owner",
+      columns: [table.namespaceId, table.configurationId],
+      foreignColumns: [configurations.namespaceId, configurations.id],
+    })
+      .onUpdate("restrict")
+      .onDelete("restrict"),
+    foreignKey({
+      name: "agent_provisioning_work_revision_owner",
+      columns: [table.namespaceId, table.agentId, table.revisionId],
+      foreignColumns: [agentRevisions.namespaceId, agentRevisions.agentId, agentRevisions.id],
+    })
+      .onUpdate("restrict")
+      .onDelete("no action"),
+    unique("agent_provisioning_request_unique").on(
+      table.namespaceId,
+      table.actorId,
+      table.requestId,
+    ),
+    unique("agent_provisioning_agent_unique").on(table.namespaceId, table.agentId),
+    unique("agent_provisioning_configuration_unique").on(table.namespaceId, table.configurationId),
+    check(
+      "agent_provisioning_status_valid",
+      sql`${table.status} IN ('queued', 'running', 'failed', 'succeeded', 'cancelled')`,
+    ),
+    check(
+      "agent_provisioning_phase_valid",
+      sql`${table.completedPhase} IN ('admitted', 'configuration', 'transport', 'handoff')`,
+    ),
+    check(
+      "agent_provisioning_fingerprint_valid",
+      sql`${table.requestFingerprint} ~ '^[a-f0-9]{64}$'`,
+    ),
+    check(
+      "agent_provisioning_json_objects",
+      sql`jsonb_typeof(${table.plan}) = 'object'
+        AND jsonb_typeof(${table.progress}) = 'object'`,
+    ),
+    check(
+      "agent_provisioning_revision_requires_handoff",
+      sql`${table.revisionId} IS NULL OR (${table.completedPhase} = 'handoff' AND ${table.agentId} IS NOT NULL)`,
+    ),
+    check(
+      "agent_provisioning_success_requires_handoff",
+      sql`${table.status} <> 'succeeded' OR (${table.completedPhase} = 'handoff' AND ${table.agentId} IS NOT NULL AND ${table.configurationId} IS NOT NULL AND ${table.revisionId} IS NOT NULL)`,
+    ),
+    check(
+      "agent_provisioning_failed_before_handoff",
+      sql`${table.status} NOT IN ('failed', 'cancelled') OR ${table.revisionId} IS NULL`,
+    ),
   ],
 );
 

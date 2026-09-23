@@ -50,6 +50,10 @@ import {
   ScopeViolationError,
 } from "../errors.ts";
 import type { ControllerWork } from "./controller-work.ts";
+import type {
+  AgentProvisioningReadRepository,
+  AgentProvisioningRepository,
+} from "./agent-provisioning.ts";
 
 export interface InstallationReadRepository {
   findInstallation(installationId: string): Promise<Readonly<Installation> | undefined>;
@@ -521,6 +525,8 @@ export interface PlatformOperationRepository extends PlatformOperationReadReposi
   append(operation: PlatformOperation): Promise<void>;
 }
 
+export type { AgentProvisioningRecord } from "./agent-provisioning.ts";
+
 export interface IAMPolicyReadRepository {
   listRoles(namespaceId: string): Promise<readonly Readonly<Role>[]>;
   getRole(namespaceId: string, roleId: string): Promise<Readonly<Role> | undefined>;
@@ -550,6 +556,7 @@ export interface PlatformReadView {
   readonly revisions: AgentRevisionReadRepository;
   readonly iamPolicy: IAMPolicyReadRepository;
   readonly repositorySessions: RepositorySessionReadRepository;
+  readonly provisioning: AgentProvisioningReadRepository;
   readonly operations: PlatformOperationReadRepository;
 }
 
@@ -565,6 +572,7 @@ export interface PlatformUnitOfWork extends PlatformReadView {
   readonly revisions: AgentRevisionRepository;
   readonly iamPolicy: IAMPolicyRepository;
   readonly repositorySessions: RepositorySessionRepository;
+  readonly provisioning: AgentProvisioningRepository;
   readonly audit: PlatformAuditRepository;
   readonly operations: PlatformOperationRepository;
 }
@@ -1819,6 +1827,14 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
     },
   );
 
+  const provisioningUnavailable = async (): Promise<never> => {
+    throw new DependencyUnavailableError(
+      "Agent provisioning requires durable PostgreSQL state for checkpoints.",
+    );
+  };
+  const provisioningAbsent = async (): Promise<undefined> => undefined;
+  const provisioningPendingAbsent = async (): Promise<boolean> => false;
+
   return {
     installations,
     namespaces,
@@ -1831,6 +1847,21 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
     revisions,
     iamPolicy,
     repositorySessions,
+    provisioning: {
+      findByWorkId: provisioningAbsent,
+      hasPendingNamespaceProvisioning: provisioningPendingAbsent,
+      findByAgent: provisioningAbsent,
+      findByConfiguration: provisioningAbsent,
+      findByRequest: provisioningAbsent,
+      create: provisioningUnavailable,
+      beginEffect: provisioningUnavailable,
+      checkpoint: provisioningUnavailable,
+      recordFailure: provisioningUnavailable,
+      settleEffect: provisioningUnavailable,
+      cancel: provisioningUnavailable,
+      cancelByAgent: async () => undefined,
+      retryByWorkId: provisioningUnavailable,
+    },
     audit: {
       async append(event) {
         if (event.installationId !== snapshot.installation?.id) {
@@ -1928,6 +1959,7 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
                 )?.agentId
             : undefined;
         return immutableCopy({
+          kind: "lifecycle",
           idempotencyKey,
           namespaceId: operation.namespaceId,
           ...(operation.kind === "agent" ? { agentId: operation.resourceId } : {}),

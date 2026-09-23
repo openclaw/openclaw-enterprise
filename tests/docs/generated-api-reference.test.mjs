@@ -23,11 +23,11 @@ test("generated API reference stays on the approved single page", async () => {
 
   assert.deepEqual(
     outputs.map((output) => output.path),
-    ["docs/reference/api.md"],
+    ["docs/reference/api.md", "docs/reference/cheatsheets/api.md"],
   );
 
   const page = outputs[0].content;
-  assert.match(page, /\| \[Agents\]\(#agents\) \| 12 operations \|/);
+  assert.match(page, /\| \[Agents\]\(#agents\) \| 15 operations \|/);
   assert.match(page, /\| \[Providers\]\(#providers\) \| 1 operation \|/);
   assert.match(
     page,

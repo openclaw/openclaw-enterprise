@@ -35,10 +35,13 @@
 
 - [`listAgents`](../api.md#get-namespacesnamespaceidagents): List authorized Agents in one exact Namespace.
 - [`getAgent`](../api.md#get-namespacesnamespaceidagentsagentid): Get an exact Namespace-owned Agent.
+- [`getAgentProvisioning`](../api.md#get-namespacesnamespaceidagentsprovisionworkid): Get first-time provisioning status for one exact work item.
 - [`createAgent`](../api.md#post-namespacesnamespaceidagents): Create a Namespace-owned Agent.
+- [`provisionAgent`](../api.md#post-namespacesnamespaceidagentsprovision): Create a new Agent and queue first-time provisioning.
 - [`updateAgent`](../api.md#patch-namespacesnamespaceidagentsagentid): Replace an exact Namespace-owned Agent's editable draft.
 - [`deployAgent`](../api.md#post-namespacesnamespaceidagentsagentiddeploy): Admit an immutable revision from the Agent's saved draft.
 - [`discoverAgentModels`](../api.md#post-namespacesnamespaceidagentsmodels): List provider models for Agent creation without storing the supplied credential.
+- [`retryAgentProvisioning`](../api.md#post-namespacesnamespaceidagentsprovisionworkidretry): Retry failed first-time provisioning for one exact work item.
 - [`stopAgent`](../api.md#post-namespacesnamespaceidagentsagentidstop): Stop one Agent while retaining its revision and persistent state.
 - [`getAgentNativeAdmin`](../api.md#get-namespacesnamespaceidagentsagentidnativeadmin): Resolve native admin UI launch availability for one Agent.
 - [`deleteAgent`](../api.md#delete-namespacesnamespaceidagentsagentid): Begin deletion of an exact Namespace-owned Agent and its AgentRevisions.

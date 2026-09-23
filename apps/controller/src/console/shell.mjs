@@ -239,10 +239,24 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       });
       nav.append(link);
     }
+    const revision = document.querySelector('meta[name="occ-build-revision"]')?.content;
+    const knownRevision = /^[a-f0-9]{40}$/.test(revision ?? "");
     const sidebar = element(
       "aside",
       { className: "sidebar", id: "navigation-drawer" },
-      element("p", { className: "brand" }, "Control Plane"),
+      element(
+        "p",
+        { className: "brand" },
+        "OCE",
+        element(
+          "span",
+          {
+            className: "occ-version",
+            title: knownRevision ? `OCC commit ${revision}` : "OCC build revision unavailable",
+          },
+          knownRevision ? revision.slice(0, 8) : "dev",
+        ),
+      ),
       nav,
       session ? accountMenu() : null,
     );

@@ -1,10 +1,12 @@
 # Create and deploy Agents in the console
 
-Use the [platform console](../console.md) to create an Agent, prepare its
-credentials, and request deployment. On an existing Kubernetes Installation,
+Use the [platform console](../console.md) to create an Agent and, for supported
+Dedicated runtimes, start first-time provisioning from the same form. On an
+existing Kubernetes Installation,
 start with [production Agent prerequisites](../../guides/deploy/production-agents.md#prepare-each-namespace):
 you need a ready Namespace, configured Secret storage, and permission to
-create Secrets and grant the Agent access to its key. After deployment, [verify this same
+create Secrets. First-time provisioning grants access to accepted Secret references;
+ordinary draft creation also requires permission to grant the Agent access to its key. After deployment, [verify this same
 Agent and revision](../../guides/deploy/production-agents.md#verify-production-workloads).
 If you are using [Local Setup](../../guides/quickstart.md) instead, the
 [local first-Agent walkthrough](../../guides/first-agent.md) creates a separate
@@ -61,16 +63,21 @@ does not make that link available.
    Edit any of the four files, keep the text to submit that default, or clear a
    field to create an empty file. The browser submits LF newlines. See
    [initial contents](../agents.md#initial-contents-at-creation) for limits.
-7. Select **Create Agent**. A successful save opens the Agent detail page on
-   **New revision**. No revision or workload exists yet. OCC privately stages the
-   initial contents for application before the first deployment runs. After
-   deployment, use the [live workspace editor](../console.md#edit-workspace-files).
-   Pending inputs have no update API; see [workspace recovery](../../guides/topics/workspace-files.md#set-files-when-creating-an-agent).
+7. Select **Create Agent**. For supported Dedicated runtimes, the provisioning
+   request contains inline Configuration, saved Secret references, Agent inputs
+   and workspace files. Console follows the returned job while the worker
+   creates the Configuration and Agent, provisions runtime credentials and
+   submits the first deployment. It waits for deployment activation and opens Workspace files for the returned revision. For
+   ordinary create paths, the Console saves the Configuration first and opens a
+   draft Agent on **New revision** with no workload yet. After deployment, use
+   the [live workspace editor](../console.md#edit-workspace-files). Pending
+   inputs have no update API; see [workspace recovery](../../guides/topics/workspace-files.md#set-files-when-creating-an-agent).
 
-The credential field is masked. Saving creates a Namespace Secret, the Configuration,
-and the Agent, then grants that Agent's service principal `operate` on the exact
-Secret through the existing IAM APIs. This requires Secret creation and IAM
-administration permissions in addition to Agent and Configuration creation.
+The credential field is masked. Saving creates a Namespace Secret and sends only
+its reference to provisioning. The worker creates the Configuration and Agent,
+grants exact Secret access, provisions runtime credentials, and admits the first
+revision. Ordinary draft creation performs the Configuration, Agent, and exact IAM
+grants as separate browser requests and requires IAM administration permission.
 The key is never put into Configuration JSON, Agent responses, or browser storage.
 A Preset with an existing authentication binding retains that binding; use the
 Agent's Credentials tab to change it after creation. API-key and Codex PAT
@@ -108,7 +115,7 @@ has no managed Secret storage or model-key delivery. Saving a key does not prove
 provider acceptance or runtime readiness. See
 [harness authentication](../agents.md#harness-authentication).
 
-The saves are separate operations. After a successful step, the form retains its
+For ordinary draft creation, saves are separate operations. After a successful step, the form retains its
 resource ID and freezes the saved inputs, including the authentication method. Correct a conflicting Agent name or
 restore the required permission, then retry to reuse the saved resources. If the
 Agent was saved but its model or Slack Secret grant failed, select **Retry credential access** to finish grants on that same Agent, or ask an administrator to check the saved Secret grants.
@@ -117,9 +124,17 @@ IDs and the Agents list before starting again; give the displayed request ID to
 your operator if the outcome cannot be established. Leaving the form does not
 remove resources that were already saved.
 
+If provisioning admission loses its response, **Retry provisioning request** resubmits
+the same request ID and saved Secret references. An acknowledged job is retried through
+its returned job URL; accepted inputs remain fixed. Secrets saved before a later
+failure remain available and are reused, never deleted automatically. A lost Secret
+save response requires checking existing Namespace Secrets before starting again.
+See the [provisioning flow](../../flows/agent-provisioning.md) for the API sequence.
+
 ## Initial runtime credentials
 
-Before an Agent's first deployment, provision generated transport credentials
+First-time provisioning creates generated transport credentials automatically.
+For ordinary draft Agents, before the first deployment, provision generated transport credentials
 and, when Slack is enabled, store its app and bot tokens as Namespace Secrets
 bound through the Agent's Configuration. Model credentials are selected
 separately during Agent creation through `harnessAuth`; runtime credential

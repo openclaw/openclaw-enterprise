@@ -33,7 +33,10 @@ export function createHarnessAuthFields(context, binding = null, executionMode =
     spellcheck: "false",
     autocomplete: "off",
     placeholder: "sec_…",
-    value: ["api_key", "codex_pat"].includes(binding?.method) ? binding.source.id : "",
+    value:
+      ["api_key", "codex_pat"].includes(binding?.method) && binding.source?.kind === "secret"
+        ? binding.source.id
+        : "",
   });
   const account = element(
     "select",

@@ -31,6 +31,7 @@ import type {
   AgentRevision,
   AgentRuntimeCredentialsInput,
   AgentRuntimeCredentialStatus,
+  ComputeAgentProvisioningInput,
   ComputeDriver,
   ComputeAgentBinding,
   ComputeReadiness,
@@ -163,6 +164,44 @@ interface KubernetesApiClients {
 
 export const MINIMUM_KUBERNETES_VERSION = "1.35.0";
 const MINIMUM_KUBERNETES_VERSION_PARTS = [1, 35, 0] as const;
+
+interface LifecycleOwnerSelection {
+  readonly driver: Driver;
+  readonly capability: Driver["capability"];
+  readonly id: string;
+  readonly implementation: string;
+}
+
+function lifecycleOwnerSelection(drivers: readonly Driver[]): readonly LifecycleOwnerSelection[] {
+  return Object.freeze(
+    drivers.map((driver) =>
+      Object.freeze({
+        driver,
+        capability: driver.capability,
+        id: driver.id,
+        implementation: driver.implementation,
+      }),
+    ),
+  );
+}
+
+function sameLifecycleOwners(
+  current: readonly LifecycleOwnerSelection[],
+  drivers: readonly Driver[],
+): boolean {
+  return (
+    current.length === drivers.length &&
+    current.every((selected, index) => {
+      const driver = drivers[index];
+      return (
+        selected.driver === driver &&
+        selected.capability === driver.capability &&
+        selected.id === driver.id &&
+        selected.implementation === driver.implementation
+      );
+    })
+  );
+}
 
 function kubernetesVersion(value: unknown): {
   readonly normalized: string;
@@ -897,11 +936,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
   readonly capability = "compute" as const;
   readonly implementation: string;
   readonly supportsWorkspaceSetup = true as const;
+  readonly agentProvisioning = Object.freeze({
+    executionModes: Object.freeze(["dedicated"] as const),
+  });
   private readonly options: KubernetesComputeDriverOptions;
   private readonly sandboxDriver: SandboxDriver | undefined;
   private readonly nodeEnrollment: GatewayNodeEnrollment | undefined;
   private readonly readNodeCa: (() => Promise<string | undefined>) | undefined;
   private lifecycle: ComputeLifecycleDispatcher;
+  private lifecycleOwners: readonly LifecycleOwnerSelection[];
   private lifecycleStarted = false;
   private apiClients: Promise<KubernetesApiClients> | undefined;
   private patchOptions:
@@ -1120,13 +1163,19 @@ export class KubernetesComputeDriver implements ComputeDriver {
     this.sandboxDriver = selection.sandboxDriver;
     this.nodeEnrollment = selection.nodeEnrollment;
     this.readNodeCa = selection.readNodeCa;
-    this.lifecycle = new ComputeLifecycleDispatcher(selection.lifecycleDrivers ?? []);
+    const lifecycleDrivers = selection.lifecycleDrivers ?? [];
+    this.lifecycle = new ComputeLifecycleDispatcher(lifecycleDrivers);
+    this.lifecycleOwners = lifecycleOwnerSelection(lifecycleDrivers);
   }
 
   setLifecycleDrivers(drivers: readonly Driver[]): void {
     if (this.lifecycleStarted) {
+      if (sameLifecycleOwners(this.lifecycleOwners, drivers)) {
+        return;
+      }
       throw new Error("Compute lifecycle owners cannot change after lifecycle operations begin.");
     }
+    this.lifecycleOwners = lifecycleOwnerSelection(drivers);
     this.lifecycle = new ComputeLifecycleDispatcher(drivers);
   }
 
@@ -1172,6 +1221,19 @@ export class KubernetesComputeDriver implements ComputeDriver {
         "Repository credentials require a configured embedded OpenClaw Kubernetes runtime without a SandboxDriver.",
       );
     }
+  }
+
+  validateAgentProvisioning(input: ComputeAgentProvisioningInput): void {
+    if (input.executionMode !== "dedicated") {
+      throw new ConfigurationFailure(
+        "Kubernetes Agent provisioning supports only dedicated execution mode.",
+      );
+    }
+    const configuration = this.kubernetesGatewayConfigurationDocument(input.configuration);
+    this.verifyGatewayRoutingConfiguration({
+      configuration,
+      harness: { id: "codex", version: "provisioning", mode: "dedicated" },
+    });
   }
 
   validateHarnessAuth(
@@ -5271,7 +5333,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
     )}.${routing.envoyNamespace}.svc`;
   }
 
-  private verifyGatewayRoutingConfiguration(revision: AgentRevision): void {
+  private verifyGatewayRoutingConfiguration(
+    revision: Pick<AgentRevision, "configuration" | "harness">,
+  ): void {
     if (
       this.options.runtime !== undefined &&
       revision.harness.mode === "dedicated" &&

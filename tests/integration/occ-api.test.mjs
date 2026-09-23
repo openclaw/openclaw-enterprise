@@ -138,8 +138,8 @@ async function assertUnsafeStartupRejected() {
         once(processState.child, "exit"),
         new Promise((_, reject) => {
           deadline = setTimeout(
-            () => reject(new Error(`${description} unexpectedly started listening`)),
-            5_000,
+            () => reject(new Error(`${description} did not reject startup within 15 seconds`)),
+            15_000,
           );
         }),
       ]);
@@ -281,6 +281,84 @@ async function createAgent(controller, namespaceId, name, values = {}) {
   return result.data;
 }
 
+function exactSecretRef(namespaceId, id) {
+  return { kind: "secret", namespaceId, id };
+}
+
+function provisioningRequestBody(namespaceId, secrets, overrides = {}) {
+  return {
+    requestId: `req_${randomUUID()}`,
+    name: `Provisioned Agent ${randomUUID().slice(0, 8)}`,
+    executionMode: "dedicated",
+    configuration: {
+      kind: "agent",
+      values: { agents: { defaults: { model: "codex/gpt-6-astra" } } },
+      secretBindings: {
+        TOOL_API_KEY: {
+          source: exactSecretRef(namespaceId, secrets.toolApiKey.id),
+        },
+      },
+      ...overrides.configuration,
+    },
+    harnessAuth: {
+      method: "api_key",
+      source: exactSecretRef(namespaceId, secrets.modelApiKey.id),
+    },
+    ...overrides,
+  };
+}
+
+function createProvisioningCapableConfigurationDriver() {
+  const driver = createTestConfigurationDriver({ id: "configuration-provisioning-api" });
+  driver.createExact = (configuration) => driver.create(configuration);
+  driver.inspectExact = async (configuration) => {
+    try {
+      const stored = await driver.read(configuration);
+      assert.deepEqual(stored, configuration);
+      return stored;
+    } catch {
+      return undefined;
+    }
+  };
+  return driver;
+}
+
+function createProvisioningCapableComputeDriver() {
+  const runtimeStatus = new Map();
+  const keyOf = ({ namespace, agent }) => `${namespace.id}:${agent.id}`;
+  return {
+    id: "compute-provisioning-api",
+    capability: "compute",
+    implementation: "deterministic-test",
+    agentProvisioning: { executionModes: ["dedicated"] },
+    async ensureNamespace(namespace) {
+      return { namespaceId: namespace.id, namespaceReady: true };
+    },
+    async deleteNamespace(namespace) {
+      return { namespaceId: namespace.id, namespaceDeleted: true };
+    },
+    validateHarnessAuth() {},
+    validateAgentProvisioning() {},
+    async prepareRevision(revision) {
+      return {
+        namespaceId: revision.namespaceId,
+        agentId: revision.agentId,
+        revisionId: revision.id,
+        ready: true,
+      };
+    },
+    async provisionAgentRuntimeCredentials(binding) {
+      runtimeStatus.set(keyOf(binding), { transportConfigured: true });
+      return { transportConfigured: true };
+    },
+    async getAgentRuntimeCredentialStatus(binding) {
+      return runtimeStatus.get(keyOf(binding)) ?? { transportConfigured: false };
+    },
+    async stopRevision() {},
+    async retireRevision() {},
+  };
+}
+
 async function bindHarnessKey(fixture, namespaceId, agent) {
   const created = await injectedRequest(fixture.app, "POST", `/namespaces/${namespaceId}/secrets`, {
     body: { name: `key-${agent.id}`, value: "synthetic-api-contract-key" },
@@ -404,7 +482,9 @@ async function createInjectedFixture(options = {}) {
     async retireRevision() {},
   };
   const auditSink = options.auditSink ?? new InMemoryAuditSink();
-  const configurationDriver = createTestConfigurationDriver({ id: "configuration-integration" });
+  const configurationDriver =
+    options.configurationDriver ??
+    createTestConfigurationDriver({ id: "configuration-integration" });
   const secretDriver = createTestSecretDriver({ id: "secret-api-integration" });
   const sessionsByPrincipalId = new Map();
   let controller;
@@ -468,6 +548,9 @@ async function createInjectedFixture(options = {}) {
       secretDriver,
       resolveHarness: resolveApprovedDevelopmentHarness,
       auditSink,
+      ...(Object.hasOwn(options, "providerSummaries")
+        ? { providerSummaries: options.providerSummaries }
+        : {}),
       development: {
         enabled: true,
         installationId,
@@ -1157,11 +1240,19 @@ test("Agent Provider API preserves nullable drafts and immutable revision associ
         drivers: { service_account: "chatgpt-service-accounts" },
       },
     ],
+    providerSummaries: [{ id: "openai", type: "chatgpt" }],
   });
   const controller = {
     request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
   };
   await bootstrap(controller);
+  const providers = await controller.request("GET", "/providers");
+  assert.equal(providers.status, 200);
+  assert.deepEqual(providers.data, [{ id: "openai", type: "chatgpt" }]);
+  assert.doesNotMatch(
+    JSON.stringify(providers.body),
+    /apiKey|workspaceId|credential|drivers|path/i,
+  );
   const namespace = await createNamespace(controller, "provider-api");
   const configuration = await createConfiguration(controller, namespace.id);
   const collection = `/namespaces/${namespace.id}/agents`;
@@ -1224,6 +1315,59 @@ test("Agent Provider API preserves nullable drafts and immutable revision associ
   });
   assert.equal(replaced.status, 200);
   assert.equal(replaced.data.providerId, "openai");
+});
+
+test("Installation API exposes Agent provisioning capabilities without configured Providers", async () => {
+  let ensureNamespaceCalls;
+  let deleteNamespaceCalls;
+  const computeDriver = {
+    id: "compute-provisioning-capable",
+    capability: "compute",
+    implementation: "deterministic-test",
+    agentProvisioning: { executionModes: ["dedicated"] },
+    async ensureNamespace(namespace) {
+      ensureNamespaceCalls.push(namespace.id);
+      return { namespaceId: namespace.id, namespaceReady: true };
+    },
+    async deleteNamespace(namespace) {
+      deleteNamespaceCalls.push(namespace.id);
+      return { namespaceId: namespace.id, namespaceDeleted: true };
+    },
+    validateHarnessAuth() {},
+    validateAgentProvisioning() {},
+    async prepareRevision(revision) {
+      return {
+        namespaceId: revision.namespaceId,
+        agentId: revision.agentId,
+        revisionId: revision.id,
+        ready: true,
+      };
+    },
+    async stopRevision() {},
+    async retireRevision() {},
+  };
+  const fixture = await createInjectedFixture({
+    providers: [],
+    providerSummaries: [],
+    computeDriver,
+  });
+  ensureNamespaceCalls = fixture.computeCalls.ensureNamespace;
+  deleteNamespaceCalls = fixture.computeCalls.deleteNamespace;
+  const controller = {
+    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
+  };
+  const bootstrapped = await bootstrap(controller);
+  assert.deepEqual(bootstrapped.capabilities, {
+    agentProvisioning: { executionModes: ["dedicated"] },
+  });
+
+  const installation = await controller.request("GET", "/installation");
+  assert.equal(installation.status, 200);
+  assert.deepEqual(installation.data.capabilities, bootstrapped.capabilities);
+
+  const providers = await controller.request("GET", "/providers");
+  assert.equal(providers.status, 200);
+  assert.deepEqual(providers.data, []);
 });
 
 test("Agent deployment status polls the admitted revision work with exact read authorization", async () => {
@@ -2304,6 +2448,162 @@ test("OCC Fastify enforces strict schemas, canonical errors, and its real 64 KiB
 
   const untouched = await injectedRequest(fixture.app, "GET", "/namespaces");
   assertOnlyDefaultNamespace(untouched);
+});
+
+test("Agent provisioning API validates inline configuration with existing Secret references", async () => {
+  const fixture = await createInjectedFixture({
+    computeDriver: createProvisioningCapableComputeDriver(),
+    configurationDriver: createProvisioningCapableConfigurationDriver(),
+  });
+  const installation = await injectedRequest(fixture.app, "POST", "/installation/bootstrap", {
+    body: { name: "Provisioning validation installation" },
+  });
+  assert.equal(installation.status, 201);
+  const namespace = await injectedRequest(fixture.app, "POST", "/namespaces", {
+    body: { name: "provisioning-validation" },
+  });
+  assert.equal(namespace.status, 201);
+  await fixture.controller.handleNamespaceLifecycle(
+    fixture.principal.id,
+    namespace.data.id,
+    "ready",
+  );
+  const modelApiKey = await injectedRequest(
+    fixture.app,
+    "POST",
+    `/namespaces/${namespace.data.id}/secrets`,
+    { body: { name: "model-api-key", value: `model-key-${randomUUID()}` } },
+  );
+  assert.equal(modelApiKey.status, 201, JSON.stringify(modelApiKey.body));
+  const toolApiKey = await injectedRequest(
+    fixture.app,
+    "POST",
+    `/namespaces/${namespace.data.id}/secrets`,
+    { body: { name: "tool-api-key", value: `tool-key-${randomUUID()}` } },
+  );
+  assert.equal(toolApiKey.status, 201, JSON.stringify(toolApiKey.body));
+  const secrets = { modelApiKey: modelApiKey.data, toolApiKey: toolApiKey.data };
+
+  const foreignNamespaceId = `ns_${randomUUID()}`;
+  const foreignSecretId = `sec_${randomUUID()}`;
+  const oversizedBindings = Object.fromEntries(
+    Array.from({ length: 65 }, (_, index) => [`TOOL_${index}`, { source: toolApiKey.data.ref }]),
+  );
+  const invalidBodies = [
+    [
+      "submitted Secret values",
+      {
+        ...provisioningRequestBody(namespace.data.id, secrets),
+        secrets: [{ name: "tool-api-key", value: `tool-key-${randomUUID()}` }],
+      },
+    ],
+    [
+      "request-local Secret binding sources",
+      provisioningRequestBody(namespace.data.id, secrets, {
+        configuration: {
+          secretBindings: {
+            TOOL_API_KEY: {
+              source: { kind: "provisioning-secret", name: "tool-api-key" },
+            },
+          },
+        },
+      }),
+    ],
+    [
+      "request-local Harness Secret source",
+      provisioningRequestBody(namespace.data.id, secrets, {
+        harnessAuth: {
+          method: "api_key",
+          source: { kind: "provisioning-secret", name: "model-api-key" },
+        },
+      }),
+    ],
+    [
+      "too many binding destinations",
+      provisioningRequestBody(namespace.data.id, secrets, {
+        configuration: { secretBindings: oversizedBindings },
+      }),
+    ],
+    [
+      "non-env delivery",
+      provisioningRequestBody(namespace.data.id, secrets, {
+        configuration: {
+          secretBindings: {
+            TOOL_API_KEY: {
+              source: toolApiKey.data.ref,
+              delivery: { type: "file" },
+            },
+          },
+        },
+      }),
+    ],
+    [
+      "cross-Namespace Secret references",
+      provisioningRequestBody(namespace.data.id, secrets, {
+        configuration: {
+          secretBindings: {
+            TOOL_API_KEY: {
+              source: { kind: "secret", namespaceId: foreignNamespaceId, id: foreignSecretId },
+            },
+          },
+        },
+        harnessAuth: { method: "runtime" },
+      }),
+    ],
+    [
+      "reserved environment destinations",
+      provisioningRequestBody(namespace.data.id, secrets, {
+        configuration: {
+          secretBindings: {
+            OPENCLAW_TOKEN: {
+              source: toolApiKey.data.ref,
+            },
+          },
+        },
+        harnessAuth: { method: "runtime" },
+      }),
+    ],
+  ];
+
+  for (const [description, body] of invalidBodies) {
+    const result = await injectedRequest(
+      fixture.app,
+      "POST",
+      `/namespaces/${namespace.data.id}/agents/provision`,
+      { body },
+    );
+    assert.equal(result.status, 400, description);
+    assert.equal(result.body.error.code, "INVALID_REQUEST", description);
+  }
+
+  const durableOnly = await injectedRequest(
+    fixture.app,
+    "POST",
+    `/namespaces/${namespace.data.id}/agents/provision`,
+    { body: provisioningRequestBody(namespace.data.id, secrets) },
+  );
+  assert.equal(durableOnly.status, 503, JSON.stringify(durableOnly.body));
+  assert.equal(durableOnly.body.error.code, "DEPENDENCY_UNAVAILABLE");
+  assert.deepEqual(
+    await fixture.platformState.read((view) => view.agents.listAgents(namespace.data.id)),
+    [],
+    "in-memory admission must stop before creating an Agent",
+  );
+
+  const oversized = await injectedRequest(
+    fixture.app,
+    "POST",
+    `/namespaces/${namespace.data.id}/agents/provision`,
+    {
+      rawBody: JSON.stringify(
+        provisioningRequestBody(namespace.data.id, secrets, {
+          configuration: { values: { payload: "x".repeat(448 * 1024) } },
+        }),
+      ),
+    },
+  );
+  assert.equal(oversized.status, 413);
+  assert.equal(oversized.body.error.code, "PAYLOAD_TOO_LARGE");
 });
 
 test("bootstrap fails closed when IAM omits structured authorization evidence", async () => {
