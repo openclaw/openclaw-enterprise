@@ -73,7 +73,7 @@ Configuration authorization and generation ownership.
 A successful save reloads the draft; admitted snapshots and active revision
 selection remain unchanged. Invalid input, denied writes, and stale drafts retain
 editor text. An uncertain mutation outcome blocks another save until successful
-readback. Unsaved or unresolved edits block deployment of the old saved values and tab
+readback. Unsaved or unresolved edits block deployment of the old saved values and tab or revision
 navigation until save, cancel, or the required reload resolves them.
 Saving and deploying remain separate explicit actions.
 

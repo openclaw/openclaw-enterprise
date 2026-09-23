@@ -97,7 +97,7 @@ admitted snapshot, **Edit current Configuration** opens the current draft, not
 a copy of the historical snapshot.
 
 Save does not deploy or change existing AgentRevisions. Select **Deploy new
-revision** after saving to apply the new values. Deployment and tab switching are blocked while edits are unsaved, a save is
+revision** after saving to apply the new values. Deployment, tab switching, and revision navigation are blocked while edits are unsaved, a save is
 pending, or a stale or unknown result requires reload. Other Agents sharing this
 Configuration also use the updated values on their next deployment.
 

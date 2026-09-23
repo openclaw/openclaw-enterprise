@@ -869,6 +869,20 @@ test("Agent detail preserves admitted revision history while draft edits change 
   });
   await page.getByText("Save or cancel Configuration edits before leaving this tab.").waitFor();
   assert.equal(new URL(page.url()).searchParams.get("tab"), "configuration");
+  assert.equal(await page.getByLabel("AgentRevision").isDisabled(), true);
+  assert.equal(
+    await page.getByRole("button", { name: "View current revision" }).isDisabled(),
+    true,
+  );
+  await page.evaluate((revisionId) => {
+    const next = new URL(globalThis.location.href);
+    next.searchParams.set("revision", revisionId);
+    globalThis.history.pushState(globalThis.history.state, "", next);
+    globalThis.dispatchEvent(new globalThis.PopStateEvent("popstate"));
+  }, second.revision.id);
+  await page.getByText("Save or cancel Configuration edits before leaving this tab.").waitFor();
+  assertRevisionUrl(page, "draft");
+  assert.deepEqual(JSON.parse(await editor.inputValue()), editedValues);
   const savedConfiguration = page.waitForResponse(
     (response) =>
       response.url() ===

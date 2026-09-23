@@ -175,7 +175,13 @@ export async function renderAgentDetail(context) {
   let selectedTab = tabsForSelection.includes(tab) ? tab : "configuration";
   const target = (revision = selected, tab = selectedTab) =>
     `agents/${agentId}?revision=${encodeURIComponent(revision)}&tab=${tab}`;
-  const change = (revision, tab) => context.navigate(target(revision, tab));
+  const change = (revision, tab) => {
+    if (draftEditorBlocksNavigation()) {
+      showDraftEditorNavigationBlock();
+      return;
+    }
+    context.navigate(target(revision, tab));
+  };
   const header = element(
     "div",
     { className: "agent-toolbar" },
@@ -205,15 +211,22 @@ export async function renderAgentDetail(context) {
   const selector = element("section", { className: "agent-card revision-selector" });
   const content = element("div");
   const tabControls = new Map();
+  const revisionControls = new Map();
   let draftEditorNavigationBlock = null;
   let showDraftEditorNavigationBlock = () => {};
   function draftEditorBlocksNavigation() {
     return selected === "draft" && selectedTab === "configuration" && draftEditorNavigationBlock;
   }
-  function updateTabControls() {
+  function trackRevisionControl(control) {
+    revisionControls.set(control, control.disabled);
+  }
+  function updateNavigationControls() {
     const blocked = Boolean(draftEditorBlocksNavigation());
     for (const [id, control] of tabControls) {
       control.disabled = blocked && id !== selectedTab;
+    }
+    for (const [control, originallyDisabled] of revisionControls) {
+      control.disabled = blocked || originallyDisabled;
     }
   }
   const tabs = element("nav", {
@@ -310,12 +323,31 @@ export async function renderAgentDetail(context) {
       );
     }
     chooser.value = selected;
-    chooser.addEventListener("change", () => change(chooser.value));
+    chooser.addEventListener("change", () => {
+      const nextRevision = chooser.value;
+      if (draftEditorBlocksNavigation()) {
+        chooser.value = selected;
+        showDraftEditorNavigationBlock();
+        return;
+      }
+      change(nextRevision);
+    });
+    trackRevisionControl(chooser);
     const position = revisions.findIndex((revision) => revision.id === selected);
     const older = button("Older revision", () => change(revisions[position + 1].id));
     older.disabled = position < 0 || position >= revisions.length - 1;
+    trackRevisionControl(older);
     const newer = button("Newer revision", () => change(revisions[position - 1].id));
     newer.disabled = position <= 0;
+    trackRevisionControl(newer);
+    const newRevision = button("New revision", () => change("draft"));
+    trackRevisionControl(newRevision);
+    const currentRevision = agent.activeRevisionId
+      ? button("View current revision", () => change(agent.activeRevisionId))
+      : null;
+    if (currentRevision) {
+      trackRevisionControl(currentRevision);
+    }
     selector.append(
       ...[
         element(
@@ -336,10 +368,8 @@ export async function renderAgentDetail(context) {
           { className: "form-actions" },
           selected !== "draft" && revisions.length > 1 ? older : null,
           selected !== "draft" && revisions.length > 1 ? newer : null,
-          selected !== "draft" ? button("New revision", () => change("draft")) : null,
-          agent.activeRevisionId && selected !== agent.activeRevisionId
-            ? button("View current revision", () => change(agent.activeRevisionId))
-            : null,
+          selected !== "draft" ? newRevision : null,
+          agent.activeRevisionId && selected !== agent.activeRevisionId ? currentRevision : null,
         ),
       ].filter(Boolean),
     );
@@ -540,7 +570,7 @@ export async function renderAgentDetail(context) {
               : draftEditorState.dirty
                 ? "Save or cancel Configuration edits before leaving this tab."
                 : null;
-        updateTabControls();
+        updateNavigationControls();
         updateDeployControls();
       },
     };
@@ -986,8 +1016,7 @@ export async function renderAgentDetail(context) {
       deleting ||
       next.pathname !== url.pathname ||
       next.searchParams.get("namespace") !== namespaceId ||
-      nextRevision !== selected ||
-      nextTab === selectedTab
+      (nextRevision === selected && nextTab === selectedTab)
     ) {
       return false;
     }
@@ -999,6 +1028,9 @@ export async function renderAgentDetail(context) {
       );
       showDraftEditorNavigationBlock();
       return true;
+    }
+    if (nextRevision !== selected) {
+      return false;
     }
     selectedTab = nextTab;
     void renderTab();
