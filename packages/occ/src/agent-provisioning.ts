@@ -92,9 +92,6 @@ export interface AgentProvisioningPlan {
   readonly configuration: AgentProvisioningConfigurationInput;
   readonly harnessAuth: AgentProvisioningHarnessAuth | null;
   readonly executionMode?: HarnessExecutionMode;
-  readonly providerId?: string | null;
-  readonly plugins?: PluginDesiredState;
-  readonly repositoryBindings?: readonly RepositoryBindingRequest[];
   readonly secrets: readonly {
     readonly name: string;
     readonly secretId: string;
@@ -389,16 +386,16 @@ export function provisioningProgress(
             message: "Provisioning was cancelled. Create a new Agent to provision again.",
           },
         }
-      : error !== undefined && isNonEmptyString(error.code) && isNonEmptyString(error.message)
-        ? { error: { code: error.code, message: error.message } }
-        : failed
-          ? {
+      : failed
+        ? error !== undefined && isNonEmptyString(error.code) && isNonEmptyString(error.message)
+          ? { error: { code: error.code, message: error.message } }
+          : {
               error: {
                 code: failedCode,
                 message: "Provisioning failed. Review the failed step before retrying.",
               },
             }
-          : {}),
+        : {}),
   });
 }
 

@@ -1102,11 +1102,18 @@ async function canonicalData(db) {
     "iam_restrictions",
     ...(hasPresets ? ["presets"] : []),
   ]) {
+    const ignoredColumns =
+      table === "agents"
+        ? ["repository_bindings"]
+        : table === "controller_work"
+          ? ["work_kind"]
+          : [];
     result[table] = (
       await db.app.query(
-        // repository_bindings is the one new nullable column in the existing
-        // Agent table; every previously stored field must remain identical.
-        `SELECT to_jsonb(t) - 'repository_bindings' AS value FROM occ.${table} t ORDER BY to_jsonb(t)::pg_catalog.text`,
+        // New migration-owned compatibility columns may be defaulted onto
+        // existing rows; every previously stored field must remain identical.
+        `SELECT to_jsonb(t) - $1::pg_catalog.text[] AS value FROM occ.${table} t ORDER BY to_jsonb(t)::pg_catalog.text`,
+        [ignoredColumns],
       )
     ).rows;
   }

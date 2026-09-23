@@ -67,9 +67,9 @@ Provisioning requires PostgreSQL-backed state. The in-memory platform state inte
 
 `packages/occ/src/index.ts:processAgentProvisioningSecrets`
 
-The Secret phase walks from `secretCursor` through the accepted local Secret inputs. Before each driver call, it checkpoints a `pendingEffect` with the target Secret ID. If metadata for that exact Secret already exists after recovery, the worker reuses its backend reference. Otherwise it reveals the sealed value for the exact Installation, Namespace, Agent, work ID, and slot, then calls `SecretDriver.createExact`. Exact-create recovery verifies ownership and accepted input, conflicts on mismatch, and never overwrites or adopts a backend Secret by name.
+The Secret phase walks from `secretCursor` through the accepted local Secret inputs. Before each driver call, it checkpoints a `pendingEffect` with the target Secret ID. If metadata for that exact Secret already exists after recovery, the worker reuses its backend reference. If a previous write may have succeeded but the result was lost, the worker calls `SecretDriver.inspectExact` on the recorded target and accepted value. Only a fresh pending item calls `SecretDriver.createExact`; that call is a single create and conflicts on an existing or mismatched backend Secret.
 
-After the effect, the worker records Secret metadata and advances the cursor in the same transaction that removes its completed input from `protected_inputs`. Failed work retains only pending inputs needed for an authorized retry. Cancellation disables retry; unresolved creates retain their recovery material until their outcome and exact cleanup are verified.
+After the effect result is known, the worker stores an `effectReceipt` beside `pendingEffect`. The next checkpoint records Secret metadata, advances the cursor, and removes the completed input from `protected_inputs` in one transaction. Failed work retains only pending inputs needed for an authorized retry. Cancellation disables retry; unresolved creates retain their recovery material until inspection proves the outcome and owned cleanup completes.
 
 ### 4. The worker finalizes Configuration and access
 
@@ -83,7 +83,7 @@ The same transaction finalizes the reserved Configuration metadata. If Secret bi
 
 `packages/occ/src/index.ts:processAgentProvisioningConfiguration`
 
-After database setup, OCC builds the final Configuration object from reserved metadata and the inline values, then calls `ConfigurationDriver.createExact` once for that final generation. Generation 2 is used when bindings were resolved; generation 1 is used when no bindings were submitted. The worker checkpoints `configuration` after the driver effect, not while holding a database transaction across the external wait.
+After database setup, OCC builds the final Configuration object from reserved metadata and the inline values. A fresh materialization calls `ConfigurationDriver.createExact` once for that final generation; recovery from a lost result calls `ConfigurationDriver.inspectExact` on the recorded target. Generation 2 is used when bindings were resolved; generation 1 is used when no bindings were submitted. The worker checkpoints `configuration` after the driver effect is known, not while holding a database transaction across the external wait.
 
 The transport phase shares the existing runtime-credential path without a loopback HTTP request. `processAgentProvisioning` calls `admitAgentRuntimeCredentialProvisioning`, then the selected Compute Driver's `provisionAgentRuntimeCredentials` with an empty input. After that effect, the worker checkpoints `transport`.
 
@@ -99,7 +99,7 @@ After `deployAgent` returns, provisioning checkpoints `handoff`, marks the recor
 
 `packages/occ/src/state/postgres-state.ts:provisioning`
 
-`recordFailure` stores a safe error on the provisioning record and either retries the queued work or marks it failed permanently after retry exhaustion. `retryAgentProvisioning` only requeues failed, pre-handoff work for the initiating actor after fresh authorization and lifecycle checks. Duplicate retry on already pending work returns current status without resetting attempts or admitting another execution. Stop and delete call `cancelByAgent`; deletion also removes workspace setup immediately and only finalizes the Agent row after unresolved external effects have either settled, quiesced, or been marked safe.
+`recordFailure` stores a safe error on the provisioning record and either retries the queued work or marks it failed permanently after retry exhaustion. `retryAgentProvisioning` only requeues failed, pre-handoff work for the initiating actor after fresh authorization and lifecycle checks. Duplicate retry on already pending work returns current status without resetting attempts or admitting another execution. Stop and delete call `cancelByAgent`; deletion also removes workspace setup immediately. Terminal Stop/Delete recovery first inspects any pending effect, records an `effectReceipt` when the backend object exists, runs owned cleanup from that receipt, and only finalizes the Agent row after pending effects have settled, quiesced, or been marked safe.
 
 `migrations/0029_agent_provisioning_work.sql` enforces exact ownership, unique `(namespace_id, actor_id, request_id)`, one provisioning record per Agent and Configuration, monotonic phase progress, immutable accepted plans, immutable finalized Configuration generation, and revision IDs only at `handoff`.
 
@@ -126,6 +126,7 @@ After `deployAgent` returns, provisioning checkpoints `handoff`, marks the recor
 
 ## Changelog
 
+- 2026-09-23 01:25: Corrected provisioning effect recovery to use inspect-first recovery and clarified terminal cleanup ownership. (cody/01a0cd23-4e0e-7a92-ab33-32a667859782 - 5886094b)
 - 2026-09-23 00:51: Restored concrete status, exact-create recovery, generation, external-effect, retry, and cleanup details from the accepted spec. (cody/01a0cd23-4e0e-7a92-ab33-32a667859782 - 79ca801d)
 - 2026-09-23 00:45: Clarified Console first-time provisioning, ordinary create separation, and versioned provisioning keyring prerequisites. (cody/01a0cd23-4e0e-7a92-ab33-32a667859782 - 79ca801d)
 - 2026-09-23 00:22: Added the source-backed Agent provisioning flow. (cody/01a0cd23-4e0e-7a92-ab33-32a667859782 - 79ca801d)

@@ -20,8 +20,12 @@ import {
   admitLoggingConfiguration,
   WORKSPACE_DEFAULTS_ID,
 } from "../../packages/contracts/src/index.ts";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
-import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import {
+  KubernetesConfigurationDriver,
+  kubernetesConfigurationName,
+} from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
+import { KubernetesSecretDriver } from "../../apps/controller/src/drivers/secret/kubernetes/index.ts";
+import { createGatewayNodeEnrollment } from "../../apps/controller/src/gateway/node-enrollment-client.ts";
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import {
@@ -112,6 +116,7 @@ function createProvisioningProtector() {
 }
 
 function provisioningRequestBody() {
+  const model = "codex/gpt-6-astra";
   return {
     requestId: `req_${randomUUID()}`,
     name: `Kubernetes provisioned ${randomUUID().slice(0, 8)}`,
@@ -120,7 +125,12 @@ function provisioningRequestBody() {
       kind: "agent",
       values: {
         gateway: { controlUi: { enabled: false } },
-        agents: { defaults: { model: "codex/gpt-6-astra" } },
+        agents: {
+          defaults: {
+            model,
+            models: { [model]: { agentRuntime: { id: "codex" } } },
+          },
+        },
         channels: { slack: { enabled: true, botTokenEnv: "SLACK_BOT_TOKEN" } },
       },
       secretBindings: {
@@ -173,18 +183,6 @@ function runtimeDrivers({ computeDriver, configurationDriver, secretDriver }) {
   };
 }
 
-function createProvisioningConfigurationDriver(options) {
-  const driver = createTestConfigurationDriver(options);
-  driver.createExact = (configuration) => driver.create(configuration);
-  return driver;
-}
-
-function createProvisioningSecretDriver(options) {
-  const driver = createTestSecretDriver(options);
-  driver.createExact = ({ identity, value }) => driver.create(identity, value);
-  return driver;
-}
-
 async function privateBootstrapDirectory(context) {
   const directory = await mkdtemp("/private/tmp/openclaw-kubernetes-provisioning-bootstrap-");
   await chmod(directory, 0o700);
@@ -192,9 +190,9 @@ async function privateBootstrapDirectory(context) {
   return directory;
 }
 
-async function createProvisioningApiFixture(context, computeDriver) {
+async function createProvisioningApiFixture(context, computeDriver, authentication) {
   const pool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
-  const workerPool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
+  let workerPool;
   const state = new PostgresPlatformState(pool);
   const existingInstallation = await state.loadInstallation();
   const authSecret = "kubernetes-integration-auth-secret-32-bytes";
@@ -215,10 +213,17 @@ async function createProvisioningApiFixture(context, computeDriver) {
       environment: { PATH: process.env.PATH },
     });
   }
-  const configurationDriver = createProvisioningConfigurationDriver({
-    id: "configuration-kubernetes-provisioning",
-  });
-  const secretDriver = createProvisioningSecretDriver({ id: "secret-kubernetes-provisioning" });
+  const bootstrapNamespaceIds = (await state.read((view) => view.namespaces.listNamespaces())).map(
+    ({ id }) => id,
+  );
+  const configurationDriver = new KubernetesConfigurationDriver(
+    { authentication },
+    { id: "configuration-kubernetes-provisioning" },
+  );
+  const secretDriver = new KubernetesSecretDriver(
+    { authentication },
+    { id: "secret-kubernetes-provisioning" },
+  );
   const protector = createProvisioningProtector();
   let worker;
   const drivers = runtimeDrivers({ computeDriver, configurationDriver, secretDriver });
@@ -237,7 +242,10 @@ async function createProvisioningApiFixture(context, computeDriver) {
   context.after(async () => {
     await stopWorker();
     await app.close?.();
-    await workerPool.end();
+    if (workerPool !== undefined) {
+      await workerPool.end();
+      workerPool = undefined;
+    }
     await pool.end();
   });
 
@@ -266,6 +274,8 @@ async function createProvisioningApiFixture(context, computeDriver) {
 
   async function startWorker() {
     assert.equal(worker, undefined, "the fixture worker is already running");
+    assert.equal(workerPool, undefined, "the fixture worker pool is already open");
+    workerPool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
     worker = createControllerWorker({
       pool: workerPool,
       drivers,
@@ -284,10 +294,12 @@ async function createProvisioningApiFixture(context, computeDriver) {
     }
     const current = worker;
     worker = undefined;
+    workerPool = undefined;
     await current.stop();
   }
 
   return {
+    bootstrapNamespaceIds,
     request,
     startWorker,
     stopWorker,
@@ -750,6 +762,15 @@ async function createScopedController(context, installationId, platformNamespace
           apiGroups: [""],
           resources: ["persistentvolumeclaims"],
           verbs: ["get", "create", "patch", "delete"],
+        },
+      },
+      {
+        op: "add",
+        path: "/rules/-",
+        value: {
+          apiGroups: [""],
+          resources: ["secrets"],
+          verbs: ["get", "list", "create", "patch", "update", "delete"],
         },
       },
     ]),
@@ -1819,7 +1840,7 @@ test(
 );
 
 test(
-  "provisioning API and worker create a dedicated Agent gateway through the real Kubernetes driver",
+  "provisioning API and worker hand off a dedicated Agent with real Kubernetes fixture storage",
   { ...requiresKubernetesAndPostgres, timeout: 360_000 },
   async (context) => {
     await assertKubernetesFixtureAvailable();
@@ -1837,21 +1858,44 @@ test(
       );
     });
     const controller = await createScopedController(context, installationId, platformNamespace);
-    const { driver, kubernetesNamespaceName } = await createDriver({
-      authentication: controller.authentication,
-      network: {
-        dns: { namespace: "kube-system", podLabels: { "k8s-app": "kube-dns" } },
-        gatewayPort: 8080,
-        gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
-        gatewayClients: [
-          {
-            namespace: platformNamespace,
-            podLabels: { "app.kubernetes.io/name": "platform-probe" },
-          },
-        ],
+    const gatewayRouting = {
+      gatewayName: `oce-agent-gateways-${hash(installationId, 8)}`,
+      gatewayNamespace: platformNamespace,
+      envoyNamespace: platformNamespace,
+    };
+    const nodeEnrollment = createGatewayNodeEnrollment(
+      async () => "fixture-node-enrollment-api-key",
+    );
+    const { driver, kubernetesNamespaceName } = await createDriver(
+      {
+        authentication: controller.authentication,
+        gatewayRouting,
+        network: {
+          dns: { namespace: "kube-system", podLabels: { "k8s-app": "kube-dns" } },
+          gatewayPort: 8080,
+          gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
+        },
+        runtime: {
+          transportSecretPrefix: "transport",
+          gatewayStorageClassName: "local-path",
+        },
       },
+      { nodeEnrollment },
+    );
+    const fixture = await createProvisioningApiFixture(context, driver, controller.authentication);
+    context.after(async () => {
+      await Promise.all(
+        fixture.bootstrapNamespaceIds.map((namespaceId) =>
+          kubectl(
+            "delete",
+            "namespace",
+            kubernetesNamespaceName(namespaceId),
+            "--ignore-not-found=true",
+            "--wait=true",
+          ),
+        ),
+      );
     });
-    const fixture = await createProvisioningApiFixture(context, driver);
     const namespaceResponse = await fixture.request("POST", "/namespaces", {
       name: `k8s-provision-${randomUUID().slice(0, 8)}`,
     });
@@ -1862,7 +1906,10 @@ test(
       await kubectl("delete", "namespace", placement, "--ignore-not-found=true", "--wait=true");
     });
 
-    assert.equal((await driver.ensureNamespace(namespaceOwner)).namespaceReady, false);
+    await fixture.startWorker();
+    await waitFor("worker to create the provisioning tenant Namespace", async () =>
+      (await missing("namespace", placement)) ? undefined : true,
+    );
     await kubectl(
       "create",
       "rolebinding",
@@ -1873,11 +1920,6 @@ test(
       `--serviceaccount=${platformNamespace}:${controller.account}`,
     );
     await waitFor("provisioning tenant Namespace to become ready", async () => {
-      const observation = await driver.ensureNamespace(namespaceOwner);
-      return observation.namespaceReady ? observation : undefined;
-    });
-    await fixture.startWorker();
-    await waitFor("API Namespace provisioning status to become ready", async () => {
       const observed = await fixture.request("GET", `/namespaces/${namespaceOwner.id}`);
       assert.equal(observed.status, 200, JSON.stringify(observed.body));
       return observed.data.status === "ready" ? observed.data : undefined;
@@ -1892,7 +1934,7 @@ test(
     );
     assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
     await fixture.startWorker();
-    await waitFor("Kubernetes provisioning to succeed", async () => {
+    const provisioned = await waitFor("Kubernetes provisioning handoff to succeed", async () => {
       const observed = await fixture.request(
         "GET",
         `/namespaces/${namespaceOwner.id}/agents/${admitted.data.agent.id}/provisioning`,
@@ -1900,19 +1942,50 @@ test(
       assert.equal(observed.status, 200, JSON.stringify(observed.body));
       return observed.data.status === "succeeded" ? observed.data : undefined;
     });
+    await fixture.stopWorker();
 
-    const gateway = await assertReadyGateway(placement, admitted.data.agent.id, namespaceOwner.id);
-    assert.equal(
-      gateway.spec.template.spec.containers[0].env.some(({ name }) => name === "SLACK_BOT_TOKEN"),
-      true,
-      "generic provisioning Secret bindings must reach the gateway environment",
-    );
     const revisions = await fixture.request(
       "GET",
       `/namespaces/${namespaceOwner.id}/agents/${admitted.data.agent.id}/revisions`,
     );
     assert.equal(revisions.status, 200, JSON.stringify(revisions.body));
     assert.equal(revisions.data.length, 1);
+    assert.equal(revisions.data[0].id, provisioned.revisionId);
+    assert.equal(revisions.data[0].compute.id, driver.id);
+    assert.equal(revisions.data[0].compute.implementation, driver.implementation);
+
+    const configuration = await resource(
+      "configmap",
+      kubernetesConfigurationName(revisions.data[0].configurationId),
+      placement,
+    );
+    assert.equal(
+      configuration.metadata.annotations["openclaw.dev/configuration-id"],
+      revisions.data[0].configurationId,
+    );
+    assert.equal(configuration.metadata.annotations["openclaw.dev/configuration-generation"], "2");
+
+    const provisionedSecrets = (await resources("secrets", placement)).filter(
+      ({ metadata }) =>
+        metadata.labels?.["app.kubernetes.io/managed-by"] === "openclaw-enterprise" &&
+        metadata.labels?.["openclaw.dev/namespace"] === namespaceOwner.id &&
+        metadata.labels?.["openclaw.dev/secret"] !== undefined,
+    );
+    assert.equal(
+      provisionedSecrets.length,
+      body.secrets.length,
+      "all provisioning input Secrets must be stored through the real Kubernetes Secret Driver",
+    );
+    const transport = await resource(
+      "secret",
+      `transport-${hash(admitted.data.agent.id)}`,
+      placement,
+    );
+    assert.deepEqual(
+      Object.keys(transport.data).sort(),
+      ["app-server-token", "gateway-password"],
+      "runtime transport credentials must be generated before provisioning handoff",
+    );
   },
 );
 
@@ -2026,6 +2099,8 @@ test(
     let app;
     let worker;
     let workerPool;
+    let workerDrivers = drivers;
+    let workerStarts = 0;
     context.after(async () => {
       if (worker !== undefined) {
         await worker.stop();
@@ -2086,9 +2161,18 @@ test(
 
     async function startWorker() {
       workerPool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
+      if (workerStarts > 0) {
+        workerDrivers = await loadInstallationConfiguration({
+          mode: "development",
+          environment: {},
+          startupConfiguration: { configuration, logging: { level: "info" } },
+        });
+        assert.ok(workerDrivers);
+      }
+      workerStarts += 1;
       worker = createControllerWorker({
         pool: workerPool,
-        drivers,
+        drivers: workerDrivers,
         pollIntervalMs: 25,
         leaseDurationMs: 30_000,
         maxAttempts: 20,

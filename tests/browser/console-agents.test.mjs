@@ -1502,7 +1502,6 @@ test("Agent detail retries failed first-time provisioning and keeps exact revisi
   );
 });
 
-
 test("Agent detail blocks repeat Configuration saves after an uncertain draft update", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();

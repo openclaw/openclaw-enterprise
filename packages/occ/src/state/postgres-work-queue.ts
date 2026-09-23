@@ -373,6 +373,18 @@ const INSERT_EVIDENCE_CTE_SQL = `
   )`;
 const INSERT_EVIDENCE_SQL = `${INSERT_EVIDENCE_CTE_SQL}
   SELECT transitioned.* FROM transitioned`;
+const SETTLE_PROVISIONING_FAILURE_SQL = `
+  settled_provisioning_failures AS (
+    UPDATE occ.agent_provisioning_work AS provisioning
+    SET status = 'failed',
+        updated_at = clock_timestamp()
+    FROM transitioned
+    WHERE provisioning.work_id = transitioned.idempotency_key
+      AND transitioned.work_kind = 'provisioning'
+      AND transitioned.state = 'failed_permanent'
+      AND provisioning.status NOT IN ('failed', 'succeeded', 'cancelled')
+    RETURNING provisioning.work_id
+  ),`;
 
 /**
  * A repository is scoped to one query client. Supplying an already checked-out
@@ -848,7 +860,8 @@ export class PostgresWorkQueue {
            AND claim_token = $2::uuid
            AND lease_expires_at > clock_timestamp()
          RETURNING *
-       ), ${transferRepositoryCleanupSql()} ${INSERT_EVIDENCE_SQL}`,
+       ), ${transferRepositoryCleanupSql()} ${SETTLE_PROVISIONING_FAILURE_SQL}
+       ${INSERT_EVIDENCE_SQL}`,
       [
         claim.idempotencyKey,
         claim.claimToken,
@@ -926,7 +939,8 @@ export class PostgresWorkQueue {
          WHERE work.idempotency_key = eligible.idempotency_key
            AND work.lease_expires_at > clock_timestamp()
          RETURNING work.*
-       ), ${transferRepositoryCleanupSql("$7::boolean")} ${INSERT_EVIDENCE_CTE_SQL}
+       ), ${transferRepositoryCleanupSql("$7::boolean")} ${SETTLE_PROVISIONING_FAILURE_SQL}
+       ${INSERT_EVIDENCE_CTE_SQL}
        SELECT EXISTS (SELECT 1 FROM source) AS claim_current,
          EXISTS (SELECT 1 FROM transitioned) AS failed`,
       [
@@ -995,7 +1009,8 @@ export class PostgresWorkQueue {
          FROM candidates
          WHERE work.idempotency_key = candidates.idempotency_key
          RETURNING work.*
-       ), ${transferRepositoryCleanupSql()} ${INSERT_EVIDENCE_SQL}`,
+       ), ${transferRepositoryCleanupSql()} ${SETTLE_PROVISIONING_FAILURE_SQL}
+       ${INSERT_EVIDENCE_SQL}`,
       [
         requestedLimit,
         this.maxAttempts,
@@ -1028,7 +1043,8 @@ export class PostgresWorkQueue {
          FROM candidates
          WHERE work.idempotency_key = candidates.idempotency_key
          RETURNING work.*
-       ), ${transferRepositoryCleanupSql()} ${INSERT_EVIDENCE_SQL}`,
+       ), ${transferRepositoryCleanupSql()} ${SETTLE_PROVISIONING_FAILURE_SQL}
+       ${INSERT_EVIDENCE_SQL}`,
       [requestedLimit, this.maxAttempts, "failure", "MAX_ATTEMPTS_EXHAUSTED"],
     );
 

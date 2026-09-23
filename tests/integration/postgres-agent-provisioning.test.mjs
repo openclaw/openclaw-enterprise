@@ -32,6 +32,14 @@ const requiresPostgres = {
 };
 const uuidV4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const identifier = (prefix) => new RegExp(`^${prefix}_${uuidV4}$`);
+const defaultModel = "codex/gpt-6-astra";
+
+function agentDefaults() {
+  return {
+    model: defaultModel,
+    models: { [defaultModel]: { agentRuntime: { id: "codex" } } },
+  };
+}
 
 function requestId() {
   return `req_${randomUUID()}`;
@@ -45,7 +53,7 @@ function provisioningBody(overrides = {}) {
     configuration: {
       kind: "agent",
       values: {
-        agents: { defaults: { model: "codex/gpt-6-astra" } },
+        agents: { defaults: agentDefaults() },
         channels: {
           slack: {
             enabled: true,
@@ -134,12 +142,45 @@ function createRuntimeComputeDriver(options = {}) {
 function createProvisioningConfigurationDriver(options) {
   const driver = createTestConfigurationDriver(options);
   driver.createExact = (configuration) => driver.create(configuration);
+  driver.inspectExact = async (configuration) => {
+    try {
+      const stored = await driver.read(configuration);
+      assert.deepEqual(stored, configuration);
+      return stored;
+    } catch {
+      return undefined;
+    }
+  };
   return driver;
 }
 
 function createProvisioningSecretDriver(options) {
   const driver = createTestSecretDriver(options);
-  driver.createExact = ({ identity, value }) => driver.create(identity, value);
+  const exactCreations = new Map();
+  const keyOf = (identity) => `${identity.namespaceId}:${identity.id}`;
+  driver.createExact = async ({ identity, value }) => {
+    const backendRef = await driver.create(identity, value);
+    exactCreations.set(keyOf(identity), {
+      identity: structuredClone(identity),
+      value,
+      backendRef: structuredClone(backendRef),
+    });
+    return backendRef;
+  };
+  driver.inspectExact = async ({ identity, value }) => {
+    driver.calls.push({ operation: "inspectExact", identity: structuredClone(identity), value });
+    const created = exactCreations.get(keyOf(identity));
+    if (created === undefined || created.value !== value) {
+      return undefined;
+    }
+    try {
+      assert.deepEqual(created.identity, identity);
+      assert.equal(created.value, value);
+      return structuredClone(created.backendRef);
+    } catch {
+      return undefined;
+    }
+  };
   return driver;
 }
 
@@ -204,7 +245,6 @@ function installationDrivers({ computeDriver, configurationDriver, secretDriver 
 
 async function createFixture(context, options = {}) {
   const pool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
-  const workerPool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
   const state = new PostgresPlatformState(pool);
   await ensureProvisioningBootstrap(context, state);
   const credentials = { email: adminEmail, password: adminPassword };
@@ -216,6 +256,9 @@ async function createFixture(context, options = {}) {
     options.secretDriver ?? createProvisioningSecretDriver({ id: "secret-provisioning" });
   const protector = options.protector ?? createProtector();
   let worker;
+  let workerPool;
+  const revokedBindings = [];
+  const teardownCancellations = [];
   const drivers = installationDrivers({ computeDriver, configurationDriver, secretDriver });
   const app = await composePostgresDevelopment(
     {
@@ -231,9 +274,28 @@ async function createFixture(context, options = {}) {
   const session = await signInToControllerApp(app, credentials);
 
   context.after(async () => {
+    for (const binding of revokedBindings) {
+      await pool.query(
+        `INSERT INTO occ.iam_access_bindings
+         (id, namespace_id, identity_subject_id, group_subject_id, role_id, resource_kind, resource_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (id) DO NOTHING`,
+        [
+          binding.id,
+          binding.namespace_id,
+          binding.identity_subject_id,
+          binding.group_subject_id,
+          binding.role_id,
+          binding.resource_kind,
+          binding.resource_id,
+        ],
+      );
+    }
+    for (const { namespaceId, agentId } of teardownCancellations) {
+      await request("POST", `/namespaces/${namespaceId}/agents/${agentId}/stop`);
+    }
     await stopWorker();
     await app.close?.();
-    await workerPool.end();
     await pool.end();
   });
 
@@ -283,6 +345,8 @@ async function createFixture(context, options = {}) {
 
   async function startWorker() {
     assert.equal(worker, undefined, "the fixture worker is already running");
+    assert.equal(workerPool, undefined, "the fixture worker pool is already open");
+    workerPool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
     worker = createControllerWorker({
       pool: workerPool,
       drivers,
@@ -301,29 +365,36 @@ async function createFixture(context, options = {}) {
     }
     const current = worker;
     worker = undefined;
+    workerPool = undefined;
     await current.stop();
   }
 
   async function revokeCurrentPrincipal() {
     const iam = await state.loadNativeIAMState();
     const principal = iam.identities.find(
-      (identity) => identity.kind === "principal" && identity.issuer.endsWith("/api/auth"),
+      (identity) => identity.kind === "principal" && identity.issuer.endsWith(":better-auth"),
     );
     assert.ok(principal, "the bootstrapped administrator Principal must exist");
     const result = await pool.query(
       `DELETE FROM occ.iam_access_bindings
        WHERE identity_subject_id = $1
          AND namespace_id IS NULL
-         AND resource_kind = 'installation'
-       RETURNING id`,
+       RETURNING id, namespace_id, identity_subject_id, group_subject_id, role_id,
+                 resource_kind, resource_id`,
       [principal.id],
     );
     assert.ok(result.rowCount > 0, "revocation must remove the exact administrator binding");
+    revokedBindings.push(...result.rows);
+  }
+
+  function cancelProvisioningAtTeardown(namespaceId, agentId) {
+    teardownCancellations.push({ namespaceId, agentId });
   }
 
   return {
     app,
     bootstrapNamespace,
+    cancelProvisioningAtTeardown,
     computeDriver,
     pool,
     protector,
@@ -335,7 +406,6 @@ async function createFixture(context, options = {}) {
     startWorker,
     state,
     stopWorker,
-    workerPool,
   };
 }
 
@@ -383,6 +453,7 @@ test(
       body,
     });
     assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    fixture.cancelProvisioningAtTeardown(namespace.id, admitted.data.agent.id);
     assert.equal(admitted.data.agent.name, body.name);
     assert.equal(admitted.data.agent.namespaceId, namespace.id);
     assert.equal(admitted.data.agent.harnessAuth, null);
@@ -427,9 +498,10 @@ test(
 
     const row = await provisioningRow(fixture.pool, namespace.id, body.requestId);
     assert.equal(row.agent_id, admitted.data.agent.id);
-    assert.equal(row.phase, "queued");
+    assert.equal(row.status, "queued");
+    assert.equal(row.completed_phase, "admitted");
     assert.equal(JSON.stringify(row).includes(body.secrets[1].value), false);
-    assert.notEqual(row.fingerprint, body.secrets[1].value);
+    assert.notEqual(row.request_fingerprint, body.secrets[1].value);
 
     const replay = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
       body,
@@ -478,27 +550,56 @@ test(
       secrets.rows.map(({ name }) => name),
       body.secrets.map(({ name }) => name).sort(),
     );
+    const grantRoleId = `role_${namespace.id}_agent_secret_operate`;
+    const grantRole = await fixture.pool.query(
+      "SELECT permissions FROM occ.iam_roles WHERE namespace_id = $1 AND id = $2",
+      [namespace.id, grantRoleId],
+    );
+    assert.equal(grantRole.rowCount, 1);
+    assert.deepEqual(grantRole.rows[0].permissions, [
+      { action: "operate", resourceKind: "secret" },
+    ]);
+    const grants = await fixture.pool.query(
+      `SELECT binding.resource_id
+       FROM occ.iam_access_bindings AS binding
+       JOIN occ.agents AS agent
+         ON agent.namespace_id = binding.namespace_id
+        AND agent.service_principal_id = binding.identity_subject_id
+       WHERE binding.namespace_id = $1
+         AND agent.id = $2
+         AND binding.role_id = $3
+         AND binding.resource_kind = 'secret'
+       ORDER BY binding.resource_id`,
+      [namespace.id, admitted.data.agent.id, grantRoleId],
+    );
+    assert.deepEqual(
+      grants.rows.map(({ resource_id: resourceId }) => resourceId),
+      secrets.rows.map(({ id }) => id).sort(),
+      "provisioning must grant the Agent service principal exact operate access to each submitted Secret",
+    );
     const configuration = await fixture.pool.query(
       "SELECT generation, secret_bindings FROM occ.configurations WHERE namespace_id = $1 AND id = $2",
       [namespace.id, admitted.data.agent.configurationId],
     );
     assert.equal(configuration.rowCount, 1);
-    assert.equal(configuration.rows[0].generation, 2);
+    assert.equal(Number(configuration.rows[0].generation), 2);
     assert.deepEqual(Object.keys(configuration.rows[0].secret_bindings).sort(), [
       "EXTERNAL_SERVICE_TOKEN",
       "SLACK_BOT_TOKEN",
       "SLACK_SIGNING_SECRET",
     ]);
-    const revisions = await fixture.pool.query(
-      "SELECT id, configuration_generation, harness_auth, secret_bindings FROM occ.agent_revisions WHERE namespace_id = $1 AND agent_id = $2",
-      [namespace.id, admitted.data.agent.id],
+    const revisions = await fixture.state.read((view) =>
+      view.revisions.listRevisions(namespace.id, admitted.data.agent.id),
     );
-    assert.equal(revisions.rowCount, 1);
-    assert.equal(revisions.rows[0].configuration_generation, 2);
-    assert.equal(revisions.rows[0].harness_auth.method, "api_key");
+    assert.equal(revisions.length, 1);
+    assert.equal(revisions[0].id, status.revisionId);
+    assert.equal(revisions[0].configurationGeneration, 2);
+    assert.equal(revisions[0].harnessAuth.method, "api_key");
     assert.deepEqual(
-      fixture.computeDriver.calls.map(({ operation }) => operation),
-      ["provisionAgentRuntimeCredentials", "prepareRevision"],
+      fixture.computeDriver.calls
+        .filter(({ operation }) => operation === "provisionAgentRuntimeCredentials")
+        .map(({ agentId }) => agentId),
+      [admitted.data.agent.id],
     );
 
     const work = await fixture.pool.query(
@@ -506,7 +607,7 @@ test(
       [namespace.id, admitted.data.agent.id],
     );
     assert.equal(work.rowCount, 1);
-    assert.equal(work.rows[0].state, "completed");
+    assert.equal(work.rows[0].state, "succeeded");
   },
 );
 
@@ -526,7 +627,6 @@ test(
     const stopped = await fixture.request(
       "POST",
       `/namespaces/${namespace.id}/agents/${admitted.data.agent.id}/stop`,
-      { body: {} },
     );
     assert.equal(stopped.status, 202, JSON.stringify(stopped.body));
 
@@ -576,10 +676,24 @@ test(
       assert.equal(observed.rowCount, 1);
       return observed.rows[0].state === "failed_permanent" ? observed.rows[0] : undefined;
     });
-    assert.ok(
-      /AUTH|FORBIDDEN|DENIED/.test(work.reason_code ?? ""),
-      `expected an authorization failure reason, got ${work.reason_code}`,
+    assert.equal(work.reason_code, "PROVISIONING_REJECTED");
+    const denialAudit = await fixture.pool.query(
+      `SELECT kind, outcome, details->'__occAuditMetadata'->>'reasonCode' AS reason_code
+       FROM occ.audit_events
+       WHERE namespace_id = $1
+         AND resource_kind = 'agent'
+         AND resource_id = $2
+         AND action = 'openclaw.agents.provision.failure'
+         AND kind = 'authorization_denial'`,
+      [namespace.id, admitted.data.agent.id],
     );
+    assert.deepEqual(denialAudit.rows, [
+      {
+        kind: "authorization_denial",
+        outcome: "denied",
+        reason_code: "AUTHORIZATION_DENIED",
+      },
+    ]);
     assert.deepEqual(
       secretDriver.calls.map(({ operation }) => operation),
       [],
@@ -623,7 +737,7 @@ test(
         return observed.data.status === "failed" ? observed.data : undefined;
       },
     );
-    assert.equal(failed.phase, "database_setup");
+    assert.equal(failed.phase, "admitted");
     assert.equal(failed.error?.code, "PROVISIONING_DEPENDENCY_UNAVAILABLE");
     assert.deepEqual(
       computeDriver.calls.map(({ operation }) => operation),
@@ -636,11 +750,10 @@ test(
     const retried = await fixture.request(
       "POST",
       `/namespaces/${namespace.id}/agents/${admitted.data.agent.id}/provisioning/retry`,
-      { body: {} },
     );
     assert.equal(retried.status, 202, JSON.stringify(retried.body));
     assert.equal(retried.data.status, "queued");
-    assert.equal(retried.data.phase, "configuration");
+    assert.equal(retried.data.phase, "admitted");
 
     await fixture.startWorker();
     const succeeded = await waitFor("retried Agent provisioning to succeed", async () => {
@@ -667,14 +780,127 @@ test(
     );
     assert.equal(revisions.rowCount, 1);
     assert.deepEqual(
-      computeDriver.calls.map(({ operation }) => operation),
-      ["provisionAgentRuntimeCredentials", "prepareRevision"],
+      computeDriver.calls
+        .filter(({ operation }) => operation === "provisionAgentRuntimeCredentials")
+        .map(({ agentId }) => agentId),
+      [admitted.data.agent.id],
     );
   },
 );
 
 test(
-  "cancelled provisioning with a settled Secret receipt cleans up the exact backend",
+  "failed provisioning keeps the accepted plan reserved until retry or deletion",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const computeDriver = createRuntimeComputeDriver();
+    const provisionRuntimeCredentials = computeDriver.provisionAgentRuntimeCredentials;
+    const getRuntimeCredentialStatus = computeDriver.getAgentRuntimeCredentialStatus;
+    let failTransportSettlement = true;
+    let reportTransportConfigured = false;
+    computeDriver.provisionAgentRuntimeCredentials = async (...args) => {
+      const status = await provisionRuntimeCredentials(...args);
+      if (failTransportSettlement) {
+        throw new Error("synthetic transport settlement failure");
+      }
+      return status;
+    };
+    computeDriver.getAgentRuntimeCredentialStatus = async (...args) =>
+      reportTransportConfigured
+        ? getRuntimeCredentialStatus(...args)
+        : { transportConfigured: false };
+    const fixture = await createFixture(context, { computeDriver });
+    const namespace = await fixture.bootstrapNamespace();
+    const body = provisioningBody();
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body,
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+
+    await fixture.startWorker();
+    const failed = await waitFor("Agent provisioning to fail after transport effect", async () => {
+      const observed = await fixture.request(
+        "GET",
+        `/namespaces/${namespace.id}/agents/${admitted.data.agent.id}/provisioning`,
+      );
+      assert.equal(observed.status, 200, JSON.stringify(observed.body));
+      return observed.data.status === "failed" ? observed.data : undefined;
+    });
+    assert.equal(failed.phase, "configuration");
+    assert.equal(failed.error?.code, "PROVISIONING_OUTCOME_UNKNOWN");
+    await fixture.stopWorker();
+
+    const configuration = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/configurations/${admitted.data.agent.configurationId}`,
+    );
+    assert.equal(configuration.status, 200, JSON.stringify(configuration.body));
+
+    const reserved = [
+      await fixture.request(
+        "POST",
+        `/namespaces/${namespace.id}/agents/${admitted.data.agent.id}/runtime-credentials`,
+        { body: {} },
+      ),
+      await fixture.request(
+        "POST",
+        `/namespaces/${namespace.id}/agents/${admitted.data.agent.id}/deploy`,
+      ),
+      await fixture.request(
+        "PATCH",
+        `/namespaces/${namespace.id}/agents/${admitted.data.agent.id}`,
+        { body: { configurationId: admitted.data.agent.configurationId } },
+      ),
+      await fixture.request(
+        "PATCH",
+        `/namespaces/${namespace.id}/configurations/${admitted.data.agent.configurationId}`,
+        {
+          body: {
+            values: configuration.data.values,
+            secretBindings: configuration.data.secretBindings,
+          },
+        },
+      ),
+    ];
+    assert.deepEqual(
+      reserved.map(({ status }) => status),
+      [409, 409, 409, 409],
+      "failed pre-handoff provisioning must reserve direct credential, deploy, Agent, and Configuration mutations",
+    );
+
+    failTransportSettlement = false;
+    reportTransportConfigured = true;
+    const retried = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/agents/${admitted.data.agent.id}/provisioning/retry`,
+    );
+    assert.equal(retried.status, 202, JSON.stringify(retried.body));
+    assert.equal(retried.data.status, "queued");
+    assert.equal(retried.data.error, undefined);
+
+    await fixture.startWorker();
+    const succeeded = await waitFor(
+      "transport-recovered Agent provisioning to succeed",
+      async () => {
+        const observed = await fixture.request(
+          "GET",
+          `/namespaces/${namespace.id}/agents/${admitted.data.agent.id}/provisioning`,
+        );
+        assert.equal(observed.status, 200, JSON.stringify(observed.body));
+        return observed.data.status === "succeeded" ? observed.data : undefined;
+      },
+    );
+    assert.equal(succeeded.revisionId?.startsWith("rev_"), true);
+
+    const revisions = await fixture.pool.query(
+      "SELECT id FROM occ.agent_revisions WHERE namespace_id = $1 AND agent_id = $2",
+      [namespace.id, admitted.data.agent.id],
+    );
+    assert.equal(revisions.rowCount, 1);
+  },
+);
+
+test(
+  "cancelled provisioning with a lost Secret create response recovers and cleans up the exact backend",
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
     const secretDriver = createProvisioningSecretDriver({ id: "secret-provisioning-cleanup" });
@@ -684,7 +910,7 @@ test(
       secrets: [{ name: "model-api-key", value: `model-secret-${randomUUID()}` }],
       configuration: {
         kind: "agent",
-        values: { agents: { defaults: { model: "codex/gpt-6-astra" } } },
+        values: { agents: { defaults: agentDefaults() } },
       },
       harnessAuth: {
         method: "api_key",
@@ -707,36 +933,52 @@ test(
       (await provisioningRow(fixture.pool, namespace.id, body.requestId)).work_id,
     );
     const controller = await createDirectProvisioningController(fixture);
-    let cancelled = false;
-    const result = await controller.processAgentProvisioning(claim, resolveApprovedHarness, {
-      runEffect: async (operation) => {
-        const value = await operation(new AbortController().signal);
-        if (!cancelled) {
-          cancelled = true;
-          const stopped = await fixture.request(
-            "POST",
-            `/namespaces/${namespace.id}/agents/${admitted.data.agent.id}/stop`,
-            { body: {} },
-          );
-          assert.equal(stopped.status, 202, JSON.stringify(stopped.body));
-          throw new Error("synthetic post-receipt cancellation");
-        }
-        return value;
-      },
-    });
+    const createExact = secretDriver.createExact;
+    secretDriver.createExact = async (input) => {
+      await createExact(input);
+      const stopped = await fixture.request(
+        "POST",
+        `/namespaces/${namespace.id}/agents/${admitted.data.agent.id}/stop`,
+      );
+      assert.equal(stopped.status, 202, JSON.stringify(stopped.body));
+      throw new Error("synthetic lost Secret create response");
+    };
+
+    const result = await controller.processAgentProvisioning(claim, resolveApprovedHarness);
     assert.deepEqual(result, {
       outcome: "permanent",
       code: "PROVISIONING_CANCELLED",
     });
     assert.deepEqual(
       secretDriver.calls.map(({ operation }) => operation),
-      ["create", "delete"],
-      "a settled Secret receipt must clean up the exact backend after cancellation",
+      ["create"],
+      "a lost Secret create response must not be redispatched during cancellation",
+    );
+    const cancelled = await fixture.state.transact((unit) =>
+      unit.provisioning.findByWorkId(claim.idempotencyKey),
+    );
+    assert.equal(cancelled.status, "cancelled");
+
+    const cleaned = await controller.recoverTerminalProvisioningEffectCleanup(cancelled);
+    assert.equal(cleaned, true);
+    assert.deepEqual(
+      secretDriver.calls.map(({ operation }) => operation),
+      ["create", "inspectExact", "delete"],
+      "terminal cleanup must inspect and delete the exact backend without redispatching create",
     );
     const persistedSecrets = await fixture.pool.query(
       "SELECT id FROM occ.secrets WHERE namespace_id = $1",
       [namespace.id],
     );
     assert.equal(persistedSecrets.rowCount, 0);
+    const work = await fixture.pool.query(
+      "SELECT state, reason_code FROM occ.controller_work WHERE idempotency_key = $1",
+      [claim.idempotencyKey],
+    );
+    assert.equal(work.rowCount, 1);
+    assert.deepEqual(work.rows[0], {
+      state: "failed_permanent",
+      reason_code: "PROVISIONING_CANCELLED",
+    });
   },
 );

@@ -234,7 +234,7 @@ CREATE OR REPLACE FUNCTION occ.finalize_agent_deletion(
 ) RETURNS boolean
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, occ
+SET search_path = pg_catalog, occ, pg_temp
 AS $$
 DECLARE
   v_service_principal_id text;

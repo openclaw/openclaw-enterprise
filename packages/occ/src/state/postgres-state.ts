@@ -115,6 +115,7 @@ export interface PersistedNativeIAMState {
 
 export interface PostgresPlatformStateOptions {
   readonly bootstrapNativeIAM?: PersistedNativeIAMState;
+  readonly workQueue?: PostgresWorkQueueOptions;
 }
 
 export interface PersistedNativeIAMPrincipalSeed {
@@ -602,7 +603,8 @@ function auditFromRow(row: PostgresRow, installationId: string): Readonly<AuditE
 }
 
 function integer(row: PostgresRow, key: string): number {
-  const value = row[key];
+  const stored = row[key];
+  const value = typeof stored === "string" && /^-?\d+$/.test(stored) ? Number(stored) : stored;
   if (typeof value !== "number" || !Number.isSafeInteger(value)) {
     throw new DependencyUnavailableError("Persisted platform state has an invalid integer.");
   }
@@ -761,11 +763,13 @@ function permissions(value: unknown): readonly Permission[] {
 export class PostgresPlatformState implements PlatformStateStore {
   readonly auditSink: PlatformAuditSink;
   private readonly pool: PostgresPool;
+  private readonly queueOptions: PostgresWorkQueueOptions;
   private bootstrapNativeIAM: PersistedNativeIAMState | undefined;
   private readonly contexts = new WeakMap<PlatformUnitOfWork, TransactionContext>();
 
   constructor(pool: PostgresPool, options: PostgresPlatformStateOptions = {}) {
     this.pool = pool;
+    this.queueOptions = Object.freeze({ ...(options.workQueue ?? {}) });
     this.bootstrapNativeIAM = options.bootstrapNativeIAM;
     this.auditSink = {
       append: async (event) => this.transact(async (state) => state.audit.append(event)),
@@ -1066,10 +1070,11 @@ export class PostgresPlatformState implements PlatformStateStore {
     ) => Promise<T>,
     options: PostgresWorkQueueOptions = {},
   ): Promise<T> {
+    const queueOptions = { ...this.queueOptions, ...options };
     return this.execute(false, async (state, context) =>
       work(
         state,
-        bindRepository(new PostgresWorkQueue(context.client, options), context.lifetime, [
+        bindRepository(new PostgresWorkQueue(context.client, queueOptions), context.lifetime, [
           "enqueue",
           "enqueueRepositoryCleanup",
           "claim",
@@ -1245,7 +1250,7 @@ export class PostgresPlatformState implements PlatformStateStore {
 
   private repositories(context: TransactionContext): PlatformUnitOfWork {
     const { client } = context;
-    const queue = new PostgresWorkQueue(client);
+    const queue = new PostgresWorkQueue(client, this.queueOptions);
 
     const installations: InstallationRepository = {
       findInstallation: async (installationId) => {
@@ -2702,7 +2707,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           if (current === undefined) {
             throw new ResourceConflictError("The Agent provisioning record is unavailable.");
           }
-          const progress = beginProvisioningEffectProgress(current, effect, claim.claimToken);
+          const progress = beginProvisioningEffectProgress(current, effect);
           const updated = rows(
             (
               await client.query(
@@ -2953,12 +2958,8 @@ export class PostgresPlatformState implements PlatformStateStore {
           const terminal = rows(
             (
               await client.query(
-                `UPDATE occ.agent_provisioning_work AS provisioning
-	                 SET status = 'failed',
-	                     updated_at = clock_timestamp()
-	                 WHERE provisioning.work_id = $1
-	                   AND provisioning.status = 'running'
-	                 RETURNING provisioning.*`,
+                `SELECT * FROM occ.agent_provisioning_work
+                 WHERE work_id = $1 AND status = 'failed'`,
                 [claim.idempotencyKey],
               )
             ).rows,
@@ -3213,6 +3214,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                  ), queued_work AS (
                    UPDATE occ.controller_work AS work
                    SET state = 'queued',
+                       attempt_count = 0,
                        available_at = clock_timestamp(),
                        claim_token = NULL,
                        lease_expires_at = NULL,

@@ -513,7 +513,8 @@
             "provisioning cancellation stops before backend effects and leaves truthful status",
             "provisioning worker reauthorizes after admission and revoked authority creates no backend effects",
             "failed provisioning can retry through the API and resume without duplicating the Agent",
-            "cancelled provisioning with a settled Secret receipt cleans up the exact backend"
+            "failed provisioning keeps the accepted plan reserved until retry or deletion",
+            "cancelled provisioning with a lost Secret create response recovers and cleans up the exact backend"
           ]
         },
         {
@@ -681,7 +682,7 @@
           "expectedTests": [
             "real Kubernetes Compute Driver owns isolated Agent gateways, identities, revisions, and deletion",
             "real Kubernetes Drivers safely use and preserve an externally managed tenant namespace",
-            "provisioning API and worker create a dedicated Agent gateway through the real Kubernetes driver",
+            "provisioning API and worker hand off a dedicated Agent with real Kubernetes fixture storage",
             "authenticated PostgreSQL OCC API and worker deploy real Agent-owned gateways, Secret bindings, and revisions"
           ]
         }

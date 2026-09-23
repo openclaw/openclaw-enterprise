@@ -148,8 +148,6 @@ export function beginProvisioningEffectProgress(
     "workId" | "namespaceId" | "agentId" | "configurationId" | "progress"
   >,
   effect: ProvisioningEffectTarget,
-  _claimToken: string,
-  nonce = randomUUID(),
 ): Readonly<Record<string, unknown>> {
   if (
     pendingEffectRecord(record.progress) !== undefined ||
@@ -160,7 +158,7 @@ export function beginProvisioningEffectProgress(
   return Object.freeze({
     pendingEffect: Object.freeze({
       kind: effect.kind,
-      owner: nonce,
+      owner: randomUUID(),
       targetId: targetIdFor(record, effect),
       ...(effect.secretId === undefined ? {} : { secretId: effect.secretId }),
     }),

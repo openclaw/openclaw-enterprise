@@ -414,7 +414,7 @@ export class ControllerWorker {
       leaseDurationMs: this.leaseDurationMs,
       maxAttempts: this.maxAttempts,
     };
-    this.state = new PostgresPlatformState(options.pool);
+    this.state = new PostgresPlatformState(options.pool, { workQueue: this.queueOptions });
     this.queue = new PostgresWorkQueue(options.pool, this.queueOptions);
     this.providers = validateProviderDefinitions(drivers?.installation.provider ?? []);
     this.providerMap = providerDefinitionMap(this.providers);
@@ -530,16 +530,17 @@ export class ControllerWorker {
         : { provisioningInputProtector: this.provisioningInputProtector }),
     });
     for (const driver of [
-      this.iam,
-      this.compute,
       this.configuration,
-      this.secretDriver,
       this.sandbox,
+      this.iam,
+      this.secretDriver,
       this.repoDriver,
       this.pluginDriver,
-    ]) {
+      this.compute,
+    ] as const) {
       if (driver !== undefined) {
         provisioning.registerDriver(driver);
+        provisioning.selectDriver(driver.capability, driver.id);
       }
     }
     this.provisioningController = provisioning;

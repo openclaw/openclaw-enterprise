@@ -160,7 +160,6 @@ export {
   validateServiceAccountProviderBinding,
 } from "./providers.ts";
 export {
-  beginProvisioningEffectProgress,
   provisioningDeletionDisposition,
   provisioningEffectReceipt,
   provisioningPendingEffect,
@@ -1442,9 +1441,6 @@ export class OpenClawController {
           configuration: configurationInput,
           harnessAuth,
           executionMode,
-          providerId,
-          plugins,
-          repositoryBindings,
           drivers: {
             compute: compute.id,
             configuration: configurationDriver.id,
@@ -1454,12 +1450,7 @@ export class OpenClawController {
           secrets: protectedSecrets.map(({ name, secretId, slot }) => ({ name, secretId, slot })),
         },
         protectedInputs: {
-          secrets: protectedSecrets.map(({ name, secretId, slot, protectedInput }) => ({
-            name,
-            secretId,
-            slot,
-            protectedInput,
-          })),
+          secrets: protectedSecrets.map(({ protectedInput }) => protectedInput),
         },
       });
       await this.authorizeProvisioningRecord(state, principalId, record.record);
@@ -1685,6 +1676,8 @@ export class OpenClawController {
         code === "PROVISIONING_DEPENDENCY_UNAVAILABLE" || code === "PROVISIONING_OUTCOME_UNKNOWN"
           ? "retry"
           : "permanent";
+      const authorizationDenied =
+        error instanceof AuthorizationDeniedError && !(error instanceof DependencyUnavailableError);
       await this.mutate(async (state) => {
         const current = await state.provisioning.findByWorkId(claim.idempotencyKey);
         if (current === undefined) {
@@ -1710,12 +1703,20 @@ export class OpenClawController {
           installationId: this.installation.id,
           namespaceId: current.namespaceId,
           occurredAt: this.timestamp(),
-          kind: "mutation",
+          kind: authorizationDenied ? "authorization_denial" : "mutation",
           actorId: current.actorId,
           source: "occ",
           action: "openclaw.agents.provision.failure",
           resource: { kind: "agent", namespaceId: current.namespaceId, id: current.agentId },
-          outcome: "failure",
+          outcome: authorizationDenied ? "denied" : "failure",
+          ...(authorizationDenied
+            ? {
+                reasonCode: "AUTHORIZATION_DENIED",
+                ...(error.authorization === undefined
+                  ? {}
+                  : { authorization: { principalId: current.actorId, ...error.authorization } }),
+              }
+            : {}),
           details: { workId: current.workId, phase: current.completedPhase, code },
         });
       });
@@ -3695,7 +3696,11 @@ export class OpenClawController {
     if (
       record.status === "queued" ||
       record.status === "running" ||
-      this.provisioningBefore(record, "configuration")
+      this.provisioningBefore(record, "configuration") ||
+      (record.status === "failed" && record.revisionId === undefined) ||
+      (record.status === "cancelled" &&
+        (record.progress.pendingEffect !== undefined ||
+          readProvisioningEffectReceipt(record) !== undefined))
     ) {
       throw new ResourceConflictError(
         "The Agent is reserved for provisioning. Stop or delete it, or retry its failed provisioning request.",
@@ -3712,8 +3717,15 @@ export class OpenClawController {
     const record = await state.provisioning.findByConfiguration(namespaceId, configurationId);
     if (
       record !== undefined &&
-      (this.provisioningBefore(record, "configuration") ||
-        (!readOnly && (record.status === "queued" || record.status === "running")))
+      (readOnly
+        ? this.provisioningBefore(record, "configuration")
+        : this.provisioningBefore(record, "configuration") ||
+          record.status === "queued" ||
+          record.status === "running" ||
+          (record.status === "failed" && record.revisionId === undefined) ||
+          (record.status === "cancelled" &&
+            (record.progress.pendingEffect !== undefined ||
+              readProvisioningEffectReceipt(record) !== undefined)))
     ) {
       throw new ResourceConflictError(
         "The Configuration is reserved for provisioning and is not available for this operation.",
@@ -4433,23 +4445,27 @@ export class OpenClawController {
     if (!Array.isArray(secrets)) {
       return Object.freeze([]);
     }
+    const plannedSecrets = record.plan.secrets;
+    if (!Array.isArray(plannedSecrets)) {
+      throw new ScopeViolationError("Agent provisioning Secret plan is invalid.");
+    }
     return Object.freeze(
-      secrets.map((entry) => {
-        const record = asRecord(entry);
-        const protectedInput = asRecord(record?.protectedInput);
+      secrets.map((entry, index) => {
+        const planned = asRecord(plannedSecrets[record.secretCursor + index]);
+        const protectedInput = asRecord(entry);
         const sealed = asRecord(protectedInput?.sealed) as unknown as SealedProvisioningInput;
         if (
-          !isNonEmptyString(record?.name) ||
-          !isNonEmptyString(record.secretId) ||
-          !isNonEmptyString(record.slot) ||
+          !isNonEmptyString(planned?.name) ||
+          !isNonEmptyString(planned.secretId) ||
+          !isNonEmptyString(planned.slot) ||
           sealed === undefined
         ) {
           throw new ScopeViolationError("Agent provisioning protected Secret input is invalid.");
         }
         return Object.freeze({
-          name: record.name,
-          secretId: record.secretId,
-          slot: record.slot,
+          name: planned.name,
+          secretId: planned.secretId,
+          slot: planned.slot,
           sealed,
         });
       }),
@@ -4520,7 +4536,7 @@ export class OpenClawController {
         "The selected IAM Driver does not support provisioning policy transactions.",
       );
     }
-    const roleId = "role_agent_secret_operate";
+    const roleId = `role_${namespaceId}_agent_secret_operate`;
     const existingRole = await state.iamPolicy.getRole(namespaceId, roleId);
     if (
       existingRole !== undefined &&

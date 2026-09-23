@@ -41,8 +41,9 @@ does not make that link available.
    want to replace your edits. Starter templates omit gateway authentication;
    Kubernetes Compute renders trusted-proxy settings from the Installation's
    [operator-managed proxy trust](../drivers/kubernetes-compute/networking-and-isolation.md#gateway-authentication).
-   Native admin UI still needs its [explicit opt-in configuration](../../guides/deploy/native-admin.md);
-   the starter does not enable it.
+   The starter's loopback Control UI origins support direct local access only.
+   The OCE native admin link still needs its [explicit opt-in configuration](../../guides/deploy/native-admin.md),
+   including the derived Agent HTTPS origin.
 4. If you need Slack, use its channel card and select **Dedicated**. Channel
    settings and their plugin entries are included in the inline Configuration
    when first-time provisioning is available. Slack app and bot tokens use the

@@ -2856,10 +2856,18 @@ test("Kubernetes lifecycle owners cannot be replaced after their first operation
   // Freeze ownership synchronously so an in-flight reconciliation cannot lose its revocation owner.
   assert.throws(() => driver.setLifecycleDrivers([]), /owners cannot change.*operations begin/i);
   await operation;
+  assert.doesNotThrow(() => driver.setLifecycleDrivers([selected]));
   assert.throws(
-    () => driver.setLifecycleDrivers([selected]),
+    () =>
+      driver.setLifecycleDrivers([
+        {
+          ...selected,
+          computeLifecycleHooks: { async afterNamespacePrepared() {} },
+        },
+      ]),
     /owners cannot change.*operations begin/i,
   );
+  assert.throws(() => driver.setLifecycleDrivers([]), /owners cannot change.*operations begin/i);
 });
 
 test("Kubernetes lifecycle hooks never run before cluster ownership and workload identity checks", async () => {
