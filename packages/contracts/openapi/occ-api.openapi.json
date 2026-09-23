@@ -118,7 +118,8 @@
                   { "const": "UNKNOWN_OUTCOME", "type": "string" },
                   { "const": "NOT_IMPLEMENTED", "type": "string" },
                   { "const": "INTERNAL_ERROR", "type": "string" },
-                  { "const": "DEPENDENCY_UNAVAILABLE", "type": "string" }
+                  { "const": "DEPENDENCY_UNAVAILABLE", "type": "string" },
+                  { "const": "SECRET_DRIVER_UNAVAILABLE", "type": "string" }
                 ]
               },
               "details": {
@@ -2052,6 +2053,18 @@
                                   {
                                     "additionalProperties": false,
                                     "properties": {
+                                      "connectionId": {
+                                        "pattern": "^pco_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "method": { "const": "provider_connection", "type": "string" }
+                                    },
+                                    "required": ["method", "connectionId"],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
                                       "method": { "const": "runtime", "type": "string" }
                                     },
                                     "required": ["method"],
@@ -2280,6 +2293,18 @@
                         "anyOf": [
                           {
                             "additionalProperties": false,
+                            "properties": {
+                              "connectionId": {
+                                "pattern": "^pco_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
+                              "method": { "const": "provider_connection", "type": "string" }
+                            },
+                            "required": ["method", "connectionId"],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
                             "properties": { "method": { "const": "runtime", "type": "string" } },
                             "required": ["method"],
                             "type": "object"
@@ -2442,6 +2467,18 @@
                           "anyOf": [
                             {
                               "anyOf": [
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "connectionId": {
+                                      "pattern": "^pco_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                      "type": "string"
+                                    },
+                                    "method": { "const": "provider_connection", "type": "string" }
+                                  },
+                                  "required": ["method", "connectionId"],
+                                  "type": "object"
+                                },
                                 {
                                   "additionalProperties": false,
                                   "properties": {
@@ -2732,6 +2769,18 @@
                                 {
                                   "additionalProperties": false,
                                   "properties": {
+                                    "connectionId": {
+                                      "pattern": "^pco_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                      "type": "string"
+                                    },
+                                    "method": { "const": "provider_connection", "type": "string" }
+                                  },
+                                  "required": ["method", "connectionId"],
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
                                     "method": { "const": "runtime", "type": "string" }
                                   },
                                   "required": ["method"],
@@ -2992,6 +3041,18 @@
                                 {
                                   "additionalProperties": false,
                                   "properties": {
+                                    "connectionId": {
+                                      "pattern": "^pco_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                      "type": "string"
+                                    },
+                                    "method": { "const": "provider_connection", "type": "string" }
+                                  },
+                                  "required": ["method", "connectionId"],
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
                                     "method": { "const": "runtime", "type": "string" }
                                   },
                                   "required": ["method"],
@@ -3226,6 +3287,18 @@
                         "anyOf": [
                           {
                             "additionalProperties": false,
+                            "properties": {
+                              "connectionId": {
+                                "pattern": "^pco_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
+                              "method": { "const": "provider_connection", "type": "string" }
+                            },
+                            "required": ["method", "connectionId"],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
                             "properties": { "method": { "const": "runtime", "type": "string" } },
                             "required": ["method"],
                             "type": "object"
@@ -3355,6 +3428,18 @@
                           "anyOf": [
                             {
                               "anyOf": [
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "connectionId": {
+                                      "pattern": "^pco_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                      "type": "string"
+                                    },
+                                    "method": { "const": "provider_connection", "type": "string" }
+                                  },
+                                  "required": ["method", "connectionId"],
+                                  "type": "object"
+                                },
                                 {
                                   "additionalProperties": false,
                                   "properties": {
@@ -3664,6 +3749,18 @@
                         },
                         "harnessAuth": {
                           "anyOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "connectionId": {
+                                  "pattern": "^pco_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "method": { "const": "provider_connection", "type": "string" }
+                              },
+                              "required": ["method", "connectionId"],
+                              "type": "object"
+                            },
                             {
                               "additionalProperties": false,
                               "properties": { "method": { "const": "runtime", "type": "string" } },
@@ -4318,6 +4415,18 @@
                               {
                                 "additionalProperties": false,
                                 "properties": {
+                                  "connectionId": {
+                                    "pattern": "^pco_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  },
+                                  "method": { "const": "provider_connection", "type": "string" }
+                                },
+                                "required": ["method", "connectionId"],
+                                "type": "object"
+                              },
+                              {
+                                "additionalProperties": false,
+                                "properties": {
                                   "method": { "const": "runtime", "type": "string" }
                                 },
                                 "required": ["method"],
@@ -4655,6 +4764,18 @@
                         },
                         "harnessAuth": {
                           "anyOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "connectionId": {
+                                  "pattern": "^pco_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "method": { "const": "provider_connection", "type": "string" }
+                              },
+                              "required": ["method", "connectionId"],
+                              "type": "object"
+                            },
                             {
                               "additionalProperties": false,
                               "properties": { "method": { "const": "runtime", "type": "string" } },
@@ -5181,6 +5302,18 @@
                           "anyOf": [
                             {
                               "anyOf": [
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "connectionId": {
+                                      "pattern": "^pco_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                      "type": "string"
+                                    },
+                                    "method": { "const": "provider_connection", "type": "string" }
+                                  },
+                                  "required": ["method", "connectionId"],
+                                  "type": "object"
+                                },
                                 {
                                   "additionalProperties": false,
                                   "properties": {
@@ -6434,6 +6567,7 @@
                                   { "const": "namespace", "type": "string" },
                                   { "const": "configuration", "type": "string" },
                                   { "const": "preset", "type": "string" },
+                                  { "const": "provider_connection", "type": "string" },
                                   { "const": "service_account", "type": "string" },
                                   { "const": "secret", "type": "string" },
                                   { "const": "agent", "type": "string" },
@@ -6554,6 +6688,7 @@
                       { "const": "agent_revision", "type": "string" },
                       { "const": "configuration", "type": "string" },
                       { "const": "preset", "type": "string" },
+                      { "const": "provider_connection", "type": "string" },
                       { "const": "secret", "type": "string" },
                       { "const": "service_account", "type": "string" }
                     ]
@@ -6613,6 +6748,7 @@
                                 { "const": "namespace", "type": "string" },
                                 { "const": "configuration", "type": "string" },
                                 { "const": "preset", "type": "string" },
+                                { "const": "provider_connection", "type": "string" },
                                 { "const": "service_account", "type": "string" },
                                 { "const": "secret", "type": "string" },
                                 { "const": "agent", "type": "string" },
@@ -6890,6 +7026,7 @@
                                 { "const": "namespace", "type": "string" },
                                 { "const": "configuration", "type": "string" },
                                 { "const": "preset", "type": "string" },
+                                { "const": "provider_connection", "type": "string" },
                                 { "const": "service_account", "type": "string" },
                                 { "const": "secret", "type": "string" },
                                 { "const": "agent", "type": "string" },
@@ -7040,6 +7177,7 @@
                                     { "const": "namespace", "type": "string" },
                                     { "const": "configuration", "type": "string" },
                                     { "const": "preset", "type": "string" },
+                                    { "const": "provider_connection", "type": "string" },
                                     { "const": "service_account", "type": "string" },
                                     { "const": "secret", "type": "string" },
                                     { "const": "agent", "type": "string" },
@@ -7170,6 +7308,7 @@
                             { "const": "agent_revision", "type": "string" },
                             { "const": "configuration", "type": "string" },
                             { "const": "preset", "type": "string" },
+                            { "const": "provider_connection", "type": "string" },
                             { "const": "secret", "type": "string" },
                             { "const": "service_account", "type": "string" }
                           ]
@@ -7232,6 +7371,7 @@
                                   { "const": "namespace", "type": "string" },
                                   { "const": "configuration", "type": "string" },
                                   { "const": "preset", "type": "string" },
+                                  { "const": "provider_connection", "type": "string" },
                                   { "const": "service_account", "type": "string" },
                                   { "const": "secret", "type": "string" },
                                   { "const": "agent", "type": "string" },
@@ -7467,6 +7607,7 @@
                                   { "const": "namespace", "type": "string" },
                                   { "const": "configuration", "type": "string" },
                                   { "const": "preset", "type": "string" },
+                                  { "const": "provider_connection", "type": "string" },
                                   { "const": "service_account", "type": "string" },
                                   { "const": "secret", "type": "string" },
                                   { "const": "agent", "type": "string" },
@@ -8599,6 +8740,621 @@
         "tags": ["Presets"],
         "x-openclaw-permissions": [
           { "action": "update", "resourceKind": "preset", "scope": "requested" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/provider-connections": {
+      "get": {
+        "description": "Only ProviderConnection resources with individual read permission are returned.",
+        "operationId": "listProviderConnections",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "authMethodId": {
+                            "maxLength": 200,
+                            "minLength": 1,
+                            "pattern": "^(?!\\s)(?!.*\\s$)(?!.*[\\u0000-\\u001f\\u007f]).+$",
+                            "type": "string"
+                          },
+                          "baseUrl": { "maxLength": 2048, "minLength": 1, "type": "string" },
+                          "createdAt": {
+                            "format": "date-time",
+                            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                            "type": "string"
+                          },
+                          "id": {
+                            "pattern": "^pco_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "name": {
+                            "maxLength": 200,
+                            "minLength": 1,
+                            "pattern": "^(?!\\s)(?!.*\\s$)(?!.*[\\u0000-\\u001f\\u007f]).+$",
+                            "type": "string"
+                          },
+                          "namespaceId": {
+                            "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "providerId": {
+                            "maxLength": 200,
+                            "minLength": 1,
+                            "pattern": "^(?!\\s)(?!.*\\s$)(?!.*[\\u0000-\\u001f\\u007f]).+$",
+                            "type": "string"
+                          },
+                          "source": {
+                            "additionalProperties": false,
+                            "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                            "properties": {
+                              "id": {
+                                "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
+                              "kind": { "const": "secret", "type": "string" },
+                              "namespaceId": {
+                                "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["kind", "namespaceId", "id"],
+                            "type": "object"
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "providerId",
+                          "authMethodId",
+                          "id",
+                          "namespaceId",
+                          "createdAt"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "List readable provider connections in a Namespace",
+        "tags": ["Providers"],
+        "x-openclaw-permissions": [
+          { "action": "read", "resourceKind": "provider_connection", "scope": "each_returned" }
+        ]
+      },
+      "post": {
+        "description": "Requires create permission for ProviderConnection resources in the requested Namespace. Requires Secret create permission in the Namespace when supplying a new credential value. Requires operate permission on each bound Secret when Secret bindings are present or selected.",
+        "operationId": "createProviderConnection",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "authMethodId": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "pattern": "^(?!\\s)(?!.*\\s$)(?!.*[\\u0000-\\u001f\\u007f]).+$",
+                    "type": "string"
+                  },
+                  "baseUrl": { "maxLength": 2048, "minLength": 1, "type": "string" },
+                  "name": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "pattern": "^(?!\\s)(?!.*\\s$)(?!.*[\\u0000-\\u001f\\u007f]).+$",
+                    "type": "string"
+                  },
+                  "providerId": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "pattern": "^(?!\\s)(?!.*\\s$)(?!.*[\\u0000-\\u001f\\u007f]).+$",
+                    "type": "string"
+                  },
+                  "secretValue": {
+                    "description": "Protected Secret value. It must be nonempty UTF-8 without NUL; OCC accepts at most 65,536 UTF-8 bytes and still enforces the route request body limit.",
+                    "maxLength": 65536,
+                    "minLength": 1,
+                    "pattern": "^[^\\u0000]*$",
+                    "type": "string"
+                  },
+                  "source": {
+                    "additionalProperties": false,
+                    "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                    "properties": {
+                      "id": {
+                        "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      },
+                      "kind": { "const": "secret", "type": "string" },
+                      "namespaceId": {
+                        "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      }
+                    },
+                    "required": ["kind", "namespaceId", "id"],
+                    "type": "object"
+                  }
+                },
+                "required": ["name", "providerId", "authMethodId"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "authMethodId": {
+                          "maxLength": 200,
+                          "minLength": 1,
+                          "pattern": "^(?!\\s)(?!.*\\s$)(?!.*[\\u0000-\\u001f\\u007f]).+$",
+                          "type": "string"
+                        },
+                        "baseUrl": { "maxLength": 2048, "minLength": 1, "type": "string" },
+                        "createdAt": {
+                          "format": "date-time",
+                          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                          "type": "string"
+                        },
+                        "id": {
+                          "pattern": "^pco_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "name": {
+                          "maxLength": 200,
+                          "minLength": 1,
+                          "pattern": "^(?!\\s)(?!.*\\s$)(?!.*[\\u0000-\\u001f\\u007f]).+$",
+                          "type": "string"
+                        },
+                        "namespaceId": {
+                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "providerId": {
+                          "maxLength": 200,
+                          "minLength": 1,
+                          "pattern": "^(?!\\s)(?!.*\\s$)(?!.*[\\u0000-\\u001f\\u007f]).+$",
+                          "type": "string"
+                        },
+                        "source": {
+                          "additionalProperties": false,
+                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                          "properties": {
+                            "id": {
+                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "kind": { "const": "secret", "type": "string" },
+                            "namespaceId": {
+                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            }
+                          },
+                          "required": ["kind", "namespaceId", "id"],
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "providerId",
+                        "authMethodId",
+                        "id",
+                        "namespaceId",
+                        "createdAt"
+                      ],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "413": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "415": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Save provider and authentication configuration without authenticating",
+        "tags": ["Providers"],
+        "x-openclaw-permissions": [
+          { "action": "create", "resourceKind": "provider_connection", "scope": "namespace" },
+          {
+            "action": "create",
+            "condition": "new_provider_secret",
+            "resourceKind": "secret",
+            "scope": "namespace"
+          },
+          {
+            "action": "operate",
+            "condition": "bound_secret",
+            "resourceKind": "secret",
+            "scope": "request_body"
+          }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/provider-connections/{connectionId}": {
+      "delete": {
+        "description": "Requires delete permission on the requested ProviderConnection.",
+        "operationId": "deleteProviderConnection",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "connectionId",
+            "required": true,
+            "schema": {
+              "pattern": "^pco_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": { "description": "Default Response" },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Remove an unreferenced provider configuration without revoking upstream credentials",
+        "tags": ["Providers"],
+        "x-openclaw-permissions": [
+          { "action": "delete", "resourceKind": "provider_connection", "scope": "requested" }
+        ]
+      },
+      "get": {
+        "description": "Requires read permission on the requested ProviderConnection.",
+        "operationId": "getProviderConnection",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "connectionId",
+            "required": true,
+            "schema": {
+              "pattern": "^pco_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "authMethodId": {
+                          "maxLength": 200,
+                          "minLength": 1,
+                          "pattern": "^(?!\\s)(?!.*\\s$)(?!.*[\\u0000-\\u001f\\u007f]).+$",
+                          "type": "string"
+                        },
+                        "baseUrl": { "maxLength": 2048, "minLength": 1, "type": "string" },
+                        "createdAt": {
+                          "format": "date-time",
+                          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                          "type": "string"
+                        },
+                        "id": {
+                          "pattern": "^pco_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "name": {
+                          "maxLength": 200,
+                          "minLength": 1,
+                          "pattern": "^(?!\\s)(?!.*\\s$)(?!.*[\\u0000-\\u001f\\u007f]).+$",
+                          "type": "string"
+                        },
+                        "namespaceId": {
+                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "providerId": {
+                          "maxLength": 200,
+                          "minLength": 1,
+                          "pattern": "^(?!\\s)(?!.*\\s$)(?!.*[\\u0000-\\u001f\\u007f]).+$",
+                          "type": "string"
+                        },
+                        "source": {
+                          "additionalProperties": false,
+                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                          "properties": {
+                            "id": {
+                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "kind": { "const": "secret", "type": "string" },
+                            "namespaceId": {
+                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            }
+                          },
+                          "required": ["kind", "namespaceId", "id"],
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "providerId",
+                        "authMethodId",
+                        "id",
+                        "namespaceId",
+                        "createdAt"
+                      ],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Get a provider connection without credential values",
+        "tags": ["Providers"],
+        "x-openclaw-permissions": [
+          { "action": "read", "resourceKind": "provider_connection", "scope": "requested" }
         ]
       }
     },
@@ -9793,6 +10549,131 @@
         "tags": ["Service accounts"],
         "x-openclaw-permissions": [
           { "action": "update", "resourceKind": "service_account", "scope": "requested" }
+        ]
+      }
+    },
+    "/provider-catalog": {
+      "get": {
+        "description": "Requires read permission on the requested Installation.",
+        "operationId": "listProviderCatalog",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "authMethods": {
+                            "items": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "credentialKind": {
+                                  "anyOf": [
+                                    { "const": "secret", "type": "string" },
+                                    { "const": "none", "type": "string" }
+                                  ]
+                                },
+                                "id": {
+                                  "maxLength": 200,
+                                  "minLength": 1,
+                                  "pattern": "^(?!\\s)(?!.*\\s$)(?!.*[\\u0000-\\u001f\\u007f]).+$",
+                                  "type": "string"
+                                },
+                                "label": {
+                                  "maxLength": 200,
+                                  "minLength": 1,
+                                  "pattern": "^(?!\\s)(?!.*\\s$)(?!.*[\\u0000-\\u001f\\u007f]).+$",
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["id", "label", "credentialKind"],
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "id": {
+                            "maxLength": 200,
+                            "minLength": 1,
+                            "pattern": "^(?!\\s)(?!.*\\s$)(?!.*[\\u0000-\\u001f\\u007f]).+$",
+                            "type": "string"
+                          },
+                          "label": {
+                            "maxLength": 200,
+                            "minLength": 1,
+                            "pattern": "^(?!\\s)(?!.*\\s$)(?!.*[\\u0000-\\u001f\\u007f]).+$",
+                            "type": "string"
+                          },
+                          "requiresBaseUrl": { "type": "boolean" }
+                        },
+                        "required": ["id", "label", "requiresBaseUrl", "authMethods"],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "List native model providers and authentication method availability",
+        "tags": ["Providers"],
+        "x-openclaw-permissions": [
+          { "action": "read", "resourceKind": "installation", "scope": "requested" }
         ]
       }
     },

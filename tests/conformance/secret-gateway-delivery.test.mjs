@@ -233,17 +233,25 @@ test("secret-gateway-delivery rejects missing, foreign, and reserved model proje
       ),
     /does not match AgentRevision bindings/i,
   );
-  assert.throws(
-    () =>
-      driver.secretEnvironmentForRevision(
-        revision(driver, {
-          secretBindings: { OPENAI_API_KEY: candidate.secretBindings.EXTERNAL_SERVICE_TOKEN },
-        }),
-        { secretEnvironment: [projection({ name: "OPENAI_API_KEY" })] },
-        namespace,
-      ),
-    /Secret bindings are invalid|Model authentication must use/i,
-  );
+  for (const name of [
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_OAUTH_TOKEN",
+    "OLLAMA_API_KEY",
+    "VLLM_API_KEY",
+  ]) {
+    assert.throws(
+      () =>
+        driver.secretEnvironmentForRevision(
+          revision(driver, {
+            secretBindings: { [name]: candidate.secretBindings.EXTERNAL_SERVICE_TOKEN },
+          }),
+          { secretEnvironment: [projection({ name })] },
+          namespace,
+        ),
+      /Secret bindings are invalid|Model authentication must use/i,
+    );
+  }
   assert.throws(
     () =>
       driver.secretEnvironmentForRevision(

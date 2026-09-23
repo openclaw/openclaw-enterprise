@@ -32,7 +32,7 @@ export const scenarios = {
     path: "/console/agents",
     description:
       "Browse pages, component states, and guided Agent workflows. Every preview mounts the production console modules and styles in its own frame. Reset story discards all local changes.",
-    gap: "Stop Agent requests the stopped desired state; deployment resumes an Agent. General Configuration JSON editing after creation, model-Secret creation, Namespace provisioning, Preset management, and Provider setup require an API, CLI, or operator workflow. Serving health and model responses require separate runtime verification.",
+    gap: "Stop Agent requests the stopped desired state; deployment resumes an Agent. General Configuration JSON editing after creation, Namespace provisioning, Preset management, and Installation Provider setup require an API, CLI, or operator workflow. Serving health and model responses require separate runtime verification.",
   },
   login: {
     group: "Pages/Sign in",
@@ -137,15 +137,52 @@ export const scenarios = {
     group: "Pages/Providers",
     name: "Configured",
     path: "/console/providers",
-    description: "Installation-wide Provider discovery.",
-    gap: "This is a read-only page; configure Providers through installation configuration.",
+    description: "Namespace provider connections and separate Installation Provider discovery.",
+    gap: "Enter an API key or use an existing Secret ID. Saving does not test inference access.",
   },
   providersEmpty: {
     group: "Pages/Providers",
     name: "Empty",
     path: "/console/providers",
     emptyProviders: true,
-    description: "No Providers are configured.",
+    emptyConnections: true,
+    description:
+      "Add the first Namespace provider connection. No Installation Providers are configured.",
+  },
+  providersAnthropic: {
+    group: "Pages/Providers",
+    name: "Anthropic API key",
+    path: "/console/providers",
+    actions: [{ selector: "#connection-provider", value: "anthropic" }],
+    description: "Save an Anthropic API key as a Namespace Secret with its provider connection.",
+  },
+  providersWithoutStorage: {
+    group: "Pages/Providers",
+    name: "Credential storage not configured",
+    path: "/console/providers",
+    emptyConnections: true,
+    rules: [
+      {
+        suffix: "/provider-connections",
+        method: "POST",
+        status: 503,
+        code: "SECRET_DRIVER_UNAVAILABLE",
+      },
+    ],
+    actions: [
+      { selector: "#connection-name", value: "Unsaved API key" },
+      { selector: "#connection-credential-value", value: "synthetic-unsaved-key" },
+      click("Save provider connection"),
+    ],
+    description:
+      "A missing Secret Driver is a known pre-save failure; uncertain backend writes still require refresh.",
+  },
+  providersExistingSecret: {
+    group: "Pages/Providers",
+    name: "Existing Secret",
+    path: "/console/providers",
+    actions: [{ selector: "#connection-credential-source", value: "existing" }],
+    description: "Reuse an existing Secret instead of entering another credential.",
   },
   providersError: {
     group: "Pages/Providers",
@@ -153,6 +190,22 @@ export const scenarios = {
     path: "/console/providers",
     rules: [{ path: "/providers", status: 503 }],
     description: "Provider discovery fails and can be retried.",
+  },
+  providersLocal: {
+    group: "Pages/Providers",
+    name: "Local server",
+    path: "/console/providers",
+    actions: [{ selector: "#connection-provider", value: "ollama" }],
+    description:
+      "Configure a local endpoint without a credential. Runtime network access and a matching Agent model must be configured separately.",
+  },
+  providersVllm: {
+    group: "Pages/Providers",
+    name: "Self-hosted server",
+    path: "/console/providers",
+    actions: [{ selector: "#connection-provider", value: "vllm" }],
+    description:
+      "Configure a vLLM endpoint and API key. Saving does not test server access or change network rules.",
   },
   namespaces: {
     group: "Pages/Namespaces",
@@ -241,7 +294,21 @@ export const scenarios = {
       { path: "/providers", status: 403 },
       { path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/service-accounts", status: 403 },
     ],
-    description: "Unavailable Provider and service-account lists do not hide the Agent form.",
+    description:
+      "Denied control-plane Provider and service-account discovery remain visible without hiding model-provider setup.",
+  },
+  createDiscoveryUnavailable: {
+    group: "Pages/Create Agent",
+    name: "Control-plane discovery unavailable",
+    path: create,
+    actions: [
+      ...form,
+      { selector: "#harness-auth-method", value: "provider_connection" },
+      { selector: "#provider-connection-id", value: "pco_00000000-0000-4000-8000-000000000001" },
+    ],
+    rules: [{ path: "/providers", status: 503 }],
+    description:
+      "A saved model connection remains available while the optional Installation Provider directory returns 503. This story deliberately injects the discovery failure.",
   },
   createInvalid: {
     group: "Pages/Create Agent",
@@ -551,6 +618,13 @@ export const scenarios = {
     auth: "service",
     description: "Select an existing issued service account.",
     gap: "Service-account issuance is outside the console.",
+  },
+  authConnection: {
+    group: "Components/Credentials",
+    name: "Saved provider connection",
+    path: `${draft}&tab=credentials`,
+    auth: "connection",
+    description: "Select a connection configured on the Providers page.",
   },
   nativeAdmin: {
     group: "Components/Native admin",

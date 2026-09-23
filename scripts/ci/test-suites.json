@@ -118,6 +118,9 @@
           "path": "tests/integration/sandbox-driver-startup.test.mjs"
         },
         {
+          "path": "tests/integration/provider-connections-api.test.mjs"
+        },
+        {
           "path": "tests/integration/secret-api.test.mjs"
         },
         {
@@ -438,6 +441,13 @@
           ]
         },
         {
+          "path": "tests/integration/postgres-provider-connections.test.mjs",
+          "expectedTests": [
+            "in-memory ProviderConnections preserve setup, source ownership, and live revision references",
+            "PostgreSQL ProviderConnections survive reopening and enforce source, identity, and IAM ownership"
+          ]
+        },
+        {
           "path": "tests/integration/postgres-presets.test.mjs",
           "expectedTests": [
             "in-memory Presets preserve template copies, Namespace isolation, and deletion boundaries",
@@ -473,6 +483,8 @@
             "a deployment during candidate cleanup supersedes the remaining Agent stop effects",
             "maintenance retains its real lease across consecutive short predecessor retirements",
             "the revision worker activates admitted candidates, retires predecessors, and rejects revoked, malformed, and wrong-owner effects",
+            "the revision worker forwards connection metadata and optional Secret delivery references before activation",
+            "the revision worker rechecks operator and Agent connection permissions while retaining Secret access",
             "the revision worker rejects associated-account access revoked after admission before invoking Compute",
             "the revision worker rejects managed ServiceAccount issuance revoked after admission before Compute",
             "the revision worker retries transient Provider binding read failures without activating",

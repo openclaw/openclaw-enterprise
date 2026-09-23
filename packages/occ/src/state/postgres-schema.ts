@@ -40,6 +40,7 @@ const collatedText = customType<{ data: string; driverData: string }>({
 const identifierPatterns = {
   installation: "^ins_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
   namespace: "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+  providerConnection: "^pco_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
   preset: "^pre_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
   configuration: "^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
   serviceAccount: "^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -259,6 +260,9 @@ export const agents = occSchema.table(
     repositoryBindings: jsonb("repository_bindings").$type<readonly RepositoryBindingSelection[]>(),
     servicePrincipalId: text("service_principal_id").notNull(),
     harnessAuth: jsonb("harness_auth").$type<HarnessAuthBinding>(),
+    harnessAuthProviderConnectionId: text("harness_auth_provider_connection_id").generatedAlwaysAs(
+      sql`CASE WHEN harness_auth->>'method' = 'provider_connection' THEN harness_auth->>'connectionId' END`,
+    ),
     harnessAuthSecretId: text("harness_auth_secret_id").generatedAlwaysAs(
       sql`CASE WHEN harness_auth->>'method' = 'api_key' THEN harness_auth #>> '{source,id}' END`,
     ),
@@ -320,6 +324,13 @@ export const agents = occSchema.table(
       "agents_harness_auth_valid",
       sql`${table.harnessAuth} IS NULL OR occ.harness_auth_is_valid(${table.harnessAuth}, ${table.namespaceId}, false)`,
     ),
+    foreignKey({
+      name: "agents_harness_auth_provider_connection_owner",
+      columns: [table.namespaceId, table.harnessAuthProviderConnectionId],
+      foreignColumns: [providerConnections.namespaceId, providerConnections.id],
+    })
+      .onUpdate("restrict")
+      .onDelete("restrict"),
     foreignKey({
       name: "agents_harness_auth_secret_owner",
       columns: [table.namespaceId, table.harnessAuthSecretId],
@@ -429,6 +440,53 @@ export const secrets = occSchema.table(
       "secrets_backend_uid_valid",
       sql`${table.backendUid} ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'`,
     ),
+  ],
+);
+
+export const providerConnections = occSchema.table(
+  "provider_connections",
+  {
+    id: text("id").primaryKey(),
+    namespaceId: text("namespace_id")
+      .notNull()
+      .references(() => namespaces.id, { onDelete: "restrict", onUpdate: "restrict" }),
+    name: collatedText("name").notNull(),
+    providerId: text("provider_id").notNull(),
+    authMethodId: text("auth_method_id").notNull(),
+    sourceSecretId: text("source_secret_id"),
+    baseUrl: text("base_url"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (table): PgTableExtraConfigValue[] => [
+    unique("provider_connections_namespace_id_id_unique").on(table.namespaceId, table.id),
+    unique("provider_connections_namespace_id_name_unique").on(table.namespaceId, table.name),
+    check(
+      "provider_connections_id_format",
+      sql`${table.id} ~ ${identifierPatterns.providerConnection}`,
+    ),
+    check(
+      "provider_connections_name_valid",
+      sql`char_length(${table.name}) BETWEEN 1 AND 200 AND ${table.name} = btrim(${table.name}) AND ${table.name} !~ '[[:cntrl:]]'`,
+    ),
+    check(
+      "provider_connections_provider_id_valid",
+      sql`char_length(${table.providerId}) BETWEEN 1 AND 200 AND ${table.providerId} = btrim(${table.providerId}) AND ${table.providerId} !~ '[[:cntrl:]]'`,
+    ),
+    check(
+      "provider_connections_auth_method_id_valid",
+      sql`char_length(${table.authMethodId}) BETWEEN 1 AND 200 AND ${table.authMethodId} = btrim(${table.authMethodId}) AND ${table.authMethodId} !~ '[[:cntrl:]]'`,
+    ),
+    check(
+      "provider_connections_base_url_valid",
+      sql`${table.baseUrl} IS NULL OR (char_length(${table.baseUrl}) BETWEEN 1 AND 2048 AND ${table.baseUrl} = btrim(${table.baseUrl}) AND ${table.baseUrl} !~ '[[:cntrl:]]')`,
+    ),
+    foreignKey({
+      name: "provider_connections_source_secret_owner",
+      columns: [table.namespaceId, table.sourceSecretId],
+      foreignColumns: [secrets.namespaceId, secrets.id],
+    })
+      .onDelete("restrict")
+      .onUpdate("restrict"),
   ],
 );
 
@@ -781,7 +839,7 @@ export const iamRestrictions = occSchema.table(
     ),
     check(
       "iam_restrictions_resource_kind_valid",
-      sql`${table.resourceKind} IN ('installation', 'namespace', 'configuration', 'preset', 'service_account', 'secret', 'agent', 'agent_revision')`,
+      sql`${table.resourceKind} IN ('installation', 'namespace', 'configuration', 'preset', 'provider_connection', 'service_account', 'secret', 'agent', 'agent_revision')`,
     ),
     check("iam_restrictions_effect_deny", sql`${table.effect} = 'deny'`),
     check(

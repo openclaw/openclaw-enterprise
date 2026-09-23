@@ -50,6 +50,7 @@ Stores Agent drafts, their desired runtime state, and the active revision refere
 - `harness_auth`
 - `harness_auth_secret_id`
 - `harness_auth_service_account_id`
+- `harness_auth_provider_connection_id`
 - `active_revision_id`
 - `desired_runtime_state`
 - `status`
@@ -113,6 +114,20 @@ Stores Secret metadata and backend references; Secret values are kept by the sel
 - `backend_name`
 - `backend_key`
 - `backend_uid`
+- `created_at`
+
+### `provider_connections`
+
+Stores immutable Namespace-owned model setup metadata and optional Secret references.
+It stores no provider credential values or OAuth tokens.
+
+- `id`
+- `namespace_id`
+- `name`
+- `provider_id`
+- `auth_method_id`
+- `source_secret_id`
+- `base_url`
 - `created_at`
 
 ### `service_accounts`

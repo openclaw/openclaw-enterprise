@@ -232,6 +232,15 @@ test(
       headers: authenticatedHeaders(session, { host: "127.0.0.1" }),
     });
     assert.equal(humanAuthorized.statusCode, 200, humanAuthorized.body);
+
+    // Development without an Installation config knows that its Provider inventory is empty.
+    const providers = await app.inject({
+      method: "GET",
+      url: "/providers",
+      headers: authenticatedHeaders(session, { host: "127.0.0.1" }),
+    });
+    assert.equal(providers.statusCode, 200, providers.body);
+    assert.deepEqual(providers.json().data, []);
   },
 );
 

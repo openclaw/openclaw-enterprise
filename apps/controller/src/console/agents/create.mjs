@@ -106,7 +106,10 @@ function renderAgentForm(context, rendered) {
   if (
     binding != null &&
     (!isObject(binding) ||
-      !["runtime", "api_key", "chatgpt_service_account"].includes(binding.method) ||
+      !["runtime", "api_key", "chatgpt_service_account", "provider_connection"].includes(
+        binding.method,
+      ) ||
+      (binding.method === "provider_connection" && typeof binding.connectionId !== "string") ||
       (binding.method === "chatgpt_service_account" &&
         typeof binding.serviceAccountId !== "string") ||
       (binding.method === "api_key" &&
@@ -249,9 +252,13 @@ function renderAgentForm(context, rendered) {
       mode,
       "Slack requires Dedicated execution. Changing the mode keeps any edited JSON; use Reset template to start again.",
     ),
-    field("Provider (optional)", provider),
-    providerStatus,
     auth.section,
+    field(
+      "Control-plane Provider (optional)",
+      provider,
+      "Associates this Agent with an Installation service-account Provider. Model credentials are selected above.",
+    ),
+    providerStatus,
     field(
       "Configuration JSON",
       configuration,
@@ -383,16 +390,16 @@ function renderAgentForm(context, rendered) {
       if (!context.isCurrent()) {
         return;
       }
-      const modelProviders = items.filter((item) => item.type === "chatgpt");
+      const controlPlaneProviders = items.filter((item) => item.type === "chatgpt");
       provider.append(
-        ...modelProviders
+        ...controlPlaneProviders
           .filter((item) => item.id !== providerId)
           .map((item) => element("option", { value: item.id }, `${item.id} · ${item.type}`)),
       );
       providersLoaded = true;
-      providerStatus.textContent = modelProviders.length
-        ? "Choose an installed Provider."
-        : "No Providers configured.";
+      providerStatus.textContent = controlPlaneProviders.length
+        ? "Choose an installed control-plane Provider if needed."
+        : "No control-plane Providers configured.";
       updateControls();
     })
     .catch((error) => {
@@ -402,7 +409,7 @@ function renderAgentForm(context, rendered) {
       if (error.status === 401) {
         context.onExpired();
       } else {
-        providerStatus.textContent = `Providers unavailable. ${message(error)} You can continue with None.`;
+        providerStatus.textContent = `Control-plane Providers unavailable. ${message(error)} You can continue with None for this optional association.`;
       }
     });
   form.addEventListener("submit", async (event) => {

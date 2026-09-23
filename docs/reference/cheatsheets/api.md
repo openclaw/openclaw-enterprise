@@ -103,7 +103,12 @@
 
 ### Providers
 
+- [`listProviderCatalog`](../api.md#get-providercatalog): List native model providers and authentication method availability.
+- [`listProviderConnections`](../api.md#get-namespacesnamespaceidproviderconnections): List readable provider connections in a Namespace.
 - [`listProviders`](../api.md#get-providers): List configured Providers.
+- [`getProviderConnection`](../api.md#get-namespacesnamespaceidproviderconnectionsconnectionid): Get a provider connection without credential values.
+- [`createProviderConnection`](../api.md#post-namespacesnamespaceidproviderconnections): Save provider and authentication configuration without authenticating.
+- [`deleteProviderConnection`](../api.md#delete-namespacesnamespaceidproviderconnectionsconnectionid): Remove an unreferenced provider configuration without revoking upstream credentials.
 
 ### Presets
 

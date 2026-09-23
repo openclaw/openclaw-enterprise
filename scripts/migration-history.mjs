@@ -110,6 +110,9 @@ function classifyReceipts(receipts, manifest) {
   if (receipts.length === 28) {
     return "repositoryRetention";
   }
+  if (receipts.length === 29) {
+    return "workspaceSetup";
+  }
   refuse("an incomplete or unsupported development history is installed");
 }
 

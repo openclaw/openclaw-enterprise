@@ -233,6 +233,14 @@
       "tag": "0028_agent_workspace_setup",
       "breakpoints": true,
       "sha256": "bb093c191fc0a02c9aac9e91f67df66e8fe0c5e7addd105330dcbff9c8d1ae91"
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1787000000029,
+      "tag": "0029_provider_connections",
+      "breakpoints": true,
+      "sha256": "16ba984722752bcf34b1adb828e4b3b6501f5581f5e1b6c3025a5fd8d977be0a"
     }
   ],
   "initialSchemaStates": {
@@ -259,8 +267,9 @@
     "prePresetsMain": "c2400ee2ec0c8168bd62de1ce0203bf364d38b3b7bbb51a0da35ed23c56e875f",
     "main": "fa7286bdba1ceac7097e75c05477664dbac21895280c972257ddfcd20bc76f9f",
     "repositoryCredentials": "a72e0e9b38947bb6fddc8f5b6b8179e7eee1ce4bb288cf3cc62e47bb9fa20e64",
-    "completed": "ba6666c978c47e0dd01c4b1251285f9c4c2b276c7c616fd5c8b861728c7d05e2",
-    "repositoryRetention": "d283cb9e5f8866f4bde1ddba6fd76bd2b056bb8ee81ae0b42c2a80e78d9943fb"
+    "completed": "9104b63a427da0d5a4567d216332b811697baf06febda7db07f12330fa17c840",
+    "repositoryRetention": "d283cb9e5f8866f4bde1ddba6fd76bd2b056bb8ee81ae0b42c2a80e78d9943fb",
+    "workspaceSetup": "ba6666c978c47e0dd01c4b1251285f9c4c2b276c7c616fd5c8b861728c7d05e2"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

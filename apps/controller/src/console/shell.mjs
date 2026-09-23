@@ -249,7 +249,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     const main = element("main", { className: "content", id: "main" });
     const selected = namespaces.find((item) => item.id === namespaceId);
     const scope =
-      feature === "agents"
+      feature === "agents" || feature === "providers"
         ? `Namespace · ${session ? (selected?.name ?? "No available selection") : "Checking access"}`
         : feature === "settings"
           ? "Your account"

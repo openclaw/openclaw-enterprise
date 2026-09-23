@@ -48,7 +48,20 @@ function authContext(revision, namespace = kubernetesNamespaceName(tenant.id)) {
               uid: "model-secret-uid",
             },
           }
-        : revision.harnessAuth,
+        : revision.harnessAuth.method === "provider_connection" && revision.harnessAuth.credential
+          ? {
+              ...revision.harnessAuth,
+              credential: {
+                ...revision.harnessAuth.credential,
+                backendRef: {
+                  namespaceName: namespace,
+                  name: "occ-model-key",
+                  key: "value",
+                  uid: "model-secret-uid",
+                },
+              },
+            }
+          : revision.harnessAuth,
   };
 }
 
@@ -2100,7 +2113,22 @@ test("Kubernetes cached runtime failure evidence is native-only and readiness-pa
   );
 });
 
-test("embedded replacement cuts over an unready shared gateway and waits for actual startup readiness", async () => {
+async function exerciseEmbeddedReplacement(scenario) {
+  const model = `${scenario.providerId}/${scenario.model}`;
+  const connectionAuth = {
+    method: "provider_connection",
+    connection: {
+      id: "pco_00000000-0000-4000-8000-000000000001",
+      providerId: scenario.providerId,
+      authMethodId: scenario.authMethodId,
+      ...(scenario.baseUrl ? { baseUrl: scenario.baseUrl } : {}),
+    },
+    ...(scenario.marker
+      ? {}
+      : {
+          credential: { source: apiKeyAuth.source, secretDriverId: apiKeyAuth.secretDriverId },
+        }),
+  };
   const driver = createKubernetesComputeDriver(
     routedOptions({
       runtime: {
@@ -2157,22 +2185,32 @@ test("embedded replacement cuts over an unready shared gateway and waits for act
   };
   const replacement = {
     ...base,
+    harnessAuth: scenario.providerId === "openai" ? apiKeyAuth : connectionAuth,
     id: "revision-embedded-recovery-restored",
     revision: 8,
     configuration: {
       agents: {
         defaults: {
-          model: "openai/gpt-5",
-          models: { "openai/gpt-5": { alias: "Selected model", params: { temperature: 0.2 } } },
+          model,
+          models: { [model]: { alias: "Selected model", params: { temperature: 0.2 } } },
         },
       },
       models: {
         providers: {
-          openai: {
-            baseUrl: "https://api.openai.com/v1",
-            api: "openai-responses",
-            apiKey: "${OPENAI_API_KEY}",
-            models: [{ id: "gpt-5", name: "Selected GPT", contextWindow: 128000, maxTokens: 8192 }],
+          [scenario.providerId]: {
+            baseUrl: scenario.baseUrl
+              ? "https://outdated.example.test"
+              : `https://api.${scenario.providerId}.com/v1`,
+            api: scenario.api,
+            apiKey: "${" + scenario.environmentName + "}",
+            models: [
+              {
+                id: scenario.model,
+                name: "Selected model",
+                contextWindow: 128000,
+                maxTokens: 8192,
+              },
+            ],
           },
         },
       },
@@ -2441,22 +2479,54 @@ test("embedded replacement cuts over an unready shared gateway and waits for act
   const gatewayEnvironment = Object.fromEntries(
     replaced.spec.template.spec.containers[0].env.map((entry) => [entry.name, entry]),
   );
-  assert.equal(gatewayEnvironment.OPENCLAW_HARNESS_MODEL.value, "openai/gpt-5");
-  assert.deepEqual(gatewayEnvironment.OPENAI_API_KEY.valueFrom.secretKeyRef, {
-    name: "occ-model-key",
-    key: "value",
-  });
+  assert.equal(gatewayEnvironment.OPENCLAW_HARNESS_MODEL.value, model);
+  assert.equal(gatewayEnvironment.OPENCLAW_HARNESS_PROVIDER.value, scenario.providerId);
+  assert.equal(gatewayEnvironment.OPENCLAW_HARNESS_CREDENTIAL_ENV.value, scenario.environmentName);
+  if (scenario.marker) {
+    assert.equal(gatewayEnvironment[scenario.environmentName].value, scenario.marker);
+  } else {
+    assert.deepEqual(gatewayEnvironment[scenario.environmentName].valueFrom.secretKeyRef, {
+      name: "occ-model-key",
+      key: "value",
+    });
+  }
+  for (const name of [
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_OAUTH_TOKEN",
+    "OLLAMA_API_KEY",
+    "VLLM_API_KEY",
+  ].filter((name) => name !== scenario.environmentName)) {
+    assert.equal(gatewayEnvironment[name], undefined);
+  }
   const probeConfiguration = JSON.parse(gatewayEnvironment.OPENCLAW_HARNESS_PROBE_CONFIG.value);
-  assert.equal(probeConfiguration.agents.defaults.model, "openai/gpt-5");
+  assert.equal(probeConfiguration.agents.defaults.model, model);
   assert.deepEqual(probeConfiguration.agents.defaults.models, {
-    "openai/gpt-5": {
+    [model]: {
       alias: "Selected model",
       params: { temperature: 0.2 },
       agentRuntime: { id: "openclaw" },
     },
   });
-  const { apiKey: _alias, ...expectedProvider } = replacement.configuration.models.providers.openai;
-  assert.deepEqual(probeConfiguration.models.providers.openai, expectedProvider);
+  const { apiKey: alias, ...expectedProvider } =
+    replacement.configuration.models.providers[scenario.providerId];
+  if (scenario.baseUrl) {
+    expectedProvider.baseUrl = scenario.baseUrl;
+  }
+  assert.deepEqual(probeConfiguration.models.providers[scenario.providerId], expectedProvider);
+  const mounted = JSON.parse(
+    objects.get(key("ConfigMap", driver.gatewayConfiguration(replacement).name)).data[
+      "openclaw.json"
+    ],
+  );
+  assert.deepEqual(mounted.models.providers[scenario.providerId], {
+    ...expectedProvider,
+    apiKey: alias,
+  });
+  assert.equal(
+    replacement.configuration.models.providers[scenario.providerId].baseUrl,
+    scenario.baseUrl ? "https://outdated.example.test" : expectedProvider.baseUrl,
+  );
   for (const section of ["gateway", "channels", "plugins", "auth", "env", "secrets"]) {
     assert.equal(
       probeConfiguration[section],
@@ -2508,6 +2578,46 @@ test("embedded replacement cuts over an unready shared gateway and waits for act
     replaced.spec.template.spec.containers[0].command,
     "initial and replacement gateways execute the same native startup validation",
   );
+}
+
+test("embedded replacement cuts over an unready shared gateway and waits for actual startup readiness", async (t) => {
+  for (const scenario of [
+    {
+      providerId: "openai",
+      authMethodId: "api-key",
+      model: "gpt-5",
+      environmentName: "OPENAI_API_KEY",
+      api: "openai-responses",
+    },
+    {
+      providerId: "anthropic",
+      authMethodId: "api-key",
+      model: "claude-sonnet-4-5",
+      environmentName: "ANTHROPIC_API_KEY",
+      api: "anthropic-messages",
+    },
+    {
+      providerId: "ollama",
+      authMethodId: "local",
+      model: "llama3.2",
+      environmentName: "OLLAMA_API_KEY",
+      api: "ollama",
+      baseUrl: "http://10.20.0.5:11434",
+      marker: "ollama-local",
+    },
+    {
+      providerId: "vllm",
+      authMethodId: "custom",
+      model: "meta-llama/model",
+      environmentName: "VLLM_API_KEY",
+      api: "openai-completions",
+      baseUrl: "https://models.example.test/v1",
+    },
+  ]) {
+    await t.test(`${scenario.providerId}/${scenario.authMethodId}`, () =>
+      exerciseEmbeddedReplacement(scenario),
+    );
+  }
 });
 
 test("SDK resource requirements still require explicit CPU and memory requests and limits", () => {
@@ -3729,6 +3839,113 @@ test("revision lifecycle rejects another driver or missing identity before clust
     harnessAuth: apiKeyAuth,
     configuration: { ...revision.configuration, agents: { defaults: { model: "openai/gpt-5" } } },
   };
+  const anthropicConnection = {
+    method: "provider_connection",
+    connection: {
+      id: "pco_00000000-0000-4000-8000-000000000001",
+      providerId: "anthropic",
+      authMethodId: "api-key",
+    },
+    credential: { source: apiKeyAuth.source, secretDriverId: apiKeyAuth.secretDriverId },
+  };
+  const anthropicRevision = {
+    ...embeddedRevision,
+    harnessAuth: anthropicConnection,
+    configuration: {
+      ...embeddedRevision.configuration,
+      agents: { defaults: { model: "anthropic/claude-sonnet-4-5" } },
+    },
+  };
+  assert.throws(
+    () =>
+      production.validateHarnessAuth(
+        revision.harness,
+        anthropicConnection,
+        anthropicRevision.configuration,
+      ),
+    /embedded OpenClaw/,
+  );
+  assert.throws(
+    () =>
+      production.validateHarnessAuth(
+        embeddedRevision.harness,
+        anthropicConnection,
+        embeddedRevision.configuration,
+      ),
+    /compatible model provider/,
+  );
+  for (const unsupported of [
+    { ...anthropicConnection, credential: undefined },
+    {
+      ...anthropicConnection,
+      connection: { ...anthropicConnection.connection, authMethodId: "setup-token" },
+    },
+    {
+      ...anthropicConnection,
+      connection: {
+        ...anthropicConnection.connection,
+        providerId: "openai",
+        authMethodId: "oauth",
+      },
+    },
+  ]) {
+    assert.throws(
+      () =>
+        production.validateHarnessAuth(
+          embeddedRevision.harness,
+          unsupported,
+          anthropicRevision.configuration,
+        ),
+      /unsupported/,
+    );
+  }
+  // Resolved Secrets must match both the frozen credential and exact runtime Namespace.
+  const connectionContext = authContext(anthropicRevision);
+  for (const changed of [
+    {
+      ...connectionContext.harnessAuth,
+      connection: { ...anthropicConnection.connection, authMethodId: "setup-token" },
+    },
+    {
+      ...connectionContext.harnessAuth,
+      credential: {
+        ...connectionContext.harnessAuth.credential,
+        backendRef: {
+          ...connectionContext.harnessAuth.credential.backendRef,
+          namespaceName: "another-tenant",
+        },
+      },
+    },
+  ]) {
+    assert.throws(
+      () =>
+        production.harnessAuthForRevision(
+          anthropicRevision,
+          { harnessAuth: changed },
+          kubernetesNamespaceName(tenant.id),
+        ),
+      /admitted source/,
+    );
+  }
+  const openaiConnection = {
+    ...anthropicConnection,
+    connection: { ...anthropicConnection.connection, providerId: "openai" },
+  };
+  const dedicatedConnectionRevision = { ...revision, harnessAuth: openaiConnection };
+  production.validateHarnessAuth(revision.harness, openaiConnection, revision.configuration);
+  const dedicatedConnectionEnvironment = production.harnessAuthForRevision(
+    dedicatedConnectionRevision,
+    authContext(dedicatedConnectionRevision),
+    kubernetesNamespaceName(tenant.id),
+  ).environment;
+  assert.deepEqual(
+    dedicatedConnectionEnvironment.find((entry) => entry.name === "CODEX_LOGIN_MODE"),
+    { name: "CODEX_LOGIN_MODE", value: "api_key" },
+  );
+  assert.equal(
+    dedicatedConnectionEnvironment.some((entry) => entry.name === "OPENCLAW_HARNESS_PROBE_CONFIG"),
+    false,
+  );
   // Admission must retain supported model choices without permitting a second credential selector.
   for (const model of ["codex/gpt-5", "openai/gpt-5"]) {
     const configuration = { agents: { defaults: { model } } };
@@ -3787,6 +4004,15 @@ test("revision lifecycle rejects another driver or missing identity before clust
     { env: { OPENAI_API_KEY: "plaintext-fixture" } },
     { env: { vars: { OPENAI_API_KEY: "plaintext-fixture" } } },
     { models: { providers: { openai: { headers: { Authorization: "Bearer fixture" } } } } },
+    {
+      models: {
+        providers: {
+          openai: {
+            models: [{ id: "gpt-5", headers: { Authorization: "Bearer ${ALTERNATE_KEY}" } }],
+          },
+        },
+      },
+    },
   ]) {
     await assert.rejects(
       production.prepareRevision({

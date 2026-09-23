@@ -36,16 +36,27 @@ export function validateModelCredentialReferences(values: OpenClawConfigurationD
   for (const provider of Object.values(providers ?? {})) {
     const config = asRecord(provider);
     validateReference(config?.apiKey);
-    for (const [name, value] of Object.entries(asRecord(config?.headers) ?? {})) {
-      if (/^(?:authorization|api-key|x-api-key)$/i.test(name)) {
-        validateReference(value, name.toLowerCase() === "authorization");
+    for (const model of [config, ...(Array.isArray(config?.models) ? config.models : [])]) {
+      for (const [name, value] of Object.entries(asRecord(asRecord(model)?.headers) ?? {})) {
+        if (/^(?:authorization|api-key|x-api-key)$/i.test(name)) {
+          validateReference(value, name.toLowerCase() === "authorization");
+        }
       }
     }
   }
   const env = asRecord(values.env);
   for (const settings of [env, asRecord(env?.vars)]) {
     for (const [name, value] of Object.entries(settings ?? {})) {
-      if (name === "OPENAI_API_KEY" || name === "CODEX_ACCESS_TOKEN") {
+      if (
+        [
+          "OPENAI_API_KEY",
+          "CODEX_ACCESS_TOKEN",
+          "ANTHROPIC_API_KEY",
+          "ANTHROPIC_OAUTH_TOKEN",
+          "OLLAMA_API_KEY",
+          "VLLM_API_KEY",
+        ].includes(name)
+      ) {
         validateReference(value);
       }
     }

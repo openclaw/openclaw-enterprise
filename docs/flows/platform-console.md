@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-09-22
-last_updated_session: codex/01a0cc48-2eda-7fc2-a19e-096b68fccb7b
+updated: 2026-09-23
+last_updated_session: codex/01a0cb30-109d-7520-b27c-ace1d03ac751
 ---
 
 # Platform console request flow
@@ -89,7 +89,8 @@ graph TD
 `apps/controller/src/composition/development-postgres.ts:composePostgresDevelopment`
 
 Startup projects validated Provider definitions into safe `{id,type}` summaries
-and passes them to `createFastifyApp`. This is a startup snapshot, not a live
+and passes them to `createFastifyApp`. Development without an Installation
+configuration supplies an empty list. This is a startup snapshot, not a live
 configuration scan. The request path never reads credentials or contacts a
 Provider. The existing [Provider-managed credential delivery](service-account-driver-credential-delivery.md) owns
 client construction and Driver activation.
@@ -275,6 +276,8 @@ refreshes and inspects the Agent and revision history.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 04:18: Return an empty Provider inventory in development without an Installation configuration. (01a0cb30-109d-7520-b27c-ace1d03ac751 - 30547beeda9e413de5b7c4bf6c9f3b10f58c5fcb)
 
 - 2026-09-22 20:56: Rename the deployment-facing Console view to New revision. (01a0cc48-2eda-7fc2-a19e-096b68fccb7b - 081bccfcf3f5b114588dde1b42a0deb07f326017)
 

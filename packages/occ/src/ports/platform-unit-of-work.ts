@@ -21,6 +21,7 @@ export function bindPlatformUnitOfWork(
       "hasAgents",
       "hasConfigurations",
       "hasPresets",
+      "hasProviderConnections",
       "hasServiceAccounts",
       "hasSecrets",
       "transitionNamespaceStatus",
@@ -32,6 +33,14 @@ export function bindPlatformUnitOfWork(
       "lockConfiguration",
       "advanceConfigurationGeneration",
       "deleteConfiguration",
+    ]),
+    providerConnections: bindRepository(repositories.providerConnections, lifetime, [
+      "findProviderConnection",
+      "listProviderConnections",
+      "createProviderConnection",
+      "lockProviderConnection",
+      "hasReferences",
+      "deleteProviderConnection",
     ]),
     presets: bindRepository(repositories.presets, lifetime, [
       "findPreset",

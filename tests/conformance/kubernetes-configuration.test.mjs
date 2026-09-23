@@ -294,7 +294,22 @@ test("Kubernetes Configuration rejects literal model credentials before writes a
     { models: { providers: { openai: { apiKey: sentinel } } } },
     { models: { providers: { codex: { headers: { Authorization: `Bearer ${sentinel}` } } } } },
     { models: { providers: { openai: { headers: { "x-api-key": sentinel } } } } },
-    { env: { OPENAI_API_KEY: sentinel } },
+    {
+      models: {
+        providers: {
+          vllm: {
+            models: [{ id: "selected-model", headers: { Authorization: `Bearer ${sentinel}` } }],
+          },
+        },
+      },
+    },
+    ...[
+      "OPENAI_API_KEY",
+      "ANTHROPIC_API_KEY",
+      "ANTHROPIC_OAUTH_TOKEN",
+      "OLLAMA_API_KEY",
+      "VLLM_API_KEY",
+    ].map((name) => ({ env: { [name]: sentinel } })),
     { env: { vars: { CODEX_ACCESS_TOKEN: sentinel } } },
   ];
   for (const values of valuesWithCredential) {

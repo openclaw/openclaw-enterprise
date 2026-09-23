@@ -43,6 +43,10 @@ from [AGENTS.md](../AGENTS.md#running-integration-tests) instead.
 
 ## Active specifications
 
+[Provider setup and revision authentication](35-provider-auth-setup.md) — In progress;
+native provider/auth choices, saved Namespace connections, and Agent selection.
+OAuth acquisition and runtime delivery are deferred to a separate PR.
+
 [Native OpenClaw plugin tool policies](35-native-plugin-tool-policy.md) — Proposed;
 enforce Agent plugin policies through a managed native policy plugin and existing
 approval transport.

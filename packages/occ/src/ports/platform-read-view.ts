@@ -18,6 +18,10 @@ export function createPlatformReadView(
       "listNamespaces",
     ]),
     configurations: bindRepository(repositories.configurations, lifetime, ["findConfiguration"]),
+    providerConnections: bindRepository(repositories.providerConnections, lifetime, [
+      "findProviderConnection",
+      "listProviderConnections",
+    ]),
     presets: bindRepository(repositories.presets, lifetime, ["findPreset", "listPresets"]),
     secrets: bindRepository(repositories.secrets, lifetime, ["findSecret"]),
     serviceAccounts: bindRepository(repositories.serviceAccounts, lifetime, [

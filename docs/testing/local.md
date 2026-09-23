@@ -181,7 +181,12 @@ Do not change managed browser policies to make the suite run. A managed Chrome
 debugging policy can currently block the browser suite on locked-down hosts; use
 an approved browser environment instead. Set `OCC_TEST_CONSOLE_ARTIFACT_DIR` to
 retain screenshots at a chosen path; otherwise the suite uses a temporary
-directory. The existing
+directory. With that path configured, the provider setup browser case also records
+a video. Baseline CI uploads it as `console-provider-recordings`. This is a real
+Console/API fixture with a test Secret Driver; credential inputs are masked. It
+does not establish live model access. Identify the CI run and tested head when
+sharing the recording.
+The existing
 [image smoke test](images.md#images-and-helm) also loads console assets from the built
 controller image; it does not claim a live production deployment.
 

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
 updated: 2026-09-23
-last_updated_session: codex/01a0cc43-d13b-7cb2-ae15-1fd56e61bbf4
+last_updated_session: codex/01a0cb30-109d-7520-b27c-ace1d03ac751
 ---
 
 # Harness Execution Topology Flow
@@ -60,6 +60,11 @@ selection, and Agent ServicePrincipal. Production admits both approved
 `openclaw`/`embedded` and `codex`/`dedicated` combinations. An associated
 `access_token` additionally requires dedicated Codex; the frozen account
 contains only its OCC identity, credential kind, and opaque Secret reference.
+An Agent may select a saved provider connection. Admission checks its method's
+deployment capability and freezes the connection metadata, endpoint, and optional
+Secret source. OpenAI API keys support both approved topologies; Anthropic and
+local connections require embedded OpenClaw. Compute applies their native provider
+configuration without adding an inference transport; see the [binding flow](native-service-account-credential-delivery.md).
 
 ### 2. Claim work and realize the approved topology
 
@@ -199,6 +204,9 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 
 ## Changelog
 
+- 2026-09-23 04:16: Describe native provider connection snapshots and embedded-only compatibility for Anthropic/local methods. (01a0cb30-109d-7520-b27c-ace1d03ac751 - 30547beeda9e413de5b7c4bf6c9f3b10f58c5fcb)
+
+- 2026-09-23 03:20: Link provider-connection admission to existing API-key execution in the accompanying implementation. (01a0cb30-109d-7520-b27c-ace1d03ac751 - 762c0e1361c63bf925768977fb0d9fde7e6719b3)
 - 2026-09-23 03:24: Move durable claim cleanup from revision retirement to Agent deletion. (01a0cc43-d13b-7cb2-ae15-1fd56e61bbf4 - 43776d25c5007e017f7d0ffdca6b06f063afcd37)
 
 - 2026-09-17 19:14: Distinguish SSH operator credentials from Kubernetes managed authentication. (01a0acbf-4d5a-7413-9411-dce911f3ad23 - b8cabaf9a49e069a7668ccf88b9e71a7484227b7)

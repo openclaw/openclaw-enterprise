@@ -12,6 +12,10 @@ export const CreateDiscoveryError = {
   ...story("createDiscoveryError"),
   name: "Optional discovery denied",
 };
+export const CreateDiscoveryUnavailable = {
+  ...story("createDiscoveryUnavailable"),
+  name: "Control-plane discovery unavailable",
+};
 export const CreateInvalid = { ...story("createInvalid"), name: "Invalid JSON" };
 export const CreateConflict = { ...story("createConflict"), name: "Partial save and conflict" };
 export const CreateUnknown = { ...story("createUnknown"), name: "Save outcome unknown" };

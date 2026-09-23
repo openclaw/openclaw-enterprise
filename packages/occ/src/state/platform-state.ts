@@ -27,6 +27,7 @@ import type {
   NamespaceStatus,
   PluginDesiredState,
   Preset,
+  ProviderConnection,
   RepositoryBindingSelection,
   Secret,
   SecretBindings,
@@ -78,6 +79,7 @@ export interface NamespaceRepository extends NamespaceReadRepository {
   hasAgents(namespaceId: string): Promise<boolean>;
   hasConfigurations(namespaceId: string): Promise<boolean>;
   hasPresets(namespaceId: string): Promise<boolean>;
+  hasProviderConnections(namespaceId: string): Promise<boolean>;
   hasServiceAccounts(namespaceId: string): Promise<boolean>;
   hasSecrets(namespaceId: string): Promise<boolean>;
   transitionNamespaceStatus(
@@ -202,6 +204,24 @@ export interface ConfigurationRepository extends ConfigurationReadRepository {
   deleteConfiguration(namespaceId: string, configurationId: string): Promise<boolean>;
 }
 
+export interface ProviderConnectionReadRepository {
+  findProviderConnection(
+    namespaceId: string,
+    connectionId: string,
+  ): Promise<Readonly<ProviderConnection> | undefined>;
+  listProviderConnections(namespaceId: string): Promise<readonly Readonly<ProviderConnection>[]>;
+}
+
+export interface ProviderConnectionRepository extends ProviderConnectionReadRepository {
+  createProviderConnection(connection: ProviderConnection): Promise<Readonly<ProviderConnection>>;
+  lockProviderConnection(
+    namespaceId: string,
+    connectionId: string,
+  ): Promise<Readonly<ProviderConnection> | undefined>;
+  hasReferences(namespaceId: string, connectionId: string): Promise<boolean>;
+  deleteProviderConnection(namespaceId: string, connectionId: string): Promise<boolean>;
+}
+
 export interface PresetReadRepository {
   findPreset(namespaceId: string, presetId: string): Promise<Readonly<Preset> | undefined>;
   listPresets(namespaceId: string): Promise<readonly Readonly<Preset>[]>;
@@ -318,6 +338,42 @@ export function validHarnessAuthSnapshot(value: HarnessAuthSnapshot, namespaceId
     if (value.method === "runtime") {
       return normalizeHarnessAuthBinding(value) !== null;
     }
+    if (value.method === "provider_connection") {
+      const connection = value.connection;
+      if (
+        Object.keys(value).length !== (value.credential === undefined ? 2 : 3) ||
+        connection === null ||
+        typeof connection !== "object" ||
+        Array.isArray(connection) ||
+        Object.keys(connection).length !== (connection.baseUrl === undefined ? 3 : 4) ||
+        !/^pco_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+          connection.id,
+        ) ||
+        !isNonEmptyString(connection.providerId) ||
+        !isNonEmptyString(connection.authMethodId) ||
+        (connection.baseUrl !== undefined &&
+          (!isNonEmptyString(connection.baseUrl) ||
+            connection.baseUrl.length > 2048 ||
+            connection.baseUrl !== connection.baseUrl.trim() ||
+            Array.from(connection.baseUrl).some((character) => {
+              const code = character.charCodeAt(0);
+              return code < 32 || code === 127;
+            })))
+      ) {
+        return false;
+      }
+      if (value.credential === undefined) {
+        return true;
+      }
+      const credential = value.credential;
+      const binding = normalizeHarnessAuthBinding({ method: "api_key", source: credential.source });
+      return (
+        Object.keys(credential).length === 2 &&
+        binding?.method === "api_key" &&
+        binding.source.namespaceId === namespaceId &&
+        isNonEmptyString(credential.secretDriverId)
+      );
+    }
     const binding =
       value.method === "api_key"
         ? normalizeHarnessAuthBinding({ method: value.method, source: value.source })
@@ -361,6 +417,11 @@ export function harnessAuthMatches(
   binding: HarnessAuthBinding | null,
   snapshot: HarnessAuthSnapshot,
 ): boolean {
+  if (binding?.method === "provider_connection") {
+    return (
+      snapshot.method === "provider_connection" && snapshot.connection.id === binding.connectionId
+    );
+  }
   if (binding === null || binding.method !== snapshot.method) {
     return false;
   }
@@ -376,19 +437,21 @@ export function harnessAuthMatches(
 }
 
 function harnessSecretReference(
-  binding: HarnessAuthBinding | undefined | null,
+  binding: HarnessAuthBinding | HarnessAuthSnapshot | undefined | null,
   namespaceId: string,
   secretId: string,
 ): boolean {
-  return (
-    binding?.method === "api_key" &&
-    binding.source.namespaceId === namespaceId &&
-    binding.source.id === secretId
-  );
+  const source =
+    binding?.method === "api_key"
+      ? binding.source
+      : binding?.method === "provider_connection" && "connection" in binding
+        ? binding.credential?.source
+        : undefined;
+  return source?.namespaceId === namespaceId && source.id === secretId;
 }
 
 function harnessAccountReference(
-  binding: HarnessAuthBinding | undefined | null,
+  binding: HarnessAuthBinding | HarnessAuthSnapshot | undefined | null,
   serviceAccountId: string,
 ): boolean {
   return (
@@ -397,7 +460,7 @@ function harnessAccountReference(
 }
 
 export async function assertHarnessAuthAvailable(
-  state: Pick<PlatformReadView, "secrets" | "serviceAccounts">,
+  state: Pick<PlatformReadView, "secrets" | "serviceAccounts" | "providerConnections">,
   namespaceId: string,
   value: HarnessAuthBinding | null,
 ): Promise<void> {
@@ -410,7 +473,18 @@ export async function assertHarnessAuthAvailable(
   if (binding === null || binding.method === "runtime") {
     return;
   }
-  if (binding.method === "api_key") {
+  if (binding.method === "provider_connection") {
+    if (
+      (await state.providerConnections.findProviderConnection(
+        namespaceId,
+        binding.connectionId,
+      )) === undefined
+    ) {
+      throw new ScopeViolationError(
+        "The Agent harness authentication references an unavailable ProviderConnection.",
+      );
+    }
+  } else if (binding.method === "api_key") {
     if (
       binding.source.namespaceId !== namespaceId ||
       (await state.secrets.findSecret(namespaceId, binding.source.id)) === undefined
@@ -541,6 +615,7 @@ export interface PlatformReadView {
   readonly namespaces: NamespaceReadRepository;
   readonly configurations: ConfigurationReadRepository;
   readonly presets: PresetReadRepository;
+  readonly providerConnections: ProviderConnectionReadRepository;
   readonly secrets: SecretReadRepository;
   readonly serviceAccounts: ServiceAccountReadRepository;
   readonly agents: AgentReadRepository;
@@ -556,6 +631,7 @@ export interface PlatformUnitOfWork extends PlatformReadView {
   readonly namespaces: NamespaceRepository;
   readonly configurations: ConfigurationRepository;
   readonly presets: PresetRepository;
+  readonly providerConnections: ProviderConnectionRepository;
   readonly secrets: SecretRepository;
   readonly serviceAccounts: ServiceAccountRepository;
   readonly agents: AgentRepository;
@@ -594,6 +670,7 @@ interface PlatformSnapshot {
   readonly namespaces: Map<string, Readonly<PersistedNamespace>>;
   readonly configurations: Map<string, Readonly<ConfigurationOwnership>>;
   readonly presets: Map<string, Readonly<Preset>>;
+  readonly providerConnections: Map<string, Readonly<ProviderConnection>>;
   readonly secrets: Map<string, Readonly<Secret>>;
   readonly serviceAccounts: Map<string, Readonly<ServiceAccount>>;
   readonly agents: Map<string, Readonly<Agent>>;
@@ -633,6 +710,12 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
       ]),
     ),
     presets: new Map(Array.from(snapshot.presets, ([key, preset]) => [key, immutableCopy(preset)])),
+    providerConnections: new Map(
+      Array.from(snapshot.providerConnections, ([key, connection]) => [
+        key,
+        immutableCopy(connection),
+      ]),
+    ),
     secrets: new Map(Array.from(snapshot.secrets, ([key, secret]) => [key, immutableCopy(secret)])),
     serviceAccounts: new Map(
       Array.from(snapshot.serviceAccounts, ([key, account]) => [key, immutableCopy(account)]),
@@ -873,6 +956,10 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
       Array.from(snapshot.configurations.values()).some(
         (configuration) => configuration.namespaceId === namespaceId,
       ),
+    hasProviderConnections: async (namespaceId) =>
+      Array.from(snapshot.providerConnections.values()).some(
+        (connection) => connection.namespaceId === namespaceId,
+      ),
     hasPresets: async (namespaceId) =>
       Array.from(snapshot.presets.values()).some((preset) => preset.namespaceId === namespaceId),
     hasServiceAccounts: async (namespaceId) =>
@@ -918,6 +1005,9 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
         Array.from(snapshot.configurations.values()).some(
           (configuration) => configuration.namespaceId === namespaceId,
         ) ||
+        Array.from(snapshot.providerConnections.values()).some(
+          (connection) => connection.namespaceId === namespaceId,
+        ) ||
         Array.from(snapshot.presets.values()).some(
           (preset) => preset.namespaceId === namespaceId,
         ) ||
@@ -936,6 +1026,103 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
       const saved = immutableCopy({ ...namespace, deletedAt });
       snapshot.namespaces.set(key, saved);
       return immutableCopy(saved);
+    },
+  };
+
+  const findProviderConnection: ProviderConnectionReadRepository["findProviderConnection"] = async (
+    namespaceId,
+    connectionId,
+  ) => {
+    if (snapshot.namespaces.get(namespaceId)?.deletedAt !== undefined) {
+      return undefined;
+    }
+    const connection = snapshot.providerConnections.get(agentKey(namespaceId, connectionId));
+    return connection === undefined ? undefined : immutableCopy(connection);
+  };
+  const providerConnections: ProviderConnectionRepository = {
+    findProviderConnection,
+    listProviderConnections: async (namespaceId) =>
+      Object.freeze(
+        snapshot.namespaces.get(namespaceId)?.deletedAt !== undefined
+          ? []
+          : Array.from(snapshot.providerConnections.values())
+              .filter((connection) => connection.namespaceId === namespaceId)
+              .sort((a, b) => a.id.localeCompare(b.id))
+              .map((connection) => immutableCopy(connection)),
+      ),
+    createProviderConnection: async (connection) => {
+      assertInitialized(snapshot);
+      const namespace = await namespaces.lockNamespace(connection.namespaceId);
+      if (namespace === undefined || !["provisioning", "ready"].includes(namespace.status)) {
+        throw new ScopeViolationError(
+          "The ProviderConnection belongs to an unavailable Namespace.",
+        );
+      }
+      if (
+        connection.source !== undefined &&
+        (connection.source.namespaceId !== connection.namespaceId ||
+          (await secrets.findSecret(connection.namespaceId, connection.source.id)) === undefined)
+      ) {
+        throw new ScopeViolationError("The ProviderConnection references an unavailable Secret.");
+      }
+      if (
+        Array.from(snapshot.providerConnections.values()).some(
+          (existing) =>
+            existing.id === connection.id ||
+            (existing.namespaceId === connection.namespaceId && existing.name === connection.name),
+        )
+      ) {
+        throw new ResourceConflictError(
+          "The ProviderConnection identity or Namespace name already exists.",
+        );
+      }
+      snapshot.providerConnections.set(
+        agentKey(connection.namespaceId, connection.id),
+        immutableCopy(connection),
+      );
+      return immutableCopy(connection);
+    },
+    lockProviderConnection: findProviderConnection,
+    hasReferences: async (namespaceId, connectionId) => {
+      const references = (auth: HarnessAuthBinding | HarnessAuthSnapshot | null | undefined) =>
+        auth?.method === "provider_connection" &&
+        ("connectionId" in auth ? auth.connectionId : auth.connection.id) === connectionId;
+      return (
+        Array.from(snapshot.agents.values()).some(
+          (agent) =>
+            agent.namespaceId === namespaceId &&
+            (references(agent.harnessAuth) ||
+              references(
+                snapshot.revisions
+                  .get(agentKey(namespaceId, agent.id))
+                  ?.find((revision) => revision.id === agent.activeRevisionId)?.harnessAuth,
+              )),
+        ) ||
+        snapshot.operations.some(
+          (operation) =>
+            operation.kind === "agent_revision" &&
+            operation.namespaceId === namespaceId &&
+            Array.from(snapshot.revisions.values())
+              .flat()
+              .some(
+                (revision) =>
+                  revision.namespaceId === namespaceId &&
+                  revision.id === operation.resourceId &&
+                  references(revision.harnessAuth),
+              ),
+        )
+      );
+    },
+    deleteProviderConnection: async (namespaceId, connectionId) => {
+      if ((await findProviderConnection(namespaceId, connectionId)) === undefined) {
+        return false;
+      }
+      if (await providerConnections.hasReferences(namespaceId, connectionId)) {
+        throw new ScopeViolationError(
+          "The ProviderConnection is referenced by active platform state.",
+        );
+      }
+      return snapshot.providerConnections.delete(agentKey(namespaceId, connectionId));
     },
   };
 
@@ -1145,6 +1332,10 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
         return false;
       }
       return (
+        Array.from(snapshot.providerConnections.values()).some(
+          (connection) =>
+            connection.namespaceId === namespaceId && connection.source?.id === secretId,
+        ) ||
         Array.from(snapshot.configurations.values()).some(
           (configuration) =>
             configuration.namespaceId === namespaceId &&
@@ -1410,7 +1601,7 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
         throw new ScopeViolationError("Legacy Agent authentication selectors are unsupported.");
       }
       await assertHarnessAuthAvailable(
-        { secrets, serviceAccounts },
+        { secrets, serviceAccounts, providerConnections },
         agent.namespaceId,
         agent.harnessAuth,
       );
@@ -1517,7 +1708,11 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
       }
       await assertConfigurationUsableByAgent(configurations, secrets, namespaceId, configurationId);
       const association = harnessAuth === undefined ? current.harnessAuth : harnessAuth;
-      await assertHarnessAuthAvailable({ secrets, serviceAccounts }, namespaceId, association);
+      await assertHarnessAuthAvailable(
+        { secrets, serviceAccounts, providerConnections },
+        namespaceId,
+        association,
+      );
       const nextProviderId = providerId === undefined ? current.providerId : providerId;
       const plugins = nextPlugins === undefined ? current.plugins : normalizedPlugins(nextPlugins);
       const repositoryBindings =
@@ -1606,7 +1801,7 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
         throw new ScopeViolationError("The AgentRevision belongs to an unavailable Agent.");
       }
       await assertHarnessAuthAvailable(
-        { secrets, serviceAccounts },
+        { secrets, serviceAccounts, providerConnections },
         revision.namespaceId,
         harnessAuthBindingFromSnapshot(revision.harnessAuth),
       );
@@ -1651,6 +1846,11 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
     }
     if (resourceKind === "configuration") {
       return (await configurations.findConfiguration(namespaceId, resourceId)) !== undefined;
+    }
+    if (resourceKind === "provider_connection") {
+      return (
+        (await providerConnections.findProviderConnection(namespaceId, resourceId)) !== undefined
+      );
     }
     if (resourceKind === "preset") {
       return (await presets.findPreset(namespaceId, resourceId)) !== undefined;
@@ -1801,6 +2001,7 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
     namespaces,
     configurations,
     presets,
+    providerConnections,
     secrets,
     serviceAccounts,
     agents,
@@ -1935,6 +2136,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     namespaces: new Map(),
     configurations: new Map(),
     presets: new Map(),
+    providerConnections: new Map(),
     secrets: new Map(),
     serviceAccounts: new Map(),
     agents: new Map(),

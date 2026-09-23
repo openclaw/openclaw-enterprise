@@ -315,6 +315,74 @@ interface PreparedHarnessAuth {
   readonly environment: readonly V1EnvVar[];
 }
 
+interface NativeModelAuthentication {
+  readonly providerId: string;
+  readonly environmentName: string;
+  readonly marker?: string;
+  readonly api?: string;
+}
+
+// These mappings belong to the bundled OpenClaw runtime, not the platform catalog.
+function nativeModelAuthentication(auth: HarnessAuthSnapshot): NativeModelAuthentication {
+  if (auth.method === "api_key" || auth.method === "chatgpt_service_account") {
+    return { providerId: "openai", environmentName: MODEL_API_KEY };
+  }
+  if (auth.method === "provider_connection") {
+    const { providerId, authMethodId } = auth.connection;
+    const methods: Readonly<Record<string, NativeModelAuthentication>> = {
+      "openai/api-key": { providerId: "openai", environmentName: MODEL_API_KEY },
+      "anthropic/api-key": { providerId: "anthropic", environmentName: "ANTHROPIC_API_KEY" },
+      "ollama/local": {
+        providerId: "ollama",
+        environmentName: "OLLAMA_API_KEY",
+        marker: "ollama-local",
+        api: "ollama",
+      },
+      "vllm/custom": {
+        providerId: "vllm",
+        environmentName: "VLLM_API_KEY",
+        api: "openai-completions",
+      },
+    };
+    const native = methods[`${providerId}/${authMethodId}`];
+    if (native !== undefined && (auth.credential === undefined) === (native.marker !== undefined)) {
+      return native;
+    }
+  }
+  throw new ConfigurationFailure("Harness authentication method is unsupported.");
+}
+
+function harnessNativeConfiguration(
+  configuration: OpenClawConfigurationDocument,
+  auth: HarnessAuthSnapshot,
+): OpenClawConfigurationDocument {
+  if (auth.method !== "provider_connection") {
+    return configuration;
+  }
+  const native = nativeModelAuthentication(auth);
+  const models = asRecord(configuration.models);
+  const providers = asRecord(models?.providers);
+  const provider = asRecord(providers?.[native.providerId]);
+  const baseUrl = auth.connection.baseUrl;
+  if ((native.api !== undefined) !== (baseUrl !== undefined)) {
+    throw new ConfigurationFailure("Provider connection endpoint is missing or unsupported.");
+  }
+  return {
+    ...configuration,
+    models: {
+      ...models,
+      providers: {
+        ...providers,
+        [native.providerId]: {
+          ...provider,
+          apiKey: `\${${native.environmentName}}`,
+          ...(baseUrl === undefined ? {} : { baseUrl, api: native.api }),
+        },
+      },
+    },
+  } as OpenClawConfigurationDocument;
+}
+
 /** One rendering step; neither credential values nor backend lookups belong here. */
 function prepareHarnessAuth(
   harness: RevisionHarnessDescriptor,
@@ -330,6 +398,13 @@ function prepareHarnessAuth(
   const environment: V1EnvVar[] = [];
   if (resolvedAuth.method === "api_key") {
     environment.push(secret(MODEL_API_KEY, resolvedAuth.backendRef));
+  } else if (resolvedAuth.method === "provider_connection") {
+    const native = nativeModelAuthentication(resolvedAuth);
+    if (resolvedAuth.credential !== undefined) {
+      environment.push(secret(native.environmentName, resolvedAuth.credential.backendRef));
+    } else {
+      environment.push({ name: native.environmentName, value: native.marker! });
+    }
   } else if (
     resolvedAuth.method === "chatgpt_service_account" &&
     harness.mode === "dedicated" &&
@@ -345,10 +420,11 @@ function prepareHarnessAuth(
   } else {
     throw new ConfigurationFailure("Harness authentication method is unsupported.");
   }
+  const loginMode = resolvedAuth.method === "provider_connection" ? "api_key" : resolvedAuth.method;
   if (harness.mode === "dedicated") {
-    environment.push({ name: "CODEX_LOGIN_MODE", value: resolvedAuth.method });
+    environment.push({ name: "CODEX_LOGIN_MODE", value: loginMode });
   }
-  return { loginMode: resolvedAuth.method, environment };
+  return { loginMode, environment };
 }
 
 const MANAGER = "openclaw-enterprise";
@@ -675,7 +751,8 @@ function harnessPrimaryModel(configuration: OpenClawConfigurationDocument): stri
 
 function harnessProbeConfiguration(configuration: OpenClawConfigurationDocument): object {
   const model = harnessPrimaryModel(configuration);
-  const provider = asRecord(asRecord(asRecord(configuration.models)?.providers)?.openai);
+  const providerId = model.split("/", 1)[0]!;
+  const provider = asRecord(asRecord(asRecord(configuration.models)?.providers)?.[providerId]);
   const fragment = provider === undefined ? undefined : { ...provider };
   if (fragment !== undefined) {
     delete fragment.apiKey;
@@ -708,7 +785,7 @@ function harnessProbeConfiguration(configuration: OpenClawConfigurationDocument)
         models: { [model]: { ...modelEntry, agentRuntime: { id: "openclaw" } } },
       },
     },
-    ...(fragment === undefined ? {} : { models: { providers: { openai: fragment } } }),
+    ...(fragment === undefined ? {} : { models: { providers: { [providerId]: fragment } } }),
   };
 }
 
@@ -1111,12 +1188,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (
       (!embedded && !dedicated) ||
       !auth ||
-      (auth.method !== "api_key" && auth.method !== "chatgpt_service_account") ||
-      (embedded && auth.method !== "api_key")
+      (auth.method !== "api_key" &&
+        auth.method !== "chatgpt_service_account" &&
+        auth.method !== "provider_connection") ||
+      (embedded && auth.method === "chatgpt_service_account")
     ) {
       throw new ConfigurationFailure(
         "Harness authentication is incompatible with the selected topology.",
       );
+    }
+    const native = nativeModelAuthentication(auth);
+    if (dedicated && native.providerId !== "openai") {
+      throw new ConfigurationFailure("Provider connection requires embedded OpenClaw.");
     }
     if (
       auth.method === "chatgpt_service_account" &&
@@ -1141,7 +1224,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         ? [selection]
         : [value?.primary, ...(Array.isArray(value?.fallbacks) ? value.fallbacks : [])];
     });
-    const prefixes = embedded ? ["openai/"] : ["openai/", "codex/"];
+    const prefixes = embedded ? [`${native.providerId}/`] : ["openai/", "codex/"];
     if (
       models.length === 0 ||
       models.some(
@@ -1150,10 +1233,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
           !prefixes.some((prefix) => model.startsWith(prefix) && model.length > prefix.length),
       )
     ) {
-      throw new ConfigurationFailure("Harness authentication requires a compatible OpenAI model.");
-    }
-    if (embedded) {
-      harnessProbeConfiguration(configuration);
+      throw new ConfigurationFailure(
+        "Harness authentication requires a compatible model provider.",
+      );
     }
     const conflictingAuth = () =>
       new ConfigurationFailure("Model credentials must use the Harness authentication binding.");
@@ -1164,7 +1246,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
     for (const values of [env, asRecord(env?.vars)]) {
       if (
         Object.keys(values ?? {}).some((name) =>
-          /^(?:OPENAI_|CODEX_(?:ACCESS_TOKEN|CHATGPT_WORKSPACE_ID|LOGIN_MODE)$)/i.test(name),
+          /^(?:OPENAI_|ANTHROPIC_|OLLAMA_API_KEY$|VLLM_API_KEY$|CODEX_(?:ACCESS_TOKEN|CHATGPT_WORKSPACE_ID|LOGIN_MODE)$)/i.test(
+            name,
+          ),
         )
       ) {
         throw conflictingAuth();
@@ -1175,8 +1259,25 @@ export class KubernetesComputeDriver implements ComputeDriver {
     for (const provider of selectedProviders) {
       const config = asRecord(providers[provider!]);
       if (
-        Object.keys(asRecord(config?.headers) ?? {}).some((name) =>
-          /^(?:authorization|api-key|x-api-key)$/i.test(name),
+        auth.method === "provider_connection" &&
+        (config?.auth !== undefined ||
+          (auth.connection.baseUrl !== undefined &&
+            Array.isArray(config?.models) &&
+            config.models.some((value) => {
+              const model = asRecord(value);
+              return (
+                (model?.baseUrl !== undefined && model.baseUrl !== auth.connection.baseUrl) ||
+                (model?.api !== undefined && model.api !== native.api)
+              );
+            })))
+      ) {
+        throw conflictingAuth();
+      }
+      if (
+        [config, ...(Array.isArray(config?.models) ? config.models : [])].some((model) =>
+          Object.keys(asRecord(asRecord(model)?.headers) ?? {}).some((name) =>
+            /^(?:authorization|api-key|x-api-key)$/i.test(name),
+          ),
         )
       ) {
         throw conflictingAuth();
@@ -1187,7 +1288,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (!embedded) {
         throw conflictingAuth();
       }
-      if (config.apiKey === "${OPENAI_API_KEY}") {
+      if (config.apiKey === `\${${native.environmentName}}`) {
         continue;
       }
       const ref = asRecord(config.apiKey);
@@ -1199,13 +1300,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
         !ref ||
         Object.keys(ref).length !== 3 ||
         ref.source !== "env" ||
-        ref.id !== MODEL_API_KEY ||
+        ref.id !== native.environmentName ||
         source?.source !== "env" ||
         (source.allowlist !== undefined &&
-          (!Array.isArray(source.allowlist) || !source.allowlist.includes(MODEL_API_KEY)))
+          (!Array.isArray(source.allowlist) || !source.allowlist.includes(native.environmentName)))
       ) {
         throw conflictingAuth();
       }
+    }
+    if (embedded) {
+      harnessProbeConfiguration(harnessNativeConfiguration(configuration, auth));
     }
     this.validateChannelSecretBindings(configuration, secretBindings);
   }
@@ -1591,11 +1695,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
       throw new ConfigurationFailure("AgentRevision Configuration ownership is invalid.");
     }
     const materialInput = this.repositoryMaterialInput(revision, context);
-    const nativeConfiguration =
+    const gatewayNativeConfiguration =
       materialInput === undefined
         ? revision.configuration
         : repositoryNativeConfiguration(revision.configuration);
     const embedded = revision.harness.mode === "embedded";
+    const nativeConfiguration = embedded
+      ? harnessNativeConfiguration(gatewayNativeConfiguration, revision.harnessAuth)
+      : gatewayNativeConfiguration;
     if (
       (embedded && revision.harness.id !== "openclaw") ||
       (!embedded && (revision.harness.mode !== "dedicated" || revision.harness.id !== "codex"))
@@ -5970,6 +6077,28 @@ export class KubernetesComputeDriver implements ComputeDriver {
           "Harness authentication Secret does not match the admitted source.",
         );
       }
+    } else if (auth.method === "provider_connection") {
+      const credential = auth.credential;
+      const snapshot =
+        credential === undefined
+          ? auth
+          : {
+              ...auth,
+              credential: { source: credential.source, secretDriverId: credential.secretDriverId },
+            };
+      if (
+        !isDeepStrictEqual(snapshot, revision.harnessAuth) ||
+        (credential !== undefined &&
+          (credential.source.namespaceId !== revision.namespaceId ||
+            credential.backendRef.namespaceName !== namespace ||
+            !credential.backendRef.name?.trim() ||
+            !credential.backendRef.key?.trim() ||
+            !credential.backendRef.uid?.trim()))
+      ) {
+        throw new OwnershipFailure(
+          "Provider connection delivery does not match the admitted source.",
+        );
+      }
     } else {
       if (!isDeepStrictEqual(auth, revision.harnessAuth)) {
         throw new OwnershipFailure(
@@ -5978,6 +6107,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       }
     }
     const prepared = prepareHarnessAuth(revision.harness, auth);
+    const native = nativeModelAuthentication(auth);
     return {
       ...prepared,
       environment: [
@@ -5985,9 +6115,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
         { name: "OPENCLAW_HARNESS_MODEL", value: harnessPrimaryModel(revision.configuration) },
         ...(revision.harness.mode === "embedded"
           ? [
+              { name: "OPENCLAW_HARNESS_PROVIDER", value: native.providerId },
+              { name: "OPENCLAW_HARNESS_CREDENTIAL_ENV", value: native.environmentName },
               {
                 name: "OPENCLAW_HARNESS_PROBE_CONFIG",
-                value: JSON.stringify(harnessProbeConfiguration(revision.configuration)),
+                value: JSON.stringify(
+                  harnessProbeConfiguration(
+                    harnessNativeConfiguration(revision.configuration, auth),
+                  ),
+                ),
               },
             ]
           : []),

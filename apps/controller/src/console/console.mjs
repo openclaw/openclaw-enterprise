@@ -4,6 +4,7 @@ import { createApiClient } from "./api-client.mjs";
 import { createViewLifetime } from "./view-lifetime.mjs";
 import { createNavigation, pages } from "./navigation.mjs";
 import { createShell, panel, sorted } from "./shell.mjs";
+import { renderProviderConnections } from "./provider-connections.mjs";
 
 const app = document.querySelector("#app");
 const lifetime = createViewLifetime();
@@ -266,15 +267,18 @@ async function loadPage({ fromNavigation = false } = {}) {
       await renderAgentDetail({ ...agentContext, agentId: current.agentId });
       return;
     }
+    if (current.feature === "providers") {
+      await renderProviderConnections({
+        ...agentContext,
+        namespaceId: namespaces.some((item) => item.id === namespaceId) ? namespaceId : null,
+      });
+      return;
+    }
     panel(shell.view, "Loading…", `Reading ${pages[current.feature].toLowerCase()}.`);
     const items =
       current.feature === "namespaces"
         ? namespaces
-        : await request(
-            current.feature === "providers"
-              ? "/providers"
-              : `/namespaces/${encodeURIComponent(namespaceId)}/agents`,
-          );
+        : await request(`/namespaces/${encodeURIComponent(namespaceId)}/agents`);
     if (!lifetime.isCurrent(active)) {
       return;
     }

@@ -20,6 +20,7 @@ import type {
   Namespace,
   PluginDesiredState,
   Preset,
+  ProviderConnection,
   Permission,
   Principal,
   Restriction,
@@ -54,6 +55,7 @@ import type {
   NamespaceRepository,
   PersistedNamespace,
   PresetRepository,
+  ProviderConnectionRepository,
   PlatformAuditSink,
   PlatformOperation,
   PlatformReadView,
@@ -238,6 +240,24 @@ function namespaceFromRow(row: PostgresRow): Readonly<PersistedNamespace> {
     status: status as Namespace["status"],
     createdAt: timestamp(row, "created_at"),
     ...(deletedAt === undefined ? {} : { deletedAt }),
+  });
+}
+
+function providerConnectionFromRow(row: PostgresRow): Readonly<ProviderConnection> {
+  const namespaceId = text(row, "namespace_id");
+  const secretId = optionalText(row, "source_secret_id");
+  const baseUrl = optionalText(row, "base_url");
+  return immutableCopy({
+    id: text(row, "id"),
+    namespaceId,
+    name: text(row, "name"),
+    providerId: text(row, "provider_id"),
+    authMethodId: text(row, "auth_method_id"),
+    ...(secretId === undefined
+      ? {}
+      : { source: { kind: "secret" as const, namespaceId, id: secretId } }),
+    ...(baseUrl === undefined ? {} : { baseUrl }),
+    createdAt: timestamp(row, "created_at"),
   });
 }
 
@@ -1198,6 +1218,18 @@ export class PostgresPlatformState implements PlatformStateStore {
         )[0];
         return found?.present === true;
       },
+      hasProviderConnections: async (namespaceId) => {
+        return (
+          rows(
+            (
+              await client.query(
+                "SELECT EXISTS (SELECT 1 FROM occ.provider_connections WHERE namespace_id = $1) AS present",
+                [namespaceId],
+              )
+            ).rows,
+          )[0]?.present === true
+        );
+      },
       hasPresets: async (namespaceId) => {
         const found = rows(
           (
@@ -1271,6 +1303,112 @@ export class PostgresPlatformState implements PlatformStateStore {
           ).rows,
         )[0];
         return existing === undefined ? undefined : namespaceFromRow(existing);
+      },
+    };
+
+    const findProviderConnection = async (
+      namespaceId: string,
+      connectionId: string,
+      lock = false,
+    ): Promise<Readonly<ProviderConnection> | undefined> => {
+      const found = rows(
+        (
+          await client.query(
+            `SELECT p.* FROM occ.provider_connections AS p
+         JOIN occ.namespaces AS n ON n.id = p.namespace_id AND n.deleted_at IS NULL
+         WHERE p.namespace_id = $1 AND p.id = $2${lock ? " FOR UPDATE OF p" : ""}`,
+            [namespaceId, connectionId],
+          )
+        ).rows,
+      )[0];
+      return found === undefined ? undefined : providerConnectionFromRow(found);
+    };
+    const providerConnections: ProviderConnectionRepository = {
+      findProviderConnection,
+      listProviderConnections: async (namespaceId) =>
+        Object.freeze(
+          rows(
+            (
+              await client.query(
+                `SELECT p.* FROM occ.provider_connections AS p
+         JOIN occ.namespaces AS n ON n.id = p.namespace_id AND n.deleted_at IS NULL
+         WHERE p.namespace_id = $1 ORDER BY p.id`,
+                [namespaceId],
+              )
+            ).rows,
+          ).map(providerConnectionFromRow),
+        ),
+      createProviderConnection: async (connection) => {
+        await this.requireInitialized(context);
+        const namespace = await namespaces.lockNamespace(connection.namespaceId);
+        if (namespace === undefined || !["provisioning", "ready"].includes(namespace.status)) {
+          throw new ScopeViolationError(
+            "The ProviderConnection belongs to an unavailable Namespace.",
+          );
+        }
+        if (
+          connection.source !== undefined &&
+          (connection.source.namespaceId !== connection.namespaceId ||
+            (await secrets.findSecret(connection.namespaceId, connection.source.id)) === undefined)
+        ) {
+          throw new ScopeViolationError("The ProviderConnection references an unavailable Secret.");
+        }
+        await client.query(
+          `INSERT INTO occ.provider_connections
+          (id, namespace_id, name, provider_id, auth_method_id, source_secret_id, base_url, created_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          [
+            connection.id,
+            connection.namespaceId,
+            connection.name,
+            connection.providerId,
+            connection.authMethodId,
+            connection.source?.id ?? null,
+            connection.baseUrl ?? null,
+            connection.createdAt,
+          ],
+        );
+        return immutableCopy(connection);
+      },
+      lockProviderConnection: async (namespaceId, connectionId) =>
+        findProviderConnection(namespaceId, connectionId, true),
+      hasReferences: async (namespaceId, connectionId) =>
+        rows(
+          (
+            await client.query(
+              `SELECT EXISTS (
+          SELECT 1 FROM occ.agents WHERE namespace_id = $1 AND harness_auth_provider_connection_id = $2
+        ) OR EXISTS (
+          SELECT 1 FROM occ.agents AS a JOIN occ.agent_revisions AS r
+          ON r.namespace_id = a.namespace_id AND r.agent_id = a.id AND r.id = a.active_revision_id
+          WHERE a.namespace_id = $1 AND r.admitted_spec #>> '{harness_auth,connection,id}' = $2
+        ) OR EXISTS (
+          SELECT 1 FROM occ.controller_work AS w JOIN occ.agent_revisions AS r
+          ON r.namespace_id = w.namespace_id AND r.agent_id = w.agent_id AND r.id = w.revision_id
+          WHERE w.namespace_id = $1 AND w.state IN ('queued', 'claimed')
+            AND r.admitted_spec #>> '{harness_auth,connection,id}' = $2
+        ) AS present`,
+              [namespaceId, connectionId],
+            )
+          ).rows,
+        )[0]?.present === true,
+      deleteProviderConnection: async (namespaceId, connectionId) => {
+        if ((await findProviderConnection(namespaceId, connectionId, true)) === undefined) {
+          return false;
+        }
+        if (await providerConnections.hasReferences(namespaceId, connectionId)) {
+          throw new ScopeViolationError(
+            "The ProviderConnection is referenced by active platform state.",
+          );
+        }
+        return (
+          (
+            await client.query(
+              "DELETE FROM occ.provider_connections WHERE namespace_id = $1 AND id = $2",
+              [namespaceId, connectionId],
+            )
+          ).rowCount === 1
+        );
       },
     };
 
@@ -1551,6 +1689,8 @@ export class PostgresPlatformState implements PlatformStateStore {
           (
             await client.query(
               `SELECT EXISTS (
+                 SELECT 1 FROM occ.provider_connections WHERE namespace_id = $1 AND source_secret_id = $2
+               ) OR EXISTS (
                  SELECT 1
                  FROM occ.configurations AS c,
                       jsonb_each(COALESCE(c.secret_bindings, '{}'::jsonb)) AS binding(env, value)
@@ -1593,15 +1733,19 @@ export class PostgresPlatformState implements PlatformStateStore {
                  JOIN occ.agent_revisions AS r ON r.namespace_id = a.namespace_id
                    AND r.agent_id = a.id AND r.id = a.active_revision_id
                  WHERE a.namespace_id = $1
-                   AND r.admitted_spec #>> '{harness_auth,method}' = 'api_key'
-                   AND r.admitted_spec #>> '{harness_auth,source,id}' = $2
+                   AND ((r.admitted_spec #>> '{harness_auth,method}' = 'api_key'
+                     AND r.admitted_spec #>> '{harness_auth,source,id}' = $2)
+                     OR (r.admitted_spec #>> '{harness_auth,method}' = 'provider_connection'
+                     AND r.admitted_spec #>> '{harness_auth,credential,source,id}' = $2))
                ) OR EXISTS (
                  SELECT 1 FROM occ.controller_work AS w
                  JOIN occ.agent_revisions AS r ON r.namespace_id = w.namespace_id
                    AND r.agent_id = w.agent_id AND r.id = w.revision_id
                  WHERE w.namespace_id = $1 AND w.state IN ('queued', 'claimed')
-                   AND r.admitted_spec #>> '{harness_auth,method}' = 'api_key'
-                   AND r.admitted_spec #>> '{harness_auth,source,id}' = $2
+                   AND ((r.admitted_spec #>> '{harness_auth,method}' = 'api_key'
+                     AND r.admitted_spec #>> '{harness_auth,source,id}' = $2)
+                     OR (r.admitted_spec #>> '{harness_auth,method}' = 'provider_connection'
+                     AND r.admitted_spec #>> '{harness_auth,credential,source,id}' = $2))
                ) AS present`,
               [namespaceId, secretId],
             )
@@ -1899,7 +2043,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           throw new ScopeViolationError("Legacy Agent authentication selectors are unsupported.");
         }
         await assertHarnessAuthAvailable(
-          { secrets, serviceAccounts },
+          { secrets, serviceAccounts, providerConnections },
           agent.namespaceId,
           agent.harnessAuth,
         );
@@ -1957,7 +2101,11 @@ export class PostgresPlatformState implements PlatformStateStore {
         repositoryBindings,
       ) => {
         if (harnessAuth !== undefined) {
-          await assertHarnessAuthAvailable({ secrets, serviceAccounts }, namespaceId, harnessAuth);
+          await assertHarnessAuthAvailable(
+            { secrets, serviceAccounts, providerConnections },
+            namespaceId,
+            harnessAuth,
+          );
         }
         const configuration = await configurations.findConfiguration(namespaceId, configurationId);
         if (configuration === undefined) {
@@ -2132,7 +2280,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           );
         }
         await assertHarnessAuthAvailable(
-          { secrets, serviceAccounts },
+          { secrets, serviceAccounts, providerConnections },
           revision.namespaceId,
           harnessAuthBindingFromSnapshot(revision.harnessAuth),
         );
@@ -2234,6 +2382,8 @@ export class PostgresPlatformState implements PlatformStateStore {
         agent_revision: "SELECT 1 FROM occ.agent_revisions WHERE namespace_id = $1 AND id = $2",
         configuration:
           "SELECT 1 FROM occ.configurations WHERE namespace_id = $1 AND id = $2 FOR KEY SHARE",
+        provider_connection:
+          "SELECT 1 FROM occ.provider_connections WHERE namespace_id = $1 AND id = $2 FOR KEY SHARE",
         preset: "SELECT 1 FROM occ.presets WHERE namespace_id = $1 AND id = $2 FOR KEY SHARE",
         secret: "SELECT 1 FROM occ.secrets WHERE namespace_id = $1 AND id = $2 FOR KEY SHARE",
         service_account:
@@ -2396,6 +2546,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       namespaces,
       configurations,
       presets,
+      providerConnections,
       secrets,
       serviceAccounts,
       agents,

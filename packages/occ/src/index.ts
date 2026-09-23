@@ -33,6 +33,9 @@ import type {
   PluginRevisionState,
   ProviderDefinition,
   ProviderRef,
+  ProviderConnection,
+  CreateProviderConnectionInput,
+  ModelAuthCatalogProvider,
   RepositoryBindingRequest,
   RepositoryBindingSelection,
   RepoDriver,
@@ -48,6 +51,7 @@ import type {
   SecretBindings,
   SecretDriver,
   SecretMetadata,
+  SecretReference,
   ServiceAccount,
   ServiceAccountCredential,
   ServiceAccountDriver,
@@ -81,6 +85,7 @@ import {
   NotImplementedError,
   ResourceConflictError,
   ScopeViolationError,
+  SecretDriverUnavailableError,
 } from "./errors.ts";
 import {
   assertConfiguredProvider,
@@ -118,6 +123,7 @@ export {
   NotImplementedError,
   ResourceConflictError,
   ScopeViolationError,
+  SecretDriverUnavailableError,
 } from "./errors.ts";
 export {
   providerDefinitionMap,
@@ -693,6 +699,7 @@ export class OpenClawController {
   private readonly providers: readonly ProviderDefinition[];
   private readonly loggingLevel: LoggingLevel;
   private readonly providerMap: ReadonlyMap<string, ProviderDefinition>;
+  private providerCatalog: readonly ModelAuthCatalogProvider[] = [];
 
   constructor(installation: Installation, options: ControllerOptions = {}) {
     if (!isNonEmptyString(installation.id) || !validName(installation.name)) {
@@ -717,6 +724,21 @@ export class OpenClawController {
     this.providers = validateProviderDefinitions(options.providers ?? []);
     this.loggingLevel = normalizeLoggingLevel(options.loggingLevel);
     this.providerMap = providerDefinitionMap(this.providers);
+  }
+
+  registerProviderCatalog(catalog: readonly ModelAuthCatalogProvider[]): void {
+    this.providerCatalog = immutableCopy(catalog);
+  }
+
+  private providerAuthMethod(providerId: string, authMethodId: string) {
+    const provider = this.providerCatalog.find((item) => item.id === providerId);
+    const method = provider?.authMethods.find((item) => item.id === authMethodId);
+    if (!provider || !method) {
+      throw new ScopeViolationError(
+        "Select a provider and authentication method from the catalog.",
+      );
+    }
+    return { provider, method };
   }
 
   registerDriver(driver: Driver): Driver {
@@ -1560,6 +1582,172 @@ export class OpenClawController {
       await driver.validateValues(values);
     }
     return template;
+  }
+
+  async createProviderConnection(
+    principalId: string,
+    input: CreateProviderConnectionInput,
+  ): Promise<Readonly<ProviderConnection>> {
+    if (!validName(input.name)) {
+      throw new ScopeViolationError("The provider connection name is invalid.");
+    }
+    const { provider, method } = this.providerAuthMethod(input.providerId, input.authMethodId);
+    if (
+      (input.source !== undefined && input.secretValue !== undefined) ||
+      (method.credentialKind === "secret") !==
+        (input.source !== undefined || input.secretValue !== undefined)
+    ) {
+      throw new ScopeViolationError(
+        "This authentication method requires its exact credential source.",
+      );
+    }
+    if (provider.requiresBaseUrl !== (input.baseUrl !== undefined)) {
+      throw new ScopeViolationError("An endpoint is required only for a local provider.");
+    }
+    if (input.baseUrl !== undefined) {
+      let endpoint: URL;
+      try {
+        endpoint = new URL(input.baseUrl);
+      } catch {
+        throw new ScopeViolationError("The provider endpoint must be an HTTP or HTTPS URL.");
+      }
+      if (
+        !["http:", "https:"].includes(endpoint.protocol) ||
+        endpoint.username ||
+        endpoint.password ||
+        endpoint.search ||
+        endpoint.hash
+      ) {
+        throw new ScopeViolationError(
+          "The provider endpoint cannot contain credentials, a query, or a fragment.",
+        );
+      }
+    }
+    return this.mutate(async (state) => {
+      const namespace = await this.lockNamespace(state, input.namespaceId);
+      await this.authorize(principalId, "create", {
+        kind: "provider_connection",
+        id: namespace.id,
+        namespaceId: namespace.id,
+      });
+      if (namespace.status !== "ready") {
+        throw new NamespaceNotReadyError();
+      }
+      const connectionId = this.nextIdentifier("provider_connection");
+      // Share the enclosing transaction so a rejected connection rolls back its new Secret.
+      const source =
+        input.secretValue === undefined
+          ? input.source
+          : {
+              kind: "secret" as const,
+              namespaceId: namespace.id,
+              id: (
+                await this.createSecret(principalId, {
+                  namespaceId: namespace.id,
+                  name: `Provider credential ${connectionId}`,
+                  value: input.secretValue,
+                })
+              ).id,
+            };
+      if (source !== undefined) {
+        await this.authorizeHarnessAuthSource(state, principalId, namespace.id, {
+          method: "api_key",
+          source,
+        });
+      }
+      const connection: ProviderConnection = {
+        id: connectionId,
+        namespaceId: namespace.id,
+        name: input.name,
+        providerId: input.providerId,
+        authMethodId: input.authMethodId,
+        ...(source === undefined ? {} : { source }),
+        ...(input.baseUrl === undefined ? {} : { baseUrl: input.baseUrl }),
+        createdAt: this.timestamp(),
+      };
+      await state.providerConnections.createProviderConnection(connection);
+      return immutableCopy(connection);
+    });
+  }
+
+  async listProviderConnections(
+    principalId: string,
+    namespaceId: string,
+  ): Promise<readonly Readonly<ProviderConnection>[]> {
+    return this.read(async (state) => {
+      await this.exactNamespace(state, namespaceId);
+      const visible: Readonly<ProviderConnection>[] = [];
+      for (const connection of await state.providerConnections.listProviderConnections(
+        namespaceId,
+      )) {
+        if (
+          await this.canRead(principalId, {
+            kind: "provider_connection",
+            id: connection.id,
+            namespaceId,
+          })
+        ) {
+          visible.push(connection);
+        }
+      }
+      return Object.freeze(visible);
+    });
+  }
+
+  async getProviderConnection(
+    principalId: string,
+    namespaceId: string,
+    connectionId: string,
+  ): Promise<Readonly<ProviderConnection>> {
+    await this.authorize(principalId, "read", {
+      kind: "provider_connection",
+      id: connectionId,
+      namespaceId,
+    });
+    return this.read(async (state) => {
+      await this.exactNamespace(state, namespaceId);
+      const connection = await state.providerConnections.findProviderConnection(
+        namespaceId,
+        connectionId,
+      );
+      if (!connection) {
+        throw new ScopeViolationError(
+          "The provider connection does not belong to the exact Namespace.",
+        );
+      }
+      return connection;
+    });
+  }
+
+  async deleteProviderConnection(
+    principalId: string,
+    namespaceId: string,
+    connectionId: string,
+  ): Promise<void> {
+    return this.mutate(async (state) => {
+      await this.lockNamespace(state, namespaceId);
+      await this.authorize(principalId, "delete", {
+        kind: "provider_connection",
+        id: connectionId,
+        namespaceId,
+      });
+      if (!(await state.providerConnections.lockProviderConnection(namespaceId, connectionId))) {
+        throw new ScopeViolationError(
+          "The provider connection does not belong to the exact Namespace.",
+        );
+      }
+      if (await state.providerConnections.hasReferences(namespaceId, connectionId)) {
+        throw new ResourceConflictError(
+          "An Agent or deployment still references this provider connection.",
+        );
+      }
+      for (const binding of await state.iamPolicy.listAccessBindings(namespaceId)) {
+        if (binding.resourceKind === "provider_connection" && binding.resourceId === connectionId) {
+          await state.iamPolicy.deleteAccessBinding(namespaceId, binding.id);
+        }
+      }
+      await state.providerConnections.deleteProviderConnection(namespaceId, connectionId);
+    });
   }
 
   async createSecret(
@@ -2453,6 +2641,9 @@ export class OpenClawController {
       if (await state.namespaces.hasAgents(namespace.id)) {
         throw new NamespaceNotEmptyError();
       }
+      if (await state.namespaces.hasProviderConnections(namespace.id)) {
+        throw new NamespaceNotEmptyError();
+      }
       if (await state.namespaces.hasPresets(namespace.id)) {
         throw new NamespaceNotEmptyError();
       }
@@ -2920,6 +3111,29 @@ export class OpenClawController {
     if (binding === null || binding.method === "runtime") {
       return;
     }
+    if (binding.method === "provider_connection") {
+      await this.authorize(principalId, "operate", {
+        kind: "provider_connection",
+        id: binding.connectionId,
+        namespaceId,
+      });
+      const connection = await state.providerConnections.lockProviderConnection(
+        namespaceId,
+        binding.connectionId,
+      );
+      if (!connection) {
+        throw new ScopeViolationError(
+          "The provider connection does not belong to the exact Namespace.",
+        );
+      }
+      if (connection.source) {
+        await this.authorizeHarnessAuthSource(state, principalId, namespaceId, {
+          method: "api_key",
+          source: connection.source,
+        });
+      }
+      return;
+    }
     if (binding.method === "api_key") {
       if (binding.source.namespaceId !== namespaceId) {
         throw new ScopeViolationError("Harness authentication sources cannot cross Namespaces.");
@@ -2952,27 +3166,44 @@ export class OpenClawController {
       );
     }
     await this.authorizeHarnessAuthSource(state, principalId, agent.namespaceId, binding);
+    if (binding.method === "provider_connection") {
+      await this.authorizeHarnessAuthSource(
+        state,
+        agent.servicePrincipalId,
+        agent.namespaceId,
+        binding,
+      );
+      const connection = await state.providerConnections.lockProviderConnection(
+        agent.namespaceId,
+        binding.connectionId,
+      );
+      if (!connection) {
+        throw new ScopeViolationError("The provider connection is unavailable.");
+      }
+      this.providerAuthMethod(connection.providerId, connection.authMethodId);
+      const credential =
+        connection.source === undefined
+          ? undefined
+          : await this.admitHarnessSecret(state, agent, connection.source);
+      return immutableCopy({
+        method: "provider_connection" as const,
+        connection: {
+          id: connection.id,
+          providerId: connection.providerId,
+          authMethodId: connection.authMethodId,
+          ...(connection.baseUrl === undefined ? {} : { baseUrl: connection.baseUrl }),
+        },
+        ...(credential === undefined ? {} : { credential }),
+      });
+    }
     if (binding.method === "runtime") {
       return immutableCopy(binding);
     }
     if (binding.method === "api_key") {
-      await this.authorize(agent.servicePrincipalId, "operate", binding.source);
-      const source = await state.secrets.lockSecret(agent.namespaceId, binding.source.id);
-      if (source === undefined) {
-        throw new ScopeViolationError("The Harness Secret is unavailable.");
-      }
-      const driver = this.secretDriver(source.driverId);
-      const resolved = await this.secretOperation(() => driver.resolve(source));
-      if (
-        Object.keys(source.backendRef).some(
-          (key) =>
-            resolved[key as keyof typeof resolved] !==
-            source.backendRef[key as keyof typeof source.backendRef],
-        )
-      ) {
-        throw new DependencyUnavailableError("The Harness Secret backend identity changed.");
-      }
-      return immutableCopy({ ...binding, secretDriverId: driver.id });
+      return immutableCopy({
+        method: "api_key" as const,
+        ...(await this.admitHarnessSecret(state, agent, binding.source)),
+      });
     }
     const account = await state.serviceAccounts.lockServiceAccount(
       agent.namespaceId,
@@ -3042,6 +3273,30 @@ export class OpenClawController {
     });
   }
 
+  private async admitHarnessSecret(
+    state: PlatformUnitOfWork,
+    agent: Readonly<Agent>,
+    reference: SecretReference,
+  ): Promise<{ source: SecretReference; secretDriverId: string }> {
+    await this.authorize(agent.servicePrincipalId, "operate", reference);
+    const source = await state.secrets.lockSecret(agent.namespaceId, reference.id);
+    if (source === undefined) {
+      throw new ScopeViolationError("The Harness Secret is unavailable.");
+    }
+    const driver = this.secretDriver(source.driverId);
+    const resolved = await this.secretOperation(() => driver.resolve(source));
+    if (
+      Object.keys(source.backendRef).some(
+        (key) =>
+          resolved[key as keyof typeof resolved] !==
+          source.backendRef[key as keyof typeof source.backendRef],
+      )
+    ) {
+      throw new DependencyUnavailableError("The Harness Secret backend identity changed.");
+    }
+    return { source: reference, secretDriverId: driver.id };
+  }
+
   private secretMetadata(secret: Secret): Readonly<SecretMetadata> {
     return immutableCopy({
       id: secret.id,
@@ -3052,6 +3307,9 @@ export class OpenClawController {
   }
 
   private secretDriver(expectedId?: string): SecretDriver {
+    if (!this.selections.has("secret")) {
+      throw new SecretDriverUnavailableError();
+    }
     try {
       const driver = this.selectedDriver("secret");
       if (expectedId !== undefined && driver.id !== expectedId) {
@@ -3211,6 +3469,14 @@ export class OpenClawController {
         throw new ScopeViolationError(
           "The IAM target AgentRevision does not belong to the Namespace.",
         );
+      }
+      if (resourceKind === "provider_connection") {
+        if (!(await state.providerConnections.findProviderConnection(namespaceId, resourceId))) {
+          throw new ScopeViolationError(
+            "The IAM target provider connection does not belong to the Namespace.",
+          );
+        }
+        return;
       }
       if (resourceKind === "preset") {
         if ((await state.presets.findPreset(namespaceId, resourceId)) === undefined) {
@@ -3552,6 +3818,7 @@ export class OpenClawController {
       namespace: "ns",
       configuration: "cfg",
       preset: "pre",
+      provider_connection: "pco",
       service_account: "sa",
       secret: "sec",
       agent: "agt",

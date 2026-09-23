@@ -1685,6 +1685,15 @@ async function prepareFile({ lane, file, statePath }) {
   const env = baseEnv(resolvedStatePath, effectiveState);
   const resourceIds = [];
 
+  // The runner strips inherited test selectors; only this browser file owns recording output.
+  if (
+    name === "checks-baseline" &&
+    relativeFile === "tests/browser/console-agents.test.mjs" &&
+    process.env.OCC_TEST_CONSOLE_ARTIFACT_DIR
+  ) {
+    env.OCC_TEST_CONSOLE_ARTIFACT_DIR = process.env.OCC_TEST_CONSOLE_ARTIFACT_DIR;
+  }
+
   if (name === "repository-credentials-container") {
     if (state?.lane !== name) {
       throw new Error("Repository credential images require their own lane state.");

@@ -211,9 +211,7 @@ export async function composePostgresDevelopment(
       ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
       resolveHarness: resolveApprovedHarness,
       auditSink: state.auditSink,
-      ...(drivers === undefined
-        ? {}
-        : { providerSummaries: providerSummariesFromDefinitions(drivers.installation.provider) }),
+      providerSummaries: providerSummariesFromDefinitions(drivers?.installation.provider ?? []),
       auth,
       ...(config.logger === undefined ? {} : { logger: config.logger }),
       provisionAuthAccount,

@@ -1632,6 +1632,156 @@ test("Kubernetes startup failure evidence requires the exact runtime Pod report"
   ]);
 });
 
+test("OpenClaw startup probes the selected provider with only its credential and gates readiness", async (t) => {
+  for (const scenario of [
+    { provider: "anthropic", credential: "ANTHROPIC_API_KEY", ready: true },
+    { provider: "ollama", credential: "OLLAMA_API_KEY", value: "ollama-local", ready: true },
+    { provider: "vllm", credential: "VLLM_API_KEY", ready: true },
+    {
+      provider: "anthropic",
+      credential: "ANTHROPIC_API_KEY",
+      resultProvider: "openai",
+      ready: false,
+    },
+    {
+      provider: "ollama",
+      credential: "OLLAMA_API_KEY",
+      value: "ollama-local",
+      resultSource: "profile",
+      ready: false,
+    },
+  ]) {
+    await t.test(
+      `${scenario.credential}/${scenario.resultProvider ?? scenario.resultSource ?? "accepted"}`,
+      async () => {
+        const directory = mkdtempSync(join(tmpdir(), "oce-model-probe-"));
+        const model = `${scenario.provider}/selected-model`;
+        const credentialValue = scenario.value ?? "fixture-model-credential";
+        let statusHandler;
+        let gatewayStarts = 0;
+        let probes = 0;
+        const diagnostics = [];
+        const idleTimers = [];
+        try {
+          const sandbox = {
+            URL,
+            console: {
+              error(message) {
+                diagnostics.push(message);
+              },
+            },
+            setInterval(callback) {
+              idleTimers.push(callback);
+            },
+            process: {
+              env: {
+                PATH: "/usr/bin",
+                HOME: "/home/node",
+                OPENCLAW_AGENT_REVISION_ID: "revision-provider-probe",
+                OPENCLAW_RUNTIME_STATUS_CONTAINER: "gateway",
+                OPENCLAW_RUNTIME_STATUS_PORT: "18791",
+                OPENCLAW_POD_UID: "pod-provider-probe",
+                OPENCLAW_GATEWAY_PORT: "8080",
+                OPENCLAW_HARNESS_MODEL: model,
+                OPENCLAW_HARNESS_PROVIDER: scenario.provider,
+                OPENCLAW_HARNESS_CREDENTIAL_ENV: scenario.credential,
+                OPENCLAW_HARNESS_PROBE_CONFIG: JSON.stringify({ agents: { defaults: { model } } }),
+                [scenario.credential]: credentialValue,
+                UNRELATED_SECRET: "must-not-reach-model-probe",
+              },
+              on() {},
+              exit() {
+                assert.fail("probe must hold unready or start the gateway");
+              },
+            },
+            require(specifier) {
+              if (specifier === "node:fs") {
+                return {
+                  mkdirSync() {},
+                  mkdtempSync: () => mkdtempSync(join(directory, "probe-")),
+                  writeFileSync,
+                  rmSync,
+                };
+              }
+              if (specifier === "node:http") {
+                return {
+                  createServer(handler) {
+                    statusHandler = handler;
+                    return { listen() {} };
+                  },
+                };
+              }
+              if (specifier === "node:child_process") {
+                return {
+                  // Replace only the external process boundary. The production
+                  // entrypoint creates its config, selects auth, parses status, and gates startup.
+                  spawnSync(command, args, options) {
+                    probes++;
+                    assert.equal(command, "node");
+                    assert.equal(args[args.indexOf("--probe-provider") + 1], scenario.provider);
+                    assert.equal(options.env[scenario.credential], credentialValue);
+                    assert.equal(options.env.UNRELATED_SECRET, undefined);
+                    assert.deepEqual(
+                      Object.keys(options.env).sort(),
+                      [
+                        "PATH",
+                        "HOME",
+                        "OPENCLAW_STATE_DIR",
+                        "OPENCLAW_CONFIG_PATH",
+                        scenario.credential,
+                      ].sort(),
+                    );
+                    const config = JSON.parse(
+                      readFileSync(options.env.OPENCLAW_CONFIG_PATH, "utf8"),
+                    );
+                    assert.equal(config.agents.defaults.model, model);
+                    return {
+                      status: 0,
+                      stdout: JSON.stringify({
+                        auth: {
+                          probes: {
+                            results: [
+                              {
+                                provider: scenario.resultProvider ?? scenario.provider,
+                                model,
+                                source: scenario.resultSource ?? "env",
+                                status: "ok",
+                              },
+                            ],
+                          },
+                        },
+                      }),
+                    };
+                  },
+                  spawn(_command, args) {
+                    assert.ok(args.includes("gateway"));
+                    gatewayStarts++;
+                    return { on() {}, kill() {} };
+                  },
+                };
+              }
+              return nodeRequire(specifier);
+            },
+          };
+          vm.runInNewContext(GATEWAY_RUNTIME_ENTRYPOINT, sandbox);
+          await Promise.resolve();
+          assert.equal(probes, 1);
+          assert.equal(gatewayStarts, scenario.ready ? 1 : 0);
+          assert.equal(idleTimers.length, scenario.ready ? 0 : 1);
+          const status = readRuntimeStatusFromHandler(statusHandler);
+          assert.equal(
+            status.runtimeFailure?.code,
+            scenario.ready ? undefined : "MODEL_PROBE_FAILED",
+          );
+          assert.equal(JSON.stringify(diagnostics).includes(credentialValue), false);
+        } finally {
+          rmSync(directory, { recursive: true, force: true });
+        }
+      },
+    );
+  }
+});
+
 test("Codex runtime gates startup and readiness on a successful native authentication turn", async (t) => {
   const started = { type: "turn.started" };
   const assistant = { type: "item.completed", item: { type: "agent_message", text: "READY" } };

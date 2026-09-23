@@ -6,11 +6,75 @@ accounts. Its nullable Agent `providerId` association neither grants permissions
 nor changes model or Harness selection. The GitHub Provider owns repository
 credential configuration for the selected `RepoDriver` and uses the separate
 Agent `repositoryBindings` selection.
-Providers have no OCC resource or write API. Installation administrators can
+Installation Providers have no OCC resource or write API. Installation administrators can
 discover nonsecret configured IDs and types through `GET /providers`.
 
 [Configure the ChatGPT Provider](../guides/integrations/chatgpt.md) for the
-operator workflow. ChatGPT is the only bundled Provider.
+operator workflow. The bundled Installation Provider types are ChatGPT and GitHub.
+
+For Agent model authentication, use a **ProviderConnection** saved in a Namespace.
+It records a model provider, authentication method, and credential reference or
+endpoint. It does not create or change an Installation Provider.
+
+## Model authentication catalog and saved connections
+
+`GET /provider-catalog` requires Installation `read` and returns the bundled
+model-provider choices. Each method reports its ID, label, and whether it needs
+a Secret. Only supported API-key and local-server methods are offered.
+
+| Model provider | Saved authentication choices | Kubernetes deployment through a connection |
+| -------------- | ---------------------------- | ------------------------------------------ |
+| OpenAI         | API key                      | Embedded OpenClaw or dedicated Codex       |
+| Anthropic      | API key                      | Embedded OpenClaw                          |
+| Ollama         | Local server, no credential  | Embedded OpenClaw                          |
+| vLLM           | Self-hosted server, API key  | Embedded OpenClaw                          |
+
+Native mappings are checked against OpenClaw `2026.9.1`. OAuth and other login
+methods are deferred to separate work and are not offered by this catalog.
+Saving an API key requires a configured Secret Driver. The default Docker
+development stack has no Secret Driver and cannot deploy managed authentication
+bindings. Use the Kubernetes Installation path for saved provider credentials;
+the bundled catalog alone does not establish Installation support.
+Ollama uses its native protocol
+and a nonsecret local marker; vLLM uses its OpenAI-compatible completions protocol.
+The Agent's native Configuration must select a model from the connection's provider.
+
+Local servers require separately configured network access from the Agent workload.
+Saving a connection neither starts a model server nor changes Kubernetes network
+policy. OCC does not contact the endpoint; the deployed OpenClaw runtime probes
+the selected model and credential before becoming ready.
+
+Use `GET` or `POST /namespaces/:namespaceId/provider-connections` to list or create
+connections, and `GET` or `DELETE` the same path with `/:connectionId` for one
+connection. Creation requires a ready Namespace and `provider_connection:create`
+in that Namespace. Reads filter by exact connection `read`; deletion requires
+exact connection `delete`. Connections are immutable: create a replacement to
+change the name, provider, method, source, or endpoint.
+
+The creation body contains `name`, `providerId`, `authMethodId`, and any required
+`baseUrl`. For credential methods, supply either write-only `secretValue` to create
+a Secret or `source` to reuse a same-Namespace Secret reference. New credentials
+require Secret `create`; binding requires the creator's exact Secret `operate`.
+Credential values stay in the selected Secret Driver. Endpoint URLs
+must use HTTP or HTTPS and contain no credentials, query, or fragment. OpenAI
+and Anthropic do not accept an endpoint override through this API. Responses
+contain safe metadata and references only; setup makes no model-provider request.
+
+Select a saved connection with [Agent `harnessAuth`](agents.md#harness-authentication).
+Binding requires the actor's exact connection and source Secret `operate`.
+Deployment requires those grants for both the actor and Agent service principal;
+the worker repeats the checks. Ollama requires no Secret grant. The revision
+freezes connection metadata and any credential source; Compute projects the
+credential only into the workload that runs the model. For embedded OpenClaw,
+Compute applies the selected endpoint and credential reference to both the mounted
+Configuration and isolated startup probe. Connections do not change model or
+Harness selection.
+
+Draft, active-revision, and pending-deployment references block deletion. Inactive
+historical revisions retain their saved metadata after an unused connection is
+removed. Removing a connection deletes neither its Secret nor the upstream key;
+referenced Secrets and Namespaces remain protected from deletion. Rotate keys
+through the existing [Secret update and redeploy workflow](drivers/kubernetes-secret.md#update-and-redeploy).
 
 ## Read configured Providers
 
@@ -223,9 +287,10 @@ verification requirements.
 ## Deferred behavior
 
 Optional member Drivers, per-Agent Driver selection, automatic account creation,
-clientless Providers, installed Provider loading/injection, Provider detail,
-creation, and management UI, OAuth/refresh, renewal, and a common inference API
-remain out of scope.
+clientless Providers, installed Provider loading/injection, and Installation
+Provider mutation remain out of scope. OAuth acquisition, refresh, and upstream
+revocation belong to a separate implementation. Additional inference transports
+are not implemented.
 
 ## Related
 

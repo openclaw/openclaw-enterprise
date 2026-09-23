@@ -92,7 +92,17 @@ runs:
       shell: bash
       env:
         CI_RUNNER_TEST_TIMEOUT_MS: ${{ inputs.lane == 'checks-baseline' && '300000' || inputs.lane == 'k3d-model' && '5400000' || '' }}
+        OCC_TEST_CONSOLE_ARTIFACT_DIR: ${{ inputs.lane == 'checks-baseline' && format('{0}/console-provider-recordings', runner.temp) || '' }}
       run: node scripts/ci/run-tests.mjs run "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --results "$RUNNER_TEMP/results/${{ inputs.lane }}.json"
+    - name: Upload provider Console recordings
+      if: always() && inputs.lane == 'checks-baseline'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: console-provider-recordings
+        path: ${{ runner.temp }}/console-provider-recordings/**/*.webm
+        overwrite: true
+        if-no-files-found: warn
+        retention-days: 14
     - name: Cleanup lane
       if: always()
       shell: bash

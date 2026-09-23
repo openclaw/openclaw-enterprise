@@ -18,6 +18,7 @@ import { createConsoleAppFixture, providerFixtures } from "../helpers/console-ap
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 
 async function artifactDirectory(t) {
   const configured = process.env.OCC_TEST_CONSOLE_ARTIFACT_DIR;
@@ -38,6 +39,7 @@ async function launchBrowser(options = {}) {
   const browser = await chromium.launch({
     ...(browserExecutable === undefined ? {} : { executablePath: browserExecutable }),
     headless: true,
+    slowMo: options.slowMo ?? 0,
     ...(options.args === undefined ? {} : { args: options.args }),
   });
   return browser;
@@ -45,7 +47,8 @@ async function launchBrowser(options = {}) {
 
 async function newPage(t, fixture, options = {}) {
   const artifacts = await artifactDirectory(t);
-  const browser = await launchBrowser(options);
+  const recording = options.recording && process.env.OCC_TEST_CONSOLE_ARTIFACT_DIR;
+  const browser = await launchBrowser({ ...options, slowMo: recording ? 150 : 0 });
   let context;
   fixture.registerCleanupBeforeAppClose(async () => {
     let cleanupError;
@@ -64,7 +67,9 @@ async function newPage(t, fixture, options = {}) {
       throw cleanupError;
     }
   });
-  context = await browser.newContext();
+  context = await browser.newContext(
+    recording ? { recordVideo: { dir: join(artifacts, options.recording) } } : {},
+  );
   return { page: await context.newPage(), artifacts };
 }
 
@@ -303,7 +308,7 @@ test("Agent creation saves native Configuration JSON and a draft Agent without a
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByRole("button", { name: "Start without Preset" }).click();
-  await page.getByText("Choose an installed Provider.").waitFor();
+  await page.getByText("Choose an installed control-plane Provider if needed.").waitFor();
   await page.getByLabel("Authentication source").selectOption("api_key");
   const secretInput = page.getByLabel("OpenAI API key Secret ID");
   assert.equal(await secretInput.getAttribute("type"), "password");
@@ -431,7 +436,7 @@ test("Agent creation saves native Configuration JSON and a draft Agent without a
   await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByRole("button", { name: "Start without Preset" }).click();
-  await page.getByText("Choose an installed Provider.").waitFor();
+  await page.getByText("Choose an installed control-plane Provider if needed.").waitFor();
   await page.getByLabel("Agent name").fill("Denied Agent");
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
   const deniedResponse = page.waitForResponse(
@@ -487,10 +492,10 @@ test("Agent creation renders provider and service account choices and saves sele
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByRole("button", { name: "Start without Preset" }).click();
-  const provider = page.getByLabel("Provider (optional)");
+  const provider = page.getByLabel("Control-plane Provider (optional)");
   await page.getByLabel("Authentication source").selectOption("chatgpt_service_account");
   const account = page.getByLabel("Issued ChatGPT service account");
-  await page.getByText("Choose an installed Provider.").waitFor();
+  await page.getByText("Choose an installed control-plane Provider if needed.").waitFor();
   await page.getByText("Issued accounts in this Namespace are available.").waitFor();
   assert.equal(await provider.isDisabled(), false);
   assert.equal(await account.isDisabled(), false);
@@ -558,10 +563,259 @@ test("Agent creation renders provider and service account choices and saves sele
   );
 });
 
+test("Providers setup saves API-key and local connections for Agent drafts", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Provider setup", { ready: true });
+  const secret = await fixture.createSecret(
+    namespace.id,
+    "Model key",
+    "provider-setup-secret-value",
+  );
+  const { page } = await newPage(t, fixture, { recording: "provider-setup" });
+  const requests = apiRequests(page, fixture.origin);
+  const path = `/namespaces/${namespace.id}/provider-connections`;
+  await login(page, fixture, `/console/providers?namespace=${namespace.id}`);
+  await page.getByRole("heading", { name: "Add provider" }).waitFor();
+  await page.getByLabel("Connection name").fill("Team API key");
+  await page.getByLabel("Provider", { exact: true }).selectOption("openai");
+  assert.deepEqual(
+    await page
+      .getByLabel("Authentication method")
+      .locator("option")
+      .evaluateAll((options) => options.map((option) => option.value)),
+    ["api-key"],
+  );
+  await page.getByLabel("Authentication method").selectOption("api-key");
+  assert.equal(await page.getByLabel("API key", { exact: true }).getAttribute("type"), "password");
+  await page.getByLabel("API key", { exact: true }).fill("new-provider-api-key");
+  await page.getByRole("button", { name: "Save provider connection" }).click();
+  await page.getByText("OpenAI / API key / Team API key", { exact: true }).waitFor();
+  assert.equal(pathRequests(requests, "POST", path).length, 1);
+  assert.equal(pathRequests(requests, "POST", path)[0].body.secretValue, "new-provider-api-key");
+  assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 0);
+  assert.equal(await page.getByLabel("API key", { exact: true }).inputValue(), "");
+
+  await page.getByLabel("Connection name").fill("Shared API key");
+  await page.getByLabel("Credential source").selectOption("existing");
+  await page.getByLabel("Secret ID", { exact: true }).fill(secret.id);
+  await page.getByRole("button", { name: "Save provider connection" }).click();
+  await page.getByText("OpenAI / API key / Shared API key", { exact: true }).waitFor();
+
+  await page.getByLabel("Connection name").fill("Claude API key");
+  await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
+  assert.deepEqual(
+    await page
+      .getByLabel("Authentication method")
+      .locator("option")
+      .evaluateAll((options) => options.map((option) => option.value)),
+    ["api-key"],
+  );
+  await page.getByLabel("API key", { exact: true }).fill("new-provider-anthropic-key");
+  await page.getByRole("button", { name: "Save provider connection" }).click();
+  await page.getByText("Anthropic / API key / Claude API key", { exact: true }).waitFor();
+
+  // Selecting a local provider changes the required inputs, without carrying over a Secret.
+  await page.getByLabel("Connection name").fill("Local models");
+  await page.getByLabel("Provider", { exact: true }).selectOption("ollama");
+  assert.equal(await page.getByLabel("Secret ID", { exact: true }).isVisible(), false);
+  assert.equal(await page.getByLabel("Base URL").getAttribute("required"), "");
+  await page.getByLabel("Base URL").fill("http://model-server:11434");
+  await page.getByRole("button", { name: "Save provider connection" }).click();
+  await page.getByText("Ollama / Local server / Local models", { exact: true }).waitFor();
+
+  await page.getByLabel("Connection name").fill("Hosted models");
+  await page.getByLabel("Provider", { exact: true }).selectOption("vllm");
+  await page.getByLabel("Base URL").fill("http://model-server:8000/v1");
+  await page.getByLabel("API key", { exact: true }).fill("new-provider-vllm-key");
+  await page.getByRole("button", { name: "Save provider connection" }).click();
+  await page.getByText("vLLM / Self-hosted server / Hosted models", { exact: true }).waitFor();
+  const saved = await fixture.request("GET", path);
+  assert.equal(saved.status, 200);
+  const keyConnection = saved.data.find((item) => item.name === "Team API key");
+  const sharedConnection = saved.data.find((item) => item.name === "Shared API key");
+  const anthropicConnection = saved.data.find((item) => item.name === "Claude API key");
+  const localConnection = saved.data.find((item) => item.name === "Local models");
+  const hostedConnection = saved.data.find((item) => item.name === "Hosted models");
+  assert.equal(keyConnection.source.kind, "secret");
+  assert.equal(keyConnection.source.namespaceId, namespace.id);
+  assert.notEqual(keyConnection.source.id, secret.id);
+  assert.equal(anthropicConnection.source.kind, "secret");
+  assert.equal(hostedConnection.source.kind, "secret");
+  assert.deepEqual(sharedConnection.source, secret.ref);
+  assert.doesNotMatch(
+    JSON.stringify(saved.data),
+    /secretValue|new-provider-api-key|new-provider-anthropic-key|new-provider-vllm-key/,
+  );
+  assert.equal(localConnection.source, undefined);
+  assert.equal(localConnection.baseUrl, "http://model-server:11434");
+  assert.equal(hostedConnection.baseUrl, "http://model-server:8000/v1");
+  await page.reload();
+  await page.getByText("OpenAI / API key / Team API key", { exact: true }).waitFor();
+  await expectNoText(page, /provider-setup-secret-value|new-provider-/);
+  await page.getByRole("button", { name: "Remove Local models" }).click();
+  await page
+    .getByText("Ollama / Local server / Local models", { exact: true })
+    .waitFor({ state: "detached" });
+  assert.equal((await fixture.request("GET", path)).data.length, 4);
+
+  await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name").fill("Connected Agent");
+  await page.getByLabel("Authentication source").selectOption("provider_connection");
+  await page
+    .getByLabel("Provider connection", { exact: true })
+    .selectOption({ label: "OpenAI / API key / Team API key" });
+  await page
+    .getByLabel("Configuration JSON")
+    .fill(JSON.stringify(nativeValues("provider-connection", { harnessId: "codex" })));
+  const createdResponse = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const created = await (await createdResponse).json();
+  assert.deepEqual(created.data.harnessAuth, {
+    method: "provider_connection",
+    connectionId: keyConnection.id,
+  });
+
+  await page.getByRole("button", { name: "Credentials", exact: true }).click();
+  await page.getByLabel("Provider connection", { exact: true }).selectOption(sharedConnection.id);
+  const savedResponse = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${created.data.id}` &&
+      response.request().method() === "PATCH",
+  );
+  await page.getByRole("button", { name: "Save authentication source" }).click();
+  assert.equal((await savedResponse).status(), 200);
+  await page.reload();
+  await page.getByLabel("Provider connection", { exact: true }).waitFor();
+  await page.getByLabel("Provider connection", { exact: true }).scrollIntoViewIfNeeded();
+  assert.equal(
+    await page.getByLabel("Provider connection", { exact: true }).inputValue(),
+    sharedConnection.id,
+  );
+  const agent = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${created.data.id}`,
+  );
+  assert.deepEqual(agent.data.harnessAuth, {
+    method: "provider_connection",
+    connectionId: sharedConnection.id,
+  });
+});
+
+test("Providers setup identifies missing credential storage without reporting an uncertain save", async (t) => {
+  // Default Docker development has no Secret Driver. Do not replace that missing
+  // dependency with the fixture's usual passive Secret store.
+  const fixture = await createConsoleAppFixture(t, { secretDriver: null });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Provider storage missing", { ready: true });
+  const { page } = await newPage(t, fixture, { recording: "provider-storage-unconfigured" });
+  const path = `/namespaces/${namespace.id}/provider-connections`;
+  await login(page, fixture, `/console/providers?namespace=${namespace.id}`);
+  await page.getByLabel("Connection name").fill("Unsaved API key");
+  await page.getByLabel("API key", { exact: true }).fill("synthetic-unsaved-provider-key");
+  const responsePromise = page.waitForResponse(
+    (response) => response.url().endsWith(path) && response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Save provider connection" }).click();
+  const response = await responsePromise;
+  assert.equal(response.status(), 503);
+  assert.equal((await response.json()).error.code, "SECRET_DRIVER_UNAVAILABLE");
+  await page
+    .getByText(/Credential storage is not configured.*No provider connection was saved/)
+    .waitFor();
+  assert.equal(await page.getByLabel("API key", { exact: true }).inputValue(), "");
+  assert.equal(
+    await page.getByRole("button", { name: "Save provider connection" }).isEnabled(),
+    true,
+  );
+  assert.deepEqual((await fixture.request("GET", path)).data, []);
+});
+
+test("Providers setup requires refresh after losing a successful credential save response", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Uncertain provider save", { ready: true });
+  const { page } = await newPage(t, fixture);
+  const path = `/namespaces/${namespace.id}/provider-connections`;
+  await login(page, fixture, `/console/providers?namespace=${namespace.id}`);
+  await page.getByLabel("Connection name").fill("Saved before disconnect");
+  await page.getByLabel("API key", { exact: true }).fill("uncertain-provider-key");
+  // Commit through the real API, then lose its response. The UI must not repeat creation.
+  await page.route(`**${path}`, async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    const response = await route.fetch();
+    assert.equal(response.status(), 201);
+    await route.abort("failed");
+  });
+  await page.getByRole("button", { name: "Save provider connection" }).click();
+  await page.getByText(/Outcome unknown/).waitFor();
+  assert.equal(
+    await page.getByRole("button", { name: "Save provider connection" }).isDisabled(),
+    true,
+  );
+  assert.equal(await page.getByLabel("API key", { exact: true }).inputValue(), "");
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.getByText("OpenAI / API key / Saved before disconnect", { exact: true }).waitFor();
+  assert.equal((await fixture.request("GET", path)).data.length, 1);
+  assert.equal(
+    await page.getByRole("button", { name: "Save provider connection" }).isEnabled(),
+    true,
+  );
+});
+
+test("Providers setup keeps a failed Secret write uncertain and redacts the backend error", async (t) => {
+  const fixture = await createConsoleAppFixture(t, {
+    secretDriver: createTestSecretDriver({ createError: new Error("private-backend-error") }),
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Provider write failed", { ready: true });
+  const { page } = await newPage(t, fixture);
+  const path = `/namespaces/${namespace.id}/provider-connections`;
+  await login(page, fixture, `/console/providers?namespace=${namespace.id}`);
+  await page.getByLabel("Connection name").fill("Uncertain API key");
+  await page.getByLabel("API key", { exact: true }).fill("synthetic-unsaved-provider-key");
+  const responsePromise = page.waitForResponse(
+    (response) => response.url().endsWith(path) && response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Save provider connection" }).click();
+  const response = await responsePromise;
+  assert.equal(response.status(), 503);
+  const body = await response.json();
+  assert.equal(body.error.code, "DEPENDENCY_UNAVAILABLE");
+  assert.doesNotMatch(JSON.stringify(body), /private-backend-error|synthetic-unsaved-provider-key/);
+  await page.getByText(/Outcome unknown/).waitFor();
+  assert.equal(await page.getByLabel("API key", { exact: true }).inputValue(), "");
+  assert.equal(
+    await page.getByRole("button", { name: "Save provider connection" }).isDisabled(),
+    true,
+  );
+});
+
 test("Agent creation leaves optional lists disabled when discovery is inaccessible", async (t) => {
   const fixture = await createConsoleAppFixture(t, { providerSummaries: undefined });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Unavailable lists", { ready: true });
+  const connection = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/provider-connections`,
+    {
+      body: {
+        name: "Available model",
+        providerId: "openai",
+        authMethodId: "api-key",
+        secretValue: "available-model-key",
+      },
+    },
+  );
+  assert.equal(connection.status, 201);
   const { page } = await newPage(t, fixture);
   const serviceAccounts = `**/namespaces/${namespace.id}/service-accounts`;
   await page.route(serviceAccounts, async (route) => {
@@ -571,12 +825,16 @@ test("Agent creation leaves optional lists disabled when discovery is inaccessib
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByRole("button", { name: "Start without Preset" }).click();
-  await page.getByText(/Providers unavailable\./).waitFor();
+  await page.getByText(/Control-plane Providers unavailable\./).waitFor();
   await page.getByText(/Service accounts unavailable\./).waitFor();
-  assert.equal(await page.getByLabel("Provider (optional)").isDisabled(), true);
+  assert.equal(await page.getByLabel("Control-plane Provider (optional)").isDisabled(), true);
   assert.equal(await page.getByLabel("Issued ChatGPT service account").isDisabled(), true);
-  assert.equal(await page.getByLabel("Provider (optional)").inputValue(), "");
+  assert.equal(await page.getByLabel("Control-plane Provider (optional)").inputValue(), "");
   assert.equal(await page.getByLabel("Issued ChatGPT service account").inputValue(), "");
+  // Installation Provider discovery does not own the Namespace's model connections.
+  await page.getByLabel("Authentication source").selectOption("provider_connection");
+  await page.getByLabel("Provider connection", { exact: true }).selectOption(connection.data.id);
+  assert.equal(await page.getByLabel("Provider connection", { exact: true }).isEnabled(), true);
 });
 
 test("Agent creation reuses the saved Configuration after an Agent creation conflict", async (t) => {
@@ -591,7 +849,7 @@ test("Agent creation reuses the saved Configuration after an Agent creation conf
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByRole("button", { name: "Start without Preset" }).click();
-  await page.getByText("Choose an installed Provider.").waitFor();
+  await page.getByText("Choose an installed control-plane Provider if needed.").waitFor();
   requests.length = 0;
   await page.getByLabel("SOUL.md", { exact: true }).fill("# Keep this draft\n");
   await page.getByLabel("Agent name").fill("Retry Agent");

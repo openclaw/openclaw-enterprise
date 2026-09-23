@@ -325,7 +325,7 @@ export async function createConsoleAppFixture(t, options = {}) {
       headers: session === null ? headers : authenticatedHeaders(session, headers),
       body,
     });
-    const payload = parseJson(result);
+    const payload = result.response.status === 204 ? {} : parseJson(result);
     return {
       status: result.response.status,
       headers: result.response.headers,

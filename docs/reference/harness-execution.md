@@ -81,11 +81,16 @@ queue guarantees.
 The Agent's [harnessAuth binding](agents.md#harness-authentication) is the sole
 model-auth selector. Kubernetes supports these combinations:
 
-| Binding                      | Topology          | Credential consumer                                             |
-| ---------------------------- | ----------------- | --------------------------------------------------------------- |
-| `api_key` with an OCC Secret | Embedded OpenClaw | Combined gateway/Harness receives `OPENAI_API_KEY`.             |
-| `api_key` with an OCC Secret | Dedicated Codex   | Only Codex receives `OPENAI_API_KEY` and logs in through stdin. |
-| `chatgpt_service_account`    | Dedicated Codex   | Only Codex receives the account token and forced workspace.     |
+| Binding                      | Topology          | Credential consumer                                                                 |
+| ---------------------------- | ----------------- | ----------------------------------------------------------------------------------- |
+| `api_key` with an OCC Secret | Embedded OpenClaw | Combined gateway/Harness receives `OPENAI_API_KEY`.                                 |
+| `api_key` with an OCC Secret | Dedicated Codex   | Only Codex receives `OPENAI_API_KEY` and logs in through stdin.                     |
+| `chatgpt_service_account`    | Dedicated Codex   | Only Codex receives the account token and forced workspace.                         |
+| `provider_connection`        | Depends on method | The selected model workload receives the native provider credential, when required. |
+
+See [saved provider connections](providers.md#model-authentication-catalog-and-saved-connections)
+for supported methods and topologies. Anthropic and local connections require
+embedded OpenClaw; local endpoints require separately configured network access.
 
 Kubernetes workload rendering prepares one explicit login mode and exact Secret
 projections. The selected Sandbox consumes the same already-rendered workload
@@ -124,8 +129,8 @@ These startup checks make provider requests and may incur model usage charges.
 They do not verify access to every other configured model or guarantee continued validity
 after upstream revocation. Embedded probe transport configuration must use
 literal metadata rather than additional environment or Secret references. The
-canonical `OPENAI_API_KEY` authentication alias remains supported, and unrelated
-gateway/channel configuration bindings remain separate.
+selected provider's canonical credential environment reference remains supported;
+unrelated gateway/channel configuration bindings remain separate.
 
 The revision freezes the admitted source reference, not historical Secret bytes.
 A managed account snapshot also retains its exact credential and verified private

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-09-17
-last_updated_session: codex/01a0acbf-4d5a-7413-9411-dce911f3ad23
+updated: 2026-09-23
+last_updated_session: codex/01a0cb30-109d-7520-b27c-ace1d03ac751
 ---
 
 # Harness Authentication Binding Flow
@@ -10,6 +10,9 @@ last_updated_session: codex/01a0acbf-4d5a-7413-9411-dce911f3ad23
 
 An operator stores an OpenAI API key as an OCC Secret or separately issues a
 ChatGPT account credential, then selects that source through Agent `harnessAuth`.
+The operator can also save a Namespace provider connection with a credential or
+local endpoint and select its ID. Connections retain the selected native provider
+and authentication method through admission and workload preparation.
 Deployment freezes the authorized binding; the worker rechecks it and Kubernetes
 renders the credential only into the model-executing workload. This flow ends
 at runtime authentication and the existing guarded activation handoff. Issuance
@@ -33,6 +36,8 @@ only the method and performs gateway readiness without model authentication.
 ```mermaid
 graph TD
   A["Store key or separately issue account credential"] --> B["Save Agent harnessAuth reference"]
+  A --> P["Optionally save Namespace provider connection"]
+  P --> B
   R["Operator provisions protected host env"] --> B
   D -->|runtime| S["SSH starts embedded gateway using host env"]
   S --> T["Check gateway readiness; model auth remains unverified"]
@@ -53,7 +58,23 @@ graph TD
 
 ## Execution Trace
 
-### 1. Save one source without issuing credentials
+### 1. Save a connection or select a source
+
+`apps/controller/src/providers/model-auth-catalog.ts:MODEL_AUTH_CATALOG`,
+`packages/occ/src/index.ts:OpenClawController.createProviderConnection`
+
+The Providers page reads the nonsecret catalog and saves immutable connection
+metadata in a ready Namespace. The catalog owns provider/method IDs and required
+inputs. Credential entry creates an OCC Secret and connection in one transaction,
+with separate create authorization and audit events. Failed creation cleans up
+only its own staged Secret, except when commit outcome is unknown. An existing
+Secret instead requires exact `operate`. Responses contain only references.
+When no Secret Driver is selected, credential creation stops before any storage
+write and returns `SECRET_DRIVER_UNAVAILABLE`. The Console reports the missing
+storage configuration. Backend failures and lost responses still require a
+fresh read before retrying because their write outcome may be unknown.
+Local endpoints require
+separately configured network access; saving never probes or opens access.
 
 `packages/occ/src/index.ts:OpenClawController.createAgent`, `updateAgent`,
 `authorizeHarnessAuthSource`
@@ -64,6 +85,11 @@ needs exact Secret `operate`; a ChatGPT binding needs exact account `read`.
 Namespace locks serialize source reference changes against deletion. Missing or
 foreign sources fail closed. Binding never selects a different model, Provider,
 Harness, or execution mode and cannot issue an account credential.
+
+A `provider_connection` binding requires exact connection `operate` and, when
+present, its source Secret `operate`. The connection and source must remain in
+the Agent's Namespace. Connection deletion checks draft, active-revision, and
+pending-deployment references; inactive historical snapshots remain intact.
 
 The [Secret storage flow](secret-storage-and-delivery.md) owns value storage;
 [account issuance](service-account-driver-credential-delivery.md) owns upstream
@@ -83,6 +109,13 @@ ownership. `runtime` needs no source grant, lookup, or delivery metadata. The
 selected Compute validates the combination: SSH accepts only embedded OpenClaw
 with `runtime`; Kubernetes continues to require managed authentication.
 
+For a connection, OCC repeats connection and source authorization for the actor
+and Agent principal, then checks the catalog's deployment capability. Unsupported
+methods fail before revision admission. A `provider_connection` snapshot freezes
+connection ID, provider, method, and optional endpoint, with an optional credential
+containing the Secret reference and Driver identity. Ollama has no credential.
+No token bytes or backend locators enter this snapshot.
+
 A runtime revision records only `{ "method": "runtime" }`. Host credential
 changes can affect that revision after restart without redeployment; see the
 [SSH lifecycle](pr-24-ssh-compute.md).
@@ -101,11 +134,13 @@ The worker authorizes the original deploying actor and required Agent Secret
 grants against the admitted revision. It verifies current source ownership and
 matches managed-account credential and Provider metadata against the frozen
 snapshot. Revocation or a changed source rejects work before provisioning.
+Connection-backed revisions also recheck the actor and Agent's exact connection
+`operate` and the frozen connection/source identity before workload effects.
 For `runtime`, worker Agent/Configuration authorization still runs but credential
 source authorization and lookup do not. The dispatch context carries only the
 method; SSH does not read the operator credential file or issue a model probe.
 
-For an API key it resolves authoritative backend ownership from OCC state and
+For a Secret-backed binding it resolves authoritative backend ownership from OCC state and
 passes an ephemeral `ComputeRevisionContext`. It does not call the Secret Driver,
 read the Kubernetes Secret, or rewrite the revision. Physical backend identity
 is checked at API admission. A missing physical Secret/key later prevents workload
@@ -123,6 +158,10 @@ One internal workload-rendering step converts validated references to supported
 Secret projections and a closed login mode. Embedded OpenClaw receives the key
 in its combined workload. Dedicated Codex receives the key or the directly
 projected account token/workspace; its separate gateway receives neither.
+Connection-backed OpenAI keys use that same delivery boundary. Anthropic keys,
+Ollama, and vLLM require embedded OpenClaw. Compute overlays
+the selected native provider endpoint, API, and credential environment reference
+onto the runtime configuration. Conflicting model-auth configuration is rejected.
 Configuration secret bindings remain gateway-only and cannot choose model auth.
 
 The selected Sandbox consumes these already-rendered
@@ -145,9 +184,11 @@ and configuration, disables execution and external tools, and applies read-only
 filesystem policy without approval grants. Tool events fail the probe. Login
 state remains in the bounded ephemeral home.
 
-Embedded OpenClaw consumes its native OpenAI key and runs one bounded native
-primary-model probe in the actual gateway startup, with tools and fallback
+Embedded OpenClaw consumes the selected native provider configuration and runs
+one bounded native primary-model probe in the actual gateway startup, with tools and fallback
 disabled. Its 16-token output limit meets the provider's minimum request size.
+The probe must report success for the selected provider and model. Local servers
+are reached from the workload using separately configured network access.
 Initial and replacement deployments use this same startup path. For replacement,
 activation first updates the shared gateway's `Recreate` Deployment, which can
 stop the serving gateway before the new process validates credentials. Invalid
@@ -186,6 +227,7 @@ history cannot restore historical Secret values.
 
 ## Related docs
 
+- [Saved provider connections](../reference/providers.md#model-authentication-catalog-and-saved-connections)
 - [Agent harness authentication](../reference/agents.md#harness-authentication)
 - [Credential renewal and revocation](../guides/deploy/credential-lifecycle.md)
 - [Service Account Driver credential delivery flow](service-account-driver-credential-delivery.md)
@@ -197,6 +239,10 @@ history cannot restore historical Secret values.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 04:16: Trace credential entry, generic connection snapshots, and native Anthropic/local startup configuration. (01a0cb30-109d-7520-b27c-ace1d03ac751 - 30547beeda9e413de5b7c4bf6c9f3b10f58c5fcb)
+
+- 2026-09-23 03:20: Document saved provider connections and existing API-key delivery in the accompanying implementation. (01a0cb30-109d-7520-b27c-ace1d03ac751 - 762c0e1361c63bf925768977fb0d9fde7e6719b3)
 
 - 2026-09-17 19:14: Add runtime binding admission and worker behavior without managed source delivery. (01a0acbf-4d5a-7413-9411-dce911f3ad23 - b8cabaf9a49e069a7668ccf88b9e71a7484227b7)
 

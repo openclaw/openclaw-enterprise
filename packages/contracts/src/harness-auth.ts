@@ -16,6 +16,9 @@ export function normalizeHarnessAuthBinding(input: unknown): HarnessAuthBinding 
 
 /** Public intent excludes private admission and delivery metadata. */
 export function harnessAuthBindingFromSnapshot(snapshot: HarnessAuthSnapshot): HarnessAuthBinding {
+  if (snapshot.method === "provider_connection") {
+    return { method: "provider_connection", connectionId: snapshot.connection.id };
+  }
   if (snapshot.method === "api_key") {
     return { method: snapshot.method, source: snapshot.source };
   }

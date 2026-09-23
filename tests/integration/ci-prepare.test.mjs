@@ -35,6 +35,36 @@ function runPrepare(args, env = {}) {
   });
 }
 
+test("prepareFile preserves optional recording output only for the baseline Console test", async (t) => {
+  const root = await fixture(t);
+  for (const [file, directory, expected] of [
+    ["tests/browser/console-agents.test.mjs", join(root, "recordings"), true],
+    ["tests/browser/console-agents.test.mjs", "", false],
+    ["tests/conformance/contracts.test.mjs", join(root, "recordings"), false],
+  ]) {
+    const exported = join(root, `export-${expected}-${file.includes("browser")}.env`);
+    const result = runPrepare(
+      [
+        "--lane",
+        "checks-baseline",
+        "--file",
+        file,
+        "--state",
+        join(root, "state.json"),
+        "--github-env",
+        exported,
+      ],
+      { OCC_TEST_CONSOLE_ARTIFACT_DIR: directory },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const env = await readFile(exported, "utf8");
+    assert.equal(env.includes("OCC_TEST_CONSOLE_ARTIFACT_DIR="), expected);
+    if (expected) {
+      assert.ok(env.includes(`OCC_TEST_CONSOLE_ARTIFACT_DIR=${directory}\n`));
+    }
+  }
+});
+
 async function fixtureImageCommands(
   t,
   scenario,

@@ -1,3 +1,13 @@
+import type { ProviderConnectionReferenceSnapshot } from "./provider-connections.ts";
+
+export type {
+  ProviderConnection,
+  CreateProviderConnectionInput,
+  ProviderConnectionReferenceSnapshot,
+  ModelAuthCatalogMethod,
+  ModelAuthCatalogProvider,
+} from "./provider-connections.ts";
+
 import type { WorkspaceSetup } from "./workspace-setup.ts";
 import { asRecord, immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
 import {
@@ -106,6 +116,7 @@ export const RESOURCE_KINDS = Object.freeze([
   "namespace",
   "configuration",
   "preset",
+  "provider_connection",
   "service_account",
   "secret",
   "agent",
@@ -212,6 +223,7 @@ export interface SecretEnvironmentProjection {
 }
 
 export type HarnessAuthBinding =
+  | { readonly method: "provider_connection"; readonly connectionId: string }
   | { readonly method: "api_key"; readonly source: SecretReference }
   | { readonly method: "chatgpt_service_account"; readonly serviceAccountId: string }
   | { readonly method: "runtime" };
@@ -219,6 +231,14 @@ export type HarnessAuthBinding =
 /** Private admission metadata. Public APIs expose only HarnessAuthBinding. */
 export type HarnessAuthSnapshot =
   | { readonly method: "runtime" }
+  | {
+      readonly method: "provider_connection";
+      readonly connection: ProviderConnectionReferenceSnapshot;
+      readonly credential?: {
+        readonly source: SecretReference;
+        readonly secretDriverId: string;
+      };
+    }
   | {
       readonly method: "api_key";
       readonly source: SecretReference;
@@ -238,6 +258,15 @@ export type HarnessAuthSnapshot =
 
 /** Authoritative delivery references, resolved again at dispatch; never secret values. */
 export type ResolvedHarnessAuth =
+  | {
+      readonly method: "provider_connection";
+      readonly connection: ProviderConnectionReferenceSnapshot;
+      readonly credential?: {
+        readonly source: SecretReference;
+        readonly secretDriverId: string;
+        readonly backendRef: SecretBackendRef;
+      };
+    }
   | (Extract<HarnessAuthSnapshot, { method: "api_key" }> & {
       readonly backendRef: SecretBackendRef;
     })
@@ -730,7 +759,13 @@ export interface IAMPolicyManagementContext {
 }
 
 export type ManagedIAMResourceKind =
-  "agent" | "agent_revision" | "configuration" | "preset" | "secret" | "service_account";
+  | "provider_connection"
+  | "agent"
+  | "agent_revision"
+  | "configuration"
+  | "preset"
+  | "secret"
+  | "service_account";
 
 export interface IAMManagedRoleInput {
   readonly id: string;

@@ -44,6 +44,13 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
   }
 }
 
+export class SecretDriverUnavailableError extends DependencyUnavailableError {
+  constructor() {
+    super("No Secret Driver is selected for this Installation.");
+    this.name = "SecretDriverUnavailableError";
+  }
+}
+
 export class ScopeViolationError extends Error {
   constructor(message: string) {
     super(message);

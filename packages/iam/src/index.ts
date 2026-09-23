@@ -131,6 +131,10 @@ export function createAuthPrincipalSeed(
             resourceKind,
           })),
       ),
+      ...(["create", "read", "delete", "operate"] as const).map((action) => ({
+        action,
+        resourceKind: "provider_connection" as const,
+      })),
       { action: "operate", resourceKind: "secret" },
       ...(["create", "read", "update", "delete", "deploy", "operate", "administer"] as const).map(
         (action) => ({
@@ -203,6 +207,7 @@ const ACTIONS: readonly PermissionAction[] = [
 
 const MANAGED_RESOURCE_KINDS: readonly ManagedIAMResourceKind[] = [
   "preset",
+  "provider_connection",
   "agent",
   "agent_revision",
   "configuration",
@@ -526,7 +531,7 @@ export function validateNativeIAMState(state: NativeIAMState): void {
       `AccessBinding ${binding.id} has an invalid resource id`,
     );
     assertCondition(
-      !["configuration", "preset"].includes(binding.resourceKind ?? "") ||
+      !["configuration", "preset", "provider_connection"].includes(binding.resourceKind ?? "") ||
         isNonEmptyString(binding.namespaceId),
       `AccessBinding ${binding.id} targets a Namespace resource without a Namespace`,
     );
@@ -648,7 +653,7 @@ function validRequest(request: AuthorizationRequest): boolean {
     isNonEmptyString(request.principalId) &&
     isNonEmptyString(request.resource.id) &&
     optionalNonempty(request.resource.namespaceId) &&
-    (!["configuration", "preset"].includes(request.resource.kind) ||
+    (!["configuration", "preset", "provider_connection"].includes(request.resource.kind) ||
       isNonEmptyString(request.resource.namespaceId)) &&
     (request.resource.kind !== "service_account" ||
       isNonEmptyString(request.resource.namespaceId)) &&

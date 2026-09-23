@@ -1891,18 +1891,61 @@ export class ControllerWorker {
     }
     const refs = uniqueSecretRefs(secretBindings.bindings);
     const auth = revision.harnessAuth;
+    if (auth.method === "provider_connection") {
+      const admitted = auth.connection;
+      const connection = await this.state.read((view) =>
+        view.providerConnections.findProviderConnection(revision.namespaceId, admitted.id),
+      );
+      if (
+        !connection ||
+        connection.providerId !== admitted.providerId ||
+        connection.authMethodId !== admitted.authMethodId ||
+        connection.baseUrl !== admitted.baseUrl ||
+        connection.source?.id !== auth.credential?.source.id ||
+        connection.source?.namespaceId !== auth.credential?.source.namespaceId
+      ) {
+        return { outcome: "permanent", code: "HARNESS_AUTH_SOURCE_CHANGED" };
+      }
+      for (const principalId of [claim.actorId, revision.servicePrincipalId]) {
+        const authorization: AuthorizationRequest = {
+          principalId,
+          action: "operate",
+          resource: {
+            kind: "provider_connection",
+            id: admitted.id,
+            namespaceId: revision.namespaceId,
+          },
+        };
+        const decision = await this.iamDecision(driver, authorization);
+        if (!decision.allowed) {
+          return { outcome: "permanent", code: "AUTHORIZATION_DENIED", authorization, decision };
+        }
+      }
+    }
+    let credential: { source: SecretReference; secretDriverId: string } | undefined;
     if (auth.method === "api_key") {
-      if (auth.source?.kind !== "secret" || auth.source.namespaceId !== revision.namespaceId) {
+      credential = auth;
+    } else if (auth.method === "provider_connection") {
+      credential = auth.credential;
+    }
+    if (credential !== undefined) {
+      if (
+        credential.source?.kind !== "secret" ||
+        credential.source.namespaceId !== revision.namespaceId
+      ) {
         return { outcome: "permanent", code: "INVALID_HARNESS_AUTH" };
       }
       if (
         !refs.some(
-          (ref) => ref.id === auth.source.id && ref.namespaceId === auth.source.namespaceId,
+          (ref) =>
+            ref.id === credential.source.id && ref.namespaceId === credential.source.namespaceId,
         )
       ) {
-        refs.push(auth.source);
+        refs.push(credential.source);
       }
-    } else if (auth.method !== "chatgpt_service_account" && auth.method !== "runtime") {
+    } else if (
+      !["provider_connection", "chatgpt_service_account", "runtime"].includes(auth.method)
+    ) {
       return { outcome: "permanent", code: "INVALID_HARNESS_AUTH" };
     }
     for (const ref of refs) {
@@ -2105,8 +2148,14 @@ export class ControllerWorker {
     }
 
     let harnessAuth: ResolvedHarnessAuth;
-    if (revision.harnessAuth.method === "api_key") {
-      const auth = revision.harnessAuth;
+    const snapshot = revision.harnessAuth;
+    let auth: { source: SecretReference; secretDriverId: string } | undefined;
+    if (snapshot.method === "api_key") {
+      auth = snapshot;
+    } else if (snapshot.method === "provider_connection") {
+      auth = snapshot.credential;
+    }
+    if (auth !== undefined) {
       if (typeof secretDriverId !== "string" || auth.secretDriverId !== secretDriverId) {
         return { result: { outcome: "permanent", code: "SECRET_DRIVER_MISMATCH" } };
       }
@@ -2128,9 +2177,19 @@ export class ControllerWorker {
       }
       // Admission verifies the physical source. Workers project authoritative
       // OCC metadata without requiring permission to read backend Secret values.
-      harnessAuth = { ...auth, backendRef: secret.backendRef };
+      if (snapshot.method === "api_key") {
+        harnessAuth = { ...snapshot, backendRef: secret.backendRef };
+      } else if (snapshot.method === "provider_connection") {
+        harnessAuth = { ...snapshot, credential: { ...auth, backendRef: secret.backendRef } };
+      } else {
+        return { result: { outcome: "permanent", code: "INVALID_HARNESS_AUTH" } };
+      }
+    } else if (snapshot.method === "provider_connection") {
+      harnessAuth = { method: "provider_connection", connection: snapshot.connection };
+    } else if (snapshot.method === "api_key") {
+      return { result: { outcome: "permanent", code: "INVALID_HARNESS_AUTH" } };
     } else {
-      harnessAuth = revision.harnessAuth;
+      harnessAuth = snapshot;
     }
     const workspaceSetup = await this.state.read((view) =>
       view.workspaceSetups.find(revision.namespaceId, revision.agentId),

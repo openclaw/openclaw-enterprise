@@ -115,10 +115,9 @@ Creating an Agent does not create a provider account or issue credentials.
 
 ## Harness authentication
 
-`harnessAuth` selects how an Agent obtains model credentials. Creation
-omission stores `null`; PATCH omission preserves the binding and explicit `null`
-clears it. Both supported topologies require a valid binding at deployment.
-A managed source must belong to the Agent's exact Namespace:
+`harnessAuth` selects model credentials. Creation defaults to `null`; PATCH
+omission preserves the binding, while `null` clears it. Deployment requires a
+valid binding in either topology. Managed sources belong to the Agent's Namespace:
 
 ```json
 {
@@ -133,31 +132,37 @@ A managed source must belong to the Agent's exact Namespace:
 }
 ```
 
-For an already issued ChatGPT account credential, use
+Use `{ "method": "provider_connection", "connectionId": "pco_123e4567-e89b-42d3-a456-426614174000" }`
+for a [saved provider connection](providers.md#model-authentication-catalog-and-saved-connections).
+OpenAI API keys support either topology; Anthropic, Ollama, and vLLM require
+embedded OpenClaw. Binding requires the actor's exact
+connection and any source Secret `operate`; deployment requires these grants for
+the Agent principal too.
+
+For an issued ChatGPT account credential, use
 `{ "method": "chatgpt_service_account", "serviceAccountId": "sa_123e4567-e89b-42d3-a456-426614174000" }`.
-This requires dedicated Codex and the account's matching `providerId`. Binding
-an account does not issue its credential or change the model, Harness, or Provider.
+This requires dedicated Codex and the account's matching `providerId`.
+Bindings neither issue credentials nor change model, Harness, or Provider selection.
 
-For SSH embedded OpenClaw, use `{ "method": "runtime" }`. The operator supplies
-credentials in the protected host environment file; OCC neither reads nor
-delivers credentials and performs no authentication/model probe. Agent and
-Configuration authorization, topology checks, and process readiness remain
-required. No credential-source permission is needed because OCC owns no source.
-Kubernetes and Docker reject this method. See [SSH credentials](drivers/ssh-compute.md#credentials-and-supported-boundaries).
+`{ "method": "runtime" }` supports SSH embedded OpenClaw only.
+[SSH credentials](drivers/ssh-compute.md#credentials-and-supported-boundaries)
+live in the operator's protected host environment file; OCC neither reads,
+delivers, nor probes them. No credential-source grant is required;
+Agent/Configuration authorization, topology checks, and process readiness still apply.
 
-API-key binding requires the actor's exact Secret `operate`. Deployment also
-requires the Agent service principal's exact Secret `operate`. ChatGPT binding
-requires the actor's exact account `read`, including the current account when
-replacing or clearing a binding. There is no implied account grant for the Agent
-principal. Each consumer of a shared source is authorized independently.
+API-key binding requires the actor's exact Secret `operate`; deployment also
+requires the Agent principal's grant. ChatGPT binding requires the actor's exact
+account `read`, including the current account when replacing or clearing it;
+the Agent receives no implied grant. Shared-source consumers are authorized independently.
 
-A deployment freezes the binding and, for managed methods, resolved reference metadata.
-A `runtime` snapshot contains only its method. Operator changes to host credentials
-can affect an existing revision without redeployment; readiness does not prove model access. Dispatch
-reauthorizes the admitted actor and required Agent grants, and checks source
-ownership again. Public responses expose safe references only. Backend Secret
-names, provider workspace IDs, upstream identities, and credential values remain
-private. Changing a draft requires a later explicit deployment. See
+Deployments freeze bindings and resolved references. Connection snapshots retain
+the ID, provider, method, endpoint, and any credential source; see
+[connection lifecycle](providers.md#model-authentication-catalog-and-saved-connections)
+for deletion restrictions and retained history. `runtime` snapshots contain only
+the method: host credential changes can affect existing revisions, and readiness
+does not prove model access. Dispatch rechecks actor/Agent grants and source
+ownership. Responses expose safe references, never credentials or backend
+identifiers. Draft changes require redeployment. See
 [credential delivery](harness-execution.md#harness-authentication) and
 [Secret consumption grants](drivers/kubernetes-secret.md#bind-a-secret-to-gateway-environment).
 

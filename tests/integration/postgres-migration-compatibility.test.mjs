@@ -1104,9 +1104,9 @@ async function canonicalData(db) {
   ]) {
     result[table] = (
       await db.app.query(
-        // repository_bindings is the one new nullable column in the existing
-        // Agent table; every previously stored field must remain identical.
-        `SELECT to_jsonb(t) - 'repository_bindings' AS value FROM occ.${table} t ORDER BY to_jsonb(t)::pg_catalog.text`,
+        // New nullable/reference columns have no prior stored value; every
+        // previously stored field must remain identical.
+        `SELECT to_jsonb(t) - 'repository_bindings' - 'harness_auth_provider_connection_id' AS value FROM occ.${table} t ORDER BY to_jsonb(t)::pg_catalog.text`,
       )
     ).rows;
   }
@@ -1153,6 +1153,7 @@ test(
       [24, "prePresetsMain"],
       [25, "main"],
       [28, "repositoryRetention"],
+      [29, "workspaceSetup"],
     ]) {
       await context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -1259,6 +1260,7 @@ test(
       [25, "main"],
       [27, "repositoryCredentials"],
       [28, "repositoryRetention"],
+      [29, "workspaceSetup"],
     ]) {
       await context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });

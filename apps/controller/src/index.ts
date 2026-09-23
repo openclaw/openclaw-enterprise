@@ -1,3 +1,4 @@
+import { MODEL_AUTH_CATALOG } from "./providers/model-auth-catalog.ts";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
@@ -40,6 +41,7 @@ import {
   type AuditEvent,
   type AuthorizationEvidence,
   type ConfigurationDriver,
+  type CreateProviderConnectionInput,
   type ComputeDriver,
   type HarnessExecutionMode,
   type HarnessAuthBinding,
@@ -73,6 +75,7 @@ import {
   NotImplementedError,
   ResourceConflictError,
   ScopeViolationError,
+  SecretDriverUnavailableError,
   type DeploymentStatusResult,
   type HarnessResolver,
   type OpenClawController,
@@ -205,7 +208,11 @@ interface RequiredPermission {
   readonly resourceKind: ResourceKind;
   readonly scope: "requested" | "installation" | "namespace" | "each_returned" | "request_body";
   readonly condition?:
-    "associated_service_account" | "existing_namespace" | "bound_secret" | "iam_binding_target";
+    | "associated_service_account"
+    | "existing_namespace"
+    | "bound_secret"
+    | "iam_binding_target"
+    | "new_provider_secret";
 }
 
 interface DocumentedFastifySchema extends FastifySchema {
@@ -242,6 +249,7 @@ const RESOURCE_ID = {
   presetId: /^pre_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
   configurationId: /^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
   serviceAccountId: /^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  connectionId: /^pco_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
   secretId: /^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
   agentId: /^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
   revisionId: /^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
@@ -385,6 +393,13 @@ function operationTarget(
   if (operation.operationId === "createNamespace") {
     return { kind: "namespace", id: installationId };
   }
+  if (operation.resourceKind === "provider_connection" && namespaceId) {
+    return {
+      kind: "provider_connection",
+      id: typeof params.connectionId === "string" ? params.connectionId : namespaceId,
+      namespaceId,
+    };
+  }
   if (operation.resourceKind === "preset" && namespaceId) {
     return { kind: "preset", id: presetId ?? namespaceId, namespaceId };
   }
@@ -459,6 +474,23 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
 
   if (operation.operationId === "createSecret") {
     return [{ ...permission, scope: "namespace" }];
+  }
+  if (operation.operationId === "createProviderConnection") {
+    return [
+      { ...permission, scope: "namespace" },
+      {
+        action: "create",
+        resourceKind: "secret",
+        scope: "namespace",
+        condition: "new_provider_secret",
+      },
+      {
+        action: "operate",
+        resourceKind: "secret",
+        scope: "request_body",
+        condition: "bound_secret",
+      },
+    ];
   }
 
   if (operation.operationId === "createIAMAccessBinding") {
@@ -546,6 +578,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
   switch (operation.authorizationTarget) {
     case "namespace_collection":
       return [{ ...permission, scope: "namespace" }];
+    case "provider_connection_candidates":
     case "preset_candidates":
     case "namespace_candidates":
       return [{ ...permission, scope: "each_returned" }];
@@ -578,6 +611,7 @@ function permissionDescription(
     namespace: "Namespace",
     configuration: "Configuration",
     preset: "Preset",
+    provider_connection: "ProviderConnection",
     service_account: "ServiceAccount",
     secret: "Secret",
     agent: "Agent",
@@ -604,6 +638,9 @@ function permissionDescription(
       }
       if (condition === "iam_binding_target") {
         return `Requires ${action} permission on the request body ${name} when the AccessBinding targets that resource kind.`;
+      }
+      if (condition === "new_provider_secret") {
+        return "Requires Secret create permission in the Namespace when supplying a new credential value.";
       }
       switch (scope) {
         case "installation":
@@ -830,6 +867,13 @@ function requestFailure(error: unknown): RequestFailure {
   if (error instanceof NotImplementedError) {
     return failure(501, "NOT_IMPLEMENTED", error.message);
   }
+  if (error instanceof SecretDriverUnavailableError) {
+    return failure(
+      503,
+      "SECRET_DRIVER_UNAVAILABLE",
+      "Credential storage is not configured for this Installation. Ask the Installation operator to configure a Secret Driver.",
+    );
+  }
   if (isDependencyUnavailable(error)) {
     return failure(503, "DEPENDENCY_UNAVAILABLE", "A required platform dependency is unavailable.");
   }
@@ -1019,6 +1063,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   });
 
   let controller = options.controller;
+  controller?.registerProviderCatalog(MODEL_AUTH_CATALOG);
   let bootstrapping = false;
   const installationId =
     development.installationId ?? controller?.installation.id ?? `ins_${randomUUID()}`;
@@ -1959,6 +2004,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           createdAt: new Date().toISOString(),
         };
         const created = options.createController(installation);
+        created.registerProviderCatalog(MODEL_AUTH_CATALOG);
         created.registerDriver(selected);
         created.selectDriver("iam", selected.id);
         if (options.computeDriver) {
@@ -2002,6 +2048,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         data: await controller.getInstallation(context.actorId),
         meta: { requestId: request.id },
       });
+      return;
+    }
+
+    if (operation.operationId === "listProviderCatalog") {
+      await controller.getInstallation(context.actorId);
+      reply.send({ data: MODEL_AUTH_CATALOG, meta: { requestId: request.id } });
       return;
     }
 
@@ -2230,6 +2282,76 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             operation,
             request,
             { kind: "preset", id: params.presetId as string, namespaceId },
+            "mutation",
+            context,
+          ),
+        );
+      });
+      reply.status(204).send();
+      return;
+    }
+
+    if (operation.operationId === "listProviderConnections") {
+      reply.send({
+        data: await controller.listProviderConnections(context.actorId, namespaceId),
+        meta: { requestId: request.id },
+      });
+      return;
+    }
+    if (operation.operationId === "getProviderConnection") {
+      reply.send({
+        data: await controller.getProviderConnection(
+          context.actorId,
+          namespaceId,
+          params.connectionId as string,
+        ),
+        meta: { requestId: request.id },
+      });
+      return;
+    }
+    if (operation.operationId === "createProviderConnection") {
+      const connection = await controller.transact(async (unit) => {
+        const created = await controller!.createProviderConnection(context.actorId, {
+          ...body,
+          namespaceId,
+        } as CreateProviderConnectionInput);
+        if (body?.secretValue !== undefined && created.source !== undefined) {
+          await unit.audit.append(
+            event(
+              occApiRoutes.find((route) => route.operationId === "createSecret")!,
+              request,
+              created.source,
+              "mutation",
+              context,
+            ),
+          );
+        }
+        await unit.audit.append(
+          event(
+            operation,
+            request,
+            { kind: "provider_connection", id: created.id, namespaceId },
+            "mutation",
+            context,
+          ),
+        );
+        return created;
+      });
+      reply.status(201).send({ data: connection, meta: { requestId: request.id } });
+      return;
+    }
+    if (operation.operationId === "deleteProviderConnection") {
+      await controller.transact(async (unit) => {
+        await controller!.deleteProviderConnection(
+          context.actorId,
+          namespaceId,
+          params.connectionId as string,
+        );
+        await unit.audit.append(
+          event(
+            operation,
+            request,
+            { kind: "provider_connection", id: params.connectionId as string, namespaceId },
             "mutation",
             context,
           ),

@@ -1059,7 +1059,11 @@ function probeOpenClawAuthenticationFailureCode() {
   const directory = fs.mkdtempSync("/tmp/openclaw-auth-probe-");
   try {
     const model = process.env.OPENCLAW_HARNESS_MODEL;
-    if (typeof model !== "string" || !model.startsWith("openai/") || !process.env.OPENAI_API_KEY?.trim()) return "UNAVAILABLE";
+    const provider = process.env.OPENCLAW_HARNESS_PROVIDER;
+    const credentialEnvironment = process.env.OPENCLAW_HARNESS_CREDENTIAL_ENV;
+    if (typeof provider !== "string" || typeof credentialEnvironment !== "string" ||
+      typeof model !== "string" || !model.startsWith(provider + "/") ||
+      !process.env[credentialEnvironment]?.trim()) return "UNAVAILABLE";
     const configuration = JSON.parse(process.env.OPENCLAW_HARNESS_PROBE_CONFIG);
     if (configuration.agents?.defaults?.model !== model) return "UNAVAILABLE";
     configuration.agents.defaults.workspace = directory + "/workspace";
@@ -1068,7 +1072,7 @@ function probeOpenClawAuthenticationFailureCode() {
     fs.writeFileSync(configPath, JSON.stringify(configuration), { mode: 0o600 });
     const result = spawnSync("node", [
       "/app/openclaw.mjs", "models", "status", "--json", "--probe",
-      "--probe-provider", "openai", "--probe-concurrency", "1",
+      "--probe-provider", provider, "--probe-concurrency", "1",
       "--probe-timeout", "15000", "--probe-max-tokens", "16",
     ], {
       cwd: directory,
@@ -1077,7 +1081,7 @@ function probeOpenClawAuthenticationFailureCode() {
         HOME: directory,
         OPENCLAW_STATE_DIR: directory + "/state",
         OPENCLAW_CONFIG_PATH: configPath,
-        OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+        [credentialEnvironment]: process.env[credentialEnvironment],
       },
       encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
       timeout: 30000, killSignal: "SIGKILL", maxBuffer: 262144,
@@ -1086,7 +1090,7 @@ function probeOpenClawAuthenticationFailureCode() {
     if (result.status !== 0 || result.error) return "MODEL_PROBE_FAILED";
     const results = JSON.parse(result.stdout).auth?.probes?.results;
     return Array.isArray(results) && results.length === 1 &&
-      results[0].provider === "openai" && results[0].model === model &&
+      results[0].provider === provider && results[0].model === model &&
       results[0].source === "env" && results[0].status === "ok"
         ? undefined
         : "MODEL_PROBE_FAILED";

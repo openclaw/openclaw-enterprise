@@ -17,6 +17,8 @@ import {
   NamespaceId,
   PermissionActionSchema,
   ProviderId,
+  ProviderConnectionId,
+  CreateProviderConnectionBody,
   RepositoryBindingSelectionsSchema,
   RevisionId,
   ResourceKindSchema,
@@ -524,3 +526,47 @@ export const PresetListResponse = Type.Object(
 export type PresetWire = Type.Static<typeof PresetSchema>;
 export type PresetResponse = Type.Static<typeof PresetResponse>;
 export type PresetListResponse = Type.Static<typeof PresetListResponse>;
+
+export const ProviderConnectionSchema = Type.Object(
+  {
+    ...Type.Omit(CreateProviderConnectionBody, ["secretValue"]).properties,
+    id: ProviderConnectionId,
+    namespaceId: NamespaceId,
+    createdAt: Timestamp,
+  },
+  { additionalProperties: false },
+);
+export const ProviderConnectionResponse = Type.Object(
+  { data: ProviderConnectionSchema, meta: Meta },
+  { additionalProperties: false },
+);
+export const ProviderConnectionListResponse = Type.Object(
+  { data: Type.Array(ProviderConnectionSchema), meta: Meta },
+  { additionalProperties: false },
+);
+export const ProviderCatalogResponse = Type.Object(
+  {
+    data: Type.Array(
+      Type.Object(
+        {
+          id: ProviderId,
+          label: Name,
+          requiresBaseUrl: Type.Boolean(),
+          authMethods: Type.Array(
+            Type.Object(
+              {
+                id: ProviderId,
+                label: Name,
+                credentialKind: Type.Union([Type.Literal("secret"), Type.Literal("none")]),
+              },
+              { additionalProperties: false },
+            ),
+          ),
+        },
+        { additionalProperties: false },
+      ),
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);
