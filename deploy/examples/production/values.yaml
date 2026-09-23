@@ -6,7 +6,14 @@ images:
   controller: registry.example.invalid/openclaw-enterprise/controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 auth:
-  baseUrl: https://occ.example.internal
+  baseUrl: https://console.oce.example.internal
+
+# Route wildcard DNS/TLS to OCC; the shared parent must contain only trusted OCE ingress hosts.
+# See docs/guides/deploy/native-admin.md before installing.
+agentNativeAdmin:
+  enabled: true
+  domain: agents.oce.example.internal
+  sharedCookieDomain: oce.example.internal
 
 bootstrap:
   adminEmail: admin@example.invalid

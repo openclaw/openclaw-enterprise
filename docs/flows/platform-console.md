@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: 2026-09-22
-last_updated_session: codex/01a0cc48-2eda-7fc2-a19e-096b68fccb7b
+last_updated_session: 01a0ccc0-00fa-7173-ab45-f7a5fb55b3b6
 ---
 
 # Platform console request flow
@@ -147,7 +147,12 @@ The form starts with editable native JSON for the selected execution mode and
 optional Agent-owned plugin selections. `apps/controller/src/console/agents/starter-model.mjs`
 selects the shared first-party default: `codex/gpt-6-astra` for dedicated or
 `openai/gpt-6-astra` for embedded. A mode change preserves edited JSON; reset
-restores the selected mode’s starter. Submission parses the JSON object and
+restores the selected mode’s starter. `configurationTemplate` enables native
+Control UI for both modes with explicit loopback origins on port 18789, preserving
+token authentication and device pairing. Rendered Preset values replace the
+starter unchanged. These defaults do not configure the isolated HTTPS origin or
+trusted-proxy identity required by [OCE native admin access](agent-native-admin.md).
+Submission parses the JSON object and
 posts `{kind: "agent", values}` to
 `POST /namespaces/:namespaceId/configurations`. After that returns its ID,
 `POST /namespaces/:namespaceId/agents` creates the Agent draft with the selected
@@ -275,6 +280,8 @@ refreshes and inspects the Agent and revision history.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-22 23:19: Enable native Control UI in Console starters with explicit loopback origins; preserve Preset and edited configuration. (01a0ccc0-00fa-7173-ab45-f7a5fb55b3b6 - 6d23cef977270fdf8ced6ea54ac8e1302cf8acd6)
 
 - 2026-09-22 20:56: Rename the deployment-facing Console view to New revision. (01a0cc48-2eda-7fc2-a19e-096b68fccb7b - 081bccfcf3f5b114588dde1b42a0deb07f326017)
 

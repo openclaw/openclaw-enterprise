@@ -12,6 +12,19 @@ Agent; it does not verify an Agent you create in the console.
 
 ## Create an Agent
 
+The Embedded and Dedicated starters enable native Control UI with explicit
+`http://127.0.0.1:18789` and `http://localhost:18789` browser origins. Gateway token
+authentication and device pairing remain required. For direct access, forward
+local port 18789 to the Agent gateway's configured port through a loopback-only
+tunnel or port-forward. Changing the local browser port requires updating
+`gateway.controlUi.allowedOrigins`. Do not expose the gateway publicly.
+Presets and edited Configuration JSON retain their chosen settings.
+
+For the OCE **Open native admin UI** link, complete
+[native admin setup](../../guides/deploy/native-admin.md), including trusted-proxy
+authentication and the exact Agent HTTPS origin. Enabling the native UI alone
+does not make that link available.
+
 1. Sign in, select the intended Namespace, open **Agents**, and select
    **Create Agent**.
 2. To reuse a [Preset](../presets.md), choose one, fill its variables, and select

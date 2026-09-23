@@ -19,6 +19,11 @@ import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 
+const STARTER_CONTROL_UI = {
+  enabled: true,
+  allowedOrigins: ["http://127.0.0.1:18789", "http://localhost:18789"],
+};
+
 async function artifactDirectory(t) {
   const configured = process.env.OCC_TEST_CONSOLE_ARTIFACT_DIR;
   const directory =
@@ -671,7 +676,12 @@ test("Agent creation preserves edited JSON across mode changes and resets to the
   ]);
   assert.equal(Object.hasOwn(embeddedTemplate, "plugins"), false);
 
-  const edited = JSON.stringify(nativeValues("manual-edit"), null, 2);
+  const editedValues = nativeValues("manual-edit");
+  editedValues.gateway.controlUi = {
+    enabled: false,
+    allowedOrigins: ["https://custom-control.example.test"],
+  };
+  const edited = JSON.stringify(editedValues, null, 2);
   await configuration.fill(edited);
   await mode.selectOption("dedicated");
   assert.equal(await configuration.inputValue(), edited);
@@ -727,6 +737,7 @@ test("Agent creation saves the default model for both harnesses without changing
     // Starters leave gateway authentication to the selected Compute Driver while
     // preserving the separate credentials for dedicated Codex execution.
     assert.equal(Object.hasOwn(configuration.data.values.gateway, "auth"), false);
+    assert.deepEqual(configuration.data.values.gateway.controlUi, STARTER_CONTROL_UI);
     if (mode === "dedicated") {
       assert.equal(
         configuration.data.values.plugins.entries.codex.config.appServer.authToken,
@@ -1731,6 +1742,7 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
     enabled: false,
     count: 0,
   });
+  assert.deepEqual(rendered.gateway.controlUi, { enabled: false });
   assert.deepEqual(
     JSON.parse(await page.getByLabel("Plugin selections JSON").inputValue()),
     plugins,
@@ -1794,6 +1806,7 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
     `/namespaces/${namespace.id}/configurations/${created.data.configurationId}`,
   );
   assert.deepEqual(saved.data.secretBindings, secretBindings);
+  assert.deepEqual(saved.data.values.gateway.controlUi, { enabled: false });
   assert.equal(saved.data.values.plugins.entries.knowledge.config.marker, "changed");
   assert.deepEqual(saved.data.values.plugins.entries.knowledge.config.thresholds, [5, 6]);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
