@@ -19,6 +19,10 @@ export const CreateSlackSecretStaged = {
 export const CreateWorkspaceFiles = { ...story("createWorkspaceFiles"), name: "Workspace files" };
 export const CreateEmbedded = { ...story("createEmbedded"), name: "Embedded form" };
 export const CreatePreset = { ...story("createPreset"), name: "Preset variables" };
+export const CreateBoundCredentialPreset = {
+  ...story("createBoundCredentialPreset"),
+  name: "Preset with saved model credential",
+};
 export const CreateNoPresets = { ...story("createNoPresets"), name: "No Presets" };
 export const CreateAnthropic = { ...story("createAnthropic"), name: "Anthropic API key" };
 export const CreateCodexPat = { ...story("createCodexPat"), name: "Codex PAT" };

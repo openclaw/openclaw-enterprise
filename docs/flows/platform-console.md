@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: 2026-09-23
-last_updated_session: authoring-run/2516b0a6-7a82-4268-a586-d821679b2a78
+last_updated_session: 01a0cf27-71c6-7042-8357-74d1811a2ef8
 ---
 
 # Platform console request flow
@@ -149,7 +149,9 @@ explicit API-key or Codex-PAT method; Anthropic uses API keys. PAT selection loc
 Dedicated execution. The method is retained with saved artifacts for retries.
 It does not discover Installation Providers or assign their identities from the
 native provider selection. The Providers navigation item is hidden.
-Existing Preset bindings remain intact. Key entry uses the existing Secret API;
+Existing Preset bindings remain intact. API-key and PAT Presets keep the provider
+fixed; Configuration JSON with a different provider is rejected before saving.
+Key entry uses the existing Secret API;
 creation retains successful Secret, Configuration, and Agent identities before
 `apps/controller/src/console/agents/secret-access.mjs:ensureSecretOperateBinding`
 grants that Agent access to its exact model Secret and the Secrets staged by the Slack drawer. Known failures retry only pending
@@ -311,6 +313,8 @@ refreshes and inspects the Agent and revision history.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 18:48: Keep saved API-key and PAT Presets bound to their provider before Configuration or Agent writes. (01a0cf27-71c6-7042-8357-74d1811a2ef8 - 4da114ac7b11f926d4b774b8d32a09fa136135eb)
 
 - 2026-09-23 18:35: Reconcile provider credential creation with staged Slack Secret grants and shared retry recovery. (authoring-run/2516b0a6-7a82-4268-a586-d821679b2a78 - ae092fc7c13aad4c637b0238ae2f41ecb2b03219)
 

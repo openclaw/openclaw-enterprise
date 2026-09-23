@@ -278,6 +278,19 @@ export const scenarios = {
     emptyPresets: true,
     description: "Creation remains available without a Preset.",
   },
+  createBoundCredentialPreset: {
+    group: "Pages/Create Agent",
+    name: "Preset with saved model credential",
+    path: create,
+    actions: [
+      { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
+      { selector: "#preset-variable-name", value: "Preset credential demo" },
+      { selector: "#preset-variable-model", value: "codex/gpt-5.1" },
+      click("Use Preset"),
+    ],
+    description:
+      "The saved API-key credential fixes the provider. Models and compatible execution modes remain editable; JSON cannot redirect the credential to another provider.",
+  },
   createAnthropic: {
     group: "Pages/Create Agent",
     name: "Anthropic API key",

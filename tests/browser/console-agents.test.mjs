@@ -2829,6 +2829,77 @@ test("Channel drawer reports partial save when post-PATCH Secret grant is reject
   assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
 });
 
+test("API-key Presets keep their credential provider fixed while allowing model and runtime changes", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const root = await mkdtemp(join(tmpdir(), "occ-bound-provider-preset-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  fixture.controller.registerDriver(configurationDriver);
+  fixture.controller.selectDriver("configuration", configurationDriver.id);
+  const namespace = await fixture.createNamespace("Bound provider Preset", { ready: true });
+  const secret = await fixture.createSecret(namespace.id, "OpenAI model key", "preset-model-key");
+  const harnessAuth = { method: "api_key", source: secret.ref };
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: {
+      name: "Saved OpenAI credential",
+      template: {
+        agent: { name: "Bound provider Agent", executionMode: "embedded", harnessAuth },
+        configuration: { values: nativeValues("bound-provider") },
+      },
+    },
+  });
+  assert.equal(preset.status, 201);
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  const configuration = page.getByLabel("Configuration JSON", { exact: true });
+  const original = JSON.parse(await configuration.inputValue());
+  // Editing JSON must not silently retarget the saved OpenAI Secret to Anthropic.
+  const changed = structuredClone(original);
+  changed.agents.defaults.model = "anthropic/claude-account-model";
+  await configuration.fill(JSON.stringify(changed));
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page
+    .getByRole("alert")
+    .filter({ hasText: "Configuration must use the selected provider" })
+    .waitFor();
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  const provider = page.getByLabel("Provider", { exact: true });
+  assert.equal(await provider.inputValue(), "openai");
+  assert.equal(await provider.isDisabled(), true);
+
+  // Same-provider model and embedded-to-dedicated edits retain the original credential binding.
+  await configuration.fill(JSON.stringify(original));
+  await page.getByLabel("Model ID", { exact: true }).fill("gpt-5.1");
+  await page.getByLabel("Model ID", { exact: true }).press("Tab");
+  await page.getByLabel("Execution mode").selectOption("dedicated");
+  const dedicated = JSON.parse(await configuration.inputValue());
+  assert.equal(dedicated.agents.defaults.model, "codex/gpt-5.1");
+  // Existing dedicated Presets may also use the supported OpenAI model prefix.
+  dedicated.agents.defaults.model = "openai/gpt-5.1";
+  await configuration.fill(JSON.stringify(dedicated));
+  const createdResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const response = await createdResponse;
+  assert.equal(response.status(), 201);
+  const created = (await response.json()).data;
+  assert.deepEqual(created.harnessAuth, harnessAuth);
+  assert.equal(created.executionMode, "dedicated");
+  const saved = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/configurations/${created.configurationId}`,
+  );
+  assert.equal(saved.data.values.agents.defaults.model, "openai/gpt-5.1");
+  assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 0);
+});
+
 test("Presets render variables into independent Agent drafts and keep partial-save retries fixed", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();

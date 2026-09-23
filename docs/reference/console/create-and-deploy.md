@@ -73,7 +73,9 @@ Secret through the existing IAM APIs. This requires Secret creation and IAM
 administration permissions in addition to Agent and Configuration creation.
 The key is never put into Configuration JSON, Agent responses, or browser storage.
 A Preset with an existing authentication binding retains that binding; use the
-Agent's Credentials tab to change it after creation.
+Agent's Credentials tab to change it after creation. API-key and Codex PAT
+Presets also keep their provider fixed, including when editing Configuration
+JSON. Start without a Preset to select a different provider and credential.
 
 Model discovery requires Agent `create` permission in this Namespace. It sends
 the supplied credential to the selected authentication method's official API

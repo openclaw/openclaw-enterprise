@@ -105,6 +105,7 @@ function renderAgentForm(context, rendered) {
     throw new Error("Rendered Preset contains invalid Agent fields or Secret bindings.");
   }
   const binding = agent.harnessAuth;
+  const hasBoundModelCredential = ["api_key", "codex_pat"].includes(binding?.method);
   if (
     binding != null &&
     (!isObject(binding) ||
@@ -295,7 +296,9 @@ function renderAgentForm(context, rendered) {
       ? element(
           "p",
           { className: "hint" },
-          "This Preset's saved authentication source is preserved.",
+          hasBoundModelCredential
+            ? "This Preset's saved credential and provider are fixed. Start without a Preset to use a different provider."
+            : "This Preset's saved authentication source is preserved.",
         )
       : element(
           "div",
@@ -458,7 +461,7 @@ function renderAgentForm(context, rendered) {
     const selected = values?.agents?.defaults?.model;
     const ref = typeof selected === "string" ? selected : selected?.primary;
     if (typeof ref === "string" && /^(openai|anthropic|codex)\//.test(ref)) {
-      if (!savedSecret && binding?.method !== "codex_pat") {
+      if (!savedSecret && !hasBoundModelCredential) {
         const selectedProvider = ref.startsWith("anthropic/") ? "anthropic" : "openai";
         if (selectedProvider !== nativeProvider.value && !binding) {
           apiKey.value = "";
@@ -704,7 +707,7 @@ function renderAgentForm(context, rendered) {
     channelEditor.setAttribute("aria-busy", pending ? "true" : "false");
     const usesPat = (binding?.method ?? authMethod.value) === "codex_pat";
     mode.disabled ||= nativeProvider.value === "anthropic" || usesPat;
-    nativeProvider.disabled ||= Boolean(savedSecret) || binding?.method === "codex_pat";
+    nativeProvider.disabled ||= Boolean(savedSecret) || hasBoundModelCredential;
     authMethod.disabled ||= Boolean(savedSecret) || nativeProvider.value === "anthropic";
     authMethod.querySelector('[value="api_key"]').textContent =
       nativeProvider.value === "anthropic" ? "Anthropic API key" : "OpenAI API key";
@@ -762,16 +765,22 @@ function renderAgentForm(context, rendered) {
     }
     const selected = values.agents?.defaults?.model;
     const primaryModel = typeof selected === "string" ? selected : selected?.primary;
-    const prefix = mode.value === "dedicated" ? "codex" : nativeProvider.value;
-    if (!binding && primaryModel !== `${prefix}/${model.value.trim()}`) {
+    const fallbackPrefixes =
+      mode.value === "dedicated" ? ["openai/", "codex/"] : [`${nativeProvider.value}/`];
+    // Bound credentials must keep their provider; dedicated Presets support both native prefixes.
+    const primaryPrefixes = hasBoundModelCredential
+      ? fallbackPrefixes
+      : [mode.value === "dedicated" ? "codex/" : `${nativeProvider.value}/`];
+    if (
+      (!binding || hasBoundModelCredential) &&
+      !primaryPrefixes.some((prefix) => primaryModel === `${prefix}${model.value.trim()}`)
+    ) {
       feedback.textContent =
         "Configuration must use the selected provider and model. Update the JSON or reset the template before saving.";
       return;
     }
-    const fallbackPrefixes =
-      mode.value === "dedicated" ? ["openai/", "codex/"] : [`${nativeProvider.value}/`];
     if (
-      (!binding || ["api_key", "codex_pat"].includes(binding.method)) &&
+      (!binding || hasBoundModelCredential) &&
       Array.isArray(selected?.fallbacks) &&
       selected.fallbacks.some(
         (ref) =>
