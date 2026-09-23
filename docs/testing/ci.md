@@ -25,8 +25,9 @@ are flagged for review and pages above 2,500 fail, except the approved single-pa
 and links must pass. Run `pnpm docs:check-length` for the word-count
 check alone.
 
-Suite Audit and the ten PR lanes start independently on ephemeral eight-core
-Ubuntu 24.04 Blacksmith runners. `CI Required` uses the same runner pool and
+Suite Audit and the ten PR lanes start independently on ephemeral runners.
+Kubernetes lanes use `ubuntu-latest` for bridge netfilter support; other lanes
+and the audit use `blacksmith-8vcpu-ubuntu-2404`. `CI Required` uses Blacksmith and
 still requires both the audit and every lane to pass, including result-artifact
 accounting. This avoids serial runner allocation before the test lanes without
 changing test selection or failure handling.
@@ -54,7 +55,7 @@ container isolation and authorized live proof. CI preparation and suite ownershi
 alone establish no result: inspect executed cases and skips at the exact tested
 commit, including whether a pull-request run tested a merge commit.
 
-Kubernetes jobs load the runner kernel's bridge netfilter module and enable
+The automatic Kubernetes lanes load the runner kernel's bridge netfilter module and enable
 IPv4 bridge packet filtering before cluster creation. This is required for
 K3s to enforce NetworkPolicies on bridged Pod traffic. Failure to enable it
 fails setup; deny-traffic assertions remain required.

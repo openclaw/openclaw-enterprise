@@ -40,7 +40,8 @@ jobs:
 
   pr-safe:
     name: ${{ matrix.title }}
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    # Kubernetes needs a runner kernel with bridge netfilter support.
+    runs-on: ${{ matrix.profile == 'k3d' && 'ubuntu-latest' || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
