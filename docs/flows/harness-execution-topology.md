@@ -72,7 +72,18 @@ approved harness, and calls `ComputeDriver.prepareRevision`.
 
 Docker's existing topology implementation starts an embedded gateway or dedicated
 Codex container, but it does not support the new harness-auth binding contract;
-unsupported bindings fail before deployment. Kubernetes supports managed bindings.
+unsupported bindings fail before deployment. In the underlying container path,
+`dockerGatewayConfigurationDocument` admits only supported authentication
+fields and modes. Omitted
+mode renders password mode. An omitted password or explicit managed reference
+selects `OPENCLAW_GATEWAY_PASSWORD`; other password settings are preserved.
+Explicit trusted proxy retains its native configuration and can also request the
+managed password. `reconcileGateway` generates the managed credential only for a
+new container, leaving a reused container's credential intact. Dedicated
+Codex app-server authentication remains independent. These implementation checks
+do not establish a currently deployable Docker Agent path.
+
+Kubernetes supports managed bindings.
 SSH supports `{ "method": "runtime" }` only for embedded OpenClaw: operator
 credentials remain on the host and OCC checks gateway readiness without model
 validation. See the [SSH flow](pr-24-ssh-compute.md).
@@ -200,6 +211,12 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 ## Changelog
 
 - 2026-09-23 03:24: Move durable claim cleanup from revision retirement to Agent deletion. (01a0cc43-d13b-7cb2-ae15-1fd56e61bbf4 - 43776d25c5007e017f7d0ffdca6b06f063afcd37)
+
+- 2026-09-22 22:31: Describe supported auth admission without legacy gateway credential compatibility handling. (authoring-run/d7126920-6a2a-4126-ad7d-fafd57593855 - c387eef76420f05a060689d2fa04b57a3e416956)
+- Removed legacy gateway credential compatibility handling. (NOT_IN_SPEC)
+
+- 2026-09-22 22:02: Trace Docker managed gateway passwords while preserving harness admission limits and Codex transport authentication. (authoring-run/b91ebd83-2105-4b1e-aad8-6747fe22c2f1 - 01b42feaf8321e231fbe23a80e00ba641bb9fbcb)
+- Bundled Compute Drivers use managed passwords or trusted proxy for native gateway authentication. (NOT_IN_SPEC)
 
 - 2026-09-17 19:14: Distinguish SSH operator credentials from Kubernetes managed authentication. (01a0acbf-4d5a-7413-9411-dce911f3ad23 - b8cabaf9a49e069a7668ccf88b9e71a7484227b7)
 

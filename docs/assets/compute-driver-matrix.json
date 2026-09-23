@@ -2154,7 +2154,7 @@
       "cells": {
         "docker": {
           "status": "supported",
-          "detail": "Omits shared gateway token when native trusted-proxy is selected.",
+          "detail": "At the reviewed baseline, explicit trusted-proxy mode omitted the gateway credential. The current Driver supports password or trusted-proxy authentication only; see the current Driver reference.",
           "evidence": [
             {
               "path": "apps/controller/src/drivers/compute/docker/index.ts",
@@ -2174,7 +2174,7 @@
         },
         "kubernetes": {
           "status": "supported",
-          "detail": "Omits token; private routing additionally verifies trusted-proxy settings.",
+          "detail": "At the reviewed baseline, private routing verified explicit trusted-proxy settings. The current Driver always renders trusted-proxy authentication from Installation settings; see the current Driver reference.",
           "evidence": [
             {
               "path": "apps/controller/src/drivers/compute/kubernetes/index.ts",
@@ -2199,7 +2199,7 @@
         },
         "ssh": {
           "status": "supported",
-          "detail": "Trusted-proxy unit omits gateway.env token file.",
+          "detail": "At the reviewed baseline, the trusted-proxy unit omitted its generated gateway credential file. The current Driver supports password or trusted-proxy authentication only; see the current Driver reference.",
           "evidence": [
             {
               "path": "apps/controller/src/drivers/compute/ssh/remote-helper.cjs",

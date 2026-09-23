@@ -411,7 +411,9 @@ function nativeConfiguration(model) {
         mode: "local",
         bind: "lan",
         controlUi: { enabled: false },
-        auth: { mode: "token", token: "${OPENCLAW_GATEWAY_TOKEN}" },
+        auth: {
+          password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" },
+        },
         http: { endpoints: { chatCompletions: { enabled: true } } },
       },
       agents: {

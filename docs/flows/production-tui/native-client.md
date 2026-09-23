@@ -26,7 +26,7 @@ ambiguous runtime state before attaching.
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.deployment`
 
 The runtime image supplies `/app/openclaw.mjs`. The gateway container already
-has the configuration file, port, token, and persistent runtime state mounted.
+has the configuration file, port, opt-in password, and persistent runtime state mounted.
 The operator starts a separate client state directory so TUI device-pairing and
 client metadata do not reuse the serving gateway state:
 
@@ -41,9 +41,10 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
 
 The command intentionally does not pass `--url` or a token. The OCC service key
 stays in the operator environment and never enters the Pod or TUI. Gateway
-authentication uses the separate Agent gateway token. The TUI inherits the
-Pod-local gateway connection details from the running container environment and
-configuration, authenticates with the injected gateway token, and opens the
+authentication uses the separate Agent loopback password selected by its
+native environment SecretRef. The TUI inherits the Pod-local gateway connection
+details from the running container environment and configuration, authenticates
+with the injected gateway password, and opens the
 normal interactive UI. `--message` submits the first prompt to the TUI-native
 agent named `main`; that name is separate from the OCC Namespace, Agent, and
 AgentRevision IDs. The client process unsets `OPENAI_API_KEY`; model access
@@ -67,7 +68,7 @@ the [service-key procedure](../../guides/deploy/service-keys.md#revoke-or-rotate
 Automated coverage for this exact lifecycle is
 `tests/integration/production-tui-k3d-real.test.mjs`. It uses
 `tests/helpers/tui-pty.py` to keep the native TUI process open across two
-prompts, verify nonce-only assistant responses, prove fresh invalid-token
+prompts, verify nonce-only assistant responses, prove fresh invalid-password
 denial, repeat the attach path after immutable revision cutover, and confirm
 Ctrl+D exits only the client. Its native Configuration sets
 `agents.defaults.skipBootstrap` to `true` for the disposable demo Agent so

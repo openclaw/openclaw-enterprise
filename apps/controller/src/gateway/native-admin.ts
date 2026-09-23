@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import type { Agent, AgentRevision } from "@openclaw-enterprise/contracts";
+import { unsupportedNativeGatewayAuthFields } from "./auth-fields.ts";
 
 export interface NativeAdminAccessConfig {
   readonly enabled: boolean;
@@ -92,7 +93,7 @@ export function nativeAdminConfigurationSupported(
   const scopes = asRecord(auth?.identityScopes)?.["occ-workspace-files"];
   return (
     auth?.mode === "trusted-proxy" &&
-    !("token" in auth) &&
+    unsupportedNativeGatewayAuthFields(auth).length === 0 &&
     proxy?.userHeader === "x-occ-identity" &&
     Array.isArray(proxy.allowUsers) &&
     proxy.allowUsers.includes("occ-workspace-files") &&

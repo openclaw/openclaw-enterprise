@@ -116,15 +116,14 @@ and public CA bundle, never this administrative service key.
 
 The HTTPRoute sets `x-occ-identity: occ-workspace-files` and sets `x-real-ip`
 from Envoy's direct downstream connection. It removes `x-forwarded-for`,
-`forwarded`, and `x-openclaw-scopes`. Each Agent's native Configuration must
-select trusted-proxy auth, trust the actual proxy source CIDRs, enable
-`allowRealIpFallback`, accept the fixed identity header and user, and grant
-that identity `operator.admin`. Compute validates those settings and does not
-mount the generated gateway token in this mode. A direct loopback connection
+`forwarded`, and `x-openclaw-scopes`. Kubernetes Compute renders native
+trusted-proxy auth from the operator's `network.gatewayTrustedProxyCidrs`, enables
+`allowRealIpFallback`, and grants the fixed identity `operator.admin`. Agent
+Configuration cannot override that trust boundary. A direct loopback connection
 can still use the Driver-managed gateway password if the native Configuration
 explicitly selects its [environment SecretRef](drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials).
 This password is separate from the Envoy service key. See the complete
-[native configuration fragment](../guides/deploy/workspace-routing.md#configure-native-gateway-authentication).
+[operator proxy trust setup](../guides/deploy/workspace-routing.md#configure-native-gateway-authentication).
 
 This key grants native administrative access across the Installation's routed
 gateways. OCC separately checks the caller's exact Agent permission. Keep the

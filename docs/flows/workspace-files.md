@@ -1,7 +1,7 @@
 ---
 created: 2026-08-31
 updated: 2026-09-22
-last_updated_session: 01a082d6-50c7-7953-808f-7e609f6fc7cb
+last_updated_session: authoring-run/ffffed03-0b85-4984-990e-aa0705a91645
 ---
 
 # Agent Workspace Files Flow
@@ -254,12 +254,13 @@ rewrites the upgrade path to `/` and selects the existing same-namespace Agent
 gateway Service. Namespace attachment labels, route ownership checks, and
 restricted Kubernetes RBAC protect this mapping.
 
-Native trusted-proxy configuration recognizes the Envoy socket source and the
-fixed identity. `allowRealIpFallback` accepts its genuine nonloopback OCC
+Kubernetes Compute renders native trust from Installation
+`network.gatewayTrustedProxyCidrs`, fixing `occ-workspace-files` with
+`operator.admin`. Conflicting tenant trust settings fail deployment. `allowRealIpFallback` accepts its genuine nonloopback OCC
 connection address even within a shared Pod CIDR. NetworkPolicy admits only
 Envoy to the native gateway; the CIDR is not an independent authentication
-boundary. Native Configuration omits a gateway token in this mode. The native
-hello must grant `operator.admin` for writes; reads also accept `operator.read`.
+boundary. Native
+hello grants `operator.admin`; reads also accept `operator.read`.
 
 ### 8. Native file access returns a bounded result
 
@@ -320,6 +321,9 @@ replays it. The native client closes in the operation's cleanup path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-22 21:24: Render Kubernetes operator proxy trust and retain optional loopback passwords. (authoring-run/ffffed03-0b85-4984-990e-aa0705a91645 - cbf1851308a2db398820ae9e1000f57837703ace)
+- Kubernetes Compute uses trusted proxy for native gateway authentication. (NOT_IN_SPEC)
 
 - 2026-09-22 04:18: Added creation-time workspace setup and completion boundaries. (01a0c755-0518-7502-a533-64cd7465de15 - f3dbdd41c8f3b49573d1353a4b06ce510ee43a56)
 

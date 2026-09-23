@@ -196,7 +196,7 @@ function managedNamespaceLabels(namespaceId) {
   ];
 }
 
-async function composeProjectGatewayTokens(project) {
+async function composeProjectGatewayPasswords(project) {
   const ids = await dockerLines([
     "ps",
     "-aq",
@@ -211,14 +211,14 @@ async function composeProjectGatewayTokens(project) {
     .filter(
       (entry) =>
         typeof entry === "string" &&
-        (entry.startsWith("OPENCLAW_GATEWAY_TOKEN=") || entry.startsWith("GATEWAY_TOKEN=")),
+        (entry.startsWith("OPENCLAW_GATEWAY_PASSWORD=") || entry.startsWith("GATEWAY_PASSWORD=")),
     )
     .map((entry) => entry.slice(entry.indexOf("=") + 1))
     .filter(Boolean);
 }
 
 async function composeFailureLogs(project, env, secrets, options = {}) {
-  const discoveredSecrets = [...secrets, ...(await composeProjectGatewayTokens(project))];
+  const discoveredSecrets = [...secrets, ...(await composeProjectGatewayPasswords(project))];
   try {
     const { stdout, stderr } = await docker(
       composeArguments(
@@ -572,7 +572,7 @@ function containerSecretValues(containers) {
     "APP_SERVER_TOKEN",
     "CODEX_ACCESS_TOKEN",
     "OPENAI_API_KEY",
-    "OPENCLAW_GATEWAY_TOKEN",
+    "OPENCLAW_GATEWAY_PASSWORD",
   ]);
   return containers
     .flatMap((container) => container.Config?.Env ?? [])
@@ -665,7 +665,7 @@ async function assertGatewayReady(gateway, description) {
   assert.equal(response.status, 200, `${description} must leave the gateway ready`);
 }
 
-async function invokeGateway({ networkName, gateway, gatewayToken, mode, onFailure }) {
+async function invokeGateway({ networkName, gateway, gatewayPassword, mode, onFailure }) {
   assertNamespaceOnlyAttachment(gateway, networkName);
   const nonce = `OCC-DOCKER-${mode.toUpperCase()}-${randomUUID()}`;
   const endpoint = new URL("/v1/chat/completions", gatewayUrl(gateway));
@@ -679,7 +679,7 @@ async function invokeGateway({ networkName, gateway, gatewayToken, mode, onFailu
   const response = await fetch(endpoint, {
     method: "POST",
     headers: {
-      authorization: `Bearer ${gatewayToken}`,
+      authorization: `Bearer ${gatewayPassword}`,
       "content-type": "application/json",
     },
     body: JSON.stringify({
@@ -694,7 +694,7 @@ async function invokeGateway({ networkName, gateway, gatewayToken, mode, onFailu
     }),
     signal: AbortSignal.timeout(240_000),
   });
-  const body = sanitize(await response.text(), [gatewayToken]);
+  const body = sanitize(await response.text(), [gatewayPassword]);
   if (response.status !== 200) {
     const diagnostics = onFailure === undefined ? "" : `\n\n${await onFailure()}`;
     assert.fail(
@@ -745,8 +745,8 @@ function tuiDockerCommand(gateway, stateDir, args, environment = []) {
   ];
 }
 
-async function assertInvalidTokenTuiDenied({ context, gateway, gatewayToken, onFailure }) {
-  const invalidToken = `invalid-${randomUUID()}`;
+async function assertInvalidPasswordTuiDenied({ context, gateway, gatewayPassword, onFailure }) {
+  const invalidPassword = `invalid-${randomUUID()}`;
   const nonce = `OCC-TUI-DENIED-${randomUUID()}`;
   const prompt = `Reply exactly: ${nonce}`;
   const result = await runTuiPty(
@@ -762,25 +762,31 @@ async function assertInvalidTokenTuiDenied({ context, gateway, gatewayToken, onF
         gateway,
         `/tmp/occ-tui-denied-${randomUUID()}`,
         ["--session", `occ-tui-denied-${randomUUID()}`, "--message", prompt],
-        [["OPENCLAW_GATEWAY_TOKEN", invalidToken]],
+        [["OPENCLAW_GATEWAY_PASSWORD", invalidPassword]],
       ),
     ],
     {
       timeoutMs: 90_000,
-      secrets: [gatewayToken, invalidToken],
+      secrets: [gatewayPassword, invalidPassword],
       onFailure,
     },
   );
-  assert.equal(result.denied, true, "fresh TUI client state must reject an invalid gateway token");
+  assert.equal(
+    result.denied,
+    true,
+    "fresh TUI client state must reject an invalid gateway password",
+  );
   assertNoSecretMaterial(
     result,
-    [gatewayToken, invalidToken],
-    "TUI denial output must not leak tokens",
+    [gatewayPassword, invalidPassword],
+    "TUI denial output must not leak passwords",
   );
-  context.diagnostic(`embedded TUI invalid-token denial:\n${result.transcriptTail.slice(-1200)}`);
+  context.diagnostic(
+    `embedded TUI invalid-password denial:\n${result.transcriptTail.slice(-1200)}`,
+  );
 }
 
-async function assertInteractiveTuiConversation({ context, gateway, gatewayToken, onFailure }) {
+async function assertInteractiveTuiConversation({ context, gateway, gatewayPassword, onFailure }) {
   const firstNonce = `OCC-TUI-FIRST-${randomUUID()}`;
   const secondNonce = `OCC-TUI-SECOND-${randomUUID()}`;
   const firstPrompt = `Reply exactly: ${firstNonce}`;
@@ -806,7 +812,7 @@ async function assertInteractiveTuiConversation({ context, gateway, gatewayToken
       ]),
     ],
     {
-      secrets: [gatewayToken],
+      secrets: [gatewayPassword],
       onFailure,
     },
   );
@@ -815,7 +821,11 @@ async function assertInteractiveTuiConversation({ context, gateway, gatewayToken
   assert.equal(result.firstReplyLine.includes(firstPrompt), false);
   assert.match(result.secondReplyLine, new RegExp(secondNonce));
   assert.equal(result.secondReplyLine.includes(secondPrompt), false);
-  assertNoSecretMaterial(result, [gatewayToken], "TUI conversation output must not leak tokens");
+  assertNoSecretMaterial(
+    result,
+    [gatewayPassword],
+    "TUI conversation output must not leak passwords",
+  );
   context.diagnostic(
     `embedded TUI replies:\nfirst: ${result.firstReplyLine}\nsecond: ${result.secondReplyLine}\n${result.transcriptTail.slice(-1600)}`,
   );
@@ -1407,9 +1417,9 @@ test(
       "embedded execution must not start a separate Codex container",
     );
 
-    const embeddedToken = nonempty(
-      containerEnv(embeddedGateway, "OPENCLAW_GATEWAY_TOKEN"),
-      "embedded gateway token",
+    const embeddedPassword = nonempty(
+      containerEnv(embeddedGateway, "OPENCLAW_GATEWAY_PASSWORD"),
+      "embedded gateway password",
     );
 
     const dedicatedGateway = (
@@ -1466,25 +1476,25 @@ test(
     );
     assertNamespaceOnlyAttachment(dedicatedAgent, inspectedNetworkName(dedicatedNetwork));
     assertDockerRuntimeOtelSettings(otelLogs, [embeddedGateway, dedicatedGateway, dedicatedAgent]);
-    const dedicatedToken = nonempty(
-      containerEnv(dedicatedGateway, "OPENCLAW_GATEWAY_TOKEN"),
-      "dedicated gateway token",
+    const dedicatedPassword = nonempty(
+      containerEnv(dedicatedGateway, "OPENCLAW_GATEWAY_PASSWORD"),
+      "dedicated gateway password",
     );
 
     await invokeGateway({
       networkName: inspectedNetworkName(dedicatedNetwork),
       gateway: dedicatedGateway,
-      gatewayToken: dedicatedToken,
+      gatewayPassword: dedicatedPassword,
       mode: "dedicated",
-      onFailure: () => containerLogs([dedicatedGateway, dedicatedAgent], [dedicatedToken]),
+      onFailure: () => containerLogs([dedicatedGateway, dedicatedAgent], [dedicatedPassword]),
     });
     if (podmanSelected) {
       await invokeGateway({
         networkName: inspectedNetworkName(embeddedNetwork),
         gateway: embeddedGateway,
-        gatewayToken: embeddedToken,
+        gatewayPassword: embeddedPassword,
         mode: "embedded",
-        onFailure: () => containerLogs([embeddedGateway], [embeddedToken]),
+        onFailure: () => containerLogs([embeddedGateway], [embeddedPassword]),
       });
       // Exercise the supported controller cleanup path without inventing Agent deletion semantics.
       await deleteEmptyNamespace({ request, cleanupNamespace });
@@ -1526,11 +1536,11 @@ test(
       return;
     }
 
-    await assertInvalidTokenTuiDenied({
+    await assertInvalidPasswordTuiDenied({
       context,
       gateway: embeddedGateway,
-      gatewayToken: embeddedToken,
-      onFailure: () => containerLogs([embeddedGateway], [embeddedToken]),
+      gatewayPassword: embeddedPassword,
+      onFailure: () => containerLogs([embeddedGateway], [embeddedPassword]),
     });
     const [tuiGateway] = await waitForContainers(
       [
@@ -1545,18 +1555,18 @@ test(
     await assertInteractiveTuiConversation({
       context,
       gateway: tuiGateway,
-      gatewayToken: embeddedToken,
-      onFailure: () => containerLogs([tuiGateway], [embeddedToken]),
+      gatewayPassword: embeddedPassword,
+      onFailure: () => containerLogs([tuiGateway], [embeddedPassword]),
     });
     await invokeGateway({
       networkName: inspectedNetworkName(embeddedNetwork),
       gateway: embeddedGateway,
-      gatewayToken: embeddedToken,
+      gatewayPassword: embeddedPassword,
       mode: "embedded",
-      onFailure: () => containerLogs([embeddedGateway], [embeddedToken]),
+      onFailure: () => containerLogs([embeddedGateway], [embeddedPassword]),
     });
     await otelLogs.assertRecords({
-      forbidden: [providerKey, adminPassword, serviceKey, embeddedToken, dedicatedToken],
+      forbidden: [providerKey, adminPassword, serviceKey, embeddedPassword, dedicatedPassword],
       expected: [
         {
           label: "bootstrap service-key creation",

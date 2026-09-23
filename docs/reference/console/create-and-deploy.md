@@ -31,6 +31,10 @@ Agent; it does not verify an Agent you create in the console.
    your edits. Confirm your Installation
    has access to the chosen model. Primary and fallback models must use the same
    supported provider and Harness.
+   Starter templates omit gateway authentication; Kubernetes Compute renders
+   trusted-proxy settings from the Installation's
+   [operator-managed proxy trust](../drivers/kubernetes-compute/networking-and-isolation.md#gateway-authentication).
+   Native admin UI still needs its [explicit opt-in configuration](../../guides/deploy/native-admin.md).
 5. If you need Slack, use OpenAI with **Dedicated** execution and its channel
    card. Channel settings are saved with the Configuration. Provision Slack
    credentials after creation.
@@ -91,8 +95,9 @@ separately during Agent creation through `harnessAuth`; runtime credential
 provisioning does not change that key.
 
 Select **Provision generated runtime credentials** to create the transport bundle.
-The server generates independent gateway and app-server transport tokens and a
-local gateway password. The password is projected only when native Configuration
+The Kubernetes Driver generates an app-server transport token and a local
+gateway password. Kubernetes gateway authentication is trusted-proxy only. The
+password is projected only when native Configuration
 explicitly selects the supported environment reference; it is never returned by
 the credential API. Provisioning checks for existing Agent runtime Deployments
 before writing credentials so it does not modify values after a runtime has
@@ -108,8 +113,9 @@ action, and outcome, never the values.
 
 Provisioning creates missing whole Secrets before any AgentRevision exists. It
 never rotates or overwrites existing credentials. A retry may reuse complete,
-owned transport groups; a foreign or malformed Secret is a conflict that requires
-operator investigation. If a response is lost or a dependency fails, refresh
+owned transport groups. The Kubernetes transport group must contain exactly
+`app-server-token` and `gateway-password`. Unexpected keys, foreign ownership,
+or malformed values produce a conflict. If a response is lost or a dependency fails, refresh
 stored status before explicitly retrying. Already-created Secrets remain in place
 even when later storage or audit work fails; there is no automatic retry or
 rollback deletion.

@@ -1,8 +1,7 @@
 ---
 created: 2026-09-07
-updated: 2026-09-17
-last_updated_session: codex/01a0acbf-4d5a-7413-9411-dce911f3ad23
-pr: 24
+updated: 2026-09-22
+last_updated_session: authoring-run/d7126920-6a2a-4126-ad7d-fafd57593855
 ---
 
 <a id="pr-24-ssh-compute-flow"></a>
@@ -106,6 +105,10 @@ Namespace still holds it while retrying cleanup of remaining owned accounts.
 
 `ssh/remote-helper.cjs:prepare`, `ensureRuntimeIdentity`, `snapshot`
 
+Before host work, `sshGatewayConfigurationDocument` admits only the supported
+authentication fields and modes. Omitted auth mode renders explicit password mode with a
+managed environment SecretRef; explicit trusted proxy retains its configured trust.
+
 The helper creates or verifies a deterministic per-Agent system user and
 private group, then creates the Agent directory and reserves the lowest free
 port across the shared root. Root-owned account markers bind the UID/GID to the
@@ -113,9 +116,13 @@ exact Driver, Namespace, Agent, and ServicePrincipal. Existing unowned accounts
 or conflicting markers fail closed. Agent-owned `home/` and `state/` use mode
 `0700` and persist across revisions.
 
-Snapshots store admitted configuration as root-owned, private-group-readable
-`openclaw.json`. The helper validates existing bytes against their hash and
-rejects a different revision ID with the same revision number. An older
+The helper creates `gateway-password.env` only when needed and missing,
+preserving its value across later revisions. It does not migrate historical
+credential files.
+
+Snapshots store the Driver-rendered configuration as root-owned,
+private-group-readable `openclaw.json`. The helper validates existing bytes
+against their hash and rejects a different revision ID with the same revision number. An older
 candidate returns not-ready. Preparation leaves the running unit and `current`
 pointer untouched, so failed OCC publication does not cut over the gateway.
 
@@ -137,9 +144,11 @@ The helper renders the unit for the Agent's private Unix account, replaces
 `current`, restarts the gateway, and polls loopback `/readyz` for up to 120
 seconds. It writes `served.json` only after readiness succeeds. A matching
 current pointer alone never establishes successful activation. The unit loads
-the driver-generated gateway token unless trusted-proxy authentication is
-selected, and optionally loads the operator-owned `env` file. The Driver never
-reads or writes that operator credential file and never submits a model probe.
+the per-Agent managed `gateway-password.env` for password access and optionally
+loads the operator-owned `env` file. Explicit trusted proxy without a password
+omits the managed file. The unit has no legacy credential or environment
+migration path. The Driver never reads or writes the operator credential
+file and never submits a model probe.
 Readiness confirms gateway startup only; an invalid key can leave the gateway
 ready while model requests fail. Host credential changes may affect an existing
 revision after restart without a new immutable revision.
@@ -174,7 +183,7 @@ bindings only after the host operation succeeds.
   preservation after redeployment and stop. An unselected skip is not host proof.
 - Inspect the exact unit with `systemctl status` and `journalctl -u`, and compare
   `current` with `served.json`. A pointer alone does not establish readiness.
-  Keep operator credentials and token files out of diagnostics.
+  Keep operator credentials and gateway password files out of diagnostics.
 - Ownership/configuration errors fail permanently; SSH, timeout, and unexpected
   helper errors are retryable. Host markers reserve ports only within the
   shared root; operators must reserve the configured range from other services.
@@ -192,6 +201,12 @@ bindings only after the host operation succeeds.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-22 22:31: Describe supported auth admission and remove legacy environment migration behavior. (authoring-run/d7126920-6a2a-4126-ad7d-fafd57593855 - c387eef76420f05a060689d2fa04b57a3e416956)
+- Removed legacy gateway credential compatibility handling. (NOT_IN_SPEC)
+
+- 2026-09-22 22:02: Trace managed gateway password files and preserve operator credentials during legacy-auth removal. (authoring-run/b91ebd83-2105-4b1e-aad8-6747fe22c2f1 - 01b42feaf8321e231fbe23a80e00ba641bb9fbcb)
+- Bundled Compute Drivers use managed passwords or trusted proxy for native gateway authentication. (NOT_IN_SPEC)
 
 - 2026-09-17 19:14: Add explicit runtime credentials, unchanged readiness, and operator-file ownership semantics. (01a0acbf-4d5a-7413-9411-dce911f3ad23 - b8cabaf9a49e069a7668ccf88b9e71a7484227b7)
 

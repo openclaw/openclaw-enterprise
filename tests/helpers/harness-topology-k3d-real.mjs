@@ -891,6 +891,10 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
         .map((cidr) => cidr.trim())
         .filter(Boolean);
   }
+  if (options.gatewayTrustedProxyCidrs !== undefined) {
+    configuration.drivers.compute.configuration.network.gatewayTrustedProxyCidrs =
+      options.gatewayTrustedProxyCidrs;
+  }
   configuration.drivers.compute.configuration.resources.namespace.quota = {
     pods: "8",
     "requests.cpu": "2",
@@ -1390,7 +1394,7 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
       : `http://127.0.0.1:${options.controllerPort}`;
   const controllerAuthBaseURL = options.publicOrigin ?? bootstrapAuthBaseURL;
   const gatewayPassword =
-    options.gatewayPassword === true ? randomBytes(32).toString("base64url") : undefined;
+    options.gatewayPassword === false ? undefined : randomBytes(32).toString("base64url");
   let inClusterWorker;
   const platformNamespace = `oce-production-${mode}-${hash(identifier)}`;
   await kubectl("create", "namespace", platformNamespace);
@@ -1487,6 +1491,7 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
       ? {}
       : {
           gatewayRouting: workspaceGateway.routing,
+          gatewayTrustedProxyCidrs: workspaceGateway.nativeOptions.gatewayAuth.trustedProxies,
         },
   );
   const apiConfiguration = structuredClone(workerConfiguration);
@@ -2008,9 +2013,15 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
   assert.equal(independentConfiguration.status, 200);
   assert.deepEqual(independentConfiguration.data.values, launchValues);
   const persistedAgent = await storedAgent(observerPool, namespaceId, agent.data.id);
-  const gatewayToken = await provisionAgentTransportSecret(directory, placement, agent.data.id, {
-    gatewayPassword,
-  });
+  const provisionedGatewayPassword = await provisionAgentTransportSecret(
+    directory,
+    placement,
+    agent.data.id,
+    {
+      gatewayPassword,
+    },
+  );
+  assert.equal(provisionedGatewayPassword, gatewayPassword);
   {
     const revisionsBefore = await request(
       "GET",
@@ -2278,7 +2289,6 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
     gatewayPod,
     harnessPod,
     loggingObservationStartedAt,
-    gatewayToken,
     gatewayPassword,
     controllerUrl,
     credentials,
@@ -2301,7 +2311,7 @@ async function inspectWorkloadEnvironment(namespace, pod) {
     secretRotationProbe,
     "APP_SERVER_TOKEN",
     "APP_SERVER_URL",
-    "OPENCLAW_GATEWAY_TOKEN",
+    "OPENCLAW_GATEWAY_PASSWORD",
   ])};process.stdout.write(JSON.stringify(Object.fromEntries(keys.map(k=>[k,Object.hasOwn(process.env,k)]))))`;
   return JSON.parse(
     await kubectl("exec", pod, "--namespace", namespace, "--", "node", "-e", script),
@@ -2380,7 +2390,6 @@ async function assertActualModelTurn(topology) {
   try {
     await assertGatewayModelTurn({
       gatewayUrl: topology.gatewayUrl,
-      gatewayToken: topology.gatewayToken,
       gatewayPassword: topology.gatewayPassword,
       nonce: `OCC-K3D-${topology.mode.toUpperCase()}-${randomUUID()}`,
       secrets: [process.env.OPENAI_API_KEY],
@@ -2752,7 +2761,7 @@ async function assertKubernetesOtelLogs(topology) {
   });
   assertKubernetesRuntimeOtelSettings(observation, [topology.gatewayPod, topology.harnessPod]);
   await observation.assertRecords({
-    forbidden: [process.env.OPENAI_API_KEY, topology.gatewayToken],
+    forbidden: [process.env.OPENAI_API_KEY, topology.gatewayPassword],
     expected: [
       {
         label: `${topology.mode} gateway operational record`,
@@ -3157,7 +3166,7 @@ async function assertRetainedArtifact(
     }));
     assertNoSecretMaterial(
       observed,
-      [topology.gatewayToken, topology.gatewayPassword, process.env.OPENAI_API_KEY],
+      [topology.gatewayPassword, process.env.OPENAI_API_KEY],
       "artifact failure history",
     );
     process.stderr.write(`Artifact failure history: ${JSON.stringify(observed)}\n`);
@@ -3435,7 +3444,7 @@ async function requestDedicatedAgentTurn(topology, sessionKey, prompt) {
   const response = await fetch(`${topology.gatewayUrl}/v1/chat/completions`, {
     method: "POST",
     headers: {
-      authorization: `Bearer ${topology.gatewayPassword ?? topology.gatewayToken}`,
+      authorization: `Bearer ${topology.gatewayPassword}`,
       "content-type": "application/json",
       "x-openclaw-session-key": sessionKey,
     },
@@ -3449,7 +3458,7 @@ async function requestDedicatedAgentTurn(topology, sessionKey, prompt) {
   const body = await response.text();
   assertNoSecretMaterial(
     body,
-    [topology.gatewayToken, topology.gatewayPassword, process.env.OPENAI_API_KEY],
+    [topology.gatewayPassword, process.env.OPENAI_API_KEY],
     "Dedicated Agent responses must not expose credentials",
   );
   assert.equal(response.status, 200, `dedicated Agent model turn failed: ${body}`);
@@ -3766,7 +3775,7 @@ async function assertSecretApiNoLeakage(topology, secrets) {
     [secretRotationProbe]: false,
     APP_SERVER_TOKEN: false,
     APP_SERVER_URL: false,
-    OPENCLAW_GATEWAY_TOKEN: false,
+    OPENCLAW_GATEWAY_PASSWORD: false,
   });
 }
 
@@ -4034,7 +4043,7 @@ async function assertSameNamespaceSecretSharing(context, topology) {
       topology.secretApi.sharedProbe.id,
     ),
   ]);
-  const gatewayToken = await provisionAgentTransportSecret(
+  const gatewayPassword = await provisionAgentTransportSecret(
     topology.directory,
     topology.placement,
     agent.data.id,
@@ -4052,7 +4061,7 @@ async function assertSameNamespaceSecretSharing(context, topology) {
     gatewayServiceName: `gateway-${hash(agent.data.id)}`,
     agentServiceName: `agent-${hash(agent.data.id)}`,
     gatewayPod: deployed.gatewayPod,
-    gatewayToken,
+    gatewayPassword,
   };
   let forwarding = await startPortForward(topology.placement, peerTopology.gatewayServiceName);
   context.after(() => forwarding?.stop());
@@ -4919,7 +4928,7 @@ async function assertRoutedWorkspaceModelTurn(topology, connection, marker) {
   const turn = await connection.requestModelTurn(marker);
   assertNoSecretMaterial(
     turn.content,
-    [topology.gatewayToken, topology.workspaceGateway.apiKey, process.env.OPENAI_API_KEY],
+    [topology.gatewayPassword, topology.workspaceGateway.apiKey, process.env.OPENAI_API_KEY],
     "workspace-file model proof must not expose credentials",
   );
 }

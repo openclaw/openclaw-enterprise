@@ -126,6 +126,23 @@ Driver retains the Agent-owned state and workspace volumes used for initial
 workspace setup across stop and revision replacement. Without initial workspace
 inputs, writable container tmpfs remains ephemeral.
 
+## Gateway authentication
+
+The container implementation renders `gateway.auth.mode: password` when native
+Configuration omits the mode. Explicit `password` and `trusted-proxy` are supported.
+Only supported authentication fields and modes are admitted. These rules do not
+remove the harness-authentication admission limit above.
+
+With password mode, omitting `gateway.auth.password` selects the managed
+`OPENCLAW_GATEWAY_PASSWORD` reference. An explicit reference to that variable also
+selects a managed password, including optional loopback access with trusted proxy.
+For either mode, a new container receives a new managed password; a reused healthy
+container keeps its value. Other explicit password settings are preserved and
+receive no Driver-generated password. Configuration API secret-reference rules
+still apply. Trusted proxy without a password reference receives no managed
+password. The dedicated Codex `APP_SERVER_TOKEN` remains a separate transport
+credential with its existing recovery checks.
+
 ## Initial workspace storage
 
 When an Agent has [initial workspace contents](../agents.md#initial-contents-at-creation),

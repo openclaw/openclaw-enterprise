@@ -195,6 +195,26 @@ async function assertReadyGateway(namespaceName, agentId, namespaceId, snapshot)
     false,
     "Agent gateway identity must remain stable across immutable revisions",
   );
+  const expectedNativeDocument =
+    snapshot === undefined
+      ? undefined
+      : {
+          ...snapshot.configuration,
+          gateway: {
+            ...snapshot.configuration.gateway,
+            trustedProxies: ["127.0.0.1/32"],
+            allowRealIpFallback: true,
+            auth: {
+              ...snapshot.configuration.gateway?.auth,
+              mode: "trusted-proxy",
+              trustedProxy: {
+                userHeader: "x-occ-identity",
+                allowUsers: ["occ-workspace-files"],
+              },
+              identityScopes: { "occ-workspace-files": ["operator.admin"] },
+            },
+          },
+        };
   if (snapshot !== undefined) {
     const document = JSON.stringify(snapshot.configuration);
     for (const metadata of [deployment.metadata, deployment.spec.template.metadata]) {
@@ -220,8 +240,8 @@ async function assertReadyGateway(namespaceName, agentId, namespaceId, snapshot)
     assert.deepEqual(Object.keys(configuration.data), ["openclaw.json"]);
     assert.deepEqual(
       JSON.parse(configuration.data["openclaw.json"]),
-      snapshot.configuration,
-      "the immutable native document must preserve every value regardless of PostgreSQL JSON key ordering",
+      expectedNativeDocument,
+      "the immutable native document must preserve revision values and render the fixture Installation's gateway authentication",
     );
     assert.equal(configuration.metadata.annotations["openclaw.dev/agent-id"], agentId);
     if (namespaceId !== undefined) {
@@ -288,7 +308,7 @@ async function assertReadyGateway(namespaceName, agentId, namespaceId, snapshot)
     );
     assert.deepEqual(
       JSON.parse(mountedDocument),
-      snapshot.configuration,
+      expectedNativeDocument,
       "the running owner gateway must read the exact immutable native AgentRevision document",
     );
   }
@@ -386,6 +406,7 @@ function fixtureComputeConfiguration(overrides = {}) {
     network: {
       dns: { namespace: "kube-system", podLabels: { "k8s-app": "kube-dns" } },
       gatewayPort: 8080,
+      gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
       gatewayClients: [
         { namespace: "default", podLabels: { "app.kubernetes.io/name": "platform-probe" } },
       ],
@@ -619,6 +640,7 @@ test(
       network: {
         dns: { namespace: "kube-system", podLabels: { "k8s-app": "kube-dns" } },
         gatewayPort: 8080,
+        gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
         gatewayClients: [platformPeer],
       },
     });
@@ -1943,7 +1965,9 @@ test(
           mode: "local",
           bind: "loopback",
           controlUi: { enabled: false },
-          auth: { mode: "token", token: "${OPENCLAW_GATEWAY_TOKEN}" },
+          auth: {
+            password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" },
+          },
         },
         logging: { level: "info" },
         agents: {

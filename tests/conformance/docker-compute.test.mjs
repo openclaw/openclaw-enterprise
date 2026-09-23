@@ -110,36 +110,112 @@ test("Docker stop removes exact runtime containers and is retry-safe", async () 
   assert.deepEqual(stopped, [revision.id, revision.id]);
 });
 
-test("Docker Compute gateway containers keep token auth by default and omit it for trusted proxy auth", async () => {
-  const defaultEnvironment = await gatewayContainerEnvironment();
-  assert.match(defaultEnvironment.OPENCLAW_GATEWAY_TOKEN ?? "", /^[0-9a-f]{64}$/);
-  assert.equal(defaultEnvironment.OPENCLAW_GATEWAY_PORT, "8080");
+test("Docker Compute gateway containers use password auth by default and preserve trusted proxy auth", async () => {
+  const defaultLaunch = await gatewayContainerLaunch();
+  assert.match(defaultLaunch.environment.OPENCLAW_GATEWAY_PASSWORD ?? "", /^[0-9a-f]{64}$/);
+  assert.equal(defaultLaunch.environment.OPENCLAW_GATEWAY_PORT, "8080");
+  assert.equal(
+    JSON.parse(defaultLaunch.environment.OPENCLAW_CONFIG_JSON).gateway.auth.mode,
+    "password",
+  );
+  assert.equal(
+    JSON.parse(defaultLaunch.environment.OPENCLAW_CONFIG_JSON).gateway.auth.password,
+    "${OPENCLAW_GATEWAY_PASSWORD}",
+  );
+  assert.equal(defaultLaunch.revision.configuration.gateway, undefined);
 
-  const trustedProxyEnvironment = await gatewayContainerEnvironment({
+  const passwordLaunch = await gatewayContainerLaunch({
+    gateway: { auth: { password: { source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" } } },
+  });
+  assert.match(passwordLaunch.environment.OPENCLAW_GATEWAY_PASSWORD ?? "", /^[0-9a-f]{64}$/);
+  assert.equal(
+    JSON.parse(passwordLaunch.environment.OPENCLAW_CONFIG_JSON).gateway.auth.mode,
+    "password",
+  );
+  assert.deepEqual(
+    JSON.parse(passwordLaunch.environment.OPENCLAW_CONFIG_JSON).gateway.auth.password,
+    { source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" },
+  );
+  assert.equal(passwordLaunch.revision.configuration.gateway.auth.mode, undefined);
+
+  const staticPasswordLaunch = await gatewayContainerLaunch({
+    gateway: { auth: { mode: "password", password: "static-gateway-password" } },
+  });
+  assert.equal(staticPasswordLaunch.environment.OPENCLAW_GATEWAY_PASSWORD, undefined);
+  assert.equal(
+    JSON.parse(staticPasswordLaunch.environment.OPENCLAW_CONFIG_JSON).gateway.auth.mode,
+    "password",
+  );
+  assert.equal(
+    JSON.parse(staticPasswordLaunch.environment.OPENCLAW_CONFIG_JSON).gateway.auth.password,
+    "static-gateway-password",
+  );
+
+  const trustedProxyLaunch = await gatewayContainerLaunch({
     gateway: { auth: { mode: "trusted-proxy" } },
   });
-  assert.equal(trustedProxyEnvironment.OPENCLAW_GATEWAY_TOKEN, undefined);
-  assert.equal(trustedProxyEnvironment.OPENCLAW_GATEWAY_PORT, "8080");
+  assert.equal(trustedProxyLaunch.environment.OPENCLAW_GATEWAY_PASSWORD, undefined);
+  assert.equal(
+    JSON.parse(trustedProxyLaunch.environment.OPENCLAW_CONFIG_JSON).gateway.auth.mode,
+    "trusted-proxy",
+  );
+
+  const trustedProxyWithPasswordLaunch = await gatewayContainerLaunch({
+    gateway: {
+      auth: {
+        mode: "trusted-proxy",
+        password: { source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" },
+      },
+    },
+  });
+  assert.match(
+    trustedProxyWithPasswordLaunch.environment.OPENCLAW_GATEWAY_PASSWORD ?? "",
+    /^[0-9a-f]{64}$/,
+  );
+  assert.equal(
+    JSON.parse(trustedProxyWithPasswordLaunch.environment.OPENCLAW_CONFIG_JSON).gateway.auth.mode,
+    "trusted-proxy",
+  );
+  assert.deepEqual(
+    JSON.parse(trustedProxyWithPasswordLaunch.environment.OPENCLAW_CONFIG_JSON).gateway.auth
+      .password,
+    { source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" },
+  );
 });
 
-async function gatewayContainerEnvironment(configuration = {}) {
+test("Docker Compute rejects unsupported native gateway auth before Docker engine access", async () => {
   const driver = new DockerComputeDriver({
     images: { gateway: "gateway:local", agent: "agent:local" },
   });
-  const revision = {
-    id: `revision-${configuration.gateway?.auth?.mode ?? "default-token"}`,
-    namespaceId: tenant.id,
-    agentId: "agent-docker-token",
-    revision: 1,
-    configurationId: "cfg_00000000-0000-4000-8000-000000000001",
-    configurationKind: "agent",
-    configurationGeneration: 1,
-    configuration: admitLoggingConfiguration(configuration, "info"),
-    harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
-    compute: { id: driver.id, implementation: driver.implementation },
-    servicePrincipalId: "service-principal-docker-token",
-    createdAt: tenant.createdAt,
-  };
+
+  for (const [configuration, expected] of [
+    [{ gateway: { auth: { mode: "oauth" } } }, /password or trusted-proxy/i],
+    [{ gateway: { auth: { unsupportedField: true } } }, /unsupported field unsupportedField/i],
+    [{ gateway: { auth: null } }, /gateway auth must be an object/i],
+  ]) {
+    const revision = dockerGatewayRevision(driver, configuration);
+    let networkAccesses = 0;
+    let dockerRequests = 0;
+    driver.network = async () => {
+      networkAccesses += 1;
+      throw new Error("network access must not occur");
+    };
+    driver.request = async () => {
+      dockerRequests += 1;
+      throw new Error("Docker API access must not occur");
+    };
+
+    await assert.rejects(() => driver.prepareRevision(revision), expected);
+    assert.equal(networkAccesses, 0);
+    assert.equal(dockerRequests, 0);
+  }
+});
+
+async function gatewayContainerLaunch(configuration = {}) {
+  const driver = new DockerComputeDriver({
+    images: { gateway: "gateway:local", agent: "agent:local" },
+  });
+  const revision = dockerGatewayRevision(driver, configuration);
   const createdContainers = [];
   const previousOpenAiApiKey = process.env.OPENAI_API_KEY;
   process.env.OPENAI_API_KEY = "test-openai-api-key";
@@ -186,7 +262,30 @@ async function gatewayContainerEnvironment(configuration = {}) {
   }
 
   assert.equal(createdContainers.length, 1);
-  return Object.fromEntries(createdContainers[0].Env.map((entry) => splitEnvironment(entry)));
+  return {
+    body: createdContainers[0],
+    environment: Object.fromEntries(
+      createdContainers[0].Env.map((entry) => splitEnvironment(entry)),
+    ),
+    revision,
+  };
+}
+
+function dockerGatewayRevision(driver, configuration = {}) {
+  return {
+    id: `revision-${configuration.gateway?.auth?.mode ?? "default-password"}`,
+    namespaceId: tenant.id,
+    agentId: "agent-docker-auth",
+    revision: 1,
+    configurationId: "cfg_00000000-0000-4000-8000-000000000001",
+    configurationKind: "agent",
+    configurationGeneration: 1,
+    configuration: admitLoggingConfiguration(configuration, "info"),
+    harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+    compute: { id: driver.id, implementation: driver.implementation },
+    servicePrincipalId: "service-principal-docker-auth",
+    createdAt: tenant.createdAt,
+  };
 }
 
 function splitEnvironment(entry) {

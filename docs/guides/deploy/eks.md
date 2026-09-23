@@ -143,7 +143,7 @@ before provisioning Namespaces and Agents:
    values in Helm and `drivers.compute.configuration` in the Installation YAML.
    Remove Compute `network.gatewayClients` when routing is enabled. Keep the
    default derived private Service hostname unless you operate custom DNS.
-4. Configure each Agent's [native trusted-proxy authentication](workspace-routing.md#configure-native-gateway-authentication).
+4. Configure the Installation's verified [proxy source CIDRs](workspace-routing.md#configure-native-gateway-authentication); Kubernetes Compute renders each Agent's native trusted-proxy authentication.
    Use the actual Envoy source CIDRs from your Pod network; account for custom
    networking or source translation rather than assuming a node subnet. Keep
    `allowRealIpFallback: true` and the fixed identity's `operator.admin` grant.

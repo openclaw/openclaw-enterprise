@@ -220,6 +220,7 @@ export function createKubernetesInstallationConfiguration({
   compute.resources.gateway = structuredClone(workload);
   compute.resources.agent = structuredClone(workload);
   compute.resources.namespace.containerDefaults = structuredClone(workload);
+  compute.network.gatewayTrustedProxyCidrs = ["127.0.0.1/32"];
   compute.network.gatewayClients = [
     {
       namespace: platformNamespace,
@@ -258,13 +259,8 @@ export async function createKubernetesFixtureHarnessAuth({ authentication, names
   };
 }
 
-export async function assertGatewayModelTurn({
-  gatewayUrl,
-  gatewayToken,
-  gatewayPassword,
-  nonce,
-  secrets = [],
-}) {
+export async function assertGatewayModelTurn({ gatewayUrl, gatewayPassword, nonce, secrets = [] }) {
+  assert.ok(gatewayPassword, "Kubernetes model probes require the loopback gateway password.");
   const endpoint = `${gatewayUrl}/v1/chat/completions`;
   const denied = await fetch(endpoint, {
     method: "POST",
@@ -276,7 +272,7 @@ export async function assertGatewayModelTurn({
   const response = await fetch(endpoint, {
     method: "POST",
     headers: {
-      authorization: `Bearer ${gatewayPassword ?? gatewayToken}`,
+      authorization: `Bearer ${gatewayPassword}`,
       "content-type": "application/json",
     },
     body: JSON.stringify({
@@ -289,7 +285,7 @@ export async function assertGatewayModelTurn({
     signal: AbortSignal.timeout(180_000),
   });
   const body = await response.text();
-  for (const secret of [gatewayToken, gatewayPassword, ...secrets]) {
+  for (const secret of [gatewayPassword, ...secrets]) {
     if (secret) {
       assert.equal(
         body.includes(secret),
@@ -388,19 +384,14 @@ export function createRealKubernetesFixture({
     const suffix = kubernetesHash(agentId);
     const tokenDirectory = join(directory, `tokens-${suffix}`);
     const transportToken = randomBytes(32).toString("hex");
-    const gatewayToken = randomBytes(32).toString("hex");
+    const selectedGatewayPassword = gatewayPassword ?? randomBytes(32).toString("base64url");
     await mkdir(tokenDirectory, { mode: 0o700 });
     try {
       await Promise.all([
         writeFile(join(tokenDirectory, "app-server-token"), transportToken, { mode: 0o600 }),
-        writeFile(join(tokenDirectory, "gateway-token"), gatewayToken, { mode: 0o600 }),
-        ...(gatewayPassword === undefined
-          ? []
-          : [
-              writeFile(join(tokenDirectory, "gateway-password"), gatewayPassword, {
-                mode: 0o600,
-              }),
-            ]),
+        writeFile(join(tokenDirectory, "gateway-password"), selectedGatewayPassword, {
+          mode: 0o600,
+        }),
       ]);
       await kubectl(
         "create",
@@ -410,15 +401,12 @@ export function createRealKubernetesFixture({
         "--namespace",
         namespace,
         `--from-file=app-server-token=${join(tokenDirectory, "app-server-token")}`,
-        `--from-file=gateway-token=${join(tokenDirectory, "gateway-token")}`,
-        ...(gatewayPassword === undefined
-          ? []
-          : [`--from-file=gateway-password=${join(tokenDirectory, "gateway-password")}`]),
+        `--from-file=gateway-password=${join(tokenDirectory, "gateway-password")}`,
       );
     } finally {
       await rm(tokenDirectory, { recursive: true, force: true });
     }
-    return gatewayToken;
+    return selectedGatewayPassword;
   }
 
   async function startPortForward(namespace, serviceName) {

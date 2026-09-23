@@ -1,7 +1,7 @@
 ---
 created: 2026-08-31
-updated: 2026-09-17
-last_updated_session: codex/01a0acbf-4d5a-7413-9411-dce911f3ad23
+updated: 2026-09-22
+last_updated_session: authoring-run/ffffed03-0b85-4984-990e-aa0705a91645
 ---
 
 # Production TUI Flow
@@ -122,13 +122,13 @@ This flow calls out the production embedded TUI path.
 
 Kubernetes Compute verifies tenant ownership and NetworkPolicies, writes an
 immutable ConfigMap named `gateway-<agent-hash>-rev-<revision-hash>` containing
-`openclaw.json`, creates the Agent-owned ServiceAccount, creates or reuses the
+`openclaw.json` with Driver-rendered operator proxy trust, creates the Agent-owned ServiceAccount, creates or reuses the
 gateway private-state PersistentVolumeClaim, and uses one gateway Deployment
 with `Recreate` strategy.
 
 For embedded OpenClaw, the gateway Deployment is also the Harness workload. Its
 container receives `OPENCLAW_CONFIG_PATH=/etc/openclaw/openclaw.json`,
-`OPENCLAW_GATEWAY_PORT`, `OPENCLAW_GATEWAY_TOKEN`, `OPENCLAW_STATE_DIR`, and
+`OPENCLAW_GATEWAY_PORT`, opt-in `OPENCLAW_GATEWAY_PASSWORD`, `OPENCLAW_STATE_DIR`, and
 the exact OCC Secret model credential selected by revision `harnessAuth`. The
 API handles the protected initial Secret write; the worker never reads its value. For the first embedded revision, `prepareRevision` creates
 the Deployment and keeps the Service on the inactive selector until the gateway
@@ -216,6 +216,9 @@ ConfigMap-mounted gateway is Running and Ready.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-22 21:24: Render Kubernetes operator proxy trust and retain optional loopback passwords. (authoring-run/ffffed03-0b85-4984-990e-aa0705a91645 - cbf1851308a2db398820ae9e1000f57837703ace)
+- Kubernetes Compute uses trusted proxy for native gateway authentication. (NOT_IN_SPEC)
 
 - 2026-09-17 00:48: Correct current harness admission and metadata-only dispatch boundaries after implementation review. (01a0acbf-4d5a-7413-9411-dce911f3ad23 - 107900e9551b90c3e9ac24d30f8ea866f17e5dbb)
 

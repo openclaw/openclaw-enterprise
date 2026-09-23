@@ -483,7 +483,7 @@ async function runGatewaySmoke(t, harnessId, options = {}) {
       ? [`OPENCLAW_CONFIG_JSON=${JSON.stringify(configuration)}`]
       : []),
     "OPENCLAW_GATEWAY_PORT=8080",
-    "OPENCLAW_GATEWAY_TOKEN=openclaw-runtime-image-smoke-token",
+    "OPENCLAW_GATEWAY_PASSWORD=openclaw-runtime-image-smoke-password",
     "OPENCLAW_STATE_DIR=/home/node/.openclaw",
     "APP_SERVER_URL=ws://127.0.0.1:9",
     "APP_SERVER_TOKEN=openclaw-runtime-image-app-server-token",

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createRequire } from "node:module";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -174,10 +176,17 @@ function rootSecretName(namespace, gatewayName) {
   return `${gatewayServiceName(namespace, gatewayName)}-root`;
 }
 
-test("production native examples satisfy the current Helm, Installation, and PVC schemas", async () => {
+test("production native examples satisfy the current Helm, Installation, and PVC schemas", async (t) => {
   const { loadInstallationConfiguration } =
     await import("../../apps/controller/src/composition/installation-config.ts");
-  const installationPath = fileURLToPath(new URL("installation.yaml", productionExamples));
+  // Operators must replace the trust placeholder with their observed proxy source.
+  // A documentation-only address is never a runnable trust default.
+  const directory = await mkdtemp(join(tmpdir(), "occ-production-example-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const example = await readFile(new URL("installation.yaml", productionExamples), "utf8");
+  assert.match(example, /<actual-proxy-source-cidr>/);
+  const installationPath = join(directory, "installation.yaml");
+  await writeFile(installationPath, example.replace("<actual-proxy-source-cidr>", "192.0.2.10/32"));
   const drivers = await loadInstallationConfiguration({
     mode: "production",
     environment: { OCC_CONFIG_PATH: installationPath },

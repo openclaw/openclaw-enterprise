@@ -666,7 +666,7 @@ async function initializeWorkspace(input, agentDir, owner) {
 
 function renderUnit(input, agentDir, port, runtimeUser) {
   const { runtime, revision } = input;
-  const token = revision.configuration.gateway?.auth?.mode !== "trusted-proxy";
+  const password = revision.configuration.gateway?.auth?.password !== undefined;
   const extraEnvironment = launchEnvironment(input);
   const setup =
     inspect(join(agentDir, "workspace-setup.json")) === undefined
@@ -689,7 +689,7 @@ Environment=HOME=${agentDir}/home
 Environment=OPENCLAW_STATE_DIR=${agentDir}/state
 Environment=OPENCLAW_CONFIG_PATH=${agentDir}/current/openclaw.json
 Environment=OPENCLAW_GATEWAY_PORT=${port}
-${extraEnvironment}${token ? `EnvironmentFile=${agentDir}/gateway.env\n` : ""}EnvironmentFile=-${agentDir}/env
+${extraEnvironment}${password ? `EnvironmentFile=${agentDir}/gateway-password.env\n` : ""}EnvironmentFile=-${agentDir}/env
 ${setup}ExecStart=${runtime.nodePath} ${runtime.openclawPath} gateway --port ${port}
 Restart=always
 RestartSec=2
@@ -777,7 +777,7 @@ async function prepare(input, nsDir) {
   if (snapshotExists) {
     snapshot(input, agentDir, revision.id, revisionMetadata(input));
   }
-  // A late worker must not write snapshots, tokens, units, or pointers over a newer revision.
+  // A late worker must not write snapshots, credentials, units, or pointers over a newer revision.
   if (current !== undefined && current.revision > revision.revision) {
     return { ready: false };
   }
@@ -799,12 +799,12 @@ async function prepare(input, nsDir) {
       atomicWrite(join(pending, "revision.json"), JSON.stringify(revisionMetadata(input)));
     });
   }
-  if (revision.configuration.gateway?.auth?.mode !== "trusted-proxy") {
-    const tokenFile = join(agentDir, "gateway.env");
-    if (inspect(tokenFile) === undefined) {
-      atomicWrite(tokenFile, `OPENCLAW_GATEWAY_TOKEN=${randomBytes(32).toString("hex")}\n`);
+  if (revision.configuration.gateway?.auth?.password !== undefined) {
+    const passwordFile = join(agentDir, "gateway-password.env");
+    if (inspect(passwordFile) === undefined) {
+      atomicWrite(passwordFile, `OPENCLAW_GATEWAY_PASSWORD=${randomBytes(32).toString("hex")}\n`);
     } else {
-      regular(tokenFile);
+      regular(passwordFile);
     }
   }
   await initializeWorkspace(input, agentDir, owner);

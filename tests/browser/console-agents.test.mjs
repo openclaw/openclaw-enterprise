@@ -1138,6 +1138,15 @@ test("Agent creation saves explicitly selected models for both harnesses", async
       "GET",
       `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
     );
+    // Starters leave gateway authentication to the selected Compute Driver while
+    // preserving the separate credentials for dedicated Codex execution.
+    assert.equal(Object.hasOwn(configuration.data.values.gateway, "auth"), false);
+    if (mode === "dedicated") {
+      assert.equal(
+        configuration.data.values.plugins.entries.codex.config.appServer.authToken,
+        "${APP_SERVER_TOKEN}",
+      );
+    }
     const modelReference = `${provider}/${selectedModel}`;
     assert.equal(configuration.data.values.agents.defaults.model, modelReference);
     assert.deepEqual(configuration.data.values.agents.defaults.models, {

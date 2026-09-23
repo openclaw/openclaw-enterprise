@@ -1,12 +1,9 @@
 # Configure private Agent workspace routing
 
-Set up private Kubernetes routing so operators can read, create, and replace Agent
-workspace files through the OpenClaw Control Plane (OCC). This is a required
-part of the [Kubernetes setup](../kubernetes-setup.md), for embedded as well as
-dedicated Agents whose workspace files operators manage in the Console. Start with the
-[production installation](production-installation.md) and keep its protected
-Helm values, Installation YAML, and Kubernetes context. On EKS, also complete
-the [strict-mode routing prerequisites](eks.md#enable-console-workspace-files).
+Private routing lets operators manage embedded and dedicated Agent workspace
+files through OCC and the Console. Complete [production installation](production-installation.md),
+retaining its protected Helm values, Installation YAML, and Kubernetes context.
+On EKS, complete the [strict-mode prerequisites](eks.md#enable-console-workspace-files).
 
 This procedure assumes OCC API and worker Pods run in the same Kubernetes
 cluster as the private Envoy Service. The local Compose + k3d helper does not
@@ -14,12 +11,11 @@ configure this topology. Use [Kubernetes setup](../kubernetes-setup.md) for
 workspace access; enabling a Helm value alone does not connect a Compose API
 to the private Service.
 
-The production examples enable routing; the chart default is
-`gatewayRouting.enabled: false`. Operators must install the routing controllers,
-create the service-key Secret, and configure Helm and Installation settings.
-The Console's built-in Agent template still uses token authentication: update its
-Configuration with the [native gateway settings](#configure-native-gateway-authentication)
-before deploying. Creating an Agent does not configure these prerequisites.
+Production examples enable routing; the chart defaults to
+`gatewayRouting.enabled: false`. Install routing controllers, create the
+service-key Secret, and configure Helm and Installation settings.
+Console starters omit Driver-owned authentication. Configure the Installation’s
+[proxy trust](#configure-native-gateway-authentication) before deploying.
 
 ## Runtime prerequisite for separate storage
 
@@ -33,10 +29,8 @@ without routing or an enrollment client before provisioning workloads.
 These prerequisites describe the [Kubernetes Codex implementation](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#shared-contracts-and-the-codex-implementation).
 They do not establish support for a dedicated OpenClaw remote worker.
 
-The production Installation and Helm examples enable routing together. Create
-the service-key Secret and configure native trusted-proxy authentication below
-before creating a dedicated Agent. Direct access remains available for embedded
-Harnesses.
+Before creating a dedicated Agent, configure the service-key Secret and proxy
+trust below. Embedded Harnesses also support direct access.
 
 The runtime Dockerfile's default `2026.9.1` packages do not include this stack.
 Updating the controller alone removes dedicated Gateway workspace mounts without
@@ -47,8 +41,7 @@ enrollment through Envoy and a complete Enterprise task remain unverified.
 ## Agent workspace files
 
 OCC supports four files: `AGENTS.md`, `SOUL.md`, `IDENTITY.md`, and `USER.md`.
-The Kubernetes Compute Driver creates each Agent's HTTPRoute when it provisions
-the gateway. The routes share a private hostname:
+Kubernetes Compute provisions each Agent’s HTTPRoute at a shared private hostname:
 `wss://<hostname>/namespaces/<namespaceId>/agents/<agentId>`. Adding an Agent
 requires neither an endpoint map nor an API restart. See the
 [Envoy routing reference](../../reference/gateway-routing.md) for resource
@@ -149,41 +142,37 @@ The chart's `tenantGatewayPort` must match Compute's `network.gatewayPort`.
 Remove `network.gatewayClients` when enabling routing. Compute derives the
 Envoy peer from `gatewayRouting` and rejects explicit gateway clients in this mode.
 Retain the Installation's other Compute settings. Restart the API and worker
-when changing their Installation startup configuration. New Agent creation
-thereafter needs no configuration update. The worker requires tenant-local
+when changing their Installation startup configuration. The worker requires tenant-local
 HTTPRoute permissions from the chart's worker role; the API needs no route
 writes or gateway Pod/exec access.
 
 ### Configure native gateway authentication
 
-Set each Agent's native Configuration to trusted-proxy authentication. Add the
-following fields without replacing the model, Harness, or other settings:
+Set the actual Envoy socket source CIDRs in the trusted Installation YAML:
 
 ```yaml
-gateway:
-  trustedProxies:
-    - <actual-proxy-source-cidr>
-  allowRealIpFallback: true
-  auth:
-    mode: trusted-proxy
-    trustedProxy:
-      userHeader: x-occ-identity
-      allowUsers:
-        - occ-workspace-files
-    identityScopes:
-      occ-workspace-files:
-        - operator.admin
+drivers:
+  compute:
+    configuration:
+      network:
+        gatewayTrustedProxyCidrs:
+          - "<actual-proxy-source-cidr>"
 ```
 
-Compute validates the fixed identity header, allowed identity, administrative
-grant, and real-IP fallback, and requires a nonempty `trustedProxies` entry. It
-does not verify that those addresses belong to Envoy. Operators must validate
-the actual proxy source CIDRs and exclude untrusted sources.
-Omit `gateway.auth.token`; Compute rejects it and does not mount the generated
-token in this mode. If you also need password access for a direct loopback
-connection, set `gateway.auth.password` to the environment SecretRef
-`{ source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" }`. Do
-not use a plaintext password. See [Kubernetes gateway credentials](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials)
+Keep the existing network settings alongside this field. Replace the placeholder
+with CIDRs verified for your cluster; there is no production default. Restart
+the API and worker after changing their startup configuration.
+
+Kubernetes Compute renders native trusted-proxy authentication, its fixed
+`x-occ-identity: occ-workspace-files` identity with `operator.admin`, proxy trust,
+and real-IP fallback. Agent Configurations and Presets can omit those fields.
+Unsupported authentication fields or conflicting tenant trust settings fail
+deployment. Matching explicit settings are accepted. See the [gateway authentication contract](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#gateway-authentication).
+
+For optional operator loopback access, set `gateway.auth.password` to the
+environment SecretRef
+`{ source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" }`.
+Do not use a plaintext password. See [Kubernetes gateway credentials](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials)
 and [verify a model response](../operate/model-verification.md).
 
 Do not require `x-forwarded-for` in native `requiredHeaders`: the route removes
@@ -228,11 +217,7 @@ Configuration before replacing its values.
    the existing auth/database and routing-key Secrets, generated CA Secrets, and
    prepared bootstrap volume; do not rerun fresh-volume preparation. Restart both
    API and worker to load the new startup configuration. Wait for the private Gateway, certificates, and policy.
-2. For each existing Agent being routed, update its existing native
-   Configuration with the authentication fragment above. Preserve the other
-   values, remove `gateway.auth.token`, and use the environment SecretRef above
-   if you need password access. PATCH the complete updated `values` through the
-   [Configuration API](../../reference/configuration.md#create-read-update-and-delete), then
+2. For each Agent being routed, request
    `POST /namespaces/:namespaceId/agents/:agentId/deploy` for the same Agent.
    Retain and poll the returned deployment ID. Do not recreate the Agent or
    retire its current revision before successful cutover: its PVCs belong to

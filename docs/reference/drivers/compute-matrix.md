@@ -22,6 +22,17 @@ are in the [canonical matrix data](../../assets/compute-driver-matrix.json).
 An optional [OpenShell Sandbox Driver](openshell-sandbox.md) can be selected
 with Kubernetes, but stock OpenShell lacks required credential and
 workload-identity projection. It is not a supported Agent deployment path.
+The bundled Compute Drivers expose the current gateway authentication contracts:
+
+| Driver                                                                              | Gateway authentication                                                                                                                              |
+| ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [Kubernetes](kubernetes-compute/networking-and-isolation.md#gateway-authentication) | Trusted proxy only, with optional loopback password access.                                                                                         |
+| [Docker/Podman](docker-compute.md#gateway-authentication)                           | Managed password by default; explicit trusted proxy remains supported by the underlying container code. Current Agent admission limits still apply. |
+| [SSH](ssh-compute.md#credentials-and-supported-boundaries)                          | Managed password by default; explicit trusted proxy remains supported.                                                                              |
+
+The detailed matrix retains its older source baseline. Its trusted-proxy row
+records that capability at the baseline; use the current contracts above for
+credential modes.
 For setup, see [Drivers quickstart](selection.md#choose-a-bundled-driver).
 The [Compute Driver contract](compute.md) owns requirements; the
 [platform design](../../design.md) owns the target architecture.

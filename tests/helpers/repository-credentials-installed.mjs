@@ -638,11 +638,11 @@ export const submitRepositoryTaskScript = String.raw`
     }
     const { sessionKey, prompt } = JSON.parse(input);
     if (process.env.OPENAI_API_KEY) throw new Error("request client must not receive model credentials");
-    const token = process.env.OPENCLAW_GATEWAY_TOKEN;
-    if (!token) throw new Error("gateway transport credential unavailable");
+    const password = process.env.OPENCLAW_GATEWAY_PASSWORD;
+    if (!password) throw new Error("gateway loopback credential unavailable");
     const response = await fetch("http://127.0.0.1:" + (process.env.OPENCLAW_GATEWAY_PORT || "8080") + "/v1/chat/completions", {
       method: "POST", signal: AbortSignal.timeout(600000),
-      headers: { authorization: "Bearer " + token, "content-type": "application/json", "x-openclaw-session-key": sessionKey },
+      headers: { authorization: "Bearer " + password, "content-type": "application/json", "x-openclaw-session-key": sessionKey },
       body: JSON.stringify({ model: "openclaw/default", stream: false, messages: [{ role: "user", content: prompt }] }),
     });
     // Persisted transcript and independent provider reads establish success, never reply prose.

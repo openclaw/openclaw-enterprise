@@ -32,8 +32,8 @@ For detailed operator contracts, see:
   The production chart grants it through the same narrowly scoped ClusterRoles
   used for startup Namespace observation and management.
 - Approved, digest-pinned gateway and Agent images.
-- Explicit container resource limits, namespace quotas, DNS settings, and
-  approved gateway clients.
+- Explicit container resource limits, namespace quotas, DNS settings, approved
+  proxy clients, and `network.gatewayTrustedProxyCidrs` for gateway trust.
 - For real gateways in either topology, an explicitly selected
   `runtime.gatewayStorageClassName` for a private disk supporting `10Gi`
   `ReadWriteOnce` filesystem claims. Use `local-path` in the disposable k3d
@@ -123,6 +123,8 @@ drivers:
           namespace: kube-system
           podLabels: { k8s-app: kube-dns }
         gatewayPort: 8080
+        # Replace with verified source CIDRs for your authenticated proxy.
+        gatewayTrustedProxyCidrs: ["<actual-proxy-source-cidr>"]
         gatewayClients:
           - namespace: openclaw-system
             podLabels: { app: approved-gateway-client }

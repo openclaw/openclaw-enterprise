@@ -100,10 +100,9 @@ has used it. A `PLUGIN_INSTALL_FAILED` warning means that selection was disabled
 for this startup even if the Agent deployed. Dedicated Codex can also report
 `PLUGIN_AUTH_REQUIRED` when a selected app still needs authentication.
 
-To verify that Diffs actually ran, you need a token-authenticated gateway and
-an Agent client that displays native tool results. An operator can
-[attach with the OpenClaw TUI](../deploy/production-agents.md#attach-with-the-openclaw-tui)
-on a token-authenticated gateway. Ask the deployed Agent to compare two
+To verify that Diffs actually ran, use an Agent client that displays native
+tool results. An operator can [attach with the OpenClaw TUI](../deploy/production-agents.md#attach-with-the-openclaw-tui)
+using the gateway's optional loopback password. Ask the deployed Agent to compare two
 harmless lines:
 
 ```text
@@ -113,12 +112,9 @@ path: "example.txt", and mode: "view".
 
 In the client's tool activity, check that `diffs` returns
 `Diff viewer ready.` A model reply alone does not prove it called the tool.
-If your gateway uses trusted-proxy authentication, the documented
-[Chat Completions check](../operate/model-verification.md) reads only assistant
-text; it cannot verify that Diffs ran. The OCC console has no chat, and there
-is no documented trusted-proxy client that shows the tool result. You can
-still check deployment warnings, but cannot use the documented clients to
-confirm that Diffs ran on that gateway.
+The [Chat Completions check](../operate/model-verification.md) reads only
+assistant text; it cannot verify that Diffs ran. The OCC console has no chat.
+Use the TUI's tool activity for this verification.
 
 For `failed`, use the returned error and the
 [deployment status reference](../../reference/agents.md#deployment-status). Check

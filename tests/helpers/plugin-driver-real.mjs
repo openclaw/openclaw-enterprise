@@ -887,21 +887,21 @@ function createNativePluginAssertions({
 
   async function normalGatewayTurn({
     agent,
-    gatewayToken,
+    gatewayPassword,
     sessionKey = `agent:main:plugin-proof-${randomUUID()}`,
     prompt,
     expectedPatterns,
     secrets = [],
   }) {
     const gateway = await gatewayUrl(agent);
-    const token = gatewayToken ?? gateway.gatewayToken;
-    assert.ok(token, "normal Agent turn requires a gateway token.");
+    const password = gatewayPassword ?? gateway.gatewayPassword;
+    assert.ok(password, "normal Agent turn requires a gateway password.");
     try {
       await assertGatewayChatCompletionsEnabled(agent);
       const response = await fetch(`${gateway.url}/v1/chat/completions`, {
         method: "POST",
         headers: {
-          authorization: `Bearer ${token}`,
+          authorization: `Bearer ${password}`,
           "content-type": "application/json",
           "x-openclaw-session-key": sessionKey,
         },
@@ -915,14 +915,14 @@ function createNativePluginAssertions({
       const body = await response.text();
       assertNoSecretMaterial(
         body,
-        [token, ...secrets],
+        [password, ...secrets],
         "normal Agent turn must not expose credentials.",
       );
       assert.equal(
         response.status,
         200,
         `plugin-backed Agent turn failed: ${JSON.stringify(
-          httpErrorSummary(response.status, body, [token, ...secrets]),
+          httpErrorSummary(response.status, body, [password, ...secrets]),
         )}`,
       );
       let parsed;
@@ -1251,7 +1251,7 @@ export async function createPluginDriverRealFixture(
   let app;
   let pool;
   const forwarders = [];
-  const gatewayTokens = new Map();
+  const gatewayPasswords = new Map();
   let tenantNamespace;
 
   function isKubernetesNotFound(error) {
@@ -1624,10 +1624,10 @@ export async function createPluginDriverRealFixture(
   }
 
   async function deployAndWait(agent) {
-    let gatewayToken = gatewayTokens.get(agent.id);
-    if (gatewayToken === undefined) {
-      gatewayToken = await provisionAgentTransportSecret(directory, tenantNamespace, agent.id);
-      gatewayTokens.set(agent.id, gatewayToken);
+    let gatewayPassword = gatewayPasswords.get(agent.id);
+    if (gatewayPassword === undefined) {
+      gatewayPassword = await provisionAgentTransportSecret(directory, tenantNamespace, agent.id);
+      gatewayPasswords.set(agent.id, gatewayPassword);
     }
     const deployed = await request(
       "POST",
@@ -1655,7 +1655,7 @@ export async function createPluginDriverRealFixture(
     });
     const status = await getDeploymentStatus(agent.id, deployed.data.id);
     assert.equal(status.status, "succeeded", JSON.stringify(status.error));
-    return { revision: deployed.data, gatewayToken, status };
+    return { revision: deployed.data, gatewayPassword, status };
   }
 
   async function getDeploymentStatus(agentId, deploymentId) {

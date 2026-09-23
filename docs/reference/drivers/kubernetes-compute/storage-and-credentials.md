@@ -156,12 +156,13 @@ creating initial Secrets.
 
 Before deploying an Agent, provision its Agent-specific transport Secret using
 the configured `runtime.transportSecretPrefix`. The Secret name appends the
-first 12 hexadecimal characters of `sha256(agentId)`. Token-mode gateways use
-`gateway-token`; dedicated Agents additionally require `app-server-token`. When
-native Configuration explicitly selects `gateway.auth.mode: "trusted-proxy"`,
-the generated Secret may still contain a `gateway-token` key, but the Driver
-does not project it into the gateway environment. The initial credential API also
-generates `gateway-password`. The Driver projects it as `OPENCLAW_GATEWAY_PASSWORD`
+first 12 hexadecimal characters of `sha256(agentId)`. Kubernetes gateways use
+trusted-proxy authentication only. Initial provisioning generates
+`gateway-password` and the independent `app-server-token`; dedicated Codex
+requires the latter for its Harness transport. The transport bundle must contain
+exactly these two nonempty keys; initial credential inspection and provisioning
+reject other shapes.
+The Driver projects `gateway-password` as `OPENCLAW_GATEWAY_PASSWORD`
 only when `gateway.auth.password` explicitly uses an environment SecretRef with
 that ID. This supports native local-direct password access alongside trusted-proxy
 authentication; the API never returns the password. Plaintext password Configuration

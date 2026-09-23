@@ -138,6 +138,9 @@ func (r *runner) importRuntime(ctx context.Context, s *developmentState) (string
 	}
 	return reference, nil
 }
+
+// The local profile trusts only Pod loopback; first-agent verifies model access
+// with the separate loopback password. Routed installations supply Envoy source CIDRs.
 func writeInstallation(s *developmentState, reference string) error {
 	auth := map[string]any{"mode": "kubeconfig", "kubeconfigPath": "/run/openclaw-development/kubeconfig", "context": "k3d-" + s.Cluster}
 	resources := map[string]any{"requests": map[string]string{"cpu": "100m", "memory": "256Mi"}, "limits": map[string]string{"cpu": "2", "memory": "1Gi"}}
@@ -150,7 +153,7 @@ func writeInstallation(s *developmentState, reference string) error {
 			"compute": map[string]any{"id": "compute-kubernetes", "configuration": map[string]any{
 				"authentication": auth, "images": map[string]any{"gateway": reference, "agent": reference, "requireImmutableDigest": true},
 				"resources":                   map[string]any{"gateway": resources, "agent": resources, "namespace": map[string]any{"quota": map[string]string{"pods": "10"}, "containerDefaults": resources}},
-				"network":                     map[string]any{"dns": map[string]any{"namespace": "kube-system", "podLabels": map[string]string{"k8s-app": "kube-dns"}}, "gatewayPort": 8080, "gatewayClients": []any{map[string]any{"namespace": "default", "podLabels": map[string]string{"app.kubernetes.io/name": "occ-kubernetes-dev-client"}}}},
+				"network":                     map[string]any{"dns": map[string]any{"namespace": "kube-system", "podLabels": map[string]string{"k8s-app": "kube-dns"}}, "gatewayPort": 8080, "gatewayTrustedProxyCidrs": []string{"127.0.0.1/32"}, "gatewayClients": []any{map[string]any{"namespace": "default", "podLabels": map[string]string{"app.kubernetes.io/name": "occ-kubernetes-dev-client"}}}},
 				"servicePrincipalCredentials": map[string]any{"mode": "projectedServiceAccountToken", "audience": "openclaw-enterprise", "expirationSeconds": 900},
 				"runtime":                     map[string]string{"gatewayStorageClassName": "local-path", "transportSecretPrefix": "openclaw-agent-transport"},
 			}},

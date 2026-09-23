@@ -69,9 +69,10 @@ is the Kubernetes namespace created by the driver during
 ## Configure the Agent runtime
 
 Complete [private routing](workspace-routing.md#configure-private-routing) first.
-Both examples below use native trusted-proxy authentication for Console workspace
-access. Replace `<actual-proxy-source-cidr>` with the verified Envoy source CIDR
-before posting the Configuration. Follow the [native authentication requirements](workspace-routing.md#configure-native-gateway-authentication)
+Configure verified Envoy source CIDRs in the trusted Installation YAML before
+deploying either example. Kubernetes Compute renders native trusted-proxy
+authentication for Console workspace access; the examples omit Driver-owned
+settings. Follow the [native authentication requirements](workspace-routing.md#configure-native-gateway-authentication)
 for proxy identity and NetworkPolicy isolation; do not trust arbitrary client
 addresses. The gateway password SecretRef enables the separate local model check.
 Dedicated Codex also requires the [matching runtime images](workspace-routing.md#runtime-prerequisite-for-separate-storage).
@@ -88,23 +89,7 @@ cat > configuration.json <<'JSON'
     "gateway": {
       "mode": "local",
       "bind": "lan",
-      "trustedProxies": [
-        "<actual-proxy-source-cidr>"
-      ],
-      "allowRealIpFallback": true,
       "auth": {
-        "mode": "trusted-proxy",
-        "trustedProxy": {
-          "userHeader": "x-occ-identity",
-          "allowUsers": [
-            "occ-workspace-files"
-          ]
-        },
-        "identityScopes": {
-          "occ-workspace-files": [
-            "operator.admin"
-          ]
-        },
         "password": {
           "source": "env",
           "provider": "default",
@@ -167,23 +152,7 @@ cat > configuration.json <<'JSON'
       "controlUi": {
         "enabled": false
       },
-      "trustedProxies": [
-        "<actual-proxy-source-cidr>"
-      ],
-      "allowRealIpFallback": true,
       "auth": {
-        "mode": "trusted-proxy",
-        "trustedProxy": {
-          "userHeader": "x-occ-identity",
-          "allowUsers": [
-            "occ-workspace-files"
-          ]
-        },
-        "identityScopes": {
-          "occ-workspace-files": [
-            "operator.admin"
-          ]
-        },
         "password": {
           "source": "env",
           "provider": "default",
@@ -358,10 +327,10 @@ and the [Slack setup guide](../integrations/slack.md). The operator commands
 below can supply transport credentials externally. Do not use both paths to
 replace an existing transport bundle.
 
-Create the tenant transport Secret using the Agent ID suffix. Token-mode
-gateways use `gateway-token`; dedicated Codex also uses `app-server-token`.
-For native `gateway.auth.mode: "trusted-proxy"`, omit `gateway.auth.token`;
-Compute does not project it in that mode. To verify model responses through an
+Create the tenant transport Secret using the Agent ID suffix. Kubernetes
+gateways use trusted-proxy authentication; dedicated Codex separately requires
+`app-server-token`. Compute renders the gateway authentication from trusted
+Installation settings. To verify model responses through an
 operator's local Kubernetes connection, configure the `gateway-password` Secret
 reference and enable the native HTTP endpoint as described in
 [Model response verification](../operate/model-verification.md). The initial
@@ -372,18 +341,15 @@ umask 077
 AGENT_SUFFIX="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:12])' "${AGENT_ID:?}")" &&
 SECRET_DIRECTORY="$(mktemp -d /tmp/occ-agent-transport.XXXXXXXX)" &&
 python3 -c 'import secrets,sys; sys.stdout.write(secrets.token_hex(32))' > "$SECRET_DIRECTORY/app-server-token" &&
-python3 -c 'import secrets,sys; sys.stdout.write(secrets.token_hex(32))' > "$SECRET_DIRECTORY/gateway-token" &&
 python3 -c 'import secrets,sys; sys.stdout.write(secrets.token_hex(32))' > "$SECRET_DIRECTORY/gateway-password" &&
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
   -n "$TENANT_NAMESPACE" create secret generic "openclaw-agent-transport-$AGENT_SUFFIX" \
   --from-file=app-server-token="$SECRET_DIRECTORY/app-server-token" \
-  --from-file=gateway-token="$SECRET_DIRECTORY/gateway-token" \
   --from-file=gateway-password="$SECRET_DIRECTORY/gateway-password"
 ```
 
-Token-authenticated embedded OpenClaw uses the gateway token; dedicated Codex
-also uses the app-server token. Trusted-proxy gateways use the separately
-configured password for a direct local connection. Model authentication comes
+The gateway password enables the optional direct loopback checks below; the
+app-server token authenticates dedicated Codex transport. Model authentication comes
 from the saved `harnessAuth` binding.
 Kubernetes projects its source only into the model-executing workload; initial
 transport/channel provisioning does not accept model keys. Keep credential values
@@ -425,13 +391,10 @@ credentials are stored. Keep model verification as a separate check below.
 
 Wait for `GET /namespaces/$NAMESPACE_ID/agents/$AGENT_ID` to report the
 expected `activeRevisionId`, then require a real model response from that
-Agent. The Configurations in this guide use trusted-proxy authentication:
-
-- Default (trusted proxy): [verify rejection of an unauthenticated request and a real
-  model response](../operate/model-verification.md) over an operator's local
-  Kubernetes connection. This uses a separate gateway password.
-- For a separately configured token-authenticated gateway without Console
-  workspace routing: [attach with the OpenClaw TUI](#attach-with-the-openclaw-tui).
+Agent. Use its optional loopback password to [attach with the OpenClaw
+TUI](#attach-with-the-openclaw-tui), or [verify rejection of an unauthenticated
+request and a real model response](../operate/model-verification.md) over an
+operator's local Kubernetes connection.
 
 A Helm release, ready controller, or active revision does not show that the
 Agent can reach its model.
@@ -517,15 +480,14 @@ fi
 ```
 
 Confirm the model replies with the exact nonce. The TUI uses the Pod-local
-WebSocket listener and injected gateway token. The extra client process unsets
+WebSocket listener and configured gateway password. The extra client process unsets
 `OPENAI_API_KEY`; model access stays in the serving gateway path. Ctrl+D exits
 only the client.
 
-This Pod-local TUI procedure requires token authentication. It does not apply
-to gateways configured with the trusted-proxy authentication used by private
-workspace-file routing; that mode intentionally has no gateway token. Use the
-[separate password check](../operate/model-verification.md) to verify model
-responses in that mode. Use the OCC file API for workspace-file administration.
+This Pod-local TUI procedure requires the optional password SecretRef shown
+above. Trusted-proxy authentication remains active for routed requests. Use the
+[HTTP password check](../operate/model-verification.md) for a noninteractive
+model response, and the OCC file API for workspace-file administration.
 
 ## End the operator session
 
@@ -552,7 +514,7 @@ unset OCC_SERVICE_KEY_FILE OCC_SERVICE_KEY_DIRECTORY
 case "${SECRET_DIRECTORY:-}" in
   /tmp/occ-agent-transport.[[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]])
     if [ -d "$SECRET_DIRECTORY" ] && [ ! -L "$SECRET_DIRECTORY" ]; then
-      rm -f -- "$SECRET_DIRECTORY/app-server-token" "$SECRET_DIRECTORY/gateway-token" "$SECRET_DIRECTORY/gateway-password" &&
+      rm -f -- "$SECRET_DIRECTORY/app-server-token" "$SECRET_DIRECTORY/gateway-password" &&
       rmdir -- "$SECRET_DIRECTORY"
     fi ;;
   '') ;;

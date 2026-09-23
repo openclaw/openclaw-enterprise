@@ -4,7 +4,8 @@ Verify that a trusted-proxy Kubernetes gateway rejects an unauthenticated
 request and returns a real model response. The private OCC workspace proxy
 serves workspace administration; this check uses a separate gateway password
 over a Kubernetes port-forward bound to your machine's loopback address. For
-token-authenticated gateways, use the [OpenClaw TUI](../deploy/production-agents.md#attach-with-the-openclaw-tui).
+an interactive check with the same loopback password, use the
+[OpenClaw TUI](../deploy/production-agents.md#attach-with-the-openclaw-tui).
 
 ## Prepare the Agent
 
@@ -23,7 +24,6 @@ or the Agent's model and Harness settings:
 ```yaml
 gateway:
   auth:
-    mode: trusted-proxy
     password:
       source: env
       provider: default

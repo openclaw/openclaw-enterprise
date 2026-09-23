@@ -38,7 +38,6 @@ function configurationTemplate(mode, nativeProvider, providerModel) {
       mode: "local",
       bind: "lan",
       controlUi: { enabled: false },
-      auth: { mode: "token", token: "${OPENCLAW_GATEWAY_TOKEN}" },
       http: { endpoints: { chatCompletions: { enabled: true } } },
     },
     ...(providerModel

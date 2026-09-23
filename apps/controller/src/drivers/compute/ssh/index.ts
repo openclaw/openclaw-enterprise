@@ -3,6 +3,8 @@ import { stat } from "node:fs/promises";
 import type {
   AgentRevision,
   HarnessAuthSnapshot,
+  OpenClawConfigurationDocument,
+  OpenClawConfigurationValue,
   RevisionHarnessDescriptor,
   ComputeAgentBinding,
   ComputeDriver,
@@ -25,6 +27,7 @@ import {
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
 import { currentComputeAbortSignal } from "../operation-context.ts";
 import { WORKSPACE_SETUP_RUNTIME } from "../workspace-setup-runtime.ts";
+import { unsupportedNativeGatewayAuthFields } from "../../../gateway/auth-fields.ts";
 import { SystemSshCommandExecutor, type SshCommandExecutor } from "./executor.ts";
 
 export interface SshComputeHost {
@@ -75,6 +78,13 @@ const ADDRESS = new RegExp(ADDRESS_PATTERN);
 const ACCOUNT_PATTERN = "^(?!root$)[a-z_][a-z0-9_-]*$";
 const ACCOUNT = new RegExp(ACCOUNT_PATTERN);
 const IDENTITY = /^[A-Za-z0-9][A-Za-z0-9_.:/-]*$/;
+const OPENCLAW_GATEWAY_PASSWORD = "OPENCLAW_GATEWAY_PASSWORD";
+const GATEWAY_PASSWORD_EXPRESSION = `\${${OPENCLAW_GATEWAY_PASSWORD}}`;
+const GATEWAY_PASSWORD_REFERENCE = immutableCopy({
+  source: "env",
+  provider: "default",
+  id: OPENCLAW_GATEWAY_PASSWORD,
+});
 
 function required(value: unknown, description: string): string {
   if (!isNonEmptyString(value)) {
@@ -138,6 +148,63 @@ function failure(error: unknown): "permanent" | "retryable" {
 
 function hasPluginSelections(revision: AgentRevision): boolean {
   return revision.plugins !== undefined && Object.keys(revision.plugins.plugins).length > 0;
+}
+
+function usesGatewayPasswordReference(value: unknown): boolean {
+  if (value === GATEWAY_PASSWORD_EXPRESSION) {
+    return true;
+  }
+  const password = asRecord(value);
+  return (
+    password?.source === "env" &&
+    password.provider === "default" &&
+    password.id === OPENCLAW_GATEWAY_PASSWORD
+  );
+}
+
+function sshGatewayConfigurationDocument(
+  configuration: OpenClawConfigurationDocument,
+): OpenClawConfigurationDocument {
+  const gatewayRecord = asRecord(configuration.gateway);
+  if (configuration.gateway !== undefined && gatewayRecord === undefined) {
+    throw new ConfigurationFailure("SSH native gateway configuration must be an object.");
+  }
+  const gateway = (gatewayRecord ?? {}) as Record<string, OpenClawConfigurationValue>;
+  const authRecord = asRecord(gateway.auth);
+  if (gateway.auth !== undefined && authRecord === undefined) {
+    throw new ConfigurationFailure("SSH native gateway auth must be an object.");
+  }
+  const auth = (authRecord ?? {}) as Record<string, OpenClawConfigurationValue>;
+  const unsupported = unsupportedNativeGatewayAuthFields(auth);
+  if (unsupported.length > 0) {
+    throw new ConfigurationFailure(
+      `SSH native gateway authentication contains unsupported field ${unsupported[0]}.`,
+    );
+  }
+  if (auth.mode !== undefined && auth.mode !== "trusted-proxy" && auth.mode !== "password") {
+    throw new ConfigurationFailure(
+      "SSH Compute supports only native trusted-proxy or password gateway authentication.",
+    );
+  }
+  if (auth.password !== undefined && !usesGatewayPasswordReference(auth.password)) {
+    throw new ConfigurationFailure(
+      "Gateway password authentication must use OPENCLAW_GATEWAY_PASSWORD.",
+    );
+  }
+  if (auth.mode === "trusted-proxy") {
+    return configuration;
+  }
+  return {
+    ...configuration,
+    gateway: {
+      ...gateway,
+      auth: {
+        ...auth,
+        mode: "password",
+        password: GATEWAY_PASSWORD_REFERENCE,
+      },
+    },
+  } as OpenClawConfigurationDocument;
 }
 
 export class SshComputeDriver implements ComputeDriver {
@@ -384,6 +451,7 @@ export class SshComputeDriver implements ComputeDriver {
   ): Promise<ComputeReadiness> {
     this.lifecycleStarted = true;
     this.validateRevision(revision);
+    sshGatewayConfigurationDocument(revision.configuration);
     // TODO: Dedicated Codex requires authenticated transport and separate host credential delivery.
     if (revision.harness.id !== "openclaw" || revision.harness.mode !== "embedded") {
       throw new ConfigurationFailure(
@@ -417,6 +485,7 @@ export class SshComputeDriver implements ComputeDriver {
   async activateRevision(revision: AgentRevision, context?: ComputeRevisionContext): Promise<void> {
     this.lifecycleStarted = true;
     this.validateRevision(revision);
+    sshGatewayConfigurationDocument(revision.configuration);
     if (revision.harness.id !== "openclaw" || revision.harness.mode !== "embedded") {
       throw new ConfigurationFailure(
         "SSH Compute supports only embedded OpenClaw; dedicated Codex is not implemented.",
@@ -532,11 +601,13 @@ export class SshComputeDriver implements ComputeDriver {
     context?: ComputeRevisionContext,
   ): Promise<Record<string, unknown>> {
     const namespace = this.validateRevision(revision);
+    const renderedConfiguration = sshGatewayConfigurationDocument(revision.configuration);
+    const effectiveRevision = { ...revision, configuration: renderedConfiguration };
     return this.execute(this.host(namespace), {
       operation,
       namespace,
-      revision,
-      configurationHash: sha256Hex(JSON.stringify(revision.configuration)),
+      revision: effectiveRevision,
+      configurationHash: sha256Hex(JSON.stringify(renderedConfiguration)),
       ...(context?.workspaceSetup === undefined
         ? {}
         : {

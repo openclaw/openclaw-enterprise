@@ -5,7 +5,7 @@ import {
   sha256Hex,
 } from "@openclaw-enterprise/utils";
 import { randomBytes } from "node:crypto";
-import { isIP } from "node:net";
+import { BlockList, isIP } from "node:net";
 import { isAbsolute } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type {
@@ -56,6 +56,7 @@ import type {
   SecretEnvironmentProjection,
   LoggingLevel,
   RuntimeFailureEvidence,
+  OpenClawConfigurationValue,
 } from "@openclaw-enterprise/contracts";
 import { admittedLoggingLevel, normalizeSecretBindings } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError, ResourceConflictError } from "@openclaw-enterprise/occ";
@@ -68,6 +69,7 @@ import {
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
 import { discoverHarnessModels } from "../model-discovery.ts";
 import { currentComputeAbortSignal, withComputeAbortSignal } from "../operation-context.ts";
+import { unsupportedNativeGatewayAuthFields } from "../../../gateway/auth-fields.ts";
 import type { GatewayNodeEnrollment } from "../../../gateway/node-enrollment-client.ts";
 import {
   PLUGIN_RUNTIME_DIRECTORY,
@@ -212,6 +214,7 @@ export interface KubernetesComputeDriverOptions {
   readonly network: {
     readonly dns: KubernetesWorkloadPeer;
     readonly gatewayPort: number;
+    readonly gatewayTrustedProxyCidrs: readonly string[];
     readonly gatewayClients?: readonly KubernetesWorkloadPeer[];
     readonly pluginStatusProxySourceCidrs?: readonly string[];
     readonly repositoryCredentials?: KubernetesWorkloadPeer & { readonly port: number };
@@ -264,7 +267,6 @@ interface GatewayConfigurationSnapshot {
   readonly name: string;
   readonly revision: number;
   readonly revisionId: string;
-  readonly usesTrustedProxyAuth: boolean;
   readonly usesGatewayPasswordEnv: boolean;
   readonly usesWritableNativeAdminConfig: boolean;
   readonly annotations: Readonly<Record<string, string>>;
@@ -386,9 +388,10 @@ const WORKLOAD_TERMINATION_TIMEOUT_MS = 120_000;
 const WORKLOAD_TERMINATION_POLL_MS = 100;
 const AGENT_TRANSPORT_PORT = 18_790;
 const AGENT_TRANSPORT_TOKEN_KEY = "app-server-token";
-const GATEWAY_TOKEN_KEY = "gateway-token";
 const GATEWAY_PASSWORD_KEY = "gateway-password";
 const OPENCLAW_GATEWAY_PASSWORD = "OPENCLAW_GATEWAY_PASSWORD";
+const TRUSTED_PROXY_IDENTITY = "occ-workspace-files";
+const TRUSTED_PROXY_HEADER = "x-occ-identity";
 const MODEL_API_KEY = "OPENAI_API_KEY";
 const SERVICE_ACCOUNT_TOKEN_KEY = "token";
 const SERVICE_ACCOUNT_WORKSPACE_KEY = "workspace-id";
@@ -495,13 +498,21 @@ function validatePeer(value: KubernetesWorkloadPeer, description: string): void 
   }
 }
 
-function validateCidr(value: unknown, description: string): void {
+interface ParsedCidr {
+  readonly value: string;
+  readonly address: string;
+  readonly family: 4 | 6;
+  readonly prefix: number;
+}
+
+function parseCidr(value: unknown, description: string): ParsedCidr {
   if (typeof value !== "string") {
     throw new ConfigurationFailure(`${description} must be a CIDR string.`);
   }
-  const [address, prefix, extra] = value.split("/");
-  const family = isIP(address ?? "");
-  const prefixValue = Number(prefix);
+  const [address = "", prefix, extra] = value.split("/");
+  const family = isIP(address);
+  const prefixValue =
+    typeof prefix === "string" && /^(0|[1-9]\d*)$/u.test(prefix) ? Number(prefix) : NaN;
   if (
     extra !== undefined ||
     family === 0 ||
@@ -511,6 +522,42 @@ function validateCidr(value: unknown, description: string): void {
   ) {
     throw new ConfigurationFailure(`${description} must be a valid IPv4 or IPv6 CIDR.`);
   }
+  return { value, address, family: family === 4 ? 4 : 6, prefix: prefixValue };
+}
+
+function validateCidr(value: unknown, description: string): void {
+  parseCidr(value, description);
+}
+
+function trustedProxyCidrTrustsEverySource(cidr: ParsedCidr): boolean {
+  if (cidr.prefix === 0) {
+    return true;
+  }
+  if (cidr.family !== 6) {
+    return false;
+  }
+  const blockList = new BlockList();
+  blockList.addSubnet(cidr.address, cidr.prefix, "ipv6");
+  return blockList.check("0.0.0.0", "ipv4") && blockList.check("255.255.255.255", "ipv4");
+}
+
+function trustedProxyCidrSet(value: unknown, description: string): ReadonlySet<string> {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new ConfigurationFailure(`${description} must contain at least one CIDR.`);
+  }
+  const cidrs = new Set<string>();
+  value.forEach((entry, index) => {
+    const parsed = parseCidr(entry, `${description} ${index}`);
+    if (trustedProxyCidrTrustsEverySource(parsed)) {
+      throw new ConfigurationFailure(`${description}s cannot trust every source.`);
+    }
+    cidrs.add(parsed.value.toLowerCase());
+  });
+  return cidrs;
+}
+
+function cidrSetsEqual(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
+  return left.size === right.size && [...left].every((cidr) => right.has(cidr));
 }
 
 function validateDnsHostname(value: string, description: string): void {
@@ -777,11 +824,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
       },
       network: {
         type: "object",
-        required: ["dns", "gatewayPort"],
+        required: ["dns", "gatewayPort", "gatewayTrustedProxyCidrs"],
         additionalProperties: false,
         properties: {
           dns: WORKLOAD_PEER_SCHEMA,
           gatewayPort: { type: "integer" },
+          gatewayTrustedProxyCidrs: { type: "array", items: { type: "string" } },
           gatewayClients: { type: "array", items: WORKLOAD_PEER_SCHEMA },
           pluginStatusProxySourceCidrs: { type: "array", items: { type: "string" } },
           repositoryCredentials: {
@@ -935,6 +983,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     validatePeer(options.network.dns, "DNS peer");
     validatePort(options.network.gatewayPort, "Gateway port");
+    trustedProxyCidrSet(options.network.gatewayTrustedProxyCidrs, "Trusted proxy CIDR");
     if (options.network.pluginStatusProxySourceCidrs !== undefined) {
       if (!Array.isArray(options.network.pluginStatusProxySourceCidrs)) {
         throw new ConfigurationFailure("Plugin status proxy source CIDRs must be an array.");
@@ -1270,7 +1319,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (!status.transportConfigured) {
         await this.createRuntimeCredentialSecret(context, context.transport, {
           [AGENT_TRANSPORT_TOKEN_KEY]: this.generateRuntimeCredentialToken(),
-          [GATEWAY_TOKEN_KEY]: this.generateRuntimeCredentialToken(),
           [GATEWAY_PASSWORD_KEY]: this.generateRuntimeCredentialToken(),
         });
       }
@@ -1622,6 +1670,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
       materialInput === undefined
         ? revision.configuration
         : repositoryNativeConfiguration(revision.configuration);
+    const admittedNativeConfiguration =
+      this.kubernetesGatewayConfigurationDocument(nativeConfiguration);
+    const admittedRevision = { ...revision, configuration: admittedNativeConfiguration };
     const embedded = revision.harness.mode === "embedded";
     if (
       (embedded && revision.harness.id !== "openclaw") ||
@@ -1633,18 +1684,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (sandboxDriver !== undefined && embedded) {
       throw new ConfigurationFailure("SandboxDriver support is limited to dedicated Harnesses.");
     }
-    const workspaceSetup = this.workspaceSetupForRevision(revision, context);
+    const workspaceSetup = this.workspaceSetupForRevision(admittedRevision, context);
     this.validateHarnessAuth(
       revision.harness,
       revision.harnessAuth,
-      revision.configuration,
+      admittedRevision.configuration,
       revision.secretBindings,
     );
-    const channels = this.enabledChannels(revision);
-    this.verifyGatewayRoutingConfiguration(revision);
+    const channels = this.enabledChannels(admittedRevision);
+    this.verifyGatewayRoutingConfiguration(admittedRevision);
     const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
     const secretEnvironment = this.secretEnvironmentForRevision(revision, context, namespace);
-    const harnessAuth = this.harnessAuthForRevision(revision, context, namespace);
+    const harnessAuth = this.harnessAuthForRevision(admittedRevision, context, namespace);
     const tenantOwnership = { namespaceId: revision.namespaceId };
     const observed = await this.get("Namespace", namespace);
     if (observed === undefined) {
@@ -1675,7 +1726,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     };
     const revisionName = `${agentName}-rev-${sha256Hex(revision.id, 12)}`;
     const revisionOwnership = { ...agentOwnership, revisionId: revision.id };
-    const pluginRuntime = this.pluginRuntimeSnapshot(revision);
+    const pluginRuntime = this.pluginRuntimeSnapshot(admittedRevision);
     const pluginOwnership = this.pluginRuntimeOwnership(revision);
     const hasEnabledPluginSelections =
       pluginRuntime !== undefined &&
@@ -1727,10 +1778,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
           };
     };
     await this.deliverWorkspaceSetup(revision, workspaceSetup, namespace);
-    const document = JSON.stringify(nativeConfiguration);
+    const document = JSON.stringify(admittedNativeConfiguration);
     const configuration = this.gatewayConfiguration(
-      revision,
-      await this.workspaceNodeDeviceId(revision, namespace),
+      admittedRevision,
+      await this.workspaceNodeDeviceId(admittedRevision, namespace),
     );
     let existingGatewayRevisionId: string | undefined;
     const existingGateway = await this.getOwned(
@@ -2112,26 +2163,30 @@ export class KubernetesComputeDriver implements ComputeDriver {
 
   async activateRevision(revision: AgentRevision, context?: ComputeRevisionContext): Promise<void> {
     const materialInput = this.repositoryMaterialInput(revision, context);
-    if (materialInput !== undefined) {
-      repositoryNativeConfiguration(revision.configuration);
-    }
+    const nativeConfiguration =
+      materialInput === undefined
+        ? revision.configuration
+        : repositoryNativeConfiguration(revision.configuration);
+    const admittedNativeConfiguration =
+      this.kubernetesGatewayConfigurationDocument(nativeConfiguration);
+    const admittedRevision = { ...revision, configuration: admittedNativeConfiguration };
     if (this.options.runtime === undefined) {
       return;
     }
-    this.verifyGatewayRoutingConfiguration(revision);
-    const workspaceSetup = this.workspaceSetupForRevision(revision, context);
+    this.verifyGatewayRoutingConfiguration(admittedRevision);
+    const workspaceSetup = this.workspaceSetupForRevision(admittedRevision, context);
     this.validateHarnessAuth(
       revision.harness,
       revision.harnessAuth,
-      revision.configuration,
+      admittedRevision.configuration,
       revision.secretBindings,
     );
-    const channels = this.enabledChannels(revision);
-    const pluginRuntime = this.pluginRuntimeSnapshot(revision);
+    const channels = this.enabledChannels(admittedRevision);
+    const pluginRuntime = this.pluginRuntimeSnapshot(admittedRevision);
     const { name: namespace } = await this.resolveNamespace(revision.namespaceId);
     await this.deliverWorkspaceSetup(revision, workspaceSetup, namespace);
     const secretEnvironment = this.secretEnvironmentForRevision(revision, context, namespace);
-    const harnessAuth = this.harnessAuthForRevision(revision, context, namespace);
+    const harnessAuth = this.harnessAuthForRevision(admittedRevision, context, namespace);
     const agentName = `agent-${sha256Hex(revision.agentId, 12)}`;
     const gatewayName = `gateway-${sha256Hex(revision.agentId, 12)}`;
     const gatewayOwnership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
@@ -2197,8 +2252,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
               agentName,
               "gateway",
               launch.environment,
-              this.gatewayConfiguration(revision).loggingLevel,
-              this.gatewayConfiguration(revision),
+              this.gatewayConfiguration(admittedRevision).loggingLevel,
+              this.gatewayConfiguration(admittedRevision),
               true,
               revision.servicePrincipalId,
               harnessAuth,
@@ -2243,8 +2298,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const revisionName = `${agentName}-rev-${sha256Hex(revision.id, 12)}`;
     const configuration = this.gatewayConfiguration(
-      revision,
-      await this.workspaceNodeDeviceId(revision, namespace),
+      admittedRevision,
+      await this.workspaceNodeDeviceId(admittedRevision, namespace),
     );
     if (
       this.nodeEnrollment !== undefined &&
@@ -3123,7 +3178,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       ...context,
       transport: {
         name: transportName,
-        keys: [AGENT_TRANSPORT_TOKEN_KEY, GATEWAY_TOKEN_KEY, GATEWAY_PASSWORD_KEY],
+        keys: [AGENT_TRANSPORT_TOKEN_KEY, GATEWAY_PASSWORD_KEY],
       },
     };
   }
@@ -3194,7 +3249,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const expected = [...spec.keys].sort();
     const actual = Object.keys(data).sort();
-    if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
+    if (!isDeepStrictEqual(expected, actual)) {
       throw new ResourceConflictError("The Agent runtime credential Secret is incomplete.");
     }
     for (const key of expected) {
@@ -4974,7 +5029,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
     revision: AgentRevision,
     workspaceNodeId?: string,
   ): GatewayConfigurationSnapshot {
-    const gateway = asRecord(revision.configuration.gateway);
+    const nativeConfiguration = this.kubernetesGatewayConfigurationDocument(revision.configuration);
+    const gateway = asRecord(nativeConfiguration.gateway);
     const auth = asRecord(gateway?.auth);
     const password = auth === undefined ? undefined : auth.password;
     const passwordReference = password === undefined ? undefined : asRecord(password);
@@ -4989,20 +5045,117 @@ export class KubernetesComputeDriver implements ComputeDriver {
       name: `gateway-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`,
       revision: revision.revision,
       revisionId: revision.id,
-      usesTrustedProxyAuth: auth?.mode === "trusted-proxy",
       usesGatewayPasswordEnv,
-      usesWritableNativeAdminConfig: this.usesWritableNativeAdminConfig(revision.configuration),
+      usesWritableNativeAdminConfig: this.usesWritableNativeAdminConfig(nativeConfiguration),
       annotations: {
         "openclaw.dev/configuration-id": revision.configurationId,
         "openclaw.dev/configuration-kind": revision.configurationKind,
         "openclaw.dev/configuration-generation": String(revision.configurationGeneration),
       },
-      loggingLevel: admittedLoggingLevel(revision.configuration),
+      loggingLevel: admittedLoggingLevel(nativeConfiguration),
       ...(workspaceNodeId === undefined ? {} : { workspaceNodeId }),
       workspace:
-        asRecord(asRecord(asRecord(revision.configuration.agents)?.entries)?.main)?.workspace ??
-        asRecord(asRecord(revision.configuration.agents)?.defaults)?.workspace ??
+        asRecord(asRecord(asRecord(nativeConfiguration.agents)?.entries)?.main)?.workspace ??
+        asRecord(asRecord(nativeConfiguration.agents)?.defaults)?.workspace ??
         "/home/node/.openclaw/workspace",
+    };
+  }
+
+  private kubernetesGatewayConfigurationDocument(
+    configuration: OpenClawConfigurationDocument,
+  ): OpenClawConfigurationDocument {
+    const gatewayRecord = asRecord(configuration.gateway);
+    if (configuration.gateway !== undefined && gatewayRecord === undefined) {
+      throw new ConfigurationFailure("Kubernetes native gateway configuration must be an object.");
+    }
+    const gateway = (gatewayRecord ?? {}) as Record<string, OpenClawConfigurationValue>;
+    const authRecord = asRecord(gateway.auth);
+    if (gateway.auth !== undefined && authRecord === undefined) {
+      throw new ConfigurationFailure("Kubernetes native gateway auth must be an object.");
+    }
+    const auth = (authRecord ?? {}) as Record<string, OpenClawConfigurationValue>;
+    const trustedProxyRecord = asRecord(auth.trustedProxy);
+    if (auth.trustedProxy !== undefined && trustedProxyRecord === undefined) {
+      throw new ConfigurationFailure("Kubernetes native trustedProxy auth must be an object.");
+    }
+    const trustedProxy = (trustedProxyRecord ?? {}) as Record<string, OpenClawConfigurationValue>;
+    const identityScopesRecord = asRecord(auth.identityScopes);
+    if (auth.identityScopes !== undefined && identityScopesRecord === undefined) {
+      throw new ConfigurationFailure("Kubernetes native identityScopes must be an object.");
+    }
+    const identityScopes = identityScopesRecord as
+      Record<string, OpenClawConfigurationValue> | undefined;
+    const unsupported = unsupportedNativeGatewayAuthFields(auth);
+    if (unsupported.length > 0) {
+      throw new ConfigurationFailure(
+        `Kubernetes native gateway authentication contains unsupported field ${unsupported[0]}.`,
+      );
+    }
+    if (auth.mode !== undefined && auth.mode !== "trusted-proxy") {
+      throw new ConfigurationFailure(
+        "Kubernetes Compute supports only native trusted-proxy gateway authentication.",
+      );
+    }
+    if (
+      gateway.trustedProxies !== undefined &&
+      !cidrSetsEqual(
+        trustedProxyCidrSet(gateway.trustedProxies, "Kubernetes native trustedProxies"),
+        trustedProxyCidrSet(this.options.network.gatewayTrustedProxyCidrs, "Trusted proxy CIDR"),
+      )
+    ) {
+      throw new ConfigurationFailure(
+        "Kubernetes native trustedProxies must match network.gatewayTrustedProxyCidrs.",
+      );
+    }
+    if (gateway.allowRealIpFallback !== undefined && gateway.allowRealIpFallback !== true) {
+      throw new ConfigurationFailure(
+        "Kubernetes native trusted-proxy authentication requires allowRealIpFallback.",
+      );
+    }
+    if (trustedProxy.userHeader !== undefined && trustedProxy.userHeader !== TRUSTED_PROXY_HEADER) {
+      throw new ConfigurationFailure(
+        `Kubernetes native trustedProxy.userHeader must be ${TRUSTED_PROXY_HEADER}.`,
+      );
+    }
+    if (
+      trustedProxy.allowUsers !== undefined &&
+      !isDeepStrictEqual(trustedProxy.allowUsers, [TRUSTED_PROXY_IDENTITY])
+    ) {
+      throw new ConfigurationFailure(
+        `Kubernetes native trustedProxy.allowUsers must contain only ${TRUSTED_PROXY_IDENTITY}.`,
+      );
+    }
+    if (trustedProxy.allowLoopback !== undefined && trustedProxy.allowLoopback !== false) {
+      throw new ConfigurationFailure(
+        "Kubernetes native trustedProxy.allowLoopback must be false when configured.",
+      );
+    }
+    if (
+      identityScopes !== undefined &&
+      (!isDeepStrictEqual(Object.keys(identityScopes).sort(), [TRUSTED_PROXY_IDENTITY]) ||
+        !isDeepStrictEqual(identityScopes[TRUSTED_PROXY_IDENTITY], ["operator.admin"]))
+    ) {
+      throw new ConfigurationFailure(
+        `Kubernetes native identityScopes must grant only ${TRUSTED_PROXY_IDENTITY} operator.admin.`,
+      );
+    }
+    return {
+      ...configuration,
+      gateway: {
+        ...gateway,
+        trustedProxies: [...this.options.network.gatewayTrustedProxyCidrs],
+        allowRealIpFallback: true,
+        auth: {
+          ...auth,
+          mode: "trusted-proxy",
+          trustedProxy: {
+            ...trustedProxy,
+            userHeader: TRUSTED_PROXY_HEADER,
+            allowUsers: [TRUSTED_PROXY_IDENTITY],
+          },
+          identityScopes: { [TRUSTED_PROXY_IDENTITY]: ["operator.admin"] },
+        },
+      },
     };
   }
 
@@ -5132,8 +5285,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
         "Gateway routing requires native trusted-proxy authentication.",
       );
     }
-    if ("token" in (auth ?? {})) {
-      throw new ConfigurationFailure("Gateway routing native configuration must omit auth.token.");
+    const unsupported = unsupportedNativeGatewayAuthFields(auth);
+    if (unsupported.length > 0) {
+      throw new ConfigurationFailure(
+        `Gateway routing native configuration contains unsupported auth field ${unsupported[0]}.`,
+      );
     }
     if (trustedProxy?.userHeader !== "x-occ-identity") {
       throw new ConfigurationFailure(
@@ -6377,12 +6533,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
             name: "APP_SERVER_URL",
             value: `ws://agent-${suffix}:${AGENT_TRANSPORT_PORT}`,
           });
-        }
-        // Native trusted-proxy authentication rejects a simultaneously configured shared token.
-        if (configuration?.usesTrustedProxyAuth !== true) {
-          variables.push(
-            secret("OPENCLAW_GATEWAY_TOKEN", runtime.transportSecretPrefix, GATEWAY_TOKEN_KEY),
-          );
         }
         if (configuration?.usesGatewayPasswordEnv === true) {
           variables.push(

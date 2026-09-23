@@ -96,9 +96,13 @@ drivers:
         # Native gateway listener port; keep it aligned with the runtime.
         # See [Networking](../../../docs/reference/drivers/kubernetes-compute/networking-and-isolation.md#networking).
         gatewayPort: 8080
+        # Required: replace with the actual authenticated Envoy socket source CIDRs.
+        # Keep the exact Envoy NetworkPolicy peer; CIDR trust alone is insufficient.
+        gatewayTrustedProxyCidrs:
+          - "<actual-proxy-source-cidr>"
       # Dedicated Harness storage requires private routing and native node enrollment.
       # Match the Helm release `oce` in namespace `openclaw-system`.
-      # Configure Agent trusted-proxy auth as described in workspace-routing.md.
+      # The Driver renders native trusted-proxy auth from the operator CIDRs above.
       gatewayRouting:
         gatewayName: oce-agent-gateways
         gatewayNamespace: openclaw-system

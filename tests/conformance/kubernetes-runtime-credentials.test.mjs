@@ -51,6 +51,7 @@ function options(overrides = {}) {
     network: {
       dns: { namespace: "kube-system", podLabels: { "k8s-app": "kube-dns" } },
       gatewayPort: 8080,
+      gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
       gatewayClients: [
         { namespace: "openclaw-controller", podLabels: { "app.kubernetes.io/name": "controller" } },
       ],
@@ -196,7 +197,6 @@ test("mocked Kubernetes client reports only complete owned Agent runtime credent
   const secrets = {
     [`transport-${digest(agent.id)}`]: runtimeSecret(driver, namespaceName, "transport", {
       "app-server-token": "app-server-token-value",
-      "gateway-token": "gateway-token-value",
       "gateway-password": "gateway-password-value",
     }),
   };
@@ -330,11 +330,8 @@ test("mocked Kubernetes client preflights the transport Secret before initial cr
   );
   const transport = created[0].stringData;
   assert.match(transport["app-server-token"], /^[A-Za-z0-9_-]+$/);
-  assert.match(transport["gateway-token"], /^[A-Za-z0-9_-]+$/);
   assert.match(transport["gateway-password"], /^[A-Za-z0-9_-]+$/);
-  assert.notEqual(transport["app-server-token"], transport["gateway-token"]);
   assert.notEqual(transport["app-server-token"], transport["gateway-password"]);
-  assert.notEqual(transport["gateway-token"], transport["gateway-password"]);
 });
 
 test("mocked Kubernetes client can recover missing transport when model credentials already exist", async () => {
@@ -364,7 +361,6 @@ test("mocked Kubernetes client returns configured metadata without writes for ex
       "transport",
       {
         "app-server-token": "app-server-token-value",
-        "gateway-token": "gateway-token-value",
         "gateway-password": "gateway-password-value",
       },
     ),
@@ -377,7 +373,7 @@ test("mocked Kubernetes client returns configured metadata without writes for ex
   assert.equal(created.length, 0);
 });
 
-test("mocked Kubernetes client treats legacy two-token transport Secrets as conflicts", async () => {
+test("mocked Kubernetes client rejects transport Secrets with unexpected keys", async () => {
   const first = credentialFixture();
   const secrets = {
     [`transport-${digest(agent.id)}`]: runtimeSecret(
@@ -386,7 +382,8 @@ test("mocked Kubernetes client treats legacy two-token transport Secrets as conf
       "transport",
       {
         "app-server-token": "app-server-token-value",
-        "gateway-token": "gateway-token-value",
+        unexpected: "unexpected-value",
+        "gateway-password": "gateway-password-value",
       },
     ),
   };
@@ -394,7 +391,7 @@ test("mocked Kubernetes client treats legacy two-token transport Secrets as conf
 
   await assert.rejects(
     driver.provisionAgentRuntimeCredentials(binding(), {}),
-    ResourceConflictError,
+    /runtime credential Secret is incomplete/,
   );
   assert.equal(created.length, 0);
 });
@@ -500,13 +497,11 @@ test("mocked Kubernetes client rejects malformed existing credential Secrets bef
         "transport",
         {
           "app-server-token": "app-server-token-value",
-          "gateway-token": "gateway-token-value",
           "gateway-password": "gateway-password-value",
         },
         {
           data: {
             "app-server-token": "",
-            "gateway-token": encode("gateway-token-value"),
             "gateway-password": encode("gateway-password-value"),
           },
         },

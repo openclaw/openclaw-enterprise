@@ -45,8 +45,10 @@ are not duplicated in Configuration metadata. Deployment separately persists
 its immutable revision snapshot.
 
 When Kubernetes Compute prepares an admitted AgentRevision, it creates a
-**separate, immutable, Agent-owned snapshot ConfigMap** containing exactly that
-revision's native `configuration` document. The Agent gateway mounts this
+**separate, immutable, Agent-owned snapshot ConfigMap** containing the revision's
+native configuration with [Driver-owned proxy trust](../drivers/kubernetes-compute/networking-and-isolation.md#gateway-authentication)
+rendered from the Installation. This rendering does not rewrite the stored
+Configuration or AgentRevision. The Agent gateway mounts this
 snapshot read-only at `/etc/openclaw/openclaw.json`; its environment contains
 only the file path in `OPENCLAW_CONFIG_PATH`. It never mounts the mutable
 Configuration Driver ConfigMap or copies raw configuration into Pod

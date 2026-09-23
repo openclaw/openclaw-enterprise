@@ -6,8 +6,12 @@ namespace ownership for the [Kubernetes Compute Driver](../kubernetes-compute.md
 ## Networking
 
 Configure the cluster DNS namespace and Pod labels and the gateway port.
-Without private routing, also configure the namespace and Pod selectors in
-`network.gatewayClients` allowed to access Agent gateways.
+Set `network.gatewayTrustedProxyCidrs` to a
+nonempty list of valid CIDRs for the actual proxy socket sources. This is trusted
+Installation configuration; the Driver has no production CIDR default and rejects
+all-source ranges, including IPv4-mapped equivalents. Without
+private routing, also configure the namespace and Pod selectors in
+`network.gatewayClients` for your authenticated proxy.
 
 Each tenant starts with default-deny ingress and egress. Explicit policies allow
 DNS, approved gateway clients, and required communication between an Agent's
@@ -33,11 +37,32 @@ the proxy's source range; NetworkPolicy distinguishes the authenticated proxy
 from other Pods in that range. Do not retain direct API or tenant-workload
 access to the native gateway port for this mode.
 
-When native Configuration selects `gateway.auth.mode: "trusted-proxy"`, Compute
-omits automatic `OPENCLAW_GATEWAY_TOKEN` projection: native OpenClaw rejects a
-simultaneous gateway token. Token mode remains the default. Readiness uses a
-Pod-local HTTP request to `127.0.0.1:$OPENCLAW_GATEWAY_PORT/readyz`; TLS terminates
-at Envoy, so native readiness probes remain unchanged.
+### Gateway authentication
+
+Kubernetes Compute supports trusted-proxy gateway authentication only, for
+embedded and dedicated Agents, with or without private routing. At deployment,
+it renders `gateway.trustedProxies` from `network.gatewayTrustedProxyCidrs`,
+`gateway.auth.mode: trusted-proxy`, `userHeader: x-occ-identity`, the allowed
+identity `occ-workspace-files` with `operator.admin`, and
+`gateway.allowRealIpFallback: true`. Agent Configuration and Console starters
+can omit those fields. Unsupported gateway authentication fields or conflicting
+tenant trust fields fail deployment; matching explicit CIDR lists are accepted
+regardless of order. `trustedProxy.allowLoopback` must be omitted or false:
+loopback access uses the separate password, not proxy identity headers. Native
+required-header and device auto-approval settings retain their separate purposes.
+
+An optional [loopback password](storage-and-credentials.md#runtime-credentials)
+supports operator verification; it does not change the gateway's authentication mode.
+Readiness uses a Pod-local HTTP request to
+`127.0.0.1:$OPENCLAW_GATEWAY_PORT/readyz`; TLS terminates at Envoy, so native
+readiness probes remain unchanged. Docker and SSH default to managed password
+authentication and also support explicit trusted proxy.
+
+Operators must verify that the configured CIDRs contain the proxy's actual
+source addresses and exclude untrusted sources. CIDRs do not authenticate a
+proxy: retain the exact Envoy NetworkPolicy peer, TLS verification, service-key
+authentication, and identity/header sanitization. Direct embedded access still
+requires a trusted proxy or the optional operator loopback password.
 
 Production currently permits public TCP/443 egress for model access; a
 restricted model proxy is not yet available. Channels require an approved

@@ -108,7 +108,7 @@ SHA-256 of the exact Namespace, Agent, and AgentRevision IDs.
 <root>/namespaces/<nsHash>/agents/<agentHash>/agent.json
 <root>/namespaces/<nsHash>/agents/<agentHash>/home/
 <root>/namespaces/<nsHash>/agents/<agentHash>/state/
-<root>/namespaces/<nsHash>/agents/<agentHash>/gateway.env
+<root>/namespaces/<nsHash>/agents/<agentHash>/gateway-password.env
 <root>/namespaces/<nsHash>/agents/<agentHash>/env
 <root>/namespaces/<nsHash>/agents/<agentHash>/revisions/<revHash>/openclaw.json
 <root>/namespaces/<nsHash>/agents/<agentHash>/revisions/<revHash>/revision.json
@@ -129,7 +129,7 @@ Markers record exact Driver, Namespace, Agent, and ServicePrincipal ownership.
 Revision markers also record revision ID/number, configuration hash, and
 Harness. Foreign markers, changed snapshots, unexpected symlinks, and units
 without the exact Namespace/Agent ownership header are refused rather than
-adopted. JSON markers and `gateway.env` are `0600`; `home/` and `state/` are
+adopted. JSON markers and `gateway-password.env` are `0600`; `home/` and `state/` are
 `0700` and owned by the Agent's private user and group. The native configuration
 snapshot stays owned by the SSH account with mode `0640` and the Agent's
 private group, so its gateway can read but never rewrite the admitted document
@@ -201,11 +201,18 @@ and unexpected helper failures are retryable.
 
 ## Credentials and supported boundaries
 
-The Driver writes only the per-Agent gateway token in `gateway.env`. Token auth
-uses `"${OPENCLAW_GATEWAY_TOKEN}"` in the native document. For native
-`gateway.auth.mode: "trusted-proxy"`, the unit omits `gateway.env` entirely.
-An older token file may remain after a change to trusted-proxy auth, but the
-unit does not load it.
+When native Configuration omits `gateway.auth.mode`, the Driver renders
+`password` mode with a managed environment SecretRef using
+`OPENCLAW_GATEWAY_PASSWORD`. Explicit `password` and `trusted-proxy` modes are
+supported. An explicit password must use that variable's default-provider
+environment SecretRef; trusted proxy can opt into the same loopback password.
+The Driver admits only supported authentication fields and modes before host
+changes.
+
+The helper creates a private per-Agent `gateway-password.env` when the managed
+password is needed. Later revisions reuse that file; the Driver does not rotate
+it during prepare, activation, or stop. The systemd unit loads it for managed
+password access and omits it for trusted proxy without a password.
 
 The optional `EnvironmentFile=-<agentDir>/env` is operator-owned and never read
 or written by the Driver. Provision model/channel credential lines there and

@@ -41,6 +41,7 @@ function options(overrides = {}) {
     network: {
       dns: { namespace: "kube-system", podLabels: { "k8s-app": "kube-dns" } },
       gatewayPort: 8080,
+      gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
       gatewayClients: [
         { namespace: "openclaw-controller", podLabels: { "app.kubernetes.io/name": "controller" } },
       ],
@@ -55,6 +56,8 @@ function options(overrides = {}) {
 }
 
 function revision(driver, overrides = {}) {
+  const native = createHarnessConfiguration("openclaw", "gpt-4.1");
+  delete native.gateway.auth;
   return {
     id: "revision-secret-gateway-delivery-1",
     namespaceId: tenant.id,
@@ -64,7 +67,7 @@ function revision(driver, overrides = {}) {
     configurationKind: "agent",
     configurationGeneration: 1,
     configuration: {
-      ...createHarnessConfiguration("openclaw", "gpt-4.1"),
+      ...native,
       logging: { level: "info", consoleLevel: "info", consoleStyle: "json" },
       diagnostics: { otel: { logs: false } },
     },
@@ -160,7 +163,6 @@ test("secret-gateway-delivery renders exact bound Namespace Secret env only into
     optional: false,
   });
   assert.equal(environment.OPENAI_API_KEY.valueFrom.secretKeyRef.name, "stored-model-key");
-  assert.ok(environment.OPENCLAW_GATEWAY_TOKEN);
   assert.equal(environment.APP_SERVER_TOKEN, undefined);
   assert.equal(environment.CODEX_ACCESS_TOKEN, undefined);
 

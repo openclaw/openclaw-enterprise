@@ -69,7 +69,7 @@ function revision(driver, number = 1, agentId = "agent-ssh-1", configuration = {
     configurationGeneration: number,
     configuration: admitLoggingConfiguration(
       {
-        gateway: { mode: "local", auth: { mode: "token", token: "${OPENCLAW_GATEWAY_TOKEN}" } },
+        gateway: { mode: "local" },
         agents: {
           defaults: {
             skipBootstrap: true,
@@ -85,6 +85,29 @@ function revision(driver, number = 1, agentId = "agent-ssh-1", configuration = {
     compute: { id: driver.id, implementation: driver.implementation },
     servicePrincipalId: `${agentId}-principal`,
     createdAt: tenant.createdAt,
+  };
+}
+
+function expectedRuntimeConfiguration(rev) {
+  const gateway = rev.configuration.gateway ?? {};
+  const auth = gateway.auth ?? {};
+  if (auth.mode === "trusted-proxy") {
+    return rev.configuration;
+  }
+  return {
+    ...rev.configuration,
+    gateway: {
+      ...gateway,
+      auth: {
+        ...auth,
+        mode: "password",
+        password: {
+          source: "env",
+          provider: "default",
+          id: "OPENCLAW_GATEWAY_PASSWORD",
+        },
+      },
+    },
   };
 }
 
@@ -516,7 +539,7 @@ test("SSH embedded revisions stop without deleting snapshots or persistent Agent
   }
   for (const path of [
     join(dir, "agent.json"),
-    join(dir, "gateway.env"),
+    join(dir, "gateway-password.env"),
     join(f.revisionDir(rev), "revision.json"),
   ]) {
     assert.equal((await stat(path)).mode & 0o777, 0o600);
@@ -526,10 +549,13 @@ test("SSH embedded revisions stop without deleting snapshots or persistent Agent
   const snapshot = await stat(join(f.revisionDir(rev), "openclaw.json"));
   assert.equal(snapshot.mode & 0o777, 0o640);
   assert.equal(snapshot.uid, process.getuid());
-  assert.deepEqual(await json(join(f.revisionDir(rev), "openclaw.json")), rev.configuration);
+  assert.deepEqual(
+    await json(join(f.revisionDir(rev), "openclaw.json")),
+    expectedRuntimeConfiguration(rev),
+  );
   assert.equal(
     (await json(join(f.revisionDir(rev), "revision.json"))).configurationHash,
-    digest(JSON.stringify(rev.configuration)),
+    digest(JSON.stringify(expectedRuntimeConfiguration(rev))),
   );
   await missing(join(dir, "current"));
   await missing(join(dir, "served.json"));
@@ -545,8 +571,8 @@ test("SSH embedded revisions stop without deleting snapshots or persistent Agent
   assert.deepEqual(await json(join(dir, "served.json")), { revisionId: rev.id });
   assert.equal(await readlink(join(dir, "current")), `revisions/${digest(rev.id).slice(0, 12)}`);
   assert.match(
-    await readFile(join(dir, "gateway.env"), "utf8"),
-    /^OPENCLAW_GATEWAY_TOKEN=[a-f0-9]{64}\n$/,
+    await readFile(join(dir, "gateway-password.env"), "utf8"),
+    /^OPENCLAW_GATEWAY_PASSWORD=[a-f0-9]{64}\n$/,
   );
   assert.equal(await readFile(operatorEnv, "utf8"), operatorContents);
   assert.equal(
@@ -565,7 +591,7 @@ Environment=HOME=${dir}/home
 Environment=OPENCLAW_STATE_DIR=${dir}/state
 Environment=OPENCLAW_CONFIG_PATH=${dir}/current/openclaw.json
 Environment=OPENCLAW_GATEWAY_PORT=${port}
-EnvironmentFile=${dir}/gateway.env
+EnvironmentFile=${dir}/gateway-password.env
 EnvironmentFile=-${dir}/env
 ExecStart=${process.execPath} ${f.configured.runtime.openclawPath} gateway --port ${port}
 Restart=always
@@ -633,11 +659,13 @@ test("SSH trusted-proxy omits gateway.env, and allocation spans Agents and Names
     (await json(join(f.agentDir(second), "agent.json"))).runtimeUser,
     (await json(join(f.agentDir(first), "agent.json"))).runtimeUser,
   );
+  const secondUnit = await readFile(join(f.units, f.unit(second)), "utf8");
   assert.doesNotMatch(
-    await readFile(join(f.units, f.unit(second)), "utf8"),
-    /gateway\.env|OPENCLAW_GATEWAY_TOKEN|OPENCLAW_LOG_LEVEL/,
+    secondUnit,
+    /EnvironmentFile=.*gateway(?:-password)?\.env|OPENCLAW_GATEWAY_PASSWORD|OPENCLAW_LOG_LEVEL/,
   );
   await missing(join(f.agentDir(second), "gateway.env"));
+  await missing(join(f.agentDir(second), "gateway-password.env"));
   assert.equal(
     (await json(join(f.agentDir(first), "agent.json"))).port,
     f.configured.network.gatewayPortRange.start,
@@ -665,6 +693,44 @@ test("SSH trusted-proxy omits gateway.env, and allocation spans Agents and Names
   assert.equal((await stat(otherDir)).isDirectory(), true);
   await f.driver.activateRevision(third);
   assert.equal((await f.driver.deleteNamespace(other)).namespaceDeleted, true);
+});
+
+test("SSH trusted-proxy can opt into direct loopback password authentication", async (t) => {
+  const f = await fixture(t);
+  const password = revision(f.driver, 1, "agent-ssh-string-password", {
+    gateway: { auth: { password: "${OPENCLAW_GATEWAY_PASSWORD}" } },
+  });
+  await prepare(f, password);
+  assert.match(
+    await readFile(join(f.agentDir(password), "gateway-password.env"), "utf8"),
+    /^OPENCLAW_GATEWAY_PASSWORD=[a-f0-9]{64}\n$/,
+  );
+  assert.deepEqual(
+    await json(join(f.revisionDir(password), "openclaw.json")),
+    expectedRuntimeConfiguration(password),
+  );
+
+  const rev = revision(f.driver, 1, "agent-ssh-proxy-password", {
+    gateway: {
+      auth: {
+        mode: "trusted-proxy",
+        password: "${OPENCLAW_GATEWAY_PASSWORD}",
+        trustedProxy: { userHeader: "x-user" },
+      },
+    },
+  });
+  await prepare(f, rev);
+  assert.match(
+    await readFile(join(f.agentDir(rev), "gateway-password.env"), "utf8"),
+    /^OPENCLAW_GATEWAY_PASSWORD=[a-f0-9]{64}\n$/,
+  );
+  assert.match(
+    await readFile(join(f.units, f.unit(rev)), "utf8"),
+    new RegExp(`^EnvironmentFile=${join(f.agentDir(rev), "gateway-password.env")}$`, "m"),
+  );
+  assert.doesNotMatch(await readFile(join(f.units, f.unit(rev)), "utf8"), /gateway\.env/);
+  await missing(join(f.agentDir(rev), "gateway.env"));
+  assert.deepEqual(await json(join(f.revisionDir(rev), "openclaw.json")), rev.configuration);
 });
 
 test("SSH activation invokes lifecycle start hooks and cleans them up after activation failure", async (t) => {
@@ -708,6 +774,17 @@ test("SSH activation invokes lifecycle start hooks and cleans them up after acti
     `start:${failed.id}`,
     `stop:${failed.id}`,
   ]);
+
+  const beforeInvalidAuth = [...hooks];
+  const invalidAuth = revision(f.driver, 3, "agent-ssh-invalid-auth", {
+    gateway: { auth: { unsupportedField: true } },
+  });
+  bind(f.driver, invalidAuth);
+  await assert.rejects(
+    f.driver.activateRevision(invalidAuth),
+    /unsupported field unsupportedField/,
+  );
+  assert.deepEqual(hooks, beforeInvalidAuth);
 });
 
 test("SSH revisions fail closed on unbound identities, unsupported topology, sandbox and Secret delivery", async (t) => {
@@ -761,6 +838,19 @@ test("SSH revisions fail closed on unbound identities, unsupported topology, san
     }),
     /PluginDriver installation/,
   );
+  for (const configuration of [
+    { gateway: { auth: { mode: "oauth" } } },
+    { gateway: { auth: { unsupportedField: true } } },
+    { gateway: { auth: { password: "plaintext" } } },
+  ]) {
+    await assert.rejects(
+      f.driver.prepareRevision({
+        ...rev,
+        configuration: admitLoggingConfiguration(configuration, "info"),
+      }),
+      /gateway authentication|OPENCLAW_GATEWAY_PASSWORD/,
+    );
+  }
   for (const change of [
     { servicePrincipalId: "foreign" },
     { namespaceId: "foreign" },

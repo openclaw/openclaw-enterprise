@@ -105,7 +105,7 @@ test(
     const proofSessionKey = `agent:main:plugin-proof-${randomUUID()}`;
     const content = await fixture.normalGatewayTurn({
       agent: primary,
-      gatewayToken: deployedPrimary.gatewayToken,
+      gatewayPassword: deployedPrimary.gatewayPassword,
       sessionKey: proofSessionKey,
       prompt,
       expectedPatterns,
@@ -143,7 +143,7 @@ test(
     const disabledSessionKey = `agent:main:plugin-disabled-${randomUUID()}`;
     await fixture.normalGatewayTurn({
       agent: primary,
-      gatewayToken: disabledRevision.gatewayToken,
+      gatewayPassword: disabledRevision.gatewayPassword,
       sessionKey: disabledSessionKey,
       prompt: `Try to use the previously installed plugin. If no plugin tool is available, answer ${disabledMarker}.`,
       expectedPatterns: [disabledMarker],
@@ -166,7 +166,7 @@ test(
     const removedSessionKey = `agent:main:plugin-removed-${randomUUID()}`;
     await fixture.normalGatewayTurn({
       agent: primary,
-      gatewayToken: removedRevision.gatewayToken,
+      gatewayPassword: removedRevision.gatewayPassword,
       sessionKey: removedSessionKey,
       prompt: `Try to use the previously installed plugin. If no plugin tool is available, answer ${removedMarker}.`,
       expectedPatterns: [removedMarker],
@@ -186,7 +186,7 @@ test(
     const siblingSessionKey = `agent:main:plugin-sibling-${randomUUID()}`;
     await fixture.normalGatewayTurn({
       agent: sibling,
-      gatewayToken: deployedSibling.gatewayToken,
+      gatewayPassword: deployedSibling.gatewayPassword,
       sessionKey: siblingSessionKey,
       prompt: `Try to use the plugin installed on the other Agent. If no plugin tool is available, answer ${siblingMarker}.`,
       expectedPatterns: [siblingMarker],
@@ -243,7 +243,7 @@ test(
     );
     assertNoSecretMaterial(
       logs,
-      [modelSecret, deployedPrimary.gatewayToken],
+      [modelSecret, deployedPrimary.gatewayPassword],
       "failed startup must not expose credentials.",
     );
     assert.equal(logs.includes("OpenClaw plugin configuration conflicts"), true);
@@ -332,7 +332,7 @@ test(
     const calendarSessionKey = `agent:main:codex-calendar-${randomUUID()}`;
     const content = await fixture.normalGatewayTurn({
       agent,
-      gatewayToken: deployed.gatewayToken,
+      gatewayPassword: deployed.gatewayPassword,
       sessionKey: calendarSessionKey,
       prompt: `${prompt}\nInclude this marker in the final answer: ${turnMarker}`,
       expectedPatterns,
@@ -588,7 +588,7 @@ test(
     const successSessionKey = `agent:main:codex-best-effort-success-${randomUUID()}`;
     const content = await fixture.normalGatewayTurn({
       agent: primary,
-      gatewayToken: deployedWithWarning.gatewayToken,
+      gatewayPassword: deployedWithWarning.gatewayPassword,
       sessionKey: successSessionKey,
       prompt: `${successPrompt}\nInclude this marker in the final answer: ${successTurnMarker}`,
       expectedPatterns: successExpectedPatterns.includes(successTurnMarker)

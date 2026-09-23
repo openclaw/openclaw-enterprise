@@ -5,7 +5,7 @@ const auth = { method: "api_key", source: secretRef("sec_demo_model") };
 
 function configurationValues(scenario) {
   const values = {
-    gateway: { mode: "local", auth: { mode: "token", token: "${OPENCLAW_GATEWAY_TOKEN}" } },
+    gateway: { mode: "local" },
     agents: { defaults: { model: "codex/gpt-6-astra" } },
     channels: {},
   };
