@@ -27,6 +27,7 @@ with its own manifest and lockfile. See [Console Storybook](contributing/console
 | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | `apps/controller/src/`                                    | HTTP API, console serving, and API/worker entrypoints. `server.mjs` and `worker.mjs` start the processes.    |
 | `apps/controller/src/admission/`                          | Request admission and resource validation at the API boundary.                                               |
+| `apps/controller/src/http/`                               | Resource HTTP handlers and response projection, grouped by platform primitive.                               |
 | `apps/controller/src/auth/`                               | Authentication integrations.                                                                                 |
 | `apps/controller/src/composition/`                        | Runtime assembly and wiring of selected implementations.                                                     |
 | `apps/controller/src/drivers/`                            | Bundled infrastructure Driver implementations, organized by capability.                                      |
