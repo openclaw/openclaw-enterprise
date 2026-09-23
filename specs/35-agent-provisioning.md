@@ -13,7 +13,7 @@ Admission returns a job handle before an Agent exists. Provisioning succeeds whe
 ## Scope
 
 - First-time Kubernetes Dedicated Codex Agents, inline Configuration, ordinary same-Namespace Secret references, existing model-auth/provider/plugin/repository/workspace options, durable setup progress, safe retries and request deduplication.
-- Console may save Secrets independently or offer one Create agent action that saves Secrets and then submits provisioning sequentially.
+- Console reuses the channel setup Secret select/create modal to save Slack tokens before Agent creation. API-key model authentication uses an existing Secret reference. Create Agent submits the resulting inline Configuration and references.
 - Secret creation, secret-value custody, Slack-specific setup, automatic rollback/cleanup, cluster setup, migrations of existing Agents, credential rotation, new IAM delegation, and live integration messages are outside provisioning.
 
 ## Contract
@@ -22,7 +22,7 @@ Admission returns a job handle before an Agent exists. Provisioning succeeds whe
 
 The provisioning body includes a stable client `requestId`, Agent inputs and `configuration: { kind: "agent", values, secretBindings? }`. Bindings and model authentication use the existing ordinary Secret reference types. The API rejects `secrets`, request-local `provisioning-secret` references, existing Agent/Configuration IDs, cross-Namespace references and conflicting trusted-proxy settings. No provisioning encryption key or protected-input staging is required.
 
-Console clears each entered secret value after the Secrets API acknowledges its save and retains the returned reference. Saving Secrets is a separate, non-atomic operation: if a later save or provisioning fails, successfully saved namespace Secrets remain available. A retry reuses their references rather than recreating them. An uncertain Secrets API response is surfaced for recovery rather than blindly resubmitted. Provisioning never deletes namespace Secrets.
+The channel setup Secret modal saves immediately and clears entered values after each attempt; applying channel settings retains the returned references in the form. Saving Secrets is a separate, non-atomic operation: if a later save or provisioning fails, successfully saved namespace Secrets remain available. A retry reuses their references rather than recreating them. An uncertain Secrets API response is surfaced for recovery rather than blindly resubmitted. Provisioning never deletes namespace Secrets.
 
 ### Admission and status
 
@@ -55,20 +55,22 @@ The operator provides a ready Namespace and existing compatible runtime images, 
 
 1. Remove provisioning-only Secret input types, encrypted staging/key configuration, decryption, Secret creation, secret progress and staged-value cleanup from API, worker, persistence and packaging.
 2. Make provisioning queue records Namespace-scoped at admission; create Configuration and Agent in the worker. Retain the existing queue, request deduplication, completed outputs, safe retry and minimal lifecycle fencing.
-3. Update Console to save Secrets via the existing API, retain references through failures, poll the job before Agent creation, then use ordinary deployment status.
+3. Reuse Console channel Secret saving, retain references through failures, poll the job before Agent creation, then use ordinary deployment status. Preserve ordinary-create Secret grants and recovery; add no duplicate credential-entry form.
 4. Update API schemas/examples, current references, operator guidance and the [implementation flow](../docs/flows/agent-provisioning.md). Remove obsolete recovery/staging tests and replace them with outcome-focused coverage.
 
 ## Verification
 
 - API/worker integration: saved references and inline values are accepted; secret values/local references are rejected; paused-worker admission creates only one deduplicated job and no Agent/Configuration. Changed requests and cross-Namespace references fail.
 - PostgreSQL integration: worker creates one Configuration/Agent/revision; retries reuse completed resources, revoke stale authority, preserve ambiguous-effect evidence, and cannot resurrect stopped/deleted Agents. Migration compatibility retains ordinary deletion invariants.
-- Console browser: separate Secret saving and sequential Create agent work; successful saves survive later failures; retries reuse references and request identity; progress switches to the exact ordinary deployment view.
+- Console browser: channel setup saves Secrets before Create Agent; successful saves survive cancellation and later failures; provisioning retries reuse references and request identity; progress switches to the exact ordinary deployment view. Ordinary-create grant failures retain the saved Agent.
 - Kubernetes fixture: the supported API/worker path hands off to the real trusted-proxy Compute Driver, with no gateway-token projection. This is fixture proof, not native enrollment, a real model turn or a Slack message.
 - Repository checks: type/build/workspace/format, generated OpenAPI and docs checks pass; stale provisioning-key and secret-staging configuration has no callers.
 
 ## Manual Notes
 
 ## Changelog
+
+- 2026-09-23 11:20: Reused PR #323 channel Secret setup and retained ordinary-create grants without duplicate credential inputs. (Codex/01a0cc7f-028b-7803-acf5-803c3d799d75 - f2dd1d3f)
 
 - 2026-09-23 08:06: Approved separate Console Secret saving, job-first creation, retained safe retries and removal of provisioning staging and automatic rollback. (Codex/01a0cc7f-028b-7803-acf5-803c3d799d75 - 3e55be4b)
 

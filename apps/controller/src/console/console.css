@@ -454,16 +454,6 @@ select {
   flex-wrap: wrap;
   margin-top: 20px;
 }
-.secret-save-row {
-  display: grid;
-  grid-template-columns: minmax(180px, 1fr) minmax(220px, 1fr) minmax(160px, 1fr) auto;
-  gap: 12px;
-  align-items: end;
-  margin: 12px 0;
-}
-.secret-save-row .form-field {
-  margin: 0;
-}
 .table-scroll {
   overflow-x: auto;
 }
@@ -582,9 +572,6 @@ summary:focus-visible {
 @media (max-width: 760px) {
   .agent-card {
     padding: 18px;
-  }
-  .secret-save-row {
-    grid-template-columns: 1fr;
   }
   .configuration-summary {
     grid-template-columns: 1fr;

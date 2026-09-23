@@ -31,16 +31,13 @@ const createWorkspaceFields = [
 const createProvisioningSecrets = [
   ...form,
   { selector: "#agent-name", value: "Slack research assistant" },
-  { selector: "#harness-auth-method", value: "api_key_new_secret" },
-  { selector: "#harness-auth-new-secret", value: "MODEL_API_KEY" },
-  { selector: "#secret-save-name-0", value: "MODEL_API_KEY" },
-  { selector: "#secret-save-value-0", value: "demo-model-key" },
-  click("Add Secret"),
-  { selector: "#secret-save-name-1", value: "SLACK_APP_TOKEN" },
-  { selector: "#secret-save-value-1", value: "demo-app-token" },
-  click("Add Secret"),
-  { selector: "#secret-save-name-2", value: "SLACK_BOT_TOKEN" },
-  { selector: "#secret-save-value-2", value: "demo-bot-token" },
+  { selector: "#harness-auth-method", value: "api_key" },
+  { selector: "#harness-auth-secret", value: "sec_demo_model" },
+  click("Configure Slack"),
+  { selector: "#slack-secret-slack-app-token", value: "sec_demo_slack_app_token" },
+  ...createSlackBotSecret,
+  { selector: "#slack-channel-ids", value: "CDEMO123" },
+  click("Apply channel settings"),
 ];
 
 // API failures are injected at the HTTP boundary. The console owns their presentation.
@@ -221,11 +218,11 @@ export const scenarios = {
   },
   createProvisioningSecrets: {
     group: "Pages/Create Agent",
-    name: "Provisioning with saved Secrets",
+    name: "Provisioning with Slack Secret refs",
     path: create,
     actions: createProvisioningSecrets,
     description:
-      "Dedicated creation saves generic Secrets first, then submits provisioning with the returned references.",
+      "Dedicated creation submits provisioning with inline Configuration and Secret references prepared through the channel modal.",
   },
   createUnsupportedProvisioning: {
     group: "Pages/Create Agent",

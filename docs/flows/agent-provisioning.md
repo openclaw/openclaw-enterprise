@@ -8,13 +8,13 @@ last_updated_session: "Codex/01a0cc7f-028b-7803-acf5-803c3d799d75"
 
 ## Overview
 
-Console saves entered credentials through the existing Secrets API, then sends inline Configuration and ordinary Secret references to the provisioning API. OCC queues setup work without creating placeholder resources. A worker creates the Configuration and Agent, grants the Agent access to accepted Secrets, provisions trusted-proxy runtime credentials, and admits the first deployment.
+Console saves new Slack token Secrets from the channel setup modal through the existing Secrets API, then sends inline Configuration and ordinary Secret references to the provisioning API. API-key model authentication selects an existing Secret reference. OCC queues setup work without creating placeholder resources. A worker creates the Configuration and Agent, grants the Agent access to accepted Secrets, provisions trusted-proxy runtime credentials, and admits the first deployment.
 
 This flow ends at deployment submission. The [controller worker](controller-worker.md) and [Harness execution topology](harness-execution-topology.md) own activation, runtime failures and later deployments.
 
 ## Entry Points
 
-- Console: `apps/controller/src/console/agents/create.mjs`, including separate Secret saving and sequential Create Agent.
+- Console: `apps/controller/src/console/agents/create.mjs`, with the shared Slack Secret select/create modal in `apps/controller/src/console/channels/slack.mjs`.
 - API: `packages/contracts/src/api/routes.ts:provisionAgent`, `apps/controller/src/index.ts:createFastifyApp`, and `packages/occ/src/index.ts:OpenClawController.provisionAgent`.
 - Preconditions: a ready Namespace, supported Dedicated runtime and selected Drivers, PostgreSQL-backed work storage, required Agent/Configuration/deploy permissions, exact Secret access and existing transactional IAM authority. No provisioning-input keyring is required.
 
@@ -48,9 +48,11 @@ graph TD
 
 `apps/controller/src/console/agents/create.mjs:renderCreateAgent`
 
-Each new credential goes to ordinary `POST /namespaces/:namespaceId/secrets`. On acknowledgement, Console clears its value and retains `data.ref`. Save Secrets can run independently; Create Agent performs these calls before provisioning. Failed later steps retain saved references. A lost Secret-save response needs recovery rather than automatic repetition.
+The Slack channel setup modal sends each new token to ordinary `POST /namespaces/:namespaceId/secrets` immediately, before an Agent exists. It clears entered values after the save attempt. Applying channel settings stages the returned references and environment bindings in the form. Cancelling the drawer discards its selections but retains created namespace Secrets. API-key model authentication uses an existing Secret ID. A lost Secret-save response needs recovery rather than automatic repetition.
 
-The provisioning payload contains inline Configuration, ordinary Secret bindings, supported Agent options and a stable request ID. Slack has no special worker path. After an uncertain admission response, the Console resends the same request ID and accepted inputs, without resaving acknowledged Secrets.
+Create Agent sends the parsed inline Configuration, ordinary Secret bindings, model-auth references, supported Agent options and a stable request ID. The provisioning worker owns exact Secret grants; Slack has no special worker path. After an uncertain admission response, the Console resends the same request ID and accepted inputs, without resaving acknowledged Secrets.
+
+On ordinary draft creation paths, Console creates the Configuration and Agent, then grants access to the selected Slack Secrets. A grant failure retains the saved Agent and offers its Credentials view instead of repeating creation.
 
 ### 2. OCC admits one job
 
@@ -87,7 +89,7 @@ While initialization owns an Agent, conflicting edits and manual deployment are 
 - Follow the returned `data.provisioning.url` or read `GET /namespaces/:namespaceId/agents/provision/:workId`. Failed work reports a safe error. Explicit retry uses the same URL plus `/retry` and an empty body.
 - Inspect `worker.completed`, `worker.error` and the `agent_provisioning` work metric. PostgreSQL job state lives in `occ.controller_work` and `occ.agent_provisioning_work`.
 - Use `tests/integration/postgres-agent-provisioning.test.mjs` for persisted admission, deduplication, safe retry, retained outputs and authorization behavior.
-- Use Console browser coverage for saving separately, reuse after failure and job-to-deployment navigation. The disposable Kubernetes fixture proves actual Driver handoff, not native enrollment, model execution or Slack replies.
+- Use Console browser coverage for channel Secret creation before provisioning, reference reuse after failure and job-to-deployment navigation. The disposable Kubernetes fixture proves actual Driver handoff, not native enrollment, model execution or Slack replies.
 
 ## Related docs
 
@@ -103,6 +105,8 @@ While initialization owns an Agent, conflicting edits and manual deployment are 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 11:20: Reused the channel setup Secret modal and preserved ordinary-create grant recovery when rebasing onto PR #323. (Codex/01a0cc7f-028b-7803-acf5-803c3d799d75 - f2dd1d3f)
 
 - 2026-09-23 08:37: Simplified Secret saving, delayed resource creation, retry ownership and deployment handoff. (Codex/01a0cc7f-028b-7803-acf5-803c3d799d75 - 01331ac4)
 
