@@ -121,6 +121,14 @@ access. The editor does not change the policy when saving channel settings. Slac
 unresolved references to `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN`.
 Slack requires dedicated execution and Kubernetes runtime projection.
 
+The Slack drawer links each bound token to its exact same-Namespace Secret's
+metadata API response and provides a link to the Agent's **Credentials** tab.
+These links open in new tabs, preserving unsaved channel edits in the drawer.
+Secret metadata requires read permission on that Secret and never includes its
+value. Unbound tokens point you to Credentials; during creation, create the Agent
+first. Save channel edits before changing credentials, then refresh the original
+Agent page before editing channels again.
+
 The simple editor may reject native channel documents it cannot round-trip,
 including non-Socket Slack settings, non-standard credential references, mixed
 per-channel mention settings, or unsupported plugin shapes. Inspect unsupported

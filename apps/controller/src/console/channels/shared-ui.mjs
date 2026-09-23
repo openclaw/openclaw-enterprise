@@ -324,16 +324,11 @@ function openDrawer(section, state, provider) {
     ),
     enabled,
   );
-  provider.appendFields(body, config);
-  body.append(
-    element(
-      "p",
-      { className: "muted" },
-      state.copy.drawerFootnote ?? "This Configuration may be shared by other Agents.",
-    ),
-    feedback,
-    element("div", { className: "form-actions" }, cancel, submit),
-  );
+  provider.appendFields(body, config, state.drawerContext);
+  if (state.copy.drawerFootnote) {
+    body.append(element("p", { className: "muted" }, state.copy.drawerFootnote));
+  }
+  body.append(feedback, element("div", { className: "form-actions" }, cancel, submit));
   body.addEventListener("submit", (event) => {
     event.preventDefault();
     if (state.pending) {
@@ -375,7 +370,7 @@ function openDrawer(section, state, provider) {
 }
 
 export function renderChannelSection(
-  { values, executionMode, readOnly, onSave, copy = {} },
+  { values, executionMode, readOnly, onSave, copy = {}, drawerContext = {} },
   providers,
 ) {
   const section = element("section", { className: "channels-section" });
@@ -386,6 +381,7 @@ export function renderChannelSection(
     onSave,
     section,
     copy,
+    drawerContext,
     pending: false,
     outcomeUnknown: false,
     error: element("div", { "aria-live": "polite" }),

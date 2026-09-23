@@ -634,6 +634,14 @@ export async function renderAgentDetail(context) {
         values,
         executionMode,
         readOnly: !draft,
+        drawerContext: {
+          namespaceId,
+          secretBindings: snapshot.secretBindings,
+          credentialsHref: context.pageUrl(
+            `agents/${agent.id}?revision=draft&tab=credentials`,
+            namespaceId,
+          ),
+        },
         onSave: async (updatedValues) => {
           let mutationStarted = false;
           try {

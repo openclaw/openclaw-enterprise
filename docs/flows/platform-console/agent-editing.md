@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-09-22
-last_updated_session: 01a0ccc0-00fa-7173-ab45-f7a5fb55b3b6
+updated: 2026-09-23
+last_updated_session: 01a0cd92-fd3f-7d83-a51e-f6264ef6be09
 ---
 
 # Console Agent editing and runtime requests
@@ -86,6 +86,17 @@ readiness cannot be established for them. The Slack editor requires
 dedicated execution for enabled channels and may refuse native documents that it
 cannot round-trip, including non-Socket Slack settings, non-standard credential
 references, mixed Slack mention settings, and unsupported plugin shapes.
+
+`apps/controller/src/console/agents/detail.mjs:renderAgentDetail` passes the
+selected Namespace, saved Secret bindings, and draft Credentials URL to the
+channel editor. `apps/controller/src/console/channels/slack.mjs:appendFields`
+links each same-Namespace Secret binding to its exact metadata endpoint; it does
+not infer Secret IDs from environment reference names or fetch Secret values.
+The metadata endpoint retains exact-resource read authorization. Missing bindings
+show setup guidance, and creation requires an Agent before credential navigation.
+Secret metadata and Credentials links open in new tabs so the original drawer
+retains unsaved inputs. Credential changes can advance the Configuration generation;
+the existing channel-save preflight below rejects a stale drawer.
 
 Saving channels first rereads the Agent and Configuration, then checks that the
 Agent still references the same Configuration generation. The subsequent PATCH
@@ -224,6 +235,8 @@ subsequent worker cleanup and the Namespace-owned resources it preserves.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 02:26: Trace Slack credential navigation and preservation of unsaved channel edits; remove the generic drawer sharing footnote. (01a0cd92-fd3f-7d83-a51e-f6264ef6be09 - 380f7706e2856f1ac1e3bed7f5ddd9c71d133ba8)
 
 - 2026-09-22 23:30: Trace native Configuration draft editing, save checks, and immutable snapshot navigation. (01a0ccc0-00fa-7173-ab45-f7a5fb55b3b6 - 0dabaafb97326254e5ae173491be014aaa6388c6)
 

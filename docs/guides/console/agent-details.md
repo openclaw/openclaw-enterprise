@@ -124,15 +124,16 @@ unavailable.
 
 ### Slack editor
 
-| Control                                           | Purpose                                                                                                    |
-| ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| **Enable Slack**                                  | Enables Slack in the draft when saved.                                                                     |
-| **Slack channel IDs**                             | Comma-separated channel IDs, not channel names. Existing properties of retained channels are preserved.    |
-| **Allowed user IDs**                              | Comma-separated direct-message `allowFrom` user IDs.                                                       |
-| **Require a mention**                             | Applies the mention requirement to the listed channels.                                                    |
-| **App token reference** / **Bot token reference** | Fixed unresolved references to `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN`. Enter token values in Credentials. |
-| **Save configuration**                            | Saves supported channel changes to the shared draft. Scroll to the drawer bottom if needed.                |
-| **Cancel** / **Close**                            | Discards the drawer's unsaved inputs.                                                                      |
+| Control                                   | Purpose                                                                                                        |
+| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| **Enable Slack**                          | Enables Slack in the draft when saved.                                                                         |
+| **Slack channel IDs**                     | Comma-separated channel IDs, not channel names. Existing properties of retained channels are preserved.        |
+| **Allowed user IDs**                      | Comma-separated direct-message `allowFrom` user IDs.                                                           |
+| **Require a mention**                     | Applies the mention requirement to the listed channels.                                                        |
+| **Slack app token** / **Slack bot token** | Opens the bound Secret's metadata in a new tab. Unbound tokens show setup guidance.                            |
+| **Open Agent Credentials**                | Opens Credentials in a new tab, keeping unsaved drawer inputs. Save channel edits before changing credentials. |
+| **Save configuration**                    | Saves supported channel changes to the shared draft. Scroll to the drawer bottom if needed.                    |
+| **Cancel** / **Close**                    | Discards the drawer's unsaved inputs.                                                                          |
 
 Saving preserves existing direct-message and group policies. Adding an allowed
 user does not override a disabled policy. **No selected channels** describes the

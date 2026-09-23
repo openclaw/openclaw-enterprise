@@ -1,4 +1,5 @@
 import { element } from "../dom.mjs";
+import { SLACK_SECRET_BINDINGS, secretIdForBinding } from "../agents/credentials.mjs";
 import {
   isRecord,
   refsEqual,
@@ -7,7 +8,6 @@ import {
   field,
   input,
   checkbox,
-  refField,
   uniqueList,
   arrayOfStrings,
 } from "./shared-ui.mjs";
@@ -135,7 +135,59 @@ function updatedSlack(values, body) {
   return withProvider(values, "slack", config);
 }
 
-function appendFields(body, config) {
+function sameNamespaceEnvSecretHref(binding, namespaceId) {
+  const secretId = secretIdForBinding(binding);
+  if (
+    secretId === null ||
+    binding?.source?.namespaceId !== namespaceId ||
+    binding?.delivery?.type !== "env"
+  ) {
+    return null;
+  }
+  return `/namespaces/${encodeURIComponent(namespaceId)}/secrets/${encodeURIComponent(secretId)}`;
+}
+
+function credentialLink(href, label) {
+  return element("a", { href, target: "_blank", rel: "noopener" }, `${label} (opens in new tab)`);
+}
+
+function credentialReferenceField(binding, context = {}) {
+  const source = context.secretBindings?.[binding.key];
+  const secretHref = sameNamespaceEnvSecretHref(source, context.namespaceId);
+  const fieldChildren = [element("span", { className: "channel-label" }, binding.label)];
+  if (secretHref) {
+    fieldChildren.push(
+      credentialLink(secretHref, `View ${binding.label.replace("Slack ", "")} Secret metadata`),
+    );
+  } else {
+    fieldChildren.push(
+      element(
+        "p",
+        { className: "hint" },
+        "No Secret is bound for this token. Add it in Credentials.",
+      ),
+    );
+  }
+  return element("div", { className: "channel-field channel-reference" }, ...fieldChildren);
+}
+
+function credentialNavigation(context = {}) {
+  if (!context.credentialsHref) {
+    return element(
+      "p",
+      { className: "hint" },
+      "Create the Agent, then use Credentials to add Slack tokens.",
+    );
+  }
+  return element(
+    "p",
+    { className: "hint" },
+    credentialLink(context.credentialsHref, "Open Agent Credentials"),
+    " to store Slack tokens. Save channel edits before changing credentials. After credential changes, refresh this page before editing channels again.",
+  );
+}
+
+function appendFields(body, config, context) {
   const channelIds = Object.keys(config.channels ?? {});
   const users = uniqueList(Array.isArray(config.allowFrom) ? config.allowFrom : []);
   const mention = Object.values(config.channels ?? {})[0]?.requireMention ?? true;
@@ -160,10 +212,10 @@ function appendFields(body, config) {
     element(
       "p",
       { className: "hint" },
-      "Fixed unresolved references only. No token values are entered here.",
+      "Slack channels use fixed environment names. Secret links show metadata only, never token values.",
     ),
-    refField("App token reference", config.appToken ?? STANDARD_REFS.slack.appToken),
-    refField("Bot token reference", config.botToken ?? STANDARD_REFS.slack.botToken),
+    ...SLACK_SECRET_BINDINGS.map((binding) => credentialReferenceField(binding, context)),
+    credentialNavigation(context),
   );
 }
 

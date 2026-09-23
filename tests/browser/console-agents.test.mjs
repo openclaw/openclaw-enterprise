@@ -331,6 +331,16 @@ test("Agent creation saves native Configuration JSON and a draft Agent without a
   await page.getByLabel("Agent name").fill("Console-created Agent");
   await page.getByLabel("Execution mode").selectOption("dedicated");
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
+  await page.getByRole("button", { name: "Configure Slack" }).click();
+  const createChannelDialog = page.getByRole("dialog", { name: "Configure Slack" });
+  await createChannelDialog
+    .getByText("Create the Agent, then use Credentials to add Slack tokens.")
+    .waitFor();
+  await createChannelDialog
+    .getByText("These settings are not persisted until you create the Agent.")
+    .waitFor();
+  assert.equal(await createChannelDialog.getByRole("link").count(), 0);
+  await createChannelDialog.getByRole("button", { name: "Cancel" }).click();
 
   const configurationResponse = page.waitForResponse(
     (response) =>
@@ -1719,13 +1729,33 @@ test("Agent detail opens native admin UI only after real API access checks pass"
 
 test("Channel drawer saves channel edits without exposing Secret values or dropping unrelated draft state", async (t) => {
   const secretValue = "super-secret-channel-value";
+  const slackAppSecretValue = "super-secret-slack-app-value";
+  const slackBotSecretValue = "super-secret-slack-bot-value";
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Channel state", { ready: true });
   const secret = await fixture.createSecret(namespace.id, "OpenAI API key", secretValue);
+  const slackAppSecret = await fixture.createSecret(
+    namespace.id,
+    "Slack app token",
+    slackAppSecretValue,
+  );
+  const slackBotSecret = await fixture.createSecret(
+    namespace.id,
+    "Slack bot token",
+    slackBotSecretValue,
+  );
   const secretBindings = {
     EXTERNAL_API_TOKEN: {
       source: secret.ref,
+      delivery: { type: "env" },
+    },
+    SLACK_APP_TOKEN: {
+      source: slackAppSecret.ref,
+      delivery: { type: "env" },
+    },
+    SLACK_BOT_TOKEN: {
+      source: slackBotSecret.ref,
       delivery: { type: "env" },
     },
   };
@@ -1771,14 +1801,71 @@ test("Channel drawer saves channel edits without exposing Secret values or dropp
   );
   await page.getByRole("heading", { name: "Channel Agent" }).waitFor();
   await page.getByRole("button", { name: "Channels" }).click();
-  await expectNoText(page, secretValue);
+  for (const value of [secretValue, slackAppSecretValue, slackBotSecretValue]) {
+    await expectNoText(page, value);
+  }
 
   await page.getByRole("button", { name: "Edit Slack" }).click();
-  await page.getByLabel("Slack channel IDs").fill("COLD123, CNEW123");
-  await page.getByLabel("Allowed user IDs").fill("UNEW123");
+  const dialog = page.getByRole("dialog", { name: "Edit Slack" });
+  const appSecretPath = `/namespaces/${namespace.id}/secrets/${slackAppSecret.id}`;
+  const botSecretPath = `/namespaces/${namespace.id}/secrets/${slackBotSecret.id}`;
+  const appSecretLink = dialog.getByRole("link", {
+    name: "View app token Secret metadata (opens in new tab)",
+  });
+  const botSecretLink = dialog.getByRole("link", {
+    name: "View bot token Secret metadata (opens in new tab)",
+  });
+  assert.equal(await appSecretLink.getAttribute("href"), appSecretPath);
+  assert.equal(await appSecretLink.getAttribute("target"), "_blank");
+  assert.equal(await appSecretLink.getAttribute("rel"), "noopener");
+  assert.equal(await botSecretLink.getAttribute("href"), botSecretPath);
+  await dialog
+    .getByText(
+      "Save channel edits before changing credentials. After credential changes, refresh this page before editing channels again.",
+    )
+    .waitFor();
+
+  const channelIds = page.getByLabel("Slack channel IDs");
+  const allowedUsers = page.getByLabel("Allowed user IDs");
+  await channelIds.fill("COLD123, CNEW123");
+  await allowedUsers.fill("UNEW123");
+  await dialog
+    .getByRole("link", { name: "Open Agent Credentials (opens in new tab)" })
+    .scrollIntoViewIfNeeded();
+  await dialog.screenshot({
+    path: join(artifacts, "agent-channel-drawer-links.png"),
+  });
+
+  const appSecretPopupPromise = page.waitForEvent("popup");
+  await appSecretLink.click();
+  const appSecretPopup = await appSecretPopupPromise;
+  await appSecretPopup.waitForLoadState("domcontentloaded");
+  assert.equal(new URL(appSecretPopup.url()).pathname, appSecretPath);
+  await appSecretPopup.getByText("Slack app token").waitFor();
+  const secretMetadataText = await appSecretPopup.locator("body").textContent();
+  assert.match(secretMetadataText, new RegExp(slackAppSecret.id));
+  assert.doesNotMatch(secretMetadataText, new RegExp(slackAppSecretValue));
+  await appSecretPopup.close();
+
+  const credentialsPopupPromise = page.waitForEvent("popup");
+  await dialog.getByRole("link", { name: "Open Agent Credentials (opens in new tab)" }).click();
+  const credentialsPopup = await credentialsPopupPromise;
+  await credentialsPopup.waitForURL(/\/console\/agents\/agt_/);
+  const credentialsUrl = new URL(credentialsPopup.url());
+  assert.equal(credentialsUrl.pathname, `/console/agents/${agent.id}`);
+  assert.equal(credentialsUrl.searchParams.get("namespace"), namespace.id);
+  assert.equal(credentialsUrl.searchParams.get("revision"), "draft");
+  assert.equal(credentialsUrl.searchParams.get("tab"), "credentials");
+  await credentialsPopup.getByRole("heading", { name: "Runtime credentials" }).waitFor();
+  await credentialsPopup.close();
+  assert.equal(await channelIds.inputValue(), "COLD123, CNEW123");
+  assert.equal(await allowedUsers.inputValue(), "UNEW123");
+
   await page.getByRole("button", { name: "Save configuration" }).click();
   await page.getByText(/Configuration .*generation 2/).waitFor();
-  await expectNoText(page, secretValue);
+  for (const value of [secretValue, slackAppSecretValue, slackBotSecretValue]) {
+    await expectNoText(page, value);
+  }
   assert.equal(await page.getByRole("button", { name: /Microsoft Teams/ }).count(), 0);
 
   const configuration = await fixture.request(
@@ -1824,6 +1911,43 @@ test("Channel drawer saves channel edits without exposing Secret values or dropp
   assert.equal(configuration.data.values.agents.defaults.model, "codex/gpt-5.1");
 
   await page.screenshot({ path: join(artifacts, "agent-channels.png"), fullPage: true });
+});
+
+test("Channel drawer guides unbound Slack credentials without guessed Secret metadata links", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Unbound Slack credentials", { ready: true });
+  const slack = {
+    enabled: true,
+    mode: "socket",
+    appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+    botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+    channels: { CUNBOUND123: { requireMention: true } },
+  };
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Unbound Slack Agent",
+    nativeValues("unbound-slack", { harnessId: "codex", channels: { slack } }),
+    { executionMode: "dedicated" },
+  );
+  const { page } = await newPage(t, fixture);
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "channels");
+
+  await login(page, fixture, url.pathname + url.search);
+  await page.getByRole("heading", { name: "Unbound Slack Agent" }).waitFor();
+  await page.getByRole("button", { name: "Edit Slack" }).click();
+  const dialog = page.getByRole("dialog", { name: "Edit Slack" });
+  assert.equal(await dialog.getByRole("link", { name: /Secret metadata/ }).count(), 0);
+  assert.equal(
+    await dialog.getByText("No Secret is bound for this token. Add it in Credentials.").count(),
+    2,
+  );
+  assert.equal(
+    await dialog
+      .getByRole("link", { name: "Open Agent Credentials (opens in new tab)" })
+      .getAttribute("href"),
+    `/console/agents/${agent.id}?revision=draft&tab=credentials&namespace=${namespace.id}`,
+  );
 });
 
 test("Presets render variables into independent Agent drafts and keep partial-save retries fixed", async (t) => {
