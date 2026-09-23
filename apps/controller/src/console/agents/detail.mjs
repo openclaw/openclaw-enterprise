@@ -268,7 +268,7 @@ export async function renderAgentDetail(context) {
     const chooser = element(
       "select",
       { id: "revision-selector", "aria-label": "AgentRevision" },
-      element("option", { value: "draft" }, "Saved draft · editable Configuration"),
+      element("option", { value: "draft" }, "New revision · editable Configuration"),
     );
     for (const revision of revisions) {
       chooser.append(
@@ -301,7 +301,7 @@ export async function renderAgentDetail(context) {
           "h2",
           {},
           selected === "draft"
-            ? "Saved draft"
+            ? "New revision"
             : snapshot
               ? `AgentRevision v${snapshot.revision}`
               : "AgentRevision unavailable",
@@ -315,7 +315,7 @@ export async function renderAgentDetail(context) {
           { className: "form-actions" },
           selected !== "draft" && revisions.length > 1 ? older : null,
           selected !== "draft" && revisions.length > 1 ? newer : null,
-          selected !== "draft" ? button("Saved draft", () => change("draft")) : null,
+          selected !== "draft" ? button("New revision", () => change("draft")) : null,
           agent.activeRevisionId && selected !== agent.activeRevisionId
             ? button("View selected revision", () => change(agent.activeRevisionId))
             : null,
@@ -378,7 +378,7 @@ export async function renderAgentDetail(context) {
       if (!deployPending) {
         if (revisionResult.status !== "fulfilled") {
           deployStatus.textContent =
-            "Revision history is required before deploying this saved draft.";
+            "Revision history is required before deploying this new revision.";
         } else if (runtimeAuth) {
           deployStatus.textContent =
             "Configured on the runtime host; not validated by OCC. Gateway readiness does not confirm model access.";
@@ -391,10 +391,10 @@ export async function renderAgentDetail(context) {
     }
     if (draft) {
       deployStatus = element("p", { className: "muted", role: "status" });
-      deploy = button("Deploy saved draft", async () => {
+      deploy = button("Deploy new revision", async () => {
         deploy.disabled = true;
         deployPending = true;
-        deployStatus.textContent = "Checking the saved draft…";
+        deployStatus.textContent = "Checking Configuration…";
         let submitted = false;
         try {
           const [freshAgent, freshConfig, freshCredentials] = await Promise.all([
@@ -412,7 +412,7 @@ export async function renderAgentDetail(context) {
             JSON.stringify(freshAgent.harnessAuth) !== JSON.stringify(agent.harnessAuth) ||
             freshConfig.generation !== snapshot.generation
           ) {
-            deployStatus.textContent = "The saved draft changed. Refresh before deploying.";
+            deployStatus.textContent = "The Configuration changed. Refresh before deploying.";
             return;
           }
           const credentialBlockReason = runtimeCredentialBlockReason(freshConfig.values);
@@ -539,7 +539,7 @@ export async function renderAgentDetail(context) {
         "p",
         { className: "notice", role: "status" },
         draft
-          ? "Saved draft. Changes affect future deployments using this Configuration. Admitted AgentRevisions stay unchanged."
+          ? "New revision. Changes affect future deployments using this Configuration. Admitted AgentRevisions stay unchanged."
           : selected === agent.activeRevisionId
             ? "Selected AgentRevision · read-only admitted snapshot. Selection does not confirm that this revision is serving."
             : "Unselected AgentRevision · read-only admitted snapshot. Browsing this snapshot does not change the Agent's selected revision.",
@@ -631,7 +631,8 @@ export async function renderAgentDetail(context) {
             current.configurationId !== agent.configurationId ||
             JSON.stringify(current.harnessAuth) !== JSON.stringify(agent.harnessAuth)
           ) {
-            feedback.textContent = "The saved draft changed. Refresh before saving authentication.";
+            feedback.textContent =
+              "The Configuration changed. Refresh before saving authentication.";
             return;
           }
           mutationStarted = true;

@@ -44,7 +44,7 @@ those states by interacting with the real controls after loading fixture data.
 | Namespaces              | Ready and provisioning, empty, permission denial.                                                                                                                                                                                                |
 | Settings and navigation | Signed-in account and unknown route.                                                                                                                                                                                                             |
 | Create Agent            | Preset selection and variables, no Presets, dedicated and embedded forms, optional discovery denial, invalid JSON, partial save with conflict, unknown save outcome.                                                                             |
-| Agent detail            | Saved draft, admitted snapshot, queued or failed deployment, denied deployment, missing Agent, unavailable Configuration and revision history.                                                                                                   |
+| Agent detail            | New revision, admitted snapshot, queued or failed deployment, denied deployment, missing Agent, unavailable Configuration and revision history.                                                                                                  |
 | Navigation components   | Account menu, Namespace switcher, mobile drawer.                                                                                                                                                                                                 |
 | Channels                | Unconfigured cards, Slack editor with pairing/open/disabled policies, unsupported Slack shape, read-only snapshot, save conflict.                                                                                                                |
 | Credentials             | Stored and missing metadata, masked Slack tokens, one-token replacement, partially missing tokens, generated credentials locked after admission, metadata failure, missing authentication, operator-managed credentials, issued ChatGPT account. |
@@ -79,7 +79,7 @@ for the supported installation workflow and prerequisites.
 
 ### Update
 
-Edit Slack settings on the saved draft and compare them with the original
+Edit Slack settings on the new revision and compare them with the original
 revision. Deploy again to admit a new snapshot. The fixture retains both versions.
 Credential edits likewise need deployment to affect managed runtime configuration.
 Workspace-file writes apply immediately and do not create a revision.
@@ -95,7 +95,7 @@ The fixture records the requested stopped state. **Refresh stop status** rereads
 that metadata. The story demonstrates the controls and request handling; it does
 not run a Compute Driver or prove live shutdown.
 
-Resume with **Saved draft** → **Deploy saved draft**, creating a new revision.
+Resume with **New revision** → **Deploy new revision**, creating a new revision.
 Disabling Slack does not stop an Agent. See
 [Stop and resume](../reference/agents/deployment.md#stop-and-resume).
 

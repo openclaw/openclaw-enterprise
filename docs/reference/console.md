@@ -59,7 +59,7 @@ not broaden access.
 The console creates an Agent and reusable Configuration, records optional
 Agent-owned plugin selections and a harness authentication binding, stages initial
 workspace contents, and provisions transport/channel credentials. Creation leaves
-the Agent stopped and undeployed; **Deploy** starts the saved draft. Follow
+the Agent stopped and undeployed; **Deploy new revision** creates and starts a revision from the current Configuration. Follow
 [Create and deploy Agents](console/create-and-deploy.md) for the complete
 workflow, channel constraints, and recovery after partial or uncertain writes.
 Plugin selections use the same Agent create/update contract as the API: omitted
@@ -73,7 +73,7 @@ files** updates only the tab content. The surrounding Agent panels stay in place
 and browser Back/Forward restores the selected tab. Password fields are cleared
 when leaving a tab. Use **Refresh** to reload the Agent and its Configuration.
 
-An Agent detail page has the saved draft and immutable AgentRevisions. The draft
+An Agent detail page has a **New revision** view and immutable AgentRevisions. The new revision view
 reads the current Configuration and is editable only through the supported
 channel editor and harness authentication controls. Choose **Operator-managed
 credentials** for SSH embedded OpenClaw: “Configured on the runtime host; not
@@ -138,7 +138,7 @@ the Agent's desired state and selected revision; it does not probe the runtime.
 If the result is uncertain, refresh before retrying. Permission denials remain
 visible, and the console never automatically repeats a stop request.
 
-To resume, open **Saved draft** and select **Deploy saved draft**. This creates a
+To resume, open **New revision** and select **Deploy new revision**. This creates a
 new revision. See [Stop and resume](agents/deployment.md#stop-and-resume) for the
 worker lifecycle and preservation guarantees.
 

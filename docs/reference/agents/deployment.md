@@ -134,7 +134,7 @@ are defined by the [API reference](../api.md).
 
 In the console, open the Agent, select **Stop Agent**, and confirm. Use
 **Refresh stop status** to reread its desired state and selected revision.
-Resume through **Saved draft** → **Deploy saved draft**. See the
+Resume through **New revision** → **Deploy new revision**. See the
 [console controls](../console.md#stop-and-resume-an-agent) for request recovery.
 
 `POST /namespaces/:namespaceId/agents/:agentId/stop` is bodyless and requires

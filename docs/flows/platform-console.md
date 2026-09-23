@@ -47,7 +47,7 @@ graph TD
     B -->|authenticated| D["Read readable Namespaces and validate selection"]
     D --> E["Request current page resource"]
     E --> E1["Edit starter JSON and select associations"]
-    E --> E2["Select saved draft or AgentRevision by URL"]
+    E --> E2["Select new revision or AgentRevision by URL"]
     E2 --> E3["Save supported channel draft edit"]
     E2 --> E4["Confirm Agent deletion"]
     E2 --> E5["Confirm Agent stop"]
@@ -232,9 +232,11 @@ login. An unconfirmed logout stays blocked with Retry. The
 [authentication flow](local-password-authentication.md) owns server revocation;
 this client never infers it from a network error.
 
-## Deploy the saved draft
+<span id="deploy-the-saved-draft"></span>
 
-The saved-draft detail view exposes **Deploy saved draft**. The **Operator-managed
+## Deploy the new revision
+
+The **New revision** detail view exposes **Deploy new revision**. The **Operator-managed
 credentials** option persists `{ "method": "runtime" }` and explains that OCC does
 not validate host credentials. It bypasses only the managed runtime-credential
 metadata gate; the server retains driver compatibility and authorization checks. It rereads the Agent and
@@ -273,6 +275,8 @@ refreshes and inspects the Agent and revision history.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-22 20:56: Rename the deployment-facing Console view to New revision. (01a0cc48-2eda-7fc2-a19e-096b68fccb7b - 081bccfcf3f5b114588dde1b42a0deb07f326017)
 
 - 2026-09-22 20:43: Trace Console stop confirmation, admission, and state refresh. (01a0cc48-2eda-7fc2-a19e-096b68fccb7b - 6adfd148a517e84ae064a8e08438b051f80820fb)
 - 2026-09-22 20:32: Remove the deleted Teams editor from current module ownership. (01a0cc48-2eda-7fc2-a19e-096b68fccb7b - 43776d25c5007e017f7d0ffdca6b06f063afcd37)

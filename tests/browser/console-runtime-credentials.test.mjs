@@ -344,7 +344,7 @@ test("draft Agent deploy waits for generated runtime credentials", async (t) => 
   await page
     .getByText(/Deploy requires stored credential metadata: Generated runtime credentials/)
     .waitFor();
-  assert.equal(await page.getByRole("button", { name: "Deploy saved draft" }).isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), true);
   assert.equal(
     await page
       .getByRole("button", { name: "Provision generated runtime credentials" })
@@ -359,14 +359,14 @@ test("draft Agent deploy waits for generated runtime credentials", async (t) => 
       "Stored credential metadata is present. This does not confirm live channel readiness.",
     )
     .waitFor();
-  assert.equal(await page.getByRole("button", { name: "Deploy saved draft" }).isDisabled(), false);
+  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), false);
 
   const deployResponse = page.waitForResponse(
     (response) =>
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deploy` &&
       response.request().method() === "POST",
   );
-  await page.getByRole("button", { name: "Deploy saved draft" }).click();
+  await page.getByRole("button", { name: "Deploy new revision" }).click();
   assert.equal((await deployResponse).status(), 202);
   await page.screenshot({ path: join(artifacts, "runtime-credentials.png"), fullPage: true });
 });
@@ -399,7 +399,7 @@ test("Slack credential gate treats omitted enabled as enabled", async (t) => {
   await page
     .getByText(/Deploy requires stored credential metadata: Slack Secret bindings/)
     .waitFor();
-  assert.equal(await page.getByRole("button", { name: "Deploy saved draft" }).isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), true);
   assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
 });
 
@@ -431,7 +431,7 @@ test("Teams-enabled drafts keep console deploy blocked", async (t) => {
       "Microsoft Teams credentials and readiness are operator-managed and cannot be confirmed by this Credentials tab. Use the operator deployment workflow for Teams, or disable Teams through the Configuration API to deploy here.",
     )
     .waitFor();
-  assert.equal(await page.getByRole("button", { name: "Deploy saved draft" }).isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), true);
   await expectNoText(page, /Slack app token|Slack bot token/);
   assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).count(), 0);
 });
@@ -506,7 +506,7 @@ test("bound Slack credential fields show masks without reading or resaving store
   assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
   await expectNoText(page, /xapp-not-saved/);
   assert.deepEqual(channelApi.requests, []);
-  assert.equal(await page.getByRole("button", { name: "Deploy saved draft" }).isDisabled(), false);
+  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), false);
 });
 
 test("Slack credential replacement updates only entered tokens and preserves stored bindings", async (t) => {
@@ -556,7 +556,7 @@ test("Slack credential replacement updates only entered tokens and preserves sto
   await expectNoText(page, /xapp-replacement/);
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
   await page
-    .getByText("Channel Secrets saved. Deploy the saved draft to deliver the new bindings.")
+    .getByText("Channel Secrets saved. Deploy the new revision to deliver the new bindings.")
     .waitFor();
   await expectNoText(page, /xapp-replacement/);
   assert.equal(secretDriver.valueFor(appSecret), "xapp-replacement");
@@ -573,7 +573,7 @@ test("Slack credential replacement updates only entered tokens and preserves sto
   assert.deepEqual(configuration.data.secretBindings, secretBindings);
   assert.equal(await page.getByLabel("Slack app token").inputValue(), "••••••••");
   assert.equal(await page.getByLabel("Slack bot token").inputValue(), "••••••••");
-  assert.equal(await page.getByRole("button", { name: "Deploy saved draft" }).isDisabled(), false);
+  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), false);
 });
 
 test("partially bound Slack credentials save only the missing token", async (t) => {
@@ -623,7 +623,7 @@ test("partially bound Slack credentials save only the missing token", async (t) 
   await page.getByLabel("Slack bot token").fill("xoxb-new-bot");
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
   await page
-    .getByText("Channel Secrets saved. Deploy the saved draft to deliver the new bindings.")
+    .getByText("Channel Secrets saved. Deploy the new revision to deliver the new bindings.")
     .waitFor();
   assert.deepEqual(
     channelApi.requests
@@ -645,7 +645,7 @@ test("partially bound Slack credentials save only the missing token", async (t) 
     secretBindings.SLACK_APP_TOKEN,
   );
   assert.equal(configurationPatch.body.secretBindings.SLACK_BOT_TOKEN.source.id, "sec_2");
-  assert.equal(await page.getByRole("button", { name: "Deploy saved draft" }).isDisabled(), false);
+  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), false);
 });
 
 test("missing Slack credential fields require both tokens and clear replacements after errors", async (t) => {
@@ -696,7 +696,7 @@ test("missing Slack credential fields require both tokens and clear replacements
   await expectNoText(page, hostileBackendMessage);
   assert.equal(await page.locator(".runtime-credentials .credential-status.missing").count(), 2);
   assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
-  assert.equal(await page.getByRole("button", { name: "Deploy saved draft" }).isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), true);
   await expectNoText(page, /xapp-console-secret|xoxb-console-secret/);
   assert.equal(await page.getByLabel("Slack app token").inputValue(), "");
   assert.equal(await page.getByLabel("Slack bot token").inputValue(), "");
@@ -709,7 +709,7 @@ test("missing Slack credential fields require both tokens and clear replacements
   await page.getByLabel("Slack bot token").fill("xoxb-console-secret-2");
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
   await page
-    .getByText("Channel Secrets saved. Deploy the saved draft to deliver the new bindings.")
+    .getByText("Channel Secrets saved. Deploy the new revision to deliver the new bindings.")
     .waitFor();
   await expectNoText(page, /xapp-console-secret-2|xoxb-console-secret-2/);
 
@@ -753,7 +753,7 @@ test("missing Slack credential fields require both tokens and clear replacements
     "SLACK_APP_TOKEN",
     "SLACK_BOT_TOKEN",
   ]);
-  assert.equal(await page.getByRole("button", { name: "Deploy saved draft" }).isDisabled(), false);
+  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), false);
 });
 
 test("operator-managed console binding saves and deploys without a managed credential gate", async (t) => {
@@ -793,7 +793,7 @@ test("operator-managed console binding saves and deploys without a managed crede
   );
   await page.getByRole("button", { name: "Save authentication source" }).click();
   assert.deepEqual((await (await save).json()).data.harnessAuth, { method: "runtime" });
-  await page.getByRole("button", { name: "Deploy saved draft" }).waitFor();
+  await page.getByRole("button", { name: "Deploy new revision" }).waitFor();
   await page.getByText(/Gateway readiness does not confirm model access/).waitFor();
   // Runtime removes only the credential gate, not failed-history protection.
   const revisionsPath = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/revisions`;
@@ -806,9 +806,9 @@ test("operator-managed console binding saves and deploys without a managed crede
   );
   await page.reload();
   await page
-    .getByText("Revision history is required before deploying this saved draft.", { exact: true })
+    .getByText("Revision history is required before deploying this new revision.", { exact: true })
     .waitFor();
-  assert.equal(await page.getByRole("button", { name: "Deploy saved draft" }).isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), true);
   await page.unroute(revisionsPath);
   await page.reload();
   await page.getByText(/Gateway readiness does not confirm model access/).waitFor();
@@ -821,7 +821,7 @@ test("operator-managed console binding saves and deploys without a managed crede
   const deployed = page.waitForResponse(
     (r) => r.url().endsWith(`/agents/${agent.id}/deploy`) && r.request().method() === "POST",
   );
-  await page.getByRole("button", { name: "Deploy saved draft" }).click();
+  await page.getByRole("button", { name: "Deploy new revision" }).click();
   const response = await deployed;
   assert.equal(response.status(), 202);
   assert.deepEqual((await response.json()).data.harnessAuth, { method: "runtime" });

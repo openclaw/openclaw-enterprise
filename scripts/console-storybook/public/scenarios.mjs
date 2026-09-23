@@ -267,7 +267,7 @@ export const scenarios = {
   },
   draft: {
     group: "Pages/Agent detail",
-    name: "Saved draft",
+    name: "New revision",
     path: draft,
     description:
       "Editable desired configuration, masked authentication summary, deployment gate, and Agent deletion.",
@@ -344,7 +344,7 @@ export const scenarios = {
         status: 403,
       },
     ],
-    actions: [click("Deploy saved draft")],
+    actions: [click("Deploy new revision")],
     description: "A rejected deployment reports failure and re-enables the action.",
   },
   menu: {
@@ -422,7 +422,7 @@ export const scenarios = {
     path: `${revision}&tab=channels`,
     deployed: true,
     slack: true,
-    description: "Admitted channel settings are immutable. Switch to the saved draft to edit.",
+    description: "Admitted channel settings are immutable. Switch to the new revision to edit.",
   },
   channelConflict: {
     group: "Components/Channels",
@@ -689,7 +689,7 @@ export const scenarios = {
       "Choose Research assistant, fill Variable: name, then Use Preset.",
       "Review the Configuration and masked pre-existing model Secret reference; click Create Agent.",
       "Open Credentials and Provision generated runtime credentials.",
-      "Click Deploy saved draft. Inspect Deployment status and Refresh deployment to advance the simulated worker, then Refresh the page to read the active revision.",
+      "Click Deploy new revision. Inspect Deployment status and Refresh deployment to advance the simulated worker, then Refresh the page to read the active revision.",
       "Use AgentRevision to inspect the immutable snapshot and Workspace files to inspect runtime files.",
     ],
     gap: "The fixture supplies a ready Namespace, Preset, and model Secret. Set those up outside the console. Verify actual serving health and a model response outside this walkthrough.",
@@ -701,11 +701,11 @@ export const scenarios = {
     deployed: true,
     slack: true,
     description:
-      "Edit the saved draft while an admitted revision remains unchanged; deploy a new immutable revision.",
+      "Edit the new revision while an admitted revision remains unchanged; deploy a new immutable revision.",
     steps: [
       "Open Edit Slack, add CNEW123 to Slack channel IDs, then Save configuration.",
       "Select v1 in AgentRevision and open Channels: it still has the original settings.",
-      "Return to Saved draft, then Deploy saved draft.",
+      "Return to New revision, then Deploy new revision.",
       "Refresh deployment and inspect the new revision. The prior snapshot remains readable.",
       "Workspace file edits are separate: they save immediately without a new revision.",
     ],
@@ -722,7 +722,7 @@ export const scenarios = {
     steps: [
       "Open Stop Agent and review the confirmation copy.",
       "Confirm Stop Agent. The page reports Stop requested and keeps revision/workspace inspection available.",
-      "Return to Saved draft and Deploy saved draft to request running again.",
+      "Return to New revision and Deploy new revision to request running again.",
     ],
     gap: "Stop Agent confirms OCC accepted the stopped desired state and selected revision metadata only. Verify live gateway shutdown outside Console if required. Disabling a channel does not stop the Agent; deletion is destructive.",
   },

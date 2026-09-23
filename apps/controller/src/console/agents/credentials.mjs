@@ -273,7 +273,7 @@ export function createRuntimeCredentialsPanel({
 
   function deployGateMessage() {
     if (!revisionsLoaded) {
-      return "Revision history is required before deploying this saved draft.";
+      return "Revision history is required before deploying this new revision.";
     }
     if (state.loading || (!state.loaded && state.error === null)) {
       return "Loading runtime credential metadata before deployment.";
@@ -537,7 +537,7 @@ export function createRuntimeCredentialsPanel({
         onConfigurationChange?.(state.configuration);
         state.outcomeUnknown = false;
         state.saveMessage =
-          "Channel Secrets saved. Deploy the saved draft to deliver the new bindings.";
+          "Channel Secrets saved. Deploy the new revision to deliver the new bindings.";
         status.textContent = state.saveMessage;
       } catch (cause) {
         if (!context.isCurrent()) {
@@ -607,7 +607,7 @@ export function createRuntimeCredentialsPanel({
         element(
           "p",
           { className: "muted" },
-          "Generate connection credentials, store channel tokens, then deploy the saved draft to apply them. Stored status does not confirm live readiness.",
+          "Generate connection credentials, store channel tokens, then deploy the new revision to apply them. Stored status does not confirm live readiness.",
         ),
         renderRuntimeMetadata(state),
         state.saveMessage

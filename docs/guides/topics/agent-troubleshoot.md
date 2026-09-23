@@ -15,7 +15,7 @@ Once access is fixed, refresh and confirm the Namespace is `ready`.
 
 ## Deployment is blocked or has no selected revision
 
-On Kubernetes, open the Agent's **Saved draft → Credentials** and confirm that
+On Kubernetes, open the Agent's **New revision → Credentials** and confirm that
 **Transport** shows **Stored**. Check that the saved model authentication matches
 the execution mode. For an OpenAI API key, the person selecting it and the
 Agent's own identity both need `operate` on the exact platform Secret. See

@@ -2,7 +2,7 @@
 
 Open **Agents**, then select an Agent to inspect its configuration, deployment
 record, credentials, and workspace. This walkthrough explains the page from top
-to bottom, including controls revealed by **Saved draft**. For initial setup, use
+to bottom, including controls revealed by **New revision**. For initial setup, use
 [Create and deploy Agents](../../reference/console/create-and-deploy.md).
 
 Screenshots show a local demonstration Agent, `ocedemo-1`, captured on September
@@ -56,36 +56,38 @@ channel response using [Agent troubleshooting](../topics/agent-troubleshoot.md).
 The older v1 snapshot retains its failed deployment and model-probe details while
 the Agent selects v2. Browsing that failure does not change the selected revision.
 
-## Browse revisions or open the saved draft
+<span id="browse-revisions-or-open-the-saved-draft"></span>
+
+## Browse revisions or open New revision
 
 ![Revision selector, history buttons, source Configuration, and snapshot notice](../../assets/console/revision-browser.png)
 
 An **AgentRevision** is an immutable deployment snapshot. A **Configuration** is
 the reusable, mutable input from which a new revision is created.
 
-| Component                                 | What it does                                                                                                                                      |
-| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **AgentRevision** dropdown                | Selects the saved draft or a historical snapshot to inspect. Revision entries include version, creation time, and whether the Agent selects them. |
-| **Older revision** / **Newer revision**   | Browses history; disabled at the corresponding end. Browsing does not activate a revision.                                                        |
-| **Saved draft**                           | Opens the current Configuration and supported editing controls.                                                                                   |
-| **View selected revision**                | Returns to the snapshot currently selected by the Agent.                                                                                          |
-| `rev_…`                                   | Identifies the viewed immutable revision.                                                                                                         |
-| **Source Configuration … · generation N** | Identifies the Configuration and generation captured for that revision. The draft instead shows its current generation.                           |
-| Read-only snapshot notice                 | Explains whether the viewed revision is selected and that its admitted settings cannot be edited.                                                 |
+| Component                                 | What it does                                                                                                                                       |
+| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **AgentRevision** dropdown                | Selects the new revision or a historical snapshot to inspect. Revision entries include version, creation time, and whether the Agent selects them. |
+| **Older revision** / **Newer revision**   | Browses history; disabled at the corresponding end. Browsing does not activate a revision.                                                         |
+| **New revision**                          | Opens the current Configuration and supported editing controls.                                                                                    |
+| **View selected revision**                | Returns to the snapshot currently selected by the Agent.                                                                                           |
+| `rev_…`                                   | Identifies the viewed immutable revision.                                                                                                          |
+| **Source Configuration … · generation N** | Identifies the Configuration and generation captured for that revision. The draft instead shows its current generation.                            |
+| Read-only snapshot notice                 | Explains whether the viewed revision is selected and that its admitted settings cannot be edited.                                                  |
 
 There is no rollback or redeploy-old-revision button. See
 [Agent Revisions](../topics/agent-revisions.md) for the lifecycle.
 
-![Saved draft selector, deployment action, and credential metadata notice](../../assets/console/saved-draft.png)
+![New revision selector, deployment action, and credential metadata notice](../../assets/console/saved-draft.png)
 
-**Deploy saved draft** submits the saved Configuration for a new revision. It
+**Deploy new revision** submits the saved Configuration for a new revision. It
 checks freshness and required credential metadata; missing prerequisites or a
 changed draft require correction or refresh. A successful request opens the new
 revision's Workspace files view. The credential notice below the button reports
 stored metadata, not successful authentication or a working channel.
 
 The **Configuration**, **Channels**, **Credentials**, and **Workspace files** tabs
-change the panel below. Credentials is available only on the saved draft.
+change the panel below. Credentials is available only on the new revision.
 Browser Back and Forward restore the selected tab. Leaving a tab clears entered token values. The workspace remains live regardless of the selected revision.
 
 ## Configuration tab
@@ -116,7 +118,7 @@ The Slack card shows **Not configured**, **Disabled**, or
 **Configured (enabled)** based on saved settings: Socket Mode, selected channels, and allowed users. This is not a
 live connection indicator.
 
-Revision cards are read-only. On the saved draft, **Configure** or **Edit** opens
+Revision cards are read-only. On the new revision, **Configure** or **Edit** opens
 a drawer; **Disable** saves a disabled channel setting. These changes affect
 future deployments, including other Agents sharing that Configuration. They do
 not stop a running channel or modify an existing revision. Channels require
@@ -240,7 +242,7 @@ permission on this Agent, regardless of the revision or tab you are viewing.
 An accepted stop requests shutdown; it does not prove that the runtime has
 finished. **Refresh stop status** reads the desired state and selected revision.
 An uncertain result blocks another stop until a successful refresh. To resume,
-open **Saved draft** and select **Deploy saved draft**, which creates a new
+open **New revision** and select **Deploy new revision**, which creates a new
 revision. See [Stop and resume](../../reference/agents/deployment.md#stop-and-resume).
 
 ## Delete Agent and error recovery

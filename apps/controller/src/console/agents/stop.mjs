@@ -51,7 +51,7 @@ export function createAgentStop(context, path, agent, onDeleting, onAgentChanged
             element(
               "p",
               { className: "notice", role: "status" },
-              "Stop requested. OCC will not start this Agent again until you deploy the saved draft. Runtime shutdown completion is not exposed in Console.",
+              "Stop requested. OCC will not start this Agent again until you deploy the new revision. Runtime shutdown completion is not exposed in Console.",
             ),
           ]
         : []),
@@ -226,7 +226,7 @@ export function createAgentStop(context, path, agent, onDeleting, onAgentChanged
       element(
         "p",
         { id: "agent-stop-confirm-description" },
-        "This interrupts the current runtime gateway. Configuration, AgentRevisions, Credentials, and workspace data are retained. Deploy the saved draft to start the Agent again.",
+        "This interrupts the current runtime gateway. Configuration, AgentRevisions, Credentials, and workspace data are retained. Deploy the new revision to start the Agent again.",
       ),
       element("div", { className: "form-actions" }, cancel, confirm),
     );

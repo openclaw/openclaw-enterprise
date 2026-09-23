@@ -361,7 +361,7 @@ test("Agent creation saves native Configuration JSON and a draft Agent without a
       url.searchParams.get("revision") === "draft"
     );
   });
-  await page.getByRole("heading", { name: "Saved draft" }).waitFor();
+  await page.getByRole("heading", { name: "New revision" }).waitFor();
   await page.getByRole("button", { name: "Configuration" }).waitFor();
   await revealNativeConfiguration(page, "View native Configuration");
   await page.getByText('"marker": "create"').waitFor();
@@ -789,7 +789,7 @@ test("Agent detail preserves admitted revision history while draft edits change 
   await page.getByText('"marker": "rev-one"').waitFor();
   assertRevisionUrl(page, first.revision.id);
 
-  await page.getByRole("button", { name: "Saved draft" }).click();
+  await page.getByRole("button", { name: "New revision" }).click();
   await page.waitForURL((url) => url.searchParams.get("revision") === "draft");
   await revealNativeConfiguration(page, "View native Configuration");
   await page.getByText('"marker": "draft-current"').waitFor();
@@ -914,8 +914,8 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
     .waitFor();
 
   await page.getByRole("button", { name: "Configuration", exact: true }).click();
-  await page.getByRole("button", { name: "Saved draft", exact: true }).click();
-  await page.getByRole("button", { name: "Deploy saved draft" }).click();
+  await page.getByRole("button", { name: "New revision", exact: true }).click();
+  await page.getByRole("button", { name: "Deploy new revision" }).click();
   await page.waitForURL(/revision=rev_/);
   const running = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
   assert.equal(running.data.desiredRuntimeState, "running");
@@ -1974,7 +1974,7 @@ test("Agent tab switches ignore late configuration reads and keep direct workspa
   release();
   await delivered;
   // Configuration completion may prepare shared controls, but must not replace the active tab.
-  await page.getByRole("heading", { name: "Saved draft", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "New revision", exact: true }).waitFor();
   assert.equal(
     await page.getByRole("heading", { name: "Workspace files", exact: true }).isVisible(),
     true,

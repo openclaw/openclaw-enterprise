@@ -60,7 +60,7 @@ The commands below also use `jq`.
 
 In the console, open the Agent's **Configuration** tab and choose a revision
 from the **AgentRevision** selector. **Selected by Agent** identifies the active
-revision. **Saved draft** shows the current Configuration. Viewing an older
+revision. **New revision** shows the current Configuration. Viewing an older
 revision does not select it for deployment. The [HTTP API](../../reference/api.md#agent-revisions)
 also lists and reads revisions; the CLI has no revision history command.
 

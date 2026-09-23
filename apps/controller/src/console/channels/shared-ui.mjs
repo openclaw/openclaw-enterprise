@@ -320,7 +320,7 @@ function openDrawer(section, state, provider) {
       "p",
       { className: "notice", role: "status" },
       state.copy.drawerNotice ??
-        "Saved draft. Changes affect future deployments using this Configuration. Use the Credentials tab for supported OpenAI and Slack credentials before first deploy.",
+        "New revision. Changes affect future deployments using this Configuration. Use the Credentials tab for supported OpenAI and Slack credentials before first deploy.",
     ),
     enabled,
   );

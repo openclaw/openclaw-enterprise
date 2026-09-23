@@ -26,7 +26,7 @@ go to the Agent's gateway; model credentials are configured separately.
 
 ## Connect and verify
 
-1. Open the Agent's saved draft in the console and open **Channels**. Enable
+1. Open the Agent's new revision in the console and open **Channels**. Enable
    Slack, enter the channel IDs, and leave **Require mention** enabled for this
    setup. Save. If multiple Agents use this Configuration, the edit also
    affects their future deployments.
@@ -37,7 +37,7 @@ go to the Agent's gateway; model credentials are configured separately.
    credentials confirm storage only; they do not prove Slack accepted them.
    Bound tokens show a synthetic password mask. To replace one token, edit that
    field and leave the other unchanged; its stored value is preserved.
-3. Select **Deploy saved draft** to apply the saved bindings. After a channel
+3. Select **Deploy new revision** to apply the saved bindings. After a channel
    draft or Secret value change, explicitly redeploy each consumer. Follow
    [Secret updates](../../reference/drivers/kubernetes-secret.md#update-and-redeploy)
    when replacing an existing token.

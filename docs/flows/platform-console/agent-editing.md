@@ -52,8 +52,7 @@ graph TD
 
 `apps/controller/src/console/agents/detail.mjs:renderAgentDetail`
 
-The detail page reads the Agent, revision list, and either the saved draft
-Configuration or the selected AgentRevision. `revision=draft` reads the current
+The detail page reads the Agent, revision list, and either the current Configuration in **New revision** or the selected AgentRevision. `revision=draft` reads the current
 Configuration referenced by the Agent. `revision=<id>` reads that immutable
 snapshot. The Selected revision badge is derived from `activeRevisionId`; the
 newest revision and the viewed snapshot can both differ from that pointer.
@@ -62,7 +61,7 @@ does not render a live serving-health indicator. Revision snapshots are read-onl
 Stopping and deletion apply to the Agent itself, regardless of the viewed revision or tab.
 
 `apps/controller/src/console/channels.mjs:renderChannels` renders supported
-Slack channel settings for the saved draft only. Slack uses fixed unresolved
+Slack channel settings in **New revision** only. Slack uses fixed unresolved
 `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN` environment references. Existing native
 Teams settings remain in Configuration JSON, with no card or editor. The
 deployment guard still refuses Teams-enabled drafts because Console credential
@@ -92,7 +91,7 @@ or provisioning; it still requires readable revision history and unchanged draft
 state before submitting deployment. API authorization and selected-driver
 compatibility checks remain authoritative.
 
-For managed authentication methods, the saved draft reads metadata from the exact Agent's `runtime-credentials`
+For managed authentication methods, the **New revision** view reads metadata from the exact Agent's `runtime-credentials`
 endpoint. The response reports stored groups, not
 provider validity or runtime health; an uncertain response requires a status
 refresh before retrying.
@@ -208,6 +207,8 @@ subsequent worker cleanup and the Namespace-owned resources it preserves.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-22 20:56: Rename the deployment-facing Console view to New revision. (01a0cc48-2eda-7fc2-a19e-096b68fccb7b - 081bccfcf3f5b114588dde1b42a0deb07f326017)
 
 - 2026-09-22 20:43: Add confirmed Console stop requests and exact Agent state refresh. (01a0cc48-2eda-7fc2-a19e-096b68fccb7b - 6adfd148a517e84ae064a8e08438b051f80820fb)
 - 2026-09-22 20:35: Trace metadata-derived Slack token masks and replacement-only Secret writes. (01a0cc48-2eda-7fc2-a19e-096b68fccb7b - 43776d25c5007e017f7d0ffdca6b06f063afcd37)

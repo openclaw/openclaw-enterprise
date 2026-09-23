@@ -36,7 +36,7 @@ Agent; it does not verify an Agent you create in the console.
    field to create an empty file. The browser submits LF newlines. See
    [initial contents](../agents.md#initial-contents-at-creation) for limits.
 7. Select **Create Agent**. A successful save opens the Agent detail page on
-   **Saved draft**. No revision or workload exists yet. OCC privately stages the
+   **New revision**. No revision or workload exists yet. OCC privately stages the
    initial contents for application before the first deployment runs. After
    deployment, use the [live workspace editor](../console.md#edit-workspace-files).
    Pending inputs have no update API; see [workspace recovery](../../guides/topics/workspace-files.md#set-files-when-creating-an-agent).
@@ -113,9 +113,11 @@ a save attempt or when leaving the tab, and bound fields return to their mask.
 Tokens are never stored in local storage, URLs, or native Configuration values. A stored channel Secret confirms storage and binding only; it does not
 prove provider acceptance, runtime readiness, or a channel connection.
 
-## Deploy a saved draft
+<span id="deploy-a-saved-draft"></span>
 
-Open the Agent's saved draft and select **Deploy saved draft** after generated transport credentials are stored, required channel Secret bindings are saved, and a harness source is selected. The console rereads the Agent and Configuration
+## Deploy a new revision
+
+Open the Agent's new revision and select **Deploy new revision** after generated transport credentials are stored, required channel Secret bindings are saved, and a harness source is selected. The console rereads the Agent and Configuration
 and requests deployment through the existing exact-Agent endpoint. A changed draft
 requires a refresh. These checks are separate reads, not an atomic compare-and-set.
 Teams-enabled drafts cannot deploy through this console path because Teams credential
