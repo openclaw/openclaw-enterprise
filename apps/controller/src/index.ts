@@ -212,7 +212,7 @@ interface RequiredPermission {
     | "existing_namespace"
     | "bound_secret"
     | "iam_binding_target"
-    | "provisioning_secret";
+    | "provisioning_work";
 }
 
 interface DocumentedFastifySchema extends FastifySchema {
@@ -422,6 +422,14 @@ function operationTarget(
   ) {
     return { kind: "agent", id: namespaceId, namespaceId };
   }
+  if (
+    (operation.operationId === "getAgentProvisioning" ||
+      operation.operationId === "retryAgentProvisioning") &&
+    namespaceId &&
+    typeof params.workId === "string"
+  ) {
+    return { kind: "agent", id: params.workId, namespaceId };
+  }
   if (operation.operationId === "getAgentRevision" && namespaceId && revisionId) {
     return { kind: "agent_revision", id: revisionId, namespaceId };
   }
@@ -547,12 +555,6 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
               resourceKind: "configuration" as const,
               scope: "namespace" as const,
             },
-            {
-              action: "create" as const,
-              resourceKind: "secret" as const,
-              scope: "namespace" as const,
-              condition: "provisioning_secret" as const,
-            },
           ]
         : [
             {
@@ -572,6 +574,20 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
         resourceKind: "secret",
         scope: "requested",
         condition: "bound_secret",
+      },
+    ];
+  }
+
+  if (
+    operation.operationId === "getAgentProvisioning" ||
+    operation.operationId === "retryAgentProvisioning"
+  ) {
+    return [
+      {
+        action: permission.action,
+        resourceKind: "agent",
+        scope: "requested",
+        condition: "provisioning_work",
       },
     ];
   }
@@ -645,8 +661,8 @@ function permissionDescription(
         }
         return `Requires ${action} permission on each bound ${name} when Secret bindings are present or selected.`;
       }
-      if (condition === "provisioning_secret") {
-        return `Requires ${action} permission for ${name} resources when provisioning creates submitted Secrets.`;
+      if (condition === "provisioning_work") {
+        return `Requires current ${action} authorization for the accepted Agent provisioning record. Before Agent creation, only the initiating actor in the exact Namespace can use the work item.`;
       }
       if (condition === "iam_binding_target") {
         return `Requires ${action} permission on the request body ${name} when the AccessBinding targets that resource kind.`;
@@ -742,22 +758,26 @@ function clientAgent(agent: Readonly<Agent>): Record<string, unknown> {
   };
 }
 
-function agentProvisioningUrl(namespaceId: string, agentId: string): string {
-  return `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(agentId)}/provisioning`;
+function agentProvisioningUrl(namespaceId: string, workId: string): string {
+  return `/namespaces/${encodeURIComponent(namespaceId)}/agents/provision/${encodeURIComponent(workId)}`;
 }
 
 function clientAgentProvisioning(
   provisioning: Readonly<AgentProvisioningProgress>,
   namespaceId: string,
-  agentId: string,
 ): Record<string, unknown> {
   return {
+    workId: provisioning.workId,
     status: provisioning.status,
     phase: provisioning.phase,
     attemptCount: provisioning.attemptCount,
     updatedAt: provisioning.updatedAt,
+    ...(provisioning.agentId === undefined ? {} : { agentId: provisioning.agentId }),
+    ...(provisioning.configurationId === undefined
+      ? {}
+      : { configurationId: provisioning.configurationId }),
     ...(provisioning.revisionId === undefined ? {} : { revisionId: provisioning.revisionId }),
-    url: provisioning.url ?? agentProvisioningUrl(namespaceId, agentId),
+    url: provisioning.url ?? agentProvisioningUrl(namespaceId, provisioning.workId),
     ...(provisioning.error === undefined ? {} : { error: provisioning.error }),
   };
 }
@@ -2666,7 +2686,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           namespaceId,
           name: provisionBody.name,
           configuration: provisionBody.configuration as ProvisionAgentInput["configuration"],
-          ...(provisionBody.secrets === undefined ? {} : { secrets: provisionBody.secrets }),
           ...(provisionBody.initialWorkspaceFiles === undefined
             ? {}
             : {
@@ -2702,18 +2721,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           event(
             operation,
             request,
-            { kind: "agent", id: provisioned.agent.id, namespaceId },
+            {
+              kind: "agent",
+              id: provisioned.provisioning.agentId ?? provisioned.provisioning.workId,
+              namespaceId,
+            },
             "mutation",
             context,
           ),
         );
         return {
-          agent: clientAgent(provisioned.agent),
-          provisioning: clientAgentProvisioning(
-            provisioned.provisioning,
-            namespaceId,
-            provisioned.agent.id,
-          ),
+          provisioning: clientAgentProvisioning(provisioned.provisioning, namespaceId),
         };
       });
       reply.status(202).send({ data: result, meta: { requestId: request.id } });
@@ -2788,43 +2806,43 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
-    const agentId = params.agentId;
-    if (!agentId) {
-      throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
-    }
-    if (operation.operationId === "getAgent") {
-      reply.send({
-        data: clientAgent(await controller.getAgent(context.actorId, namespaceId, agentId)),
-        meta: { requestId: request.id },
-      });
-      return;
-    }
-
     if (operation.operationId === "getAgentProvisioning") {
+      const workId = params.workId;
+      if (!workId) {
+        throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
+      }
       const provisioned = await controller.getAgentProvisioning(
         context.actorId,
         namespaceId,
-        agentId,
+        workId,
       );
       reply.send({
-        data: clientAgentProvisioning(provisioned.provisioning, namespaceId, agentId),
+        data: clientAgentProvisioning(provisioned.provisioning, namespaceId),
         meta: { requestId: request.id },
       });
       return;
     }
 
     if (operation.operationId === "retryAgentProvisioning") {
+      const workId = params.workId;
+      if (!workId) {
+        throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
+      }
       const provisioning = await controller.transact(async (unit) => {
         const retried = await controller!.retryAgentProvisioning(
           context.actorId,
           namespaceId,
-          agentId,
+          workId,
         );
         await unit.audit.append(
           event(
             operation,
             request,
-            { kind: "agent", id: agentId, namespaceId },
+            {
+              kind: "agent",
+              id: retried.provisioning.agentId ?? retried.provisioning.workId,
+              namespaceId,
+            },
             "mutation",
             context,
           ),
@@ -2832,7 +2850,19 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         return retried.provisioning;
       });
       reply.status(202).send({
-        data: clientAgentProvisioning(provisioning, namespaceId, agentId),
+        data: clientAgentProvisioning(provisioning, namespaceId),
+        meta: { requestId: request.id },
+      });
+      return;
+    }
+
+    const agentId = params.agentId;
+    if (!agentId) {
+      throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
+    }
+    if (operation.operationId === "getAgent") {
+      reply.send({
+        data: clientAgent(await controller.getAgent(context.actorId, namespaceId, agentId)),
         meta: { requestId: request.id },
       });
       return;

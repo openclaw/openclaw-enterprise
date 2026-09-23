@@ -1,5 +1,4 @@
 import type {
-  Agent,
   HarnessAuthBinding,
   HarnessExecutionMode,
   InitialWorkspaceFiles,
@@ -7,7 +6,6 @@ import type {
   PluginDesiredState,
   RepositoryBindingRequest,
   SecretBindings,
-  SecretReference,
 } from "@openclaw-enterprise/contracts";
 import {
   normalizeHarnessAuthBinding,
@@ -23,84 +21,48 @@ import type { ControllerWork } from "./state/controller-work.ts";
 
 export type AgentProvisioningStatus = "queued" | "running" | "failed" | "succeeded";
 
-export interface AgentProvisioningSecretInput {
-  readonly name: string;
-  readonly value: string;
-}
-
-export interface ProvisioningSecretSource {
-  readonly kind: "provisioning-secret";
-  readonly name: string;
-}
-
-export type AgentProvisioningSecretSource = ProvisioningSecretSource | SecretReference;
-
-export interface AgentProvisioningSecretBinding {
-  readonly source: AgentProvisioningSecretSource;
-  readonly delivery?: { readonly type: "env" };
-}
-
-export type AgentProvisioningSecretBindings = Readonly<
-  Record<string, AgentProvisioningSecretBinding>
->;
-
 export interface AgentProvisioningConfigurationInput {
   readonly kind: "agent";
   readonly values: Readonly<OpenClawConfigurationDocument>;
-  readonly secretBindings?: AgentProvisioningSecretBindings;
+  readonly secretBindings?: SecretBindings;
 }
-
-export type AgentProvisioningHarnessAuth =
-  HarnessAuthBinding | { readonly method: "api_key"; readonly source: ProvisioningSecretSource };
 
 export interface ProvisionAgentInput {
   readonly requestId: string;
   readonly namespaceId: string;
   readonly name: string;
   readonly configuration: AgentProvisioningConfigurationInput;
-  readonly secrets?: readonly AgentProvisioningSecretInput[];
   readonly initialWorkspaceFiles?: InitialWorkspaceFiles;
   readonly workspaceDefaultsId?: string;
   readonly providerId?: string | null;
-  readonly harnessAuth?: AgentProvisioningHarnessAuth | null;
+  readonly harnessAuth?: HarnessAuthBinding | null;
   readonly executionMode?: HarnessExecutionMode;
   readonly plugins?: PluginDesiredState;
   readonly repositoryBindings?: readonly RepositoryBindingRequest[];
 }
 
 export interface AgentProvisioningProgress {
+  readonly workId: string;
   readonly status: AgentProvisioningStatus;
   readonly phase: AgentProvisioningRecord["completedPhase"];
   readonly attemptCount: number;
   readonly updatedAt: string;
+  readonly agentId?: string;
+  readonly configurationId?: string;
   readonly revisionId?: string;
   readonly url?: string;
   readonly error?: { readonly code: string; readonly message: string };
 }
 
 export interface ProvisionAgentResult {
-  readonly agent: Readonly<Agent>;
   readonly provisioning: Readonly<AgentProvisioningProgress>;
-}
-
-export interface NormalizedProvisioningSecret {
-  readonly name: string;
-  readonly value: string;
 }
 
 export interface AgentProvisioningPlan {
   readonly configuration: AgentProvisioningConfigurationInput;
-  readonly harnessAuth: AgentProvisioningHarnessAuth | null;
-  readonly executionMode?: HarnessExecutionMode;
-  readonly secrets: readonly {
-    readonly name: string;
-    readonly secretId: string;
-    readonly slot: string;
-  }[];
+  readonly harnessAuth: HarnessAuthBinding | null;
+  readonly executionMode: HarnessExecutionMode;
 }
-
-const LOCAL_SECRET_NAME = /^[A-Za-z0-9._:@-]{1,200}$/u;
-const PROVISIONING_SECRET_PLACEHOLDER_NAMESPACE = "__provisioning_request__";
 
 function configurationDocument(value: unknown): OpenClawConfigurationDocument {
   const record = asRecord(value);
@@ -110,93 +72,22 @@ function configurationDocument(value: unknown): OpenClawConfigurationDocument {
   return immutableCopy(record as OpenClawConfigurationDocument);
 }
 
-function provisioningSecretSource(value: unknown): ProvisioningSecretSource | undefined {
-  const record = asRecord(value);
-  if (record?.kind !== "provisioning-secret" || !isNonEmptyString(record.name)) {
-    return undefined;
-  }
-  if (!LOCAL_SECRET_NAME.test(record.name)) {
-    throw new ScopeViolationError("Agent provisioning Secret names must be safe identifiers.");
-  }
-  return Object.freeze({ kind: "provisioning-secret", name: record.name });
-}
-
 function normalizeBindingError(error: unknown): never {
   throw new ScopeViolationError(
     error instanceof Error ? error.message : "Agent provisioning Secret bindings are invalid.",
   );
 }
 
-function placeholderSecretReference(name: string): SecretReference {
-  return Object.freeze({
-    kind: "secret",
-    namespaceId: PROVISIONING_SECRET_PLACEHOLDER_NAMESPACE,
-    id: `local:${name}`,
-  });
-}
-
-function normalizeProvisioningSecretBindings(
-  input: unknown,
-): AgentProvisioningSecretBindings | undefined {
+function normalizeProvisioningSecretBindings(input: unknown): SecretBindings | undefined {
   if (input === undefined) {
     return undefined;
   }
-  const bindingRecord = asRecord(input);
-  if (bindingRecord === undefined) {
-    throw new ScopeViolationError("Agent provisioning Secret bindings must be an object.");
-  }
-
-  const localSources = new Map<string, ProvisioningSecretSource>();
-  const validationInput: Record<string, unknown> = {};
-  for (const [name, value] of Object.entries(bindingRecord)) {
-    const binding = asRecord(value);
-    const local =
-      binding?.source === undefined ? undefined : provisioningSecretSource(binding.source);
-    if (binding !== undefined && local !== undefined) {
-      localSources.set(name, local);
-      validationInput[name] = Object.freeze({
-        ...binding,
-        source: placeholderSecretReference(local.name),
-      });
-      continue;
-    }
-    validationInput[name] = value;
-  }
-
-  let normalized: SecretBindings;
   try {
-    normalized = normalizeSecretBindings(validationInput);
+    const normalized = normalizeSecretBindings(input);
+    return Object.keys(normalized).length === 0 ? undefined : normalized;
   } catch (error) {
     normalizeBindingError(error);
   }
-
-  return Object.freeze(
-    Object.fromEntries(
-      Object.entries(normalized).map(([name, binding]) => [
-        name,
-        Object.freeze({
-          source: localSources.get(name) ?? binding.source,
-          ...(binding.delivery === undefined ? {} : { delivery: binding.delivery }),
-        }),
-      ]),
-    ),
-  );
-}
-
-function sameProvisioningSecretSource(
-  left: AgentProvisioningSecretSource,
-  right: AgentProvisioningSecretSource,
-): boolean {
-  if (left.kind !== right.kind) {
-    return false;
-  }
-  if (left.kind === "provisioning-secret") {
-    return left.name === (right as ProvisioningSecretSource).name;
-  }
-  return (
-    left.namespaceId === (right as SecretReference).namespaceId &&
-    left.id === (right as SecretReference).id
-  );
 }
 
 export function requireProvisioningRequestId(value: unknown): string {
@@ -204,38 +95,6 @@ export function requireProvisioningRequestId(value: unknown): string {
     throw new ScopeViolationError("Agent provisioning requires one stable request id.");
   }
   return value;
-}
-
-export function normalizeProvisioningSecrets(
-  input: unknown,
-  validateValue: (value: unknown) => void,
-): readonly NormalizedProvisioningSecret[] {
-  if (input === undefined) {
-    return Object.freeze([]);
-  }
-  if (!Array.isArray(input) || input.length > 64) {
-    throw new ScopeViolationError("Agent provisioning secrets must be a bounded array.");
-  }
-  const names = new Set<string>();
-  return Object.freeze(
-    input.map((entry) => {
-      const record = asRecord(entry);
-      if (
-        record === undefined ||
-        Object.keys(record).some((key) => key !== "name" && key !== "value") ||
-        !isNonEmptyString(record.name) ||
-        !LOCAL_SECRET_NAME.test(record.name)
-      ) {
-        throw new ScopeViolationError("Agent provisioning secrets require a name and value.");
-      }
-      if (names.has(record.name)) {
-        throw new ScopeViolationError("Agent provisioning secret names must be unique.");
-      }
-      validateValue(record.value);
-      names.add(record.name);
-      return Object.freeze({ name: record.name, value: String(record.value) });
-    }),
-  );
 }
 
 export function normalizeProvisioningConfiguration(
@@ -253,15 +112,7 @@ export function normalizeProvisioningConfiguration(
   });
 }
 
-export function normalizeProvisioningHarnessAuth(
-  input: unknown,
-): AgentProvisioningHarnessAuth | null {
-  const record = asRecord(input);
-  const localSource =
-    record?.method === "api_key" ? provisioningSecretSource(record.source) : undefined;
-  if (localSource !== undefined) {
-    return Object.freeze({ method: "api_key", source: localSource });
-  }
+export function normalizeProvisioningHarnessAuth(input: unknown): HarnessAuthBinding | null {
   return normalizeHarnessAuthBinding(input);
 }
 
@@ -278,75 +129,6 @@ export function normalizeProvisioningWorkspace(
     ...(files === undefined ? {} : { initialWorkspaceFiles: files }),
     ...(defaultsId === undefined ? {} : { workspaceDefaultsId: defaultsId }),
   });
-}
-
-export function localProvisioningSecretNames(
-  configuration: AgentProvisioningConfigurationInput,
-  harnessAuth: AgentProvisioningHarnessAuth | null,
-): ReadonlySet<string> {
-  const names = new Set<string>();
-  for (const binding of Object.values(configuration.secretBindings ?? {})) {
-    if (
-      harnessAuth?.method === "api_key" &&
-      sameProvisioningSecretSource(binding.source, harnessAuth.source)
-    ) {
-      throw new ScopeViolationError(
-        "Agent provisioning Harness authentication Secret cannot also be delivered to the gateway environment.",
-      );
-    }
-    if (binding.source.kind === "provisioning-secret") {
-      names.add(binding.source.name);
-    }
-  }
-  if (harnessAuth?.method === "api_key" && harnessAuth.source.kind === "provisioning-secret") {
-    names.add(harnessAuth.source.name);
-  }
-  return names;
-}
-
-export function exactSecretBindings(
-  bindings: AgentProvisioningSecretBindings | undefined,
-  created: ReadonlyMap<string, SecretReference>,
-): SecretBindings | undefined {
-  if (bindings === undefined) {
-    return undefined;
-  }
-  const exact: Record<string, SecretBindings[string]> = {};
-  for (const [name, binding] of Object.entries(bindings)) {
-    const source =
-      binding.source.kind === "provisioning-secret"
-        ? created.get(binding.source.name)
-        : binding.source;
-    if (source === undefined) {
-      throw new ScopeViolationError("Agent provisioning Secret binding source is unavailable.");
-    }
-    exact[name] = Object.freeze({
-      source,
-      ...(binding.delivery === undefined ? {} : { delivery: binding.delivery }),
-    });
-  }
-  if (Object.keys(exact).length === 0) {
-    return undefined;
-  }
-  try {
-    return normalizeSecretBindings(exact);
-  } catch (error) {
-    normalizeBindingError(error);
-  }
-}
-
-export function exactProvisioningHarnessAuth(
-  harnessAuth: AgentProvisioningHarnessAuth | null,
-  created: ReadonlyMap<string, SecretReference>,
-): HarnessAuthBinding | null {
-  if (harnessAuth?.method !== "api_key" || harnessAuth.source.kind !== "provisioning-secret") {
-    return harnessAuth as HarnessAuthBinding | null;
-  }
-  const source = created.get(harnessAuth.source.name);
-  if (source === undefined) {
-    throw new ScopeViolationError("Agent provisioning Harness Secret source is unavailable.");
-  }
-  return Object.freeze({ method: "api_key", source });
 }
 
 export function provisioningProgress(
@@ -368,6 +150,7 @@ export function provisioningProgress(
   const workReasonCode = work?.reasonCode;
   const failedCode = isNonEmptyString(workReasonCode) ? workReasonCode : "PROVISIONING_FAILED";
   return Object.freeze({
+    workId: record.workId,
     status: failed
       ? "failed"
       : record.status === "succeeded"
@@ -378,6 +161,8 @@ export function provisioningProgress(
     phase: record.completedPhase,
     attemptCount,
     updatedAt,
+    ...(record.agentId === undefined ? {} : { agentId: record.agentId }),
+    ...(record.configurationId === undefined ? {} : { configurationId: record.configurationId }),
     ...(record.revisionId === undefined ? {} : { revisionId: record.revisionId }),
     ...(cancelled
       ? {

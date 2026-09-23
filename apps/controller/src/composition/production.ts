@@ -8,7 +8,6 @@ import {
   createPostgresPool,
   OpenClawController,
   PostgresPlatformState,
-  type ProvisioningInputProtector,
 } from "@openclaw-enterprise/occ";
 import { createPostgresControllerAuth } from "../auth/index.ts";
 import { createFastifyApp } from "../index.ts";
@@ -41,7 +40,6 @@ export interface ProductionConfig {
   readonly workspaceFilesAccess?: ControllerWorkspaceFilesAccess;
   readonly gatewayApiKeyPath?: string;
   readonly nativeAdmin?: NativeAdminAccessConfig;
-  readonly provisioningInputProtector?: ProvisioningInputProtector;
 }
 
 export async function composeProduction(config: ProductionConfig) {
@@ -144,9 +142,6 @@ export async function composeProduction(config: ProductionConfig) {
       recordOperations: true,
       providers: installation.provider,
       loggingLevel: config.drivers.installation.logging.level,
-      ...(config.provisioningInputProtector === undefined
-        ? {}
-        : { provisioningInputProtector: config.provisioningInputProtector }),
     });
     controller.registerDriver(iamDriver);
     if (controller.selectDriver("iam", driverId) !== iamDriver) {

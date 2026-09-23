@@ -52,14 +52,6 @@
           "path": "tests/conformance/platform-state-memory.test.mjs"
         },
         {
-          "path": "tests/conformance/provisioning-inputs.test.mjs",
-          "expectedTests": [
-            "provisioning inputs seal values and bind them to the provisioning context",
-            "provisioning input fingerprints support exact replay across key rotation",
-            "provisioning inputs fail closed when a retained key is unavailable"
-          ]
-        },
-        {
           "path": "tests/conformance/presets.test.mjs"
         },
         {

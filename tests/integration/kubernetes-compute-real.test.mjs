@@ -1,7 +1,7 @@
 import { sha256Hex } from "../../packages/utils/src/index.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,10 +10,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import pg from "pg";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
-import {
-  PostgresPlatformState,
-  createProvisioningInputProtector,
-} from "../../packages/occ/src/index.ts";
+import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { composePostgresDevelopment } from "../../apps/controller/src/composition/development-postgres.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import {
@@ -108,14 +105,7 @@ async function waitFor(description, operation, timeoutMs = 120_000) {
   assert.fail(`Timed out waiting for ${description}.`);
 }
 
-function createProvisioningProtector() {
-  return createProvisioningInputProtector({
-    primaryKeyId: "k8s-test-v1",
-    keys: [{ id: "k8s-test-v1", material: randomBytes(32).toString("base64url") }],
-  });
-}
-
-function provisioningRequestBody() {
+function provisioningRequestBody({ modelSecretRef, slackBotSecretRef }) {
   const model = "codex/gpt-6-astra";
   return {
     requestId: `req_${randomUUID()}`,
@@ -135,18 +125,15 @@ function provisioningRequestBody() {
       },
       secretBindings: {
         SLACK_BOT_TOKEN: {
-          source: { kind: "provisioning-secret", name: "slack-bot-token" },
+          source: slackBotSecretRef,
+          delivery: { type: "env" },
         },
       },
     },
     harnessAuth: {
       method: "api_key",
-      source: { kind: "provisioning-secret", name: "model-api-key" },
+      source: modelSecretRef,
     },
-    secrets: [
-      { name: "model-api-key", value: `model-key-${randomUUID()}` },
-      { name: "slack-bot-token", value: `xoxb-${randomUUID()}` },
-    ],
   };
 }
 
@@ -224,7 +211,6 @@ async function createProvisioningApiFixture(context, computeDriver, authenticati
     { authentication },
     { id: "secret-kubernetes-provisioning" },
   );
-  const protector = createProvisioningProtector();
   let worker;
   const drivers = runtimeDrivers({ computeDriver, configurationDriver, secretDriver });
   const app = await composePostgresDevelopment(
@@ -234,7 +220,6 @@ async function createProvisioningApiFixture(context, computeDriver, authenticati
       databaseUrl,
       authSecret,
       authBaseURL,
-      provisioningInputProtector: protector,
     },
     drivers,
   );
@@ -279,7 +264,6 @@ async function createProvisioningApiFixture(context, computeDriver, authenticati
     worker = createControllerWorker({
       pool: workerPool,
       drivers,
-      provisioningInputProtector: protector,
       pollIntervalMs: 25,
       leaseDurationMs: 30_000,
       maxAttempts: 3,
@@ -1935,27 +1919,58 @@ test(
     });
     await fixture.stopWorker();
 
-    const body = provisioningRequestBody();
+    const modelSecret = await fixture.request("POST", `/namespaces/${namespaceOwner.id}/secrets`, {
+      name: `Provisioning model key ${randomUUID().slice(0, 8)}`,
+      value: `model-key-${randomUUID()}`,
+    });
+    assert.equal(modelSecret.status, 201, JSON.stringify(modelSecret.body));
+    const slackBotSecret = await fixture.request(
+      "POST",
+      `/namespaces/${namespaceOwner.id}/secrets`,
+      {
+        name: `Provisioning Slack bot token ${randomUUID().slice(0, 8)}`,
+        value: `xoxb-${randomUUID()}`,
+      },
+    );
+    assert.equal(slackBotSecret.status, 201, JSON.stringify(slackBotSecret.body));
+
+    const body = provisioningRequestBody({
+      modelSecretRef: modelSecret.data.ref,
+      slackBotSecretRef: slackBotSecret.data.ref,
+    });
+    assert.equal(
+      JSON.stringify(body).includes("model-key-"),
+      false,
+      "provisioning must carry only saved Secret references, not Secret values",
+    );
+    assert.equal(
+      JSON.stringify(body).includes("xoxb-"),
+      false,
+      "provisioning must carry only saved Secret references, not Slack token values",
+    );
     const admitted = await fixture.request(
       "POST",
       `/namespaces/${namespaceOwner.id}/agents/provision`,
       body,
     );
     assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    assert.equal(admitted.data.agent, undefined);
+    assert.equal(typeof admitted.data.provisioning.workId, "string");
+    assert.match(admitted.data.provisioning.url, /^\/namespaces\//);
     await fixture.startWorker();
     const provisioned = await waitFor("Kubernetes provisioning handoff to succeed", async () => {
-      const observed = await fixture.request(
-        "GET",
-        `/namespaces/${namespaceOwner.id}/agents/${admitted.data.agent.id}/provisioning`,
-      );
+      const observed = await fixture.request("GET", admitted.data.provisioning.url);
       assert.equal(observed.status, 200, JSON.stringify(observed.body));
       return observed.data.status === "succeeded" ? observed.data : undefined;
     });
     await fixture.stopWorker();
+    assert.equal(typeof provisioned.agentId, "string");
+    assert.equal(typeof provisioned.configurationId, "string");
+    assert.equal(typeof provisioned.revisionId, "string");
 
     const revisions = await fixture.request(
       "GET",
-      `/namespaces/${namespaceOwner.id}/agents/${admitted.data.agent.id}/revisions`,
+      `/namespaces/${namespaceOwner.id}/agents/${provisioned.agentId}/revisions`,
     );
     assert.equal(revisions.status, 200, JSON.stringify(revisions.body));
     assert.equal(revisions.data.length, 1);
@@ -1972,7 +1987,7 @@ test(
       configuration.metadata.annotations["openclaw.dev/configuration-id"],
       revisions.data[0].configurationId,
     );
-    assert.equal(configuration.metadata.annotations["openclaw.dev/configuration-generation"], "2");
+    assert.equal(configuration.metadata.annotations["openclaw.dev/configuration-generation"], "1");
 
     const provisionedSecrets = (await resources("secrets", placement)).filter(
       ({ metadata }) =>
@@ -1982,14 +1997,10 @@ test(
     );
     assert.equal(
       provisionedSecrets.length,
-      body.secrets.length,
-      "all provisioning input Secrets must be stored through the real Kubernetes Secret Driver",
+      2,
+      "Console-saved Secrets must be stored through the real Kubernetes Secret Driver",
     );
-    const transport = await resource(
-      "secret",
-      `transport-${hash(admitted.data.agent.id)}`,
-      placement,
-    );
+    const transport = await resource("secret", `transport-${hash(provisioned.agentId)}`, placement);
     assert.deepEqual(
       Object.keys(transport.data).sort(),
       ["app-server-token", "gateway-password"],

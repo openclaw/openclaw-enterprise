@@ -14,7 +14,6 @@ import {
   createPostgresPool,
   OpenClawController,
   PostgresPlatformState,
-  type ProvisioningInputProtector,
 } from "@openclaw-enterprise/occ";
 import { createPostgresControllerAuth } from "../auth/index.ts";
 import { createDockerDevelopmentComputeDriverFromEnv } from "../drivers/compute/docker/index.ts";
@@ -50,7 +49,6 @@ export interface PostgresDevelopmentConfig {
   readonly workspaceFilesAccess?: ControllerWorkspaceFilesAccess;
   readonly gatewayApiKeyPath?: string;
   readonly nativeAdmin?: NativeAdminAccessConfig;
-  readonly provisioningInputProtector?: ProvisioningInputProtector;
 }
 
 export type PostgresDevelopmentRuntimeOptions =
@@ -145,9 +143,6 @@ export async function composePostgresDevelopment(
       recordOperations: true,
       ...(loggingLevel === undefined ? {} : { loggingLevel }),
       ...(drivers === undefined ? {} : { providers: drivers.installation.provider }),
-      ...(config.provisioningInputProtector === undefined
-        ? {}
-        : { provisioningInputProtector: config.provisioningInputProtector }),
     });
     controller.registerDriver(iamDriver);
     const selected = controller.selectDriver("iam", driverId);

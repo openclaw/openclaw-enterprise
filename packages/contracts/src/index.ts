@@ -190,11 +190,6 @@ export interface SecretBackendRef {
   readonly uid: string;
 }
 
-export interface ExactSecretCreateInput {
-  readonly identity: SecretIdentity;
-  readonly value: string;
-}
-
 export interface Secret extends SecretIdentity {
   readonly driverId: string;
   readonly backendRef: SecretBackendRef;
@@ -770,8 +765,6 @@ export interface ServiceAccountDriver extends Driver {
 export interface SecretDriver extends Driver {
   readonly capability: "secret";
   create(identity: SecretIdentity, value: string): Promise<SecretBackendRef>;
-  createExact?(input: ExactSecretCreateInput): Promise<SecretBackendRef>;
-  inspectExact?(input: ExactSecretCreateInput): Promise<SecretBackendRef | undefined>;
   update(secret: Secret, value: string): Promise<void>;
   delete(secret: Secret): Promise<void>;
   /** Verify live exact ownership and return only safe projection identity. */

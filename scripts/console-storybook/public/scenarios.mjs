@@ -31,16 +31,16 @@ const createWorkspaceFields = [
 const createProvisioningSecrets = [
   ...form,
   { selector: "#agent-name", value: "Slack research assistant" },
-  { selector: "#harness-auth-method", value: "api_key_provisioning" },
-  { selector: "#harness-auth-provisioning-secret", value: "MODEL_API_KEY" },
-  { selector: "#provisioning-secret-name-0", value: "MODEL_API_KEY" },
-  { selector: "#provisioning-secret-value-0", value: "demo-model-key" },
+  { selector: "#harness-auth-method", value: "api_key_new_secret" },
+  { selector: "#harness-auth-new-secret", value: "MODEL_API_KEY" },
+  { selector: "#secret-save-name-0", value: "MODEL_API_KEY" },
+  { selector: "#secret-save-value-0", value: "demo-model-key" },
   click("Add Secret"),
-  { selector: "#provisioning-secret-name-1", value: "SLACK_APP_TOKEN" },
-  { selector: "#provisioning-secret-value-1", value: "demo-app-token" },
+  { selector: "#secret-save-name-1", value: "SLACK_APP_TOKEN" },
+  { selector: "#secret-save-value-1", value: "demo-app-token" },
   click("Add Secret"),
-  { selector: "#provisioning-secret-name-2", value: "SLACK_BOT_TOKEN" },
-  { selector: "#provisioning-secret-value-2", value: "demo-bot-token" },
+  { selector: "#secret-save-name-2", value: "SLACK_BOT_TOKEN" },
+  { selector: "#secret-save-value-2", value: "demo-bot-token" },
 ];
 
 // API failures are injected at the HTTP boundary. The console owns their presentation.
@@ -217,15 +217,15 @@ export const scenarios = {
     path: create,
     actions: form,
     description:
-      "Name, execution mode, inline native JSON, request-local Secrets, authentication, Providers, plugins, Secret bindings, channel controls, and seeded workspace files.",
+      "Name, execution mode, inline native JSON, saved Secrets, authentication, Providers, plugins, Secret bindings, channel controls, and seeded workspace files.",
   },
   createProvisioningSecrets: {
     group: "Pages/Create Agent",
-    name: "Provisioning with new Secrets",
+    name: "Provisioning with saved Secrets",
     path: create,
     actions: createProvisioningSecrets,
     description:
-      "Dedicated creation can submit generic Secret values with request-local references. Values are cleared after the provision request is accepted.",
+      "Dedicated creation saves generic Secrets first, then submits provisioning with the returned references.",
   },
   createUnsupportedProvisioning: {
     group: "Pages/Create Agent",
@@ -352,7 +352,7 @@ export const scenarios = {
     path: create,
     rules: [
       {
-        suffix: "/provisioning",
+        prefix: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/provision/",
         method: "GET",
         status: 503,
       },

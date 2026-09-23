@@ -292,35 +292,14 @@ test(
     const createdAt = new Date().toISOString();
     const namespaceId = `ns_${randomUUID()}`;
     const configurationId = `cfg_${randomUUID()}`;
-    const agentId = `agt_${randomUUID()}`;
     const actorId = `principal-agent-provisioning-${randomUUID()}`;
-    const workId = `agent-provisioning:${agentId}:request-1`;
+    const workId = `agent-provisioning:${randomUUID()}:request-1`;
 
     await state.transact(async (unit) => {
       await unit.namespaces.createNamespace({
         id: namespaceId,
         name: `agent-provisioning-${randomUUID()}`,
         status: "ready",
-        createdAt,
-      });
-      await unit.configurations.createConfiguration({
-        id: configurationId,
-        namespaceId,
-        kind: "agent",
-        generation: 1,
-        createdAt,
-      });
-      await unit.agents.createAgent({
-        id: agentId,
-        namespaceId,
-        name: "Provisioning persistence",
-        configurationId,
-        providerId: null,
-        harnessAuth: null,
-        executionMode: "embedded",
-        servicePrincipalId: `service-agent-${agentId}`,
-        desiredRuntimeState: "stopped",
-        status: "active",
         createdAt,
       });
     });
@@ -330,22 +309,16 @@ test(
       kind: "provisioning",
       idempotencyKey: workId,
       namespaceId,
-      agentId,
       actorId,
     });
 
     const createInput = {
       workId,
       namespaceId,
-      agentId,
-      configurationId,
       actorId,
       requestId: "request-1",
       requestFingerprint: "a".repeat(64),
-      fingerprintKeyVersion: "test-key",
-      secretCount: 1,
       plan: { configuration: { kind: "agent", values: { ok: true } } },
-      protectedInputs: { secrets: [{ name: "one", slot: "secret:0:one" }] },
     };
 
     const created = await state.transact((unit) => unit.provisioning.create(createInput));
@@ -364,38 +337,46 @@ test(
     );
 
     const claim = await claimProvisioningWork(pool, workId);
-    const pendingSecret = {
-      kind: "secret",
+    const pendingConfiguration = {
+      kind: "configuration",
       owner: randomUUID(),
-      targetId: "sec_pending",
-      secretId: "sec_pending",
+      targetId: configurationId,
     };
     await assert.rejects(
       state.transact((unit) =>
         unit.provisioning.checkpoint(
           { idempotencyKey: workId, claimToken: randomUUID() },
-          { completedPhase: "secrets", status: "running", secretCursor: 1 },
+          { completedPhase: "admitted", status: "running", configurationId },
         ),
       ),
       { name: "WorkClaimLostError" },
     );
 
-    const pendingEffect = await state.transact((unit) =>
-      unit.provisioning.checkpoint(claim, {
-        completedPhase: "admitted",
-        status: "running",
-        secretCursor: 1,
-        progress: { pendingEffect: pendingSecret },
-      }),
+    await assert.rejects(
+      state.transact((unit) =>
+        unit.provisioning.checkpoint(claim, {
+          completedPhase: "admitted",
+          status: "running",
+          configurationId,
+        }),
+      ),
+      { name: "ScopeViolationError" },
     );
-    assert.deepEqual(pendingEffect.progress.pendingEffect, pendingSecret);
+    const pendingEffect = await state.transact((unit) =>
+      unit.provisioning.beginEffect(claim, pendingConfiguration),
+    );
+    assert.equal(pendingEffect.configurationId, undefined);
+    const actualPendingConfiguration = pendingEffect.progress.pendingEffect;
+    assert.equal(actualPendingConfiguration.kind, "configuration");
+    assert.equal(typeof actualPendingConfiguration.owner, "string");
+    assert.equal(actualPendingConfiguration.targetId, configurationId);
 
     await assert.rejects(
       state.transact((unit) =>
         unit.provisioning.checkpoint(claim, {
-          completedPhase: "secrets",
+          completedPhase: "configuration",
           status: "failed",
-          secretCursor: 1,
+          configurationId,
         }),
       ),
       { name: "ScopeViolationError" },
@@ -405,9 +386,8 @@ test(
       unit.provisioning.recordFailure(
         claim,
         {
-          completedPhase: "secrets",
-          secretCursor: 1,
-          progress: { pendingEffect: pendingSecret },
+          completedPhase: "admitted",
+          progress: { pendingEffect: actualPendingConfiguration },
         },
         {
           disposition: "retry",
@@ -417,8 +397,7 @@ test(
       ),
     );
     assert.equal(retrying.status, "running");
-    assert.equal(retrying.secretCursor, 1);
-    assert.deepEqual(retrying.protectedInputs, createInput.protectedInputs);
+    assert.equal(retrying.configurationId, undefined);
     const requeued = await pool.query(
       "SELECT state, completed_at, reason_code FROM occ.controller_work WHERE idempotency_key = $1",
       [workId],
@@ -432,27 +411,34 @@ test(
     const secondClaim = await claimProvisioningWork(pool, workId);
     const settledBeforeFailure = await state.transact((unit) =>
       unit.provisioning.settleEffect(workId, {
-        kind: "secret",
-        owner: pendingSecret.owner,
-        targetId: pendingSecret.targetId,
-        secretId: pendingSecret.secretId,
-        result: { backendRef: { id: "settled-before-failure" } },
+        kind: "configuration",
+        owner: actualPendingConfiguration.owner,
+        targetId: actualPendingConfiguration.targetId,
       }),
     );
     assert.deepEqual(settledBeforeFailure.progress.effectReceipt, {
-      kind: "secret",
-      owner: pendingSecret.owner,
-      targetId: pendingSecret.targetId,
-      secretId: pendingSecret.secretId,
-      result: { backendRef: { id: "settled-before-failure" } },
+      kind: "configuration",
+      owner: actualPendingConfiguration.owner,
+      targetId: actualPendingConfiguration.targetId,
     });
+
+    await state.transact((unit) =>
+      unit.configurations.createConfiguration({
+        id: configurationId,
+        namespaceId,
+        kind: "agent",
+        generation: 1,
+        values: { ok: true },
+        createdAt,
+      }),
+    );
 
     const failed = await state.transact((unit) =>
       unit.provisioning.recordFailure(
         secondClaim,
         {
-          completedPhase: "secrets",
-          secretCursor: 1,
+          completedPhase: "configuration",
+          configurationId,
           progress: settledBeforeFailure.progress,
         },
         {
@@ -463,11 +449,6 @@ test(
       ),
     );
     assert.equal(failed.status, "failed");
-    assert.deepEqual(
-      failed.protectedInputs,
-      createInput.protectedInputs,
-      "pending Secret effects retain protected inputs for exact recovery",
-    );
     assert.deepEqual(
       failed.progress.effectReceipt,
       settledBeforeFailure.progress.effectReceipt,
@@ -482,10 +463,9 @@ test(
     ]);
 
     const retried = await state.transact((unit) =>
-      unit.provisioning.retryByAgent(namespaceId, agentId, actorId),
+      unit.provisioning.retryByWorkId(namespaceId, workId, actorId),
     );
     assert.equal(retried.status, "queued");
-    assert.deepEqual(retried.protectedInputs, createInput.protectedInputs);
     assert.deepEqual(retried.progress.effectReceipt, settledBeforeFailure.progress.effectReceipt);
     const retryWork = await pool.query(
       "SELECT state, completed_at, reason_code FROM occ.controller_work WHERE idempotency_key = $1",
@@ -498,31 +478,13 @@ test(
       [workId],
     );
     const terminalClaim = await claimProvisioningWork(pool, workId);
-    const terminalFailure = await state.transact((unit) =>
-      unit.provisioning.recordFailure(
-        terminalClaim,
-        {
-          completedPhase: "secrets",
-          secretCursor: 1,
-          progress: retried.progress,
-        },
-        {
-          disposition: "permanent",
-          code: "PROVISIONING_REJECTED",
-          message: "second permanent test failure",
-        },
-      ),
-    );
-    assert.equal(terminalFailure.status, "failed");
-
     const cancelled = await state.transact((unit) =>
-      unit.provisioning.cancelByAgent(namespaceId, agentId, {
+      unit.provisioning.cancel(terminalClaim, {
         code: "PROVISIONING_CANCELLED",
         message: "cancelled by test",
       }),
     );
-    assert.equal(cancelled?.status, "cancelled");
-    assert.deepEqual(cancelled.protectedInputs, createInput.protectedInputs);
+    assert.equal(cancelled.status, "cancelled");
     assert.deepEqual(cancelled.progress.effectReceipt, settledBeforeFailure.progress.effectReceipt);
     const terminal = await pool.query(
       "SELECT state, reason_code FROM occ.controller_work WHERE idempotency_key = $1",
@@ -533,16 +495,16 @@ test(
     ]);
 
     await assert.rejects(
-      state.transact((unit) => unit.provisioning.retryByAgent(namespaceId, agentId, actorId)),
+      state.transact((unit) => unit.provisioning.retryByWorkId(namespaceId, workId, actorId)),
       { name: "ResourceConflictError" },
     );
 
     await assert.rejects(
       state.transact((unit) =>
         unit.provisioning.checkpoint(claim, {
-          completedPhase: "secrets",
+          completedPhase: "admitted",
           status: "running",
-          secretCursor: 1,
+          configurationId,
         }),
       ),
       { name: "ScopeViolationError" },
@@ -568,7 +530,7 @@ test(
     const agentId = `agt_${randomUUID()}`;
     const revisionId = `rev_${randomUUID()}`;
     const actorId = `principal-agent-provisioning-${randomUUID()}`;
-    const workId = `agent-provisioning:${agentId}:request-success`;
+    const workId = `agent-provisioning:${randomUUID()}:request-success`;
 
     await state.transact(async (unit) => {
       await unit.namespaces.createNamespace({
@@ -620,22 +582,16 @@ test(
       kind: "provisioning",
       idempotencyKey: workId,
       namespaceId,
-      agentId,
       actorId,
     });
     await state.transact((unit) =>
       unit.provisioning.create({
         workId,
         namespaceId,
-        agentId,
-        configurationId,
         actorId,
         requestId: "request-success",
         requestFingerprint: "c".repeat(64),
-        fingerprintKeyVersion: "test-key",
-        secretCount: 0,
         plan: { configuration: { kind: "agent", values: { ok: true } } },
-        protectedInputs: {},
       }),
     );
 
@@ -644,8 +600,9 @@ test(
       unit.provisioning.checkpoint(claim, {
         completedPhase: "handoff",
         status: "succeeded",
+        agentId,
+        configurationId,
         revisionId,
-        protectedInputs: {},
       }),
     );
     assert.equal(succeeded.status, "succeeded");
@@ -673,35 +630,14 @@ test(
     const createdAt = new Date().toISOString();
     const namespaceId = `ns_${randomUUID()}`;
     const configurationId = `cfg_${randomUUID()}`;
-    const agentId = `agt_${randomUUID()}`;
     const actorId = `principal-agent-provisioning-${randomUUID()}`;
-    const workId = `agent-provisioning:${agentId}:request-checkpoint`;
+    const workId = `agent-provisioning:${randomUUID()}:request-checkpoint`;
 
     await state.transact(async (unit) => {
       await unit.namespaces.createNamespace({
         id: namespaceId,
         name: `agent-provisioning-checkpoint-${randomUUID()}`,
         status: "ready",
-        createdAt,
-      });
-      await unit.configurations.createConfiguration({
-        id: configurationId,
-        namespaceId,
-        kind: "agent",
-        generation: 1,
-        createdAt,
-      });
-      await unit.agents.createAgent({
-        id: agentId,
-        namespaceId,
-        name: "Provisioning checkpoint",
-        configurationId,
-        providerId: null,
-        harnessAuth: null,
-        executionMode: "embedded",
-        servicePrincipalId: `service-agent-${agentId}`,
-        desiredRuntimeState: "stopped",
-        status: "active",
         createdAt,
       });
     });
@@ -711,22 +647,16 @@ test(
       kind: "provisioning",
       idempotencyKey: workId,
       namespaceId,
-      agentId,
       actorId,
     });
     await state.transact((unit) =>
       unit.provisioning.create({
         workId,
         namespaceId,
-        agentId,
-        configurationId,
         actorId,
         requestId: "request-checkpoint",
         requestFingerprint: "d".repeat(64),
-        fingerprintKeyVersion: "test-key",
-        secretCount: 1,
         plan: { configuration: { kind: "agent", values: { ok: true } } },
-        protectedInputs: { secrets: [{ name: "one", slot: "secret:0:one" }] },
       }),
     );
 
@@ -736,23 +666,31 @@ test(
       owner: randomUUID(),
       targetId: configurationId,
     };
-    const checkpointed = await state.transact((unit) =>
-      unit.provisioning.checkpoint(claim, {
-        completedPhase: "secrets",
-        status: "running",
-        secretCursor: 1,
-        progress: { pendingEffect: pendingConfiguration },
-      }),
-    );
-    assert.equal(checkpointed.status, "running");
-    assert.equal(checkpointed.secretCursor, 1);
-    assert.deepEqual(checkpointed.progress.pendingEffect, pendingConfiguration);
     await assert.rejects(
       state.transact((unit) =>
         unit.provisioning.checkpoint(claim, {
-          completedPhase: "secrets",
+          completedPhase: "admitted",
           status: "running",
-          secretCursor: 1,
+          configurationId,
+        }),
+      ),
+      { name: "ScopeViolationError" },
+    );
+    const checkpointed = await state.transact((unit) =>
+      unit.provisioning.beginEffect(claim, pendingConfiguration),
+    );
+    assert.equal(checkpointed.status, "running");
+    assert.equal(checkpointed.configurationId, undefined);
+    const actualPendingConfiguration = checkpointed.progress.pendingEffect;
+    assert.equal(actualPendingConfiguration.kind, "configuration");
+    assert.equal(typeof actualPendingConfiguration.owner, "string");
+    assert.equal(actualPendingConfiguration.targetId, configurationId);
+    await assert.rejects(
+      state.transact((unit) =>
+        unit.provisioning.checkpoint(claim, {
+          completedPhase: "admitted",
+          status: "running",
+          configurationId,
           progress: {},
         }),
       ),
@@ -762,9 +700,8 @@ test(
       state.transact((unit) =>
         unit.provisioning.settleEffect(workId, {
           kind: "configuration",
-          owner: `${pendingConfiguration.owner}-mismatch`,
+          owner: `${actualPendingConfiguration.owner}-mismatch`,
           targetId: configurationId,
-          result: { created: true },
         }),
       ),
       { name: "ResourceConflictError" },
@@ -772,23 +709,31 @@ test(
     const receipted = await state.transact((unit) =>
       unit.provisioning.settleEffect(workId, {
         kind: "configuration",
-        owner: pendingConfiguration.owner,
+        owner: actualPendingConfiguration.owner,
         targetId: configurationId,
-        result: { created: true },
       }),
     );
-    assert.deepEqual(receipted.progress.pendingEffect, pendingConfiguration);
+    assert.deepEqual(receipted.progress.pendingEffect, actualPendingConfiguration);
     assert.deepEqual(receipted.progress.effectReceipt, {
       kind: "configuration",
-      owner: pendingConfiguration.owner,
+      owner: actualPendingConfiguration.owner,
       targetId: configurationId,
-      result: { created: true },
     });
+    await state.transact((unit) =>
+      unit.configurations.createConfiguration({
+        id: configurationId,
+        namespaceId,
+        kind: "agent",
+        generation: 1,
+        values: { ok: true },
+        createdAt,
+      }),
+    );
     const cleared = await state.transact((unit) =>
       unit.provisioning.checkpoint(claim, {
-        completedPhase: "secrets",
+        completedPhase: "configuration",
         status: "running",
-        secretCursor: 1,
+        configurationId,
         progress: {},
       }),
     );

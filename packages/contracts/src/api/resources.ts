@@ -182,6 +182,7 @@ export const AgentRuntimeCredentialStatusSchema = Type.Object(
 
 export const AgentProvisioningStatusSchema = Type.Object(
   {
+    workId: Type.String({ minLength: 1, maxLength: 200 }),
     status: Type.Union([
       Type.Literal("queued"),
       Type.Literal("running"),
@@ -190,14 +191,14 @@ export const AgentProvisioningStatusSchema = Type.Object(
     ]),
     phase: Type.Union([
       Type.Literal("admitted"),
-      Type.Literal("secrets"),
-      Type.Literal("database_setup"),
       Type.Literal("configuration"),
       Type.Literal("transport"),
       Type.Literal("handoff"),
     ]),
     attemptCount: Type.Integer({ minimum: 0 }),
     updatedAt: Timestamp,
+    agentId: Type.Optional(AgentId),
+    configurationId: Type.Optional(ConfigurationId),
     revisionId: Type.Optional(RevisionId),
     url: Type.String({ minLength: 1 }),
     error: Type.Optional(
@@ -323,7 +324,6 @@ export const AgentProvisioningResponse = Type.Object(
   {
     data: Type.Object(
       {
-        agent: AgentSchema,
         provisioning: AgentProvisioningStatusSchema,
       },
       { additionalProperties: false },

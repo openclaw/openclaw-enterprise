@@ -147,6 +147,10 @@ function agentProvisionPostRequests(requests, namespaceId) {
   return pathRequests(requests, "POST", `/namespaces/${namespaceId}/agents/provision`);
 }
 
+function secretPostRequests(requests, namespaceId) {
+  return pathRequests(requests, "POST", `/namespaces/${namespaceId}/secrets`);
+}
+
 async function routeInstallationProvisioning(page, fixture, executionModes = ["dedicated"]) {
   await page.route(`${fixture.origin}/installation`, async (route) => {
     await route.fulfill({
@@ -548,6 +552,7 @@ test("Dedicated Agent creation provisions inline Configuration and masked new Se
   let provisioningReads = 0;
   let deploymentReads = 0;
   let provisionBody;
+  const savedSecrets = new Map();
   await routeProvidersWithProvisioning(page, fixture);
 
   const agent = {
@@ -560,7 +565,7 @@ test("Dedicated Agent creation provisions inline Configuration and masked new Se
     executionMode: "dedicated",
     harnessAuth: {
       method: "api_key",
-      source: { kind: "provisioning-secret", name: "MODEL_API_KEY" },
+      source: { kind: "secret", namespaceId: namespace.id, id: "sec_model_api_key" },
     },
     servicePrincipalId: "identity_provisioned_agent",
     createdAt: new Date().toISOString(),
@@ -591,15 +596,34 @@ test("Dedicated Agent creation provisions inline Configuration and masked new Se
     }),
   });
 
+  await page.route(`**/namespaces/${namespace.id}/secrets`, async (route, request) => {
+    if (request.method() !== "POST") {
+      await route.fallback();
+      return;
+    }
+    const body = request.postDataJSON();
+    const id = `sec_${body.name.toLowerCase()}`;
+    const secret = {
+      id,
+      namespaceId: namespace.id,
+      name: body.name,
+      ref: { kind: "secret", namespaceId: namespace.id, id },
+    };
+    savedSecrets.set(body.name, secret);
+    await route.fulfill(json(secret, 201));
+  });
   await page.route(`**/namespaces/${namespace.id}/agents/provision`, async (route, request) => {
     provisionBody = request.postDataJSON();
     await route.fulfill(
       json(
         {
-          agent: { ...agent, activeRevisionId: null },
           provisioning: {
+            workId: "work_create",
             status: "queued",
-            url: `/namespaces/${namespace.id}/agents/${agentId}/provisioning`,
+            phase: "admitted",
+            attemptCount: 1,
+            updatedAt: agent.createdAt,
+            url: `/namespaces/${namespace.id}/agents/provision/work_create`,
           },
         },
         202,
@@ -613,19 +637,24 @@ test("Dedicated Agent creation provisions inline Configuration and masked new Se
     }
     await route.fallback();
   });
-  await page.route(
-    `**/namespaces/${namespace.id}/agents/${agentId}/provisioning`,
-    async (route) => {
-      provisioningReads += 1;
-      await route.fulfill(
-        json({
+  await page.route(`**/namespaces/${namespace.id}/agents/provision/work_create`, async (route) => {
+    provisioningReads += 1;
+    await route.fulfill(
+      json({
+        provisioning: {
+          workId: "work_create",
           status: allowProvisioningSuccess ? "succeeded" : "running",
-          url: `/namespaces/${namespace.id}/agents/${agentId}/provisioning`,
-          ...(allowProvisioningSuccess ? { revisionId } : {}),
-        }),
-      );
-    },
-  );
+          phase: allowProvisioningSuccess ? "handoff" : "configuration",
+          attemptCount: 1,
+          updatedAt: agent.createdAt,
+          url: `/namespaces/${namespace.id}/agents/provision/work_create`,
+          ...(allowProvisioningSuccess
+            ? { configurationId: agent.configurationId, agentId, revisionId }
+            : {}),
+        },
+      }),
+    );
+  });
   await page.route(
     `**/namespaces/${namespace.id}/agents/${agentId}/deployments/${revisionId}`,
     async (route) => {
@@ -666,17 +695,17 @@ test("Dedicated Agent creation provisions inline Configuration and masked new Se
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByRole("button", { name: "Start without Preset" }).click();
-  await page.getByLabel("Authentication source").selectOption("api_key_provisioning");
+  await page.getByLabel("Authentication source").selectOption("api_key_new_secret");
   await page.getByLabel("New OpenAI API key Secret name").fill("MODEL_API_KEY");
-  assert.equal(await page.locator("#provisioning-secret-value-0").getAttribute("type"), "password");
-  await page.locator("#provisioning-secret-name-0").fill("MODEL_API_KEY");
-  await page.locator("#provisioning-secret-value-0").fill("model-secret-value");
+  assert.equal(await page.locator("#secret-save-value-0").getAttribute("type"), "password");
+  await page.locator("#secret-save-name-0").fill("MODEL_API_KEY");
+  await page.locator("#secret-save-value-0").fill("model-secret-value");
   await page.getByRole("button", { name: "Add Secret" }).click();
-  await page.locator("#provisioning-secret-name-1").fill("SLACK_APP_TOKEN");
-  await page.locator("#provisioning-secret-value-1").fill("slack-app-secret");
+  await page.locator("#secret-save-name-1").fill("SLACK_APP_TOKEN");
+  await page.locator("#secret-save-value-1").fill("slack-app-secret");
   await page.getByRole("button", { name: "Add Secret" }).click();
-  await page.locator("#provisioning-secret-name-2").fill("SLACK_BOT_TOKEN");
-  await page.locator("#provisioning-secret-value-2").fill("slack-bot-secret");
+  await page.locator("#secret-save-name-2").fill("SLACK_BOT_TOKEN");
+  await page.locator("#secret-save-value-2").fill("slack-bot-secret");
   await page.getByLabel("Agent name").fill(agent.name);
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
 
@@ -688,7 +717,7 @@ test("Dedicated Agent creation provisions inline Configuration and masked new Se
   await page.getByRole("button", { name: "Create Agent" }).click();
   assert.equal((await provisionResponse).status(), 202);
   await page.waitForFunction(
-    () => globalThis.document.querySelector("#provisioning-secret-value-0")?.value === "",
+    () => globalThis.document.querySelector("#secret-save-value-0")?.value === "",
   );
   allowProvisioningSuccess = true;
   await page.waitForURL((url) => {
@@ -709,21 +738,25 @@ test("Dedicated Agent creation provisions inline Configuration and masked new Se
     values,
     secretBindings: {
       SLACK_APP_TOKEN: {
-        source: { kind: "provisioning-secret", name: "SLACK_APP_TOKEN" },
+        source: savedSecrets.get("SLACK_APP_TOKEN").ref,
         delivery: { type: "env" },
       },
       SLACK_BOT_TOKEN: {
-        source: { kind: "provisioning-secret", name: "SLACK_BOT_TOKEN" },
+        source: savedSecrets.get("SLACK_BOT_TOKEN").ref,
         delivery: { type: "env" },
       },
     },
   });
-  assert.deepEqual(provisionBody.secrets, [
-    { name: "MODEL_API_KEY", value: "model-secret-value" },
-    { name: "SLACK_APP_TOKEN", value: "slack-app-secret" },
-    { name: "SLACK_BOT_TOKEN", value: "slack-bot-secret" },
-  ]);
+  assert.equal(Object.hasOwn(provisionBody, "secrets"), false);
   assert.equal(Object.hasOwn(provisionBody.configuration.secretBindings, "MODEL_API_KEY"), false);
+  assert.deepEqual(
+    secretPostRequests(requests, namespace.id).map((request) => request.body),
+    [
+      { name: "MODEL_API_KEY", value: "model-secret-value" },
+      { name: "SLACK_APP_TOKEN", value: "slack-app-secret" },
+      { name: "SLACK_BOT_TOKEN", value: "slack-bot-secret" },
+    ],
+  );
   assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 1);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
   assert.equal(agentPostRequests(requests, namespace.id).length, 0);
@@ -755,17 +788,17 @@ test("Dedicated Agent creation uses regular create when provisioning is unsuppor
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByText("This runtime creates draft Agents for later deployment.").waitFor();
   await assert.rejects(
-    page.getByRole("heading", { name: "New Secrets" }).waitFor({ state: "visible", timeout: 300 }),
+    page.getByRole("heading", { name: "Secrets" }).waitFor({ state: "visible", timeout: 300 }),
     /Timeout/,
   );
   const authOptions = await optionValues(page.getByLabel("Authentication source"));
   assert.equal(
-    authOptions.some((option) => option.value === "api_key_provisioning"),
+    authOptions.some((option) => option.value === "api_key_new_secret"),
     true,
   );
   assert.equal(
     await page
-      .locator('#harness-auth-method option[value="api_key_provisioning"]')
+      .locator('#harness-auth-method option[value="api_key_new_secret"]')
       .evaluate((option) => option.hidden && option.disabled),
     true,
   );
@@ -803,7 +836,7 @@ test("Dedicated Agent creation uses regular create when provisioning is unsuppor
   );
 });
 
-test("Dedicated Agent provisioning retries lost responses with the original request payload", async (t) => {
+test("Dedicated Agent creation reuses separately saved Secret references after provisioning failure", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Provision retry", { ready: true });
@@ -812,6 +845,7 @@ test("Dedicated Agent provisioning retries lost responses with the original requ
     providerModel: "gpt-5.1",
   });
   const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
   await routeProvidersWithProvisioning(page, fixture);
   const agentId = "agt_00000000-0000-4000-8000-00000000babe";
   const revisionId = "rev_00000000-0000-4000-8000-00000000babe";
@@ -827,7 +861,7 @@ test("Dedicated Agent provisioning retries lost responses with the original requ
     executionMode: "dedicated",
     harnessAuth: {
       method: "api_key",
-      source: { kind: "provisioning-secret", name: "MODEL_API_KEY" },
+      source: { kind: "secret", namespaceId: namespace.id, id: "sec_model_api_key" },
     },
     servicePrincipalId: "identity_retried_agent",
     createdAt,
@@ -858,6 +892,40 @@ test("Dedicated Agent provisioning retries lost responses with the original requ
     }),
   });
 
+  let markSecretSaveStarted;
+  let releaseSecretSave;
+  const secretSaveStarted = new Promise((resolve) => {
+    markSecretSaveStarted = resolve;
+  });
+  const allowSecretSave = new Promise((resolve) => {
+    releaseSecretSave = resolve;
+  });
+  await page.route(`**/namespaces/${namespace.id}/secrets`, async (route, request) => {
+    if (request.method() !== "POST") {
+      await route.fallback();
+      return;
+    }
+    const body = request.postDataJSON();
+    if (secretPostRequests(requests, namespace.id).length === 1) {
+      markSecretSaveStarted();
+      await allowSecretSave;
+    }
+    await route.fulfill(
+      json(
+        {
+          id: `sec_${body.name.toLowerCase()}`,
+          namespaceId: namespace.id,
+          name: body.name,
+          ref: {
+            kind: "secret",
+            namespaceId: namespace.id,
+            id: `sec_${body.name.toLowerCase()}`,
+          },
+        },
+        201,
+      ),
+    );
+  });
   await page.route(`**/namespaces/${namespace.id}/agents/provision`, async (route, request) => {
     bodies.push(request.postDataJSON());
     if (bodies.length === 1) {
@@ -877,11 +945,16 @@ test("Dedicated Agent provisioning retries lost responses with the original requ
     await route.fulfill(
       json(
         {
-          agent: { ...agent, activeRevisionId: null },
           provisioning: {
+            workId: "work_retry",
             status: "succeeded",
+            phase: "handoff",
+            attemptCount: 1,
+            updatedAt: createdAt,
+            configurationId: agent.configurationId,
+            agentId,
             revisionId,
-            url: `/namespaces/${namespace.id}/agents/${agentId}/provisioning`,
+            url: `/namespaces/${namespace.id}/agents/provision/work_retry`,
           },
         },
         202,
@@ -930,15 +1003,37 @@ test("Dedicated Agent provisioning retries lost responses with the original requ
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Agent name").fill(agent.name);
-  await page.getByLabel("Authentication source").selectOption("api_key_provisioning");
+  await page.getByLabel("Authentication source").selectOption("api_key_new_secret");
   await page.getByLabel("New OpenAI API key Secret name").fill("MODEL_API_KEY");
-  await page.locator("#provisioning-secret-name-0").fill("MODEL_API_KEY");
-  await page.locator("#provisioning-secret-value-0").fill("model-secret-before-ack");
+  await page.locator("#secret-save-name-0").fill("MODEL_API_KEY");
+  await page.locator("#secret-save-value-0").fill("model-secret-before-ack");
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
-
+  const saveClick = page.getByRole("button", { name: "Save secrets" }).click();
+  await secretSaveStarted;
+  const firstProvisionResponse = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/provision` &&
+      response.request().method() === "POST",
+  );
   await page.getByRole("button", { name: "Create Agent" }).click();
   await page
-    .getByText("Outcome unknown. Retry resubmits the same request ID and payload")
+    .locator(".create-channels + p[role='status']")
+    .filter({ hasText: "Saving Secrets…" })
+    .waitFor();
+  assert.equal(
+    secretPostRequests(requests, namespace.id).length,
+    1,
+    "Create Agent must wait for the in-flight standalone Secret save",
+  );
+  releaseSecretSave();
+  await saveClick;
+  await page.getByText("Saved as sec_model_api_key.").waitFor();
+  await page.waitForFunction(
+    () => globalThis.document.querySelector("#secret-save-value-0")?.value === "",
+  );
+  assert.equal((await firstProvisionResponse).status(), 503);
+  await page
+    .getByText("Outcome unknown. Retry resubmits the same request ID and saved references")
     .waitFor();
   await page.getByLabel("Agent name").fill("Edited after unknown");
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(nativeValues("edited"), null, 2));
@@ -957,6 +1052,12 @@ test("Dedicated Agent provisioning retries lost responses with the original requ
   assert.equal(bodies[0].requestId, bodies[1].requestId);
   assert.equal(bodies[0].name, agent.name);
   assert.deepEqual(bodies[0].configuration.values, values);
+  assert.deepEqual(bodies[0].harnessAuth, agent.harnessAuth);
+  assert.equal(Object.hasOwn(bodies[0], "secrets"), false);
+  assert.deepEqual(
+    secretPostRequests(requests, namespace.id).map((request) => request.body),
+    [{ name: "MODEL_API_KEY", value: "model-secret-before-ack" }],
+  );
 });
 
 test("Agent creation renders provider and service account choices and saves selected associations", async (t) => {
@@ -1412,262 +1513,6 @@ test("Agent detail preserves admitted revision history while draft edits change 
   assert.equal(
     (await page.locator("body").textContent()).includes(agent.harnessAuth.source.id),
     false,
-  );
-});
-
-test("Agent detail keeps explicit revision selections while provisioning status refreshes", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Provisioning selected revision", {
-    ready: true,
-  });
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "Provisioned history Agent",
-    nativeValues("selected-rev-one"),
-  );
-  const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
-  const generationTwo = await fixture.updateConfiguration(
-    namespace.id,
-    agent.configurationId,
-    nativeValues("selected-rev-two"),
-  );
-  assert.equal(generationTwo.generation, 2);
-  const second = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
-  const draft = await fixture.updateConfiguration(
-    namespace.id,
-    agent.configurationId,
-    nativeValues("selected-draft"),
-  );
-  assert.equal(draft.generation, 3);
-  const { page } = await newPage(t, fixture);
-  let provisioningReads = 0;
-
-  const json = (data, status = 200) => ({
-    status,
-    contentType: "application/json",
-    body: JSON.stringify({
-      data,
-      meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
-    }),
-  });
-  await page.route(
-    `**/namespaces/${namespace.id}/agents/${agent.id}/provisioning`,
-    async (route) => {
-      provisioningReads += 1;
-      await route.fulfill(
-        json({
-          status: provisioningReads % 2 === 1 ? "running" : "succeeded",
-          revisionId: second.revision.id,
-          url: `/namespaces/${namespace.id}/agents/${agent.id}/provisioning`,
-        }),
-      );
-    },
-  );
-  await page.route(
-    `**/namespaces/${namespace.id}/agents/${agent.id}/deployments/*`,
-    async (route) => {
-      const revisionId = decodeURIComponent(
-        new URL(route.request().url()).pathname.split("/").at(-1),
-      );
-      await route.fulfill(
-        json({
-          deploymentId: `dep_${revisionId}`,
-          revisionId,
-          status: "succeeded",
-          error: null,
-        }),
-      );
-    },
-  );
-
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").pathname +
-      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").search,
-  );
-  await page.getByRole("heading", { name: "Provisioned history Agent" }).waitFor();
-  const provisioningPanel = page.locator("section.deployment-status").filter({
-    has: page.getByRole("heading", { name: "Provisioning status" }),
-  });
-  await provisioningPanel.getByText("Provisioning in progress.").waitFor();
-  await provisioningPanel.getByRole("button", { name: "Refresh provisioning" }).click();
-  await provisioningPanel
-    .getByText("Provisioning finished. Waiting for deployment activation.")
-    .waitFor();
-  assertRevisionUrl(page, "draft");
-  await revealNativeConfiguration(page, "View native Configuration");
-  await page.getByText('"marker": "selected-draft"').waitFor();
-
-  provisioningReads = 0;
-  await page.goto(
-    `${fixture.origin}${
-      detailUrl(fixture, namespace.id, agent.id, first.revision.id, "configuration").pathname
-    }${detailUrl(fixture, namespace.id, agent.id, first.revision.id, "configuration").search}`,
-  );
-  await page.getByRole("heading", { name: "Provisioned history Agent" }).waitFor();
-  await provisioningPanel.getByText("Provisioning in progress.").waitFor();
-  await provisioningPanel.getByRole("button", { name: "Refresh provisioning" }).click();
-  await provisioningPanel
-    .getByText("Provisioning finished. Waiting for deployment activation.")
-    .waitFor();
-  assertRevisionUrl(page, first.revision.id);
-  await revealNativeConfiguration(page, "View admitted native configuration");
-  await page.getByText('"marker": "selected-rev-one"').waitFor();
-});
-
-test("Agent detail retries failed first-time provisioning and keeps exact revision pending", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Provisioning detail retry", { ready: true });
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "Failed provisioning Agent",
-    nativeValues("provisioning-detail"),
-  );
-  const revisionId = "rev_00000000-0000-4000-8000-00000000f00d";
-  const { page } = await newPage(t, fixture);
-  const requests = apiRequests(page, fixture.origin);
-  let statusReads = 0;
-
-  await page.route(
-    `**/namespaces/${namespace.id}/agents/${agent.id}/provisioning`,
-    async (route) => {
-      statusReads += 1;
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          data:
-            statusReads === 1
-              ? {
-                  status: "failed",
-                  error: {
-                    code: "PROVISIONING_FAILED",
-                    message: "The worker could not finish provisioning.",
-                  },
-                }
-              : {
-                  status: "succeeded",
-                  revisionId,
-                  url: `/namespaces/${namespace.id}/agents/${agent.id}/provisioning`,
-                },
-          meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
-        }),
-      });
-    },
-  );
-  await page.route(
-    `**/namespaces/${namespace.id}/agents/${agent.id}/provisioning/retry`,
-    async (route) => {
-      await route.fulfill({
-        status: 202,
-        contentType: "application/json",
-        body: JSON.stringify({
-          data: {
-            status: "queued",
-            revisionId,
-            url: `/namespaces/${namespace.id}/agents/${agent.id}/provisioning`,
-          },
-          meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
-        }),
-      });
-    },
-  );
-  await page.route(
-    `**/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revisionId}`,
-    async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          data: {
-            deploymentId: `dep_${revisionId}`,
-            revisionId,
-            status: "succeeded",
-            error: null,
-          },
-          meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
-        }),
-      });
-    },
-  );
-
-  await login(
-    page,
-    fixture,
-    `/console/agents/${agent.id}?namespace=${namespace.id}&tab=configuration`,
-  );
-  await page.getByRole("heading", { name: "Failed provisioning Agent" }).waitFor();
-  const provisioningPanel = page.locator("section.deployment-status").filter({
-    has: page.getByRole("heading", { name: "Provisioning status" }),
-  });
-  await provisioningPanel.getByText("Provisioning failed.").waitFor();
-  await provisioningPanel.getByText("Revision", { exact: true }).waitFor();
-  await provisioningPanel.getByText("Pending", { exact: true }).first().waitFor();
-  requests.length = 0;
-
-  await provisioningPanel.getByRole("button", { name: "Retry provisioning" }).click();
-  await page.waitForURL((url) => url.searchParams.get("revision") === revisionId);
-  assert.equal(new URL(page.url()).searchParams.get("tab"), "workspace");
-  assert.deepEqual(
-    pathRequests(
-      requests,
-      "POST",
-      `/namespaces/${namespace.id}/agents/${agent.id}/provisioning/retry`,
-    ).map((request) => request.body),
-    [{}],
-  );
-});
-
-test("Agent detail does not retry cancelled first-time provisioning", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Provisioning detail cancelled", {
-    ready: true,
-  });
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "Cancelled provisioning Agent",
-    nativeValues("provisioning-cancelled"),
-  );
-  const { page } = await newPage(t, fixture);
-
-  await page.route(
-    `**/namespaces/${namespace.id}/agents/${agent.id}/provisioning`,
-    async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          data: {
-            status: "failed",
-            error: {
-              code: "PROVISIONING_CANCELLED",
-              message: "Provisioning was cancelled by a newer terminal operation.",
-            },
-          },
-          meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
-        }),
-      });
-    },
-  );
-
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").pathname +
-      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").search,
-  );
-  await page.getByRole("heading", { name: "Cancelled provisioning Agent" }).waitFor();
-  const provisioningPanel = page.locator("section.deployment-status").filter({
-    has: page.getByRole("heading", { name: "Provisioning status" }),
-  });
-  await provisioningPanel.getByText("Provisioning failed.").waitFor();
-  assert.equal(
-    await provisioningPanel.getByRole("button", { name: "Retry provisioning" }).count(),
-    0,
   );
 });
 

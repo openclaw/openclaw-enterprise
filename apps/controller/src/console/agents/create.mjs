@@ -115,26 +115,26 @@ function parseObject(input, reportInvalid = false) {
   return values;
 }
 
-function provisioningSecretNamesFromBindings(bindings) {
+function newSecretNamesFromBindings(bindings) {
   const names = new Set();
   for (const binding of Object.values(bindings ?? {})) {
     const source = binding?.source;
-    if (source?.kind === "provisioning-secret" && typeof source.name === "string") {
+    if (source?.kind === "new-secret" && typeof source.name === "string") {
       names.add(source.name);
     }
   }
   return names;
 }
 
-function provisioningSecretNameFromAuth(binding) {
-  return binding?.method === "api_key" && binding.source?.kind === "provisioning-secret"
+function newSecretNameFromAuth(binding) {
+  return binding?.method === "api_key" && binding.source?.kind === "new-secret"
     ? binding.source.name
     : null;
 }
 
-function addDefaultProvisioningSecretBindings(bindings, secrets, harnessAuth) {
+function addDefaultNewSecretBindings(bindings, secrets, harnessAuth) {
   const next = { ...(bindings ?? {}) };
-  const authSecretName = provisioningSecretNameFromAuth(harnessAuth);
+  const authSecretName = newSecretNameFromAuth(harnessAuth);
   for (const secret of secrets) {
     if (
       secret.name !== authSecretName &&
@@ -142,7 +142,7 @@ function addDefaultProvisioningSecretBindings(bindings, secrets, harnessAuth) {
       next[secret.name] === undefined
     ) {
       next[secret.name] = {
-        source: { kind: "provisioning-secret", name: secret.name },
+        source: { kind: "new-secret", name: secret.name },
         delivery: { type: "env" },
       };
     }
@@ -150,16 +150,16 @@ function addDefaultProvisioningSecretBindings(bindings, secrets, harnessAuth) {
   return next;
 }
 
-function validateProvisioningSecretReferences(secrets, bindings, harnessAuth) {
+function validateNewSecretReferences(secrets, bindings, harnessAuth) {
   const available = new Set(secrets.map((secret) => secret.name));
-  const used = provisioningSecretNamesFromBindings(bindings);
-  const authSecret = provisioningSecretNameFromAuth(harnessAuth);
+  const used = newSecretNamesFromBindings(bindings);
+  const authSecret = newSecretNameFromAuth(harnessAuth);
   if (authSecret) {
     used.add(authSecret);
   }
   for (const name of used) {
     if (!available.has(name)) {
-      return `New Secret ${name} is referenced but has no value in New Secrets.`;
+      return `New Secret ${name} is referenced but has no value in Secrets.`;
     }
   }
   for (const secret of secrets) {
@@ -168,6 +168,35 @@ function validateProvisioningSecretReferences(secrets, bindings, harnessAuth) {
     }
   }
   return null;
+}
+
+function resolveSecretSource(source, savedSecrets) {
+  if (source?.kind !== "new-secret") {
+    return source;
+  }
+  const saved = savedSecrets.get(source.name);
+  if (!saved?.ref) {
+    throw new Error(`Save new Secret ${source.name} before creating the Agent.`);
+  }
+  return saved.ref;
+}
+
+function resolveNewSecretReferences(bindings, harnessAuth, savedSecrets) {
+  const resolvedBindings = {};
+  for (const [name, binding] of Object.entries(bindings ?? {})) {
+    resolvedBindings[name] = {
+      ...binding,
+      source: resolveSecretSource(binding?.source, savedSecrets),
+    };
+  }
+  const resolvedHarnessAuth =
+    harnessAuth?.method === "api_key"
+      ? {
+          ...harnessAuth,
+          source: resolveSecretSource(harnessAuth.source, savedSecrets),
+        }
+      : harnessAuth;
+  return { bindings: resolvedBindings, harnessAuth: resolvedHarnessAuth };
 }
 
 function provisioningStatusText(status) {
@@ -191,15 +220,18 @@ function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function deploymentStatusPath(path, provisioning) {
-  return typeof provisioning?.revisionId === "string" && provisioning.revisionId.length > 0
-    ? `${path}/deployments/${encodeURIComponent(provisioning.revisionId)}`
+function deploymentStatusPath(namespaceId, provisioning) {
+  return typeof provisioning?.agentId === "string" &&
+    provisioning.agentId.length > 0 &&
+    typeof provisioning?.revisionId === "string" &&
+    provisioning.revisionId.length > 0
+    ? `${namespacePath(namespaceId)}/agents/${encodeURIComponent(provisioning.agentId)}/deployments/${encodeURIComponent(provisioning.revisionId)}`
     : null;
 }
 
-async function waitForProvisioning({ request, status, path, first }) {
+async function waitForProvisioning({ request, status, namespaceId, first }) {
   let current = first.provisioning ?? first;
-  let agent = first.agent;
+  const jobUrl = current?.url;
   while (current?.status === "queued" || current?.status === "running") {
     status.textContent = provisioningStatusText(current.status);
     if (typeof current.url !== "string" || !current.url) {
@@ -208,17 +240,24 @@ async function waitForProvisioning({ request, status, path, first }) {
     await wait(1_000);
     const next = await request(current.url);
     current = next.provisioning ?? next;
-    agent = next.agent ?? agent;
   }
   status.textContent = provisioningStatusText(current?.status);
   if (current?.status !== "succeeded") {
     const error = new Error(current?.error?.message ?? "Provisioning did not complete.");
     error.provisioningTerminal = true;
+    error.canRetryProvisioning = current?.status === "failed";
+    error.provisioningUrl = current?.url ?? jobUrl;
     throw error;
   }
-  const deploymentPath = deploymentStatusPath(path, current);
+  const deploymentPath = deploymentStatusPath(namespaceId, current);
+  if (typeof current.agentId !== "string" || !current.agentId) {
+    throw new Error("Provisioning status did not include an Agent.");
+  }
+  if (typeof current.revisionId !== "string" || !current.revisionId) {
+    throw new Error("Provisioning status did not include an AgentRevision.");
+  }
   if (!deploymentPath) {
-    return current.revisionId ?? agent?.activeRevisionId ?? "draft";
+    return { agentId: current.agentId, revisionId: current.revisionId };
   }
   let deployment = current.deployment;
   while (deployment?.status !== "succeeded") {
@@ -231,67 +270,88 @@ async function waitForProvisioning({ request, status, path, first }) {
     await wait(1_000);
     deployment = await request(deploymentPath);
   }
-  return deployment.revisionId ?? current.revisionId ?? agent?.activeRevisionId ?? "draft";
+  return { agentId: current.agentId, revisionId: deployment.revisionId ?? current.revisionId };
 }
 
 async function finishProvisioningAttempt({ request, status, namespaceId, attempt }) {
   status.textContent = "Submitting provisioning request…";
-  const provisioned = await request(`${namespacePath(namespaceId)}/agents/provision`, {
-    method: "POST",
-    body: attempt.body,
-  });
+  const provisioned =
+    attempt.retryUrl === undefined
+      ? await request(`${namespacePath(namespaceId)}/agents/provision`, {
+          method: "POST",
+          body: attempt.body,
+        })
+      : await request(attempt.retryUrl, { method: "POST" });
   attempt.acknowledged = true;
-  attempt.onAcknowledged?.();
-  status.textContent = "Provisioning request accepted. Creating secrets…";
-  const agentId = provisioned.agent?.id;
-  const agentPath =
-    agentId === undefined
-      ? null
-      : `${namespacePath(namespaceId)}/agents/${encodeURIComponent(agentId)}`;
-  if (!agentPath) {
-    throw new Error("Provisioning response did not include an Agent.");
-  }
-  const revisionId = await waitForProvisioning({
+  const accepted = provisioned.provisioning ?? provisioned;
+  attempt.statusUrl = accepted.url ?? attempt.statusUrl;
+  attempt.retryUrl =
+    typeof attempt.statusUrl === "string" && attempt.statusUrl.length > 0
+      ? `${attempt.statusUrl}/retry`
+      : undefined;
+  status.textContent = "Provisioning request accepted.";
+  return waitForProvisioning({
     request,
     status,
-    path: agentPath,
+    namespaceId,
     first: provisioned,
   });
-  return { agentId, revisionId };
 }
 
-function createProvisioningSecretsEditor() {
-  const rows = element("div", { className: "provisioning-secret-rows" });
+function createSecretsEditor(context) {
+  const rows = element("div", { className: "secret-save-rows" });
+  const savedSecrets = new Map();
   let counter = 0;
+  let saveOutcomeUnknown = false;
+  let externallyDisabled = false;
+  let saving = false;
+  let savePromise = null;
+  const saveFeedback = element("p", { className: "hint", role: "status" });
+  let addButton;
+  let saveButton;
 
-  function addRow(name = "", value = "") {
+  function addRow(name = "", value = "", savedSecret = null) {
     const index = counter++;
     const nameInput = element("input", {
-      id: `provisioning-secret-name-${index}`,
+      id: `secret-save-name-${index}`,
       autocomplete: "off",
       spellcheck: "false",
       placeholder: "SLACK_APP_TOKEN",
       value: name,
     });
     const valueInput = element("input", {
-      id: `provisioning-secret-value-${index}`,
+      id: `secret-save-value-${index}`,
       type: "password",
       autocomplete: "off",
       spellcheck: "false",
       value,
     });
+    const status = element("p", { className: "hint", role: "status" });
+    const state = { nameInput, valueInput, status, savedSecret };
+    if (savedSecret) {
+      savedSecrets.set(savedSecret.name, savedSecret);
+      nameInput.readOnly = true;
+      valueInput.value = "";
+      valueInput.disabled = true;
+      status.textContent = `Saved as ${savedSecret.id}.`;
+    }
     const row = element(
       "div",
-      { className: "provisioning-secret-row" },
+      { className: "secret-save-row" },
       field("Secret name", nameInput),
       field("Secret value", valueInput),
-      button("Remove Secret", () => {
+      status,
+      button("Remove from form", () => {
+        if (state.savedSecret) {
+          savedSecrets.delete(state.savedSecret.name);
+        }
         row.remove();
         if (!rows.children.length) {
           addRow();
         }
       }),
     );
+    row.secretState = state;
     rows.append(row);
   }
 
@@ -299,11 +359,21 @@ function createProvisioningSecretsEditor() {
     const secrets = [];
     const names = new Set();
     for (const row of rows.children) {
-      const [nameInput, valueInput] = row.querySelectorAll("input");
+      const { nameInput, valueInput, savedSecret } = row.secretState;
       const name = nameInput.value.trim();
       const value = valueInput.value;
       nameInput.setCustomValidity("");
       valueInput.setCustomValidity("");
+      if (savedSecret) {
+        if (names.has(savedSecret.name)) {
+          nameInput.setCustomValidity("Secret names must be unique.");
+          nameInput.reportValidity();
+          return undefined;
+        }
+        names.add(savedSecret.name);
+        secrets.push({ name: savedSecret.name, saved: savedSecret });
+        continue;
+      }
       if (!name && !value) {
         continue;
       }
@@ -318,38 +388,162 @@ function createProvisioningSecretsEditor() {
         return undefined;
       }
       names.add(name);
+      if (!value) {
+        valueInput.setCustomValidity("Enter a Secret value.");
+        valueInput.reportValidity();
+        return undefined;
+      }
       secrets.push({ name, value });
     }
     return secrets;
   }
 
+  async function runSavePendingSecrets() {
+    if (saveOutcomeUnknown) {
+      throw new Error("Refresh or start over before saving after an unknown Secret save outcome.");
+    }
+    const secrets = readSecrets();
+    if (secrets === undefined) {
+      return undefined;
+    }
+    for (const secret of secrets) {
+      if (secret.saved) {
+        continue;
+      }
+      const row = [...rows.children].find(
+        (entry) => entry.secretState.nameInput.value.trim() === secret.name,
+      );
+      let mutationStarted = false;
+      try {
+        mutationStarted = true;
+        const saved = await context.request(`${namespacePath(context.namespaceId)}/secrets`, {
+          method: "POST",
+          body: { name: secret.name, value: secret.value },
+        });
+        row.secretState.savedSecret = saved;
+        row.secretState.valueInput.value = "";
+        row.secretState.valueInput.disabled = true;
+        row.secretState.nameInput.readOnly = true;
+        row.secretState.status.textContent = `Saved as ${saved.id}.`;
+        savedSecrets.set(saved.name, saved);
+        saveFeedback.textContent = `Saved ${saved.name} as ${saved.id}.`;
+        if (!context.isCurrent()) {
+          return undefined;
+        }
+      } catch (error) {
+        if (!context.isCurrent()) {
+          return undefined;
+        }
+        if (error.status === 401) {
+          context.onExpired();
+          return undefined;
+        }
+        saveOutcomeUnknown = mutationStarted && ![400, 403, 404, 409, 429].includes(error.status);
+        if (saveOutcomeUnknown && row) {
+          row.secretState.status.textContent =
+            "Secret save outcome unknown. Refresh before retrying this value.";
+        }
+        throw error;
+      }
+    }
+    return savedSecrets;
+  }
+
+  async function savePendingSecrets() {
+    if (saving) {
+      return savePromise ?? savedSecrets;
+    }
+    saving = true;
+    applyDisabled();
+    savePromise = runSavePendingSecrets();
+    try {
+      return await savePromise;
+    } finally {
+      saving = false;
+      savePromise = null;
+      if (context.isCurrent()) {
+        applyDisabled();
+      }
+    }
+  }
+  async function saveFromButton() {
+    if (saving || externallyDisabled) {
+      return;
+    }
+    saveFeedback.className = "hint";
+    saveFeedback.textContent = "Saving Secrets…";
+    try {
+      await savePendingSecrets();
+      if (context.isCurrent() && !saveOutcomeUnknown) {
+        saveFeedback.textContent ||= "Secrets saved.";
+      }
+    } catch (error) {
+      if (!context.isCurrent()) {
+        return;
+      }
+      saveFeedback.className = saveOutcomeUnknown ? "error" : "hint";
+      saveFeedback.textContent =
+        error.status === undefined && error.message ? error.message : message(error, true);
+    }
+  }
+
   function clear() {
     rows.replaceChildren();
+    savedSecrets.clear();
+    saveOutcomeUnknown = false;
     counter = 0;
     addRow();
   }
 
-  function setDisabled(value) {
-    for (const node of rows.querySelectorAll("button, input")) {
-      node.disabled = value;
+  function applyDisabled() {
+    const disabled = externallyDisabled || saving;
+    for (const row of rows.children) {
+      const { nameInput, valueInput, savedSecret } = row.secretState;
+      nameInput.disabled = disabled;
+      valueInput.disabled = disabled || Boolean(savedSecret);
+      for (const buttonNode of row.querySelectorAll("button")) {
+        buttonNode.disabled = disabled;
+      }
+    }
+    if (addButton) {
+      addButton.disabled = disabled;
+    }
+    if (saveButton) {
+      saveButton.disabled = disabled || saveOutcomeUnknown;
     }
   }
 
+  function setDisabled(value) {
+    externallyDisabled = value;
+    applyDisabled();
+  }
+
   addRow();
+  addButton = button("Add Secret", () => addRow());
+  saveButton = button("Save secrets", () => void saveFromButton());
   const section = element(
     "section",
-    { className: "provisioning-secrets" },
-    element("h2", {}, "New Secrets"),
+    { className: "secret-save-section" },
+    element("h2", {}, "Secrets"),
     element(
       "p",
       { className: "hint" },
-      "Create generic Secrets during provisioning. Values are masked, submitted only with this request, and cleared after admission is acknowledged.",
+      "Save generic namespace Secrets before provisioning. Saved references are reused if Agent creation fails.",
     ),
     rows,
-    button("Add Secret", () => addRow()),
+    saveFeedback,
+    element("div", { className: "form-actions" }, addButton, saveButton),
   );
 
-  return { section, readSecrets, clear, setDisabled };
+  return {
+    section,
+    readSecrets,
+    savePendingSecrets,
+    savedSecrets,
+    clear,
+    setDisabled,
+    hasUnknownSaveOutcome: () => saveOutcomeUnknown,
+  };
 }
 
 export function renderCreateAgent(context) {
@@ -388,8 +582,7 @@ function renderAgentForm(context, rendered) {
           (binding.source?.kind === "secret" &&
             binding.source.namespaceId === namespaceId &&
             typeof binding.source.id === "string") ||
-          (binding.source?.kind === "provisioning-secret" &&
-            typeof binding.source.name === "string")
+          (binding.source?.kind === "new-secret" && typeof binding.source.name === "string")
         )))
   ) {
     throw new Error(
@@ -465,7 +658,7 @@ function renderAgentForm(context, rendered) {
     provider.value = providerId;
   }
   const auth = createHarnessAuthFields(context, agent.harnessAuth ?? null, {
-    allowProvisioningSecret: true,
+    allowNewSecret: true,
   });
   const plugins = element("textarea", { id: "agent-plugins", rows: "4", spellcheck: "false" });
   plugins.value = JSON.stringify(agent.plugins ?? {}, null, 2);
@@ -475,7 +668,7 @@ function renderAgentForm(context, rendered) {
     spellcheck: "false",
   });
   secretBindings.value = JSON.stringify(rendered.configuration?.secretBindings ?? {}, null, 2);
-  const provisioningSecrets = createProvisioningSecretsEditor();
+  const secretsEditor = createSecretsEditor(context);
   const workspaceInputs = Object.entries(WORKSPACE_DEFAULTS).map(([filename, content]) => {
     const input = element("textarea", {
       id: `workspace-${filename.replace(".", "-")}`,
@@ -559,9 +752,9 @@ function renderAgentForm(context, rendered) {
     field(
       "Secret bindings JSON",
       secretBindings,
-      "Map environment names to existing Secret references or new provisioning-secret names. Do not enter values here.",
+      "Map environment names to existing Secret references or new Secret names from this form. Do not enter values here.",
     ),
-    provisioningSecrets.section,
+    secretsEditor.section,
     field("Plugin selections JSON", plugins, "Desired plugin selections and policies."),
     workspaceSection,
   );
@@ -677,13 +870,18 @@ function renderAgentForm(context, rendered) {
     startOver.disabled = pending || outcomeUnknown || Boolean(savedConfiguration);
     mode.disabled = pending || Boolean(savedConfiguration);
     const provisionable = shouldProvision();
-    provisioningSecrets.section.hidden = !provisionable;
-    provisioningSecrets.setDisabled(pending);
-    auth.setProvisioningSecretAllowed(provisionable);
+    secretsEditor.section.hidden = !provisionable;
+    secretsEditor.setDisabled(pending);
+    auth.setNewSecretAllowed(provisionable);
     configuration.readOnly = Boolean(savedConfiguration);
     secretBindings.readOnly = Boolean(savedConfiguration);
-    submit.disabled = pending || outcomeUnknown || !capabilityDiscoveryDone;
-    retryProvisioning.hidden = !outcomeUnknown || !provisioningAttempt;
+    submit.disabled =
+      pending ||
+      outcomeUnknown ||
+      secretsEditor.hasUnknownSaveOutcome() ||
+      !capabilityDiscoveryDone;
+    retryProvisioning.hidden =
+      (!outcomeUnknown && provisioningAttempt?.retryUrl === undefined) || !provisioningAttempt;
     retryProvisioning.disabled = pending || !provisioningAttempt;
     retryCapabilityDiscovery.hidden = !capabilityDiscoveryFailed;
     retryCapabilityDiscovery.disabled = pending;
@@ -763,7 +961,6 @@ function renderAgentForm(context, rendered) {
       if (!context.isCurrent()) {
         return;
       }
-      provisioningSecrets.clear();
       provisioningAttempt = null;
       context.navigate(`agents/${agentId}?revision=${revisionId}&tab=workspace`);
     } catch (error) {
@@ -780,14 +977,21 @@ function renderAgentForm(context, rendered) {
         ![400, 403, 404, 409, 429].includes(error.status);
       const detail =
         outcomeUnknown && attempt.acknowledged
-          ? "Outcome unknown after provisioning admission. Retry resubmits the same request ID and payload so the API can recover the saved Agent."
+          ? "Outcome unknown after provisioning admission. Retry resubmits the same request ID and saved references so the API can recover the job."
           : outcomeUnknown
-            ? "Outcome unknown. Retry resubmits the same request ID and payload; do not change credential values for that retry."
-            : error.status === undefined && error.message
-              ? error.message
-              : message(error, mutationStarted);
+            ? "Outcome unknown. Retry resubmits the same request ID and saved references."
+            : error.provisioningTerminal && error.canRetryProvisioning
+              ? `${error.message} Retry uses the accepted provisioning job.`
+              : error.status === undefined && error.message
+                ? error.message
+                : message(error, mutationStarted);
       feedback.textContent = detail + (error.requestId ? ` Request ID: ${error.requestId}` : "");
-      if (!outcomeUnknown) {
+      if (error.provisioningTerminal && error.canRetryProvisioning) {
+        provisioningAttempt = {
+          ...attempt,
+          retryUrl: error.provisioningUrl ? `${error.provisioningUrl}/retry` : attempt.retryUrl,
+        };
+      } else if (!outcomeUnknown) {
         provisioningAttempt = null;
       }
     } finally {
@@ -806,7 +1010,7 @@ function renderAgentForm(context, rendered) {
     const desiredPlugins = parseObject(plugins, true);
     const bindings = parseObject(secretBindings, true);
     const provisionable = shouldProvision();
-    const secrets = provisionable ? provisioningSecrets.readSecrets() : [];
+    const secrets = provisionable ? secretsEditor.readSecrets() : [];
     if (values === undefined || desiredPlugins === undefined || bindings === undefined) {
       return;
     }
@@ -840,20 +1044,16 @@ function renderAgentForm(context, rendered) {
       if (
         !provisionable &&
         body.harnessAuth?.method === "api_key" &&
-        body.harnessAuth.source?.kind === "provisioning-secret"
+        body.harnessAuth.source?.kind === "new-secret"
       ) {
         feedback.textContent =
-          "New provisioning Secrets are only available when this runtime supports first-time Agent provisioning.";
+          "New Secret entries are only available when this runtime supports first-time Agent provisioning.";
         return;
       }
       mutationStarted = true;
       if (provisionable) {
-        const finalBindings = addDefaultProvisioningSecretBindings(
-          bindings,
-          secrets,
-          body.harnessAuth,
-        );
-        const invalidSecrets = validateProvisioningSecretReferences(
+        const finalBindings = addDefaultNewSecretBindings(bindings, secrets, body.harnessAuth);
+        const invalidSecrets = validateNewSecretReferences(
           secrets,
           finalBindings,
           body.harnessAuth,
@@ -862,18 +1062,25 @@ function renderAgentForm(context, rendered) {
           feedback.textContent = invalidSecrets;
           return;
         }
+        savedStatus.textContent = "Saving Secrets…";
+        const savedSecrets = await secretsEditor.savePendingSecrets();
+        if (savedSecrets === undefined) {
+          return;
+        }
+        const resolved = resolveNewSecretReferences(finalBindings, body.harnessAuth, savedSecrets);
         provisioningAttempt = {
           acknowledged: false,
-          onAcknowledged: () => provisioningSecrets.clear(),
           body: {
             requestId: provisioningRequestId,
             ...body,
+            harnessAuth: resolved.harnessAuth,
             configuration: {
               kind: "agent",
               values,
-              ...(Object.keys(finalBindings).length ? { secretBindings: finalBindings } : {}),
+              ...(Object.keys(resolved.bindings).length
+                ? { secretBindings: resolved.bindings }
+                : {}),
             },
-            ...(secrets.length ? { secrets } : {}),
           },
         };
         const { agentId, revisionId } = await finishProvisioningAttempt({
@@ -885,7 +1092,6 @@ function renderAgentForm(context, rendered) {
         if (!context.isCurrent()) {
           return;
         }
-        provisioningSecrets.clear();
         provisioningAttempt = null;
         if (context.isCurrent()) {
           context.navigate(`agents/${agentId}?revision=${revisionId}&tab=workspace`);
@@ -929,13 +1135,15 @@ function renderAgentForm(context, rendered) {
       const detail =
         outcomeUnknown && provisioningAttempt
           ? provisioningAttempt.acknowledged
-            ? "Outcome unknown after provisioning admission. Retry resubmits the same request ID and payload so the API can recover the saved Agent."
-            : "Outcome unknown. Retry resubmits the same request ID and payload; do not change credential values for that retry."
-          : error.status === undefined && error.message
-            ? error.message
-            : error.status === 409 && savedConfiguration
-              ? "Agent creation conflicts with the saved state. Check the Agent name and selections, then try again."
-              : message(error, mutationStarted);
+            ? "Outcome unknown after provisioning admission. Retry resubmits the same request ID and saved references so the API can recover the job."
+            : "Outcome unknown. Retry resubmits the same request ID and saved references."
+          : secretsEditor.hasUnknownSaveOutcome()
+            ? "A Secret save outcome is unknown. Saved Secrets are retained; refresh before retrying unsaved values."
+            : error.status === undefined && error.message
+              ? error.message
+              : error.status === 409 && savedConfiguration
+                ? "Agent creation conflicts with the saved state. Check the Agent name and selections, then try again."
+                : message(error, mutationStarted);
       feedback.textContent = detail + (error.requestId ? ` Request ID: ${error.requestId}` : "");
     } finally {
       if (context.isCurrent()) {

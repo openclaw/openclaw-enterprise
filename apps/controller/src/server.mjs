@@ -6,7 +6,6 @@ import {
   loadStartupConfigurationSnapshot,
 } from "./composition/installation-config.ts";
 import { composeProduction } from "./composition/production.ts";
-import { loadProvisioningInputProtector } from "./composition/provisioning-inputs.ts";
 import { validateWorkspaceFilesApiKeyPath } from "./composition/workspace-files.ts";
 import { createOccLogger, emitOccLogEvent } from "./logging.ts";
 import { createOccMetrics } from "./metrics/index.ts";
@@ -233,7 +232,6 @@ async function start() {
   const startupConfiguration = await loadStartupConfigurationSnapshot({ mode: settings.mode });
   const logging = startupConfiguration.logging;
   const logger = createOccLogger({ component: "occ-api", level: logging.level });
-  const provisioningInputProtector = await loadProvisioningInputProtector();
   if (settings.gatewayApiKeyPath !== undefined) {
     await validateWorkspaceFilesApiKeyPath(settings.gatewayApiKeyPath);
   }
@@ -242,7 +240,6 @@ async function start() {
     logger,
     logging,
     metrics,
-    ...(provisioningInputProtector === undefined ? {} : { provisioningInputProtector }),
   };
   const drivers = await loadInstallationConfiguration({
     mode: settings.mode,

@@ -1828,10 +1828,11 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
 
   const provisioningUnavailable = async (): Promise<never> => {
     throw new DependencyUnavailableError(
-      "Agent provisioning requires durable PostgreSQL state for protected inputs and checkpoints.",
+      "Agent provisioning requires durable PostgreSQL state for checkpoints.",
     );
   };
   const provisioningAbsent = async (): Promise<undefined> => undefined;
+  const provisioningPendingAbsent = async (): Promise<boolean> => false;
 
   return {
     installations,
@@ -1847,6 +1848,7 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
     repositorySessions,
     provisioning: {
       findByWorkId: provisioningAbsent,
+      hasPendingNamespaceProvisioning: provisioningPendingAbsent,
       findByAgent: provisioningAbsent,
       findByConfiguration: provisioningAbsent,
       findByRequest: provisioningAbsent,
@@ -1855,10 +1857,9 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
       checkpoint: provisioningUnavailable,
       recordFailure: provisioningUnavailable,
       settleEffect: provisioningUnavailable,
-      completeEffectCleanup: provisioningUnavailable,
       cancel: provisioningUnavailable,
       cancelByAgent: async () => undefined,
-      retryByAgent: provisioningUnavailable,
+      retryByWorkId: provisioningUnavailable,
     },
     audit: {
       async append(event) {

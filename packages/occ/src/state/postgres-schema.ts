@@ -883,7 +883,7 @@ export const controllerWork = occSchema.table(
           AND ${table.agentTarget} IN ('stopped', 'deleted'))
         OR (${table.workKind} = 'lifecycle' AND ${table.agentId} IS NOT NULL AND ${table.revisionId} IS NOT NULL
           AND ${table.namespaceTarget} IS NULL AND ${table.agentTarget} IS NULL)
-        OR (${table.workKind} = 'provisioning' AND ${table.agentId} IS NOT NULL
+        OR (${table.workKind} = 'provisioning' AND ${table.agentId} IS NULL
           AND ${table.revisionId} IS NULL AND ${table.namespaceTarget} IS NULL
           AND ${table.agentTarget} IS NULL)
       )`,
@@ -981,20 +981,15 @@ export const agentProvisioningWork = occSchema.table(
   {
     workId: text("work_id").primaryKey(),
     namespaceId: text("namespace_id").notNull(),
-    agentId: text("agent_id").notNull(),
-    configurationId: text("configuration_id").notNull(),
+    agentId: text("agent_id"),
+    configurationId: text("configuration_id"),
     actorId: text("actor_id").notNull(),
     requestId: text("request_id").notNull(),
     requestFingerprint: text("request_fingerprint").notNull(),
-    fingerprintKeyVersion: text("fingerprint_key_version").notNull(),
     status: text("status").notNull(),
     completedPhase: text("completed_phase").notNull(),
-    secretCursor: integer("secret_cursor").notNull().default(0),
-    secretCount: integer("secret_count").notNull(),
-    configurationGeneration: bigint("configuration_generation", { mode: "number" }),
     revisionId: text("revision_id"),
     plan: jsonb("plan").$type<Record<string, unknown>>().notNull(),
-    protectedInputs: jsonb("protected_inputs").$type<Record<string, unknown>>().notNull(),
     progress: jsonb("progress").$type<Record<string, unknown>>().notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
@@ -1041,37 +1036,24 @@ export const agentProvisioningWork = occSchema.table(
     ),
     check(
       "agent_provisioning_phase_valid",
-      sql`${table.completedPhase} IN ('admitted', 'secrets', 'database_setup', 'configuration', 'transport', 'handoff')`,
-    ),
-    check(
-      "agent_provisioning_secret_cursor_valid",
-      sql`${table.secretCursor} BETWEEN 0 AND ${table.secretCount} AND ${table.secretCount} BETWEEN 0 AND 64`,
-    ),
-    check(
-      "agent_provisioning_secret_phase_complete",
-      sql`${table.completedPhase} <> 'secrets' OR ${table.secretCursor} = ${table.secretCount}`,
-    ),
-    check(
-      "agent_provisioning_generation_valid",
-      sql`${table.configurationGeneration} IS NULL OR ${table.configurationGeneration} BETWEEN 1 AND 9007199254740991`,
+      sql`${table.completedPhase} IN ('admitted', 'configuration', 'transport', 'handoff')`,
     ),
     check(
       "agent_provisioning_fingerprint_valid",
-      sql`${table.requestFingerprint} ~ '^[a-f0-9]{64}$' AND char_length(${table.fingerprintKeyVersion}) BETWEEN 1 AND 200`,
+      sql`${table.requestFingerprint} ~ '^[a-f0-9]{64}$'`,
     ),
     check(
       "agent_provisioning_json_objects",
       sql`jsonb_typeof(${table.plan}) = 'object'
-        AND jsonb_typeof(${table.protectedInputs}) = 'object'
         AND jsonb_typeof(${table.progress}) = 'object'`,
     ),
     check(
       "agent_provisioning_revision_requires_handoff",
-      sql`${table.revisionId} IS NULL OR ${table.completedPhase} = 'handoff'`,
+      sql`${table.revisionId} IS NULL OR (${table.completedPhase} = 'handoff' AND ${table.agentId} IS NOT NULL)`,
     ),
     check(
       "agent_provisioning_success_requires_handoff",
-      sql`${table.status} <> 'succeeded' OR (${table.completedPhase} = 'handoff' AND ${table.revisionId} IS NOT NULL)`,
+      sql`${table.status} <> 'succeeded' OR (${table.completedPhase} = 'handoff' AND ${table.agentId} IS NOT NULL AND ${table.configurationId} IS NOT NULL AND ${table.revisionId} IS NOT NULL)`,
     ),
     check(
       "agent_provisioning_failed_before_handoff",

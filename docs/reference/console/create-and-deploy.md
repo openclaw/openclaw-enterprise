@@ -5,9 +5,8 @@ Dedicated runtimes, start first-time provisioning from the same form. On an
 existing Kubernetes Installation,
 start with [production Agent prerequisites](../../guides/deploy/production-agents.md#prepare-each-namespace):
 you need a ready Namespace and, for an OpenAI API key, an administrator who can
-grant the Agent access to its Secret. Operators must also configure the
-versioned provisioning-input keyring for API and worker before inline Secret
-values can be accepted. After deployment, [verify this same
+grant the Agent access to its Secret. Console saves entered values through the
+existing Secrets API before it submits provisioning. After deployment, [verify this same
 Agent and revision](../../guides/deploy/production-agents.md#verify-production-workloads).
 If you are using [Local Setup](../../guides/quickstart.md) instead, the
 [local first-Agent walkthrough](../../guides/first-agent.md) creates a separate
@@ -50,18 +49,20 @@ does not make that link available.
    generic Secret fields in this form; Slack connectivity is verified after the
    Agent deploys.
 5. Choose how the Agent will authenticate to its model. Supported Dedicated
-   runtimes can accept a new masked API key value in this create request or an
+   runtimes let you save a new masked API key through the Secrets API or use an
    existing Secret reference. Ordinary create paths accept existing references or
    save a draft for later setup.
 6. Review **Workspace files**. Each field contains its rendered OpenClaw default.
    Edit any of the four files, keep the text to submit that default, or clear a
    field to create an empty file. The browser submits LF newlines. See
    [initial contents](../agents.md#initial-contents-at-creation) for limits.
-7. Select **Create Agent**. For supported first-time provisioning, the Console
-   sends one request with the Agent inputs, inline Configuration, new masked
-   Secret values or existing Secret references, and workspace files. It opens the
-   Agent detail page and follows provisioning through Secret creation,
-   Configuration materialization, runtime credentials, and first deployment. For
+7. Select **Save secrets** to save entered credentials separately, or select
+   **Create Agent** to save them and then submit provisioning. The provisioning
+   request contains inline Configuration, saved Secret references, Agent inputs
+   and workspace files. Console follows the returned job while the worker
+   creates the Configuration and Agent, provisions runtime credentials and
+   submits the first deployment. It then opens the ordinary Agent deployment
+   view for the returned revision. For
    ordinary create paths, the Console saves the Configuration first and opens a
    draft Agent on **New revision** with no workload yet. After deployment, use
    the [live workspace editor](../console.md#edit-workspace-files). Pending
@@ -76,22 +77,81 @@ does not make that link available.
 Secret fields are masked, including when a Preset fills them. Configuration
 summaries show **OpenAI API key · Secret configured** without the ID or value.
 The console does not resolve Secret values into native Configuration. Submitted
-new values are kept only in memory until provisioning admission is acknowledged.
+new values are kept only in memory until the Secrets API acknowledges each save.
+Console then clears the value and keeps its returned reference. Provisioning
+receives references only.
 
 Selecting a credential source does not change the configured model or execution
-mode, or confirm that the provider accepts it. For API-key deployments, the
-Agent's own service principal also needs `operate` on that Secret; ask an
+mode, or confirm that the provider accepts it. The Agent's own service principal
+also needs `operate` on its API-key Secret. First-time provisioning grants this
+access to accepted Secrets before deploying. For an ordinary draft Agent, ask an
 administrator to [grant it before deploying](../../guides/deploy/production-agents.md#grant-the-agent-access-to-its-model-secret).
 See [harness authentication](../agents.md#harness-authentication) for the full rules.
 
-If first-time provisioning admission succeeds, the Console clears submitted new
-Secret values and follows the returned status. If the response is lost before
-acknowledgement, **Retry provisioning request** resubmits the same request ID and
-same in-memory payload so the API can recover the saved Agent or reject a changed
-plan. After a reload, check the **Agents** list and provisioning status instead
-of entering the values again. For ordinary create paths, if the Configuration
-saves but Agent creation fails, the form shows its ID and keeps its JSON, Secret
-bindings, and execution mode fixed so you can reuse that Configuration.
+If saving a Secret succeeds but another save or provisioning fails, the saved
+namespace Secret remains available. Console reuses its reference on retry and
+does not delete it automatically. If a Secret save response is lost, check the
+namespace Secrets before submitting that value again.
+
+If provisioning admission loses its response, **Retry provisioning request**
+resubmits the same request ID and accepted inputs. Once a job is acknowledged,
+Console follows its status URL and can retry a failed job without changing its
+inputs. Successful steps retain their resource IDs; uncertain external writes
+need recovery before that step can run again. Saving a Secret does not prove
+that the provider accepts it or that an integration works.
+
+For ordinary create paths, if the Configuration saves but Agent creation fails,
+the form shows its ID and keeps its JSON, Secret bindings, and execution mode
+fixed so you can reuse that Configuration.
+
+## API sequence
+
+First [save each Secret](../drivers/kubernetes-secret.md#create-a-namespace-owned-secret)
+with `POST /namespaces/{namespaceId}/secrets` and keep its returned `data.ref`.
+Then submit `POST /namespaces/{namespaceId}/agents/provision`. This example uses
+a previously saved model credential; replace the example Namespace and Secret
+IDs with the returned reference and generate one stable request ID per submission:
+
+```json
+{
+  "requestId": "req_123e4567-e89b-42d3-a456-426614174002",
+  "name": "Support agent",
+  "executionMode": "dedicated",
+  "configuration": {
+    "kind": "agent",
+    "values": {
+      "agents": {
+        "defaults": {
+          "model": "codex/gpt-6-astra",
+          "models": {
+            "codex/gpt-6-astra": { "agentRuntime": { "id": "codex" } }
+          }
+        }
+      }
+    }
+  },
+  "harnessAuth": {
+    "method": "api_key",
+    "source": {
+      "kind": "secret",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+      "id": "sec_123e4567-e89b-42d3-a456-426614174001"
+    }
+  }
+}
+```
+
+For Slack or another integration, put the saved `data.ref` in the appropriate
+`configuration.secretBindings` entry and configure the corresponding channel.
+The [binding reference](../configuration/secrets.md#secret-bindings) defines the
+shape. No secret values are included in the provisioning request.
+
+HTTP `202` returns `data.provisioning.workId` and `data.provisioning.url`.
+Poll that URL until the job succeeds or fails. Success includes `agentId` and
+`revisionId` and means deployment was submitted; follow ordinary deployment
+status for activation. Use the same request ID for uncertain admission and the
+job's retry endpoint for a known failed job. Neither operation recreates saved
+Secrets. Later deployments use `POST /namespaces/{namespaceId}/agents/{agentId}/deploy`.
 
 ## Initial runtime credentials
 

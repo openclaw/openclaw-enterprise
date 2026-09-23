@@ -1,7 +1,7 @@
 # Feature Spec: Asynchronous Agent provisioning
 
 **Date:** 2026-09-22\
-**Status:** Approved simplification; implementation in progress in PR #322.\
+**Status:** Implemented in PR #322.\
 **Owner:** OCC resource lifecycle and controller worker
 
 ## Problem and Decision
@@ -30,7 +30,7 @@ Admission validates a ready Namespace, supported Kubernetes Dedicated Codex capa
 
 `POST .../agents/provision` returns `202` with `data.provisioning`. It contains `workId`, `status`, `phase`, `attemptCount`, `updatedAt`, and a status `url`; `configurationId`, `agentId`, and `revisionId` appear as those results become available. Public status contains only identifiers, progress and safe errors, never accepted input values or backend credentials.
 
-Status is read through `GET /namespaces/:namespaceId/agents/provision/:workId`. Bodyless `POST /namespaces/:namespaceId/agents/provision/:workId/retry` returns `202` for a retry of the unchanged accepted request. The initiating actor owns pre-Agent status/retry authorization within the Namespace. There is no separate job-cancellation API. Console watches this status during creation, then uses the existing Agent/deployment view for the exact returned revision.
+Status is read through `GET /namespaces/:namespaceId/agents/provision/:workId`. Bodyless `POST /namespaces/:namespaceId/agents/provision/:workId/retry` returns `202` for a retry of the unchanged accepted request. Only the initiating actor can read provisioning status or retry the job, with current authorization required at every stage. There is no separate job-cancellation API. Console watches this status during creation, then uses the existing Agent/deployment view for the exact returned revision.
 
 ### Worker and lifecycle
 

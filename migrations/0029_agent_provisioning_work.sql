@@ -13,27 +13,22 @@ ALTER TABLE occ.controller_work
       AND agent_target IN ('stopped', 'deleted'))
     OR (work_kind = 'lifecycle' AND agent_id IS NOT NULL AND revision_id IS NOT NULL
       AND namespace_target IS NULL AND agent_target IS NULL)
-    OR (work_kind = 'provisioning' AND agent_id IS NOT NULL AND revision_id IS NULL
+    OR (work_kind = 'provisioning' AND agent_id IS NULL AND revision_id IS NULL
       AND namespace_target IS NULL AND agent_target IS NULL)
   );
 --> statement-breakpoint
 CREATE TABLE occ.agent_provisioning_work (
   work_id text PRIMARY KEY,
   namespace_id text NOT NULL,
-  agent_id text NOT NULL,
-  configuration_id text NOT NULL,
+  agent_id text,
+  configuration_id text,
   actor_id text NOT NULL,
   request_id text NOT NULL,
   request_fingerprint text NOT NULL,
-  fingerprint_key_version text NOT NULL,
   status text NOT NULL,
   completed_phase text NOT NULL,
-  secret_cursor integer NOT NULL DEFAULT 0,
-  secret_count integer NOT NULL,
-  configuration_generation bigint,
   revision_id text,
   plan jsonb NOT NULL,
-  protected_inputs jsonb NOT NULL,
   progress jsonb NOT NULL,
   created_at timestamptz NOT NULL,
   updated_at timestamptz NOT NULL,
@@ -62,31 +57,25 @@ CREATE TABLE occ.agent_provisioning_work (
     status IN ('queued', 'running', 'failed', 'succeeded', 'cancelled')
   ),
   CONSTRAINT agent_provisioning_phase_valid CHECK (
-    completed_phase IN ('admitted', 'secrets', 'database_setup', 'configuration', 'transport', 'handoff')
-  ),
-  CONSTRAINT agent_provisioning_secret_cursor_valid CHECK (
-    secret_cursor BETWEEN 0 AND secret_count AND secret_count BETWEEN 0 AND 64
-  ),
-  CONSTRAINT agent_provisioning_secret_phase_complete CHECK (
-    completed_phase <> 'secrets' OR secret_cursor = secret_count
-  ),
-  CONSTRAINT agent_provisioning_generation_valid CHECK (
-    configuration_generation IS NULL OR configuration_generation BETWEEN 1 AND 9007199254740991
+    completed_phase IN ('admitted', 'configuration', 'transport', 'handoff')
   ),
   CONSTRAINT agent_provisioning_fingerprint_valid CHECK (
     request_fingerprint ~ '^[a-f0-9]{64}$'
-    AND char_length(fingerprint_key_version) BETWEEN 1 AND 200
   ),
   CONSTRAINT agent_provisioning_json_objects CHECK (
     jsonb_typeof(plan) = 'object'
-    AND jsonb_typeof(protected_inputs) = 'object'
     AND jsonb_typeof(progress) = 'object'
   ),
   CONSTRAINT agent_provisioning_revision_requires_handoff CHECK (
-    revision_id IS NULL OR completed_phase = 'handoff'
+    revision_id IS NULL OR (completed_phase = 'handoff' AND agent_id IS NOT NULL)
   ),
   CONSTRAINT agent_provisioning_success_requires_handoff CHECK (
-    status <> 'succeeded' OR (completed_phase = 'handoff' AND revision_id IS NOT NULL)
+    status <> 'succeeded' OR (
+      completed_phase = 'handoff'
+      AND agent_id IS NOT NULL
+      AND configuration_id IS NOT NULL
+      AND revision_id IS NOT NULL
+    )
   ),
   CONSTRAINT agent_provisioning_failed_before_handoff CHECK (
     status NOT IN ('failed', 'cancelled') OR revision_id IS NULL
@@ -105,7 +94,7 @@ BEGIN
     WHERE work.idempotency_key = NEW.work_id
       AND work.work_kind = 'provisioning'
       AND work.namespace_id = NEW.namespace_id
-      AND work.agent_id = NEW.agent_id
+      AND work.agent_id IS NULL
       AND work.actor_id = NEW.actor_id
       AND work.revision_id IS NULL
       AND work.namespace_target IS NULL
@@ -124,12 +113,8 @@ BEGIN
        )
        AND NOT (
          OLD.status = 'failed' AND NEW.status = 'cancelled'
-         AND (to_jsonb(NEW) - 'status' - 'progress' - 'protected_inputs' - 'updated_at') =
-             (to_jsonb(OLD) - 'status' - 'progress' - 'protected_inputs' - 'updated_at')
-         AND NEW.protected_inputs = CASE
-           WHEN OLD.progress ? 'pendingEffect' THEN OLD.protected_inputs
-           ELSE '{}'::jsonb
-         END
+         AND (to_jsonb(NEW) - 'status' - 'progress' - 'updated_at') =
+             (to_jsonb(OLD) - 'status' - 'progress' - 'updated_at')
          AND NEW.progress = OLD.progress ||
            jsonb_build_object('error', NEW.progress->'error')
          AND jsonb_typeof(NEW.progress->'error') = 'object'
@@ -137,13 +122,12 @@ BEGIN
        AND NOT (
          OLD.status IN ('failed', 'cancelled')
          AND NEW.status = OLD.status
-         AND (to_jsonb(NEW) - 'progress' - 'protected_inputs' - 'updated_at') =
-             (to_jsonb(OLD) - 'progress' - 'protected_inputs' - 'updated_at')
+         AND (to_jsonb(NEW) - 'progress' - 'updated_at') =
+             (to_jsonb(OLD) - 'progress' - 'updated_at')
          AND (
            (
              OLD.progress ? 'pendingEffect'
              AND NOT (OLD.progress ? 'effectReceipt')
-             AND NEW.protected_inputs = OLD.protected_inputs
              AND NEW.progress ? 'pendingEffect'
              AND NEW.progress ? 'effectReceipt'
              AND NEW.progress->'pendingEffect' = OLD.progress->'pendingEffect'
@@ -155,19 +139,6 @@ BEGIN
                OLD.progress->'pendingEffect'->>'owner'
              AND NEW.progress->'effectReceipt'->>'targetId' =
                OLD.progress->'pendingEffect'->>'targetId'
-             AND COALESCE(NEW.progress->'effectReceipt'->>'secretId', '') =
-               COALESCE(OLD.progress->'pendingEffect'->>'secretId', '')
-             AND jsonb_typeof(NEW.progress->'effectReceipt'->'result') = 'object'
-           )
-           OR (
-             OLD.progress ? 'pendingEffect'
-             AND OLD.progress ? 'effectReceipt'
-             AND NEW.protected_inputs = CASE
-               WHEN OLD.status = 'cancelled' THEN '{}'::jsonb
-               ELSE OLD.protected_inputs
-             END
-             AND NEW.progress = (OLD.progress - 'pendingEffect' - 'effectReceipt') ||
-               jsonb_build_object('externalEffectsResolved', true)
            )
          )
        ) THEN
@@ -176,39 +147,34 @@ BEGIN
 
     IF NEW.work_id IS DISTINCT FROM OLD.work_id
        OR NEW.namespace_id IS DISTINCT FROM OLD.namespace_id
-       OR NEW.agent_id IS DISTINCT FROM OLD.agent_id
-       OR NEW.configuration_id IS DISTINCT FROM OLD.configuration_id
        OR NEW.actor_id IS DISTINCT FROM OLD.actor_id
        OR NEW.request_id IS DISTINCT FROM OLD.request_id
        OR NEW.request_fingerprint IS DISTINCT FROM OLD.request_fingerprint
-       OR NEW.fingerprint_key_version IS DISTINCT FROM OLD.fingerprint_key_version
-       OR NEW.secret_count IS DISTINCT FROM OLD.secret_count
        OR NEW.plan IS DISTINCT FROM OLD.plan THEN
       RAISE EXCEPTION 'agent provisioning accepted plan is immutable' USING ERRCODE = '23514';
+    END IF;
+    IF OLD.agent_id IS NOT NULL AND NEW.agent_id IS DISTINCT FROM OLD.agent_id THEN
+      RAISE EXCEPTION 'agent provisioning Agent ID is immutable' USING ERRCODE = '23514';
+    END IF;
+    IF OLD.configuration_id IS NOT NULL
+       AND NEW.configuration_id IS DISTINCT FROM OLD.configuration_id THEN
+      RAISE EXCEPTION 'agent provisioning Configuration ID is immutable' USING ERRCODE = '23514';
     END IF;
 
     v_phase_rank_old := CASE OLD.completed_phase
       WHEN 'admitted' THEN 0
-      WHEN 'secrets' THEN 1
-      WHEN 'database_setup' THEN 2
-      WHEN 'configuration' THEN 3
-      WHEN 'transport' THEN 4
-      WHEN 'handoff' THEN 5
+      WHEN 'configuration' THEN 1
+      WHEN 'transport' THEN 2
+      WHEN 'handoff' THEN 3
     END;
     v_phase_rank_new := CASE NEW.completed_phase
       WHEN 'admitted' THEN 0
-      WHEN 'secrets' THEN 1
-      WHEN 'database_setup' THEN 2
-      WHEN 'configuration' THEN 3
-      WHEN 'transport' THEN 4
-      WHEN 'handoff' THEN 5
+      WHEN 'configuration' THEN 1
+      WHEN 'transport' THEN 2
+      WHEN 'handoff' THEN 3
     END;
-    IF v_phase_rank_new < v_phase_rank_old OR NEW.secret_cursor < OLD.secret_cursor THEN
+    IF v_phase_rank_new < v_phase_rank_old THEN
       RAISE EXCEPTION 'agent provisioning progress is monotonic' USING ERRCODE = '23514';
-    END IF;
-    IF OLD.configuration_generation IS NOT NULL
-       AND NEW.configuration_generation IS DISTINCT FROM OLD.configuration_generation THEN
-      RAISE EXCEPTION 'agent provisioning finalized generation is immutable' USING ERRCODE = '23514';
     END IF;
     IF OLD.revision_id IS NOT NULL AND NEW.revision_id IS DISTINCT FROM OLD.revision_id THEN
       RAISE EXCEPTION 'agent provisioning handoff revision is immutable' USING ERRCODE = '23514';
@@ -230,11 +196,10 @@ GRANT SELECT, INSERT ON occ.agent_provisioning_work TO occ_app;
 GRANT UPDATE (
   status,
   completed_phase,
-  secret_cursor,
-  configuration_generation,
+  agent_id,
+  configuration_id,
   revision_id,
   progress,
-  protected_inputs,
   updated_at
 ) ON occ.agent_provisioning_work TO occ_app;
 --> statement-breakpoint
@@ -252,7 +217,6 @@ DECLARE
   v_service_principal_id text;
   v_actor_id text;
   v_attempt_count integer;
-  v_unmaterialized_configuration_id text;
 BEGIN
   SELECT work.actor_id, work.attempt_count
     INTO v_actor_id, v_attempt_count
@@ -293,15 +257,6 @@ BEGIN
   WHERE attempt.namespace_id = p_namespace_id AND attempt.agent_id = p_agent_id
   ORDER BY attempt.revision_id, attempt.admission_id FOR UPDATE;
 
-  SELECT provisioning.configuration_id
-    INTO v_unmaterialized_configuration_id
-  FROM occ.agent_provisioning_work AS provisioning
-  WHERE provisioning.namespace_id = p_namespace_id
-    AND provisioning.agent_id = p_agent_id
-    AND provisioning.revision_id IS NULL
-    AND provisioning.completed_phase IN ('admitted', 'secrets', 'database_setup')
-  FOR UPDATE;
-
   -- Revalidate lease time after every potentially blocking ownership lock.
   IF NOT EXISTS (
     SELECT 1 FROM occ.controller_work AS work
@@ -326,8 +281,22 @@ BEGIN
     WHERE provisioning.namespace_id = p_namespace_id
       AND provisioning.agent_id = p_agent_id
       AND (
-        provisioning.progress ? 'pendingEffect'
-        OR provisioning.progress ? 'effectReceipt'
+        (
+          provisioning.progress ? 'pendingEffect'
+          AND NOT (
+            provisioning.progress ? 'effectReceipt'
+            AND provisioning.progress->'effectReceipt'->>'kind' =
+              provisioning.progress->'pendingEffect'->>'kind'
+            AND provisioning.progress->'effectReceipt'->>'owner' =
+              provisioning.progress->'pendingEffect'->>'owner'
+            AND provisioning.progress->'effectReceipt'->>'targetId' =
+              provisioning.progress->'pendingEffect'->>'targetId'
+          )
+        )
+        OR (
+          provisioning.progress ? 'effectReceipt'
+          AND NOT (provisioning.progress ? 'pendingEffect')
+        )
         OR provisioning.status IN ('queued', 'running')
         OR work.state IN ('queued', 'claimed')
       )
@@ -359,11 +328,12 @@ BEGIN
     ));
 
   DELETE FROM occ.apikey WHERE reference_id = v_service_principal_id;
-  -- Preserve the reserved Configuration identity above, then remove its private
-  -- workflow row through the owning work FK before removing the Agent.
-  DELETE FROM occ.controller_work
-    WHERE namespace_id = p_namespace_id AND agent_id = p_agent_id
-      AND work_kind = 'provisioning';
+  DELETE FROM occ.controller_work AS work
+  USING occ.agent_provisioning_work AS provisioning
+  WHERE work.idempotency_key = provisioning.work_id
+    AND provisioning.namespace_id = p_namespace_id
+    AND provisioning.agent_id = p_agent_id
+    AND work.work_kind = 'provisioning';
   DELETE FROM occ.agent_revisions
     WHERE namespace_id = p_namespace_id AND agent_id = p_agent_id;
   DELETE FROM occ.iam_identities
@@ -373,22 +343,6 @@ BEGIN
       AND kind = 'service_principal';
   DELETE FROM occ.agents
     WHERE namespace_id = p_namespace_id AND id = p_agent_id;
-
-  IF v_unmaterialized_configuration_id IS NOT NULL THEN
-    DELETE FROM occ.configurations
-    WHERE namespace_id = p_namespace_id
-      AND id = v_unmaterialized_configuration_id
-      AND NOT EXISTS (
-        SELECT 1 FROM occ.agents
-        WHERE namespace_id = p_namespace_id
-          AND configuration_id = v_unmaterialized_configuration_id
-      )
-      AND NOT EXISTS (
-        SELECT 1 FROM occ.agent_revisions
-        WHERE namespace_id = p_namespace_id
-          AND configuration_id = v_unmaterialized_configuration_id
-      );
-  END IF;
 
   INSERT INTO occ.audit_events (
     id, occurred_at, kind, actor_id, action, namespace_id,

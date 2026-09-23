@@ -18,7 +18,7 @@ export const CreateSlackSecretStaged = {
 };
 export const CreateProvisioningSecrets = {
   ...story("createProvisioningSecrets"),
-  name: "Provisioning with new Secrets",
+  name: "Provisioning with saved Secrets",
 };
 export const CreateUnsupportedProvisioning = {
   ...story("createUnsupportedProvisioning"),

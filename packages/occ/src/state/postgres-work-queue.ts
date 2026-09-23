@@ -467,9 +467,9 @@ export class PostgresWorkQueue {
     }
     if (
       kind === "provisioning" &&
-      (agentId === null || revisionId !== null || namespaceTarget !== null || agentTarget !== null)
+      (agentId !== null || revisionId !== null || namespaceTarget !== null || agentTarget !== null)
     ) {
-      throw new ScopeViolationError("Provisioning work requires one exact Agent target.");
+      throw new ScopeViolationError("Provisioning work requires one exact Namespace target.");
     }
     const availableAt = input.availableAt === undefined ? null : asDate(input.availableAt);
 

@@ -2,7 +2,7 @@ import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:net";
 import test from "node:test";
@@ -19,7 +19,6 @@ import {
   BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
   InMemoryPlatformState,
   OpenClawController,
-  createProvisioningInputProtector,
 } from "../../packages/occ/src/index.ts";
 import {
   authenticatedHeaders,
@@ -282,7 +281,11 @@ async function createAgent(controller, namespaceId, name, values = {}) {
   return result.data;
 }
 
-function provisioningRequestBody(overrides = {}) {
+function exactSecretRef(namespaceId, id) {
+  return { kind: "secret", namespaceId, id };
+}
+
+function provisioningRequestBody(namespaceId, secrets, overrides = {}) {
   return {
     requestId: `req_${randomUUID()}`,
     name: `Provisioned Agent ${randomUUID().slice(0, 8)}`,
@@ -292,28 +295,68 @@ function provisioningRequestBody(overrides = {}) {
       values: { agents: { defaults: { model: "codex/gpt-6-astra" } } },
       secretBindings: {
         TOOL_API_KEY: {
-          source: { kind: "provisioning-secret", name: "tool-api-key" },
+          source: exactSecretRef(namespaceId, secrets.toolApiKey.id),
         },
       },
       ...overrides.configuration,
     },
     harnessAuth: {
       method: "api_key",
-      source: { kind: "provisioning-secret", name: "model-api-key" },
+      source: exactSecretRef(namespaceId, secrets.modelApiKey.id),
     },
-    secrets: [
-      { name: "model-api-key", value: `model-key-${randomUUID()}` },
-      { name: "tool-api-key", value: `tool-key-${randomUUID()}` },
-    ],
     ...overrides,
   };
 }
 
-function createTestProvisioningProtector() {
-  return createProvisioningInputProtector({
-    primaryKeyId: "occ-api-test-v1",
-    keys: [{ id: "occ-api-test-v1", material: randomBytes(32).toString("base64url") }],
-  });
+function createProvisioningCapableConfigurationDriver() {
+  const driver = createTestConfigurationDriver({ id: "configuration-provisioning-api" });
+  driver.createExact = (configuration) => driver.create(configuration);
+  driver.inspectExact = async (configuration) => {
+    try {
+      const stored = await driver.read(configuration);
+      assert.deepEqual(stored, configuration);
+      return stored;
+    } catch {
+      return undefined;
+    }
+  };
+  return driver;
+}
+
+function createProvisioningCapableComputeDriver() {
+  const runtimeStatus = new Map();
+  const keyOf = ({ namespace, agent }) => `${namespace.id}:${agent.id}`;
+  return {
+    id: "compute-provisioning-api",
+    capability: "compute",
+    implementation: "deterministic-test",
+    agentProvisioning: { executionModes: ["dedicated"] },
+    async ensureNamespace(namespace) {
+      return { namespaceId: namespace.id, namespaceReady: true };
+    },
+    async deleteNamespace(namespace) {
+      return { namespaceId: namespace.id, namespaceDeleted: true };
+    },
+    validateHarnessAuth() {},
+    validateAgentProvisioning() {},
+    async prepareRevision(revision) {
+      return {
+        namespaceId: revision.namespaceId,
+        agentId: revision.agentId,
+        revisionId: revision.id,
+        ready: true,
+      };
+    },
+    async provisionAgentRuntimeCredentials(binding) {
+      runtimeStatus.set(keyOf(binding), { transportConfigured: true });
+      return { transportConfigured: true };
+    },
+    async getAgentRuntimeCredentialStatus(binding) {
+      return runtimeStatus.get(keyOf(binding)) ?? { transportConfigured: false };
+    },
+    async stopRevision() {},
+    async retireRevision() {},
+  };
 }
 
 async function bindHarnessKey(fixture, namespaceId, agent) {
@@ -439,7 +482,9 @@ async function createInjectedFixture(options = {}) {
     async retireRevision() {},
   };
   const auditSink = options.auditSink ?? new InMemoryAuditSink();
-  const configurationDriver = createTestConfigurationDriver({ id: "configuration-integration" });
+  const configurationDriver =
+    options.configurationDriver ??
+    createTestConfigurationDriver({ id: "configuration-integration" });
   const secretDriver = createTestSecretDriver({ id: "secret-api-integration" });
   const sessionsByPrincipalId = new Map();
   let controller;
@@ -475,9 +520,6 @@ async function createInjectedFixture(options = {}) {
               controller = new OpenClawController(installation, {
                 state: platformState,
                 recordOperations: options.recordOperations ?? false,
-                ...(options.provisioningInputProtector === undefined
-                  ? {}
-                  : { provisioningInputProtector: options.provisioningInputProtector }),
                 ...(options.providers === undefined ? {} : { providers: options.providers }),
               });
               if (options.providers?.length) {
@@ -2408,9 +2450,10 @@ test("OCC Fastify enforces strict schemas, canonical errors, and its real 64 KiB
   assertOnlyDefaultNamespace(untouched);
 });
 
-test("Agent provisioning API validates request inputs and redacts submitted Secret values", async () => {
+test("Agent provisioning API validates inline configuration with existing Secret references", async () => {
   const fixture = await createInjectedFixture({
-    provisioningInputProtector: createTestProvisioningProtector(),
+    computeDriver: createProvisioningCapableComputeDriver(),
+    configurationDriver: createProvisioningCapableConfigurationDriver(),
   });
   const installation = await injectedRequest(fixture.app, "POST", "/installation/bootstrap", {
     body: { name: "Provisioning validation installation" },
@@ -2425,47 +2468,69 @@ test("Agent provisioning API validates request inputs and redacts submitted Secr
     namespace.data.id,
     "ready",
   );
+  const modelApiKey = await injectedRequest(
+    fixture.app,
+    "POST",
+    `/namespaces/${namespace.data.id}/secrets`,
+    { body: { name: "model-api-key", value: `model-key-${randomUUID()}` } },
+  );
+  assert.equal(modelApiKey.status, 201, JSON.stringify(modelApiKey.body));
+  const toolApiKey = await injectedRequest(
+    fixture.app,
+    "POST",
+    `/namespaces/${namespace.data.id}/secrets`,
+    { body: { name: "tool-api-key", value: `tool-key-${randomUUID()}` } },
+  );
+  assert.equal(toolApiKey.status, 201, JSON.stringify(toolApiKey.body));
+  const secrets = { modelApiKey: modelApiKey.data, toolApiKey: toolApiKey.data };
 
   const foreignNamespaceId = `ns_${randomUUID()}`;
   const foreignSecretId = `sec_${randomUUID()}`;
   const oversizedBindings = Object.fromEntries(
-    Array.from({ length: 65 }, (_, index) => [
-      `TOOL_${index}`,
-      { source: { kind: "provisioning-secret", name: "tool-api-key" } },
-    ]),
+    Array.from({ length: 65 }, (_, index) => [`TOOL_${index}`, { source: toolApiKey.data.ref }]),
   );
   const invalidBodies = [
     [
-      "NUL Secret values",
-      provisioningRequestBody({
-        secrets: [
-          { name: "model-api-key", value: "model-key" },
-          { name: "tool-api-key", value: "tool\u0000key" },
-        ],
+      "submitted Secret values",
+      {
+        ...provisioningRequestBody(namespace.data.id, secrets),
+        secrets: [{ name: "tool-api-key", value: `tool-key-${randomUUID()}` }],
+      },
+    ],
+    [
+      "request-local Secret binding sources",
+      provisioningRequestBody(namespace.data.id, secrets, {
+        configuration: {
+          secretBindings: {
+            TOOL_API_KEY: {
+              source: { kind: "provisioning-secret", name: "tool-api-key" },
+            },
+          },
+        },
       }),
     ],
     [
-      "too many new Secrets",
-      provisioningRequestBody({
-        secrets: Array.from({ length: 65 }, (_, index) => ({
-          name: `secret-${index}`,
-          value: `value-${index}`,
-        })),
+      "request-local Harness Secret source",
+      provisioningRequestBody(namespace.data.id, secrets, {
+        harnessAuth: {
+          method: "api_key",
+          source: { kind: "provisioning-secret", name: "model-api-key" },
+        },
       }),
     ],
     [
       "too many binding destinations",
-      provisioningRequestBody({
+      provisioningRequestBody(namespace.data.id, secrets, {
         configuration: { secretBindings: oversizedBindings },
       }),
     ],
     [
       "non-env delivery",
-      provisioningRequestBody({
+      provisioningRequestBody(namespace.data.id, secrets, {
         configuration: {
           secretBindings: {
             TOOL_API_KEY: {
-              source: { kind: "provisioning-secret", name: "tool-api-key" },
+              source: toolApiKey.data.ref,
               delivery: { type: "file" },
             },
           },
@@ -2474,7 +2539,7 @@ test("Agent provisioning API validates request inputs and redacts submitted Secr
     ],
     [
       "cross-Namespace Secret references",
-      provisioningRequestBody({
+      provisioningRequestBody(namespace.data.id, secrets, {
         configuration: {
           secretBindings: {
             TOOL_API_KEY: {
@@ -2483,21 +2548,19 @@ test("Agent provisioning API validates request inputs and redacts submitted Secr
           },
         },
         harnessAuth: { method: "runtime" },
-        secrets: [],
       }),
     ],
     [
       "reserved environment destinations",
-      provisioningRequestBody({
+      provisioningRequestBody(namespace.data.id, secrets, {
         configuration: {
           secretBindings: {
             OPENCLAW_TOKEN: {
-              source: { kind: "provisioning-secret", name: "tool-api-key" },
+              source: toolApiKey.data.ref,
             },
           },
         },
         harnessAuth: { method: "runtime" },
-        secrets: [{ name: "tool-api-key", value: `tool-key-${randomUUID()}` }],
       }),
     ],
   ];
@@ -2511,15 +2574,21 @@ test("Agent provisioning API validates request inputs and redacts submitted Secr
     );
     assert.equal(result.status, 400, description);
     assert.equal(result.body.error.code, "INVALID_REQUEST", description);
-    const serialized = JSON.stringify(result.body);
-    for (const secret of body.secrets ?? []) {
-      assert.equal(
-        serialized.includes(JSON.stringify(secret.value).slice(1, -1)),
-        false,
-        `${description}: submitted Secret values must not appear in error responses`,
-      );
-    }
   }
+
+  const durableOnly = await injectedRequest(
+    fixture.app,
+    "POST",
+    `/namespaces/${namespace.data.id}/agents/provision`,
+    { body: provisioningRequestBody(namespace.data.id, secrets) },
+  );
+  assert.equal(durableOnly.status, 503, JSON.stringify(durableOnly.body));
+  assert.equal(durableOnly.body.error.code, "DEPENDENCY_UNAVAILABLE");
+  assert.deepEqual(
+    await fixture.platformState.read((view) => view.agents.listAgents(namespace.data.id)),
+    [],
+    "in-memory admission must stop before creating an Agent",
+  );
 
   const oversized = await injectedRequest(
     fixture.app,
@@ -2527,7 +2596,7 @@ test("Agent provisioning API validates request inputs and redacts submitted Secr
     `/namespaces/${namespace.data.id}/agents/provision`,
     {
       rawBody: JSON.stringify(
-        provisioningRequestBody({
+        provisioningRequestBody(namespace.data.id, secrets, {
           configuration: { values: { payload: "x".repeat(448 * 1024) } },
         }),
       ),

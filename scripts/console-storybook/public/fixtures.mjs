@@ -330,9 +330,9 @@ export function installFixture(scenario, evidence) {
           initialWorkspaceFiles = {},
           workspaceDefaultsId: _workspaceDefaultsId,
           requestId,
-          secrets: _secrets = [],
           ...agentBody
         } = body;
+        const workId = nextId("work");
         const savedConfig = {
           ...configuration,
           id: nextId("cfg"),
@@ -368,21 +368,84 @@ export function installFixture(scenario, evidence) {
         });
         provisioning.set(saved.id, {
           requestId,
+          workId,
           reads: 0,
           status: scenario.provisioningStatus ?? "queued",
+          agentId: saved.id,
+          configurationId: savedConfig.id,
           revisionId: revision.id,
-          url: `/namespaces/${namespaceId}/agents/${saved.id}/provisioning`,
+          url: `/namespaces/${namespaceId}/agents/provision/${workId}`,
         });
+        provisioning.set(workId, provisioning.get(saved.id));
         return response(
           {
-            agent: saved,
             provisioning: {
+              workId,
               status: scenario.provisioningStatus ?? "queued",
-              url: `/namespaces/${namespaceId}/agents/${saved.id}/provisioning`,
+              phase: "admitted",
+              attemptCount: 1,
+              updatedAt: createdAt,
+              url: `/namespaces/${namespaceId}/agents/provision/${workId}`,
             },
           },
           202,
         );
+      }
+      const provisioningMatch = resource.match(/^agents\/provision\/([^/]+)(\/retry)?$/);
+      if (provisioningMatch) {
+        const [, workId, retrySuffix] = provisioningMatch;
+        const current = provisioning.get(workId);
+        if (!current) {
+          return error(404);
+        }
+        if (retrySuffix === "/retry" && method === "POST") {
+          current.status = "queued";
+          current.reads = 0;
+          return response(
+            {
+              provisioning: {
+                workId: current.workId,
+                status: current.status,
+                phase: "admitted",
+                attemptCount: 2,
+                updatedAt: createdAt,
+                url: current.url,
+              },
+            },
+            202,
+          );
+        }
+        if (retrySuffix === undefined && method === "GET") {
+          current.reads += 1;
+          if (current.status !== "failed") {
+            current.status = current.reads > 1 ? "succeeded" : "running";
+          }
+          return response({
+            provisioning: {
+              workId: current.workId,
+              status: current.status,
+              phase: current.status === "succeeded" ? "handoff" : "configuration",
+              attemptCount: 1,
+              updatedAt: createdAt,
+              url: current.url,
+              ...(current.status === "failed"
+                ? {
+                    error: {
+                      code: "PROVISIONING_FAILED",
+                      message: "The worker could not finish provisioning.",
+                    },
+                  }
+                : {}),
+              ...(current.status === "succeeded"
+                ? {
+                    configurationId: current.configurationId,
+                    agentId: current.agentId,
+                    revisionId: current.revisionId,
+                  }
+                : {}),
+            },
+          });
+        }
       }
       const agentMatch = resource.match(/^agents\/([^/]+)(.*)$/);
       if (agentMatch) {
@@ -427,44 +490,6 @@ export function installFixture(scenario, evidence) {
           if (["GET", "POST"].includes(method)) {
             return response(credentials.get(id) ?? { transportConfigured: true });
           }
-        }
-        if (suffix === "/provisioning" && method === "GET") {
-          const current = provisioning.get(id);
-          if (!current) {
-            return error(404);
-          }
-          current.reads += 1;
-          if (current.status !== "failed") {
-            current.status = current.reads > 1 ? "succeeded" : "running";
-          }
-          return response({
-            status: current.status,
-            url: current.url,
-            ...(current.status === "failed"
-              ? {
-                  error: {
-                    code: "PROVISIONING_FAILED",
-                    message: "The worker could not finish provisioning.",
-                  },
-                }
-              : { revisionId: current.revisionId }),
-          });
-        }
-        if (suffix === "/provisioning/retry" && method === "POST") {
-          const current = provisioning.get(id);
-          if (!current) {
-            return error(404);
-          }
-          current.status = "queued";
-          current.reads = 0;
-          return response(
-            {
-              status: current.status,
-              url: current.url,
-              revisionId: current.revisionId,
-            },
-            202,
-          );
         }
         if (suffix === "/deploy" && method === "POST") {
           const next = snapshot(

@@ -944,59 +944,6 @@ test(
 );
 
 test(
-  "provisioning input keys mount only when the operator supplies a dedicated keyring Secret",
-  tooling,
-  async () => {
-    const configured = {
-      "provisioning.keys.secretName": "occ-provisioning-keys",
-      "provisioning.keys.key": "active-keyring.json",
-      "provisioning.keys.mountPath": "/etc/openclaw/provisioning",
-    };
-    await assert.rejects(
-      render({ "provisioning.keys.secretName": "occ-auth" }),
-      /provisioning\.keys\.secretName/,
-    );
-
-    const objects = await resources((await render(configured)).stdout);
-    const deployment = (component) =>
-      objects.find(
-        ({ kind, metadata }) =>
-          kind === "Deployment" && metadata.labels?.["app.kubernetes.io/component"] === component,
-      );
-
-    for (const component of ["api", "worker"]) {
-      const pod = deployment(component).spec.template.spec;
-      const container = pod.containers[0];
-      assert.deepEqual(
-        container.env.find(({ name }) => name === "OCC_PROVISIONING_KEYS_PATH"),
-        {
-          name: "OCC_PROVISIONING_KEYS_PATH",
-          value: "/etc/openclaw/provisioning/keyring.json",
-        },
-      );
-      assert.deepEqual(
-        container.volumeMounts.find(({ name }) => name === "provisioning-keys"),
-        {
-          name: "provisioning-keys",
-          mountPath: "/etc/openclaw/provisioning",
-          readOnly: true,
-        },
-      );
-      assert.deepEqual(
-        pod.volumes.find(({ name }) => name === "provisioning-keys"),
-        {
-          name: "provisioning-keys",
-          secret: {
-            secretName: "occ-provisioning-keys",
-            items: [{ key: "active-keyring.json", path: "keyring.json" }],
-          },
-        },
-      );
-    }
-  },
-);
-
-test(
   "the real Helm renderer rejects mutable images, broad dependencies, and shared credentials",
   tooling,
   async () => {

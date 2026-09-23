@@ -602,15 +602,6 @@ function auditFromRow(row: PostgresRow, installationId: string): Readonly<AuditE
   });
 }
 
-function integer(row: PostgresRow, key: string): number {
-  const stored = row[key];
-  const value = typeof stored === "string" && /^-?\d+$/.test(stored) ? Number(stored) : stored;
-  if (typeof value !== "number" || !Number.isSafeInteger(value)) {
-    throw new DependencyUnavailableError("Persisted platform state has an invalid integer.");
-  }
-  return value;
-}
-
 function timestampDate(row: PostgresRow, key: string): Date {
   return new Date(timestamp(row, key));
 }
@@ -629,35 +620,28 @@ function provisioningRecordFromRow(row: PostgresRow): Readonly<AgentProvisioning
   const completedPhase = text(row, "completed_phase");
   if (
     completedPhase !== "admitted" &&
-    completedPhase !== "secrets" &&
-    completedPhase !== "database_setup" &&
     completedPhase !== "configuration" &&
     completedPhase !== "transport" &&
     completedPhase !== "handoff"
   ) {
     throw new DependencyUnavailableError("Persisted Agent provisioning phase is invalid.");
   }
+  const agentId = optionalText(row, "agent_id");
+  const configurationId = optionalText(row, "configuration_id");
   return copyProvisioningRecord({
     workId: text(row, "work_id"),
     namespaceId: text(row, "namespace_id"),
-    agentId: text(row, "agent_id"),
-    configurationId: text(row, "configuration_id"),
+    ...(agentId === undefined ? {} : { agentId }),
+    ...(configurationId === undefined ? {} : { configurationId }),
     actorId: text(row, "actor_id"),
     requestId: text(row, "request_id"),
     requestFingerprint: text(row, "request_fingerprint"),
-    fingerprintKeyVersion: text(row, "fingerprint_key_version"),
     status,
     completedPhase,
-    secretCursor: integer(row, "secret_cursor"),
-    secretCount: integer(row, "secret_count"),
-    ...(row.configuration_generation === null || row.configuration_generation === undefined
-      ? {}
-      : { configurationGeneration: integer(row, "configuration_generation") }),
     ...(row.revision_id === null || row.revision_id === undefined
       ? {}
       : { revisionId: text(row, "revision_id") }),
     plan: jsonObject(row.plan),
-    protectedInputs: jsonObject(row.protected_inputs),
     progress: jsonObject(row.progress),
     createdAt: timestampDate(row, "created_at"),
     updatedAt: timestampDate(row, "updated_at"),
@@ -685,11 +669,14 @@ function pendingEffectMatchesReceipt(progress: Readonly<Record<string, unknown>>
     return false;
   }
   return (
+    (pending.kind === "configuration" || pending.kind === "transport") &&
+    typeof pending.owner === "string" &&
+    pending.owner.length > 0 &&
+    typeof pending.targetId === "string" &&
+    pending.targetId.length > 0 &&
     pending.kind === receipt.kind &&
     pending.owner === receipt.owner &&
-    pending.targetId === receipt.targetId &&
-    pending.secretId === receipt.secretId &&
-    recordValue(receipt.result) !== undefined
+    pending.targetId === receipt.targetId
   );
 }
 
@@ -718,17 +705,6 @@ function validateProvisioningProgressStep(
 ): void {
   if (!phaseAtLeast(next.completedPhase, current.completedPhase)) {
     throw new ScopeViolationError("Agent provisioning checkpoints cannot move backward.");
-  }
-  if (next.secretCursor !== undefined && next.secretCursor > current.secretCount) {
-    throw new ScopeViolationError("Agent provisioning Secret cursor exceeds the plan.");
-  }
-  if (
-    next.completedPhase === "secrets" &&
-    (next.secretCursor ?? current.secretCursor) !== current.secretCount
-  ) {
-    throw new ScopeViolationError(
-      "Agent provisioning Secrets phase requires every planned Secret.",
-    );
   }
   if (pendingEffectChanged(current.progress, next)) {
     throw new ScopeViolationError("Agent provisioning pending effects cannot be replaced.");
@@ -2588,6 +2564,24 @@ export class PostgresPlatformState implements PlatformStateStore {
           );
           return found[0] === undefined ? undefined : provisioningRecordFromRow(found[0]);
         },
+        hasPendingNamespaceProvisioning: async (namespaceId) => {
+          const found = await client.query(
+            `SELECT 1
+             FROM occ.agent_provisioning_work AS provisioning
+             JOIN occ.controller_work AS work
+               ON work.idempotency_key = provisioning.work_id
+             WHERE provisioning.namespace_id = $1
+               AND (
+                 provisioning.progress ? 'pendingEffect'
+                 OR provisioning.progress ? 'effectReceipt'
+                 OR provisioning.status IN ('queued', 'running')
+                 OR work.state IN ('queued', 'claimed')
+               )
+             LIMIT 1`,
+            [namespaceId],
+          );
+          return (found.rowCount ?? 0) > 0;
+        },
         findByAgent: async (namespaceId, agentId) => {
           const found = rows(
             (
@@ -2631,51 +2625,35 @@ export class PostgresPlatformState implements PlatformStateStore {
             kind: "provisioning",
             idempotencyKey: record.workId,
             namespaceId: record.namespaceId,
-            agentId: record.agentId,
             actorId: record.actorId,
           });
           const inserted = rows(
             (
               await client.query(
                 `INSERT INTO occ.agent_provisioning_work (
-                   work_id, namespace_id, agent_id, configuration_id, actor_id, request_id,
-                   request_fingerprint, fingerprint_key_version, status, completed_phase,
-                   secret_cursor, secret_count, plan, protected_inputs, progress,
-                   created_at, updated_at
+                   work_id, namespace_id, actor_id, request_id, request_fingerprint,
+                   status, completed_phase, plan, progress, created_at, updated_at
                  )
-                 SELECT work.idempotency_key, work.namespace_id, work.agent_id, $4::text,
-                   work.actor_id, $5::text, $6::text, $7::text, 'queued', 'admitted',
-                   0, $8::integer, $9::jsonb, $10::jsonb, '{}'::jsonb,
+                 SELECT work.idempotency_key, work.namespace_id, work.actor_id, $3::text,
+                   $4::text, 'queued', 'admitted', $5::jsonb, '{}'::jsonb,
                    clock_timestamp(), clock_timestamp()
                  FROM occ.controller_work AS work
-                 JOIN occ.agents AS agent
-                   ON agent.namespace_id = work.namespace_id AND agent.id = work.agent_id
-                 JOIN occ.configurations AS configuration
-                   ON configuration.namespace_id = work.namespace_id
-                   AND configuration.id = $4::text
                  WHERE work.idempotency_key = $1
                    AND work.work_kind = 'provisioning'
                    AND work.namespace_id = $2
-                   AND work.agent_id = $3
-                   AND work.actor_id = $11
+                   AND work.agent_id IS NULL
+                   AND work.actor_id = $6
                    AND work.revision_id IS NULL
                    AND work.namespace_target IS NULL
                    AND work.agent_target IS NULL
-                   AND configuration.secret_bindings IS NULL
-                   AND configuration.generation = 1
                  ON CONFLICT (namespace_id, actor_id, request_id) DO NOTHING
                  RETURNING *`,
                 [
                   record.workId,
                   record.namespaceId,
-                  record.agentId,
-                  record.configurationId,
                   record.requestId,
                   record.requestFingerprint,
-                  record.fingerprintKeyVersion,
-                  record.secretCount,
                   JSON.stringify(record.plan),
-                  JSON.stringify(record.protectedInputs),
                   record.actorId,
                 ],
               )
@@ -2719,7 +2697,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                    WHERE provisioning.work_id = $1
                      AND work.work_kind = 'provisioning'
                      AND work.namespace_id = provisioning.namespace_id
-                     AND work.agent_id = provisioning.agent_id
+                     AND work.agent_id IS NULL
                      AND work.actor_id = provisioning.actor_id
                      AND work.revision_id IS NULL
                      AND work.namespace_target IS NULL
@@ -2792,7 +2770,7 @@ export class PostgresPlatformState implements PlatformStateStore {
 	                   WHERE provisioning.work_id = $1
 	                     AND work.work_kind = 'provisioning'
 	                     AND work.namespace_id = provisioning.namespace_id
-	                     AND work.agent_id = provisioning.agent_id
+		                     AND work.agent_id IS NULL
 	                     AND work.actor_id = provisioning.actor_id
 	                     AND work.revision_id IS NULL
 	                     AND work.namespace_target IS NULL
@@ -2805,16 +2783,15 @@ export class PostgresPlatformState implements PlatformStateStore {
                    UPDATE occ.agent_provisioning_work AS provisioning
                    SET completed_phase = $3::text,
                        status = COALESCE($4::text, provisioning.status),
-                       secret_cursor = COALESCE($5::integer, provisioning.secret_cursor),
-                       configuration_generation = COALESCE($6::bigint, provisioning.configuration_generation),
+                       agent_id = COALESCE($5::text, provisioning.agent_id),
+                       configuration_id = COALESCE($6::text, provisioning.configuration_id),
                        revision_id = COALESCE($7::text, provisioning.revision_id),
                        progress = COALESCE($8::jsonb, provisioning.progress),
-                       protected_inputs = COALESCE($9::jsonb, provisioning.protected_inputs),
                        updated_at = clock_timestamp()
                    FROM owner
 	                   WHERE provisioning.work_id = owner.idempotency_key
 	                     AND provisioning.status NOT IN ('failed', 'succeeded', 'cancelled')
-	                     AND provisioning.progress = $10::jsonb
+	                     AND provisioning.progress = $9::jsonb
 	                   RETURNING provisioning.*
 	                 ), completed_work AS (
                    UPDATE occ.controller_work AS work
@@ -2837,11 +2814,10 @@ export class PostgresPlatformState implements PlatformStateStore {
                   claim.claimToken,
                   next.completedPhase,
                   next.status ?? null,
-                  next.secretCursor ?? null,
-                  next.configurationGeneration ?? null,
+                  next.agentId ?? null,
+                  next.configurationId ?? null,
                   next.revisionId ?? null,
                   next.progress === undefined ? null : JSON.stringify(next.progress),
-                  next.protectedInputs === undefined ? null : JSON.stringify(next.protectedInputs),
                   JSON.stringify(current.progress),
                 ],
               )
@@ -2889,7 +2865,7 @@ export class PostgresPlatformState implements PlatformStateStore {
 	                   WHERE provisioning.work_id = $1
 	                     AND work.work_kind = 'provisioning'
 	                     AND work.namespace_id = provisioning.namespace_id
-	                     AND work.agent_id = provisioning.agent_id
+		                     AND work.agent_id IS NULL
 	                     AND work.actor_id = provisioning.actor_id
 	                     AND work.revision_id IS NULL
 	                     AND work.namespace_target IS NULL
@@ -2902,27 +2878,22 @@ export class PostgresPlatformState implements PlatformStateStore {
 	                   UPDATE occ.agent_provisioning_work AS provisioning
 	                   SET completed_phase = $3::text,
 	                       status = CASE
-	                         WHEN $10::text = 'permanent' THEN 'failed'
-	                         ELSE 'running'
-	                       END,
-	                       secret_cursor = COALESCE($4::integer, provisioning.secret_cursor),
-	                       configuration_generation = COALESCE($5::bigint, provisioning.configuration_generation),
-	                       revision_id = COALESCE($6::text, provisioning.revision_id),
-	                       progress = COALESCE($7::jsonb, provisioning.progress) ||
-	                         jsonb_build_object(
-	                           'error',
-	                           jsonb_build_object('code', $8::text, 'message', $9::text)
-	                         ),
-	                       protected_inputs = CASE
-	                         WHEN $10::text IN ('retry', 'permanent') THEN
-	                           COALESCE($11::jsonb, provisioning.protected_inputs)
-	                         ELSE provisioning.protected_inputs
-	                       END,
-	                       updated_at = clock_timestamp()
+		                         WHEN $10::text = 'permanent' THEN 'failed'
+		                         ELSE 'running'
+		                       END,
+		                       agent_id = COALESCE($4::text, provisioning.agent_id),
+		                       configuration_id = COALESCE($5::text, provisioning.configuration_id),
+		                       revision_id = COALESCE($6::text, provisioning.revision_id),
+		                       progress = COALESCE($7::jsonb, provisioning.progress) ||
+		                         jsonb_build_object(
+		                           'error',
+		                           jsonb_build_object('code', $8::text, 'message', $9::text)
+		                         ),
+		                       updated_at = clock_timestamp()
 	                   FROM owner
 	                   WHERE provisioning.work_id = owner.idempotency_key
 	                     AND provisioning.status NOT IN ('failed', 'succeeded', 'cancelled')
-	                     AND provisioning.progress = $12::jsonb
+	                     AND provisioning.progress = $11::jsonb
 	                   RETURNING provisioning.*
 	                 )
 	                 SELECT * FROM updated_provisioning`,
@@ -2930,14 +2901,13 @@ export class PostgresPlatformState implements PlatformStateStore {
                   claim.idempotencyKey,
                   claim.claimToken,
                   next.completedPhase,
-                  next.secretCursor ?? null,
-                  next.configurationGeneration ?? null,
+                  next.agentId ?? null,
+                  next.configurationId ?? null,
                   next.revisionId ?? null,
                   next.progress === undefined ? null : JSON.stringify(next.progress),
                   failed.code,
                   failed.message,
                   failed.disposition,
-                  next.protectedInputs === undefined ? null : JSON.stringify(next.protectedInputs),
                   JSON.stringify(current.progress),
                 ],
               )
@@ -2973,13 +2943,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         },
         settleEffect: async (workId: string, input: AgentProvisioningEffectSettlement) => {
           const settlement = validateProvisioningEffectSettlement(input);
-          const receiptJson = JSON.stringify({
-            kind: settlement.kind,
-            owner: settlement.owner,
-            targetId: settlement.targetId,
-            ...(settlement.secretId === undefined ? {} : { secretId: settlement.secretId }),
-            ...(settlement.result === undefined ? {} : { result: settlement.result }),
-          });
+          const receiptJson = JSON.stringify(settlement);
           const settled = rows(
             (
               await client.query(
@@ -2990,33 +2954,22 @@ export class PostgresPlatformState implements PlatformStateStore {
                      AND provisioning.progress -> 'pendingEffect' ->> 'kind' = $2
                      AND provisioning.progress -> 'pendingEffect' ->> 'owner' = $3
                      AND provisioning.progress -> 'pendingEffect' ->> 'targetId' = $4
-                     AND (
-                       ($5::text IS NULL AND NOT (provisioning.progress -> 'pendingEffect' ? 'secretId'))
-                       OR provisioning.progress -> 'pendingEffect' ->> 'secretId' = $5::text
-                     )
-                   FOR UPDATE
-                 ), updated_provisioning AS (
-                   UPDATE occ.agent_provisioning_work AS provisioning
-                   SET progress = provisioning.progress ||
-                         jsonb_build_object('effectReceipt', $6::jsonb),
-                       updated_at = clock_timestamp()
+	                   FOR UPDATE
+	                 ), updated_provisioning AS (
+	                   UPDATE occ.agent_provisioning_work AS provisioning
+	                   SET progress = provisioning.progress ||
+	                         jsonb_build_object('effectReceipt', $5::jsonb),
+	                       updated_at = clock_timestamp()
                    FROM matched
                    WHERE provisioning.work_id = matched.work_id
                      AND (
                        NOT (provisioning.progress ? 'effectReceipt')
-                       OR provisioning.progress -> 'effectReceipt' = $6::jsonb
+	                       OR provisioning.progress -> 'effectReceipt' = $5::jsonb
                      )
                    RETURNING provisioning.*
                  )
                  SELECT * FROM updated_provisioning`,
-                [
-                  workId,
-                  settlement.kind,
-                  settlement.owner,
-                  settlement.targetId,
-                  settlement.secretId ?? null,
-                  receiptJson,
-                ],
+                [workId, settlement.kind, settlement.owner, settlement.targetId, receiptJson],
               )
             ).rows,
           );
@@ -3026,28 +2979,6 @@ export class PostgresPlatformState implements PlatformStateStore {
             );
           }
           return provisioningRecordFromRow(settled[0]);
-        },
-        completeEffectCleanup: async (workId: string, owner: string) => {
-          const cleaned = rows(
-            (
-              await client.query(
-                `UPDATE occ.agent_provisioning_work AS provisioning
-                 SET progress = (provisioning.progress - 'effectReceipt' - 'pendingEffect') ||
-                       jsonb_build_object('externalEffectsResolved', true),
-                     protected_inputs = CASE
-                       WHEN provisioning.status = 'cancelled' THEN '{}'::jsonb
-                       ELSE provisioning.protected_inputs
-                     END,
-                     updated_at = clock_timestamp()
-                 WHERE provisioning.work_id = $1
-                   AND provisioning.progress -> 'effectReceipt' ->> 'owner' = $2
-                   AND provisioning.progress -> 'pendingEffect' ->> 'owner' = $2
-                 RETURNING provisioning.*`,
-                [workId, owner],
-              )
-            ).rows,
-          );
-          return cleaned[0] === undefined ? undefined : provisioningRecordFromRow(cleaned[0]);
         },
         cancel: async (claim, error) => {
           const code = typeof error.code === "string" ? error.code : "";
@@ -3068,7 +2999,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                    WHERE provisioning.work_id = $1
 	                     AND work.work_kind = 'provisioning'
 	                     AND work.namespace_id = provisioning.namespace_id
-	                     AND work.agent_id = provisioning.agent_id
+		                     AND work.agent_id IS NULL
 	                     AND work.actor_id = provisioning.actor_id
 	                     AND work.revision_id IS NULL
 	                     AND work.namespace_target IS NULL
@@ -3079,16 +3010,11 @@ export class PostgresPlatformState implements PlatformStateStore {
                    FOR UPDATE OF work
                  ), updated_provisioning AS (
 	                   UPDATE occ.agent_provisioning_work AS provisioning
-	                   SET status = 'cancelled',
-	                       progress = provisioning.progress || jsonb_build_object(
-	                         'error', jsonb_build_object('code', $3::text, 'message', $4::text)
-	                       ),
-	                       protected_inputs = CASE
-	                         WHEN provisioning.progress ? 'pendingEffect'
-	                         THEN provisioning.protected_inputs
-	                         ELSE '{}'::jsonb
-	                       END,
-	                       updated_at = clock_timestamp()
+		                   SET status = 'cancelled',
+		                       progress = provisioning.progress || jsonb_build_object(
+		                         'error', jsonb_build_object('code', $3::text, 'message', $4::text)
+		                       ),
+		                       updated_at = clock_timestamp()
 	                   FROM owner
 	                   WHERE provisioning.work_id = owner.idempotency_key
 	                     AND provisioning.status NOT IN ('failed', 'succeeded', 'cancelled')
@@ -3138,7 +3064,7 @@ export class PostgresPlatformState implements PlatformStateStore {
 	                     AND provisioning.revision_id IS NULL
 	                     AND work.work_kind = 'provisioning'
 	                     AND work.namespace_id = provisioning.namespace_id
-	                     AND work.agent_id = provisioning.agent_id
+		                     AND work.agent_id IS NULL
 	                     AND work.actor_id = provisioning.actor_id
 	                     AND work.revision_id IS NULL
 	                     AND work.namespace_target IS NULL
@@ -3147,16 +3073,11 @@ export class PostgresPlatformState implements PlatformStateStore {
 	                   FOR UPDATE OF work
 	                 ), updated_provisioning AS (
 	                   UPDATE occ.agent_provisioning_work AS provisioning
-	                   SET status = 'cancelled',
-	                       progress = provisioning.progress || jsonb_build_object(
-	                         'error', jsonb_build_object('code', $3::text, 'message', $4::text)
-	                       ),
-	                       protected_inputs = CASE
-	                         WHEN provisioning.progress ? 'pendingEffect'
-	                         THEN provisioning.protected_inputs
-	                         ELSE '{}'::jsonb
-	                       END,
-	                       updated_at = clock_timestamp()
+		                   SET status = 'cancelled',
+		                       progress = provisioning.progress || jsonb_build_object(
+		                         'error', jsonb_build_object('code', $3::text, 'message', $4::text)
+		                       ),
+		                       updated_at = clock_timestamp()
                    FROM owner
                    WHERE provisioning.work_id = owner.idempotency_key
                    RETURNING provisioning.*
@@ -3181,7 +3102,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           );
           return cancelled[0] === undefined ? undefined : provisioningRecordFromRow(cancelled[0]);
         },
-        retryByAgent: async (namespaceId, agentId, actorId) => {
+        retryByWorkId: async (namespaceId, workId, actorId) => {
           const retried = rows(
             (
               await client.query(
@@ -3191,13 +3112,13 @@ export class PostgresPlatformState implements PlatformStateStore {
                    JOIN occ.agent_provisioning_work AS provisioning
                      ON provisioning.work_id = work.idempotency_key
                    WHERE provisioning.namespace_id = $1
-                     AND provisioning.agent_id = $2
+                     AND provisioning.work_id = $2
                      AND provisioning.actor_id = $3
 	                     AND provisioning.status = 'failed'
 	                     AND provisioning.revision_id IS NULL
 	                     AND work.work_kind = 'provisioning'
 	                     AND work.namespace_id = provisioning.namespace_id
-	                     AND work.agent_id = provisioning.agent_id
+		                     AND work.agent_id IS NULL
 	                     AND work.actor_id = provisioning.actor_id
 	                     AND work.revision_id IS NULL
 	                     AND work.namespace_target IS NULL
@@ -3228,7 +3149,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                    RETURNING work.idempotency_key
                  )
                  SELECT * FROM updated_provisioning`,
-                [namespaceId, agentId, actorId],
+                [namespaceId, workId, actorId],
               )
             ).rows,
           );
