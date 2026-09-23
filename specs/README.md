@@ -43,6 +43,10 @@ from [AGENTS.md](../AGENTS.md#running-integration-tests) instead.
 
 ## Active specifications
 
+[Two-cluster Gateway execution](37-two-cluster-gateway-execution-plan.md) — Accepted for implementation;
+complete local OCE setup across separate CP and DP clusters, with portable
+cluster access and transport configuration. Runtime implementation and proof are pending.
+
 [Native OpenClaw plugin tool policies](35-native-plugin-tool-policy.md) — Proposed;
 enforce Agent plugin policies through a managed native policy plugin and existing
 approval transport.
