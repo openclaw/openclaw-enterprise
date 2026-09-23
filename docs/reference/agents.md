@@ -1,9 +1,8 @@
 # Agents
 
-An Agent is an AI workload that you name, configure, and deploy inside a
-[Namespace](namespaces.md). Each Agent has its own identity, revision history,
-and, once deployed, gateway. It cannot use another Namespace's resources
-through its own permissions.
+An Agent is a named AI workload in a [Namespace](namespaces.md), with its own
+identity, revision history, and deployed gateway. Its permissions do not grant
+access to another Namespace's resources.
 
 Use a [Preset](presets.md) to copy reusable launch settings into a new Agent draft.
 
@@ -12,23 +11,11 @@ existing Agent, see [Compute](../guides/topics/agent-compute.md) for execution
 choices, [Agent Revisions](../guides/topics/agent-revisions.md) for changes, or
 [Troubleshoot](../guides/topics/agent-troubleshoot.md) if a deployment stalls.
 
-```text
-Namespace: support
-├── Agent: ticket-triage
-│   ├── Service principal: unique to ticket-triage
-│   └── Gateway: unique to deployed ticket-triage
-└── Agent: customer-help
-    ├── Service principal: unique to customer-help
-    └── Gateway: unique to deployed customer-help
-```
-
 Creating an Agent saves its identity and exact Namespace-owned Configuration
 reference with an `active` lifecycle status and a `stopped` desired runtime
 state. No workload or model starts, and no revision is created, until an
-authorized caller requests deployment. Deployment records an immutable revision
-and queues the work to start it. Stopping an Agent ends execution and routing
-but keeps its revision history and persistent state. A later deployment creates
-a new revision.
+authorized caller requests deployment. See [identity and deployment](#identity-and-deployment)
+for revision, execution, and stop behavior.
 
 ## Supported operations
 
@@ -281,9 +268,8 @@ An Agent belongs to the Namespace in its creation URL. The controller assigns
 that ownership; request bodies cannot select a different Namespace or
 Installation.
 
-Names are unique within one Namespace. Two different Namespaces can each own an
-Agent with the same name, but neither can read or operate the other's Agent
-without its own scoped permissions.
+Names are unique within each Namespace. Cross-Namespace access requires
+separate scoped permissions.
 
 You can create an Agent while its Namespace is still `provisioning`. A failed
 or deleting Namespace rejects new Agents.
@@ -353,9 +339,7 @@ each deployed Agent still owns its own gateway and stable service principal.
 ## Current limitations
 
 The public API has no revision mutation/deletion or explicit rollback endpoint.
-Editing a Configuration or Agent does not update a running workload; a new
-deployment is required. Stop retains Agent-owned persistent data and does not
-destroy credentials. Brokered model credentials and controller API
+Brokered model credentials and controller API
 authentication for Agent service principals remain unavailable. The optional
 [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires bundled
 Kubernetes Compute and dedicated Codex. Stock OpenShell cannot provide all the
