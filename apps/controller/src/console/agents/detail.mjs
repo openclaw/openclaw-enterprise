@@ -162,10 +162,23 @@ function provisioningDeploymentPath(path, provisioning) {
     : null;
 }
 
-function createProvisioningStatusPanel(context, path, agentId, selectedRevision) {
+function createProvisioningStatusPanel(
+  context,
+  path,
+  agentId,
+  { selectedRevision, followInitialProvisioning },
+) {
   const section = element("section", { className: "agent-card deployment-status" });
   section.hidden = true;
   const state = { loading: false, provisioning: null, deployment: null, error: null };
+  let observedInitialProvisioningProgress = false;
+
+  function canRetryProvisioning() {
+    return (
+      state.provisioning?.status === "failed" &&
+      state.provisioning.error?.code !== "PROVISIONING_CANCELLED"
+    );
+  }
 
   function statusText() {
     if (state.error) {
@@ -219,7 +232,7 @@ function createProvisioningStatusPanel(context, path, agentId, selectedRevision)
         button(state.loading ? "Refreshing..." : "Refresh provisioning", () => void load(), {
           disabled: state.loading,
         }),
-        state.provisioning?.status === "failed"
+        canRetryProvisioning()
           ? button("Retry provisioning", () => void retry(), { disabled: state.loading })
           : null,
       ),
@@ -230,15 +243,32 @@ function createProvisioningStatusPanel(context, path, agentId, selectedRevision)
     const deploymentPath = provisioningDeploymentPath(path, state.provisioning);
     if (!deploymentPath) {
       const revisionId = state.provisioning?.revisionId;
-      if (typeof revisionId === "string" && selectedRevision !== revisionId) {
+      if (
+        followInitialProvisioning &&
+        observedInitialProvisioningProgress &&
+        typeof revisionId === "string" &&
+        selectedRevision !== revisionId
+      ) {
         context.navigate(`agents/${agentId}?revision=${revisionId}&tab=workspace`);
       }
       return;
     }
-    state.deployment = await context.request(deploymentPath);
+    const deployment = await context.request(deploymentPath);
+    if (!context.isCurrent()) {
+      return;
+    }
+    state.deployment = deployment;
+    if (state.deployment.status === "queued" || state.deployment.status === "running") {
+      observedInitialProvisioningProgress = true;
+    }
     if (state.deployment.status === "succeeded") {
       const revisionId = state.deployment.revisionId ?? state.provisioning?.revisionId;
-      if (typeof revisionId === "string" && selectedRevision !== revisionId) {
+      if (
+        followInitialProvisioning &&
+        observedInitialProvisioningProgress &&
+        typeof revisionId === "string" &&
+        selectedRevision !== revisionId
+      ) {
         context.navigate(`agents/${agentId}?revision=${revisionId}&tab=workspace`);
       }
       return;
@@ -258,7 +288,14 @@ function createProvisioningStatusPanel(context, path, agentId, selectedRevision)
     state.error = null;
     render();
     try {
-      state.provisioning = await context.request(`${path}/provisioning`);
+      const provisioning = await context.request(`${path}/provisioning`);
+      if (!context.isCurrent()) {
+        return;
+      }
+      state.provisioning = provisioning;
+      if (state.provisioning.status === "queued" || state.provisioning.status === "running") {
+        observedInitialProvisioningProgress = true;
+      }
       if (state.provisioning.status === "succeeded") {
         await loadDeployment();
       } else if (
@@ -297,11 +334,18 @@ function createProvisioningStatusPanel(context, path, agentId, selectedRevision)
     state.error = null;
     render();
     try {
-      state.provisioning = await context.request(`${path}/provisioning/retry`, {
+      const provisioning = await context.request(`${path}/provisioning/retry`, {
         method: "POST",
         body: {},
       });
+      if (!context.isCurrent()) {
+        return;
+      }
+      state.provisioning = provisioning;
       state.deployment = null;
+      if (state.provisioning.status === "queued" || state.provisioning.status === "running") {
+        observedInitialProvisioningProgress = true;
+      }
       if (state.provisioning.status !== "failed" && state.provisioning.status !== "cancelled") {
         setTimeout(() => void load(), 1_000);
       }
@@ -335,6 +379,7 @@ export async function renderAgentDetail(context) {
   }
   context.setTitle(agent.name);
   let deleting = agent.status === "deleting";
+  const revisionExplicitlySelected = url.searchParams.has("revision");
   const selected = url.searchParams.get("revision") ?? agent.activeRevisionId ?? "draft";
   const tab = url.searchParams.get("tab");
   const tabsForSelection = [
@@ -431,7 +476,11 @@ export async function renderAgentDetail(context) {
   }
   const deploymentStatus =
     selected === "draft" ? [] : [createDeploymentStatusPanel(context, path, selected)];
-  const provisioningStatus = createProvisioningStatusPanel(context, path, agentId, selected);
+  const provisioningStatus = createProvisioningStatusPanel(context, path, agentId, {
+    selectedRevision: selected,
+    followInitialProvisioning:
+      selected === "draft" && !revisionExplicitlySelected && !agent.activeRevisionId,
+  });
   view.replaceChildren(
     header,
     identity,

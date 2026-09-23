@@ -1720,9 +1720,6 @@ export class OpenClawController {
           details: { workId: current.workId, phase: current.completedPhase, code },
         });
       });
-      if (disposition === "permanent") {
-        await this.cleanupProvisioningEffectReceipt(record).catch(() => false);
-      }
       return Object.freeze({
         outcome: disposition,
         code,
@@ -3893,6 +3890,9 @@ export class OpenClawController {
     record: Readonly<AgentProvisioningRecord>,
     options: AgentProvisioningWorkerOptions = {},
   ): Promise<boolean> {
+    if (record.status !== "cancelled") {
+      return false;
+    }
     const runEffect =
       options.runEffect ??
       (<T>(operation: (signal: AbortSignal) => Promise<T>) =>
@@ -3964,7 +3964,7 @@ export class OpenClawController {
     record: Readonly<AgentProvisioningRecord>,
     options: AgentProvisioningWorkerOptions = {},
   ): Promise<boolean> {
-    if (record.status !== "cancelled" && record.status !== "failed") {
+    if (record.status !== "cancelled") {
       return false;
     }
     if (readProvisioningEffectReceipt(record) !== undefined) {

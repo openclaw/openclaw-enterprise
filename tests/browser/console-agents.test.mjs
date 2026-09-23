@@ -1415,6 +1415,108 @@ test("Agent detail preserves admitted revision history while draft edits change 
   );
 });
 
+test("Agent detail keeps explicit revision selections while provisioning status refreshes", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Provisioning selected revision", {
+    ready: true,
+  });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Provisioned history Agent",
+    nativeValues("selected-rev-one"),
+  );
+  const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const generationTwo = await fixture.updateConfiguration(
+    namespace.id,
+    agent.configurationId,
+    nativeValues("selected-rev-two"),
+  );
+  assert.equal(generationTwo.generation, 2);
+  const second = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
+  const draft = await fixture.updateConfiguration(
+    namespace.id,
+    agent.configurationId,
+    nativeValues("selected-draft"),
+  );
+  assert.equal(draft.generation, 3);
+  const { page } = await newPage(t, fixture);
+  let provisioningReads = 0;
+
+  const json = (data, status = 200) => ({
+    status,
+    contentType: "application/json",
+    body: JSON.stringify({
+      data,
+      meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
+    }),
+  });
+  await page.route(
+    `**/namespaces/${namespace.id}/agents/${agent.id}/provisioning`,
+    async (route) => {
+      provisioningReads += 1;
+      await route.fulfill(
+        json({
+          status: provisioningReads % 2 === 1 ? "running" : "succeeded",
+          revisionId: second.revision.id,
+          url: `/namespaces/${namespace.id}/agents/${agent.id}/provisioning`,
+        }),
+      );
+    },
+  );
+  await page.route(
+    `**/namespaces/${namespace.id}/agents/${agent.id}/deployments/*`,
+    async (route) => {
+      const revisionId = decodeURIComponent(
+        new URL(route.request().url()).pathname.split("/").at(-1),
+      );
+      await route.fulfill(
+        json({
+          deploymentId: `dep_${revisionId}`,
+          revisionId,
+          status: "succeeded",
+          error: null,
+        }),
+      );
+    },
+  );
+
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").pathname +
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").search,
+  );
+  await page.getByRole("heading", { name: "Provisioned history Agent" }).waitFor();
+  const provisioningPanel = page.locator("section.deployment-status").filter({
+    has: page.getByRole("heading", { name: "Provisioning status" }),
+  });
+  await provisioningPanel.getByText("Provisioning in progress.").waitFor();
+  await provisioningPanel.getByRole("button", { name: "Refresh provisioning" }).click();
+  await provisioningPanel
+    .getByText("Provisioning finished. Waiting for deployment activation.")
+    .waitFor();
+  assertRevisionUrl(page, "draft");
+  await revealNativeConfiguration(page, "View native Configuration");
+  await page.getByText('"marker": "selected-draft"').waitFor();
+
+  provisioningReads = 0;
+  await page.goto(
+    `${fixture.origin}${
+      detailUrl(fixture, namespace.id, agent.id, first.revision.id, "configuration").pathname
+    }${detailUrl(fixture, namespace.id, agent.id, first.revision.id, "configuration").search}`,
+  );
+  await page.getByRole("heading", { name: "Provisioned history Agent" }).waitFor();
+  await provisioningPanel.getByText("Provisioning in progress.").waitFor();
+  await provisioningPanel.getByRole("button", { name: "Refresh provisioning" }).click();
+  await provisioningPanel
+    .getByText("Provisioning finished. Waiting for deployment activation.")
+    .waitFor();
+  assertRevisionUrl(page, first.revision.id);
+  await revealNativeConfiguration(page, "View admitted native configuration");
+  await page.getByText('"marker": "selected-rev-one"').waitFor();
+});
+
 test("Agent detail retries failed first-time provisioning and keeps exact revision pending", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -1447,7 +1549,7 @@ test("Agent detail retries failed first-time provisioning and keeps exact revisi
                   },
                 }
               : {
-                  status: "running",
+                  status: "succeeded",
                   revisionId,
                   url: `/namespaces/${namespace.id}/agents/${agent.id}/provisioning`,
                 },
@@ -1473,6 +1575,24 @@ test("Agent detail retries failed first-time provisioning and keeps exact revisi
       });
     },
   );
+  await page.route(
+    `**/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revisionId}`,
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: {
+            deploymentId: `dep_${revisionId}`,
+            revisionId,
+            status: "succeeded",
+            error: null,
+          },
+          meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
+        }),
+      });
+    },
+  );
 
   await login(
     page,
@@ -1490,8 +1610,8 @@ test("Agent detail retries failed first-time provisioning and keeps exact revisi
   requests.length = 0;
 
   await provisioningPanel.getByRole("button", { name: "Retry provisioning" }).click();
-  await provisioningPanel.getByText("Provisioning in progress.").waitFor();
-  await provisioningPanel.getByText(revisionId).waitFor();
+  await page.waitForURL((url) => url.searchParams.get("revision") === revisionId);
+  assert.equal(new URL(page.url()).searchParams.get("tab"), "workspace");
   assert.deepEqual(
     pathRequests(
       requests,
@@ -1499,6 +1619,56 @@ test("Agent detail retries failed first-time provisioning and keeps exact revisi
       `/namespaces/${namespace.id}/agents/${agent.id}/provisioning/retry`,
     ).map((request) => request.body),
     [{}],
+  );
+});
+
+test("Agent detail does not retry cancelled first-time provisioning", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Provisioning detail cancelled", {
+    ready: true,
+  });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Cancelled provisioning Agent",
+    nativeValues("provisioning-cancelled"),
+  );
+  const { page } = await newPage(t, fixture);
+
+  await page.route(
+    `**/namespaces/${namespace.id}/agents/${agent.id}/provisioning`,
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: {
+            status: "failed",
+            error: {
+              code: "PROVISIONING_CANCELLED",
+              message: "Provisioning was cancelled by a newer terminal operation.",
+            },
+          },
+          meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
+        }),
+      });
+    },
+  );
+
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").pathname +
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").search,
+  );
+  await page.getByRole("heading", { name: "Cancelled provisioning Agent" }).waitFor();
+  const provisioningPanel = page.locator("section.deployment-status").filter({
+    has: page.getByRole("heading", { name: "Provisioning status" }),
+  });
+  await provisioningPanel.getByText("Provisioning failed.").waitFor();
+  assert.equal(
+    await provisioningPanel.getByRole("button", { name: "Retry provisioning" }).count(),
+    0,
   );
 });
 

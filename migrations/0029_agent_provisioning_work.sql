@@ -123,6 +123,18 @@ BEGIN
              (to_jsonb(OLD) - 'status' - 'updated_at')
        )
        AND NOT (
+         OLD.status = 'failed' AND NEW.status = 'cancelled'
+         AND (to_jsonb(NEW) - 'status' - 'progress' - 'protected_inputs' - 'updated_at') =
+             (to_jsonb(OLD) - 'status' - 'progress' - 'protected_inputs' - 'updated_at')
+         AND NEW.protected_inputs = CASE
+           WHEN OLD.progress ? 'pendingEffect' THEN OLD.protected_inputs
+           ELSE '{}'::jsonb
+         END
+         AND NEW.progress = OLD.progress ||
+           jsonb_build_object('error', NEW.progress->'error')
+         AND jsonb_typeof(NEW.progress->'error') = 'object'
+       )
+       AND NOT (
          OLD.status IN ('failed', 'cancelled')
          AND NEW.status = OLD.status
          AND (to_jsonb(NEW) - 'progress' - 'protected_inputs' - 'updated_at') =

@@ -764,15 +764,6 @@ async function createScopedController(context, installationId, platformNamespace
           verbs: ["get", "create", "patch", "delete"],
         },
       },
-      {
-        op: "add",
-        path: "/rules/-",
-        value: {
-          apiGroups: [""],
-          resources: ["secrets"],
-          verbs: ["get", "list", "create", "patch", "update", "delete"],
-        },
-      },
     ]),
   );
   await kubectl(
@@ -1858,6 +1849,24 @@ test(
       );
     });
     const controller = await createScopedController(context, installationId, platformNamespace);
+    await kubectl(
+      "patch",
+      "clusterrole",
+      controller.tenantRole,
+      "--type=json",
+      "--patch",
+      JSON.stringify([
+        {
+          op: "add",
+          path: "/rules/-",
+          value: {
+            apiGroups: [""],
+            resources: ["secrets"],
+            verbs: ["get", "list", "create", "patch", "update", "delete"],
+          },
+        },
+      ]),
+    );
     const gatewayRouting = {
       gatewayName: `oce-agent-gateways-${hash(installationId, 8)}`,
       gatewayNamespace: platformNamespace,

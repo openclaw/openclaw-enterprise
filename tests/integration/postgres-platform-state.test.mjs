@@ -430,6 +430,22 @@ test(
       [workId],
     );
     const secondClaim = await claimProvisioningWork(pool, workId);
+    const settledBeforeFailure = await state.transact((unit) =>
+      unit.provisioning.settleEffect(workId, {
+        kind: "secret",
+        owner: pendingSecret.owner,
+        targetId: pendingSecret.targetId,
+        secretId: pendingSecret.secretId,
+        result: { backendRef: { id: "settled-before-failure" } },
+      }),
+    );
+    assert.deepEqual(settledBeforeFailure.progress.effectReceipt, {
+      kind: "secret",
+      owner: pendingSecret.owner,
+      targetId: pendingSecret.targetId,
+      secretId: pendingSecret.secretId,
+      result: { backendRef: { id: "settled-before-failure" } },
+    });
 
     const failed = await state.transact((unit) =>
       unit.provisioning.recordFailure(
@@ -437,7 +453,7 @@ test(
         {
           completedPhase: "secrets",
           secretCursor: 1,
-          progress: { pendingEffect: pendingSecret },
+          progress: settledBeforeFailure.progress,
         },
         {
           disposition: "permanent",
@@ -452,6 +468,11 @@ test(
       createInput.protectedInputs,
       "pending Secret effects retain protected inputs for exact recovery",
     );
+    assert.deepEqual(
+      failed.progress.effectReceipt,
+      settledBeforeFailure.progress.effectReceipt,
+      "permanent failures keep the exact receipt for authorized retry",
+    );
     const failedWork = await pool.query(
       "SELECT state, reason_code FROM occ.controller_work WHERE idempotency_key = $1",
       [workId],
@@ -465,11 +486,34 @@ test(
     );
     assert.equal(retried.status, "queued");
     assert.deepEqual(retried.protectedInputs, createInput.protectedInputs);
+    assert.deepEqual(retried.progress.effectReceipt, settledBeforeFailure.progress.effectReceipt);
     const retryWork = await pool.query(
       "SELECT state, completed_at, reason_code FROM occ.controller_work WHERE idempotency_key = $1",
       [workId],
     );
     assert.deepEqual(retryWork.rows, [{ state: "queued", completed_at: null, reason_code: null }]);
+
+    await pool.query(
+      "UPDATE occ.controller_work SET available_at = clock_timestamp() WHERE idempotency_key = $1",
+      [workId],
+    );
+    const terminalClaim = await claimProvisioningWork(pool, workId);
+    const terminalFailure = await state.transact((unit) =>
+      unit.provisioning.recordFailure(
+        terminalClaim,
+        {
+          completedPhase: "secrets",
+          secretCursor: 1,
+          progress: retried.progress,
+        },
+        {
+          disposition: "permanent",
+          code: "PROVISIONING_REJECTED",
+          message: "second permanent test failure",
+        },
+      ),
+    );
+    assert.equal(terminalFailure.status, "failed");
 
     const cancelled = await state.transact((unit) =>
       unit.provisioning.cancelByAgent(namespaceId, agentId, {
@@ -479,24 +523,7 @@ test(
     );
     assert.equal(cancelled?.status, "cancelled");
     assert.deepEqual(cancelled.protectedInputs, createInput.protectedInputs);
-    const terminalReceipt = await state.transact((unit) =>
-      unit.provisioning.settleEffect(workId, {
-        kind: "secret",
-        owner: pendingSecret.owner,
-        targetId: pendingSecret.targetId,
-        secretId: pendingSecret.secretId,
-        result: { backendRef: { id: "settled-after-cancel" } },
-      }),
-    );
-    assert.equal(terminalReceipt.status, "cancelled");
-    assert.deepEqual(terminalReceipt.progress.pendingEffect, pendingSecret);
-    assert.deepEqual(terminalReceipt.progress.effectReceipt, {
-      kind: "secret",
-      owner: pendingSecret.owner,
-      targetId: pendingSecret.targetId,
-      secretId: pendingSecret.secretId,
-      result: { backendRef: { id: "settled-after-cancel" } },
-    });
+    assert.deepEqual(cancelled.progress.effectReceipt, settledBeforeFailure.progress.effectReceipt);
     const terminal = await pool.query(
       "SELECT state, reason_code FROM occ.controller_work WHERE idempotency_key = $1",
       [workId],

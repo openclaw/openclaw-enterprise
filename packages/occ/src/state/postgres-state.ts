@@ -3134,7 +3134,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                      ON provisioning.work_id = work.idempotency_key
                    WHERE provisioning.namespace_id = $1
 	                     AND provisioning.agent_id = $2
-	                     AND provisioning.status NOT IN ('failed', 'cancelled', 'succeeded')
+	                     AND provisioning.status NOT IN ('cancelled', 'succeeded')
 	                     AND provisioning.revision_id IS NULL
 	                     AND work.work_kind = 'provisioning'
 	                     AND work.namespace_id = provisioning.namespace_id
@@ -3143,7 +3143,7 @@ export class PostgresPlatformState implements PlatformStateStore {
 	                     AND work.revision_id IS NULL
 	                     AND work.namespace_target IS NULL
 	                     AND work.agent_target IS NULL
-	                     AND work.state IN ('queued', 'claimed')
+	                     AND work.state IN ('queued', 'claimed', 'failed_permanent')
 	                   FOR UPDATE OF work
 	                 ), updated_provisioning AS (
 	                   UPDATE occ.agent_provisioning_work AS provisioning

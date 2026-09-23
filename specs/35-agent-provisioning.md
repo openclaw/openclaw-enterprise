@@ -1,8 +1,10 @@
 # Feature Spec: Asynchronous Agent provisioning
 
 **Date:** 2026-09-22\
-**Status:** Implementation — approved simplified workflow; PR #314 trusted-proxy contract merged into main at `a870a0bd`\
+**Status:** Implemented; local integration verified, pending PR review. PR #314 trusted-proxy contract merged into main at `a870a0bd`.\
 **Owner:** OCC resource lifecycle and controller worker
+
+Current behavior is documented in the [API reference](../docs/reference/api.md), [Console workflow](../docs/reference/console/create-and-deploy.md), and [implementation flow](../docs/flows/agent-provisioning.md). PostgreSQL, browser, and disposable Kubernetes fixture checks cover admission, recovery, cancellation, resource creation, and revision activation. Native enrollment, a real model turn, and a Slack reply remain separate unrun runtime proofs.
 
 ## Problem and Decision
 
@@ -80,6 +82,7 @@ These are implementation acceptance checks. Spec review itself performed no prov
 
 ## Changelog
 
+- 2026-09-23 02:23: Recorded implementation completion, current documentation owners, and local verification limits. (Codex/01a0cc7f-028b-7803-acf5-803c3d799d75 - a20f0b07)
 - 2026-09-23 00:51: Restored concise public status, retry, exact-create recovery, phase generation, external-effect, unknown-write, and trusted-proxy identity details from the accepted spec. (cody/01a0cd23-4e0e-7a92-ab33-32a667859782 - 79ca801d)
 - 2026-09-23 00:45: Tightened the accepted provisioning contract under the repository word limit while preserving custody, trusted-proxy, lifecycle, and verification requirements. (cody/01a0cd23-4e0e-7a92-ab33-32a667859782 - 79ca801d)
 - 2026-09-22: Selected a new-Agent create-and-provision API. Later deployments use the regular Deploy API.
