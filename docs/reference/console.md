@@ -74,8 +74,8 @@ and browser Back/Forward restores the selected tab. Password fields are cleared
 when leaving a tab. Use **Refresh** to reload the Agent and its Configuration.
 
 An Agent detail page has a **New revision** view and immutable AgentRevisions. The new revision view
-reads the current Configuration and is editable only through the supported
-channel editor and harness authentication controls. Choose **Operator-managed
+reads the current Configuration and supports native JSON editing through **Edit Configuration**,
+plus the channel editor and harness authentication controls. Choose **Operator-managed
 credentials** for SSH embedded OpenClaw: “Configured on the runtime host; not
 validated by OCC.” This saves `{ "method": "runtime" }` without a Secret ID or
 account. Its deployment action does not wait for OCC-managed credential metadata;
@@ -84,7 +84,8 @@ does not establish model access. **Selected revision** displays `activeRevisionI
 newest admitted revision nor the viewed snapshot must match it.
 
 Read-only AgentRevision snapshots cannot be edited, rolled back, redeployed, or
-used as a live-health check. Activation means the revision was admitted and
+used as a live-health check. **Edit current Configuration** opens the current
+draft; saving it leaves the viewed snapshot unchanged. Activation means the revision was admitted and
 selected by OCC. The console displays persisted deployment and startup evidence,
 not live gateway health. Follow the
 [deployment guide](../guides/deploy/production-agents.md#configure-the-agent-runtime) and

@@ -32,7 +32,7 @@ export const scenarios = {
     path: "/console/agents",
     description:
       "Browse pages, component states, and guided Agent workflows. Every preview mounts the production console modules and styles in its own frame. Reset story discards all local changes.",
-    gap: "Stop Agent requests the stopped desired state; deployment resumes an Agent. General Configuration JSON editing after creation, model-Secret creation, Namespace provisioning, Preset management, and Provider setup require an API, CLI, or operator workflow. Serving health and model responses require separate runtime verification.",
+    gap: "Stop Agent requests the stopped desired state; deployment resumes an Agent. Model-Secret creation, Namespace provisioning, Preset management, and Provider setup require an API, CLI, or operator workflow. Serving health and model responses require separate runtime verification.",
   },
   login: {
     group: "Pages/Sign in",
@@ -291,6 +291,25 @@ export const scenarios = {
     path: draft,
     description:
       "Editable desired configuration, masked authentication summary, deployment gate, and Agent deletion.",
+  },
+  configurationEditor: {
+    group: "Pages/Agent detail",
+    name: "Edit Configuration",
+    path: draft,
+    actions: [click("Edit Configuration")],
+    description:
+      "Edit native JSON on the current draft. Save Configuration persists values; deployment remains a separate action.",
+  },
+  invalidConfiguration: {
+    group: "Pages/Agent detail",
+    name: "Invalid Configuration JSON",
+    path: draft,
+    actions: [
+      click("Edit Configuration"),
+      { selector: "#configuration-json", value: "{ invalid" },
+      click("Save Configuration"),
+    ],
+    description: "Invalid JSON retains editor contents and sends no Configuration write.",
   },
   admitted: {
     group: "Pages/Agent detail",
@@ -745,7 +764,7 @@ export const scenarios = {
       "Refresh deployment and inspect the new revision. The prior snapshot remains readable.",
       "Workspace file edits are separate: they save immediately without a new revision.",
     ],
-    gap: "The detail page has no general JSON/model editor. Use the API or CLI for those draft changes. Slack policy selection is also outside the drawer; existing policies are preserved.",
+    gap: "Native JSON edits use Configuration, while Slack has a dedicated drawer. The Slack drawer preserves existing policies; change unsupported policy fields through native JSON.",
   },
   stopConfirm: {
     group: "Components/Stop Agent",

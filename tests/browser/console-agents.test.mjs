@@ -159,6 +159,14 @@ function agentStopRequests(requests, namespaceId, agentId) {
   );
 }
 
+function configurationPatchRequests(requests, namespaceId, configurationId) {
+  return pathRequests(
+    requests,
+    "PATCH",
+    `/namespaces/${namespaceId}/configurations/${encodeURIComponent(configurationId)}`,
+  );
+}
+
 async function createRuntimeAuthFixture(t, namespaceName) {
   const computeDriver = new SshComputeDriver({
     ssh: { identityFile: "/tmp/ssh-test-key", knownHostsFile: "/tmp/ssh-test-hosts" },
@@ -367,7 +375,7 @@ test("Agent creation saves native Configuration JSON and a draft Agent without a
     );
   });
   await page.getByRole("heading", { name: "New revision" }).waitFor();
-  await page.getByRole("button", { name: "Configuration" }).waitFor();
+  await page.getByRole("button", { name: "Configuration", exact: true }).waitFor();
   await revealNativeConfiguration(page, "View native Configuration");
   await page.getByText('"marker": "create"').waitFor();
   // Neither the summary nor expanded native Configuration reveals the credential or its ID.
@@ -759,6 +767,13 @@ test("Agent detail preserves admitted revision history while draft edits change 
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Revision history", { ready: true });
+  const secret = await fixture.createSecret(namespace.id, "External API token", "hidden-token");
+  const secretBindings = {
+    EXTERNAL_API_TOKEN: {
+      source: secret.ref,
+      delivery: { type: "env" },
+    },
+  };
   const agent = await fixture.createAgent(
     namespace.id,
     "Revisioned Agent",
@@ -776,6 +791,7 @@ test("Agent detail preserves admitted revision history while draft edits change 
     namespace.id,
     agent.configurationId,
     nativeValues("draft-current"),
+    { secretBindings },
   );
   assert.equal(draft.generation, 3);
   const { page } = await newPage(t, fixture);
@@ -790,7 +806,7 @@ test("Agent detail preserves admitted revision history while draft edits change 
   await page.getByRole("heading", { name: "Revisioned Agent" }).waitFor();
   requests.length = 0;
 
-  await page.getByRole("button", { name: "Configuration" }).click();
+  await page.getByRole("button", { name: "Configuration", exact: true }).click();
   await page.getByLabel("AgentRevision").selectOption(first.revision.id);
   await revealNativeConfiguration(page, "View admitted native configuration");
   await page.getByText('"marker": "rev-one"').waitFor();
@@ -816,7 +832,75 @@ test("Agent detail preserves admitted revision history while draft edits change 
   await expectNoText(page, /"marker": "rev-one"|"marker": "rev-two"/);
   assertRevisionUrl(page, "draft");
 
-  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  await page.getByRole("button", { name: "Edit Configuration" }).click();
+  const editor = page.getByLabel("Configuration JSON");
+  assert.match(await editor.inputValue(), /"marker": "draft-current"/);
+  for (const invalidJson of ["{ invalid", "[]"]) {
+    await editor.fill(invalidJson);
+    await page.getByRole("button", { name: "Save Configuration" }).click();
+    await page.getByText("Enter a valid Configuration JSON object.").waitFor();
+  }
+  assert.deepEqual(configurationPatchRequests(requests, namespace.id, agent.configurationId), []);
+
+  await editor.fill(JSON.stringify(nativeValues("stale-client"), null, 2));
+  const stale = await fixture.updateConfiguration(
+    namespace.id,
+    agent.configurationId,
+    nativeValues("stale-server"),
+  );
+  assert.equal(stale.generation, 4);
+  await page.getByRole("button", { name: "Save Configuration" }).click();
+  await page.getByText("The saved Configuration changed while you were editing.").waitFor();
+  assert.deepEqual(configurationPatchRequests(requests, namespace.id, agent.configurationId), []);
+
+  await page.reload();
+  await page.getByRole("heading", { name: "Revisioned Agent" }).waitFor();
+  await page.getByRole("button", { name: "Edit Configuration" }).click();
+  const editedValues = nativeValues("draft-edited");
+  await page.getByLabel("Configuration JSON").fill(JSON.stringify(editedValues, null, 2));
+  await page.getByText("Save or cancel these Configuration edits before deploying.").waitFor();
+  await page.getByText("Save or cancel Configuration edits before deploying.").waitFor();
+  assert.equal(await page.getByRole("button", { name: "Channels" }).isDisabled(), true);
+  await page.evaluate(() => {
+    const next = new URL(globalThis.location.href);
+    next.searchParams.set("tab", "channels");
+    globalThis.history.pushState(globalThis.history.state, "", next);
+    globalThis.dispatchEvent(new globalThis.PopStateEvent("popstate"));
+  });
+  await page.getByText("Save or cancel Configuration edits before leaving this tab.").waitFor();
+  assert.equal(new URL(page.url()).searchParams.get("tab"), "configuration");
+  const savedConfiguration = page.waitForResponse(
+    (response) =>
+      response.url() ===
+        `${fixture.origin}/namespaces/${namespace.id}/configurations/${agent.configurationId}` &&
+      response.request().method() === "PATCH",
+  );
+  await page.getByRole("button", { name: "Save Configuration" }).click();
+  assert.equal((await savedConfiguration).status(), 200);
+  await page.getByText(/generation 5/).waitFor();
+  const patched = configurationPatchRequests(requests, namespace.id, agent.configurationId);
+  assert.deepEqual(
+    patched.map((request) => request.body),
+    [{ values: editedValues }],
+  );
+  const currentConfiguration = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+  );
+  assert.equal(currentConfiguration.status, 200);
+  assert.equal(currentConfiguration.data.generation, 5);
+  assert.deepEqual(currentConfiguration.data.values, editedValues);
+  assert.deepEqual(currentConfiguration.data.secretBindings, secretBindings);
+
+  await page.getByLabel("AgentRevision").selectOption(first.revision.id);
+  await revealNativeConfiguration(page, "View admitted native configuration");
+  await page.getByText('"marker": "rev-one"').waitFor();
+  await expectNoText(page, /"marker": "draft-edited"|"marker": "stale-server"/);
+  await page.getByRole("button", { name: "Edit current Configuration" }).click();
+  await page.waitForURL((url) => url.searchParams.get("revision") === "draft");
+  await revealNativeConfiguration(page, "View native Configuration");
+  await page.getByText('"marker": "draft-edited"').waitFor();
+
   await page.getByRole("button", { name: "Credentials", exact: true }).click();
   await page.getByLabel("Authentication source").selectOption("");
   const saved = page.waitForResponse(
@@ -837,6 +921,83 @@ test("Agent detail preserves admitted revision history while draft edits change 
     (await page.locator("body").textContent()).includes(agent.harnessAuth.source.id),
     false,
   );
+});
+
+test("Agent detail blocks repeat Configuration saves after an uncertain draft update", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Uncertain Configuration", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Uncertain Configuration Agent",
+    nativeValues("before-unknown"),
+    { harnessAuth: { method: "runtime" } },
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+  let interceptedPatches = 0;
+  await page.route(`**${configurationPath}`, async (route, request) => {
+    if (request.method() !== "PATCH") {
+      await route.continue();
+      return;
+    }
+    interceptedPatches += 1;
+    await route.fetch();
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "DEPENDENCY_UNAVAILABLE", message: "masked Configuration response" },
+        meta: { requestId: "req_00000000-0000-4000-8000-000000000503" },
+      }),
+    });
+  });
+
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").pathname +
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").search,
+  );
+  await page.getByRole("heading", { name: "Uncertain Configuration Agent" }).waitFor();
+  requests.length = 0;
+
+  const nextValues = nativeValues("after-unknown");
+  await page.getByText("Configured on the runtime host").waitFor();
+  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), false);
+  await page.getByRole("button", { name: "Edit Configuration" }).click();
+  await page.getByLabel("Configuration JSON").fill(JSON.stringify(nextValues, null, 2));
+  await page.getByText("Save or cancel Configuration edits before deploying.").waitFor();
+  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), true);
+  await page.getByRole("button", { name: "Save Configuration" }).click();
+
+  await page.getByText("Outcome unknown. Configuration may have been saved.").waitFor();
+  assert.equal(await page.getByRole("button", { name: "Save Configuration" }).isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Channels" }).isDisabled(), true);
+  await page.evaluate(() => {
+    const next = new URL(globalThis.location.href);
+    next.searchParams.set("tab", "channels");
+    globalThis.history.pushState(globalThis.history.state, "", next);
+    globalThis.dispatchEvent(new globalThis.PopStateEvent("popstate"));
+  });
+  await page.getByText("Outcome unknown. Reload this draft before leaving the editor.").waitFor();
+  assert.equal(new URL(page.url()).searchParams.get("tab"), "configuration");
+  assert.match(
+    await page.getByLabel("Configuration JSON").inputValue(),
+    /"marker": "after-unknown"/,
+  );
+  assert.equal(interceptedPatches, 1);
+  assert.equal(configurationPatchRequests(requests, namespace.id, agent.configurationId).length, 1);
+  const saved = await fixture.request("GET", configurationPath);
+  assert.equal(saved.data.generation, 2);
+  assert.deepEqual(saved.data.values, nextValues);
+
+  await page.getByRole("button", { name: "Reload draft" }).click();
+  await page.getByText(/generation 2/).waitFor();
+  await revealNativeConfiguration(page, "View native Configuration");
+  await page.getByText('"marker": "after-unknown"').waitFor();
+  assert.equal(interceptedPatches, 1);
 });
 
 test("Agent stop confirmation uses the real API, preserves Agent state, and deploy resumes", async (t) => {

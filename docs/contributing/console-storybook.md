@@ -44,7 +44,7 @@ those states by interacting with the real controls after loading fixture data.
 | Namespaces              | Ready and provisioning, empty, permission denial.                                                                                                                                                                                                |
 | Settings and navigation | Signed-in account and unknown route.                                                                                                                                                                                                             |
 | Create Agent            | Preset selection and variables, no Presets, dedicated and embedded forms, seeded workspace files, optional discovery denial, invalid JSON, partial save with conflict, unknown save outcome.                                                     |
-| Agent detail            | New revision, admitted snapshot, queued or failed deployment, denied deployment, missing Agent, unavailable Configuration and revision history.                                                                                                  |
+| Agent detail            | New revision, native JSON editor, invalid JSON, admitted snapshot, queued or failed deployment, denied deployment, missing Agent, unavailable Configuration and revision history.                                                                |
 | Navigation components   | Account menu, Namespace switcher, mobile drawer.                                                                                                                                                                                                 |
 | Channels                | Unconfigured cards, Slack editor with pairing/open/disabled policies, unsupported Slack shape, read-only snapshot, save conflict.                                                                                                                |
 | Credentials             | Stored and missing metadata, masked Slack tokens, one-token replacement, partially missing tokens, generated credentials locked after admission, metadata failure, missing authentication, operator-managed credentials, issued ChatGPT account. |
@@ -83,13 +83,14 @@ for the supported installation workflow and prerequisites.
 
 ### Update
 
-Edit Slack settings on the new revision and compare them with the original
-revision. Deploy again to admit a new snapshot. The fixture retains both versions.
+Use **Edit Configuration** on the new revision to change native JSON, or edit
+Slack through Channels. Save and compare the draft with the original revision.
+Deploy again to admit a new snapshot. The fixture retains both versions.
 Credential edits likewise need deployment to affect managed runtime configuration.
 Workspace-file writes apply immediately and do not create a revision.
 
-The detail page has no general Configuration JSON or model editor. Use the API or
-CLI for those changes. The Slack drawer preserves existing access policies; it
+Native JSON editing changes Configuration values, not Agent-owned Provider or
+execution-mode fields. The Slack drawer preserves existing access policies; it
 does not provide a policy selector. See [Agent revisions](../guides/topics/agent-revisions.md).
 
 ### Stop

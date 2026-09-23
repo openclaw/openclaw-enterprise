@@ -90,10 +90,24 @@ Browser Back and Forward restore the selected tab. Leaving a tab clears entered 
 | **Compute**                            | Revision's Compute Driver identifier and implementation.                                                         |
 | **View admitted native configuration** | Expands the revision's formatted native JSON. The draft uses **View native Configuration**.                      |
 
-**Configuration draft** summarizes the saved values; it is not a general JSON,
-model, Provider, or execution-mode editor. Supported edits are exposed through
-Channels and Credentials. Use the API or operator workflow for other changes.
-See the [Configuration reference](../../reference/configuration.md).
+In **New revision**, select **Edit Configuration** to edit the native JSON,
+including model and gateway settings. **Save Configuration** requires a JSON
+object and updates the saved draft; **Cancel** discards unsaved edits. On an
+admitted snapshot, **Edit current Configuration** opens the current draft, not
+a copy of the historical snapshot.
+
+Save does not deploy or change existing AgentRevisions. Select **Deploy new
+revision** after saving to apply the new values. Deployment and tab switching are blocked while edits are unsaved, a save is
+pending, or a stale or unknown result requires reload. Other Agents sharing this
+Configuration also use the updated values on their next deployment.
+
+The editor preserves existing Secret bindings and checks for a changed
+Configuration or Agent association before saving. A stale draft requires reload;
+this preflight cannot prevent another write racing with the save. If the outcome
+is unknown, inspect the saved Configuration through a successful reload before
+saving again. Invalid JSON and failed saves retain the text for correction.
+Provider, execution mode, and Harness authentication are Agent fields, not native
+Configuration JSON. See the [Configuration reference](../../reference/configuration.md).
 
 ## Channels tab
 
