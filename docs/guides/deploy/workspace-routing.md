@@ -11,9 +11,9 @@ configure this topology. Use [Kubernetes setup](../kubernetes-setup.md) for
 workspace access; enabling a Helm value alone does not connect a Compose API
 to the private Service.
 
-The production examples enable routing; the chart default is
-`gatewayRouting.enabled: false`. Operators must install the routing controllers,
-create the service-key Secret, and configure Helm and Installation settings.
+Production examples enable routing; the chart defaults to
+`gatewayRouting.enabled: false`. Install routing controllers, create the
+service-key Secret, and configure Helm and Installation settings.
 Console starters omit Driver-owned authentication. Configure the Installation’s
 [proxy trust](#configure-native-gateway-authentication) before deploying.
 
@@ -142,8 +142,7 @@ The chart's `tenantGatewayPort` must match Compute's `network.gatewayPort`.
 Remove `network.gatewayClients` when enabling routing. Compute derives the
 Envoy peer from `gatewayRouting` and rejects explicit gateway clients in this mode.
 Retain the Installation's other Compute settings. Restart the API and worker
-when changing their Installation startup configuration. New Agent creation
-thereafter needs no configuration update. The worker requires tenant-local
+when changing their Installation startup configuration. The worker requires tenant-local
 HTTPRoute permissions from the chart's worker role; the API needs no route
 writes or gateway Pod/exec access.
 
