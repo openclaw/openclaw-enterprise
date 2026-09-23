@@ -201,11 +201,29 @@ and unexpected helper failures are retryable.
 
 ## Credentials and supported boundaries
 
-The Driver writes only the per-Agent gateway token in `gateway.env`. Token auth
-uses `"${OPENCLAW_GATEWAY_TOKEN}"` in the native document. For native
-`gateway.auth.mode: "trusted-proxy"`, the unit omits `gateway.env` entirely.
-An older token file may remain after a change to trusted-proxy auth, but the
-unit does not load it.
+When native Configuration omits `gateway.auth.mode`, the Driver renders
+`password` mode with a managed environment SecretRef using
+`OPENCLAW_GATEWAY_PASSWORD`. Explicit `password` and `trusted-proxy` modes are
+supported. An explicit password must use that variable's default-provider
+environment SecretRef; trusted proxy can opt into the same loopback password.
+Gateway token mode and any `gateway.auth.token` field are rejected before host
+changes.
+
+The helper creates a private per-Agent `gateway-password.env` when the managed
+password is needed. Later revisions reuse that file; the Driver does not rotate
+it during prepare, activation, or stop. The systemd unit loads it for managed
+password access and omits it for trusted proxy without a password. The previous
+`gateway.env` token file is left untouched and no longer loaded. The unit unsets
+`OPENCLAW_GATEWAY_TOKEN`, including legacy values in the operator environment,
+without modifying that file.
+
+To migrate, remove `gateway.auth.mode: token` and `gateway.auth.token` from
+existing Configurations and Presets, then deploy a new revision of the same
+Agent. Update direct clients to use its managed password, or preserve an
+explicit trusted-proxy configuration. Keep Agent IDs, home/state directories,
+operator credentials, and existing credential files; no automatic migration
+rewrites or deletes them. Do not rotate unrelated credentials or recreate the
+Agent to change gateway authentication.
 
 The optional `EnvironmentFile=-<agentDir>/env` is operator-owned and never read
 or written by the Driver. Provision model/channel credential lines there and

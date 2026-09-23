@@ -12,6 +12,8 @@ import type {
   NamespaceDeleteResult,
   NamespaceEnsureResult,
   LoggingLevel,
+  OpenClawConfigurationDocument,
+  OpenClawConfigurationValue,
 } from "@openclaw-enterprise/contracts";
 import { admittedLoggingLevel } from "@openclaw-enterprise/contracts";
 import { asRecord, immutableCopy, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
@@ -121,6 +123,89 @@ const GATEWAY_PORT = 8080;
 const AGENT_TRANSPORT_PORT = 18_790;
 const MODEL_API_KEY = "OPENAI_API_KEY";
 const CONFIGURATION_DOCUMENT = "/home/node/.openclaw/openclaw.json";
+const GATEWAY_PASSWORD_ENV = "OPENCLAW_GATEWAY_PASSWORD";
+const GATEWAY_PASSWORD_REFERENCE = `\${${GATEWAY_PASSWORD_ENV}}`;
+
+function dockerGatewayConfigurationDocument(configuration: OpenClawConfigurationDocument): {
+  readonly configuration: OpenClawConfigurationDocument;
+  readonly requiresManagedPassword: boolean;
+} {
+  const gatewayRecord = asRecord(configuration.gateway);
+  if (configuration.gateway !== undefined && gatewayRecord === undefined) {
+    throw new ConfigurationFailure("Docker native gateway configuration must be an object.");
+  }
+  const gateway = (gatewayRecord ?? {}) as Record<string, OpenClawConfigurationValue>;
+  const authRecord = asRecord(gateway.auth);
+  if (gateway.auth !== undefined && authRecord === undefined) {
+    throw new ConfigurationFailure("Docker native gateway auth must be an object.");
+  }
+  const auth = (authRecord ?? {}) as Record<string, OpenClawConfigurationValue>;
+
+  if (auth.mode === "token") {
+    throw new ConfigurationFailure(
+      "Docker Compute does not support native gateway token authentication.",
+    );
+  }
+  if ("token" in auth) {
+    throw new ConfigurationFailure("Docker native gateway authentication must omit auth.token.");
+  }
+  const passwordReference =
+    auth.password === undefined ? undefined : gatewayPasswordEnvironmentReference(auth.password);
+  if (auth.mode === "trusted-proxy") {
+    return {
+      configuration,
+      requiresManagedPassword: passwordReference === GATEWAY_PASSWORD_ENV,
+    };
+  }
+  if (auth.mode !== undefined && auth.mode !== "password") {
+    throw new ConfigurationFailure(
+      "Docker Compute supports only native password or trusted-proxy gateway authentication.",
+    );
+  }
+
+  if (auth.password === undefined) {
+    return {
+      configuration: {
+        ...configuration,
+        gateway: {
+          ...gateway,
+          auth: {
+            ...auth,
+            mode: "password",
+            password: GATEWAY_PASSWORD_REFERENCE,
+          },
+        },
+      },
+      requiresManagedPassword: true,
+    };
+  }
+  return {
+    configuration: {
+      ...configuration,
+      gateway: {
+        ...gateway,
+        auth: {
+          ...auth,
+          mode: "password",
+        },
+      },
+    },
+    requiresManagedPassword: passwordReference === GATEWAY_PASSWORD_ENV,
+  };
+}
+
+function gatewayPasswordEnvironmentReference(
+  value: OpenClawConfigurationValue,
+): string | undefined {
+  if (value === GATEWAY_PASSWORD_REFERENCE) {
+    return GATEWAY_PASSWORD_ENV;
+  }
+  const record = asRecord(value);
+  if (record?.source === "env" && record.id === GATEWAY_PASSWORD_ENV) {
+    return GATEWAY_PASSWORD_ENV;
+  }
+  return undefined;
+}
 
 export const GATEWAY_RUNTIME_ENTRYPOINT = String.raw`
 const { chmodSync, mkdirSync, writeFileSync } = require("node:fs");
@@ -387,6 +472,7 @@ export class DockerComputeDriver implements ComputeDriver {
     ) {
       throw new ConfigurationFailure("AgentRevision Configuration ownership is invalid.");
     }
+    dockerGatewayConfigurationDocument(revision.configuration);
 
     const network = this.networkName(revision.namespaceId);
     const observed = await this.network(network);
@@ -774,7 +860,8 @@ ${WORKSPACE_SETUP_RUNTIME}`,
     const containerName = this.gatewayContainerName(revision.namespaceId, revision.agentId);
     const ownership = this.gatewayOwnership(revision);
     const existing = await this.container(containerName);
-    const configuration = JSON.stringify(revision.configuration);
+    const gatewayConfiguration = dockerGatewayConfigurationDocument(revision.configuration);
+    const configuration = JSON.stringify(gatewayConfiguration.configuration);
     const configurationHash = sha256Hex(configuration, 32);
     if (existing !== undefined) {
       this.verifyOwnership(existing.Config?.Labels, ownership, `container ${containerName}`);
@@ -814,13 +901,12 @@ ${WORKSPACE_SETUP_RUNTIME}`,
       workspaceSetup: workspaceSetup !== undefined,
       environment: {
         ...environment,
+        ...(gatewayConfiguration.requiresManagedPassword
+          ? { [GATEWAY_PASSWORD_ENV]: randomBytes(32).toString("hex") }
+          : {}),
         OPENCLAW_CONFIG_JSON: configuration,
         OPENCLAW_CONFIG_PATH: CONFIGURATION_DOCUMENT,
         OPENCLAW_GATEWAY_PORT: String(GATEWAY_PORT),
-        // Native trusted-proxy authentication rejects a simultaneously configured shared token.
-        ...(asRecord(asRecord(revision.configuration.gateway)?.auth)?.mode === "trusted-proxy"
-          ? {}
-          : { OPENCLAW_GATEWAY_TOKEN: randomBytes(32).toString("hex") }),
         OPENCLAW_STATE_DIR: "/home/node/.openclaw",
         HOME: "/home/node",
       },

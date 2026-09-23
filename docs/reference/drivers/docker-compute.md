@@ -126,6 +126,31 @@ Driver retains the Agent-owned state and workspace volumes used for initial
 workspace setup across stop and revision replacement. Without initial workspace
 inputs, writable container tmpfs remains ephemeral.
 
+## Gateway authentication
+
+The container implementation renders `gateway.auth.mode: password` when native
+Configuration omits the mode. Explicit `password` and `trusted-proxy` are supported.
+Gateway token mode and any `gateway.auth.token` field are rejected. These rules
+do not remove the harness-authentication admission limit above.
+
+With password mode, omitting `gateway.auth.password` selects the managed
+`OPENCLAW_GATEWAY_PASSWORD` reference. An explicit reference to that variable also
+selects a managed password, including optional loopback access with trusted proxy.
+For either mode, a new container receives a new managed password; a reused healthy
+container keeps its value. Other explicit password settings are preserved and
+receive no Driver-generated password. Configuration API secret-reference rules
+still apply. Trusted proxy without a password reference receives no managed
+password. The dedicated Codex `APP_SERVER_TOKEN` remains a separate transport
+credential with its existing recovery checks.
+
+For existing token Configurations and Presets, remove `gateway.auth.mode: token`
+and `gateway.auth.token` before requesting a new revision. Configure direct
+clients for the replacement gateway's password, or retain an explicitly configured
+trusted proxy. Saving a draft does not change the running gateway. Do not delete
+state volumes or unrelated credentials to migrate authentication. Current Docker
+Agent admission still rejects every `harnessAuth` binding; this change does not
+make new Docker Agent deployment available.
+
 ## Initial workspace storage
 
 When an Agent has [initial workspace contents](../agents.md#initial-contents-at-creation),

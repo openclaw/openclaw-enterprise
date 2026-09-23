@@ -56,8 +56,9 @@ The Driver never projects `OPENCLAW_GATEWAY_TOKEN`. An optional
 operator verification; it does not change the gateway's authentication mode.
 Readiness uses a Pod-local HTTP request to
 `127.0.0.1:$OPENCLAW_GATEWAY_PORT/readyz`; TLS terminates at Envoy, so native
-readiness probes remain unchanged. Docker and SSH authentication modes are
-outside this Kubernetes-only constraint.
+readiness probes remain unchanged. Docker and SSH default to managed password
+authentication and also support explicit trusted proxy; none of the bundled
+Compute Drivers supports gateway token mode.
 
 Operators must verify that the configured CIDRs contain the proxy's actual
 source addresses and exclude untrusted sources. CIDRs do not authenticate a

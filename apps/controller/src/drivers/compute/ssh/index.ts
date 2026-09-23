@@ -3,6 +3,8 @@ import { stat } from "node:fs/promises";
 import type {
   AgentRevision,
   HarnessAuthSnapshot,
+  OpenClawConfigurationDocument,
+  OpenClawConfigurationValue,
   RevisionHarnessDescriptor,
   ComputeAgentBinding,
   ComputeDriver,
@@ -61,6 +63,7 @@ interface SshComputeSelection {
 
 class OwnershipFailure extends Error {}
 class ConfigurationFailure extends Error {}
+class GatewayAuthenticationFailure extends ConfigurationFailure {}
 
 const HELPER = readFileSync(new URL("./remote-helper.cjs", import.meta.url), "utf8");
 const OPERATION_TIMEOUT_MS = 180_000;
@@ -75,6 +78,13 @@ const ADDRESS = new RegExp(ADDRESS_PATTERN);
 const ACCOUNT_PATTERN = "^(?!root$)[a-z_][a-z0-9_-]*$";
 const ACCOUNT = new RegExp(ACCOUNT_PATTERN);
 const IDENTITY = /^[A-Za-z0-9][A-Za-z0-9_.:/-]*$/;
+const OPENCLAW_GATEWAY_PASSWORD = "OPENCLAW_GATEWAY_PASSWORD";
+const GATEWAY_PASSWORD_EXPRESSION = `\${${OPENCLAW_GATEWAY_PASSWORD}}`;
+const GATEWAY_PASSWORD_REFERENCE = immutableCopy({
+  source: "env",
+  provider: "default",
+  id: OPENCLAW_GATEWAY_PASSWORD,
+});
 
 function required(value: unknown, description: string): string {
   if (!isNonEmptyString(value)) {
@@ -138,6 +148,85 @@ function failure(error: unknown): "permanent" | "retryable" {
 
 function hasPluginSelections(revision: AgentRevision): boolean {
   return revision.plugins !== undefined && Object.keys(revision.plugins.plugins).length > 0;
+}
+
+function usesGatewayPasswordReference(value: unknown): boolean {
+  if (value === GATEWAY_PASSWORD_EXPRESSION) {
+    return true;
+  }
+  const password = asRecord(value);
+  return (
+    password?.source === "env" &&
+    password.provider === "default" &&
+    password.id === OPENCLAW_GATEWAY_PASSWORD
+  );
+}
+
+function sshGatewayConfigurationDocument(
+  configuration: OpenClawConfigurationDocument,
+): OpenClawConfigurationDocument {
+  const gatewayRecord = asRecord(configuration.gateway);
+  if (configuration.gateway !== undefined && gatewayRecord === undefined) {
+    throw new ConfigurationFailure("SSH native gateway configuration must be an object.");
+  }
+  const gateway = (gatewayRecord ?? {}) as Record<string, OpenClawConfigurationValue>;
+  const authRecord = asRecord(gateway.auth);
+  if (gateway.auth !== undefined && authRecord === undefined) {
+    throw new GatewayAuthenticationFailure("SSH native gateway auth must be an object.");
+  }
+  const auth = (authRecord ?? {}) as Record<string, OpenClawConfigurationValue>;
+  if ("token" in auth) {
+    throw new GatewayAuthenticationFailure(
+      "SSH native gateway authentication must omit auth.token.",
+    );
+  }
+  if (auth.mode !== undefined && auth.mode !== "trusted-proxy" && auth.mode !== "password") {
+    throw new GatewayAuthenticationFailure(
+      "SSH Compute supports only native trusted-proxy or password gateway authentication.",
+    );
+  }
+  if (auth.password !== undefined && !usesGatewayPasswordReference(auth.password)) {
+    throw new GatewayAuthenticationFailure(
+      "Gateway password authentication must use OPENCLAW_GATEWAY_PASSWORD.",
+    );
+  }
+  if (auth.mode === "trusted-proxy") {
+    return configuration;
+  }
+  return {
+    ...configuration,
+    gateway: {
+      ...gateway,
+      auth: {
+        ...auth,
+        mode: "password",
+        password: GATEWAY_PASSWORD_REFERENCE,
+      },
+    },
+  } as OpenClawConfigurationDocument;
+}
+
+function sshRuntimeConfiguration(
+  configuration: OpenClawConfigurationDocument,
+  rejectUnsupportedAuth: boolean,
+): { readonly configuration: OpenClawConfigurationDocument; readonly hashes: readonly string[] } {
+  const rawHash = sha256Hex(JSON.stringify(configuration));
+  try {
+    const rendered = sshGatewayConfigurationDocument(configuration);
+    const renderedHash = sha256Hex(JSON.stringify(rendered));
+    return {
+      configuration: rendered,
+      hashes:
+        rejectUnsupportedAuth || renderedHash === rawHash
+          ? [renderedHash]
+          : [renderedHash, rawHash],
+    };
+  } catch (error) {
+    if (rejectUnsupportedAuth || !(error instanceof GatewayAuthenticationFailure)) {
+      throw error;
+    }
+    return { configuration, hashes: [rawHash] };
+  }
 }
 
 export class SshComputeDriver implements ComputeDriver {
@@ -384,6 +473,7 @@ export class SshComputeDriver implements ComputeDriver {
   ): Promise<ComputeReadiness> {
     this.lifecycleStarted = true;
     this.validateRevision(revision);
+    sshGatewayConfigurationDocument(revision.configuration);
     // TODO: Dedicated Codex requires authenticated transport and separate host credential delivery.
     if (revision.harness.id !== "openclaw" || revision.harness.mode !== "embedded") {
       throw new ConfigurationFailure(
@@ -405,7 +495,13 @@ export class SshComputeDriver implements ComputeDriver {
       throw new ConfigurationFailure("SSH Compute does not support PluginDriver installation.");
     }
     admittedLoggingLevel(revision.configuration);
-    const result = await this.revisionOperation("prepare-revision", revision, undefined, context);
+    const result = await this.revisionOperation(
+      "prepare-revision",
+      revision,
+      undefined,
+      context,
+      true,
+    );
     return {
       namespaceId: revision.namespaceId,
       agentId: revision.agentId,
@@ -417,6 +513,7 @@ export class SshComputeDriver implements ComputeDriver {
   async activateRevision(revision: AgentRevision, context?: ComputeRevisionContext): Promise<void> {
     this.lifecycleStarted = true;
     this.validateRevision(revision);
+    sshGatewayConfigurationDocument(revision.configuration);
     if (revision.harness.id !== "openclaw" || revision.harness.mode !== "embedded") {
       throw new ConfigurationFailure(
         "SSH Compute supports only embedded OpenClaw; dedicated Codex is not implemented.",
@@ -441,7 +538,7 @@ export class SshComputeDriver implements ComputeDriver {
     let launch: Readonly<WorkloadLaunchContext> | undefined;
     try {
       launch = await this.lifecycle.beforeWorkloadStart(revision);
-      await this.revisionOperation("activate-revision", revision, launch, context);
+      await this.revisionOperation("activate-revision", revision, launch, context, true);
     } catch (error) {
       if (launch === undefined) {
         throw error;
@@ -530,13 +627,20 @@ export class SshComputeDriver implements ComputeDriver {
     revision: AgentRevision,
     launch?: Readonly<WorkloadLaunchContext>,
     context?: ComputeRevisionContext,
+    rejectUnsupportedAuth = false,
   ): Promise<Record<string, unknown>> {
     const namespace = this.validateRevision(revision);
+    const runtimeConfiguration = sshRuntimeConfiguration(
+      revision.configuration,
+      rejectUnsupportedAuth,
+    );
+    const effectiveRevision = { ...revision, configuration: runtimeConfiguration.configuration };
     return this.execute(this.host(namespace), {
       operation,
       namespace,
-      revision,
-      configurationHash: sha256Hex(JSON.stringify(revision.configuration)),
+      revision: effectiveRevision,
+      configurationHash: runtimeConfiguration.hashes[0],
+      configurationHashes: runtimeConfiguration.hashes,
       ...(context?.workspaceSetup === undefined
         ? {}
         : {

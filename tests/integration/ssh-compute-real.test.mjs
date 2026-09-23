@@ -187,9 +187,9 @@ function output(command, args) {
   }
   const agent = readJson(input.agentDir + "/agent.json");
   if (input.operation === "model") {
-    const token = fs.readFileSync(input.agentDir + "/gateway.env", "utf8").trim().split("=")[1];
+    const password = fs.readFileSync(input.agentDir + "/gateway-password.env", "utf8").trim().split("=")[1];
     const response = await fetch("http://127.0.0.1:" + agent.port + "/v1/chat/completions", {
-      method: "POST", headers: { "content-type": "application/json", authorization: "Bearer " + token },
+      method: "POST", headers: { "content-type": "application/json", authorization: "Bearer " + password },
       body: JSON.stringify({ model: "openclaw/default", messages: [{ role: "user", content: "Reply with READY. Do not use tools." }], stream: false, max_tokens: 32 }),
       signal: AbortSignal.timeout(180000),
     });
@@ -279,7 +279,6 @@ test(
           mode: "local",
           bind: "loopback",
           controlUi: { enabled: false },
-          auth: { mode: "token", token: "${OPENCLAW_GATEWAY_TOKEN}" },
           http: { endpoints: { chatCompletions: { enabled: true } } },
         },
         agents: {

@@ -8,15 +8,17 @@ limits for Kubernetes Agent runtimes. Apply these boundaries together with the
 
 Every Agent retains one Agent-specific transport Secret in its exact tenant
 namespace, provisioned by the selected Compute Driver through the initial
-credential API or by an operator. It contains a gateway admission token. Dedicated Codex additionally
-receives a distinct `APP_SERVER_TOKEN`: its separate gateway connects only to
+credential API or by an operator. Kubernetes gateway authentication uses trusted
+proxy, with an optional separately configured loopback password. The Driver does
+not generate or project gateway admission tokens. Dedicated Codex receives a
+distinct `APP_SERVER_TOKEN`: its separate gateway connects only to
 its exact Agent Service over same-Namespace `ws://`, and the real app-server
 verifies the capability token's SHA-256 digest. Embedded OpenClaw has no
 app-server transport.
 
 The initial credential API requires exact Agent read and operate access, a ready
-Namespace, and no historical revisions. It generates transport tokens and a local gateway password internally
-and stores supplied Slack values in correctly owned Kubernetes Secrets.
+Namespace, and no historical revisions. It generates an app-server transport
+token and a local gateway password internally and stores supplied Slack values in correctly owned Kubernetes Secrets.
 Those values pass transiently through the authorized API; they are excluded from
 Configuration, database records, audit fields, responses, and logs. Provisioning
 creates missing whole Secrets only and rejects foreign, malformed, or conflicting

@@ -144,7 +144,7 @@ test("Preset variables create independent ordinary Agent drafts that survive tem
     configuration: {
       values: {
         gateway: {
-          auth: { mode: "token", token: "${OPENCLAW_GATEWAY_TOKEN}" },
+          auth: { password: "${OPENCLAW_GATEWAY_PASSWORD}" },
           controlUi: { enabled: "{{ vars.enabled }}" },
         },
         agents: {
@@ -180,7 +180,7 @@ test("Preset variables create independent ordinary Agent drafts that survive tem
     "openai/gpt-5.1",
   ]);
   assert.equal(configuration.data.values.gateway.controlUi.enabled, false);
-  assert.equal(configuration.data.values.gateway.auth.token, "${OPENCLAW_GATEWAY_TOKEN}");
+  assert.equal(configuration.data.values.gateway.auth.password, "${OPENCLAW_GATEWAY_PASSWORD}");
   assert.deepEqual(
     configuration.data.values.models.providers.openai.apiKey,
     template.configuration.values.models.providers.openai.apiKey,

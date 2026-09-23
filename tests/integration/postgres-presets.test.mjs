@@ -37,7 +37,7 @@ async function exercisePresets(store, reopened = store) {
       configuration: {
         values: {
           agents: { defaults: { model: "{{ vars.model }}" } },
-          gateway: { auth: { token: "${OPENCLAW_GATEWAY_TOKEN}" } },
+          gateway: { auth: { password: "${OPENCLAW_GATEWAY_PASSWORD}" } },
         },
       },
     },

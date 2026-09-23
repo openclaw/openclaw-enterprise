@@ -220,8 +220,24 @@ async function assertReadyGateway(namespaceName, agentId, namespaceId, snapshot)
     assert.deepEqual(Object.keys(configuration.data), ["openclaw.json"]);
     assert.deepEqual(
       JSON.parse(configuration.data["openclaw.json"]),
-      snapshot.configuration,
-      "the immutable native document must preserve every value regardless of PostgreSQL JSON key ordering",
+      {
+        ...snapshot.configuration,
+        gateway: {
+          ...snapshot.configuration.gateway,
+          trustedProxies: ["127.0.0.1/32"],
+          allowRealIpFallback: true,
+          auth: {
+            ...snapshot.configuration.gateway?.auth,
+            mode: "trusted-proxy",
+            trustedProxy: {
+              userHeader: "x-occ-identity",
+              allowUsers: ["occ-workspace-files"],
+            },
+            identityScopes: { "occ-workspace-files": ["operator.admin"] },
+          },
+        },
+      },
+      "the immutable native document must preserve revision values and render the fixture Installation's gateway authentication",
     );
     assert.equal(configuration.metadata.annotations["openclaw.dev/agent-id"], agentId);
     if (namespaceId !== undefined) {
