@@ -32,7 +32,7 @@ The bundled Compute Drivers expose the current gateway authentication contracts:
 
 The detailed matrix retains its older source baseline. Its trusted-proxy row
 records that capability at the baseline; use the current contracts above for
-credential modes and migration.
+credential modes.
 For setup, see [Drivers quickstart](selection.md#choose-a-bundled-driver).
 The [Compute Driver contract](compute.md) owns requirements; the
 [platform design](../../design.md) owns the target architecture.

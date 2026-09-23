@@ -161,9 +161,7 @@ trusted-proxy authentication only. Initial provisioning generates
 `gateway-password` and the independent `app-server-token`; dedicated Codex
 requires the latter for its Harness transport. The transport bundle must contain
 exactly these two nonempty keys; initial credential inspection and provisioning
-reject other shapes. Operators must correct an older bundle's keys while preserving
-the current password and app-server token values. The Driver does not rewrite,
-rotate, or delete existing Secrets to migrate them.
+reject other shapes.
 The Driver projects `gateway-password` as `OPENCLAW_GATEWAY_PASSWORD`
 only when `gateway.auth.password` explicitly uses an environment SecretRef with
 that ID. This supports native local-direct password access alongside trusted-proxy

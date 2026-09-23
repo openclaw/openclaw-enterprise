@@ -98,8 +98,8 @@ action, and outcome, never the values.
 Provisioning creates missing whole Secrets before any AgentRevision exists. It
 never rotates or overwrites existing credentials. A retry may reuse complete,
 owned transport groups. The Kubernetes transport group must contain exactly
-`app-server-token` and `gateway-password`; older key sets, foreign ownership, or
-malformed values require operator correction. The API does not migrate them. If a response is lost or a dependency fails, refresh
+`app-server-token` and `gateway-password`. Unexpected keys, foreign ownership,
+or malformed values produce a conflict. If a response is lost or a dependency fails, refresh
 stored status before explicitly retrying. Already-created Secrets remain in place
 even when later storage or audit work fails; there is no automatic retry or
 rollback deletion.

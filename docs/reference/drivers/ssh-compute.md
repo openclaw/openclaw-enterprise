@@ -212,22 +212,7 @@ changes.
 The helper creates a private per-Agent `gateway-password.env` when the managed
 password is needed. Later revisions reuse that file; the Driver does not rotate
 it during prepare, activation, or stop. The systemd unit loads it for managed
-password access and omits it for trusted proxy without a password. It has no
-legacy credential loading, cleanup, or environment migration path.
-
-Before upgrading, use the previous Driver to stop and retire revisions whose
-saved authentication or snapshot format is no longer supported. Updating a
-draft does not migrate immutable revision snapshots.
-
-To migrate existing Configurations and Presets, remove unsupported gateway
-authentication fields, then deploy a new revision of the same Agent. Update
-direct clients to use its managed password, or preserve an explicit
-trusted-proxy configuration. Keep Agent IDs, home/state directories, operator
-credentials, and current password files. Before redeployment, operators must
-remove obsolete gateway authentication settings from their environment,
-especially when selecting trusted proxy. The Driver does not migrate that file
-or delete historical files. Do not rotate unrelated credentials or recreate the
-Agent to change gateway authentication.
+password access and omits it for trusted proxy without a password.
 
 The optional `EnvironmentFile=-<agentDir>/env` is operator-owned and never read
 or written by the Driver. Provision model/channel credential lines there and

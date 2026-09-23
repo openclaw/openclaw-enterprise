@@ -143,14 +143,6 @@ still apply. Trusted proxy without a password reference receives no managed
 password. The dedicated Codex `APP_SERVER_TOKEN` remains a separate transport
 credential with its existing recovery checks.
 
-Before requesting a new revision, remove unsupported gateway authentication
-fields from existing Configurations and Presets. Configure direct clients for the
-replacement gateway's password, or retain an explicitly configured trusted
-proxy. Saving a draft does not change the running gateway. Do not delete state
-volumes or unrelated credentials to migrate authentication. Current Docker Agent
-admission still rejects every `harnessAuth` binding; this change does not make
-new Docker Agent deployment available.
-
 ## Initial workspace storage
 
 When an Agent has [initial workspace contents](../agents.md#initial-contents-at-creation),
