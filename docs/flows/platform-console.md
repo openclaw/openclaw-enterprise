@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: 2026-09-23
-last_updated_session: 01a0cf27-71c6-7042-8357-74d1811a2ef8
+last_updated_session: 01a0cce9-23e3-7072-aa3f-a2e26d2dbf11
 ---
 
 # Platform console request flow
@@ -168,9 +168,10 @@ bounded responses and pagination, returning only model IDs and labels. The
 explicit `authMethod` selects API-key or service-account discovery. OpenAI API-key
 discovery excludes models whose valid `shutdown_date` is today or earlier (UTC).
 Discovery makes no platform writes. Empty or failed discovery permits manual model entry; key
-and provider or authentication-method changes invalidate pending browser results. Model and execution-mode changes update the
-native model and runtime entries while preserving unrelated settings; reset
-restores the selected starter. `configurationTemplate` enables native Control UI
+and provider or authentication-method changes invalidate pending browser results. Model
+and key edits preserve provider transport and Codex plugin settings. Provider or
+execution-mode changes regenerate those entries; reset restores the selected starter.
+`configurationTemplate` enables native Control UI
 with explicit loopback origins on port 18789. Compute Drivers render gateway
 authentication from Installation trust settings; starters supply no gateway token.
 Preset values replace the starter unchanged. These defaults do not configure the
@@ -310,6 +311,8 @@ refreshes and inspects the Agent and revision history.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 21:41: Preserve edited Codex plugin settings across model and key changes. (01a0cce9-23e3-7072-aa3f-a2e26d2dbf11 - b8f23be17de4a4b077dab8d6b90b4add1f9146cb)
 
 - 2026-09-23 23:50: Describe Service Accounts hints and expired-model filtering; consolidate repeated creation and action details. (01a0cf27-71c6-7042-8357-74d1811a2ef8 - 9e0095c7)
 

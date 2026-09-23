@@ -718,24 +718,14 @@ test("Dedicated Agent creation provisions inline Configuration and masked new Se
       return;
     }
     const body = request.postDataJSON();
+    // Secrets use the real API; only provisioning and deployment progression are simulated.
+    const response = await route.fetch();
+    const saved = (await response.json()).data;
+    savedSecrets.set(body.name, saved);
     if (!body.name.endsWith("Slack app token") && !body.name.endsWith("Slack bot token")) {
-      const response = await route.fetch();
-      const saved = (await response.json()).data;
       agent.harnessAuth.source = saved.ref;
-      await route.fulfill({ response });
-      return;
     }
-    const id = body.name.endsWith("Slack app token")
-      ? "sec_slack_app_token"
-      : "sec_slack_bot_token";
-    const secret = {
-      id,
-      namespaceId: namespace.id,
-      name: body.name,
-      ref: { kind: "secret", namespaceId: namespace.id, id },
-    };
-    savedSecrets.set(body.name, secret);
-    await route.fulfill(json(secret, 201));
+    await route.fulfill({ response });
   });
   await page.route(`**/namespaces/${namespace.id}/agents/provision`, async (route, request) => {
     provisionBody = request.postDataJSON();
@@ -992,6 +982,7 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
   const revisionId = "rev_00000000-0000-4000-8000-00000000babe";
   const createdAt = new Date().toISOString();
   const bodies = [];
+  const savedSecrets = new Map();
   const agent = {
     id: agentId,
     namespaceId: namespace.id,
@@ -1039,31 +1030,14 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
       return;
     }
     const body = request.postDataJSON();
+    // Keep Secret persistence real while simulating an uncertain provisioning response.
+    const response = await route.fetch();
+    const saved = (await response.json()).data;
+    savedSecrets.set(body.name, saved);
     if (!body.name.endsWith("Slack app token") && !body.name.endsWith("Slack bot token")) {
-      const response = await route.fetch();
-      const saved = (await response.json()).data;
       agent.harnessAuth.source = saved.ref;
-      await route.fulfill({ response });
-      return;
     }
-    const id = body.name.endsWith("Slack app token")
-      ? "sec_retry_slack_app_token"
-      : "sec_retry_slack_bot_token";
-    await route.fulfill(
-      json(
-        {
-          id,
-          namespaceId: namespace.id,
-          name: body.name,
-          ref: {
-            kind: "secret",
-            namespaceId: namespace.id,
-            id,
-          },
-        },
-        201,
-      ),
-    );
+    await route.fulfill({ response });
   });
   await page.route(`**/namespaces/${namespace.id}/agents/provision`, async (route, request) => {
     bodies.push(request.postDataJSON());
@@ -1192,11 +1166,11 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
   assert.equal(Object.hasOwn(bodies[0], "secrets"), false);
   assert.deepEqual(bodies[0].configuration.secretBindings, {
     SLACK_APP_TOKEN: {
-      source: { kind: "secret", namespaceId: namespace.id, id: "sec_retry_slack_app_token" },
+      source: savedSecrets.get("Retried Agent Slack app token").ref,
       delivery: { type: "env" },
     },
     SLACK_BOT_TOKEN: {
-      source: { kind: "secret", namespaceId: namespace.id, id: "sec_retry_slack_bot_token" },
+      source: savedSecrets.get("Retried Agent Slack bot token").ref,
       delivery: { type: "env" },
     },
   });
@@ -1880,12 +1854,26 @@ test("Agent creation preserves unrelated edited JSON across model changes and re
     agentRuntime: { id: "codex" },
   });
 
+  // Model and key edits must preserve the operator's existing Codex execution policy.
+  const customCodex = structuredClone(retained.plugins.entries.codex);
+  Object.assign(customCodex.config.appServer, {
+    sandbox: "workspace-write",
+    approvalPolicy: "never",
+    remoteWorkspaceRoot: "/workspace/custom-agent",
+  });
+  retained.plugins.entries.codex = customCodex;
+  await configuration.fill(JSON.stringify(retained));
+  await modelInput.fill("gpt-4.1-codex-updated");
+  await modelInput.press("Tab");
+  assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins.entries.codex, customCodex);
+
   // Changing the key temporarily retains model settings while the operator chooses again.
   await page.getByLabel("API key", { exact: true }).fill("replacement-template-key");
   await page.getByLabel("API key", { exact: true }).press("Tab");
   const nextModel = page.getByLabel("Model ID", { exact: true });
   await nextModel.waitFor();
   assert.equal(await nextModel.inputValue(), "");
+  assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins.entries.codex, customCodex);
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Reset template" }).click();
   const resetTemplate = JSON.parse(await configuration.inputValue());

@@ -525,7 +525,12 @@ function renderAgentForm(context, rendered) {
       values.plugins = {
         ...values.plugins,
         allow: [...new Set([...(values.plugins?.allow ?? []), ...next.plugins.allow])],
-        entries: { ...values.plugins?.entries, ...next.plugins.entries },
+        entries: {
+          ...values.plugins?.entries,
+          codex: resetTransport
+            ? next.plugins.entries.codex
+            : (values.plugins?.entries?.codex ?? next.plugins.entries.codex),
+        },
       };
     } else if (values.plugins?.entries?.codex) {
       delete values.plugins.entries.codex;

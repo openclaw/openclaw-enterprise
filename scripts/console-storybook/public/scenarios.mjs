@@ -214,6 +214,12 @@ export const scenarios = {
     actions: form,
     description:
       "Choose a provider and authentication method, enter a credential, and load model choices before provisioning. No model is selected by default.",
+    steps: [
+      "Keep OpenAI and Dedicated, enter a dummy API key, and select a returned model.",
+      'In Configuration JSON, edit plugins.entries.codex.config.appServer: set sandbox to "workspace-write", approvalPolicy to "never", and remoteWorkspaceRoot to "/workspace/custom".',
+      "Change the model, then replace the dummy credential and choose a model again. Confirm all three edited appServer settings remain in Configuration JSON.",
+      "Choose Reset template and confirm to restore the standard runtime settings for the selected model.",
+    ],
   },
   createProvisioningSecrets: {
     group: "Pages/Create Agent",
