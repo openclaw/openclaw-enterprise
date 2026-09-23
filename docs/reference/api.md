@@ -51,7 +51,7 @@ Each operation lists its supported status codes.
 | [Configurations](#configurations) | 4 operations |
 | [IAM](#iam) | 8 operations |
 | [Presets](#presets) | 5 operations |
-| [Secrets](#secrets) | 4 operations |
+| [Secrets](#secrets) | 5 operations |
 | [Service accounts](#service-accounts) | 6 operations |
 | [Providers](#providers) | 1 operation |
 
@@ -2475,10 +2475,58 @@ Update a Preset without changing existing Agents
 
 | Operation | Summary |
 | --- | --- |
+| [`GET /namespaces/{namespaceId}/secrets`](#get-namespacesnamespaceidsecrets) | List readable Namespace-owned Secret metadata without revealing material |
 | [`POST /namespaces/{namespaceId}/secrets`](#post-namespacesnamespaceidsecrets) | Create exact Namespace-owned Secret material and return metadata only |
 | [`DELETE /namespaces/{namespaceId}/secrets/{secretId}`](#delete-namespacesnamespaceidsecretssecretid) | Delete exact unbound Namespace-owned Secret material |
 | [`GET /namespaces/{namespaceId}/secrets/{secretId}`](#get-namespacesnamespaceidsecretssecretid) | Get exact Namespace-owned Secret metadata without revealing material |
 | [`PATCH /namespaces/{namespaceId}/secrets/{secretId}`](#patch-namespacesnamespaceidsecretssecretid) | Replace exact Namespace-owned Secret material and return stable metadata |
+
+#### `GET /namespaces/{namespaceId}/secrets`
+
+<span id="get-namespacesnamespaceidsecrets"></span>
+
+List readable Namespace-owned Secret metadata without revealing material
+
+**Operation ID:** `listSecrets`
+
+**Permissions:** Requires read permission for Secret resources in the requested Namespace.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `read` | `secret` | `namespace` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints |
+| --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `500` | Internal Server Error |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `array<object>` | Yes | — |
+| `data[].id` | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data[].name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)(?!.*[\u0000-\u001f\u007f]).+$` |
+| `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data[].ref` | `object` | Yes | Exact OCC Secret reference. Shape: `{ "kind": "secret", "namespaceId": "ns_...", "id": "sec_..." }`. |
+| `data[].ref.id` | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data[].ref.kind` | `"secret"` | Yes | — |
+| `data[].ref.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
 #### `POST /namespaces/{namespaceId}/secrets`
 

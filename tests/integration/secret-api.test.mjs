@@ -236,6 +236,42 @@ test("Secret API stores values through the selected driver and returns metadata 
   assert.equal(JSON.stringify(created.body).includes("driverId"), false);
   assert.equal(fixture.secretDriver.valueFor(created.data), originalValue);
 
+  const hidden = await request(fixture.app, "POST", `/namespaces/${namespace.id}/secrets`, {
+    body: { name: "Hidden provider API key", value: `secret-value-${randomUUID()}` },
+  });
+  assert.equal(hidden.status, 201);
+  fixture.state.restrictions.push({
+    id: "deny-hidden-secret-read",
+    namespaceId: namespace.id,
+    resourceKind: "secret",
+    resourceId: hidden.data.id,
+    action: "read",
+    effect: "deny",
+  });
+  const foreignNamespace = await request(fixture.app, "POST", "/namespaces", {
+    body: { name: `foreign-secret-list-${randomUUID()}` },
+  });
+  assert.equal(foreignNamespace.status, 201);
+  await fixture
+    .controller()
+    .handleNamespaceLifecycle(fixture.principal.id, foreignNamespace.data.id, "ready");
+  const foreign = await request(
+    fixture.app,
+    "POST",
+    `/namespaces/${foreignNamespace.data.id}/secrets`,
+    { body: { name: "Foreign provider API key", value: `secret-value-${randomUUID()}` } },
+  );
+  assert.equal(foreign.status, 201);
+  const listed = await request(fixture.app, "GET", `/namespaces/${namespace.id}/secrets`);
+  assert.equal(listed.status, 200);
+  assert.deepEqual(listed.data, [created.data]);
+  assert.equal(JSON.stringify(listed.body).includes(originalValue), false);
+  assert.equal(
+    JSON.stringify(listed.body).includes(fixture.secretDriver.valueFor(hidden.data)),
+    false,
+  );
+  assert.equal(JSON.stringify(listed.body).includes(foreign.data.id), false);
+
   const detail = await request(
     fixture.app,
     "GET",
@@ -286,7 +322,13 @@ test("Secret API stores values through the selected driver and returns metadata 
     fixture.auditSink.events
       .filter((event) => event.resource.kind === "secret" && event.kind === "mutation")
       .map((event) => event.action),
-    ["openclaw.secrets.create", "openclaw.secrets.update", "openclaw.secrets.delete"],
+    [
+      "openclaw.secrets.create",
+      "openclaw.secrets.create",
+      "openclaw.secrets.create",
+      "openclaw.secrets.update",
+      "openclaw.secrets.delete",
+    ],
   );
 });
 

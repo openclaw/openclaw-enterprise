@@ -36,7 +36,7 @@ export function secretIdForBinding(binding) {
     : null;
 }
 
-function secretBinding(secret) {
+export function secretBinding(secret) {
   return {
     source: secret.ref,
     delivery: { type: "env" },
@@ -139,7 +139,7 @@ async function secretOperateRole(context) {
   });
 }
 
-async function ensureSecretOperateBinding(context, agent, secret) {
+export async function ensureSecretOperateBinding(context, agent, secret) {
   const principal = servicePrincipalId(agent);
   if (principal === null) {
     throw new Error("The API did not return this Agent's service principal.");

@@ -202,6 +202,7 @@ async function exerciseRepository(store) {
     assert.deepEqual(await state.secrets.createSecret(storedSecret), storedSecret);
     assert.equal(await state.namespaces.hasSecrets(namespace.id), true);
     assert.deepEqual(await state.secrets.findSecret(namespace.id, storedSecret.id), storedSecret);
+    assert.deepEqual(await state.secrets.listSecrets(namespace.id), [storedSecret]);
     assert.deepEqual(await state.secrets.lockSecret(namespace.id, storedSecret.id), storedSecret);
     await state.configurations.createConfiguration({
       ...configuration,
@@ -235,6 +236,10 @@ async function exerciseRepository(store) {
       },
     });
     await state.agents.createAgent(siblingAgent);
+    assert.deepEqual(
+      new Set((await state.secrets.listSecrets(namespace.id)).map((item) => item.id)),
+      new Set([storedSecret.id, secondSharedSecret.id]),
+    );
     assert.equal(await state.secrets.hasReferences(namespace.id, secondSharedSecret.id), true);
   });
 
@@ -243,6 +248,12 @@ async function exerciseRepository(store) {
   await store.transact(async (state) => {
     await state.namespaces.createNamespace(foreign.namespace);
     await state.secrets.createSecret(foreignSecret);
+    assert.deepEqual(
+      (await state.secrets.listSecrets(namespace.id))
+        .map((item) => item.id)
+        .includes(foreignSecret.id),
+      false,
+    );
   });
   await assert.rejects(
     store.transact((state) =>

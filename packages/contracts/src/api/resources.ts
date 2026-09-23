@@ -246,6 +246,11 @@ export const SecretResponse = Type.Object(
   },
 );
 
+export const SecretListResponse = Type.Object(
+  { data: Type.Array(SecretSchema), meta: Meta },
+  { additionalProperties: false },
+);
+
 export const ServiceAccountResponse = Type.Object(
   { data: ServiceAccountSchema, meta: Meta },
   { additionalProperties: false },
@@ -487,6 +492,7 @@ export type NamespaceResponse = Type.Static<typeof NamespaceResponse>;
 export type NamespaceListResponse = Type.Static<typeof NamespaceListResponse>;
 export type ConfigurationResponse = Type.Static<typeof ConfigurationResponse>;
 export type SecretResponse = Type.Static<typeof SecretResponse>;
+export type SecretListResponse = Type.Static<typeof SecretListResponse>;
 export type ServiceAccountResponse = Type.Static<typeof ServiceAccountResponse>;
 export type ServiceAccountListResponse = Type.Static<typeof ServiceAccountListResponse>;
 export type AgentResponse = Type.Static<typeof AgentResponse>;

@@ -220,6 +220,7 @@ export interface PresetRepository extends PresetReadRepository {
 
 export interface SecretReadRepository {
   findSecret(namespaceId: string, secretId: string): Promise<Readonly<Secret> | undefined>;
+  listSecrets(namespaceId: string): Promise<readonly Readonly<Secret>[]>;
 }
 
 export interface SecretRepository extends SecretReadRepository {
@@ -1044,6 +1045,12 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
             const secret = snapshot.secrets.get(agentKey(namespaceId, secretId));
             return secret === undefined ? undefined : immutableCopy(secret);
           },
+          listSecrets: async (namespaceId) =>
+            Object.freeze(
+              Array.from(snapshot.secrets.values())
+                .filter((secret) => secret.namespaceId === namespaceId)
+                .map((secret) => immutableCopy(secret)),
+            ),
         },
         configuration.namespaceId,
         secretBindings,
@@ -1109,6 +1116,21 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
       }
       const secret = snapshot.secrets.get(agentKey(namespaceId, secretId));
       return secret === undefined ? undefined : immutableCopy(secret);
+    },
+    listSecrets: async (namespaceId) => {
+      if (snapshot.namespaces.get(namespaceId)?.deletedAt !== undefined) {
+        return Object.freeze([]);
+      }
+      return Object.freeze(
+        Array.from(snapshot.secrets.values())
+          .filter((secret) => secret.namespaceId === namespaceId)
+          .sort((left, right) =>
+            left.createdAt === right.createdAt
+              ? left.id.localeCompare(right.id)
+              : left.createdAt.localeCompare(right.createdAt),
+          )
+          .map((secret) => immutableCopy(secret)),
+      );
     },
     lockSecret: async (namespaceId, secretId) => secrets.findSecret(namespaceId, secretId),
     createSecret: async (secret) => {

@@ -38,6 +38,7 @@ export function installFixture(scenario, evidence) {
   const deployments = new Map();
   const credentials = new Map();
   const files = new Map();
+  const secrets = new Map();
   const stagedWorkspaceFiles = new Map();
   const roles = [];
   const bindings = [];
@@ -57,6 +58,15 @@ export function installFixture(scenario, evidence) {
   const providers = scenario.emptyProviders
     ? []
     : [{ id: "chatgpt-demo", name: "ChatGPT", type: "chatgpt" }];
+  const secretMetadata = (id, name) => ({ id, namespaceId, name, ref: secretRef(id) });
+  for (const secret of [
+    secretMetadata("sec_demo_model", "Demo model API key (simulated)"),
+    secretMetadata("sec_demo_slack_app_token", "Slack app token (simulated)"),
+    secretMetadata("sec_demo_slack_bot_token", "Slack bot token (simulated)"),
+    secretMetadata("sec_demo_slack_backup_token", "Slack backup token (simulated)"),
+  ]) {
+    secrets.set(secret.id, secret);
+  }
   const accounts = [
     {
       id: "sa_demo",
@@ -425,13 +435,30 @@ export function installFixture(scenario, evidence) {
           return response(binding, 201);
         }
       }
-      if (resource === "secrets" || resource.startsWith("secrets/")) {
-        const id = resource.split("/")[1] ?? `sec_demo_${serial++}`;
-        if (["GET", "POST", "PATCH"].includes(method)) {
-          return response(
-            { id, namespaceId, name: body.name ?? "Demo Secret", ref: secretRef(id) },
-            method === "POST" ? 201 : 200,
-          );
+      if (resource === "secrets") {
+        if (method === "GET") {
+          return response([...secrets.values()].map((secret) => structuredClone(secret)));
+        }
+        if (method === "POST") {
+          const id = nextId("sec");
+          const secret = secretMetadata(id, body.name ?? "Demo Secret (simulated)");
+          secrets.set(secret.id, secret);
+          return response(structuredClone(secret), 201);
+        }
+      }
+      if (resource.startsWith("secrets/")) {
+        const id = resource.split("/")[1];
+        const secret = secrets.get(id);
+        if (!secret) {
+          return error(404);
+        }
+        if (method === "GET") {
+          return response(structuredClone(secret));
+        }
+        if (method === "PATCH") {
+          const updated = { ...secret, name: body.name ?? secret.name };
+          secrets.set(id, updated);
+          return response(structuredClone(updated));
         }
       }
     }

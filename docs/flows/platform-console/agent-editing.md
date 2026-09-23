@@ -89,19 +89,31 @@ references, mixed Slack mention settings, and unsupported plugin shapes.
 
 `apps/controller/src/console/agents/detail.mjs:renderAgentDetail` passes the
 selected Namespace, saved Secret bindings, and draft Credentials URL to the
-channel editor. `apps/controller/src/console/channels/slack.mjs:appendFields`
-links each same-Namespace Secret binding to its exact metadata endpoint; it does
-not infer Secret IDs from environment reference names or fetch Secret values.
-The metadata endpoint retains exact-resource read authorization. Missing bindings
-show setup guidance, and creation requires an Agent before credential navigation.
-Secret metadata and Credentials links open in new tabs so the original drawer
-retains unsaved inputs. Credential changes can advance the Configuration generation;
-the existing channel-save preflight below rejects a stale drawer.
+channel editor. `apps/controller/src/console/channels/slack.mjs:credentialReferenceField`
+loads metadata through `GET /namespaces/:namespaceId/secrets`. The controller
+authorizes collection read; `packages/occ/src/index.ts:listSecrets` filters each
+record by exact Secret read without calling the Secret Driver. Each token menu
+includes its current binding, readable same-Namespace Secrets, and a creation
+option. Selection stages a binding in the drawer; Cancel discards it.
+
+`apps/controller/src/console/channels/slack.mjs:openCreateSecretDialog` prefills
+the fixed environment key and accepts a password input. The Secret POST stores
+the value immediately and returns metadata; the drawer stages that reference.
+Closing the drawer does not delete the Namespace Secret. The
+[Secret storage flow](../secret-storage-and-delivery.md) owns persistence and
+unknown-outcome recovery. The modal clears the password after each attempt and
+disables its submit button on an uncertain result, directing the user to refresh.
+Metadata and Credentials links open in new tabs,
+preserving unsaved inputs. Secret values are never read back.
 
 Saving channels first rereads the Agent and Configuration, then checks that the
 Agent still references the same Configuration generation. The subsequent PATCH
-sends `{ values: updatedValues }` and omits `secretBindings`, so the backend
-retains existing bindings. The preflight reads do not prevent a later concurrent write.
+sends `{ values: updatedValues }`, adding `secretBindings` only when selections
+changed. It preserves unrelated bindings. Before that PATCH,
+`apps/controller/src/console/agents/credentials.mjs:ensureSecretOperateBinding` grants the Agent's service
+principal access to selected Secrets through the Namespace IAM API. Grants and
+Configuration updates are separate writes; a failed PATCH does not remove
+grants or newly created Secrets. The preflight reads do not prevent a later concurrent write.
 An interrupted or unavailable PATCH reply keeps the result unknown and blocks
 another channel write until Refresh. Draft channel disablement changes only
 Configuration values; it does not stop a running Agent. The
@@ -161,8 +173,9 @@ route. It neither patches Configuration nor admits a revision. The existing
 Each result stays local to its file. Unknown write outcomes require a successful
 reload before another save; the editor never retries a write automatically.
 
-Creation uses the channel editor to update the initial Configuration JSON before
-its POST. Separately, `apps/controller/src/console/agents/create.mjs` submits the
+Creation uses the same channel editor to stage initial Configuration values and
+Secret bindings before its POST; see the [creation trace](../platform-console.md#3-authorize-the-selected-page-resource).
+Separately, `apps/controller/src/console/agents/create.mjs` submits the
 four workspace textarea values as `initialWorkspaceFiles` plus
 `workspaceDefaultsId` in the Agent POST. OCC stages these exact-Agent inputs
 privately until Compute initializes the workspace before execution. This does
@@ -215,6 +228,12 @@ subsequent worker cleanup and the Namespace-owned resources it preserves.
 
 ## Debugging and Verification
 
+- A denied Secret list requires collection `read`; a missing menu entry may lack
+  exact Secret `read`. Saving bindings also requires caller `operate` on those
+  Secrets, Configuration update, and Namespace IAM authority to grant Agent use.
+- After a partial save, inspect the Configuration, Secret metadata, and Agent IAM
+  bindings before retrying. Storage and binding do not prove runtime delivery;
+  explicitly deploy and verify the consuming Agent.
 - Stop requires exact-Agent `operate`. An accepted stop or an empty selected
   revision does not independently prove that Compute shutdown has finished.
 - On `403`, check `delete` permission on the exact Agent; Agent `read` and
@@ -235,6 +254,8 @@ subsequent worker cleanup and the Namespace-owned resources it preserves.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 08:30: Trace Slack Secret menus, immediate creation, staged bindings, and explicit IAM grants before Configuration save. (01a0cd92-fd3f-7d83-a51e-f6264ef6be09 - 941edc9f6971a24ae29a74a6ca749b6375e6ec01)
 
 - 2026-09-23 02:26: Trace Slack credential navigation and preservation of unsaved channel edits; remove the generic drawer sharing footnote. (01a0cd92-fd3f-7d83-a51e-f6264ef6be09 - 380f7706e2856f1ac1e3bed7f5ddd9c71d133ba8)
 

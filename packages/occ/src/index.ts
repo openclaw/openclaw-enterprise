@@ -1616,6 +1616,28 @@ export class OpenClawController {
     });
   }
 
+  async listSecrets(
+    principalId: string,
+    namespaceId: string,
+  ): Promise<readonly Readonly<SecretMetadata>[]> {
+    return this.read(async (state) => {
+      const namespace = await this.exactNamespace(state, namespaceId);
+      const readable: Readonly<SecretMetadata>[] = [];
+      for (const secret of await state.secrets.listSecrets(namespace.id)) {
+        if (
+          await this.canRead(principalId, {
+            kind: "secret",
+            id: secret.id,
+            namespaceId: namespace.id,
+          })
+        ) {
+          readable.push(this.secretMetadata(secret));
+        }
+      }
+      return Object.freeze(readable);
+    });
+  }
+
   async updateSecret(
     principalId: string,
     input: UpdateSecretInput,

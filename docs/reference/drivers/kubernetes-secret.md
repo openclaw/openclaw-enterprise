@@ -125,6 +125,10 @@ OCC stores the Secret ID, Namespace ID, selected driver ID, and opaque
 Kubernetes backend reference. The value is stored only by the driver and is
 never returned by OCC.
 
+List readable metadata with `GET /namespaces/:namespaceId/secrets`; see the
+[SecretDriver IAM contract](secret.md#iam) for collection and exact-Secret checks.
+The list does not query Kubernetes or return values.
+
 ## Bind a Secret to gateway environment
 
 Add the returned reference to `secretBindings` on the Agent's Configuration. The

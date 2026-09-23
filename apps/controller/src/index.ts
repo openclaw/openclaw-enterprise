@@ -400,7 +400,10 @@ function operationTarget(
   if (serviceAccountId && namespaceId) {
     return { kind: "service_account", id: serviceAccountId, namespaceId };
   }
-  if (operation.operationId === "createSecret" && namespaceId) {
+  if (
+    (operation.operationId === "createSecret" || operation.operationId === "listSecrets") &&
+    namespaceId
+  ) {
     return { kind: "secret", id: namespaceId, namespaceId };
   }
   if (secretId && namespaceId) {
@@ -457,7 +460,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     ];
   }
 
-  if (operation.operationId === "createSecret") {
+  if (operation.operationId === "createSecret" || operation.operationId === "listSecrets") {
     return [{ ...permission, scope: "namespace" }];
   }
 
@@ -2258,6 +2261,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         return clientSecret(created);
       });
       reply.status(201).send({ data: secret, meta: { requestId: request.id } });
+      return;
+    }
+
+    if (operation.operationId === "listSecrets") {
+      const secrets = await controller.listSecrets(context.actorId, namespaceId);
+      reply.send({ data: secrets.map(clientSecret), meta: { requestId: request.id } });
       return;
     }
 

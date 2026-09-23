@@ -43,6 +43,7 @@ export function bindPlatformUnitOfWork(
     ]),
     secrets: bindRepository(repositories.secrets, lifetime, [
       "findSecret",
+      "listSecrets",
       "lockSecret",
       "createSecret",
       "deleteSecret",

@@ -40,10 +40,15 @@ does not make that link available.
    [operator-managed proxy trust](../drivers/kubernetes-compute/networking-and-isolation.md#gateway-authentication).
    Native admin UI still needs its [explicit opt-in configuration](../../guides/deploy/native-admin.md);
    the starter does not enable it.
-4. If you need Slack, use its channel card and select
-   **Dedicated**. Channel settings and their plugin entries are saved with the
-   Configuration when you select **Create Agent**. You can provision Slack
-   credentials in the console after creation.
+4. If you need Slack, select **Dedicated** and use its channel card. Each token
+   menu lets you select a readable Namespace Secret or **Create new Secret...**.
+   The modal prefills the binding key and masks the value you enter. Creating a
+   Secret stores it immediately, even if you later cancel Agent creation.
+   **Apply channel settings** stages settings and bindings into the form;
+   cancelling the drawer discards its selections.
+   Channel settings, plugin entries, and selected Secret bindings are saved with
+   the Configuration when you select **Create Agent**. You can also supply Slack
+   credentials from the Agent's **Credentials** tab after creation.
 5. Choose how the Agent will authenticate to its model. Use one of the options
    below, or choose **None** to save a draft and select a method later. A draft
    without a compatible method cannot be deployed.
@@ -72,6 +77,13 @@ mode, or confirm that the provider accepts it. For API-key deployments, the
 Agent's own service principal also needs `operate` on that Secret; ask an
 administrator to [grant it before deploying](../../guides/deploy/production-agents.md#grant-the-agent-access-to-its-model-secret).
 See [harness authentication](../agents.md#harness-authentication) for the full rules.
+
+For token Secrets selected through the Slack menus, creation also grants the new
+Agent `operate` through [Namespace IAM](../authorization.md#manage-namespace-policy).
+If that grant fails after the Agent is created, the console blocks another
+creation attempt and offers **Open Agent Credentials**. The Agent and
+Configuration remain saved; ask an administrator to check the
+exact Secret grants before deployment rather than creating another Agent.
 
 If the Configuration saves but Agent creation fails, the form shows its ID and
 keeps its JSON, Secret bindings, and execution mode fixed. Correct the Agent name or selections and
@@ -116,7 +128,7 @@ stored status before explicitly retrying. Already-created Secrets remain in plac
 even when later storage or audit work fails; there is no automatic retry or
 rollback deletion.
 
-For Slack, bound tokens appear as filled password fields using a synthetic mask.
+On the **Credentials** tab, bound Slack tokens appear as filled password fields using a synthetic mask.
 The browser never reads the saved token values. Focus a field to enter a
 replacement; leave it empty to keep its existing binding. Missing tokens remain
 empty and must be supplied before saving. **Save channel Secrets** requires at

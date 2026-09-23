@@ -130,15 +130,23 @@ unavailable.
 | **Slack channel IDs**                     | Comma-separated channel IDs, not channel names. Existing properties of retained channels are preserved.        |
 | **Allowed user IDs**                      | Comma-separated direct-message `allowFrom` user IDs.                                                           |
 | **Require a mention**                     | Applies the mention requirement to the listed channels.                                                        |
-| **Slack app token** / **Slack bot token** | Opens the bound Secret's metadata in a new tab. Unbound tokens show setup guidance.                            |
+| **Slack app token** / **Slack bot token** | Select a readable Secret in this Namespace or **Create new Secret...**. The current binding is selected.       |
+| **Create new Secret...**                  | Opens a modal with the fixed binding key and a password field for the Secret value.                            |
 | **Open Agent Credentials**                | Opens Credentials in a new tab, keeping unsaved drawer inputs. Save channel edits before changing credentials. |
-| **Save configuration**                    | Saves supported channel changes to the shared draft. Scroll to the drawer bottom if needed.                    |
+| **Save configuration**                    | Saves channel settings and selected Secret bindings to the shared draft.                                       |
 | **Cancel** / **Close**                    | Discards the drawer's unsaved inputs.                                                                          |
 
 Saving preserves existing direct-message and group policies. Adding an allowed
 user does not override a disabled policy. **No selected channels** describes the
 saved channel list; it does not by itself determine whether DMs work.
 See [Slack setup](../integrations/slack.md) for credentials and policy details.
+
+**Create Secret** stores the value immediately. Cancelling the channel drawer
+discards token selections but does not delete that Namespace Secret. The modal
+never reads an existing value.
+See the [Console reference](../../reference/console.md#inspect-detail-revisions-and-channel-drafts)
+for binding permissions and save behavior. Apply the saved draft with
+**Deploy new revision** before expecting the running Agent to use it.
 
 Microsoft Teams has no console editor. Existing Teams settings remain visible
 in native Configuration JSON, but a Teams-enabled draft cannot deploy through

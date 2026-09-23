@@ -8,6 +8,7 @@ import { renderWorkspaceFiles } from "./workspace.mjs";
 import { displayDate, shortId, namespacePath, link, message } from "./list.mjs";
 import {
   createRuntimeCredentialsPanel,
+  ensureSecretOperateBinding,
   hasRequiredRuntimeCredentials,
   runtimeCredentialBlockReason,
 } from "./credentials.mjs";
@@ -636,13 +637,15 @@ export async function renderAgentDetail(context) {
         readOnly: !draft,
         drawerContext: {
           namespaceId,
+          request,
+          agentName: agent.name,
           secretBindings: snapshot.secretBindings,
           credentialsHref: context.pageUrl(
             `agents/${agent.id}?revision=draft&tab=credentials`,
             namespaceId,
           ),
         },
-        onSave: async (updatedValues) => {
+        onSave: async (updatedValues, options = {}) => {
           let mutationStarted = false;
           try {
             const [freshAgent, freshConfig] = await Promise.all([
@@ -663,11 +666,22 @@ export async function renderAgentDetail(context) {
               );
             }
             mutationStarted = true;
+            const nextSecretBindings = options.secretBindings;
+            if (options.changedSecrets !== undefined) {
+              for (const secret of options.changedSecrets) {
+                await ensureSecretOperateBinding(context, freshAgent, secret);
+              }
+            }
             await request(
               `${namespacePath(namespaceId)}/configurations/${encodeURIComponent(snapshot.id)}`,
               {
                 method: "PATCH",
-                body: { values: updatedValues },
+                body: {
+                  values: updatedValues,
+                  ...(nextSecretBindings === undefined
+                    ? {}
+                    : { secretBindings: nextSecretBindings }),
+                },
               },
             );
             if (context.isCurrent()) {

@@ -33,9 +33,12 @@ OCC rejects empty values, NUL, invalid text, and values above 65,536 UTF-8 bytes
 
 ## IAM
 
-OCC authorizes creation on the Namespace's Secret collection and `read`,
-`update`, and `delete` on the specific Secret. Read returns metadata from OCC;
-it does not call the Driver or return a value. Binding or assigning a Secret
+OCC authorizes creation and listing on the Namespace's Secret collection.
+`GET /namespaces/:namespaceId/secrets` requires collection `read` and returns
+only Secrets on which the caller also has exact-resource `read`. An empty list
+means no readable Secrets. Exact Secret reads, updates, and deletion require
+`read`, `update`, and `delete`, respectively. Reads return metadata from OCC;
+they do not call the Driver or return a value. Binding or assigning a Secret
 also requires the caller to have `operate` on it. Deployment requires both the
 deploying actor and the consuming Agent's ServicePrincipal to have `operate` on
 each Secret; the worker rechecks them before preparing delivery. Namespace

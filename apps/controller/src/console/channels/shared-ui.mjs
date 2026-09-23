@@ -227,7 +227,7 @@ async function disableProvider(state, provider) {
   await save(state, withProvider(state.values, provider.id, config));
 }
 
-async function save(state, values, dialog, targetError) {
+async function save(state, values, dialog, targetError, secretBindingUpdate) {
   if (state.pending || state.outcomeUnknown) {
     return;
   }
@@ -243,7 +243,7 @@ async function save(state, values, dialog, targetError) {
   }
   let succeeded = false;
   try {
-    await state.onSave(values);
+    await state.onSave(values, secretBindingUpdate ?? {});
     succeeded = true;
     dialog?.close();
     dialog?.remove();
@@ -286,6 +286,13 @@ function openDrawer(section, state, provider) {
     "aria-label": `${statusOf(providerConfig(state.values, provider.id)).label === "Not configured" ? "Configure" : "Edit"} ${provider.name}`,
   });
   const config = isRecord(support.config) ? support.config : {};
+  const drawerContext = {
+    ...state.drawerContext,
+    secretBindings:
+      state.drawerContext.secretBindings === undefined
+        ? undefined
+        : structuredClone(state.drawerContext.secretBindings),
+  };
   const enabled = checkbox(
     `${provider.id}-enabled`,
     `Enable ${provider.name}`,
@@ -324,7 +331,7 @@ function openDrawer(section, state, provider) {
     ),
     enabled,
   );
-  provider.appendFields(body, config, state.drawerContext);
+  provider.appendFields(body, config, drawerContext);
   if (state.copy.drawerFootnote) {
     body.append(element("p", { className: "muted" }, state.copy.drawerFootnote));
   }
@@ -355,7 +362,8 @@ function openDrawer(section, state, provider) {
       return;
     }
     const nextValues = provider.updatedValues(state.values, body);
-    void save(state, withPlugin(nextValues, provider), dialog, feedback);
+    const secretBindingUpdate = provider.updatedSecretBindings?.(drawerContext);
+    void save(state, withPlugin(nextValues, provider), dialog, feedback, secretBindingUpdate);
   });
   dialog.addEventListener("cancel", (event) => {
     if (state.pending) {

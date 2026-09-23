@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-09-22
-last_updated_session: 01a0ccc0-00fa-7173-ab45-f7a5fb55b3b6
+updated: 2026-09-23
+last_updated_session: 01a0cd92-fd3f-7d83-a51e-f6264ef6be09
 ---
 
 # Platform console request flow
@@ -47,6 +47,9 @@ graph TD
     B -->|authenticated| D["Read readable Namespaces and validate selection"]
     D --> E["Request current page resource"]
     E --> E1["Edit starter JSON and select associations"]
+    E1 --> S1["Select Secret or open creation modal"]
+    S1 -->|select| S3["Stage binding until Apply"]
+    S3 -->|apply| E1
     E --> E2["Select new revision or AgentRevision by URL"]
     E2 --> E3["Save supported channel draft edit"]
     E2 --> E4["Confirm Agent deletion"]
@@ -56,17 +59,20 @@ graph TD
     E --> F["Authenticate and authorize exact scope"]
     F -->|Agents or Namespaces| G["OCC reads and filters by IAM"]
     F -->|Providers and Installation admin| H["Project loaded Provider IDs and types"]
-    E1 --> M1["POST creates Configuration"]
+    S1 -->|create| S2["POST stores Namespace Secret immediately"]
+    S2 --> S3
+    E1 --> M1["POST creates Configuration with staged bindings"]
     M1 -->|returned Configuration ID| M["POST creates Agent draft only"]
+    M --> M2["Grant Agent use of selected Secrets"]
     E2 --> N["GET draft Configuration or immutable revision"]
-    E3 --> O["PATCH Configuration values"]
+    E3 --> O["Grant Agent Secret access and PATCH Configuration"]
     E4 --> P["DELETE exact Agent"]
     E5 --> P2["POST exact Agent stop"]
   end
   subgraph Result["Browser result"]
     G --> I["Accept only current navigation response"]
     H --> I
-    M --> I
+    M2 --> I
     N --> I
     O --> I
     P -->|accepted or uncertain| Q["Show status and refresh exact Agent"]
@@ -152,8 +158,14 @@ Control UI for both modes with explicit loopback origins on port 18789. Compute
 Drivers render gateway authentication from Installation trust settings; starters
 do not supply a gateway token. Rendered Preset values replace the starter
 unchanged. These defaults do not configure the isolated HTTPS origin required by [OCE native admin access](agent-native-admin.md).
+The Slack menus use the metadata list and creation paths traced in
+[Agent editing](platform-console/agent-editing.md#4-render-draft-revision-or-channels).
+**Apply channel settings** copies the drawer's values and bindings into the
+creation form. Cancel discards the drawer selections, but a Secret created by
+the modal already belongs to the Namespace and remains stored.
+
 Submission parses the JSON object and
-posts `{kind: "agent", values}` to
+posts `{kind: "agent", values, secretBindings}` to
 `POST /namespaces/:namespaceId/configurations`. After that returns its ID,
 `POST /namespaces/:namespaceId/agents` creates the Agent draft with the selected
 plugin map, `initialWorkspaceFiles`, and `workspaceDefaultsId`, then returns to
@@ -161,6 +173,11 @@ the detail URL with `revision=draft`. The form preloads the four rendered native
 defaults and submits every textarea, including unchanged and empty values. OCC
 stages those inputs outside the Agent and Configuration; the
 [workspace setup flow](workspace-files.md) traces application before execution.
+`apps/controller/src/console/agents/create.mjs:grantConfigurationSecretAccess`
+then uses the returned Agent identity to grant exact Secret `operate` through
+Namespace IAM. These grants are separate writes from Configuration and Agent
+creation; they do not deploy the Agent. A grant failure blocks another creation
+attempt and links to the created Agent's Credentials tab for recovery.
 If that second
 write fails, the browser retains the Configuration ID and locks its JSON and
 execution mode; an explicit Agent retry reuses the saved Configuration. No write
@@ -280,6 +297,8 @@ refreshes and inspects the Agent and revision history.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 08:30: Trace pre-Agent Slack Secret selection and creation, staged Configuration bindings, and Agent Secret grants. (01a0cd92-fd3f-7d83-a51e-f6264ef6be09 - 941edc9f6971a24ae29a74a6ca749b6375e6ec01)
 
 - 2026-09-22 23:19: Enable native Control UI in Console starters with explicit loopback origins; preserve Preset and edited configuration. (01a0ccc0-00fa-7173-ab45-f7a5fb55b3b6 - 6d23cef977270fdf8ced6ea54ac8e1302cf8acd6)
 

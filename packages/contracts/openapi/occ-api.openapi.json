@@ -8603,6 +8603,130 @@
       }
     },
     "/namespaces/{namespaceId}/secrets": {
+      "get": {
+        "description": "Requires read permission for Secret resources in the requested Namespace.",
+        "operationId": "listSecrets",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "id": {
+                            "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "name": {
+                            "maxLength": 200,
+                            "minLength": 1,
+                            "pattern": "^(?!\\s)(?!.*\\s$)(?!.*[\\u0000-\\u001f\\u007f]).+$",
+                            "type": "string"
+                          },
+                          "namespaceId": {
+                            "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "ref": {
+                            "additionalProperties": false,
+                            "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                            "properties": {
+                              "id": {
+                                "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
+                              "kind": { "const": "secret", "type": "string" },
+                              "namespaceId": {
+                                "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["kind", "namespaceId", "id"],
+                            "type": "object"
+                          }
+                        },
+                        "required": ["id", "namespaceId", "name", "ref"],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "List readable Namespace-owned Secret metadata without revealing material",
+        "tags": ["Secrets"],
+        "x-openclaw-permissions": [
+          { "action": "read", "resourceKind": "secret", "scope": "namespace" }
+        ]
+      },
       "post": {
         "description": "Requires create permission for Secret resources in the requested Namespace.",
         "operationId": "createSecret",

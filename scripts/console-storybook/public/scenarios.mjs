@@ -11,6 +11,11 @@ const readyForm = [
   { selector: "#harness-auth-method", value: "runtime" },
 ];
 const account = [{ selector: ".account-toggle", click: true }];
+const createSlackBotSecret = [
+  { selector: "#slack-secret-slack-bot-token", value: "__openclaw_create_secret__" },
+  { selector: "#create-slack-bot-token-value", value: "simulated-bot-token" },
+  click("Create Secret"),
+];
 const createWorkspaceFields = [
   ...form,
   { selector: "#agent-name", value: "Workspace seed demo" },
@@ -199,6 +204,46 @@ export const scenarios = {
     actions: form,
     description:
       "Name, execution mode, native JSON, authentication, Providers, plugins, Secret bindings, channel controls, and seeded workspace files.",
+  },
+  createSlackSecretMenu: {
+    group: "Pages/Create Agent",
+    name: "Slack Secret menu before Agent exists",
+    path: create,
+    actions: [
+      ...form,
+      { selector: "#agent-name", value: "Slack launch demo" },
+      click("Configure Slack"),
+    ],
+    description:
+      "A new Agent can choose existing simulated Namespace Secrets or create new Slack token Secrets before the Agent resource exists.",
+  },
+  createSlackCreateSecretModal: {
+    group: "Pages/Create Agent",
+    name: "Create Slack Secret before Agent exists",
+    path: create,
+    actions: [
+      ...form,
+      { selector: "#agent-name", value: "Slack launch demo" },
+      click("Configure Slack"),
+      { selector: "#slack-secret-slack-app-token", value: "__openclaw_create_secret__" },
+    ],
+    description:
+      "The create form opens the same modal before an Agent exists. The default simulated Secret name follows the current Agent name.",
+  },
+  createSlackSecretStaged: {
+    group: "Pages/Create Agent",
+    name: "Slack Secret bindings staged",
+    path: create,
+    actions: [
+      ...form,
+      { selector: "#agent-name", value: "Slack launch demo" },
+      click("Configure Slack"),
+      { selector: "#slack-secret-slack-app-token", value: "sec_demo_slack_app_token" },
+      ...createSlackBotSecret,
+      click("Apply channel settings"),
+    ],
+    description:
+      "Applying channel settings copies staged Slack Secret bindings into the create form's Configuration Secret bindings JSON without exposing token values.",
   },
   createWorkspaceFiles: {
     group: "Pages/Create Agent",
@@ -421,6 +466,39 @@ export const scenarios = {
     actions: [click("Edit Slack")],
     description:
       "Edit channels, users, mention requirement, and enabled state. Token references remain fixed; token values belong in Credentials.",
+  },
+  slackSecretMenu: {
+    group: "Components/Channels",
+    name: "Slack Secret menu",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    actions: [click("Edit Slack")],
+    description:
+      "Slack token references are menus backed by simulated same-Namespace Secret metadata. Options include readable existing Secrets and Create new Secret.",
+  },
+  slackCreateSecretModal: {
+    group: "Components/Channels",
+    name: "Slack create Secret modal",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    actions: [
+      click("Edit Slack"),
+      { selector: "#slack-secret-slack-bot-token", value: "__openclaw_create_secret__" },
+    ],
+    description:
+      "Create new Secret opens a modal with the fixed Slack binding key and a password value field. Values are simulated and never read back.",
+  },
+  slackSecretStaged: {
+    group: "Components/Channels",
+    name: "Slack staged Secret binding",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    actions: [
+      click("Edit Slack"),
+      { selector: "#slack-secret-slack-app-token", value: "sec_demo_slack_backup_token" },
+    ],
+    description:
+      "Selecting a different existing Secret stages the binding and updates the metadata link. Cancel discards the staged choice; Save persists it.",
   },
   slackOpen: {
     group: "Components/Channels",
@@ -748,6 +826,32 @@ export const scenarios = {
       "Open Workspace files and inspect IDENTITY.md or USER.md to confirm the fixture carried the creation-time file contents into the deployed workspace.",
     ],
     gap: "This Storybook flow proves the UI request body and fixture readback path. It does not prove real gateway filesystem writes or serving health.",
+  },
+  createSlackSecretsFlow: {
+    group: "Flows",
+    name: "Create with Slack Secrets",
+    path: create,
+    emptyAgents: true,
+    transport: false,
+    actions: [
+      ...form,
+      { selector: "#agent-name", value: "Slack launch demo" },
+      { selector: "#harness-auth-method", value: "runtime" },
+      click("Configure Slack"),
+      { selector: "#slack-channel-ids", value: "CDEMO123" },
+      { selector: "#slack-secret-slack-app-token", value: "sec_demo_slack_app_token" },
+      ...createSlackBotSecret,
+      click("Apply channel settings"),
+    ],
+    description:
+      "Guided create-form state with one existing simulated Slack Secret and one newly created simulated Secret staged into the Agent Configuration.",
+    steps: [
+      "Start without Preset and enter the Agent name.",
+      "Open Configure Slack, choose the existing Slack app Secret, and create a new Slack bot Secret from the modal.",
+      "Apply channel settings. The form receives channel JSON and Secret binding JSON while token values stay hidden.",
+      "Create the Agent to persist the Configuration and let the controller grant the Agent access to the staged Slack Secrets.",
+    ],
+    gap: "The fixture proves the Console request workflow with simulated Secret metadata. Use a live Namespace and Slack app to prove real Secret propagation and Slack replies.",
   },
   updateFlow: {
     group: "Flows",
