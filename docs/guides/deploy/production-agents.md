@@ -69,9 +69,10 @@ is the Kubernetes namespace created by the driver during
 ## Configure the Agent runtime
 
 Complete [private routing](workspace-routing.md#configure-private-routing) first.
-Both examples below use native trusted-proxy authentication for Console workspace
-access. Replace `<actual-proxy-source-cidr>` with the verified Envoy source CIDR
-before posting the Configuration. Follow the [native authentication requirements](workspace-routing.md#configure-native-gateway-authentication)
+Configure verified Envoy source CIDRs in the trusted Installation YAML before
+deploying either example. Kubernetes Compute renders native trusted-proxy
+authentication for Console workspace access; the examples omit Driver-owned
+settings. Follow the [native authentication requirements](workspace-routing.md#configure-native-gateway-authentication)
 for proxy identity and NetworkPolicy isolation; do not trust arbitrary client
 addresses. The gateway password SecretRef enables the separate local model check.
 Dedicated Codex also requires the [matching runtime images](workspace-routing.md#runtime-prerequisite-for-separate-storage).
