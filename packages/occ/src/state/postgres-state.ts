@@ -2045,9 +2045,6 @@ export class PostgresPlatformState implements PlatformStateStore {
           throw new ScopeViolationError("The Agent references an unavailable Configuration.");
         }
         await validateSecretBindingsAvailable(agent.namespaceId, configuration.secretBindings);
-        if (Object.hasOwn(agent, "serviceAccountId")) {
-          throw new ScopeViolationError("Legacy Agent authentication selectors are unsupported.");
-        }
         await assertHarnessAuthAvailable(
           { secrets, serviceAccounts },
           agent.namespaceId,

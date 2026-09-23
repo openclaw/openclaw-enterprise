@@ -370,8 +370,8 @@ planning a deployment. Other sandbox execution combinations are rejected.
 - `404`: An associated service account does not belong to the Agent's Namespace.
 - `409 RESOURCE_CONFLICT`: Harness authentication is missing, the selected
   account has no issued access token, or its Provider binding or topology is incompatible.
-- `400 INVALID_REQUEST`: A removed top-level `serviceAccountId` or runtime
-  `modelApiKey` selector is supplied. Use `harnessAuth` explicitly.
+- `400 INVALID_REQUEST`: A runtime `modelApiKey` selector is supplied. Use
+  `harnessAuth` explicitly.
 - `409 RESOURCE_CONFLICT`: Another Agent already uses that name in the same
   Namespace, the Namespace cannot accept new Agents, or a stopping Agent cannot
   accept the requested mutation.
@@ -408,6 +408,8 @@ planning a deployment. Other sandbox execution combinations are rejected.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23: Removed the obsolete top-level Agent `serviceAccountId` selector and its dedicated rejection checks. Use `harnessAuth` for Agent authentication. (NOT_IN_SPEC)
 
 - 2026-09-01 08:47: Document nullable providerId selection, immutable revision association, and managed binding admission. (01a05d97-f2b0-71d0-bfc3-01ee7d6d58f9 - b079c4b755ef336a9c65bb4eb737e3aedbfdaa7d)
 

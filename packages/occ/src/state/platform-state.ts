@@ -1436,9 +1436,6 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
         agent.namespaceId,
         agent.configurationId,
       );
-      if (Object.hasOwn(agent, "serviceAccountId")) {
-        throw new ScopeViolationError("Legacy Agent authentication selectors are unsupported.");
-      }
       await assertHarnessAuthAvailable(
         { secrets, serviceAccounts },
         agent.namespaceId,

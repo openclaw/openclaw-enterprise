@@ -2491,7 +2491,6 @@ export class OpenClawController {
     } catch {
       throw new ScopeViolationError("The initial workspace setup input is invalid.");
     }
-    this.rejectLegacyAgentAuth(input);
     const harnessAuth = this.harnessAuthBinding(input.harnessAuth ?? null);
     const executionMode = input.executionMode ?? "embedded";
     if (!validExecutionMode(executionMode)) {
@@ -2574,7 +2573,6 @@ export class OpenClawController {
     if (!isNonEmptyString(input.configurationId)) {
       throw new ScopeViolationError("The exact Agent Configuration identity is missing.");
     }
-    this.rejectLegacyAgentAuth(input);
     const requestedAuth =
       input.harnessAuth === undefined ? undefined : this.harnessAuthBinding(input.harnessAuth);
     if (input.executionMode !== undefined && !validExecutionMode(input.executionMode)) {
@@ -2613,7 +2611,6 @@ export class OpenClawController {
       }
       await this.guardAgentProvisioning(state, namespace.id, agent.id);
       await this.guardProvisioningConfiguration(state, namespace.id, input.configurationId);
-      this.rejectLegacyAgentAuth(agent);
       const previousAuth = this.harnessAuthBinding(agent.harnessAuth);
       await this.authorizeHarnessAuthSource(state, principalId, namespace.id, previousAuth);
       if (requestedAuth !== undefined) {
@@ -2695,7 +2692,6 @@ export class OpenClawController {
           "The selected Sandbox Driver supports only dedicated Harness execution.",
         );
       }
-      this.rejectLegacyAgentAuth(lockedAgent);
       const harnessAuth = await this.admitHarnessAuth(state, principalId, lockedAgent);
       await this.authorize(principalId, "read", {
         kind: "configuration",
@@ -3385,14 +3381,6 @@ export class OpenClawController {
       secrets.set(secret.id, secret);
     }
     return Object.freeze([...secrets.values()]);
-  }
-
-  private rejectLegacyAgentAuth(value: object): void {
-    if (Object.hasOwn(value, "serviceAccountId")) {
-      throw new ScopeViolationError(
-        "Agent.serviceAccountId is no longer supported; select harnessAuth explicitly.",
-      );
-    }
   }
 
   private harnessAuthBinding(value: unknown): HarnessAuthBinding | null {
