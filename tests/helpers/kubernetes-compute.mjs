@@ -1,7 +1,7 @@
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 
 /** Construct the production Kubernetes Driver without starting clients or contacting a cluster. */
-export function createTestKubernetesComputeDriver(id) {
+export function createTestKubernetesComputeDriver(id, { repositoryCredentials = false } = {}) {
   const resources = {
     requests: { cpu: "100m", memory: "64Mi" },
     limits: { cpu: "250m", memory: "128Mi" },
@@ -21,8 +21,25 @@ export function createTestKubernetesComputeDriver(id) {
         gatewayPort: 8080,
         gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
         gatewayClients: [{ namespace: "controller", podLabels: { app: "controller" } }],
+        ...(repositoryCredentials
+          ? {
+              repositoryCredentials: {
+                namespace: "controller",
+                podLabels: { app: "worker" },
+                port: 8443,
+              },
+            }
+          : {}),
       },
       servicePrincipalCredentials: { mode: "disabled" },
+      ...(repositoryCredentials
+        ? {
+            runtime: {
+              transportSecretPrefix: "transport",
+              gatewayStorageClassName: "local-path",
+            },
+          }
+        : {}),
     },
     { id },
   );

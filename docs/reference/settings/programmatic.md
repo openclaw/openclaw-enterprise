@@ -12,7 +12,9 @@ environment variables, public API parameters, or operator configuration.
 
 [`ControllerOptions`](../../../packages/occ/src/index.ts) can inject an authorization
 callback, clock, resource-ID generator, `PlatformStateStore`, and
-`recordOperations` flag. The supported development and production paths use
+`recordOperations` flag. Its optional `defaultPresets` list contains generic
+name/template definitions; application composition owns loading bundled native
+templates from the Installation setting. The supported development and production paths use
 PostgreSQL composition with `recordOperations: true`.
 
 [`ControllerAppOptions`](../../../apps/controller/src/index.ts) supplies the existing

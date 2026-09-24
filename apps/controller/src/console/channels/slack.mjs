@@ -26,6 +26,11 @@ const STANDARD_REFS = {
 
 const CREATE_SECRET_VALUE = "__openclaw_create_secret__";
 
+function channelUsers(channel) {
+  const users = uniqueList(channel?.users ?? []);
+  return users.includes("*") ? [] : users.sort();
+}
+
 function supportSlack(values) {
   if (values?.channels !== undefined && !isRecord(values.channels)) {
     return {
@@ -93,7 +98,8 @@ function supportSlack(values) {
   if (
     channelEntries.some(
       ([, value]) =>
-        (value.users !== undefined && !arrayOfStrings(value.users)) ||
+        (value.users !== undefined &&
+          (!arrayOfStrings(value.users) || value.users.some((user) => /[,\r\n]/.test(user)))) ||
         (value.requireMention !== undefined && typeof value.requireMention !== "boolean"),
     )
   ) {
@@ -111,6 +117,24 @@ function supportSlack(values) {
       config,
     };
   }
+  if (Object.hasOwn(config.channels ?? {}, "*")) {
+    return {
+      supported: false,
+      reason: "Slack wildcard channels must be edited in native Configuration JSON.",
+      config,
+    };
+  }
+  const senderLists = new Set(
+    channelEntries.map(([, value]) => JSON.stringify(channelUsers(value))),
+  );
+  if (senderLists.size > 1) {
+    return {
+      supported: false,
+      reason:
+        "Existing Slack channels use different allowed channel users. Edit native Configuration JSON to preserve those restrictions.",
+      config,
+    };
+  }
   return { supported: true, config };
 }
 
@@ -119,12 +143,13 @@ function updatedSlack(values, body) {
   const existingConfig = providerConfig(values, "slack");
   const ids = uniqueList(body.querySelector("#slack-channel-ids").value.split(","));
   const users = uniqueList(body.querySelector("#slack-allowed-user-ids").value.split(","));
+  const allowEveryone = body.querySelector("#slack-allow-everyone").checked;
   const requireMention = body.querySelector("#slack-require-mention").checked;
   const existing = isRecord(current.channels) ? current.channels : {};
   const channels = {};
   for (const id of ids) {
     const entry = isRecord(existing[id]) ? { ...existing[id] } : {};
-    channels[id] = { ...entry, requireMention };
+    channels[id] = { ...entry, requireMention, users: allowEveryone ? ["*"] : users };
   }
   const config = {
     ...current,
@@ -132,7 +157,6 @@ function updatedSlack(values, body) {
     mode: "socket",
     appToken: STANDARD_REFS.slack.appToken,
     botToken: STANDARD_REFS.slack.botToken,
-    allowFrom: users,
     channels,
   };
   if (!isRecord(existingConfig)) {
@@ -513,13 +537,28 @@ function credentialNavigation(context = {}) {
 
 function appendFields(body, config, context) {
   const channelIds = Object.keys(config.channels ?? {});
-  const users = uniqueList(Array.isArray(config.allowFrom) ? config.allowFrom : []);
-  const mention = Object.values(config.channels ?? {})[0]?.requireMention ?? true;
+  const firstChannel = Object.values(config.channels ?? {})[0];
+  const users = channelUsers(firstChannel);
+  const mention = firstChannel?.requireMention ?? config.requireMention ?? true;
+  const allowedUsers = input("slack-allowed-user-ids", users.join(", "));
+  const everyoneField = checkbox(
+    "slack-allow-everyone",
+    "Allow everyone in these channels to mention the agent",
+    channelIds.length > 0 && users.length === 0,
+  );
+  const everyone = everyoneField.querySelector("input");
+  const updateAccessControls = () => {
+    allowedUsers.disabled = everyone.checked;
+    everyone.disabled = uniqueList(allowedUsers.value.split(",")).length > 0;
+  };
+  allowedUsers.addEventListener("input", updateAccessControls);
+  everyone.addEventListener("change", updateAccessControls);
+  updateAccessControls();
   body.append(
     element(
       "p",
       { className: "hint" },
-      "Saving preserves existing direct-message and channel access policies.",
+      "Choose who can interact in the selected channels. Existing direct-message policies and channel restrictions are preserved.",
     ),
     field(
       "Slack channel IDs",
@@ -527,9 +566,15 @@ function appendFields(body, config, context) {
       "Comma-separated channel IDs; existing per-channel properties are preserved.",
     ),
     field(
-      "Allowed user IDs",
-      input("slack-allowed-user-ids", users.join(", ")),
-      "Comma-separated direct-message allowFrom user IDs.",
+      "Allowed channel user IDs",
+      allowedUsers,
+      "Comma-separated Slack user IDs allowed in these channels. Clear the IDs to choose everyone. Direct-message access is unchanged.",
+    ),
+    everyoneField,
+    element(
+      "p",
+      { className: "hint" },
+      "Applies only to the selected channels and respects their existing access restrictions. Require a mention controls when the agent responds.",
     ),
     checkbox("slack-require-mention", "Require a mention", Boolean(mention)),
     element("h2", {}, "Credential references"),
@@ -545,15 +590,11 @@ function appendFields(body, config, context) {
 
 function summary(config, status) {
   const ids = Object.keys(config.channels ?? {});
-  const users = uniqueList(Array.isArray(config.allowFrom) ? config.allowFrom : []);
   return [
     config.mode === "socket" || status.label === "Not configured" ? "Socket Mode" : "Native Slack",
     ids.length
       ? `${ids.length} selected channel${ids.length === 1 ? "" : "s"}`
       : "No selected channels",
-    users.length
-      ? `${users.length} allowed user${users.length === 1 ? "" : "s"}`
-      : "No allowed users",
   ].join(" · ");
 }
 
@@ -564,6 +605,24 @@ export const slack = {
   setup: "Provide SLACK_APP_TOKEN and SLACK_BOT_TOKEN through Secret bindings before deployment.",
   plugin: "slack",
   support: supportSlack,
+  validate(body) {
+    const ids = uniqueList(body.querySelector("#slack-channel-ids").value.split(","));
+    const users = uniqueList(body.querySelector("#slack-allowed-user-ids").value.split(","));
+    const allowEveryone = body.querySelector("#slack-allow-everyone").checked;
+    if (ids.includes("*")) {
+      return "Enter specific Slack channel IDs; wildcard channels require native Configuration JSON.";
+    }
+    if (users.includes("*")) {
+      return "Clear the user IDs and select Allow everyone in these channels to mention the agent.";
+    }
+    if (ids.length === 0 && (allowEveryone || users.length > 0)) {
+      return "Enter at least one Slack channel ID for these access settings.";
+    }
+    if (ids.length > 0 && users.length === 0 && !allowEveryone) {
+      return "Enter allowed channel user IDs or allow everyone in these channels.";
+    }
+    return null;
+  },
   updatedValues: updatedSlack,
   updatedSecretBindings,
   appendFields,

@@ -24,6 +24,12 @@ export interface RepositoryBindingSelection {
   readonly profile: string;
 }
 
+export interface RepositoryOption {
+  readonly repositoryRef: string;
+  readonly displayName: string;
+  readonly allowedProfiles: readonly string[];
+}
+
 export interface AdmittedRepositoryBinding extends RepositoryBindingSelection {
   readonly providerId: string;
   readonly grant: RepositoryCredentialGrantIdentity;
@@ -63,6 +69,7 @@ export type OpenRepositorySessionResult =
 export interface RepoDriver extends Driver {
   readonly capability: "repo";
   readonly maintenanceIntervalMs: number;
+  listOptions(input: { readonly namespaceId: string }): readonly RepositoryOption[];
   resolve(input: {
     readonly namespaceId: string;
     readonly bindings: readonly RepositoryBindingRequest[];

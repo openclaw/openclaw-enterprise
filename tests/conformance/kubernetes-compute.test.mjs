@@ -110,6 +110,93 @@ function options(overrides = {}) {
   };
 }
 
+test("repository capability admits only configured Compute-owned native topologies", () => {
+  const configured = options({
+    runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+    network: {
+      ...options().network,
+      repositoryCredentials: {
+        namespace: "repository-service",
+        podLabels: { app: "repository" },
+        port: 8443,
+      },
+    },
+  });
+  const driver = new KubernetesComputeDriver(configured);
+  const dualCluster = new KubernetesComputeDriver({
+    ...configured,
+    gatewayRouting: {
+      hostname: "gateway.example.test",
+      gatewayName: "gateway",
+      gatewayNamespace: "system",
+      envoyNamespace: "envoy",
+    },
+    network: Object.fromEntries(
+      Object.entries(configured.network).filter(([key]) => key !== "gatewayClients"),
+    ),
+    executionCluster: {
+      authentication: {
+        mode: "kubeconfig",
+        kubeconfigPath: "/fixture/execution",
+        context: "execution",
+      },
+      harnessRouting: {
+        hostname: "harness.example.test",
+        gatewayName: "harness",
+        gatewayNamespace: "system",
+        envoyNamespace: "envoy",
+      },
+      network: {
+        dns: configured.network.dns,
+        harnessEndpointCidrs: ["192.0.2.2/32"],
+        gatewayEndpointCidrs: ["192.0.2.1/32"],
+        pluginStatusProxySourceCidrs: ["192.0.2.2/32"],
+      },
+    },
+  });
+  assert.throws(
+    () => dualCluster.validateRepositoryCredentialSupport(),
+    /not supported by the experimental two-cluster profile/,
+  );
+  for (const [id, mode] of [
+    ["openclaw", "embedded"],
+    ["codex", "dedicated"],
+  ]) {
+    const harness = { id, mode, version: "1.0.0" };
+    assert.doesNotThrow(() => driver.validateRepositoryCredentials(harness));
+    assert.throws(
+      () => driver.validateRepositoryCredentials(harness, "selected-sandbox"),
+      /without a SandboxDriver/,
+    );
+    assert.throws(() =>
+      new KubernetesComputeDriver({
+        ...configured,
+        runtime: undefined,
+      }).validateRepositoryCredentials(harness),
+    );
+    assert.throws(() =>
+      new KubernetesComputeDriver({
+        ...configured,
+        network: options().network,
+      }).validateRepositoryCredentials(harness),
+    );
+    const sandboxDriver = { id: "sandbox", implementation: "sandbox", capability: "sandbox" };
+    assert.throws(() =>
+      new KubernetesComputeDriver(configured, { sandboxDriver }).validateRepositoryCredentials(
+        harness,
+      ),
+    );
+  }
+  for (const [id, mode] of [
+    ["codex", "embedded"],
+    ["openclaw", "dedicated"],
+    ["unknown", "dedicated"],
+    ["codex", "unknown"],
+  ]) {
+    assert.throws(() => driver.validateRepositoryCredentials({ id, mode, version: "1.0.0" }));
+  }
+});
+
 function digest(value, length = 12) {
   return createHash("sha256").update(value).digest("hex").slice(0, length);
 }
@@ -751,11 +838,12 @@ test("explicit existing namespace adoption claims tenant identity only after sec
     claims,
     deleting,
     unselected,
+    computeOptions = options(),
   } = {}) => {
     let observed = prepared();
     mutate?.(observed);
     const patches = [];
-    const driver = createKubernetesComputeDriver(options());
+    const driver = createKubernetesComputeDriver(computeOptions);
     // The fixture supplies transport responses only; adoption, validation, and mutation order
     // are exercised through the production driver's real ensureNamespace implementation.
     driver.apiClients = Promise.resolve({
@@ -802,6 +890,7 @@ test("explicit existing namespace adoption claims tenant identity only after sec
         },
       },
     });
+    driver.executionApiClients = driver.apiClients;
     if (mutate === null) {
       observed = undefined;
     }
@@ -813,6 +902,29 @@ test("explicit existing namespace adoption claims tenant identity only after sec
     return { result, observed, patches };
   };
 
+  const dual = await run({
+    computeOptions: routedOptions({
+      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+      executionCluster: {
+        authentication: { mode: "kubeconfig", kubeconfigPath, context: contextName },
+        harnessRouting: {
+          ...gatewayRouting,
+          gatewayName: "harnesses",
+          hostname: "harness.example.test",
+        },
+        network: {
+          dns: options().network.dns,
+          harnessEndpointCidrs: ["192.0.2.2/32"],
+          gatewayEndpointCidrs: ["192.0.2.1/32"],
+          pluginStatusProxySourceCidrs: ["192.0.2.2/32"],
+        },
+      },
+    }),
+  });
+  assert.equal(
+    dual.observed.metadata.labels["openclaw-enterprise.io/gateway"],
+    digest(`${gatewayRouting.gatewayNamespace}/harnesses`),
+  );
   const adopted = await run();
   assert.deepEqual(adopted.result, { namespaceId: tenant.id, namespaceReady: false });
   assert.deepEqual(adopted.patches, [

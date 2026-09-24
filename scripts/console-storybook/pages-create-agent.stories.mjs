@@ -16,6 +16,14 @@ export const CreateSlackSecretStaged = {
   ...story("createSlackSecretStaged"),
   name: "Slack Secret bindings staged",
 };
+export const CreateSlackChannelAccessRequired = {
+  ...story("createSlackChannelAccessRequired"),
+  name: "Slack channel sender required",
+};
+export const CreateSlackAllowEveryone = {
+  ...story("createSlackAllowEveryone"),
+  name: "Slack allow everyone",
+};
 export const CreateProvisioningSecrets = {
   ...story("createProvisioningSecrets"),
   name: "Provisioning with saved Secrets",
@@ -26,6 +34,42 @@ export const CreateUnsupportedProvisioning = {
 };
 export const CreateWorkspaceFiles = { ...story("createWorkspaceFiles"), name: "Workspace files" };
 export const CreateEmbedded = { ...story("createEmbedded"), name: "OpenAI with OpenClaw harness" };
+export const RepositorySelection = {
+  ...story("createRepositoriesSelected"),
+  name: "Approved repositories and shared access",
+};
+export const RepositoryContributor = {
+  ...story("createRepositoriesContributor"),
+  name: "Contributor access and write limits",
+};
+export const RepositoryCollaborator = {
+  ...story("createRepositoriesCollaborator"),
+  name: "Collaborator access and write limits",
+};
+export const RepositoryEmpty = {
+  ...story("createRepositoriesEmpty"),
+  name: "No approved repositories",
+};
+export const RepositoryLoading = {
+  ...story("createRepositoriesLoading"),
+  name: "Repository discovery pending",
+};
+export const RepositoryUnavailable = {
+  ...story("createRepositoriesUnavailable"),
+  name: "Optional repository service unavailable",
+};
+export const RepositoryDenied = {
+  ...story("createRepositoriesDenied"),
+  name: "Repository discovery denied",
+};
+export const RepositoryAmbiguous = {
+  ...story("createRepositoriesAmbiguous"),
+  name: "Repository authorization unverified",
+};
+export const RepositoryRecovery = {
+  ...story("createRepositoriesRecovery"),
+  name: "Reselect repositories after rejection",
+};
 export const CreatePreset = { ...story("createPreset"), name: "Preset variables" };
 export const CreateBoundCredentialPreset = {
   ...story("createBoundCredentialPreset"),
@@ -59,3 +103,16 @@ export const CreateGrantDenied = { ...story("createGrantDenied"), name: "Credent
 export const CreateInvalid = { ...story("createInvalid"), name: "Invalid JSON" };
 export const CreateConflict = { ...story("createConflict"), name: "Provisioning conflict" };
 export const CreateUnknown = { ...story("createUnknown"), name: "Provisioning outcome unknown" };
+
+export const CreatePasswordPreset = {
+  ...story("createPasswordPreset"),
+  name: "Standard Codex password variable",
+};
+export const CreatePasswordPresetDraft = {
+  ...story("createPasswordPresetDraft"),
+  name: "Standard Codex password draft",
+};
+export const CreatePasswordPresetDenied = {
+  ...story("createPasswordPresetDenied"),
+  name: "Password Secret creation denied",
+};

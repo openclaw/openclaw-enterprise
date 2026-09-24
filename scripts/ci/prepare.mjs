@@ -1582,6 +1582,8 @@ async function prepareLane({ lane, statePath }) {
     case "repository-credentials-installed": {
       await commandAvailable(process.env.OCC_HELM_BIN ?? "helm", ["version", "--short"]);
       const cluster = await ensureK3dCluster(resolvedStatePath, state);
+      const routing = await prepareGatewayRouting({ cluster, execFile });
+      Object.assign(env, routing.env);
       env.OCC_TEST_KUBERNETES_KUBECONFIG = cluster.kubeconfig;
       env.OCC_TEST_KUBERNETES_CONTEXT = cluster.context;
       await prepareProductionImages(resolvedStatePath, state, cluster, env, { localStore: true });

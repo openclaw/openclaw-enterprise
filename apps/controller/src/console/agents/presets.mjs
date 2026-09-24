@@ -26,7 +26,7 @@ export function createPresetFields(context, apply) {
         if (input.dataset.supplied !== "true") {
           continue;
         }
-        if (input.value === "" && definition.type !== "string") {
+        if (input.value === "" && !["string", "password"].includes(definition.type)) {
           continue;
         }
         values[name] =
@@ -38,6 +38,11 @@ export function createPresetFields(context, apply) {
       }
       const rendered = renderPresetTemplate(selected.template, values);
       apply(rendered);
+      for (const { definition, input } of fields) {
+        if (definition.type === "password") {
+          input.value = "";
+        }
+      }
     } catch (error) {
       feedback.textContent = error.message;
     }
@@ -87,9 +92,10 @@ export function createPresetFields(context, apply) {
               )
             : element("input", {
                 id: `preset-variable-${name}`,
-                type: definition.type === "number" ? "number" : "text",
+                type: definition.type === "string" ? "text" : definition.type,
                 ...(definition.type === "number" ? { step: "any" } : {}),
                 autocomplete: "off",
+                ...(definition.type === "password" ? { spellcheck: "false", required: true } : {}),
               });
         input.dataset.supplied = String(Object.hasOwn(definition, "default"));
         input.value = definition.default === undefined ? "" : String(definition.default);

@@ -124,13 +124,13 @@ test("secret-gateway-delivery renders exact bound Namespace Secret env only into
     {
       secretEnvironment: [projection()],
     },
-    namespace,
+    { name: namespace, plane: "execution" },
   );
 
   const gateway = driver.deployment(
     `gateway-${suffix}`,
     { namespaceId: tenant.id, agentId: candidate.agentId },
-    namespace,
+    { name: namespace, plane: "execution" },
     "openclaw-enterprise/gateway-fixture:local",
     `agent-${suffix}`,
     "gateway",
@@ -147,7 +147,7 @@ test("secret-gateway-delivery renders exact bound Namespace Secret env only into
           backendRef: { ...projection().backendRef, name: "stored-model-key" },
         },
       },
-      namespace,
+      { name: namespace, plane: "execution" },
     ),
     [],
     secretEnvironment,
@@ -171,7 +171,7 @@ test("secret-gateway-delivery renders exact bound Namespace Secret env only into
       driver.deployment(
         `agent-${suffix}`,
         { namespaceId: tenant.id, agentId: candidate.agentId, revisionId: candidate.id },
-        namespace,
+        { name: namespace, plane: "execution" },
         "openclaw-enterprise/agent-fixture:local",
         `agent-${suffix}`,
         "agent",
@@ -198,7 +198,7 @@ test("secret-gateway-delivery renders exact bound Namespace Secret env only into
       {
         secretEnvironment: [projection({ agentId: sharedConsumer.agentId })],
       },
-      namespace,
+      { name: namespace, plane: "execution" },
     ),
     [projection({ agentId: sharedConsumer.agentId })],
   );
@@ -210,7 +210,11 @@ test("secret-gateway-delivery rejects missing, foreign, and reserved model proje
   const namespace = kubernetesNamespaceName(tenant.id);
 
   assert.throws(
-    () => driver.secretEnvironmentForRevision(candidate, undefined, namespace),
+    () =>
+      driver.secretEnvironmentForRevision(candidate, undefined, {
+        name: namespace,
+        plane: "execution",
+      }),
     /does not match AgentRevision bindings/i,
   );
   assert.throws(
@@ -220,7 +224,7 @@ test("secret-gateway-delivery rejects missing, foreign, and reserved model proje
         {
           secretEnvironment: [projection({ agentId: "another-agent" })],
         },
-        namespace,
+        { name: namespace, plane: "execution" },
       ),
     /does not match AgentRevision bindings/i,
   );
@@ -231,7 +235,7 @@ test("secret-gateway-delivery rejects missing, foreign, and reserved model proje
         {
           secretEnvironment: [projection({ backendRef: { ...projection().backendRef, name: "" } })],
         },
-        namespace,
+        { name: namespace, plane: "execution" },
       ),
     /does not match AgentRevision bindings/i,
   );
@@ -242,7 +246,7 @@ test("secret-gateway-delivery rejects missing, foreign, and reserved model proje
           secretBindings: { OPENAI_API_KEY: candidate.secretBindings.EXTERNAL_SERVICE_TOKEN },
         }),
         { secretEnvironment: [projection({ name: "OPENAI_API_KEY" })] },
-        namespace,
+        { name: namespace, plane: "execution" },
       ),
     /Secret bindings are invalid|Model authentication must use/i,
   );
@@ -261,7 +265,7 @@ test("secret-gateway-delivery rejects missing, foreign, and reserved model proje
           },
         }),
         { secretEnvironment: [projection({ name: "APP_SERVER_TOKEN" })] },
-        namespace,
+        { name: namespace, plane: "execution" },
       ),
     /Secret bindings are invalid/i,
   );

@@ -14,6 +14,11 @@ occ:
 # See [Provider configuration](../../../docs/reference/providers.md#installation-configuration).
 provider: []
 
+# Seed bundled Agent Presets without replacing existing same-name copies.
+# Omitted or false disables seeding; existing Presets are retained.
+presets:
+  includeDefaults: true
+
 # Bundled Drivers omit `package`; selection IDs and options are trusted startup inputs.
 # See [Driver selections](../../../docs/reference/drivers/selection.md#supported-selections).
 drivers:

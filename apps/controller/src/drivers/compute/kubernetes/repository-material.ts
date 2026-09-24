@@ -8,7 +8,10 @@ import type { RepositoryCredentialClientConfiguration } from "../../repo/credent
 import { normalizePushRefAllowlist } from "../../repo/credentials/client-contracts.ts";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { REPOSITORY_MATERIAL_INIT_ENTRYPOINT } from "./repository-material-init.ts";
+import {
+  REPOSITORY_MATERIAL_INIT_ENTRYPOINT,
+  REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT,
+} from "./repository-material-init.ts";
 
 export const REPOSITORY_MATERIAL_LABEL = "openclaw.dev/repository-material";
 export const REPOSITORY_MATERIAL_GENERATION = "openclaw.dev/repository-material-generation";
@@ -389,32 +392,49 @@ export function repositoryMaterialDeployment(spec: ResolvedRepositoryMaterialSpe
   return {
     volumes,
     volumeMounts,
-    initContainer: {
-      name: "prepare-repository-material",
-      image,
-      imagePullPolicy: "IfNotPresent",
-      command: ["node", "-e"],
-      args: [
-        REPOSITORY_MATERIAL_INIT_ENTRYPOINT,
-        JSON.stringify({
-          sourceRoot: "/run/oce/repository-projection",
-          targetRoot: "/run/oce/repository-output/private",
-          manifest,
-        }),
-      ],
-      volumeMounts: [
-        {
-          name: "repository-material-projection",
-          mountPath: "/run/oce/repository-projection",
-          readOnly: true,
+    initContainers: [
+      {
+        name: "prepare-repository-material",
+        image,
+        imagePullPolicy: "IfNotPresent",
+        command: ["node", "-e"],
+        args: [
+          REPOSITORY_MATERIAL_INIT_ENTRYPOINT,
+          JSON.stringify({
+            sourceRoot: "/run/oce/repository-projection",
+            targetRoot: "/run/oce/repository-output/private",
+            manifest,
+          }),
+        ],
+        volumeMounts: [
+          {
+            name: "repository-material-projection",
+            mountPath: "/run/oce/repository-projection",
+            readOnly: true,
+          },
+          { name: "repository-material-private", mountPath: "/run/oce/repository-output" },
+        ],
+        securityContext: {
+          allowPrivilegeEscalation: false,
+          readOnlyRootFilesystem: true,
+          capabilities: { drop: ["ALL"] },
         },
-        { name: "repository-material-private", mountPath: "/run/oce/repository-output" },
-      ],
-      securityContext: {
-        allowPrivilegeEscalation: false,
-        readOnlyRootFilesystem: true,
-        capabilities: { drop: ["ALL"] },
       },
-    },
+      {
+        name: "prepare-repository-native-git",
+        image,
+        imagePullPolicy: "IfNotPresent",
+        command: ["node", "-e"],
+        args: [REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT, REPOSITORY_MATERIAL_ROOT],
+        // The material init creates this owner-only subPath. Mount it directly so
+        // native client custody checks never traverse the fsGroup-writable root.
+        volumeMounts: volumeMounts.map((mount) => ({ ...mount, readOnly: false })),
+        securityContext: {
+          allowPrivilegeEscalation: false,
+          readOnlyRootFilesystem: true,
+          capabilities: { drop: ["ALL"] },
+        },
+      },
+    ],
   };
 }

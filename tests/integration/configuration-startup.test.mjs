@@ -850,3 +850,33 @@ test("startup rejects plaintext secrets, caller-authored identities, and unsuppo
     );
   }
 });
+
+test("Installation default Presets are opt-in and reject ambiguous YAML settings", async (t) => {
+  for (const presets of [undefined, {}, { includeDefaults: false }]) {
+    const configuration = installation();
+    if (presets !== undefined) {
+      configuration.presets = presets;
+    }
+    const loaded = await loadInstallationConfiguration({
+      mode: "production",
+      environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
+    });
+    assert.deepEqual(loaded.defaultPresets, []);
+  }
+  for (const presets of [
+    { includeDefaults: "true" },
+    { includeDefaults: 1 },
+    { includeDefault: true },
+    null,
+  ]) {
+    const configuration = installation();
+    configuration.presets = presets;
+    await assert.rejects(
+      loadInstallationConfiguration({
+        mode: "production",
+        environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
+      }),
+      /presets/,
+    );
+  }
+});

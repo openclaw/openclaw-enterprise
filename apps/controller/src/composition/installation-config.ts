@@ -10,7 +10,9 @@ import type {
   ConfigurationDriver,
   DriverImplementation,
   IAMDriver,
+  Identity,
   ProviderDefinition,
+  Preset,
   ProviderSummary,
   RepoDriver,
   PluginDriver,
@@ -24,6 +26,7 @@ import {
   type PostgresPlatformState,
 } from "@openclaw-enterprise/occ";
 import { Check } from "typebox/value";
+import { validatePresetTemplate } from "@openclaw-enterprise/contracts";
 import {
   KubernetesComputeDriver,
   type KubernetesComputeDriverOptions,
@@ -62,6 +65,7 @@ export interface SelectedDriverConfiguration<T = ConfigurationRecord> {
 export interface InstallationStartupConfiguration {
   readonly occ: { readonly cluster: string };
   readonly logging: LoggingConfiguration;
+  readonly presets?: { readonly includeDefaults: boolean };
   readonly provider: readonly ProviderDefinition[];
   readonly drivers: {
     readonly configuration: SelectedDriverConfiguration;
@@ -81,6 +85,7 @@ export type ServiceAccountDriverFactory = (
 ) => void;
 
 export interface InstallationRuntimeDrivers {
+  readonly defaultPresets?: readonly Pick<Preset, "name" | "template">[];
   readonly installation: InstallationStartupConfiguration;
   readonly computeDriver: ComputeDriver;
   readonly configurationDriver: ConfigurationDriver;
@@ -89,6 +94,35 @@ export interface InstallationRuntimeDrivers {
   readonly pluginDriver?: PluginDriver;
   readonly repoDriver?: RepoDriver;
   readonly createIAMDriver: (state: NativeIAMStateStore) => IAMDriver;
+}
+
+/** Resolve an authorized startup actor without depending on persisted identity order. */
+export async function initializeInstallationPresets(
+  controller: OpenClawController,
+  iam: IAMDriver,
+  identities: readonly Identity[],
+  defaults: readonly Pick<Preset, "name" | "template">[],
+): Promise<void> {
+  if (defaults.length === 0) {
+    return;
+  }
+  for (const identity of identities) {
+    if (identity.kind !== "principal") {
+      continue;
+    }
+    const decision = await iam.authorize({
+      principalId: identity.id,
+      action: "administer",
+      resource: { kind: "installation", id: controller.installation.id },
+    });
+    if (decision.allowed) {
+      await controller.initializeDefaultPresets(identity.id);
+      return;
+    }
+  }
+  throw new Error(
+    "Default Preset initialization requires an authorized Installation administrator.",
+  );
 }
 
 async function startupConfiguration(
@@ -135,7 +169,7 @@ async function startupConfiguration(
   }
   closed(
     configuration,
-    ["occ", "drivers", "provider", "logging"],
+    ["occ", "drivers", "provider", "logging", "presets"],
     "Installation startup configuration",
   );
   return configuration;
@@ -486,9 +520,36 @@ export async function loadInstallationConfiguration(options: {
     options.mode === "development" &&
     configuration.occ === undefined &&
     configuration.drivers === undefined &&
-    configuration.provider === undefined
+    configuration.provider === undefined &&
+    configuration.presets === undefined
   ) {
     return undefined;
+  }
+  const presets = object(
+    configuration.presets === undefined ? {} : configuration.presets,
+    "presets",
+  );
+  closed(presets, ["includeDefaults"], "presets");
+  if (presets.includeDefaults !== undefined && typeof presets.includeDefaults !== "boolean") {
+    throw new Error("presets.includeDefaults must be a boolean.");
+  }
+  const includeDefaults = presets.includeDefaults === true;
+  const defaultPresets: Pick<Preset, "name" | "template">[] = [];
+  if (includeDefaults) {
+    const preset = object(
+      JSON.parse(
+        await readFile(
+          new URL("../../../../deploy/presets/standard-codex.json", import.meta.url),
+          "utf8",
+        ),
+      ),
+      "Bundled default Preset",
+    );
+    closed(preset, ["name", "template"], "Bundled default Preset");
+    defaultPresets.push({
+      name: nonempty(preset.name, "Bundled default Preset name"),
+      template: validatePresetTemplate(preset.template),
+    });
   }
   const occ = object(configuration.occ, "occ");
   closed(occ, ["cluster"], "occ");
@@ -672,6 +733,7 @@ export async function loadInstallationConfiguration(options: {
   }
   const installation = Object.freeze({
     occ: Object.freeze({ cluster }),
+    presets: Object.freeze({ includeDefaults }),
     logging,
     provider: providers,
     drivers: Object.freeze({
@@ -786,6 +848,7 @@ export async function loadInstallationConfiguration(options: {
     );
   }
   return Object.freeze({
+    defaultPresets: Object.freeze(defaultPresets),
     installation,
     computeDriver,
     configurationDriver,

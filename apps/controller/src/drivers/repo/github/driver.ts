@@ -8,6 +8,7 @@ import type {
   RepositoryCredentialGrantIdentity,
   RepositoryCredentialResolution,
   RepositoryCredentialSessionStatus,
+  RepositoryOption,
 } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError, ScopeViolationError } from "@openclaw-enterprise/occ";
 import { isAbsolute, resolve } from "node:path";
@@ -147,6 +148,25 @@ export class GitHubRepoDriver implements RepoDriver {
       new TextDecoder("utf-8", { fatal: true }).decode(options.publicCa);
     }
     this.#publicCa = options.publicCa === undefined ? undefined : Uint8Array.from(options.publicCa);
+  }
+
+  listOptions(input: { readonly namespaceId: string }): readonly RepositoryOption[] {
+    return Object.freeze(
+      this.#registry.repositories.flatMap((repository) => {
+        const policy = repository.namespaces.find(
+          (candidate) => candidate.namespaceId === input.namespaceId,
+        );
+        return policy === undefined
+          ? []
+          : [
+              Object.freeze({
+                repositoryRef: repository.repositoryRef,
+                displayName: repository.repository,
+                allowedProfiles: Object.freeze([...policy.profiles]),
+              }),
+            ];
+      }),
+    );
   }
 
   resolve(input: {

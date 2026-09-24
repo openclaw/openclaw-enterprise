@@ -96,7 +96,8 @@ admission; no repository list is stored in Helm values. Follow the
 [repository credential reference](repository-credentials.md) for registry fields
 and the [operator guide](../guides/repository-credentials.md) for service setup.
 The capability requires the bundled Kubernetes Compute Driver without a Sandbox
-Driver; admitted Agents must use its supported embedded runtime and authentication.
+Driver; admitted Agents must use a supported
+[runtime and authentication combination](repository-credentials.md).
 
 ## Driver and client contract
 

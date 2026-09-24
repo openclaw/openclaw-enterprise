@@ -258,6 +258,23 @@ Passing it proves emitted-artifact composition and forwarding. The Compose case
 renders `deploy/examples/repository-credentials/compose.yaml` and checks declared
 mount separation; it does not start those services.
 
+## Check the runtime image's private material volume
+
+Run the separate [runtime volume test](images.md#repository-runtime-volume-test-environment)
+against an image built from the candidate source:
+
+```sh
+OCC_TEST_RUNTIME_IMAGE=openclaw-enterprise-runtime:test \
+  node --test tests/integration/repository-runtime-volume.test.mjs
+```
+
+The required `images-packaging` lane runs this case with the image-installed
+client and no detached bundle overlay. It checks both initializers, a root-owned
+fsGroup-style tmpfs parent, private subPath mounts, ownership rejection, retry
+and read-only delivery. An unset selector skips standalone execution; the CI
+lane rejects skips. See the linked image guide for Docker prerequisites and
+proof limits.
+
 ## Verify separate running containers
 
 Select both delivered images to run the distinct isolation case:
@@ -283,14 +300,15 @@ qualification image and rendered Compose check.
 
 ## Record each evidence boundary
 
-| Check                         | Evidence it can establish                                                                                     |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| Source tests and source guard | Behavior of real owners against named protocol fixtures; reviewed import/I/O boundaries.                      |
-| Detached package check        | Emitted entrypoints and runtime dependency closure without source fallback.                                   |
-| Combined qualification image  | Emitted service/client composition, controlled hour-13 push/API operations and alternate-backend conformance. |
-| Rendered Compose              | Declared paths and mount separation.                                                                          |
-| Separate running containers   | Delivered image identity and observed client/service custody for the exercised commands.                      |
-| Authorized live smoke         | Real provider behavior and cleanup for the selected repository, grant and client version.                     |
+| Check                         | Evidence it can establish                                                                                          |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Source tests and source guard | Behavior of real owners against named protocol fixtures; reviewed import/I/O boundaries.                           |
+| Detached package check        | Emitted entrypoints and runtime dependency closure without source fallback.                                        |
+| Runtime private volume        | Image-installed client with real Docker tmpfs and private subPath mounts; ownership, retry and read-only delivery. |
+| Combined qualification image  | Emitted service/client composition, controlled hour-13 push/API operations and alternate-backend conformance.      |
+| Rendered Compose              | Declared paths and mount separation.                                                                               |
+| Separate running containers   | Delivered image identity and observed client/service custody for the exercised commands.                           |
+| Authorized live smoke         | Real provider behavior and cleanup for the selected repository, grant and client version.                          |
 
 Retain selectors, versions, source/artifact/image identities, pass/fail/skip counts
 and cleanup results. Missing selectors leave evidence unavailable; they do not

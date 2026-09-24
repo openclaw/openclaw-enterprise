@@ -57,7 +57,14 @@ does not make that link available.
    trusted-proxy settings from the Installation's
    [operator-managed proxy trust](../drivers/kubernetes-compute/networking-and-isolation.md#gateway-authentication).
    Native admin UI still needs its [explicit opt-in configuration](../../guides/deploy/native-admin.md).
-5. If you need Slack, use OpenAI with the **Codex** harness and use its channel card. Each token
+5. Optional: under **Repository access**, select up to 16 repositories approved
+   for this Namespace. Select one authorization level shared by every chosen
+   repository. Kubernetes supports Codex (Dedicated) or OpenClaw (Embedded),
+   without a Sandbox Driver. Use Codex when this Agent also
+   needs Slack. Leave every repository unselected for an ordinary Agent without
+   repository access.
+
+6. If you need Slack, use OpenAI with the **Codex** harness and use its channel card. Each token
    menu lets you select a readable Namespace Secret or **Create new Secret...**.
    The modal prefills the binding key and masks the value you enter. Creating a
    Secret stores it immediately, even if you later cancel Agent creation.
@@ -66,13 +73,13 @@ does not make that link available.
    Channel settings, plugin entries, and selected Secret bindings are saved with
    the Configuration when you select **Create Agent**. You can also supply Slack
    credentials from the Agent's **Credentials** tab after creation.
-6. Review **Workspace files**. Each field contains its rendered OpenClaw default.
+7. Review **Workspace files**. Each field contains its rendered OpenClaw default.
    Edit any of the four files, keep the text to submit that default, or clear a
    field to create an empty file. The browser submits LF newlines. See
    [initial contents](../agents.md#initial-contents-at-creation) for limits.
-7. Select **Create Agent**. For supported Dedicated runtimes, the provisioning
+8. Select **Create Agent**. For supported Dedicated runtimes, the provisioning
    request contains inline Configuration, saved Secret references, Agent inputs
-   and workspace files. Console follows the returned job while the worker
+   repository selections and workspace files. Console follows the returned job while the worker
    creates the Configuration and Agent, provisions runtime credentials and
    submits the first deployment. It waits for deployment activation and opens Workspace files for the returned revision. For
    ordinary create paths, the Console saves the Configuration first and opens a
@@ -80,47 +87,38 @@ does not make that link available.
    the [live workspace editor](../console.md#edit-workspace-files). Pending
    inputs have no update API; see [workspace recovery](../../guides/topics/workspace-files.md#set-files-when-creating-an-agent).
 
-The credential field is masked. Saving creates a Namespace Secret and sends only
-its reference to provisioning. The worker creates the Configuration and Agent,
-grants exact Secret access, provisions runtime credentials, and admits the first
-revision. Ordinary draft creation performs the Configuration, Agent, and exact IAM
-grants as separate browser requests and requires IAM administration permission.
-The key is never put into Configuration JSON, Agent responses, or browser storage.
-A Preset with an existing authentication binding retains that binding; use the
-Agent's Credentials tab to change it after creation. API-key and Service Accounts
-Presets also keep their provider fixed, including when editing Configuration
-JSON. A saved service account token also fixes the harness to Codex. Start without a Preset
-to select a different provider or use OpenClaw with an API key. Presets using
-operator-managed runtime credentials keep the harness fixed to OpenClaw, including
-when changing providers.
+Credentials are masked and stored as Namespace Secrets, never Configuration JSON,
+Agent responses, or browser storage. Provisioning receives references; its worker
+creates the Configuration, Agent, exact Secret grants, runtime credentials, and
+first revision. Ordinary draft creation uses separate browser requests and requires
+IAM administration permission.
 
-Model discovery requires Agent `create` permission in this Namespace. It sends
-the supplied credential to the selected authentication method's official API
-without creating a Secret or saving credentials. Service Accounts token discovery (`codex_pat` in the API) validates
-the account with OpenAI authentication and lists its Codex models. The selector
-determines routing; credential prefixes do not choose an authentication method.
-Changing the provider selects its default harness and clears the credential and
-model choice. Changing the authentication method also clears the credential and
-model. Switching from Codex to OpenClaw with an unsaved service account token selects API-key
-authentication and clears the token and model; switching harnesses with an API key
-preserves that credential and model. Changing the credential clears the model choice. A returned model is not proof of
-runtime compatibility. A model must be selected or entered before saving:
-OpenClaw's implicit default does not follow the selected provider.
+Presets retain their authentication binding. API-key and Service Accounts Presets
+fix the provider, including JSON edits; saved service account tokens also fix Codex.
+Operator-managed credentials fix OpenClaw across provider changes. Start without a
+Preset to change these choices, or edit authentication later in **Credentials**.
 
-Discovery runs from the OCC API process. Its network policy must permit HTTPS
-to `api.openai.com:443` for OpenAI API keys, `api.anthropic.com:443` for Anthropic,
-or both `auth.openai.com:443` and `chatgpt.com:443` for service account tokens.
-The Helm chart's default-deny policy does not grant these destinations;
-operators must add a destination-scoped API-pod egress policy through their
-cluster's network controls. Standard Kubernetes NetworkPolicy accepts IP CIDRs,
-not DNS names, so maintain the provider destinations or use the cluster's FQDN
-policy support. Without this access, use manual model entry.
+Model discovery requires Namespace Agent `create` permission. It sends the supplied
+credential to the selected method's official API without saving it. Service Accounts
+(`codex_pat`) authenticate with OpenAI and list Codex models. The selected method,
+not the credential prefix, determines routing. Provider changes reset the harness,
+credential, and model; authentication-method changes reset credential and model.
+Switching an unsaved service account token to OpenClaw selects API-key authentication
+and clears token/model. API-key harness changes preserve both; credential edits
+clear the model. Select or enter a model before saving. Discovery does not establish
+runtime compatibility or provider acceptance.
 
-Discovery failures distinguish rejected credentials or model-list permissions,
-provider rate limits, connectivity failures, and unsupported provider responses.
-The console displays recovery guidance and the request ID, without returning the
-provider's raw response. A model-list permission failure does not determine
-whether that key can run a model; manual entry remains available.
+The OCC API process needs destination-scoped HTTPS egress to `api.openai.com:443`
+for OpenAI API keys, `api.anthropic.com:443` for Anthropic, or both
+`auth.openai.com:443` and `chatgpt.com:443` for service account tokens. Helm's
+default-deny policy does not grant these destinations. Operators must maintain
+provider IP CIDRs or use their cluster's FQDN policy support; standard NetworkPolicy
+does not accept DNS names. Manual model entry remains available without discovery.
+
+Failures distinguish rejected credentials/model-list permissions, rate limits,
+connectivity, and unsupported responses. Recovery guidance includes the request ID,
+never the raw provider response. A listing denial does not prove model execution
+is denied; manual entry remains available.
 
 These managed keys require a configured Secret Driver and compatible Compute.
 Kubernetes supports both providers; the current Docker development composition
@@ -143,6 +141,71 @@ its returned job URL; accepted inputs remain fixed. Secrets saved before a later
 failure remain available and are reused, never deleted automatically. A lost Secret
 save response requires checking existing Namespace Secrets before starting again.
 See the [provisioning flow](../../flows/agent-provisioning.md) for the API sequence.
+
+Repository discovery is independent of model authentication. The Console submits
+opaque references and never requests GitHub App or token configuration. **Reader**
+allows reads, **Contributor** adds pushes and PR work, and **Collaborator** adds
+issue management; their configuration values are `git-read`, `git-write`, and
+`git-full`. Writable choices warn that token-bounded GraphQL permits merges and
+ref changes; native push allowlists do not constrain API writes. Repository
+administration and workflow permissions remain excluded. See
+[access levels](../repository-credentials/access-levels.md) for exact permissions.
+When several repositories are selected, the form offers only levels allowed by
+all of them and always submits the chosen level explicitly. The server rechecks
+current Namespace policy when it creates the Agent and again when it admits a
+deployment.
+
+Only `503 REPOSITORY_OPTIONS_UNAVAILABLE` permits a fresh ordinary draft to
+continue without repository bindings: Agent-create authorization succeeded, but
+optional repository discovery is unavailable. Even on a provisioning-capable Dedicated runtime, this exception saves only a draft; retry discovery before provisioning. Other failures, including generic
+`503`, throttling and connection errors, block **Create Agent** before either
+write and offer retry. Denial and Namespace lifecycle conflict remain distinct.
+This preflight does not replace authorization on either subsequent write.
+
+If the Configuration saves but Agent creation fails, the form shows its ID and
+keeps its JSON and Secret bindings fixed. After a known rejection of an ordinary
+zero-binding Agent, correct the editable Agent fields and retry directly. The
+retry reuses the saved Configuration and does not depend on repository choices
+or a Repo Driver.
+
+After a known rejection of a repository-scoped Agent, **Reload repository choices**
+clears selections and refreshes Namespace policy while retaining the saved
+Configuration. Retry requires at least one current repository and a shared
+explicit access level; empty results cannot turn this attempt into an ordinary
+Agent. Failed reloads keep creation disabled and the Configuration ID visible.
+Expiry returns to sign-in. **Start a new draft** opens a new form and leaves the
+Configuration saved. Neither action deletes saved resources.
+
+If the Agent response is lost or otherwise unknown, the save may have succeeded.
+The form disables further creation and does not expose the known-rejection
+recovery actions. Check the **Agents** list and, if the form showed a
+Configuration ID, the
+[exact Configuration](../configuration.md#create-read-update-and-delete) before
+starting again. If you cannot determine the outcome, give the displayed request
+ID, if available, to your operator.
+
+## Use repositories and Slack on the same Agent
+
+Select **Dedicated**, the approved repositories and an explicit access level.
+Configure Slack and select its saved token Secrets in the creation form, then
+choose a compatible model-authentication source. With supported provisioning
+and successful repository discovery, **Create Agent** queues setup and follows
+the first deployment. The worker creates the Configuration and Agent, grants
+access to the final Secret references, and provisions transport credentials.
+Check that the returned revision belongs to this Agent and retains its repository
+selections. An ordinary draft requires credential setup and **Deploy new revision**
+from its detail page.
+
+Outside the Console, an operator must prepare the
+[repository installation](../../guides/repository-credentials/installation.md),
+Namespace approvals, runtime images and networking; supply a managed model
+credential and its exact-Agent access grant; and install a Slack app with Socket
+Mode and the required channel membership. Slack also needs the configured
+[channel proxy](../drivers/kubernetes-compute/networking-and-isolation.md).
+Deployment admission is not a live channel connection or repository operation.
+Verify this same Agent and revision before presenting the live demo.
+Repository write permission does not change the Harness's filesystem or approval
+policy. Review those settings separately before demonstrating code edits.
 
 ## Initial runtime credentials
 

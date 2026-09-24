@@ -3,7 +3,9 @@
 This experimental profile installs the complete OCE control plane in one cluster
 and dedicated Codex Harnesses in another. It uses the production controller image,
 PostgreSQL roles, migration/bootstrap Job, API, worker, and normal Agent APIs.
-Embedded execution and cloud provisioning are outside this profile. Keep the
+Embedded execution, cloud provisioning, and repository credential delivery are
+outside this profile. The repository credential service currently assumes
+cluster-local reachability; two-cluster admission rejects it explicitly. Keep the
 implementation draft until runtime and failure-path acceptance are complete.
 
 ## Prepare isolated infrastructure
@@ -129,7 +131,7 @@ tenant roles, uses normal API credential admission and deployment, verifies
 workspace RPC, recreates the exact Harness Pod, replaces a revision, and deletes
 both physical targets. Successful runs remove their resources. Failed runs
 retain their test Namespace for diagnosis; delete its Agent, Configuration, and
-Secret through the API before deleting the Namespace.
+Secret and any seeded Presets through the API before deleting the Namespace.
 
 The real API/worker integration passed the lifecycle above without skips.
 Separate manual checks proved model responses, token rejection, and workspace

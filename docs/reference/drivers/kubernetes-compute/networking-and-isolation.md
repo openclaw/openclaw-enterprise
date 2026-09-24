@@ -64,6 +64,16 @@ proxy: retain the exact Envoy NetworkPolicy peer, TLS verification, service-key
 authentication, and identity/header sanitization. Direct embedded access still
 requires a trusted proxy or the optional operator loopback password.
 
+For repository-bearing revisions, Compute grants credential-service egress to
+the embedded gateway/Harness or dedicated Codex Pod. The separate dedicated
+gateway receives no repository egress rule. With `repositoryCredentials.enabled`,
+Helm admits TCP/8443 ingress to the worker's credential sidecar from managed
+gateway Pods carrying an Agent label, and managed dedicated Agent Pods carrying
+both Agent and revision labels. Each peer also requires the tenant namespace
+label. These selectors permit transport; the credential service still validates
+the session and repository grant. Verify the effective policies in the installed
+cluster; rendered rules alone do not prove traffic enforcement.
+
 Production currently permits public TCP/443 egress for model access; a
 restricted model proxy is not yet available. Channels require an approved
 literal-IP HTTP(S) proxy configured through `runtime.channels`; direct public

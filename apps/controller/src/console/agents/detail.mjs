@@ -3,6 +3,7 @@ import { createHarnessAuthFields, harnessAuthDescription } from "./harness-auth.
 import { renderNativeAdminAccess } from "./native-admin.mjs";
 import { createAgentDeletion } from "./deletion.mjs";
 import { createAgentStop } from "./stop.mjs";
+import { repositoryProfile, repositoryWriteAccessHelp } from "./repository-profiles.mjs";
 import { renderChannels } from "../channels.mjs";
 import { renderWorkspaceFiles } from "./workspace.mjs";
 import { displayDate, shortId, namespacePath, link, message } from "./list.mjs";
@@ -784,9 +785,21 @@ export async function renderAgentDetail(context) {
         content.append(credentials.section);
       }
     } else {
+      const repositoryBindings = draft
+        ? agent.repositoryBindings
+        : snapshot.repositoryCredentials?.bindings;
       const details = [
         ["Execution mode", executionMode === "dedicated" ? "Dedicated" : "Embedded"],
         ["Provider", draft ? agent.providerId : snapshot.providerId],
+        [
+          "Repository access",
+          repositoryBindings
+            ?.map(
+              (binding) =>
+                `${binding.repositoryRef} · ${repositoryProfile(binding.profile)?.label ?? "Unknown access level"}`,
+            )
+            .join(", ") ?? "None",
+        ],
         [
           "Harness authentication",
           harnessAuthDescription(draft ? agent.harnessAuth : snapshot.harnessAuth),
@@ -805,6 +818,9 @@ export async function renderAgentDetail(context) {
           { className: "agent-card" },
           element("h2", {}, draft ? "Configuration draft" : "Configuration snapshot"),
           summary(values, details),
+          repositoryBindings?.some((binding) => repositoryProfile(binding.profile)?.writes)
+            ? element("p", { className: "hint repository-write-access" }, repositoryWriteAccessHelp)
+            : null,
           draft
             ? renderDraftConfigurationEditor(context, data)
             : element(

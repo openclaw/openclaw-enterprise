@@ -219,6 +219,25 @@ Agent's channel credentials as Namespace Secrets referenced by Configuration
 `secretBindings`. Channel credentials are available only to the dedicated gateway,
 never to its Codex Harness.
 
+Repository-bearing revisions support embedded OpenClaw or dedicated Codex,
+without a Sandbox Driver. Compute delivers each immutable repository-material
+generation only to the container that executes commands:
+
+| Credential material      | Embedded gateway/Harness | Dedicated gateway | Dedicated Codex |
+| ------------------------ | ------------------------ | ----------------- | --------------- |
+| Repository session files | Yes                      | No                | Yes             |
+| Model credential         | Yes                      | No                | Yes             |
+| Slack channel tokens     | Unsupported              | Yes               | No              |
+
+Readiness must match that consumer's exact revision and material generation.
+Same-revision rotation replaces the consuming workload; a Ready Pod carrying
+older material is insufficient. Preparation rechecks the generation after
+asynchronous plugin status and dedicated gateway/node observations. Dedicated
+replacement preserves the enrolled workspace node and its private state mount. The worker owns missing-material repair and
+session replacement. Cleanup retains Secrets while owned Deployments or Pods
+still reference them. See the
+[repository credential flow](../../../flows/agent-repository-credentials.md).
+
 Use an approved secret manager, protected files, or standard input when
 creating Secrets. Never expose credentials in command-line arguments or logs.
 Missing or incorrectly scoped credentials fail deployment.

@@ -233,3 +233,24 @@ example files and Helm installation.
 
 - [Choose another test suite](README.md).
 - [Results, cleanup, and troubleshooting](README.md#results-cleanup-and-troubleshooting).
+
+## Standard Codex Preset
+
+Run `node --test tests/integration/presets-controller.test.mjs`. The standard
+Preset case posts the shipped JSON through Fastify with native IAM, reads it
+from the Namespace catalog, renders variables, and creates a Configuration
+and dedicated Agent. It checks credential references, native policy retention,
+and rejection of a cross-Namespace model credential. The password workflow in
+`tests/browser/console-agents.test.mjs` exercises the real chooser, masked input,
+same-Namespace Secret creation, credential grant, and retry after a name conflict.
+The API suite also loads Installation YAML and checks default seeding, preserved
+customizations, and authorization rollback. The
+[production PostgreSQL suite](postgresql.md) checks bootstrap-namespace seeding,
+API restart preservation, and new-Namespace defaults with real persisted state.
+Persistence is in-memory with the filesystem Configuration Driver; no workload
+or model starts.
+
+The [runtime verification procedure](../guides/topics/standard-codex-preset.md#verify-before-use)
+requires compatible native images, working Linux sandbox enforcement, authorized
+model credentials, and controlled network destinations. API success alone does
+not prove deny-by-default tool egress, cached model search, or Pod isolation.

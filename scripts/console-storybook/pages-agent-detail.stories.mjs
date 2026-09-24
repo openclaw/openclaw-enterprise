@@ -9,6 +9,14 @@ export const InvalidConfiguration = {
   name: "Invalid Configuration JSON",
 };
 export const Admitted = { ...story("admitted"), name: "Admitted revision" };
+export const RepositoryDraft = {
+  ...story("repositoryDraft"),
+  name: "Repository access in new revision",
+};
+export const RepositoryAdmitted = {
+  ...story("repositoryAdmitted"),
+  name: "Repository access in admitted revision",
+};
 export const DeploymentPending = { ...story("deploymentPending"), name: "Deployment pending" };
 export const DeploymentFailed = { ...story("deploymentFailed"), name: "Deployment failed" };
 export const AgentMissing = { ...story("agentMissing"), name: "Agent unavailable" };

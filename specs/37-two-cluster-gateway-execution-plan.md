@@ -2,7 +2,8 @@
 
 Status: Experimental implementation with local full-stack lifecycle proof; runtime qualification remains incomplete. Keep the PR draft.
 
-Base: `e5f1dedbdb42931886ffd3e4f58789d8323d9140`, including merged PR #327.
+Original base: `e5f1dedbdb42931886ffd3e4f58789d8323d9140`, including merged PR #327.
+Updated against main `d39727589b549243fecbc8aa5611f44e4e27874e`.
 
 ## Outcome and scope
 
@@ -125,15 +126,23 @@ to seven minutes. Plugin-enabled transport, partial-target failure, and
 same-cluster integration still need completed evidence. `running` deployment status is in-progress;
 `succeeded` is the success condition.
 
-Local regressions: 218 Kubernetes/credential/plugin and HTTPS transport checks
-passed, together with 14 real Helm renderer checks. The complete local stack
+After the main refresh, 301 focused Kubernetes, credential delivery, repository
+material, plugin, HTTPS transport and real Helm renderer checks passed. The complete local stack
 passed the new real API/worker integration without skips in 118 seconds:
 placement, workspace RPC, Harness Pod reconnect, revision replacement, predecessor
 retirement, Agent deletion, and deletion of both tenant namespaces. The HTTPS
 helper test separately rejects wrong token/revision, missing CA, redirects and
 plaintext; it does not prove an installed plugin workflow.
-CI fixture automation remains pending; the `k3d-two-cluster` lane consumes an
+The upstream dedicated repository credential capability remains supported in
+single-cluster mode; two-cluster admission rejects it until its currently local
+service has a qualified remote endpoint. CI fixture automation remains pending; the `k3d-two-cluster` lane consumes an
 explicit preinstalled test environment.
+
+A broader macOS conformance run is not green: Linux fixture dependencies
+(including `/usr/bin/gh`), control-directory validation, process cancellation,
+and SSH preflight failed outside the changed Kubernetes implementation. One
+Linux-only case skipped. The changed Secret-delivery fixture was repaired and
+passed in the focused rerun; do not describe the broad run as passing.
 
 ## Documentation owners
 

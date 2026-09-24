@@ -37,6 +37,7 @@ import type {
   ProviderRef,
   RepositoryBindingRequest,
   RepositoryBindingSelection,
+  RepositoryOption,
   RepoDriver,
   RepositoryCredentialResolution,
   RepositoryRevisionState,
@@ -83,6 +84,7 @@ import {
   NamespaceNotEmptyError,
   NamespaceNotReadyError,
   NotImplementedError,
+  RepositoryOptionsUnavailableError,
   ResourceConflictError,
   ScopeViolationError,
 } from "./errors.ts";
@@ -144,6 +146,7 @@ export {
   NamespaceNotEmptyError,
   NamespaceNotReadyError,
   NotImplementedError,
+  RepositoryOptionsUnavailableError,
   ResourceConflictError,
   ScopeViolationError,
 } from "./errors.ts";
@@ -250,6 +253,7 @@ export interface ControllerOptions {
   readonly state?: PlatformStateStore;
   readonly recordOperations?: boolean;
   readonly providers?: readonly ProviderDefinition[];
+  readonly defaultPresets?: readonly Pick<Preset, "name" | "template">[];
   readonly loggingLevel?: LoggingLevel;
   readonly configuredServiceAccountDriverId?: string;
 }
@@ -453,7 +457,7 @@ function driverHasCapabilityContract(driver: Driver): boolean {
   }
   if (driver.capability === "repo") {
     return (
-      ["resolve", "open", "status", "close"].every(
+      ["listOptions", "resolve", "open", "status", "close"].every(
         (operation) => typeof candidate[operation] === "function",
       ) &&
       typeof candidate.maintenanceIntervalMs === "number" &&
@@ -725,6 +729,30 @@ function validExecutionMode(value: unknown): value is HarnessExecutionMode {
   return value === "embedded" || value === "dedicated";
 }
 
+function validRepositorySelector(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
+}
+
+function validRepositoryOption(value: unknown): value is RepositoryOption {
+  const option = asRecord(value);
+  const displayName = option?.displayName;
+  const allowedProfiles = option?.allowedProfiles;
+  return (
+    validRepositorySelector(option?.repositoryRef) &&
+    isNonEmptyString(displayName) &&
+    displayName.length <= 200 &&
+    ![...displayName].some((character) => {
+      const code = character.charCodeAt(0);
+      return code <= 0x1f || code === 0x7f;
+    }) &&
+    Array.isArray(allowedProfiles) &&
+    allowedProfiles.length >= 1 &&
+    allowedProfiles.length <= 16 &&
+    new Set(allowedProfiles).size === allowedProfiles.length &&
+    allowedProfiles.every(validRepositorySelector)
+  );
+}
+
 function invalidPluginRequest(message: string): never {
   throw new ScopeViolationError(message);
 }
@@ -749,6 +777,7 @@ export class OpenClawController {
   private readonly registry = new Map<string, RegisteredDriver>();
   private readonly selections = new Map<DriverCapability, RegisteredDriver>();
   private readonly providers: readonly ProviderDefinition[];
+  private readonly defaultPresets: readonly Pick<Preset, "name" | "template">[];
   private readonly loggingLevel: LoggingLevel;
   private readonly providerMap: ReadonlyMap<string, ProviderDefinition>;
   private readonly configuredServiceAccountDriverId: string | undefined;
@@ -774,6 +803,14 @@ export class OpenClawController {
     this.state = options.state ?? new InMemoryPlatformState();
     this.shouldRecordOperations = options.recordOperations ?? true;
     this.providers = validateProviderDefinitions(options.providers ?? []);
+    this.defaultPresets = immutableCopy(options.defaultPresets ?? []);
+    const presetNames = new Set<string>();
+    for (const preset of this.defaultPresets) {
+      if (!validName(preset.name) || presetNames.has(preset.name)) {
+        throw new PresetValidationError("Default Presets require distinct valid names.");
+      }
+      presetNames.add(preset.name);
+    }
     this.loggingLevel = normalizeLoggingLevel(options.loggingLevel);
     this.providerMap = providerDefinitionMap(this.providers);
     if (
@@ -1080,6 +1117,72 @@ export class OpenClawController {
     });
   }
 
+  async listRepositoryOptions(
+    principalId: string,
+    namespaceId: string,
+  ): Promise<readonly Readonly<RepositoryOption>[]> {
+    const namespace = await this.read((state) => this.exactNamespace(state, namespaceId));
+    if (namespace.status !== "provisioning" && namespace.status !== "ready") {
+      throw new ResourceConflictError("The Namespace does not accept new Agents.");
+    }
+    await this.authorize(principalId, "create", {
+      kind: "agent",
+      id: namespace.id,
+      namespaceId: namespace.id,
+    });
+    let compute: ComputeDriver;
+    try {
+      compute = this.selectedDriver("compute");
+    } catch {
+      throw new RepositoryOptionsUnavailableError(
+        "The selected Compute Driver cannot support repository options.",
+      );
+    }
+    if (compute.validateRepositoryCredentialSupport === undefined) {
+      throw new RepositoryOptionsUnavailableError(
+        "The selected Compute Driver cannot support repository options.",
+      );
+    }
+    const sandboxDriverId = this.sandboxDriver()?.id;
+    try {
+      compute.validateRepositoryCredentialSupport(sandboxDriverId);
+    } catch {
+      throw new RepositoryOptionsUnavailableError(
+        "The selected Compute Driver cannot support repository options with this composition.",
+      );
+    }
+    let driver: RepoDriver;
+    try {
+      driver = this.selectedDriver("repo");
+    } catch {
+      throw new RepositoryOptionsUnavailableError(
+        "The selected repository credential Driver is unavailable.",
+      );
+    }
+    let options: readonly RepositoryOption[];
+    try {
+      options = driver.listOptions({ namespaceId: namespace.id });
+    } catch {
+      throw new DependencyUnavailableError(
+        "The selected repository credential Driver could not list repository options.",
+      );
+    }
+    const selected = this.selections.get("repo");
+    if (
+      !Array.isArray(options) ||
+      options.length > 128 ||
+      !options.every(validRepositoryOption) ||
+      new Set(options.map((option) => option.repositoryRef)).size !== options.length ||
+      selected?.driver !== driver ||
+      !this.unchangedDriver(selected)
+    ) {
+      throw new DependencyUnavailableError(
+        "The selected repository credential Driver returned invalid repository options.",
+      );
+    }
+    return immutableCopy(options);
+  }
+
   async getAgent(
     principalId: string,
     namespaceId: string,
@@ -1318,6 +1421,10 @@ export class OpenClawController {
           : { secretBindings: configurationInput.secretBindings }),
         createdAt: this.timestamp(),
       });
+      const repositoryBindings = this.repositoryBindingSelections(
+        namespace.id,
+        input.repositoryBindings,
+      );
       const record = await state.provisioning.create({
         workId,
         namespaceId: namespace.id,
@@ -1331,9 +1438,7 @@ export class OpenClawController {
           executionMode,
           ...(providerId === undefined ? {} : { providerId }),
           ...(plugins === undefined ? {} : { plugins }),
-          ...(input.repositoryBindings === undefined
-            ? {}
-            : { repositoryBindings: input.repositoryBindings }),
+          ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
           ...(workspace.initialWorkspaceFiles === undefined
             ? {}
             : { initialWorkspaceFiles: workspace.initialWorkspaceFiles }),
@@ -1870,6 +1975,7 @@ export class OpenClawController {
         status: "provisioning",
         createdAt: this.timestamp(),
       });
+      await this.ensureNamespaceDefaultPresets(state, principalId, namespace);
       await this.record(state, {
         kind: "namespace",
         action: "reconcile",
@@ -1880,6 +1986,72 @@ export class OpenClawController {
       });
       return namespace;
     });
+  }
+
+  /** Apply trusted Installation defaults without replacing Namespace-owned copies. */
+  async initializeDefaultPresets(principalId: string): Promise<void> {
+    if (this.defaultPresets.length === 0) {
+      return;
+    }
+    await this.mutate(async (state) => {
+      await this.authorize(principalId, "administer", {
+        kind: "installation",
+        id: this.installation.id,
+      });
+      const namespaces = [...(await state.namespaces.listNamespaces())].sort((a, b) =>
+        a.id.localeCompare(b.id),
+      );
+      for (const namespace of namespaces) {
+        const current = await state.namespaces.lockNamespace(namespace.id);
+        if (current && ["provisioning", "ready"].includes(current.status)) {
+          await this.ensureNamespaceDefaultPresets(state, principalId, current);
+        }
+      }
+    });
+  }
+
+  private async ensureNamespaceDefaultPresets(
+    state: PlatformUnitOfWork,
+    principalId: string,
+    namespace: Readonly<Namespace>,
+  ): Promise<void> {
+    if (this.defaultPresets.length === 0) {
+      return;
+    }
+    const existing = new Set(
+      (await state.presets.listPresets(namespace.id)).map((preset) => preset.name),
+    );
+    for (const preset of this.defaultPresets) {
+      if (existing.has(preset.name)) {
+        continue;
+      }
+      await this.authorize(principalId, "create", {
+        kind: "preset",
+        id: namespace.id,
+        namespaceId: namespace.id,
+      });
+      const template = await this.admitPresetTemplate(preset.template, namespace.id);
+      const created = await state.presets.createPreset({
+        id: this.nextIdentifier("preset"),
+        namespaceId: namespace.id,
+        name: preset.name,
+        template,
+        createdAt: this.timestamp(),
+      });
+      await state.audit.append({
+        id: `aud_${crypto.randomUUID()}`,
+        installationId: this.installation.id,
+        namespaceId: namespace.id,
+        occurredAt: this.timestamp(),
+        kind: "mutation",
+        actorId: principalId,
+        source: "occ",
+        action: "openclaw.presets.create",
+        resource: { kind: "preset", id: created.id, namespaceId: namespace.id },
+        outcome: "success",
+        details: { source: "installation-defaults" },
+      });
+    }
   }
 
   async createPreset(principalId: string, input: CreatePresetInput): Promise<Readonly<Preset>> {

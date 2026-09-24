@@ -23,7 +23,10 @@ import type {
   InstallationRuntimeDrivers,
   ServiceAccountDriverFactory,
 } from "./installation-config.ts";
-import { providerSummariesFromDefinitions } from "./installation-config.ts";
+import {
+  initializeInstallationPresets,
+  providerSummariesFromDefinitions,
+} from "./installation-config.ts";
 import type { LoggingConfiguration, OccLogger } from "../logging.ts";
 import { resolveApprovedHarness } from "./production-harness.ts";
 import type { ControllerWorkspaceFilesAccess } from "../gateway/contracts.ts";
@@ -141,6 +144,7 @@ export async function composePostgresDevelopment(
     const controller = new OpenClawController(persistedInstallation, {
       state,
       recordOperations: true,
+      defaultPresets: drivers?.defaultPresets ?? [],
       ...(loggingLevel === undefined ? {} : { loggingLevel }),
       ...(drivers === undefined ? {} : { providers: drivers.installation.provider }),
     });
@@ -186,6 +190,12 @@ export async function composePostgresDevelopment(
     }
     serviceAccountDriverFactory?.(controller, state);
     await controller.validateProviderConfiguration();
+    await initializeInstallationPresets(
+      controller,
+      iamDriver,
+      iamState.identities,
+      drivers?.defaultPresets ?? [],
+    );
 
     let workspaceFilesAccess = config.workspaceFilesAccess;
     if (workspaceFilesAccess === undefined && config.gatewayApiKeyPath !== undefined) {

@@ -253,6 +253,11 @@ test(
     );
     await api("DELETE", `${base}/configurations/${native.id}`);
     await api("DELETE", `${base}/secrets/${secret.id}`);
+    // Installations may seed default Presets into this test-owned Namespace.
+    // Remove those ordinary children before requesting Namespace deletion.
+    for (const preset of await api("GET", `${base}/presets`)) {
+      await api("DELETE", `${base}/presets/${preset.id}`);
+    }
     await api("DELETE", base);
     for (const plane of ["execution", "control"]) {
       await planes[plane].waitFor(

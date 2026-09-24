@@ -48,7 +48,10 @@ function checkSize(value) {
 }
 
 function scalar(value, type) {
-  return typeof value === type && (type !== "number" || Number.isFinite(value));
+  return (
+    typeof value === (type === "password" ? "string" : type) &&
+    (type !== "number" || Number.isFinite(value))
+  );
 }
 
 function closedObject(value, fields, path) {
@@ -99,6 +102,9 @@ function substitute(text, definitions, inputs, path, key, partial) {
   }
   const whole = !key && parts.length === 3 && parts[0] === "" && parts[2] === "";
   for (const { name } of refs) {
+    if (definitions[name].type === "password" && (!whole || path !== "agent.harnessAuth.secret")) {
+      fail(path, "password variables require a whole-token Harness authentication secret.");
+    }
     if (!whole && definitions[name].type !== "string") {
       fail(path, `variable ${name} must be a string for interpolation or object keys.`);
     }
@@ -176,11 +182,14 @@ export function validatePresetTemplate(template) {
       fail("variables", "invalid variable name.");
     }
     closedObject(definition, ["type", "description", "default"], `variables.${name}`);
-    if (!["string", "number", "boolean"].includes(definition.type)) {
+    if (!["string", "number", "boolean", "password"].includes(definition.type)) {
       fail(`variables.${name}`, "unsupported type.");
     }
     if (Object.hasOwn(definition, "description") && typeof definition.description !== "string") {
       fail(`variables.${name}`, "description must be a string.");
+    }
+    if (definition.type === "password" && Object.hasOwn(definition, "default")) {
+      fail(`variables.${name}`, "password variables cannot have stored defaults.");
     }
     if (Object.hasOwn(definition, "default") && !scalar(definition.default, definition.type)) {
       fail(`variables.${name}`, "default must match its declared type.");
@@ -192,6 +201,16 @@ export function validatePresetTemplate(template) {
       ["name", "executionMode", "providerId", "harnessAuth", "plugins"],
       "agent",
     );
+  }
+  const auth = template.agent?.harnessAuth;
+  if (record(auth) && Object.hasOwn(auth, "secret")) {
+    const token = typeof auth.secret === "string" ? TOKEN.exec(auth.secret) : null;
+    if (!token || definitions[token[1]]?.type !== "password") {
+      fail(
+        "agent.harnessAuth.secret",
+        "requires a password variable token, never a stored credential.",
+      );
+    }
   }
   if (Object.hasOwn(template, "configuration")) {
     closedObject(template.configuration, ["values", "secretBindings"], "configuration");

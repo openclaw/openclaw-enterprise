@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-09-22
-last_updated_session: codex/01a0c70f-8a8f-7c62-ac81-ee1a3e99f48b
+updated: 2026-09-24
+last_updated_session: codex/01a0d171-59c4-7b42-95ab-4050d18eab79
 ---
 
 # Container publication flow
@@ -56,6 +56,27 @@ permission or protected-environment credentials.
 registers ARM64 QEMU support and asks Buildx for `linux/amd64,linux/arm64`, with
 provenance disabled, in a single OCI archive. The approved Node base index must
 provide both platforms. The controller and runtime use their existing recipes.
+`deploy/runtime/Dockerfile:openclaw-source` downloads the pinned public OpenClaw
+source archive, rejects a SHA-256 mismatch, installs its frozen dependency graph,
+and follows the upstream Docker build and production-dependency assembly with
+Codex and Slack selected. Plugin-local dependencies retain their own versions.
+Missing package-root dependencies are linked from those plugin installations so
+shared compiled chunks resolve them; existing core versions remain unchanged.
+The runtime stage verifies the assembled runtime archive checksum before extraction and
+retains `/opt/oce/runtime/provenance.json`; this archive is not an npm package.
+Matching bundled plugins replace
+independently installed plugin packages; the Dedicated Codex executable remains
+separately pinned. See the [runtime recipe](../../deploy/runtime/README.md) for
+source identity and installed-image checks.
+Before starting the runtime build,
+`scripts/ci/repository-platform-headroom.mjs:main` verifies it is running on the
+Ubuntu 24 GitHub-hosted runner and removes fixed, unused Android, language SDK,
+and non-Node tool-cache directories. The helper rejects symlinks, mounts, and
+unexpected paths, then requires 36 GiB free and logs capacity before and after
+cleanup. This makes room for both source-build dependency graphs before OCI
+export; local and self-hosted runners are rejected. Controller preparation does
+not use this cleanup.
+
 After OCI export, the job prunes only its dedicated Buildx builder's cache so
 the cache and unpacked smoke images do not exhaust the runner's disk together.
 
@@ -83,7 +104,8 @@ the next variant is loaded. The exported archive remains the publication input.
 `scripts/ci/container-release.mjs:seal` rechecks the platform contents and records
 the archive hash, multi-platform index digest, platform list, source, workflow,
 run attempt, CI identity, and approved base. Both prepared artifacts must exist
-before `.github/workflows/container-publish.yml:jobs.publish` can start.
+before `.github/workflows/container-publish.yml:jobs.publish` can start. The
+publish job runs only when the operator selected `publish: true`.
 
 No-push runs end with artifacts. Publishing runs proceed directly to automated
 validation. Archive retention and package access requirements are owned
@@ -128,6 +150,16 @@ not rebuild them. Old amd64-only seals cannot satisfy this platform contract.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-09-24 04:30: Return Enterprise container builds to reviewed manual dispatch and update the runtime source to OpenClaw `2765f7a3341b8be4835afacbff3d04c6e3c3c79b` with its verified archive checksum. (codex/01a0d171-59c4-7b42-95ab-4050d18eab79 - 0224b638)
+
+- 2026-09-24 00:30: Reclaim unused hosted Android SDK space before the runtime source build, retaining both platforms and all startup checks. (codex/01a0c179-19f7-7111-8bb4-fc7680da5545 - ae96345b)
+
+- 2026-09-24 00:05: Build and smoke PR merge commits without release artifacts or publication; keep manual main release validation. (codex/01a0c179-19f7-7111-8bb4-fc7680da5545 - 75ce7de8)
+
+- 2026-09-23 20:39: Link missing plugin dependencies for shared compiled runtime chunks without replacing core versions. (public-pr/295 - cf486a31)
+
+- 2026-09-23 19:47: Build the runtime from verified public source with matching bundled plugins and retained runtime archive provenance. (public-pr/295 - 7f6d9107)
 
 - 2026-09-22 03:04: Use manual dispatch without an independent approval or linkage comment (codex/01a0c70f-8a8f-7c62-ac81-ee1a3e99f48b - 149ac0fe)
 

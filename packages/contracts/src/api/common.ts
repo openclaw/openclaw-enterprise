@@ -483,6 +483,7 @@ export const ERROR_CODES = Object.freeze([
   "NOT_IMPLEMENTED",
   "INTERNAL_ERROR",
   "DEPENDENCY_UNAVAILABLE",
+  "REPOSITORY_OPTIONS_UNAVAILABLE",
   "MODEL_DISCOVERY_CREDENTIALS_REJECTED",
   "MODEL_DISCOVERY_RATE_LIMITED",
   "MODEL_DISCOVERY_UNAVAILABLE",
@@ -529,6 +530,10 @@ export const ErrorResponse = Type.Object(
           Type.Literal("NOT_IMPLEMENTED"),
           Type.Literal("INTERNAL_ERROR"),
           Type.Literal("DEPENDENCY_UNAVAILABLE"),
+          Type.Literal("REPOSITORY_OPTIONS_UNAVAILABLE", {
+            description:
+              "Only repository-option discovery is unavailable after Agent create authorization. An Agent without repository bindings may be submitted and is authorized again. Other dependency failures do not carry this meaning.",
+          }),
           Type.Literal("MODEL_DISCOVERY_CREDENTIALS_REJECTED"),
           Type.Literal("MODEL_DISCOVERY_RATE_LIMITED"),
           Type.Literal("MODEL_DISCOVERY_UNAVAILABLE"),
@@ -597,8 +602,12 @@ export type ErrorResponse = Type.Static<typeof ErrorResponse>;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 export type ErrorDetailCode = (typeof ERROR_DETAIL_CODES)[number];
 
-export const PresetVariableSchema = Type.Union(
-  (["string", "number", "boolean"] as const).map((type) =>
+export const PresetVariableSchema = Type.Union([
+  Type.Object(
+    { type: Type.Literal("password"), description: Type.Optional(Type.String()) },
+    { additionalProperties: false },
+  ),
+  ...(["string", "number", "boolean"] as const).map((type) =>
     Type.Object(
       {
         type: Type.Literal(type),
@@ -610,7 +619,7 @@ export const PresetVariableSchema = Type.Union(
       { additionalProperties: false },
     ),
   ),
-);
+]);
 
 export const PresetTemplateSchema = Type.Object(
   {

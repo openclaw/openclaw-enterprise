@@ -1,7 +1,7 @@
 ---
 created: "2026-09-23"
 updated: "2026-09-23"
-last_updated_session: "Codex/01a0cf27-71c6-7042-8357-74d1811a2ef8"
+last_updated_session: "public-pr/295"
 ---
 
 # Agent provisioning flow
@@ -50,7 +50,7 @@ graph TD
 
 The Slack channel setup modal sends each new token to ordinary `POST /namespaces/:namespaceId/secrets` immediately, before an Agent exists. It clears entered values after the save attempt. Applying channel settings stages the returned references and environment bindings in the form. Cancelling the drawer discards its selections but retains created namespace Secrets. Model discovery uses the entered API key or service account token without saving it. Create Agent saves that credential as an ordinary Namespace Secret, clears the input, and reuses its returned reference for provisioning retries. Bound Presets retain their credential and provider. A lost Secret-save response needs recovery rather than automatic repetition.
 
-Create Agent sends the parsed inline Configuration, ordinary Secret bindings, model-auth references, supported Agent options and a stable request ID. The provisioning worker owns exact Secret grants; Slack has no special worker path. After an uncertain admission response, the Console resends the same request ID and accepted inputs, without resaving acknowledged Secrets.
+Create Agent sends the parsed inline Configuration, ordinary Secret bindings, model-auth references, supported Agent options, selected repository bindings with an explicit access profile, and a stable request ID. The provisioning worker owns exact Secret grants; Slack has no special worker path. After an uncertain admission response, the Console resends the same request ID and accepted inputs, without resaving acknowledged Secrets.
 
 On ordinary draft creation paths, Console creates the Configuration and Agent, then grants access to the selected Slack Secrets. A grant failure retains the saved Agent and offers Retry credential access on that Agent, without repeating creation.
 
@@ -58,7 +58,7 @@ On ordinary draft creation paths, Console creates the Configuration and Agent, t
 
 `packages/occ/src/index.ts:OpenClawController.provisionAgent`
 
-OCC validates the accepted Configuration, references, workspace inputs, supported execution mode and current authority. It stores the accepted request and its deduplication fingerprint in `agent_provisioning_work`, then enqueues `controller_work` with `work_kind = 'provisioning'`. Agent and Configuration creation happen later. Identical actor/Namespace/request IDs return the same work; changed input conflicts.
+OCC validates the accepted Configuration, references, workspace inputs, supported execution mode and current authority. The repository Driver validates current Namespace selections before job admission and again when the worker creates the Agent; deployment checks the exact Harness topology through the Compute Driver. It stores the accepted request and its deduplication fingerprint in `agent_provisioning_work`, then enqueues `controller_work` with `work_kind = 'provisioning'`. Agent and Configuration creation happen later. Identical actor/Namespace/request IDs return the same work; changed input conflicts.
 
 The `202` response contains `data.provisioning`, with the work ID and status URL. Public progress exposes result IDs and safe errors without input values or backend credentials.
 
@@ -107,6 +107,8 @@ While initialization owns an Agent, conflicting edits and manual deployment are 
 ## Changelog
 
 - 2026-09-23 21:00: Integrate provider model discovery and saved API-key/PAT references with canonical Dedicated provisioning and deployment activation. (Codex/01a0cf27-71c6-7042-8357-74d1811a2ef8 - fb711b49)
+
+- 2026-09-23 20:21: Integrate repository selections with asynchronous provisioning and preserve draft-only discovery recovery. (public-pr/295 - 8bd367636aff766d484b4e684d42f6b4419c9e4e)
 
 - 2026-09-23 11:20: Reused the channel setup Secret modal and preserved ordinary-create grant recovery when rebasing onto PR #323. (Codex/01a0cc7f-028b-7803-acf5-803c3d799d75 - f2dd1d3f)
 

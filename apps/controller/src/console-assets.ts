@@ -46,6 +46,14 @@ const CONSOLE_ASSETS = new Map(
       path: new URL("agents/create.mjs", CONSOLE_ROOT),
       contentType: "text/javascript; charset=utf-8",
     },
+    "/console/agents/repositories.mjs": {
+      path: new URL("agents/repositories.mjs", CONSOLE_ROOT),
+      contentType: "text/javascript; charset=utf-8",
+    },
+    "/console/agents/repository-profiles.mjs": {
+      path: new URL("agents/repository-profiles.mjs", CONSOLE_ROOT),
+      contentType: "text/javascript; charset=utf-8",
+    },
     "/console/agents/starter-model.mjs": {
       path: new URL("agents/starter-model.mjs", CONSOLE_ROOT),
       contentType: "text/javascript; charset=utf-8",

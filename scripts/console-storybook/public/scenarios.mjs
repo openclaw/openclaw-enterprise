@@ -11,11 +11,25 @@ const readyForm = [
   { selector: "#provider-api-key", value: "storybook-model-api-key" },
   { selector: "#agent-model", value: "openai-story-model" },
 ];
+const passwordPresetForm = [
+  { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
+  { selector: "#preset-variable-name", value: "Codex assistant" },
+  { selector: "#preset-variable-model", value: "gpt-5.1" },
+  { selector: "#preset-variable-modelSecret", value: "storybook-model-key" },
+  click("Use Preset"),
+];
+const repositoryForm = [...readyForm, { selector: "#agent-name", value: "Repository assistant" }];
+const repositoryOptionsPath =
+  "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/repository-options";
 const account = [{ selector: ".account-toggle", click: true }];
 const createSlackBotSecret = [
   { selector: "#slack-secret-slack-bot-token", value: "__openclaw_create_secret__" },
   { selector: "#create-slack-bot-token-value", value: "simulated-bot-token" },
   click("Create Secret"),
+];
+const allowEveryoneInSlackChannels = [
+  { selector: "#slack-allowed-user-ids", value: "" },
+  { selector: "#slack-allow-everyone", click: true },
 ];
 const createWorkspaceFields = [
   ...form,
@@ -36,6 +50,7 @@ const createProvisioningSecrets = [
   { selector: "#slack-secret-slack-app-token", value: "sec_demo_slack_app_token" },
   ...createSlackBotSecret,
   { selector: "#slack-channel-ids", value: "CDEMO123" },
+  ...allowEveryoneInSlackChannels,
   click("Apply channel settings"),
 ];
 
@@ -276,7 +291,36 @@ export const scenarios = {
       click("Apply channel settings"),
     ],
     description:
-      "Applying channel settings copies staged Slack Secret bindings into the create form's Configuration Secret bindings JSON without exposing token values.",
+      "Applying channel settings retains staged Slack Secret bindings for creation. The raw Secret bindings JSON editor is hidden; token values stay masked.",
+  },
+  createSlackChannelAccessRequired: {
+    group: "Pages/Create Agent",
+    name: "Slack channel sender required",
+    path: create,
+    actions: [
+      ...form,
+      { selector: "#agent-name", value: "Slack launch demo" },
+      click("Configure Slack"),
+      { selector: "#slack-channel-ids", value: "CDEMO123" },
+      click("Apply channel settings"),
+    ],
+    description:
+      "The create drawer requires explicit channel user IDs or the everyone checkbox before channel settings can be applied.",
+  },
+  createSlackAllowEveryone: {
+    group: "Pages/Create Agent",
+    name: "Slack allow everyone",
+    path: create,
+    actions: [
+      ...form,
+      { selector: "#agent-name", value: "Slack launch demo" },
+      click("Configure Slack"),
+      { selector: "#slack-channel-ids", value: "CDEMO123" },
+      ...allowEveryoneInSlackChannels,
+      click("Apply channel settings"),
+    ],
+    description:
+      'The create drawer stores users: ["*"] on the selected channel while leaving direct-message allowFrom out of the new draft.',
   },
   createWorkspaceFiles: {
     group: "Pages/Create Agent",
@@ -294,6 +338,115 @@ export const scenarios = {
     description:
       "OpenClaw remains available for OpenAI with an API key. It uses Embedded execution and disables unsupported channel editing.",
   },
+  createRepositoriesSelected: {
+    group: "Pages/Create Agent",
+    name: "Approved repositories and shared access",
+    path: create,
+    actions: [
+      ...repositoryForm,
+      { selector: "#repository-application", click: true },
+      { selector: "#repository-handbook", click: true },
+      { selector: "#repository-profile-git-read", click: true },
+    ],
+    description:
+      "Two approved repositories share Reader access to code, issues, pull requests, and checks. The real form offers only their common levels and requires an explicit choice.",
+    gap: "An operator supplies Namespace approvals, GitHub App configuration, credential service, compatible runtime images, and network policy. Repository grants do not change Harness filesystem or approval policy.",
+  },
+  createRepositoriesContributor: {
+    group: "Pages/Create Agent",
+    name: "Contributor access and write limits",
+    path: create,
+    actions: [
+      ...repositoryForm,
+      { selector: "#repository-application", click: true },
+      { selector: "#repository-profile-git-write", click: true },
+    ],
+    description:
+      "Contributor adds code pushes, pull requests, and PR discussion without granting ordinary issue management. The selected write level shows token and branch-policy limits.",
+  },
+  createRepositoriesCollaborator: {
+    group: "Pages/Create Agent",
+    name: "Collaborator access and write limits",
+    path: create,
+    actions: [
+      ...repositoryForm,
+      { selector: "#repository-application", click: true },
+      { selector: "#repository-profile-git-full", click: true },
+    ],
+    description:
+      "Collaborator also creates and manages issues. GraphQL can permit merges and branch changes within the installation token grant; the Git push allowlist does not constrain GraphQL.",
+  },
+  createRepositoriesEmpty: {
+    group: "Pages/Create Agent",
+    name: "No approved repositories",
+    path: create,
+    actions: repositoryForm,
+    repositoryOptions: [],
+    description: "Successful empty discovery permits an ordinary Agent without repository access.",
+  },
+  createRepositoriesLoading: {
+    group: "Pages/Create Agent",
+    name: "Repository discovery pending",
+    path: create,
+    actions: form,
+    rules: [{ path: repositoryOptionsPath, hold: true }],
+    description: "Creation waits for repository discovery. Reset to replay the pending read.",
+  },
+  createRepositoriesUnavailable: {
+    group: "Pages/Create Agent",
+    name: "Optional repository service unavailable",
+    path: create,
+    actions: repositoryForm,
+    rules: [
+      {
+        path: repositoryOptionsPath,
+        status: 503,
+        code: "REPOSITORY_OPTIONS_UNAVAILABLE",
+      },
+    ],
+    description:
+      "The endpoint-specific optional-unavailability response permits an ordinary Agent. The preview does not establish real authorization.",
+  },
+  createRepositoriesDenied: {
+    group: "Pages/Create Agent",
+    name: "Repository discovery denied",
+    path: create,
+    actions: repositoryForm,
+    rules: [{ path: repositoryOptionsPath, status: 403 }],
+    description: "Denied Agent-create authorization blocks both Configuration and Agent writes.",
+  },
+  createRepositoriesAmbiguous: {
+    group: "Pages/Create Agent",
+    name: "Repository authorization unverified",
+    path: create,
+    actions: repositoryForm,
+    rules: [{ path: repositoryOptionsPath, status: 503 }],
+    description:
+      "A generic dependency failure cannot establish authorization. The form blocks creation and offers retry.",
+  },
+  createRepositoriesRecovery: {
+    group: "Pages/Create Agent",
+    name: "Reselect repositories after rejection",
+    path: create,
+    unsupportedProvisioning: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents",
+        method: "POST",
+        status: 409,
+        once: true,
+      },
+    ],
+    actions: [
+      ...repositoryForm,
+      { selector: "#repository-application", click: true },
+      { selector: "#repository-profile-git-write", click: true },
+      click("Create Agent"),
+      click("Reload repository choices"),
+    ],
+    description:
+      "A rejected save retains its Configuration. Reload clears stale choices; retry requires a current repository and access level. Starting a new draft explicitly leaves repository-scoped recovery.",
+  },
   createPreset: {
     group: "Pages/Create Agent",
     name: "Preset variables",
@@ -302,6 +455,40 @@ export const scenarios = {
     description:
       "A reusable template with required and defaulted variables. Use Preset copies values into an editable draft.",
     gap: "Preset CRUD has no console page; the fixture supplies a pre-existing Preset.",
+  },
+  createPasswordPreset: {
+    group: "Pages/Create Agent",
+    name: "Standard Codex password variable",
+    path: create,
+    standardCodexPreset: true,
+    actions: [{ selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" }],
+    description:
+      "The shipped Preset asks for name, model, and a masked modelSecret password. No Namespace or Secret ID is needed.",
+    steps: [
+      "Enter a name, model ID, and a dummy model key.",
+      "Use Preset and review the masked API key and restricted configuration.",
+      "Create Agent saves a same-Namespace Secret before provisioning.",
+    ],
+    gap: "All credentials and API responses in this preview are simulated.",
+  },
+  createPasswordPresetDraft: {
+    group: "Pages/Create Agent",
+    name: "Standard Codex password draft",
+    path: create,
+    standardCodexPreset: true,
+    actions: passwordPresetForm,
+    description:
+      "The password remains masked in the editable draft; Configuration JSON contains no model key. The raw Secret bindings JSON editor is hidden.",
+  },
+  createPasswordPresetDenied: {
+    group: "Pages/Create Agent",
+    name: "Password Secret creation denied",
+    path: create,
+    standardCodexPreset: true,
+    denySecretCreate: true,
+    actions: [...passwordPresetForm, click("Create Agent")],
+    description:
+      "Missing Secret create permission leaves the draft available with its password masked. No Agent is created.",
   },
   createNoPresets: {
     group: "Pages/Create Agent",
@@ -514,6 +701,25 @@ export const scenarios = {
     description:
       "Immutable Configuration snapshot, revision navigation, and persisted deployment status. This does not establish live serving health.",
   },
+  repositoryDraft: {
+    group: "Pages/Agent detail",
+    name: "Repository access in new revision",
+    path: draft,
+    repositoryBindings: [
+      { repositoryRef: "application", profile: "git-write" },
+      { repositoryRef: "handbook", profile: "git-read" },
+    ],
+    description: "The new revision names Contributor and Reader access and shows write limits.",
+  },
+  repositoryAdmitted: {
+    group: "Pages/Agent detail",
+    name: "Repository access in admitted revision",
+    path: revision,
+    deployed: true,
+    repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
+    description:
+      "The admitted snapshot names Collaborator access and retains the write-limit notice. This fixture does not establish provider authorization or runtime execution.",
+  },
   deploymentPending: {
     group: "Pages/Agent detail",
     name: "Deployment pending",
@@ -632,6 +838,37 @@ export const scenarios = {
     description:
       "Edit channels, users, mention requirement, and enabled state. Token references remain fixed; token values belong in Credentials.",
   },
+  slackEveryone: {
+    group: "Components/Channels",
+    name: "Slack everyone in channels",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    slackAllowEveryone: true,
+    actions: [click("Edit Slack")],
+    description:
+      'The editor shows users: ["*"] as Allow everyone in these channels and keeps direct-message allowFrom unchanged.',
+  },
+  slackRestrictedUsers: {
+    group: "Components/Channels",
+    name: "Slack restricted channel users",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    actions: [click("Edit Slack")],
+    description:
+      "Explicit channel user IDs disable the everyone checkbox while preserving unrelated channel properties and direct-message allowFrom.",
+  },
+  slackChannelAccessIncomplete: {
+    group: "Components/Channels",
+    name: "Slack sender access incomplete",
+    path: `${draft}&tab=channels`,
+    actions: [
+      click("Configure Slack"),
+      { selector: "#slack-channel-ids", value: "CDEMO123" },
+      click("Save configuration"),
+    ],
+    description:
+      "A selected channel needs allowed channel user IDs or the everyone checkbox before the Configuration can be saved.",
+  },
   slackSecretMenu: {
     group: "Components/Channels",
     name: "Slack Secret menu",
@@ -672,7 +909,7 @@ export const scenarios = {
     slack: true,
     slackPolicy: "open",
     actions: [click("Edit Slack")],
-    description: "Editing preserves the existing open policy and wildcard allowFrom entry.",
+    description: "Editing preserves the existing open direct-message policy and allowFrom entry.",
   },
   slackDisabled: {
     group: "Components/Channels",
@@ -691,6 +928,27 @@ export const scenarios = {
     slackMode: "http",
     description:
       "The Socket Mode editor disables editing for an HTTP-mode configuration and shows native JSON.",
+  },
+  slackMixedUsersUnsupported: {
+    group: "Components/Channels",
+    name: "Slack mixed sender lists",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    slackChannels: {
+      CDEMO123: { requireMention: true, users: ["UDEMO123"] },
+      CDEMO456: { requireMention: true, users: ["UDEMO456"] },
+    },
+    description:
+      "Different per-channel sender lists are unsupported by the simple editor and remain editable through native Configuration JSON.",
+  },
+  slackWildcardUnsupported: {
+    group: "Components/Channels",
+    name: "Slack wildcard channel map",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    slackChannels: { "*": { requireMention: true, users: ["*"] } },
+    description:
+      "A native Slack '*' channel map matches all channels and is unsupported by this editor.",
   },
   channelsEmpty: {
     group: "Components/Channels",
@@ -1017,6 +1275,7 @@ export const scenarios = {
       { selector: "#agent-name", value: "Slack launch demo" },
       click("Configure Slack"),
       { selector: "#slack-channel-ids", value: "CDEMO123" },
+      ...allowEveryoneInSlackChannels,
       { selector: "#slack-secret-slack-app-token", value: "sec_demo_slack_app_token" },
       ...createSlackBotSecret,
       click("Apply channel settings"),
@@ -1025,8 +1284,8 @@ export const scenarios = {
       "Guided create-form state with one existing simulated Slack Secret and one newly created simulated Secret staged into the Agent Configuration.",
     steps: [
       "Start without Preset and enter the Agent name.",
-      "Open Configure Slack, choose the existing Slack app Secret, and create a new Slack bot Secret from the modal.",
-      "Apply channel settings. The form receives channel JSON and Secret binding JSON while token values stay hidden.",
+      "Open Configure Slack, choose the existing Slack app Secret, create a new Slack bot Secret from the modal, and allow everyone in the selected channel.",
+      'Apply channel settings. The form receives channel JSON with users: ["*"] and Secret binding JSON while token values stay hidden.',
       "Create the Agent to persist the Configuration and let the controller grant the Agent access to the staged Slack Secrets.",
     ],
     gap: "The fixture proves the Console request workflow with simulated Secret metadata. Use a live Namespace and Slack app to prove real Secret propagation and Slack replies.",
@@ -1047,6 +1306,29 @@ export const scenarios = {
       "Workspace file edits are separate: they save immediately without a new revision.",
     ],
     gap: "Native JSON edits use Configuration, while Slack has a dedicated drawer. The Slack drawer preserves existing policies; change unsupported policy fields through native JSON.",
+  },
+  slackChannelAccessFlow: {
+    group: "Flows",
+    name: "Change Slack channel senders",
+    path: `${draft}&tab=channels`,
+    deployed: true,
+    slack: true,
+    actions: [
+      click("Edit Slack"),
+      ...allowEveryoneInSlackChannels,
+      click("Save configuration"),
+      click("Edit Slack"),
+    ],
+    description:
+      "Save channel sender access as everyone, reopen the drawer, and verify the saved setting without changing direct-message access.",
+    steps: [
+      "Open Edit Slack. Explicit channel user IDs disable the everyone checkbox.",
+      "Clear Allowed channel user IDs. Allow everyone in these channels becomes available.",
+      "Select Allow everyone in these channels and save the Configuration.",
+      'Reopen Edit Slack. The drawer shows Allow everyone selected for the saved users: ["*"] channel setting.',
+      "Turn everyone off to re-enable ID entry, then enter explicit IDs if you want to restrict channel senders before saving again.",
+    ],
+    gap: "The fixture proves saved Console state and request shape only. Use a live Slack app to prove channel delivery.",
   },
   stopConfirm: {
     group: "Components/Stop Agent",
