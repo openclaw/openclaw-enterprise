@@ -5377,42 +5377,63 @@
                               "properties": {
                                 "code": { "maxLength": 64, "minLength": 1, "type": "string" },
                                 "data": {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "runtimeFailure": {
+                                  "anyOf": [
+                                    {
                                       "additionalProperties": false,
                                       "properties": {
-                                        "check": {
-                                          "maxLength": 64,
-                                          "minLength": 1,
-                                          "pattern": "^[A-Za-z0-9._~:@-]{1,64}$",
-                                          "type": "string"
+                                        "attemptCount": {
+                                          "maximum": 2147483647,
+                                          "minimum": 0,
+                                          "type": "integer"
                                         },
-                                        "checkedAt": {
-                                          "format": "date-time",
-                                          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:[.][0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})$",
-                                          "type": "string"
+                                        "runtimeFailure": {
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "check": {
+                                              "maxLength": 64,
+                                              "minLength": 1,
+                                              "pattern": "^[A-Za-z0-9._~:@-]{1,64}$",
+                                              "type": "string"
+                                            },
+                                            "checkedAt": {
+                                              "format": "date-time",
+                                              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:[.][0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})$",
+                                              "type": "string"
+                                            },
+                                            "code": {
+                                              "maxLength": 64,
+                                              "minLength": 1,
+                                              "pattern": "^[A-Za-z0-9._~:@-]{1,64}$",
+                                              "type": "string"
+                                            },
+                                            "component": {
+                                              "maxLength": 64,
+                                              "minLength": 1,
+                                              "pattern": "^[A-Za-z0-9._~:@-]{1,64}$",
+                                              "type": "string"
+                                            }
+                                          },
+                                          "required": ["component", "check", "checkedAt", "code"],
+                                          "type": "object"
                                         },
-                                        "code": {
-                                          "maxLength": 64,
-                                          "minLength": 1,
-                                          "pattern": "^[A-Za-z0-9._~:@-]{1,64}$",
-                                          "type": "string"
-                                        },
-                                        "component": {
-                                          "maxLength": 64,
-                                          "minLength": 1,
-                                          "pattern": "^[A-Za-z0-9._~:@-]{1,64}$",
-                                          "type": "string"
-                                        }
+                                        "timeoutMs": { "minimum": 1, "type": "integer" }
                                       },
-                                      "required": ["component", "check", "checkedAt", "code"],
+                                      "required": ["timeoutMs"],
                                       "type": "object"
                                     },
-                                    "timeoutMs": { "minimum": 1, "type": "integer" }
-                                  },
-                                  "required": ["timeoutMs"],
-                                  "type": "object"
+                                    {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "attemptCount": {
+                                          "maximum": 2147483647,
+                                          "minimum": 0,
+                                          "type": "integer"
+                                        }
+                                      },
+                                      "required": ["attemptCount"],
+                                      "type": "object"
+                                    }
+                                  ]
                                 },
                                 "message": { "minLength": 1, "type": "string" }
                               },
@@ -5420,7 +5441,7 @@
                               "type": "object"
                             }
                           ],
-                          "description": "Null unless deployment failed. A failure contains code, a fixed safe message, and optional allowlisted data. CONVERGENCE_DEADLINE_EXCEEDED may include data.timeoutMs and data.runtimeFailure with bounded startup-failure evidence. Native error text is never returned."
+                          "description": "Null unless deployment failed. A failure contains code, a fixed safe message, and optional allowlisted data. CONVERGENCE_DEADLINE_EXCEEDED may include data.timeoutMs and data.runtimeFailure with bounded startup-failure evidence. Approved retry, lease, deadline, and finalization failures include data.attemptCount from the original work row. Native error text is never returned."
                         },
                         "namespaceId": {
                           "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",

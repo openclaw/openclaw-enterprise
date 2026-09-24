@@ -45,6 +45,8 @@ export interface ControllerWork {
   readonly attemptCount: number;
   readonly claimToken?: string;
   readonly leaseExpiresAt?: Date;
+  /** Lease liveness observed by the State adapter when reading the work. */
+  readonly leaseActive?: boolean;
   readonly completedAt?: Date;
   readonly reasonCode?: string;
   readonly resultData?: Readonly<Record<string, unknown>>;
@@ -276,6 +278,14 @@ export function validateSuccessResultData(data: unknown): SuccessResultData | un
   return Object.freeze({ warnings });
 }
 
+const ATTEMPT_FAILURE_CODES = new Set([
+  "MAX_ATTEMPTS_EXHAUSTED",
+  "LEASE_EXPIRED",
+  "CONVERGENCE_DEADLINE_EXCEEDED",
+  "REVISION_FINALIZATION_INCOMPLETE",
+  "DEPENDENCY_UNAVAILABLE",
+]);
+
 export function deploymentErrorForWork(
   work: Readonly<ControllerWork>,
 ): DeploymentStatusError | null {
@@ -287,10 +297,13 @@ export function deploymentErrorForWork(
     work.resultData === undefined
       ? undefined
       : validateFailureData(code, immutableCopy(work.resultData));
+  const publicData = ATTEMPT_FAILURE_CODES.has(code)
+    ? Object.freeze({ ...data, attemptCount: work.attemptCount })
+    : data;
   return Object.freeze({
     code,
     message: deploymentErrorMessage(code),
-    ...(data === undefined ? {} : { data }),
+    ...(publicData === undefined ? {} : { data: publicData }),
   });
 }
 
@@ -303,10 +316,7 @@ export function deploymentWarningsForWork(
   return validateSuccessResultData(immutableCopy(work.resultData))?.warnings ?? Object.freeze([]);
 }
 
-export function controllerWorkDeploymentStatus(
-  work: Readonly<ControllerWork>,
-  now: Date = new Date(),
-): DeploymentStatus {
+export function controllerWorkDeploymentStatus(work: Readonly<ControllerWork>): DeploymentStatus {
   if (work.state === "succeeded") {
     return completedWithoutActivation(work) ? "failed" : "succeeded";
   }
@@ -314,7 +324,7 @@ export function controllerWorkDeploymentStatus(
     return "failed";
   }
   if (work.state === "claimed") {
-    if (work.leaseExpiresAt !== undefined && work.leaseExpiresAt.getTime() > now.getTime()) {
+    if (work.leaseActive === true) {
       return "running";
     }
     return "queued";

@@ -73,6 +73,7 @@ interface WorkRow {
   readonly attempt_count: number;
   readonly claim_token: string | null;
   readonly lease_expires_at: Date | string | null;
+  readonly lease_active?: boolean;
   readonly completed_at: Date | string | null;
   readonly reason_code: string | null;
   readonly result_data: Record<string, unknown> | null;
@@ -308,6 +309,7 @@ function asWork(value: unknown): ControllerWork {
     attemptCount: row.attempt_count,
     ...(row.claim_token === null ? {} : { claimToken: row.claim_token }),
     ...(row.lease_expires_at === null ? {} : { leaseExpiresAt: asDate(row.lease_expires_at) }),
+    ...(row.lease_active === undefined ? {} : { leaseActive: row.lease_active }),
     ...(row.completed_at === null ? {} : { completedAt: asDate(row.completed_at) }),
     ...(row.reason_code === null ? {} : { reasonCode: row.reason_code }),
     ...(row.result_data === null ? {} : { resultData: Object.freeze({ ...row.result_data }) }),
@@ -406,6 +408,10 @@ export class PostgresWorkQueue {
       options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
       "Maximum controller work attempts",
     );
+    // PostgreSQL stores and compares attempt budgets as signed integers.
+    if (this.maxAttempts > 2_147_483_647) {
+      throw new ScopeViolationError("Maximum controller work attempts cannot exceed 2147483647.");
+    }
     this.leaseDurationMs = positiveInteger(
       options.leaseDurationMs ?? DEFAULT_LEASE_DURATION_MS,
       "Controller work lease duration",
@@ -725,7 +731,8 @@ export class PostgresWorkQueue {
 
   async findWork(idempotencyKey: string): Promise<ControllerWork | undefined> {
     const found = await this.client.query(
-      `SELECT * FROM occ.controller_work WHERE idempotency_key = $1`,
+      `SELECT *, state = 'claimed' AND lease_expires_at > clock_timestamp() AS lease_active
+       FROM occ.controller_work WHERE idempotency_key = $1`,
       [nonempty(idempotencyKey, "Controller work idempotency key")],
     );
     return found.rows[0] === undefined ? undefined : asWork(found.rows[0]);

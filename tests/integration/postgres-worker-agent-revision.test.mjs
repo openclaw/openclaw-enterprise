@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
+import { AgentDeploymentStatusSchema } from "../../packages/contracts/src/api/resources.ts";
 import { request as httpsRequest } from "node:https";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import test from "node:test";
@@ -21,6 +23,10 @@ import {
   seedProviderBinding,
   waitFor,
 } from "../helpers/postgres-provider-state.mjs";
+
+const { Check } = createRequire(new URL("../../packages/contracts/package.json", import.meta.url))(
+  "typebox/value",
+);
 
 async function setup(
   context,
@@ -2353,21 +2359,31 @@ test(
   async (context) => {
     const fixture = await setup(context);
     const owner = await fixture.agent("complete-lifecycle");
+    // The shared durable queue may also recover other tests' retained work.
+    // Observe effects for this exact Agent while allowing that recovery to continue.
     const effects = [];
     await fixture.start({
       ...fixture.compute,
       async prepareRevision(revision) {
-        effects.push(`prepare:${revision.id}`);
+        if (revision.agentId === owner.id) {
+          effects.push(`prepare:${revision.id}`);
+        }
         return fixture.compute.prepareRevision(revision);
       },
       async stopRevision(revision) {
-        effects.push(`stop:${revision.id}`);
+        if (revision.agentId === owner.id) {
+          effects.push(`stop:${revision.id}`);
+        }
       },
       async retireRevision(revision) {
-        effects.push(`retire:${revision.id}`);
+        if (revision.agentId === owner.id) {
+          effects.push(`retire:${revision.id}`);
+        }
       },
       async deleteAgentRuntimeCredentials({ agent }) {
-        effects.push(`credentials:${agent.id}`);
+        if (agent.id === owner.id) {
+          effects.push(`credentials:${agent.id}`);
+        }
       },
     });
 
@@ -4011,11 +4027,12 @@ test(
       owner.id,
       candidate.id,
     );
+    assert.equal(Check(AgentDeploymentStatusSchema, status), true);
     assert.equal(status.status, "failed");
     assert.deepEqual(status.error, {
       code: "CONVERGENCE_DEADLINE_EXCEEDED",
       message: "Deployment convergence deadline exceeded.",
-      data: { timeoutMs: 1, runtimeFailure },
+      data: { timeoutMs: 1, runtimeFailure, attemptCount: 1 },
     });
     assert.deepEqual(status.warnings, []);
   },
@@ -4876,5 +4893,75 @@ test(
     );
     assert.equal(active.activeRevisionId, second.id);
     assert.deepEqual(active.tags, securityTags);
+  },
+);
+
+test(
+  "deployment polling uses database lease time and preserves exact terminal attempt diagnostics",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context);
+    const owner = await fixture.agent("deployment-clock");
+    const candidate = await fixture.revision(owner, 1);
+    const { OpenClawController } = await import("../../packages/occ/src/index.ts");
+    const { NativeIAMDriver } = await import("../../packages/iam/src/index.ts");
+    const statusAt = async (date) => {
+      const controller = new OpenClawController(fixture.installation, {
+        state: fixture.state,
+        now: () => new Date(date),
+      });
+      const iam = new NativeIAMDriver(fixture.state, {
+        id: "native-iam",
+        implementation: "native",
+      });
+      controller.registerDriver(iam);
+      controller.selectDriver("iam", iam.id);
+      return controller.getDeploymentStatus(
+        fixture.actor.id,
+        fixture.namespace.id,
+        owner.id,
+        candidate.id,
+      );
+    };
+    const queue = new fixture.PostgresWorkQueue(fixture.observerPool, {
+      maxAttempts: 2_147_483_647,
+      leaseDurationMs: 60_000,
+    });
+    assert.throws(
+      () => new fixture.PostgresWorkQueue(fixture.observerPool, { maxAttempts: 2_147_483_648 }),
+      /cannot exceed 2147483647/,
+    );
+    assert.equal((await statusAt("2999-01-01")).status, "queued");
+    // Exercise the exact storage limit through claim and lease recovery, without billions of retries.
+    await fixture.observerPool.query(
+      "UPDATE occ.controller_work SET attempt_count = 2147483646 WHERE idempotency_key = $1",
+      [candidate.idempotencyKey],
+    );
+    const claim = await queue.claim();
+    assert.equal(claim?.idempotencyKey, candidate.idempotencyKey);
+    assert.equal(claim.attemptCount, 2_147_483_647);
+    assert.equal((await statusAt("2999-01-01")).status, "running");
+    await fixture.observerPool.query(
+      "UPDATE occ.controller_work SET lease_expires_at = clock_timestamp() - interval '1 second' WHERE idempotency_key = $1",
+      [candidate.idempotencyKey],
+    );
+    assert.equal((await statusAt("1970-01-01")).status, "queued");
+    await queue.recoverStale();
+    const terminal = await statusAt("2999-01-01");
+    assert.equal(Check(AgentDeploymentStatusSchema, terminal), true);
+    assert.equal(terminal.status, "failed");
+    assert.deepEqual(terminal.error, {
+      code: "LEASE_EXPIRED",
+      message: "Deployment reconciliation failed.",
+      data: { attemptCount: 2_147_483_647 },
+    });
+    assert.deepEqual(terminal.warnings, []);
+
+    // A subsequent successful revision must not rewrite the original deployment's diagnostics.
+    const replacement = await fixture.revision(owner, 2);
+    await fixture.start(fixture.compute);
+    await fixture.work(replacement, "succeeded");
+    await fixture.stop();
+    assert.deepEqual(await statusAt("1970-01-01"), terminal);
   },
 );

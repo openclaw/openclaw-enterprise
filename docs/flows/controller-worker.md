@@ -1,6 +1,6 @@
 ---
 created: 2026-08-28
-updated: "2026-09-21"
+updated: "2026-09-24"
 last_updated_session: "authoring-run/7fb656ee-ae7a-45a8-a160-6d73bc5ae25b"
 ---
 
@@ -282,6 +282,10 @@ and writes; the PostgreSQL constraint enforces the matching persisted shape.
 Other failure reasons still reject data.
 `PostgresWorkQueue.complete` and `PostgresWorkQueue.fail` publish only under the
 live claim; deployment status derives `error` and `warnings` from that result.
+`PostgresWorkQueue.findWork` evaluates claim liveness with `clock_timestamp()`;
+`controllerWorkDeploymentStatus` consumes that observation without comparing
+controller time. `deploymentErrorForWork` projects allowlisted attempt diagnostics
+from the same original work row, retaining validated terminal `result_data`.
 Completion needs no runtime receipt acknowledgment or post-commit cleanup.
 Maintenance cannot rewrite the completed deployment's historical startup warnings.
 

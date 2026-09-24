@@ -1430,7 +1430,7 @@ test("Agent deployment status polls the admitted revision work with exact read a
     error: {
       code: "CONVERGENCE_DEADLINE_EXCEEDED",
       message: "Deployment convergence deadline exceeded.",
-      data: { timeoutMs: 900_000, runtimeFailure },
+      data: { timeoutMs: 900_000, runtimeFailure, attemptCount: 1 },
     },
     warnings: [],
   });

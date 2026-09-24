@@ -491,23 +491,30 @@ export const AgentDeploymentStatusSchema = Type.Object(
             code: Type.String({ minLength: 1, maxLength: 64 }),
             message: Type.String({ minLength: 1 }),
             data: Type.Optional(
-              Type.Object(
-                {
-                  timeoutMs: Type.Integer({ minimum: 1 }),
-                  runtimeFailure: Type.Optional(
-                    Type.Object(
-                      {
-                        component: RuntimeFailureIdentifier,
-                        check: RuntimeFailureIdentifier,
-                        checkedAt: RuntimeEvidenceTimestamp,
-                        code: RuntimeFailureIdentifier,
-                      },
-                      { additionalProperties: false },
+              Type.Union([
+                Type.Object(
+                  {
+                    timeoutMs: Type.Integer({ minimum: 1 }),
+                    attemptCount: Type.Optional(Type.Integer({ minimum: 0, maximum: 2147483647 })),
+                    runtimeFailure: Type.Optional(
+                      Type.Object(
+                        {
+                          component: RuntimeFailureIdentifier,
+                          check: RuntimeFailureIdentifier,
+                          checkedAt: RuntimeEvidenceTimestamp,
+                          code: RuntimeFailureIdentifier,
+                        },
+                        { additionalProperties: false },
+                      ),
                     ),
-                  ),
-                },
-                { additionalProperties: false },
-              ),
+                  },
+                  { additionalProperties: false },
+                ),
+                Type.Object(
+                  { attemptCount: Type.Integer({ minimum: 0, maximum: 2147483647 }) },
+                  { additionalProperties: false },
+                ),
+              ]),
             ),
           },
           { additionalProperties: false },
@@ -515,7 +522,7 @@ export const AgentDeploymentStatusSchema = Type.Object(
       ],
       {
         description:
-          "Null unless deployment failed. A failure contains code, a fixed safe message, and optional allowlisted data. CONVERGENCE_DEADLINE_EXCEEDED may include data.timeoutMs and data.runtimeFailure with bounded startup-failure evidence. Native error text is never returned.",
+          "Null unless deployment failed. A failure contains code, a fixed safe message, and optional allowlisted data. CONVERGENCE_DEADLINE_EXCEEDED may include data.timeoutMs and data.runtimeFailure with bounded startup-failure evidence. Approved retry, lease, deadline, and finalization failures include data.attemptCount from the original work row. Native error text is never returned.",
       },
     ),
     warnings: Type.Array(

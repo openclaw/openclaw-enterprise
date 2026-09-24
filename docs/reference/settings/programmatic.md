@@ -141,7 +141,7 @@ accepts these constructor options:
 
 | Option             | Default       | Constraint                                        |
 | ------------------ | ------------- | ------------------------------------------------- |
-| `maxAttempts`      | `10`          | Positive safe integer.                            |
+| `maxAttempts`      | `10`          | Integer from `1` to `2147483647`.                 |
 | `leaseDurationMs`  | `60000`       | Positive safe integer, expressed in milliseconds. |
 | `claimRaceRetries` | `3`           | Positive safe integer.                            |
 | `random`           | `Math.random` | Function returning a finite number in `[0, 1)`.   |

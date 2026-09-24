@@ -1852,7 +1852,7 @@ export class OpenClawController {
         deploymentId: revision.id,
         namespaceId: revision.namespaceId,
         agentId: revision.agentId,
-        status: controllerWorkDeploymentStatus(work, this.clock()),
+        status: controllerWorkDeploymentStatus(work),
         error: deploymentErrorForWork(work),
         warnings: deploymentWarningsForWork(work),
       });

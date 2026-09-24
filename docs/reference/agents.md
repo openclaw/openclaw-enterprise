@@ -67,7 +67,7 @@ The caller needs read access to that exact AgentRevision. Responses include the
 original `deploymentId`, `namespaceId`, `agentId`, a `status`, nullable
 `error`, and plugin `warnings`. `queued` means no live worker claim currently owns the original work,
 including after a claim lease expires. `running` means a worker claim is still
-live. `succeeded` means the original deployment work completed activation or
+live, evaluated against the database clock. `succeeded` means the original deployment work completed activation or
 was already active; it is historical completion evidence, not a live health
 probe. `failed` means the original work reached a terminal failed outcome or
 completed without activating the requested revision.
@@ -77,6 +77,9 @@ For `CONVERGENCE_DEADLINE_EXCEEDED`, data contains positive `timeoutMs` and may
 include `runtimeFailure` with safe `component`, `check`, `checkedAt`, and `code`
 fields captured by Compute from that revision's runtime. The primary code and
 message remain unchanged. Missing evidence leaves the cause unspecified.
+For `MAX_ATTEMPTS_EXHAUSTED`, `LEASE_EXPIRED`, `CONVERGENCE_DEADLINE_EXCEEDED`,
+`REVISION_FINALIZATION_INCOMPLETE`, and `DEPENDENCY_UNAVAILABLE`, `error.data`
+includes the original work's exact `attemptCount` (0–2147483647).
 The result is persisted with terminal work and survives runtime deletion or
 controller restart. Polling this endpoint reads stored state only; it performs
 no runtime, provider, or model probes and requires no Agent `operate` permission.
