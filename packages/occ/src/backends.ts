@@ -1,6 +1,6 @@
 import { isAbsolute } from "node:path";
 import type { Driver, BackendDefinition, BackendRef } from "@openclaw-enterprise/contracts";
-import { asRecord, immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
+import { asRecord, deepFreeze, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { DriverSelectionError, ResourceConflictError, ScopeViolationError } from "./errors.ts";
 
 const BACKEND_ID = /^(?!\s)(?!.*\s$)(?!.*[\u0000-\u001f\u007f]).{1,200}$/;
@@ -64,7 +64,7 @@ function validateBackendDefinition(value: unknown, index: number): BackendDefini
     if (!isNonEmptyString(repo)) {
       throw new ScopeViolationError(path(id, "drivers.repo") + " is required.");
     }
-    return immutableCopy({
+    return deepFreeze({
       id,
       type: "github",
       configuration: { registryPath },
@@ -108,7 +108,7 @@ function validateBackendDefinition(value: unknown, index: number): BackendDefini
     throw new ScopeViolationError(path(id, "drivers.service_account") + " is required.");
   }
 
-  return immutableCopy({
+  return deepFreeze({
     id,
     type: "chatgpt",
     configuration: {
