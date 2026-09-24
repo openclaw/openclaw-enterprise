@@ -102,6 +102,89 @@ Installation configuration, so Agent deployments use Kubernetes Compute. To
 deploy your own Agent and get a model response, continue with [Deploy your
 first Agent](../first-agent.md).
 
+## Configure workspace storage on single-node k3d
+
+Dedicated Agents need a `ReadWriteMany` (RWX) workspace claim so overlapping
+Harness revisions can mount the same workspace. Stock k3d `local-path` storage
+rejects RWX with `Only support ReadWriteOnce and ReadWriteOncePod access mode`;
+the claim stays `Pending` and the Harness cannot start. Gateway state uses a
+separate RWO claim. See [storage ownership](../../reference/drivers/kubernetes-compute/storage-and-credentials.md).
+
+For a **single-node development cluster**, configure local-path's shared
+filesystem mode before deploying Agents. This uses a directory on the one node;
+it does not provide shared storage across nodes. Before adding another node,
+configure real shared storage, such as NFS, or an RWX-capable CSI driver.
+
+The commands below apply to the stock K3s local-path installation and were
+verified with provisioner `v0.0.37`. Run them in Bash with the same Docker engine
+that hosts the cluster. For Podman, use its corresponding node-container commands.
+Use the kubeconfig and context printed by startup; do not switch your default
+kubectl context. Inspect the existing ConfigMap first if you already customized
+local-path; the patch replaces `config.json`.
+
+```bash
+export KUBECONFIG_FILE='/path/to/profile/kubeconfig'
+export CONTEXT='k3d-occ-dev-your-profile'
+kube() { kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" "$@"; }
+
+# Stop if this is not the intended single-node k3d cluster.
+[[ "$CONTEXT" == k3d-* ]] || exit 1
+nodes=$(kube get nodes -o name) || exit 1
+[[ "$nodes" == node/k3d-* && "$nodes" != *$'\n'* ]] || exit 1
+NODE_CONTAINER="${nodes#node/}"
+docker inspect "$NODE_CONTAINER" --format '{{json .Mounts}}'
+
+# Keep these backups outside the node container.
+BACKUP_DIR=$(mktemp -d)
+kube -n kube-system get configmap local-path-config -o yaml > "$BACKUP_DIR/config.yaml"
+kube get storageclass local-path -o yaml > "$BACKUP_DIR/storageclass.yaml"
+printf 'Storage configuration backup: %s\n' "$BACKUP_DIR"
+
+# Keep K3s startup from overwriting the customized storage resources.
+docker exec "$NODE_CONTAINER" touch /var/lib/rancher/k3s/server/manifests/local-storage.yaml.skip
+kube annotate storageclass local-path defaultVolumeType=hostPath --overwrite
+kube -n kube-system patch configmap local-path-config --type merge --patch \
+  '{"data":{"config.json":"{\"nodePathMap\":[],\"sharedFileSystemPath\":\"/var/lib/rancher/k3s/storage\"}"}}'
+kube -n kube-system rollout restart deployment/local-path-provisioner
+kube -n kube-system rollout status deployment/local-path-provisioner --timeout=120s
+```
+
+The other ConfigMap entries and existing bound volumes remain unchanged. `defaultVolumeType=hostPath` allows new volumes
+without the node affinity required by the `local` volume type. Existing pending
+claims can bind on a subsequent provisioning attempt; do not delete workspace
+claims to retry.
+
+Check the affected Agent's Kubernetes namespace:
+
+```bash
+kube -n '<agent-kubernetes-namespace>' get pvc,pods
+kube -n '<agent-kubernetes-namespace>' describe pvc '<workspace-claim>'
+```
+
+Expect the workspace to become `Bound` with access mode `RWX`, followed by a
+running Harness Pod. This confirms storage recovery; check deployment status
+separately for remaining startup failures. A local proof with two non-root Pods
+successfully wrote and read files on the same dynamically provisioned RWX claim.
+
+### Preserve storage across restarts
+
+Keep the node's `/var/lib/rancher/k3s` volume, which contains workspace files,
+K3s state, and the `.skip` marker. Normal container restarts retain that volume;
+cluster deletion, volume deletion, and profile cleanup can destroy the data.
+The `local-path` StorageClass uses reclaim policy `Delete`, so deleting a claim
+also permits deletion of its backing directory. PostgreSQL's Compose volume
+stores control-plane records separately; retaining it does not back up workspaces.
+Use a durable private state directory instead of `/tmp` for a long-lived demo.
+
+K3s rewrites packaged manifests on startup. The `.skip` marker prevents it from
+reapplying the stock local-storage resources while keeping the current resources
+installed. Do not use `--disable=local-storage`: that uninstalls them. The marker
+also skips packaged local-storage updates; review and maintain those resources
+when upgrading K3s. After a restart, recheck the ConfigMap, StorageClass, and
+claims. Restart persistence has not been exercised by the two-Pod storage proof.
+See [K3s packaged components](https://docs.k3s.io/installation/packaged-components)
+and [local-path shared filesystem configuration](https://github.com/rancher/local-path-provisioner/blob/v0.0.37/README.md#configuration).
+
 ## Rebuild after a source edit
 
 The development image copies the checkout at build time; the running services
