@@ -177,7 +177,9 @@ fixture. Source checks exercise private listeners, real allow/deny networking,
 request and lifecycle metric changes, Pod replacement, attributed log receipt,
 filtering, one collection owner, exporter outage/recovery, and explicit opt-out.
 Demo smoke checks query both real data sources through Grafana and execute the
-shared dashboard queries. Readiness alone is not acceptance.
+shared dashboard queries. These checks share the production acceptance case's
+installed OCC, demo stack, and Agent workflow; the lane reports one combined case
+and verifies scoped demo removal at the end. Readiness alone is not acceptance.
 
 Run `pnpm test:observability:models` separately for the protected `k3d-otel` lane.
 Select `OCC_TEST_OPENAI_MODEL` and a digest-pinned `NODE_BASE_IMAGE`, and provide

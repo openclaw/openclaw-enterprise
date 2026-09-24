@@ -271,15 +271,24 @@ export async function installObservabilityControlPlane(t, { modelTurns = false }
       "--timeout=180s",
     );
   }
-  await probePod(
-    "operator",
-    system,
-    { app: "operator", "app.kubernetes.io/name": "approved-gateway-client" },
-    true,
-  );
-  await probePod("scraper", monitoring, { app: "scraper" });
-  await probePod("wrong-pod", monitoring, { app: "wrong" });
-  await probePod("wrong-namespace", foreign, { app: "scraper" });
+  // Independent probe Pods can become ready together; settle all creation before
+  // a failure triggers namespace cleanup.
+  const probes = await Promise.allSettled([
+    probePod(
+      "operator",
+      system,
+      { app: "operator", "app.kubernetes.io/name": "approved-gateway-client" },
+      true,
+    ),
+    probePod("scraper", monitoring, { app: "scraper" }),
+    probePod("wrong-pod", monitoring, { app: "wrong" }),
+    probePod("wrong-namespace", foreign, { app: "scraper" }),
+  ]);
+  for (const result of probes) {
+    if (result.status === "rejected") {
+      throw result.reason;
+    }
+  }
   async function node(pod, namespace, script, input) {
     return run(
       "kubectl",
@@ -487,7 +496,7 @@ export async function installObservabilityControlPlane(t, { modelTurns = false }
   }
   const createSecret = (name, stringData, namespace = system) =>
     apply({ apiVersion: "v1", kind: "Secret", metadata: metadata(name, namespace), stringData });
-  async function configureCollector(exporter, endpoint) {
+  async function configureCollector(exporter, endpoint, scraperSelectors = selectors) {
     const data = {};
     for (const name of ["collector.yaml", "kubernetes.yaml", "exporter.yaml"]) {
       data[name] = await readFile(`deploy/logging/${name}`, "utf8");
@@ -497,12 +506,13 @@ export async function installObservabilityControlPlane(t, { modelTurns = false }
       OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: endpoint,
     });
     await upgrade({
+      metrics: { ...scraperSelectors },
       logging: {
         collector: {
           enabled: true,
           image: images.collector,
           exporter,
-          metrics: { enabled: true, ...selectors },
+          metrics: { enabled: true, ...scraperSelectors },
         },
       },
     });
@@ -560,7 +570,6 @@ export async function installObservabilityControlPlane(t, { modelTurns = false }
         "app.kubernetes.io/component": "prometheus",
       },
     };
-    await upgrade({ metrics: { ...demoSelectors } });
     await configureCollector(
       {
         cidr: "",
@@ -572,10 +581,8 @@ export async function installObservabilityControlPlane(t, { modelTurns = false }
         port: 3100,
       },
       `http://${demoRelease}-loki.${monitoring}.svc:3100/otlp/v1/logs`,
+      demoSelectors,
     );
-    await upgrade({
-      logging: { collector: { ...values.logging.collector, metrics: { ...demoSelectors } } },
-    });
     const basic = `Basic ${Buffer.from(`admin:${password}`).toString("base64")}`;
     secrets.push(basic);
     const query = async (source, path) => {
@@ -601,7 +608,12 @@ export async function installObservabilityControlPlane(t, { modelTurns = false }
     return { query, prometheus, logs, password };
   }
   async function removeDemo() {
-    await upgrade({ logging: { collector: { enabled: false } }, metrics: { ...selectors } });
+    // Removing the demo must preserve an explicit metrics opt-out. Re-enabling
+    // listeners here would needlessly roll both OCC Deployments before the read.
+    await upgrade({
+      logging: { collector: { enabled: false } },
+      metrics: { ...values.metrics, ...selectors },
+    });
     if (demoInstalled) {
       await run("helm", [
         "uninstall",

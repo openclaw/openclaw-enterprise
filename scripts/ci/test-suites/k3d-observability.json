@@ -29,10 +29,6 @@
       "expectedTests": [
         "Helm defaults expose private OCC metrics and operational logs through real collection"
       ]
-    },
-    {
-      "path": "tests/integration/observability-demo-k3d.test.mjs",
-      "expectedTests": ["demo Grafana queries fresh OCC metrics and operational logs on k3d"]
     }
   ]
 }

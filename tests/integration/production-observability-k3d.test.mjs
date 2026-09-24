@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   installObservabilityControlPlane,
@@ -101,6 +102,22 @@ test(
         "exported records contain private content",
       );
     }
+    // Reuse the installed demo and first scraped lifecycle cycle. Rate-based
+    // dashboard panels need another observed cycle to return finite values.
+    await workflow.deploy();
+    await workflow.stop();
+    const dashboard = JSON.parse(
+      await readFile("deploy/helm/openclaw-observability-demo/files/dashboard.json", "utf8"),
+    );
+    for (const panel of dashboard.panels) {
+      for (const target of panel.targets ?? []) {
+        await f.waitFor(`dashboard panel ${panel.title}`, async () => {
+          const rows = await demo.prometheus(target.expr);
+          return rows.some(({ value }) => Number.isFinite(Number(value[1])));
+        });
+      }
+    }
+    f.record("Provisioned Grafana data sources and dashboard queries returned real metrics/logs");
     const collectors = await f.pods("collector");
     assert.equal(collectors.length, 2, "one chart Collector per k3d node");
     for (const pod of collectors) {
@@ -303,6 +320,13 @@ test(
       "--wait=true",
     );
     await f.removeDemo();
+    for (const component of ["api", "worker"]) {
+      const pod = await f.currentPod(component);
+      assert.ok(
+        !pod.spec.containers[0].ports?.some(({ name }) => name === "metrics"),
+        "demo removal preserves the explicit metrics opt-out",
+      );
+    }
     assert.ok((await f.api("GET", workflow.path)).id);
     f.record(
       "Pod replacement, exporter outage/recovery, metrics opt-out and scoped demo removal verified",
