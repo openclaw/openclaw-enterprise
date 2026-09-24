@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
@@ -7,6 +9,7 @@ import {
   validateExplicitK3dLoopbackContext,
 } from "../helpers/kubernetes-real.mjs";
 
+const execute = promisify(execFile);
 const configurationFile = process.env.OCC_TEST_TWO_CLUSTER_CONFIG;
 
 test(
@@ -36,6 +39,33 @@ test(
     const cpIdentity = await cp.resource("namespace", "kube-system");
     const dpIdentity = await dp.resource("namespace", "kube-system");
     assert.notEqual(cpIdentity.metadata.uid, dpIdentity.metadata.uid);
+
+    assert.equal(
+      typeof configuration.dockerContext,
+      "string",
+      "Select the owned local Docker context explicitly.",
+    );
+    const docker = async (...args) =>
+      (
+        await execute("docker", ["--context", configuration.dockerContext, ...args], {
+          timeout: 30_000,
+        })
+      ).stdout;
+    const dockerContext = JSON.parse(
+      await docker("context", "inspect", configuration.dockerContext),
+    )[0];
+    assert.ok(
+      dockerContext.Endpoints.docker.Host.startsWith("unix://"),
+      "The outage test only operates on a local Docker VM.",
+    );
+    const executionNode = `${configuration.execution.kubernetesContext}-server-0`;
+    const inspected = JSON.parse(await docker("inspect", executionNode))[0];
+    assert.equal(
+      inspected.Config.Labels["k3d.cluster"],
+      configuration.execution.kubernetesContext.slice(4),
+    );
+    assert.equal(inspected.State.Running, true);
+    const executionContainerId = inspected.Id;
 
     async function api(method, path, body) {
       const response = await fetch(new URL(path, origin), {
@@ -143,8 +173,7 @@ test(
     });
     await api("POST", `${agentPath}/runtime-credentials`, {});
 
-    async function deploy() {
-      const revision = await api("POST", `${agentPath}/deploy`);
+    async function waitForDeployment(revision) {
       await cp.waitFor("successful exact revision", async () => {
         const status = await api("GET", `${agentPath}/deployments/${revision.id}`);
         assert.notEqual(status.status, "failed", status.error?.code);
@@ -152,6 +181,13 @@ test(
       });
       return revision;
     }
+    async function deploy() {
+      return waitForDeployment(await api("POST", `${agentPath}/deploy`));
+    }
+    const authenticationPolicies = async () =>
+      (await dp.resources("networkpolicies", namespaces.execution)).filter((policy) =>
+        policy.metadata.name.startsWith("allow-agent-auth-"),
+      );
     const first = await deploy();
     const pods = (plane, role) =>
       planes[plane].resources(
@@ -224,7 +260,90 @@ test(
         return false;
       }
     });
-    const successor = await deploy();
+    await api("POST", `${agentPath}/stop`);
+    for (const [plane, role] of [
+      ["control", "gateway"],
+      ["execution", "agent"],
+    ]) {
+      await planes[plane].waitFor(
+        `${plane} runtime stopped`,
+        async () => (await pods(plane, role)).length === 0,
+      );
+    }
+    await dp.waitFor(
+      "stopped revision authentication policy removal",
+      async () => (await authenticationPolicies()).length === 0,
+    );
+    await deploy();
+    assert.equal((await api("GET", workspace)).content, content);
+    const modelDigest = async (pod) => {
+      const environment = pod.spec.containers.find((container) => container.name === "agent").env;
+      const ref = environment.find((item) => item.name === "OPENAI_API_KEY").valueFrom.secretKeyRef;
+      const delivery = await dp.resource("secret", ref.name, namespaces.execution);
+      return createHash("sha256")
+        .update(Buffer.from(delivery.data[ref.key], "base64"))
+        .digest("hex");
+    };
+    const digest = (value) => createHash("sha256").update(value).digest("hex");
+    const liveHarness = (await pods("execution", "agent")).find(
+      (pod) => !pod.metadata.deletionTimestamp,
+    );
+    assert.equal(await modelDigest(liveHarness), digest(process.env.OPENAI_API_KEY));
+    // A deliberately invalid key proves source updates do not silently mutate
+    // the active revision, while an attempted redeploy receives the new material
+    // and fails native model authentication before it can replace the live Agent.
+    const invalidKey = `test-only-invalid-${randomUUID()}`;
+    await api("PATCH", `${base}/secrets/${secret.id}`, { value: invalidKey });
+    assert.equal(await modelDigest(liveHarness), digest(process.env.OPENAI_API_KEY));
+    const rejected = await api("POST", `${agentPath}/deploy`);
+    const rejectedHarness = await dp.waitFor(
+      "replacement credential failure evidence",
+      async () => {
+        const pod = (await pods("execution", "agent")).find(
+          (item) => item.metadata.labels["openclaw.dev/revision"] === rejected.id,
+        );
+        if (!pod) {
+          return false;
+        }
+        try {
+          const status = JSON.parse(
+            await dp.kubectl(
+              "get",
+              "--request-timeout=5s",
+              "--raw",
+              `/api/v1/namespaces/${namespaces.execution}/pods/${pod.metadata.name}:18791/proxy/openclaw/runtime/status`,
+            ),
+          );
+          return status.revisionId === rejected.id &&
+            status.podUid === pod.metadata.uid &&
+            status.runtimeFailure?.check === "model-probe" &&
+            status.runtimeFailure?.code === "MODEL_PROBE_FAILED"
+            ? pod
+            : false;
+        } catch {
+          return false;
+        }
+      },
+    );
+    // Failed startup evidence leaves reconciliation pending until its convergence
+    // deadline. It must not be confused with a successfully activated revision.
+    assert.notEqual(
+      (await api("GET", `${agentPath}/deployments/${rejected.id}`)).status,
+      "succeeded",
+    );
+    assert.equal(await modelDigest(rejectedHarness), digest(invalidKey));
+    assert.equal((await api("GET", workspace)).content, content);
+    await api("PATCH", `${base}/secrets/${secret.id}`, { value: process.env.OPENAI_API_KEY });
+    const successor = await api("POST", `${agentPath}/deploy`);
+    // Both candidates can reconcile while the rejected one awaits its deadline.
+    // Their login/probe grants must coexist rather than move between revisions.
+    await dp.waitFor("independent pending candidate authentication policies", async () => {
+      const selected = (await authenticationPolicies()).map(
+        (policy) => policy.spec.podSelector.matchLabels["openclaw.dev/revision"],
+      );
+      return selected.includes(rejected.id) && selected.includes(successor.id);
+    });
+    await waitForDeployment(successor);
     assert.notEqual(successor.id, first.id);
     assert.equal((await api("GET", workspace)).content, content);
     await dp.waitFor("retired predecessor", async () =>
@@ -233,7 +352,125 @@ test(
       ),
     );
 
-    await api("DELETE", agentPath);
+    await dp.waitFor("retired revision authentication policy removal", async () => {
+      const remaining = await authenticationPolicies();
+      return (
+        remaining.length === 1 &&
+        remaining[0].spec.podSelector.matchLabels["openclaw.dev/revision"] === successor.id
+      );
+    });
+
+    // A real model must execute a shell command in the DP workspace. A successful
+    // HTTP response or the model repeating a supplied marker alone is not proof.
+    const marker = `OCE_TWO_CLUSTER_${randomUUID()}`;
+    const toolPath = "/home/node/workspace/oce-two-cluster-tool-proof.txt";
+    const prompt = `Use the shell tool to run this exact command: printf '%s' '${marker}' > ${toolPath}; cat ${toolPath}. Reply exactly with the file contents after the command succeeds.`;
+    const gateway = (await pods("control", "gateway")).find(
+      (pod) => !pod.metadata.deletionTimestamp,
+    );
+    assert.ok(gateway);
+    const turn = JSON.parse(
+      await cp.kubectl(
+        "exec",
+        gateway.metadata.name,
+        "-n",
+        namespaces.control,
+        "-c",
+        "gateway",
+        "--",
+        "node",
+        "--input-type=module",
+        "-e",
+        `const url = 'http://127.0.0.1:8080/v1/chat/completions';
+         const body = JSON.stringify({ model: 'openclaw', stream: false,
+           messages: [{ role: 'user', content: ${JSON.stringify(prompt)} }] });
+         const denied = await fetch(url, { method: 'POST', body,
+           headers: { 'content-type': 'application/json' } });
+         const response = await fetch(url, { method: 'POST', body,
+           signal: AbortSignal.timeout(120000),
+           headers: { 'content-type': 'application/json',
+             authorization: 'Bearer ' + process.env.OPENCLAW_GATEWAY_PASSWORD } });
+         const value = await response.json();
+         console.log(JSON.stringify({ denied: denied.status, status: response.status,
+           content: value.choices?.[0]?.message?.content, errorCode: value.error?.code }));`,
+      ),
+    );
+    assert.equal(turn.denied, 401);
+    assert.equal(turn.status, 200, turn.errorCode);
+    assert.equal(turn.content, marker);
+    const successorPod = (await pods("execution", "agent")).find(
+      (pod) => pod.metadata.labels["openclaw.dev/revision"] === successor.id,
+    );
+    assert.ok(successorPod);
+    assert.equal(
+      await dp.kubectl(
+        "exec",
+        successorPod.metadata.name,
+        "-n",
+        namespaces.execution,
+        "-c",
+        "agent",
+        "--",
+        "cat",
+        toolPath,
+      ),
+      marker,
+    );
+
+    // The exact owned k3d node is stopped, not a mock client. A failed DP read
+    // must not be treated as absence or allow Agent metadata to disappear.
+    let stopped = false;
+    const restore = async () => {
+      if (stopped) {
+        await docker("start", executionContainerId);
+        stopped = false;
+      }
+    };
+    t.after(restore);
+    try {
+      stopped = true;
+      await docker("stop", "--time", "10", executionContainerId);
+      await assert.rejects(dp.kubectl("get", "namespace", "kube-system", "--request-timeout=5s"));
+      await api("DELETE", agentPath);
+      await cp.waitFor("worker observes unavailable DP during deletion", async () => {
+        const output = await cp.kubectl(
+          "logs",
+          "deployment/openclaw-enterprise-worker",
+          "-n",
+          configuration.control.systemNamespace,
+          "--since=60s",
+        );
+        return output.split("\n").some((line) => {
+          try {
+            const event = JSON.parse(line);
+            return (
+              event.agentId === agent.id &&
+              event.operation === "agent.delete" &&
+              event.outcome === "retry" &&
+              event.code === "DEPENDENCY_UNAVAILABLE"
+            );
+          } catch {
+            return false;
+          }
+        });
+      });
+      assert.ok(
+        (await api("GET", `${base}/agents`)).some(
+          (item) => item.id === agent.id && item.status === "deleting",
+        ),
+      );
+    } finally {
+      await restore();
+    }
+    await dp.waitFor("execution API recovery", async () => {
+      try {
+        return (
+          (await dp.resource("namespace", "kube-system")).metadata.uid === dpIdentity.metadata.uid
+        );
+      } catch {
+        return false;
+      }
+    });
     for (const plane of ["execution", "control"]) {
       await planes[plane].waitFor(
         `${plane} Agent cleanup`,
@@ -276,7 +513,7 @@ test(
       );
     }
     t.diagnostic(
-      "Real API/worker: separate placement, workspace RPC, Pod reconnect, revision replacement, and two-target deletion passed.",
+      "Real API/worker: separate placement, workspace RPC, Pod reconnect, stop/resume, credential refresh/rejection, revision replacement, model shell execution, DP outage recovery, and two-target deletion passed.",
     );
   },
 );

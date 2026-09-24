@@ -75,7 +75,10 @@ the session and repository grant. Verify the effective policies in the installed
 cluster; rendered rules alone do not prove traffic enforcement.
 
 Production currently permits public TCP/443 egress for model access; a
-restricted model proxy is not yet available. Channels require an approved
+restricted model proxy is not yet available. Before readiness, each dedicated
+revision receives its own authentication-only egress policy. Concurrent pending
+candidates cannot replace each other's grant; stop and retirement remove the
+exact revision's policy after its Harness terminates. Channels require an approved
 literal-IP HTTP(S) proxy configured through `runtime.channels`; direct public
 channel-provider access is denied.
 

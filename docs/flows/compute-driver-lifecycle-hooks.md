@@ -98,6 +98,10 @@ gateway Deployment and Service, then checks gateway readiness.
 namespace. The Pod-level selector also schedules the Gateway's private-state initializer there.
 Compute owns both targets through the same revision lifecycle; teardown selects each resource's
 physical namespace and preserves newer revisions and durable Agent claims.
+Each dedicated candidate owns its own authentication egress NetworkPolicy until
+its Harness terminates. Pending revisions can reconcile concurrently without
+moving another candidate's model-login grant; stop and retirement remove only
+the terminating revision's grant.
 
 SSH stages embedded snapshots without starting the candidate gateway. After the
 worker commits the active revision, `SshComputeDriver.activateRevision` invokes
@@ -149,6 +153,8 @@ bounded cleanup signal so cancellation cannot suppress compensation.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 23:34: Scope authentication egress to each candidate revision and remove it after workload termination. (01a0cf72-6985-7712-ba92-d8cc32470f24 - f1d8e1e1f1e738902cbf98a0482d0872f7899ccc)
 
 - 2026-09-23 11:31: Separate dedicated Gateway scheduling and lifecycle placement from the Harness target. (01a0cf72-6985-7712-ba92-d8cc32470f24 - b141ba1157c2f28276717d35c8c63028f209a479)
 

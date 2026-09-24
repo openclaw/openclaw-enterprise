@@ -16,6 +16,7 @@ export async function installProductionHelmControlPlane({
   apiClients,
   repositoryCredentials,
   gatewayRouting,
+  executionCluster,
   metrics,
   run,
   kubernetes,
@@ -191,6 +192,9 @@ export async function installProductionHelmControlPlane({
   }
   if (gatewayRouting !== undefined) {
     values.gatewayRouting = gatewayRouting;
+  }
+  if (executionCluster !== undefined) {
+    values.executionCluster = executionCluster;
   }
   if (metrics !== undefined) {
     values.metrics = metrics;

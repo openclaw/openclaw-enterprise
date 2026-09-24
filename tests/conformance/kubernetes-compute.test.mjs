@@ -2368,7 +2368,10 @@ test("account-token authentication grants only the exact Codex revision outbound
   });
 
   // Login needs public HTTPS before readiness; candidate transport must remain closed until activation.
-  assert.equal(policy.metadata.name, `allow-agent-auth-${digest(revision.agentId, 12)}`);
+  assert.equal(
+    policy.metadata.name,
+    `allow-agent-auth-${digest(revision.agentId, 12)}-rev-${digest(revision.id, 12)}`,
+  );
   assert.equal(
     policy.metadata.annotations["openclaw.dev/service-principal-id"],
     revision.servicePrincipalId,
@@ -2397,8 +2400,8 @@ test("account-token authentication grants only the exact Codex revision outbound
     { ...revision, id: "revision-account-token-2" },
     { name: namespace, plane: "execution" },
   );
-  // One Agent-owned policy moves between candidates without leaving stale-revision egress behind.
-  assert.equal(successor.metadata.name, policy.metadata.name);
+  // A pending candidate cannot revoke another candidate's startup egress.
+  assert.notEqual(successor.metadata.name, policy.metadata.name);
   assert.notDeepEqual(successor.spec.podSelector, policy.spec.podSelector);
 });
 
@@ -4335,7 +4338,12 @@ test("provider Harness preparation preserves readiness and cleanup contracts", a
   const fixture = providerReadinessFixture({
     async provisionHarness(context) {
       assert.ok(
-        objects.has(key("NetworkPolicy", `allow-agent-auth-${digest(context.revision.agentId)}`)),
+        objects.has(
+          key(
+            "NetworkPolicy",
+            `allow-agent-auth-${digest(context.revision.agentId)}-rev-${digest(context.revision.id)}`,
+          ),
+        ),
         "API-key candidates need provider egress before Sandbox startup",
       );
       provisions.push(context);
@@ -7196,18 +7204,18 @@ for (const embedded of [true, false]) {
       save("ServiceAccount", agentName, namespace, undefined, true);
       for (const name of [
         "allow-agent-runtime",
-        "allow-agent-auth",
         "allow-plugin-status-proxy",
         "allow-plugin-status-agent",
       ]) {
-        save(
-          "NetworkPolicy",
-          `${name}-${suffix}`,
-          namespace,
-          undefined,
-          name === "allow-agent-auth",
-        );
+        save("NetworkPolicy", `${name}-${suffix}`, namespace, undefined, false);
       }
+      save(
+        "NetworkPolicy",
+        `allow-agent-auth-${suffix}-rev-${digest(successor.id)}`,
+        namespace,
+        successor,
+        true,
+      );
       for (const name of [
         "allow-gateway-agent",
         "allow-gateway-channels",

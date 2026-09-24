@@ -1,6 +1,6 @@
 # Two-cluster dedicated Gateway execution plan
 
-Status: Experimental implementation with local full-stack lifecycle proof; runtime qualification remains incomplete. Keep the PR draft.
+Status: Experimental implementation with passing local full-stack two-cluster E2E; release and broader runtime qualification remain open. Keep the PR draft for review.
 
 Original base: `e5f1dedbdb42931886ffd3e4f58789d8323d9140`, including merged PR #327.
 Updated against main `d39727589b549243fecbc8aa5611f44e4e27874e`.
@@ -96,7 +96,8 @@ difference. Cloud portability is a design constraint, not cloud acceptance proof
 - [x] Define explicit Kubernetes API, verified HTTPS, DNS, and NetworkPolicy inputs.
 - [ ] Select a released runtime pin satisfying all acceptance prerequisites.
 - [x] Implement explicit plane-aware lifecycle and bounded TLS transport.
-- [ ] Complete dual-cluster integration, runtime acceptance and deployment docs.
+- [x] Complete the local dedicated Codex two-cluster E2E and deployment docs.
+- [ ] Complete the separately listed release, plugin and broader runtime qualification.
 
 ## Verification record
 
@@ -143,6 +144,71 @@ A broader macOS conformance run is not green: Linux fixture dependencies
 and SSH preflight failed outside the changed Kubernetes implementation. One
 Linux-only case skipped. The changed Secret-delivery fixture was repaired and
 passed in the focused rerun; do not describe the broad run as passing.
+
+## Subsequent local qualification
+
+The repository runtime recipe now builds successfully at OpenClaw source
+`2765f7a3341b8be4835afacbff3d04c6e3c3c79b`, Codex 0.156.0, local manifest
+`sha256:2a7a1409f0d84d49d7343ff939ee18389843c377c104df6a5dd4dee715b4d759`.
+A fresh stock Debian 13 Lima VM passed the reviewed sandbox positive probe,
+RuntimeDefault negative probe, and missing-profile rejection without weakening
+Pod security. The standard production Helm helper installed PostgreSQL, limited
+roles, migration/bootstrap, API and worker into its new CP cluster; a distinct
+DP cluster received the execution chart and component credentials.
+
+The expanded real API/worker test passed without skips in 176 seconds. In
+addition to the original lifecycle it proves model-key source updates leave the
+active revision unchanged, redeployment delivers an invalid key and rejects its
+native model probe, restoring the key permits a successor, and a short real DP
+node outage preserves deleting metadata before automatic recovery and cleanup.
+Separate real-model calls returned the expected response and executed a shell
+command whose exact random marker was independently read from the DP workspace.
+Current-pin initial workspace setup also passed with the selected defaults hash
+and exact caller-supplied content, resolving the earlier runtime/template
+mismatch for this locally built image. Another Agent served a model reply after
+DP recovery. Installed ingress negative checks rejected missing/wrong tokens,
+stale-revision status credentials, an unknown tenant route, and absent CA trust.
+No optional plugin manifest was configured; successful plugin installation is
+not implied by those checks.
+
+Two fixture prerequisites were discovered: wait for actual DNS resolution after
+custom CoreDNS installation, and preserve the test's local-path/CoreDNS changes
+across k3s restart using its supported AddOn skip files. The current local guide
+records both. The failed startup fixture in CI now passes with explicit physical
+plane addresses; all 13 startup cases pass locally and its CI lane is green.
+
+Open follow-up: prolonged cluster failure can exhaust the existing five-attempt
+worker budget. The Agent remains `deleting`, and repeated DELETE does not
+requeue terminal work. Both behaviors are present on main and are not changed
+by the two-cluster Driver. Track a supported lifecycle recovery entrypoint;
+do not count short-outage recovery as proof of unlimited retry. The retained
+failed fixture is evidence, not successful cleanup. Remote Codex plugin
+qualification still needs a ChatGPT-backed credential; the API-key test does
+not provide it. Current-pin replacement after a model turn succeeded and served
+another model reply after 396 seconds; the native owner-lease startup failure
+remains a latency issue. Complete same-cluster real-model regression remains
+distinct acceptance work.
+Two expanded stop/resume runs observed a valid-key Pod fail its native startup
+probe. A policy watch found the shared authentication NetworkPolicy alternating
+between the rejected and new candidates every second. Preparation now creates
+revision-owned authentication policies; shutdown removes only the terminated
+revision's grant. The original failed runs and policy-watch evidence remain
+recorded, and their resources were removed through the normal API. The real
+integration now asserts concurrent candidate grants, stop cleanup, retired-grant
+cleanup, and actual model-driven shell execution.
+The final expanded run passed in 238 seconds, one test, zero failures and zero
+skips, including both candidate grants and their cleanup. Controller production
+image manifest: `sha256:37305bba4beb2d9f8fab4c7088dd4b701e2f47806485a0c64bd29e6753070ac5`.
+The 131 Compute plus 25 related Kubernetes conformance checks, TypeScript, full
+lint/format, workspace boundary, suite accounting and documentation checks passed.
+
+The retained Agent subsequently failed live reconnection after the final outage:
+its durable node state survived, but the selected native `--pair-if-needed` path
+rejected the expired setup code before loading saved node configuration. Model
+HTTP returned 500 with workspace discovery unavailable. This is separate from
+the passing deletion-recovery test and requires native runtime qualification;
+normal OCE redeploy with fresh enrollment material is only an operator recovery.
+The earlier post-outage model success occurred before setup-code expiry.
 
 ## Documentation owners
 

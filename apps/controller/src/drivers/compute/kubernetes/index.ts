@@ -2532,7 +2532,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (this.options.runtime !== undefined) {
         await this.reconcile(
           this.agentAuthenticationNetworkPolicy(revision, namespace),
-          agentOwnership,
+          revisionOwnership,
           namespace,
         );
       }
@@ -3200,6 +3200,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (!computeOwnsWorkload) {
       await this.waitForRevisionPodsToTerminate(revision, namespace, "agent");
     }
+    if (this.options.runtime !== undefined) {
+      // Concurrent candidates must not revoke each other's login/probe egress.
+      // Remove this revision's grant only after its workload has terminated.
+      await this.deleteOwnedNamespacedResource(
+        "NetworkPolicy",
+        `allow-agent-auth-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`,
+        this.pluginRuntimeOwnership(revision),
+        namespace,
+      );
+    }
   }
 
   private async removeStoppedGateway(
@@ -3464,12 +3474,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
         namespace,
       );
     }
-    await this.deleteOwnedNamespacedResource(
-      "NetworkPolicy",
-      `allow-agent-auth-${suffix}`,
-      { ...ownership, servicePrincipalId: revision.servicePrincipalId },
-      namespace,
-    );
   }
 
   private async deleteGatewayRoute(
@@ -6690,12 +6694,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
       namespaceId: revision.namespaceId,
       agentId: revision.agentId,
       servicePrincipalId: revision.servicePrincipalId,
+      revisionId: revision.id,
     };
     return {
       ...this.manifest(
         "networking.k8s.io/v1",
         "NetworkPolicy",
-        `allow-agent-auth-${sha256Hex(revision.agentId, 12)}`,
+        `allow-agent-auth-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`,
         ownership,
         namespace,
       ),
