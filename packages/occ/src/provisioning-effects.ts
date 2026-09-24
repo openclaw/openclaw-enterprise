@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { isNonEmptyString } from "@openclaw-enterprise/utils";
+import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
 import type { AgentProvisioningRecord } from "./state/agent-provisioning.ts";
 
@@ -22,26 +22,6 @@ export interface ProvisioningEffectReceipt extends ProvisioningEffectTarget {
   readonly targetId: string;
 }
 
-function pendingEffectRecord(
-  progress: Readonly<Record<string, unknown>>,
-): Readonly<Record<string, unknown>> | undefined {
-  const pendingEffect = progress.pendingEffect;
-  return typeof pendingEffect === "object" &&
-    pendingEffect !== null &&
-    !Array.isArray(pendingEffect)
-    ? (pendingEffect as Readonly<Record<string, unknown>>)
-    : undefined;
-}
-
-function effectReceiptRecord(
-  progress: Readonly<Record<string, unknown>>,
-): Readonly<Record<string, unknown>> | undefined {
-  const receipt = progress.effectReceipt;
-  return typeof receipt === "object" && receipt !== null && !Array.isArray(receipt)
-    ? (receipt as Readonly<Record<string, unknown>>)
-    : undefined;
-}
-
 function targetIdFor(
   record: Pick<AgentProvisioningRecord, "agentId" | "configurationId">,
   effect: ProvisioningEffectTarget,
@@ -58,7 +38,7 @@ export function provisioningPendingEffect(
     "workId" | "namespaceId" | "agentId" | "configurationId" | "progress"
   >,
 ): ProvisioningPendingEffect | undefined {
-  const pending = pendingEffectRecord(record.progress);
+  const pending = asRecord(record.progress.pendingEffect);
   if (pending === undefined) {
     return undefined;
   }
@@ -90,7 +70,7 @@ export function provisioningEffectReceipt(
     "workId" | "namespaceId" | "agentId" | "configurationId" | "progress"
   >,
 ): ProvisioningEffectReceipt | undefined {
-  const receipt = effectReceiptRecord(record.progress);
+  const receipt = asRecord(record.progress.effectReceipt);
   if (receipt === undefined) {
     return undefined;
   }
@@ -126,8 +106,8 @@ export function beginProvisioningEffectProgress(
   effect: ProvisioningEffectTarget,
 ): Readonly<Record<string, unknown>> {
   if (
-    pendingEffectRecord(record.progress) !== undefined ||
-    effectReceiptRecord(record.progress) !== undefined
+    asRecord(record.progress.pendingEffect) !== undefined ||
+    asRecord(record.progress.effectReceipt) !== undefined
   ) {
     throw new Error("Agent provisioning cannot replace an unresolved external effect.");
   }
