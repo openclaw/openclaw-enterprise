@@ -85,8 +85,8 @@ also ephemeral. Persisting these directories does not persist the entire home.
 
 ## Harness storage
 
-Each dedicated Agent receives a `40Gi` `ReadWriteMany` claim mounted only by
-Harness Pods:
+Each dedicated Agent receives a `40Gi` `ReadWriteOnce` (RWO) filesystem claim
+from the default StorageClass, mounted only by its Harness:
 
 | Subpath                                       | Harness mount                        |
 | --------------------------------------------- | ------------------------------------ |
@@ -101,11 +101,26 @@ initializes its own bundled/plugin assets instead of mounting shared Skill trees
 The Harness never receives the Gateway claim. Embedded Agents use the private
 claim without creating this Harness claim.
 
-RWX remains necessary for the Driver's overlapping Harness revisions, not for
-Gateway access. The interface and Skill ownership proposal is recorded in
-[the storage split specification](../../../../specs/30-storage-split-integration.md#where-data-lives).
-Rendered mounts do not establish deployed runtime compatibility; use the
-[workspace flow](../../../flows/workspace-files.md) for integration status.
+The worker stops all earlier revisions and waits for their Pods to terminate
+before preparing a dedicated replacement. This includes failed candidates and
+Sandbox-owned workloads. Replacement has a downtime window; it does not need
+simultaneous cross-node mounts. Older reconciliation and maintenance are
+superseded when a newer exclusive revision is admitted. If preparation fails,
+retry the candidate or deploy the intended configuration as a new revision;
+OCC does not restart a lower revision automatically or roll back filesystem writes
+made by a failed candidate. The last committed active
+revision is not proof that its Pod still runs during replacement.
+
+Existing owned `ReadWriteMany` workspace claims remain usable without changing
+their spec, identity, or data. New claims use RWO; Gateway private claims still
+require RWO. No revision stop or retirement replaces a PVC with ephemeral storage.
+
+RWO does not fence writers on a partitioned node. Pod termination and the storage
+provider's safe detach/attach behavior remain required; the Driver never force
+detaches a disk. A local-path PV keeps its node affinity and cannot move its data
+to another node. Cross-node rescheduling needs an appropriate portable StorageClass,
+not RWX. See the [Compute replacement contract](../compute.md#production-revision-stages)
+and [workspace flow](../../../flows/workspace-files.md) for runtime boundaries.
 
 Both claims retain exact Namespace and Agent ownership across revision
 cutover and gateway Pod replacement. Reconciliation rejects foreign,

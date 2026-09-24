@@ -862,6 +862,17 @@ export class ControllerWorker {
     revision: Readonly<AgentRevision>,
     context: ComputeRevisionContext,
   ): Promise<{ readonly observation: ComputeReadiness; readonly context: ComputeRevisionContext }> {
+    if (this.compute.requiresStoppedPredecessors?.(revision) === true) {
+      const earlier = await this.state.read(async (view) =>
+        (await view.revisions.listRevisions(revision.namespaceId, revision.agentId)).filter(
+          (candidate) => candidate.revision < revision.revision,
+        ),
+      );
+      for (const previous of earlier) {
+        await this.closeRevisionCredentials(claim, previous);
+        await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(previous));
+      }
+    }
     let prepared = context;
     if (revision.repositoryCredentials !== undefined) {
       const repositoryCredentials = await this.repositoryCredentials.prepare(claim, revision);
@@ -1777,6 +1788,28 @@ export class ControllerWorker {
           await this.retireEarlierRevisions(claim, revision);
         }
         await this.completeStoppedRevisionWork(claim, revision, "REVISION_STOPPED");
+        return;
+      }
+      // Exclusive preparation cannot allow an older maintenance/retry pass to
+      // recreate a predecessor between the replacement's readiness observations.
+      const successor =
+        this.compute.requiresStoppedPredecessors === undefined
+          ? undefined
+          : await this.state.read(async (view) =>
+              (await view.revisions.listRevisions(revision.namespaceId, revision.agentId)).find(
+                (candidate) =>
+                  candidate.revision > revision.revision &&
+                  candidate.compute.id === this.compute.id &&
+                  candidate.compute.implementation === this.compute.implementation &&
+                  this.compute.requiresStoppedPredecessors?.(candidate) === true,
+              ),
+            );
+      if (successor !== undefined) {
+        await this.finalizeRevision(claim, {
+          outcome: "success",
+          code: "REVISION_SUPERSEDED",
+          supersededBy: successor,
+        });
         return;
       }
       if (revision.repositoryCredentials !== undefined) {

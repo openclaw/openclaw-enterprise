@@ -184,7 +184,7 @@ managed resources. See the [Driver loading flow](../../flows/driver-plugin-loadi
 OCC records the Compute identity, Harness placement, and Configuration in the
 immutable revision. Before dispatch, the worker checks that the selected Compute
 still matches, rechecks authorization, and resolves current credential references.
-While preparing a replacement, the worker preserves the previous route until
+By default, while preparing a replacement, the worker preserves the previous route until
 activation checks that the active revision is still the expected one and switches
 the route. Activation lets the candidate serve; it must be safe to repeat and
 requires the configured runtime to be ready and authenticated. Deactivation is a
@@ -197,6 +197,19 @@ first production deployment, it deactivates an unpublished dedicated candidate.
 A Driver that keeps one stable Agent runtime can select `"beforeCommit"`; the
 worker then activates the candidate before publishing it and skips that initial
 deactivation. If a required stage becomes unavailable, the worker cannot proceed.
+
+A Driver may implement `requiresStoppedPredecessors(revision)` to return `true`
+for workloads needing exclusive preparation. Before preparing that revision,
+the worker closes earlier credential sessions and calls `stopRevision` for every
+earlier snapshot, including failed candidates. Stop must wait for resource
+release, preserve durable data, and be safe to repeat. A stop failure prevents
+preparation. The Driver owns backend-specific termination and Sandbox cleanup.
+
+A newer admitted exclusive revision supersedes older reconciliation and
+maintenance, even while the old revision remains the last committed active
+pointer. This prevents an old pass from recreating a competing runtime. This
+mode accepts downtime and has no automatic rollback: restore a configuration by
+deploying a new higher revision. Other Drivers keep the default ordering.
 
 ### SandboxDriver coordination
 

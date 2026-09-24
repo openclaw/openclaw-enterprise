@@ -975,7 +975,7 @@ test("dedicated Agent shared claims retain ownership inside an existing tenant n
   assert.equal(claim.metadata.namespace, "customer-support");
   assert.equal(claim.metadata.annotations["openclaw.dev/namespace-id"], tenant.id);
   assert.equal(claim.metadata.annotations["openclaw.dev/agent-id"], agentId);
-  assert.deepEqual(claim.spec.accessModes, ["ReadWriteMany"]);
+  assert.deepEqual(claim.spec.accessModes, ["ReadWriteOnce"]);
   assert.equal(claim.spec.resources.requests.storage, "40Gi");
 });
 
@@ -5039,6 +5039,61 @@ test("runtime node selector schedules gateways and their private-state initializ
     "oce-role": "control-plane",
   });
   assert.equal(pod.initContainers[0].name, "prepare-private-state");
+});
+
+test("Harness claim reuse retains owned RWO and RWX storage without mutation and rejects foreign or invalid claims", async () => {
+  const driver = createKubernetesComputeDriver(options());
+  const ownership = { namespaceId: tenant.id, agentId: "agent-workspace-ownership" };
+  const namespace = kubernetesNamespaceName(tenant.id);
+  const desired = driver.sharedWorkspaceClaim(ownership.agentId, ownership, namespace);
+  let observed;
+  const mutations = [];
+  driver.apiClients = Promise.resolve({
+    core: {
+      async readNamespacedPersistentVolumeClaim() {
+        return structuredClone(observed);
+      },
+      async patchNamespacedPersistentVolumeClaim(request) {
+        mutations.push(request);
+      },
+      async deleteNamespacedPersistentVolumeClaim(request) {
+        mutations.push(request);
+      },
+    },
+  });
+  for (const mode of ["ReadWriteOnce", "ReadWriteMany"]) {
+    observed = structuredClone(desired);
+    observed.metadata.uid = "retained-workspace";
+    observed.spec.accessModes = [mode];
+    await driver.reconcile(desired, ownership, namespace);
+    assert.deepEqual(
+      mutations,
+      [],
+      "compatible workspace claims must never be patched or replaced",
+    );
+    for (const mutate of [
+      (claim) => {
+        claim.metadata.annotations["openclaw.dev/agent-id"] = "foreign";
+      },
+      (claim) => {
+        claim.spec.accessModes = ["ReadOnlyMany"];
+      },
+      (claim) => {
+        claim.spec.volumeMode = "Block";
+      },
+      (claim) => {
+        claim.spec.resources.requests.storage = "1Gi";
+      },
+    ]) {
+      const valid = structuredClone(observed);
+      mutate(observed);
+      await assert.rejects(driver.reconcile(desired, ownership, namespace), /Refusing/);
+      assert.deepEqual(mutations, []);
+      observed = valid;
+    }
+    await driver.deleteSharedWorkspaceClaim(ownership, namespace);
+    assert.deepEqual(mutations.pop().body.preconditions, { uid: "retained-workspace" });
+  }
 });
 
 test("private gateway claim reuse and deletion verify exact ownership and storage before mutation", async () => {

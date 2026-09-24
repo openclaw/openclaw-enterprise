@@ -855,6 +855,10 @@ function harnessModelAuthentication(configuration: OpenClawConfigurationDocument
 export class KubernetesComputeDriver implements ComputeDriver {
   readonly discoverHarnessModels = discoverHarnessModels;
 
+  requiresStoppedPredecessors(revision: AgentRevision): boolean {
+    return revision.harness.mode === "dedicated";
+  }
+
   static readonly configurationSchema = Object.freeze({
     type: "object",
     required: ["authentication", "images", "resources", "network", "servicePrincipalCredentials"],
@@ -6206,7 +6210,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         namespace,
       ),
       spec: {
-        accessModes: ["ReadWriteMany"],
+        accessModes: ["ReadWriteOnce"],
         resources: { requests: { storage: SHARED_WORKSPACE_SIZE } },
       },
     };
@@ -6245,10 +6249,19 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const expectedModes = Array.isArray(desired.spec?.accessModes) ? desired.spec.accessModes : [];
     const requests = asRecord(asRecord(claim.spec?.resources)?.requests);
     const expectedRequests = asRecord(asRecord(desired.spec?.resources)?.requests);
+    // Keep existing Agent workspace data on its original RWX claim. Never patch
+    // an immutable PVC access mode or broaden Gateway private-state acceptance.
+    const agentId = desired.metadata.annotations?.["openclaw.dev/agent-id"];
+    const existingWorkspace =
+      agentId !== undefined &&
+      desired.metadata.name === this.sharedWorkspaceClaimName(agentId) &&
+      accessModes.length === 1 &&
+      accessModes[0] === "ReadWriteMany";
     if (
       claim.metadata.deletionTimestamp !== undefined ||
-      accessModes.length !== expectedModes.length ||
-      accessModes.some((mode, index) => mode !== expectedModes[index]) ||
+      (!existingWorkspace &&
+        (accessModes.length !== expectedModes.length ||
+          accessModes.some((mode, index) => mode !== expectedModes[index]))) ||
       requests?.storage !== expectedRequests?.storage ||
       (claim.spec?.volumeMode ?? "Filesystem") !== (desired.spec?.volumeMode ?? "Filesystem") ||
       (desired.spec?.storageClassName !== undefined &&

@@ -41,7 +41,7 @@ For detailed operator contracts, see:
   suite; see the [gateway disk requirements](kubernetes-compute/storage-and-credentials.md#gateway-storage) before
   selecting a production StorageClass.
 - For dedicated Agents, a default StorageClass that supports `40Gi`
-  `ReadWriteMany` PersistentVolumeClaims.
+  `ReadWriteOnce` PersistentVolumeClaims.
 - If `runtime.codexSeccompProfile` is configured, install that relative
   localhost seccomp profile on every eligible node before Agent startup.
   Kubernetes fails the Codex Pod when the configured profile is missing.
@@ -192,6 +192,11 @@ The Agent's Harness configuration determines its execution topology:
   Agent-scoped model API key or a managed ChatGPT service-account credential,
   and permits `openai/` or `codex/` models.
 
+Dedicated replacement opts into the [exclusive preparation contract](compute.md#production-revision-stages):
+the worker stops predecessors before starting the new Harness. This permits RWO
+workspace storage and introduces deployment downtime; restore a previous
+configuration through a new revision instead of restarting its old snapshot.
+
 Enabled external channels require dedicated execution. Unsupported Harness and
 execution-mode combinations fail deployment. OpenShell is designed for
 dedicated Codex only, but stock OpenShell currently blocks that deployment;
@@ -262,7 +267,7 @@ for additional execution details.
   data when resolving an incompatible or foreign claim; the driver does not
   adopt or convert it.
 - **Dedicated Harness cannot start:** Verify that the default StorageClass can
-  provision a `40Gi` `ReadWriteMany` claim and that the worker can manage
+  provision a `40Gi` `ReadWriteOnce` claim and that the worker can manage
   PersistentVolumeClaims in the tenant namespace.
 - **Agent configuration is rejected:** Confirm the selected Harness supports
   its execution mode; external channels and provider-issued access tokens

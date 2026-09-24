@@ -1,6 +1,6 @@
 ---
 created: 2026-08-21
-updated: 2026-09-23
+updated: 2026-09-24
 last_updated_session: 01a0cf72-6985-7712-ba92-d8cc32470f24
 ---
 
@@ -137,9 +137,14 @@ for candidate rules and the limits of this observation.
 
 `apps/controller/src/worker.ts:ControllerWorker`
 
-The predecessor's Kubernetes Service selector remains intact while
-`prepareRevision` stages the replacement. Dedicated Codex must complete its
-bounded native authentication/model probe before its app-server becomes ready.
+For dedicated Kubernetes execution, Compute declares
+`requiresStoppedPredecessors`. `ControllerWorker.prepareRevision` stops every
+earlier runtime and waits for Pod termination before preparing the replacement.
+Old reconciliation and maintenance cannot restart a predecessor after a newer
+exclusive revision is admitted. Both PVCs survive this downtime window; a failed
+candidate is recovered by retry or a new revision, not automatic rollback.
+Dedicated Codex must complete its bounded native authentication/model probe
+before its app-server becomes ready.
 Embedded preparation does not validate the replacement's credentials. See the
 [authentication flow](native-service-account-credential-delivery.md#5-authenticate-during-runtime-startup).
 
@@ -227,6 +232,8 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-24 11:28: Document exclusive dedicated preparation and durable RWO workspaces in the accompanying change. (01a0cf72-6985-7712-ba92-d8cc32470f24 - 14a4508baad876d3eea4e6fe6388f8d8a91559b7)
 
 - 2026-09-23 13:13: Keep fixture credential delivery namespace-local, matching native runtime placement. (codex/01a0cf72-6985-7712-ba92-d8cc32470f24 - df4ca4474d90de2d4ab0dd6f6d03a64ebb92526a)
 

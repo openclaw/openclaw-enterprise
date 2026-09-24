@@ -1,7 +1,7 @@
 ---
 created: 2026-08-31
-updated: 2026-09-23
-last_updated_session: public-pr/295
+updated: 2026-09-24
+last_updated_session: 01a0cf72-6985-7712-ba92-d8cc32470f24
 ---
 
 # Agent Workspace Files Flow
@@ -225,10 +225,11 @@ Remote channel menus remain deferred to [#241](https://github.com/openclaw/openc
 
 Only Harness mounts dedicated workspace/generated-image storage. Gateway sessions
 use its private PVC; Codex's existing remote-media reader transfers reply artifacts
-before cleanup. Embedded storage is unchanged. The Harness PVC remains RWX because
-revision preparation precedes predecessor retirement; removing that backend
-requirement needs a separate rollout decision. These contracts require matching
-runtime images; local checks alone do not prove deployed Enterprise acceptance.
+before cleanup. Embedded storage is unchanged. New Harness PVCs use RWO; owned
+existing RWX claims retain their data. The worker stops predecessors before dedicated preparation and suppresses their
+maintenance. The [storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
+owns downtime and recovery limits. These contracts require matching runtime
+images; local checks alone do not prove deployed Enterprise acceptance.
 
 The API reads the mounted key for each operation, so new connections pick up
 Secret rotation without an API restart. Missing routing, missing or invalid
@@ -317,6 +318,8 @@ replays it. The native client closes in the operation's cleanup path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-24 11:28: Document exclusive dedicated preparation and durable RWO workspaces in the accompanying change. (01a0cf72-6985-7712-ba92-d8cc32470f24 - 14a4508baad876d3eea4e6fe6388f8d8a91559b7)
 
 - 2026-09-23 19:22: Condense setup prose within the documentation length budget. (01a0cf27-71c6-7042-8357-74d1811a2ef8 - 6c6c3e4308946e7e66d656fb553da4dd5177f2c4)
 

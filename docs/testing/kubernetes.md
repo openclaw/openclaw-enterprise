@@ -30,8 +30,9 @@ OCC_TEST_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/opencla
   node --test tests/integration/kubernetes-compute-real.test.mjs
 ```
 
-All three fixture cases must run: Driver lifecycle/isolation, externally managed
-namespace preservation, and PostgreSQL API-plus-worker reconciliation. No model
+All four fixture cases must run: Driver lifecycle/isolation, externally managed
+namespace preservation, provisioning handoff, and PostgreSQL API-plus-worker
+reconciliation. No model
 key is needed. Missing all cluster selectors skips the suite; partial selectors
 fail, and a missing database skips the API-plus-worker case.
 
@@ -41,9 +42,13 @@ Secret and private-state claim deletion. The case uses nonfunctional fixture
 credentials and performs no model turn.
 
 The tests require an explicit loopback `k3d-*` context and enforcing
-NetworkPolicies. They create scoped RBAC and resources, and configure the
-selected cluster's local-path provisioner for shared filesystem tests. Because
-that changes cluster-wide storage configuration, use a disposable cluster.
+NetworkPolicies. They create scoped RBAC and resources and use the stock
+local-path provisioner for RWO Harness workspaces. The API-plus-worker case
+verifies that replacement retains the PVC UID and a file written by the old
+Harness. The HTTP fixture can fail native readiness using a workspace marker;
+a later deployment must retain both earlier files and writes from the failed
+candidate. This proves serial replacement on local storage, not cloud CSI detach,
+node fencing, or data movement between nodes. Use a disposable cluster.
 
 ### Fixture images and security controls
 

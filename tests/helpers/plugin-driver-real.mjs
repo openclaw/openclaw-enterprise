@@ -11,7 +11,6 @@ import { ensureDevelopmentBootstrap } from "./bootstrap-installation.mjs";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import { grantAgentSecretOperate } from "./postgres-harness-auth.mjs";
 import {
-  configureExistingK3dLocalPathSharedFileSystem,
   createKubernetesInstallationConfiguration,
   createRealKubernetesFixture,
   kubernetesHash as hash,
@@ -1246,7 +1245,6 @@ export async function createPluginDriverRealFixture(
     databaseUrl: selectedDatabaseUrl,
   });
 
-  await configureExistingK3dLocalPathSharedFileSystem({ kubeconfigPath, kubernetesContext });
   await validatePrerequisites();
   let worker;
   let app;

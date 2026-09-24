@@ -10,11 +10,6 @@ import { promisify } from "node:util";
 import { createInstallationDriverConfiguration } from "./installation-driver-configuration.mjs";
 
 const execute = promisify(execFile);
-const k3dSharedFileSystemPath = "/var/lib/rancher/k3s/storage";
-const localPathConfigMapName = "local-path-config";
-const localPathConfigMapNamespace = "kube-system";
-const localPathProvisionerDeployment = "local-path-provisioner";
-const localPathStorageClass = "local-path";
 
 export function kubectlArguments({ kubeconfigPath, kubernetesContext }, args) {
   return ["--kubeconfig", kubeconfigPath, "--context", kubernetesContext, ...args];
@@ -115,78 +110,6 @@ export async function validateExplicitK3dLoopbackContext(selection) {
   );
   assert.notEqual(endpoint.port, "", "the disposable Kubernetes API requires an explicit port");
   return configuration;
-}
-
-export async function configureExistingK3dLocalPathSharedFileSystem({
-  kubeconfigPath,
-  kubernetesContext,
-}) {
-  const selection = { kubeconfigPath, kubernetesContext };
-  await validateExplicitK3dLoopbackContext(selection);
-
-  await kubectlFor(
-    selection,
-    "annotate",
-    "storageclass",
-    localPathStorageClass,
-    "defaultVolumeType=hostPath",
-    "--overwrite",
-  );
-  const rawConfig = JSON.parse(
-    await kubectlFor(
-      selection,
-      "get",
-      "configmap",
-      localPathConfigMapName,
-      "--namespace",
-      localPathConfigMapNamespace,
-      "-o",
-      "json",
-    ),
-  ).data?.["config.json"];
-  assert.equal(typeof rawConfig, "string", "local-path-config must expose data.config.json");
-  await kubectlFor(
-    selection,
-    "patch",
-    "configmap",
-    localPathConfigMapName,
-    "--namespace",
-    localPathConfigMapNamespace,
-    "--type",
-    "merge",
-    "--patch",
-    JSON.stringify({
-      data: {
-        "config.json": JSON.stringify(
-          {
-            ...JSON.parse(rawConfig),
-            nodePathMap: [],
-            sharedFileSystemPath: k3dSharedFileSystemPath,
-            defaultVolumeType: "hostPath",
-          },
-          null,
-          2,
-        ),
-      },
-    }),
-  );
-  await kubectlFor(
-    selection,
-    "rollout",
-    "restart",
-    `deployment/${localPathProvisionerDeployment}`,
-    "--namespace",
-    localPathConfigMapNamespace,
-  );
-  await kubectlFor(
-    selection,
-    "rollout",
-    "status",
-    `deployment/${localPathProvisionerDeployment}`,
-    "--namespace",
-    localPathConfigMapNamespace,
-    "--timeout=120s",
-  );
 }
 
 export function kubernetesHash(value, length = 12) {

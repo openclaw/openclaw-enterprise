@@ -21,7 +21,6 @@ import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mj
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   assertGatewayModelTurn,
-  configureExistingK3dLocalPathSharedFileSystem,
   createKubernetesInstallationConfiguration,
   createRealKubernetesFixture,
   kubernetesHash as hash,
@@ -180,7 +179,6 @@ async function validatePrerequisites() {
     );
   }
   const kubeconfig = await validateKubernetesPrerequisites();
-  await configureExistingK3dLocalPathSharedFileSystem({ kubeconfigPath, kubernetesContext });
   return kubeconfig;
 }
 
@@ -2929,7 +2927,7 @@ async function assertDedicatedWorkspaceResources(topology) {
   const claim = await resource("persistentvolumeclaim", claimName, topology.placement);
   assert.deepEqual(
     [claim.spec.accessModes, claim.spec.resources.requests.storage, claim.status.phase],
-    [["ReadWriteMany"], sharedWorkspaceClaimSize, "Bound"],
+    [["ReadWriteOnce"], sharedWorkspaceClaimSize, "Bound"],
     "the Agent-owned shared workspace PVC must be bound with the expected spec",
   );
   assert.deepEqual(
