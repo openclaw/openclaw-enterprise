@@ -123,6 +123,41 @@ test("repository capability admits only configured Compute-owned native topologi
     },
   });
   const driver = new KubernetesComputeDriver(configured);
+  const dualCluster = new KubernetesComputeDriver({
+    ...configured,
+    gatewayRouting: {
+      hostname: "gateway.example.test",
+      gatewayName: "gateway",
+      gatewayNamespace: "system",
+      envoyNamespace: "envoy",
+    },
+    network: Object.fromEntries(
+      Object.entries(configured.network).filter(([key]) => key !== "gatewayClients"),
+    ),
+    executionCluster: {
+      authentication: {
+        mode: "kubeconfig",
+        kubeconfigPath: "/fixture/execution",
+        context: "execution",
+      },
+      harnessRouting: {
+        hostname: "harness.example.test",
+        gatewayName: "harness",
+        gatewayNamespace: "system",
+        envoyNamespace: "envoy",
+      },
+      network: {
+        dns: configured.network.dns,
+        harnessEndpointCidrs: ["192.0.2.2/32"],
+        gatewayEndpointCidrs: ["192.0.2.1/32"],
+        pluginStatusProxySourceCidrs: ["192.0.2.2/32"],
+      },
+    },
+  });
+  assert.throws(
+    () => dualCluster.validateRepositoryCredentialSupport(),
+    /not supported by the experimental two-cluster profile/,
+  );
   for (const [id, mode] of [
     ["openclaw", "embedded"],
     ["codex", "dedicated"],
@@ -803,11 +838,12 @@ test("explicit existing namespace adoption claims tenant identity only after sec
     claims,
     deleting,
     unselected,
+    computeOptions = options(),
   } = {}) => {
     let observed = prepared();
     mutate?.(observed);
     const patches = [];
-    const driver = createKubernetesComputeDriver(options());
+    const driver = createKubernetesComputeDriver(computeOptions);
     // The fixture supplies transport responses only; adoption, validation, and mutation order
     // are exercised through the production driver's real ensureNamespace implementation.
     driver.apiClients = Promise.resolve({
@@ -854,6 +890,7 @@ test("explicit existing namespace adoption claims tenant identity only after sec
         },
       },
     });
+    driver.executionApiClients = driver.apiClients;
     if (mutate === null) {
       observed = undefined;
     }
@@ -865,6 +902,29 @@ test("explicit existing namespace adoption claims tenant identity only after sec
     return { result, observed, patches };
   };
 
+  const dual = await run({
+    computeOptions: routedOptions({
+      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+      executionCluster: {
+        authentication: { mode: "kubeconfig", kubeconfigPath, context: contextName },
+        harnessRouting: {
+          ...gatewayRouting,
+          gatewayName: "harnesses",
+          hostname: "harness.example.test",
+        },
+        network: {
+          dns: options().network.dns,
+          harnessEndpointCidrs: ["192.0.2.2/32"],
+          gatewayEndpointCidrs: ["192.0.2.1/32"],
+          pluginStatusProxySourceCidrs: ["192.0.2.2/32"],
+        },
+      },
+    }),
+  });
+  assert.equal(
+    dual.observed.metadata.labels["openclaw-enterprise.io/gateway"],
+    digest(`${gatewayRouting.gatewayNamespace}/harnesses`),
+  );
   const adopted = await run();
   assert.deepEqual(adopted.result, { namespaceId: tenant.id, namespaceReady: false });
   assert.deepEqual(adopted.patches, [
@@ -2308,7 +2368,10 @@ test("account-token authentication grants only the exact Codex revision outbound
   });
 
   // Login needs public HTTPS before readiness; candidate transport must remain closed until activation.
-  assert.equal(policy.metadata.name, `allow-agent-auth-${digest(revision.agentId, 12)}`);
+  assert.equal(
+    policy.metadata.name,
+    `allow-agent-auth-${digest(revision.agentId, 12)}-rev-${digest(revision.id, 12)}`,
+  );
   assert.equal(
     policy.metadata.annotations["openclaw.dev/service-principal-id"],
     revision.servicePrincipalId,
@@ -2337,8 +2400,8 @@ test("account-token authentication grants only the exact Codex revision outbound
     { ...revision, id: "revision-account-token-2" },
     { name: namespace, plane: "execution" },
   );
-  // One Agent-owned policy moves between candidates without leaving stale-revision egress behind.
-  assert.equal(successor.metadata.name, policy.metadata.name);
+  // A pending candidate cannot revoke another candidate's startup egress.
+  assert.notEqual(successor.metadata.name, policy.metadata.name);
   assert.notDeepEqual(successor.spec.podSelector, policy.spec.podSelector);
 });
 
@@ -4275,7 +4338,12 @@ test("provider Harness preparation preserves readiness and cleanup contracts", a
   const fixture = providerReadinessFixture({
     async provisionHarness(context) {
       assert.ok(
-        objects.has(key("NetworkPolicy", `allow-agent-auth-${digest(context.revision.agentId)}`)),
+        objects.has(
+          key(
+            "NetworkPolicy",
+            `allow-agent-auth-${digest(context.revision.agentId)}-rev-${digest(context.revision.id)}`,
+          ),
+        ),
         "API-key candidates need provider egress before Sandbox startup",
       );
       provisions.push(context);
@@ -7136,18 +7204,18 @@ for (const embedded of [true, false]) {
       save("ServiceAccount", agentName, namespace, undefined, true);
       for (const name of [
         "allow-agent-runtime",
-        "allow-agent-auth",
         "allow-plugin-status-proxy",
         "allow-plugin-status-agent",
       ]) {
-        save(
-          "NetworkPolicy",
-          `${name}-${suffix}`,
-          namespace,
-          undefined,
-          name === "allow-agent-auth",
-        );
+        save("NetworkPolicy", `${name}-${suffix}`, namespace, undefined, false);
       }
+      save(
+        "NetworkPolicy",
+        `allow-agent-auth-${suffix}-rev-${digest(successor.id)}`,
+        namespace,
+        successor,
+        true,
+      );
       for (const name of [
         "allow-gateway-agent",
         "allow-gateway-channels",

@@ -465,13 +465,10 @@ async function fixture(mode = "embedded", nodeEnrollment) {
     );
   const enroll = (selected) => {
     const name = driver.workspaceNodeName(selected);
-    const secret = driver.manifest(
-      "v1",
-      "Secret",
-      name,
-      driver.pluginRuntimeOwnership(selected),
-      namespace,
-    );
+    const secret = driver.manifest("v1", "Secret", name, driver.pluginRuntimeOwnership(selected), {
+      name: namespace,
+      plane: "execution",
+    });
     save({
       ...secret,
       metadata: {

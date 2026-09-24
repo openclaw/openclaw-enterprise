@@ -3,7 +3,9 @@
 This experimental profile installs the complete OCE control plane in one cluster
 and dedicated Codex Harnesses in another. It uses the production controller image,
 PostgreSQL roles, migration/bootstrap Job, API, worker, and normal Agent APIs.
-Embedded execution and cloud provisioning are outside this profile. Keep the
+Embedded execution, cloud provisioning, and repository credential delivery are
+outside this profile. The repository credential service currently assumes
+cluster-local reachability; two-cluster admission rejects it explicitly. Keep the
 implementation draft until runtime and failure-path acceptance are complete.
 
 ## Prepare isolated infrastructure
@@ -14,6 +16,50 @@ Keep the default Docker context and kubeconfig unchanged. For example, use
 `10.60.0.0/16` and `10.61.0.0/16` in CP, and `10.62.0.0/16` and `10.63.0.0/16`
 in DP. A shared Docker network supplies reachable node addresses; it does not
 share Kubernetes APIs, storage, credentials, or tenant namespaces.
+
+From the repository root, create fresh clusters on an explicitly selected local
+Docker context. The context must already refer to your disposable Linux VM;
+these commands do not create a VM or switch your default context. Use unused
+cluster/network names and available loopback ports:
+
+```sh
+umask 077
+export OCE_DOCKER_CONTEXT='your-isolated-local-context'
+export OCE_TEST_DIR="$(mktemp -d "${TMPDIR:-/tmp}/oce-two-cluster.XXXXXX")"
+OCE_DOCKER_SOCKET="$(docker context inspect "$OCE_DOCKER_CONTEXT" \
+  --format '{{.Endpoints.docker.Host}}')"
+case "$OCE_DOCKER_SOCKET" in unix://*) ;; *) exit 1 ;; esac
+k3d_local() {
+  env -u DOCKER_CONTEXT DOCKER_HOST="$OCE_DOCKER_SOCKET" k3d "$@"
+}
+OCE_K3S_IMAGE='rancher/k3s@sha256:59fe491fd3b73204e499e40b325240d85c42c7189c3ae50150d37b78243f3b32'
+docker --context "$OCE_DOCKER_CONTEXT" network create oce-two-cluster-local
+k3d_local cluster create openclaw-k8s-local-cp \
+  --image "$OCE_K3S_IMAGE" --network oce-two-cluster-local \
+  --api-port 127.0.0.1:56641 --servers 1 --agents 0 --no-lb \
+  --kubeconfig-update-default=false --kubeconfig-switch-context=false \
+  --k3s-arg '--disable=traefik@server:*' \
+  --k3s-arg '--cluster-cidr=10.70.0.0/16@server:*' \
+  --k3s-arg '--service-cidr=10.71.0.0/16@server:*'
+k3d_local cluster create openclaw-k8s-local-dp \
+  --image "$OCE_K3S_IMAGE" --network oce-two-cluster-local \
+  --api-port 127.0.0.1:56642 --servers 1 --agents 0 --no-lb \
+  --kubeconfig-update-default=false --kubeconfig-switch-context=false \
+  --k3s-arg '--disable=traefik@server:*' \
+  --k3s-arg '--cluster-cidr=10.72.0.0/16@server:*' \
+  --k3s-arg '--service-cidr=10.73.0.0/16@server:*'
+k3d_local kubeconfig get openclaw-k8s-local-cp > "$OCE_TEST_DIR/cp.kubeconfig"
+k3d_local kubeconfig get openclaw-k8s-local-dp > "$OCE_TEST_DIR/dp.kubeconfig"
+kubectl --kubeconfig "$OCE_TEST_DIR/cp.kubeconfig" label \
+  node k3d-openclaw-k8s-local-cp-server-0 oce-role=control-plane
+kubectl --kubeconfig "$OCE_TEST_DIR/dp.kubeconfig" label \
+  node k3d-openclaw-k8s-local-dp-server-0 oce-role=agents
+```
+
+This creates only the infrastructure. Complete the chart, database, TLS,
+credentials and bootstrap steps below before running the API/worker test.
+Keep the private directory: its administrative kubeconfigs are not workload
+credentials and must not enter Git or the runtime image.
 
 On a laptop, give the selected Linux VM sufficient disk capacity for duplicate
 containerd imports of real runtime images. An isolated 8-CPU, 16-GiB RAM,
@@ -27,10 +73,25 @@ CP RWO StorageClass and DP RWX workspace storage. The existing
 single-node k3d local-path provisioner for the latter. This is a local fixture,
 not shared storage between clusters or a production RWX recommendation.
 
+Keep those local fixture settings across node restarts. On each **owned test
+node only**, create `local-storage.yaml.skip` and `coredns.yaml.skip` under
+`/var/lib/rancher/k3s/server/manifests/` after the packaged components have
+installed. K3s supports [skip files](https://docs.k3s.io/installation/packaged-components)
+to stop reapplying an AddOn without deleting its existing resources. Otherwise
+a node restart resets the test StorageClass's `defaultVolumeType` annotation
+and can remove the CoreDNS `NodeHosts` entry. This is disposable k3d fixture
+preparation, not a production storage or DNS configuration procedure.
+
 Import approved immutable controller/runtime images into their respective
 clusters. Install the configured Codex localhost seccomp profile on DP nodes
 using the reviewed [sandbox procedure](kubernetes.md). Do not disable AppArmor,
 seccomp, or Pod security to make a sandbox probe pass.
+
+The current runtime recipe was built and tested in a stock Debian 13 Lima VM.
+The reviewed helper's successful sandbox write, RuntimeDefault denial, and
+missing-profile rejection all passed there. The initial Ubuntu VM denied
+Bubblewrap network-namespace setup through host AppArmor. Select a compatible
+host and run the probes; a running container alone does not qualify the sandbox.
 
 ## Configure the network and credentials
 
@@ -98,6 +159,9 @@ For local DNS, use the supported `coredns-custom` ConfigMap and a separate
 `*.server` zone. k3s manages `NodeHosts` and can remove manual changes there.
 Resolve the CP Gateway hostname to its Service IP within CP and to its reachable
 ingress address within DP. Preserve the same hostname and certificate identity.
+Restart CoreDNS after installing the new custom zone and verify both names from
+the actual controller and runtime Pods before creating Agents. An accepted
+ConfigMap update does not mean its DNS records are already being served.
 
 ## Install and exercise the platform
 
@@ -114,7 +178,8 @@ Wait for Namespace `ready`. Deployment status `running` means reconciliation is
 in progress; wait for `succeeded` before asserting readiness.
 
 The real integration accepts a private JSON fixture file containing `apiUrl`
-(loopback), `serviceKeyFile`, `agentConfiguration` (the dedicated native
+(loopback), `serviceKeyFile`, `dockerContext` (an explicit local Unix-socket
+context), `agentConfiguration` (the dedicated native
 Configuration create body), and `control`/`execution` objects. Each object has
 `kubeconfigPath`, `kubernetesContext`, `release`, and `systemNamespace`.
 With an authorized model key already in the environment, run:
@@ -129,14 +194,57 @@ tenant roles, uses normal API credential admission and deployment, verifies
 workspace RPC, recreates the exact Harness Pod, replaces a revision, and deletes
 both physical targets. Successful runs remove their resources. Failed runs
 retain their test Namespace for diagnosis; delete its Agent, Configuration, and
-Secret through the API before deleting the Namespace.
+Secret and any seeded Presets through the API before deleting the Namespace.
+The outage case stops and restores the selected DP k3d node, so do not run other
+tests against that cluster concurrently. It validates the exact container and
+cluster identity before stopping it and registers a restoration cleanup.
 
-The real API/worker integration passed the lifecycle above without skips.
-Separate manual checks proved model responses, token rejection, and workspace
-read/write before and after a Harness Pod restart. A model response also succeeded
-after revision replacement. Complete acceptance still
-needs the sandbox probe, compatible runtime pin, plugin-enabled transport,
-partial-cluster failure recovery, and same-cluster regression. The initial
-runtime also exhibited a Gateway owner-lease delay: replacement after a model
-turn took approximately six to seven minutes before OCE reported success.
-Do not mistake eventual success for prompt replacement.
+The final expanded API/worker test passed without skips in 238 seconds:
+placement, workspace RPC, Pod reconnect, stop/resume, invalid-key rejection and
+correct-key recovery, concurrent candidate grants, revision replacement and
+grant cleanup, real model-driven shell execution, a short DP outage, and deletion
+of both tenant namespaces. The shell result was independently read from the DP
+workspace. The controller production image included the candidate-policy fix,
+manifest `sha256:37305bba4beb2d9f8fab4c7088dd4b701e2f47806485a0c64bd29e6753070ac5`.
+Initial workspace delivery also passed with OCE's exact defaults identity and
+caller-supplied `USER.md` content. A retained second Agent served another model
+reply after the earlier outage while its setup code was still valid. The final
+outage exposed the expired-code limitation below. Real ingress checks rejected missing/wrong tokens
+and stale-revision plugin-status credentials with 401, an unknown tenant route
+with 404, and a request without the private CA during TLS verification. With no
+plugin selection, authenticated plugin status returns 404; this is not a
+successful plugin-installation claim.
+The runtime came from the repository Dockerfile's OpenClaw source
+`2765f7a3341b8be4835afacbff3d04c6e3c3c79b`, with Codex 0.156.0, manifest
+`sha256:2a7a1409f0d84d49d7343ff939ee18389843c377c104df6a5dd4dee715b4d759`.
+This is a locally built image, not a published release qualification.
+
+Acceptance limits remain explicit:
+
+- A longer outage exhausted the existing five-attempt worker budget and left
+  an Agent `deleting`. A repeated DELETE does not requeue failed deletion work.
+  This behavior also exists on main; the short-outage result does not establish
+  recovery after retry exhaustion. Preserve the failed fixture for investigation.
+- An already paired workspace node fails to reconnect after a Pod restart once
+  its setup code expires. In the selected native runtime, `node run
+--pair-if-needed` decodes the code before consulting saved state and reports
+  `Pairing setup code has expired`. The retained Agent's model call then returned
+  500 because workspace discovery was unavailable. The 238-second test proves
+  outage recovery for deletion, not aged live-Agent reconnection. A normal OCE
+  redeploy issues fresh pairing material; it is not automatic reconnect proof.
+  Qualify a runtime fix before relying on long-lived restart recovery.
+- Remote Codex plugin installation requires a ChatGPT-backed credential;
+  an API-key model test does not establish that workflow. The HTTPS plugin-status
+  authentication tests are separate evidence.
+- Replacement after a model turn also succeeded on the current pin, including
+  another model reply afterward, but took 396 seconds. Startup logs showed the
+  prior Gateway owner lease delaying the replacement. Do not promise prompt
+  replacement or clear a live lease to shorten the measurement.
+- Same-cluster Kubernetes fixture CI passed. It is distinct from a complete
+  same-cluster real-model run.
+
+The expanded stop/resume scenario exposed concurrent candidates repeatedly
+replacing one shared authentication NetworkPolicy. The Driver now gives each
+revision its own policy and removes that grant after its workload terminates.
+The original failed runs and earlier 176-second lifecycle proof remain recorded
+separately; the final 238-second run includes the fix and expanded assertions.
