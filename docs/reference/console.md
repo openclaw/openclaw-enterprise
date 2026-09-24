@@ -70,13 +70,9 @@ Agents in the selected Namespace. Each container lists its configured Docker
 image, observed image ID or digest, and source commit when available.
 Navigation preserves the flag; remove it to hide diagnostics and stop these reads.
 
-Image observations use the Agent's active revision and existing Agent read
-permission. Docker and Kubernetes Compute support inspection; Kubernetes includes
-init containers and sidecars in its revision-owned Pods. The panel does not
-inventory other Namespaces or separate Sandbox Driver workloads. An unavailable
-commit means provenance was absent or unreadable; it is not inferred from a tag.
-Development builds without build metadata show an unavailable OCE commit.
-Refresh to retry unavailable metadata or update the snapshot.
+See [Debug sidebar fields](console/debug-fields.md) for every field, Docker and
+Kubernetes differences, inspection scope, and unavailable states.
+Use **Refresh** to retry unavailable metadata or update the snapshot.
 
 ## Agent creation and deployment
 
