@@ -971,7 +971,7 @@ test("dedicated Agent shared claims retain ownership inside an existing tenant n
   const ownership = { namespaceId: tenant.id, agentId };
 
   // Exercise the real PVC serializer against discovered placement, not a simulated cluster.
-  const claim = driver.sharedWorkspaceClaim(agentId, ownership, "customer-support");
+  const claim = driver.harnessWorkspaceClaim(agentId, ownership, "customer-support");
   assert.equal(claim.metadata.namespace, "customer-support");
   assert.equal(claim.metadata.annotations["openclaw.dev/namespace-id"], tenant.id);
   assert.equal(claim.metadata.annotations["openclaw.dev/agent-id"], agentId);
@@ -4824,7 +4824,7 @@ test("Gateway and Harness storage are separate and preserve ephemeral Codex cred
   );
   assert.notEqual(
     claim.metadata.name,
-    driver.sharedWorkspaceClaim(agentId, ownership, namespace).metadata.name,
+    driver.harnessWorkspaceClaim(agentId, ownership, namespace).metadata.name,
   );
 
   // Whole directories retain SQLite WAL/SHM siblings; only the gateway receives the private claim.
@@ -5045,7 +5045,7 @@ test("Harness claim reuse retains owned RWO and RWX storage without mutation and
   const driver = createKubernetesComputeDriver(options());
   const ownership = { namespaceId: tenant.id, agentId: "agent-workspace-ownership" };
   const namespace = kubernetesNamespaceName(tenant.id);
-  const desired = driver.sharedWorkspaceClaim(ownership.agentId, ownership, namespace);
+  const desired = driver.harnessWorkspaceClaim(ownership.agentId, ownership, namespace);
   let observed;
   const mutations = [];
   driver.apiClients = Promise.resolve({
@@ -5091,7 +5091,7 @@ test("Harness claim reuse retains owned RWO and RWX storage without mutation and
       assert.deepEqual(mutations, []);
       observed = valid;
     }
-    await driver.deleteSharedWorkspaceClaim(ownership, namespace);
+    await driver.deleteHarnessWorkspaceClaim(ownership, namespace);
     assert.deepEqual(mutations.pop().body.preconditions, { uid: "retained-workspace" });
   }
 });
@@ -6024,7 +6024,7 @@ test("retirement preserves active storage and node routing and deletes exact own
   const nodeResources = new Map();
   const claims = [
     driver.gatewayPrivateStateClaim(agentId, ownership, namespace),
-    driver.sharedWorkspaceClaim(agentId, ownership, harnessNamespace),
+    driver.harnessWorkspaceClaim(agentId, ownership, harnessNamespace),
   ];
   for (const claim of claims) {
     claim.metadata.uid = claim.metadata.name + "-uid";

@@ -89,11 +89,13 @@ active revision, activates the Kubernetes route when applicable, and retires the
 prior revision. Its live claim remains unfinished until it atomically records
 one attributable activation audit and completes the durable operation.
 Already-active recovery repeats route activation and predecessor retirement
-before that audit and finalization. Idle dedicated app-servers can overlap,
-but normal reconciliation routes requests only to the active revision. This does
-not fence independent processes during Kubernetes node partitions or manual
-replacement. The single-replica gateway can also interrupt serving during
-replacement; see the [gateway rollout limitation](../drivers/kubernetes-compute.md#execution-modes).
+before that audit and finalization. Kubernetes dedicated replacement stops all
+earlier runtimes before preparing the candidate and reuses the Harness-only RWO
+claim. This interrupts serving, including the gateway; a failed candidate needs
+retry or a new revision, not automatic rollback. See the
+[exclusive replacement contract](../drivers/compute.md#production-revision-stages).
+Pod termination does not fence independent processes during node partitions or
+manual replacement.
 See the
 [Harness execution topology flow](../../flows/harness-execution-topology.md) for the
 full placement, runtime, and recovery sequence.

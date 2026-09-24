@@ -59,13 +59,10 @@ Its local mutable tag and unpinned `docker.io/library/node:24-bookworm` base are
 disposable fixture; production images still require the documented pinning and
 review.
 
-The suite inspects restricted tenant labels, quotas and limits, NetworkPolicies,
-nonroot execution, `RuntimeDefault` seccomp, dropped capabilities, denied
-privilege escalation, a read-only root filesystem, and resource bounds. A
-skipped cluster case does not verify enforcement. The HTTP fixture exercises
-infrastructure. Its API-plus-worker case verifies Secret binding admission and
-gateway projection with synthetic values, but genuine Slack/channel runtime
-requires the runtime images and credentials below.
+The suite checks tenant isolation, resource bounds, nonroot execution, seccomp,
+dropped capabilities, and a read-only root filesystem. Skipped cases prove no
+enforcement. API-plus-worker coverage uses synthetic Secrets for binding admission
+and gateway projection; genuine channel runtime needs the images and credentials below.
 
 Live Configuration ConfigMap CRUD and least-privilege RBAC cases require the
 selected disposable cluster and tenant credentials. Without those inputs, they

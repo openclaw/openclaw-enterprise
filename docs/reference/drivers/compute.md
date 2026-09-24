@@ -71,6 +71,9 @@ activation after authorization.
 | `setLifecycleDrivers(drivers)`                                         | Startup requires it when another selected Driver provides [Compute hooks](#optional-selected-driver-hooks).                                                                                                                                         |
 | `activationOrder`, `maintenanceIntervalMs`                             | Control [activation timing](#production-revision-stages) and optional [maintenance](#optional-active-runtime-maintenance).                                                                                                                          |
 
+`requiresStoppedPredecessors(revision)` opts into [exclusive replacement](#production-revision-stages).
+It must be a side-effect-free declaration derived from the admitted revision.
+
 ### Optional startup preflight
 
 `preflight()` checks dependencies before production startup completes. A thrown
@@ -111,7 +114,7 @@ before retrying. See the [initial credential workflow](../console/create-and-dep
 `deleteAgentRuntimeCredentials(binding)` is the idempotent teardown counterpart.
 During Agent deletion, the worker calls it after retiring every revision and
 before removing the Agent's database identity. Kubernetes Compute deletes
-the admitted Agent-owned private-state and shared-workspace claims, workspace
+the admitted Agent-owned private-state and Harness-workspace claims, workspace
 setup Secret, and transport Secret; absence is success. Revision retirement
 retains those claims. Namespace-owned Harness model authentication survives Agent deletion.
 A Driver that supports provisioning but not deletion fails Agent deletion
@@ -242,7 +245,8 @@ and original deployment Principal. The worker prepares and activates the revisio
 again; those operations must be safe to repeat. Failed observations, including
 asynchronous binding failures, schedule another authorized pass without changing
 the active revision. Maintenance survives worker restarts and ends when a newer
-revision replaces it. Without an interval, lifecycle work responds to events. New deployments have limited retries.
+revision replaces it, or is admitted with exclusive replacement enabled. Without
+an interval, lifecycle work responds to events. New deployments have limited retries.
 
 ### Plugin startup warnings
 

@@ -2,7 +2,7 @@
 
 ## Outcome and scope
 
-Status: Implementing. Current contracts live in [Compute](../docs/reference/drivers/compute.md)
+Status: Implemented; draft review pending. Current contracts live in [Compute](../docs/reference/drivers/compute.md)
 and [Kubernetes storage](../docs/reference/drivers/kubernetes-compute/storage-and-credentials.md).
 
 New dedicated Harness workspaces use a durable per-Agent ReadWriteOnce PVC.
@@ -78,3 +78,13 @@ The Compute reference, worker flow, and workspace flow remain between 1,500 and
 2,500 words: each owns one complete contract or lifecycle with source-backed
 failure/recovery behavior. Historical changelog and Manual Notes are retained.
 No changes to existing deployed environments.
+
+Follow-up audit checked first provisioning separately from replacement. Credential
+provisioning still creates only Secrets; Compute creates claims during revision
+preparation, then starts consumers for WaitForFirstConsumer binding. Removed stale
+quickstart, handoff, test-setup, and lifecycle guidance and renamed private
+shared-workspace helpers to Harness workspace helpers without changing PVC names.
+The feature matrix remains a pinned historical snapshot with an explicit current
+storage correction. Documentation inventory and historical experiments retain
+their original evidence. Shortened the Kubernetes test guide after CI found it
+above the word limit; documentation and source checks verify this cleanup separately from runtime proof.

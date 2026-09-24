@@ -266,7 +266,7 @@ for (const runtime of [true, false]) {
     const first = credentialFixture();
     const ownership = { namespaceId: namespace.id, agentId: agent.id };
     const owned = [
-      first.driver.sharedWorkspaceClaim(agent.id, ownership, first.namespaceName),
+      first.driver.harnessWorkspaceClaim(agent.id, ownership, first.namespaceName),
       ...(runtime
         ? [
             first.driver.gatewayPrivateStateClaim(

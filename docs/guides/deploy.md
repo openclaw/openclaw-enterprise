@@ -36,7 +36,7 @@ Choose the guide for your cluster:
 - [Standard Kubernetes](deploy/kubernetes.md): prepare an existing Kubernetes
   cluster, storage, networking, and PostgreSQL.
 - [Amazon EKS](deploy/eks.md): prepare AWS managed Kubernetes, node groups,
-  VPC networking, EBS/EFS storage, and optional RDS PostgreSQL.
+  VPC networking, EBS storage, and optional RDS PostgreSQL.
 
 Both paths use the same Helm chart and shared installation procedure. Cluster
 hosting does not select the Agent model provider.

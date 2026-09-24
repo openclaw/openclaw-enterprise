@@ -166,18 +166,17 @@ and foreign/stale workloads fail closed.
 Kubernetes gateways in both modes mount their own persistent SQLite and media
 directories. Embedded gateways also retain their attested default workspace on
 the same private claim so continued turns survive Pod replacement. Dedicated
-Codex receives only the shared workspace claim; the gateway's nested Codex home
-remains ephemeral. The driver creates dedicated shared and private claims before
+Codex receives only the Harness workspace claim; the gateway's nested Codex home
+remains ephemeral. The driver creates separate Harness and gateway claims before
 their consuming Pods and relies on workload readiness instead of waiting for
 `Bound`, which would deadlock `WaitForFirstConsumer` storage classes. A nonroot
 gateway-image init container prepares private SQLite and media directories
 without credentials or elevated privileges.
 
-For dedicated execution, the gateway entrypoint publishes bundled and plugin
-skills into the shared runtime-assets tree before spawning OpenClaw, so Codex
-sees the directional shared workspace, session, skill, and generated-image
-mounts after the gateway has prepared them. Private gateway state, claim roots,
-`CODEX_HOME`, tokens, and credentials remain outside the dedicated Harness.
+Each image initializes its own bundled and plugin assets. Workspace-file access
+uses the enrolled Harness node; generated-image bytes return through the remote
+media reader. There are no shared workspace, session, skill, or image mounts
+between gateway and Harness. See the [storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage).
 For a selected Sandbox Driver, stopping or retiring a revision always runs its
 required cleanup after stopping a Compute-owned ordinary Harness, or delegates
 provider-owned Harness removal to that cleanup. An absent ordinary Deployment

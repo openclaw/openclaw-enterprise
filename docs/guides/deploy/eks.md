@@ -212,6 +212,6 @@ Open the Agent's **Workspace files** tab in the signed-in Console. Read all four
 paths, save and reload a harmless temporary change, then restore the original
 state. Files absent before deployment should report `NOT_FOUND` with editable
 fields, not `DEPENDENCY_UNAVAILABLE`. Compare PVC identities and existing session
-IDs after cutover; a bound EFS claim or healthy OCC API alone does not prove
+IDs after cutover; a bound PVC or healthy OCC API alone does not prove
 workspace routing. Check configured channel health without sending messages
 unless message delivery is part of your approved verification.
