@@ -163,6 +163,9 @@ Codex turn, and gateway-authored reply; gateway readiness alone is insufficient.
 The publisher passes the checked Enterprise source SHA as `OCC_BUILD_REVISION`.
 The runtime image records it in the OCI revision label and
 `/opt/oce/runtime/build.json`. The private runtime status endpoint exposes only
-that validated commit for the console's `debug=true` image panel. Local builds
+that validated commit and the upstream OpenClaw commit from
+`/opt/oce/runtime/provenance.json` for the console's `debug=true` image panel.
+The `org.openclaw.image.revision` label records the same upstream commit for
+Docker inspection; the build checks that it matches packaged provenance. Local builds
 can pass `--build-arg OCC_BUILD_REVISION=<full-lowercase-git-sha>`; omitted metadata
 remains unknown. Rebuild the runtime image to include this metadata.

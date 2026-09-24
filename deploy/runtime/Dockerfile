@@ -1,3 +1,4 @@
+ARG OPENCLAW_COMMIT=2765f7a3341b8be4835afacbff3d04c6e3c3c79b
 ARG NODE_BASE_IMAGE=docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584
 ARG NODE_RUNTIME_BASE_IMAGE=docker.io/library/node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03
 FROM ${NODE_BASE_IMAGE} AS repository-client-build
@@ -24,7 +25,8 @@ RUN corepack pnpm credentials:build
 FROM ${NODE_BASE_IMAGE} AS openclaw-source
 
 # Keep the source identity separate from its unreleased package version.
-ENV GIT_COMMIT=2765f7a3341b8be4835afacbff3d04c6e3c3c79b
+ARG OPENCLAW_COMMIT
+ENV GIT_COMMIT=${OPENCLAW_COMMIT}
 ENV OPENCLAW_BUILD_TIMESTAMP=2026-09-24T03:55:10Z
 ENV OPENCLAW_PREFER_PNPM=1
 WORKDIR /source
@@ -42,7 +44,8 @@ COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
 RUN node /tmp/build-runtime-assets.mjs inputs /source /inputs
 
 FROM ${NODE_BASE_IMAGE} AS openclaw-dependency-inputs
-ENV GIT_COMMIT=2765f7a3341b8be4835afacbff3d04c6e3c3c79b
+ARG OPENCLAW_COMMIT
+ENV GIT_COMMIT=${OPENCLAW_COMMIT}
 ENV OPENCLAW_BUILD_TIMESTAMP=2026-09-24T03:55:10Z
 ENV OPENCLAW_PREFER_PNPM=1
 WORKDIR /source
@@ -192,7 +195,10 @@ RUN chmod -R a+rX /opt/oce/repository-credentials \
     && test -x /opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/hooks/pre-push \
     && /usr/bin/git config --system --add include.path /run/oce/repository-credentials/gitconfig
 
+ARG OPENCLAW_COMMIT
 ARG OCC_BUILD_REVISION=""
+LABEL org.openclaw.image.revision=${OPENCLAW_COMMIT}
+RUN node -e 'const fs = require("node:fs"); const provenance = JSON.parse(fs.readFileSync("/opt/oce/runtime/provenance.json", "utf8")); if (!/^[a-f0-9]{40}$/.test(process.argv[1]) || provenance.commit !== process.argv[1]) throw new Error("OpenClaw label must match packaged provenance");' "$OPENCLAW_COMMIT"
 LABEL org.opencontainers.image.revision=${OCC_BUILD_REVISION}
 RUN node -e 'const fs = require("node:fs"); const revision = process.argv[1]; if (revision && !/^[a-f0-9]{40}$/.test(revision)) throw new Error("Invalid OCE build revision"); fs.writeFileSync("/opt/oce/runtime/build.json", JSON.stringify({commit: revision || null}));' "$OCC_BUILD_REVISION"
 

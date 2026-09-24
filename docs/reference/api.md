@@ -1521,6 +1521,7 @@ Read observed images and source commits for an Agent's active runtime
 | `data.images[].container` | `string` | Yes | — |
 | `data.images[].image` | `string` | Yes | — |
 | `data.images[].imageId` | `string or null` | Yes | — |
+| `data.images[].openclawCommit` | `string or null` | Yes | — |
 | `data.images[].workload` | `string` | Yes | — |
 | `data.status` | `"observed" or "undeployed" or "unsupported"` | Yes | — |
 | `meta` | `object` | Yes | — |

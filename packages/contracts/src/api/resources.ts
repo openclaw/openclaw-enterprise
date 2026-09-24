@@ -208,6 +208,7 @@ export const AgentRuntimeImagesResponse = Type.Object(
               image: Type.String(),
               imageId: Type.Union([Type.String(), Type.Null()]),
               commit: Type.Union([Type.String({ pattern: "^[a-f0-9]{40}$" }), Type.Null()]),
+              openclawCommit: Type.Union([Type.String({ pattern: "^[a-f0-9]{40}$" }), Type.Null()]),
             },
             { additionalProperties: false },
           ),

@@ -604,15 +604,19 @@ export class DockerComputeDriver implements ComputeDriver {
           [200],
         ),
       );
-      const commit = asRecord(asRecord(image?.Config)?.Labels)?.[
-        "org.opencontainers.image.revision"
-      ];
+      const labels = asRecord(asRecord(image?.Config)?.Labels);
+      const commit = labels?.["org.opencontainers.image.revision"];
+      const openclawCommit = labels?.["org.openclaw.image.revision"];
       images.push({
         workload: name,
         container: role,
         image: container.Config.Image,
         imageId: container.Image,
         commit: typeof commit === "string" && /^[a-f0-9]{40}$/.test(commit) ? commit : null,
+        openclawCommit:
+          typeof openclawCommit === "string" && /^[a-f0-9]{40}$/.test(openclawCommit)
+            ? openclawCommit
+            : null,
       });
     }
     return images;

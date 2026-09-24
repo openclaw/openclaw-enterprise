@@ -7077,22 +7077,27 @@ test("runtime image provenance survives missing metadata but never crosses Pod o
             );
           });
         }
-        return { commit, private: "must not escape" };
+        return { commit, openclawCommit: "b".repeat(40), private: "must not escape" };
       },
     },
   });
   const images = await driver.getRuntimeImages(revision);
   assert.equal(images.length, 6);
   assert.equal(images.filter((image) => image.commit === commit).length, 4);
+  assert.equal(images.filter((image) => image.openclawCommit === "b".repeat(40)).length, 4);
   assert.ok(
-    images.filter((image) => image.container === "sidecar").every((image) => image.commit === null),
+    images
+      .filter((image) => image.container === "sidecar")
+      .every((image) => image.commit === null && image.openclawCommit === null),
   );
   assert.doesNotMatch(JSON.stringify(images), /must not escape/);
   for (mode of ["restart", "missing", "timeout"]) {
     const observed = await driver.getRuntimeImages(revision);
     assert.equal(observed.length, 6);
     assert.ok(
-      observed.every((image) => image.imageId !== null && image.commit === null),
+      observed.every(
+        (image) => image.imageId !== null && image.commit === null && image.openclawCommit === null,
+      ),
       mode,
     );
   }

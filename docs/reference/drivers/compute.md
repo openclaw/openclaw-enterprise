@@ -22,16 +22,17 @@ Every `ComputeDriver` has an `id`,
 an `implementation`, and `capability: "compute"`.
 
 The optional `getRuntimeImages(revision)` method observes containers belonging to
-that admitted revision and returns `{workload, container, image, imageId, commit}`
+that admitted revision and returns `{workload, container, image, imageId, commit, openclawCommit}`
 entries. OCC requires exact Agent read authority and calls the Driver pinned by
 the active revision. The `runtime-images` API reports `undeployed` without an
 active revision and `unsupported` when the Driver omits this method.
 
 Docker reads the immutable image attached to each owned container and its OCI
-revision label, even if the configured tag has moved. Kubernetes reads image
+revision label plus `org.openclaw.image.revision` for the upstream OpenClaw commit,
+even if the configured tag has moved. Kubernetes reads image
 references and IDs from revision-owned Pods, including init and ephemeral
 containers. Its private runtime metadata read is bound to the Pod UID and running
-container ID; the commit applies only to containers with that same image ID.
+container ID; both commits apply only to containers with that same image ID.
 Commits must be full lowercase Git SHAs. Missing IDs or provenance remain `null`.
 These observations do not inventory separate Sandbox Driver workloads.
 

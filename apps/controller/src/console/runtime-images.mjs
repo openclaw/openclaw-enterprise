@@ -65,6 +65,10 @@ export async function renderRuntimeImages(target, { request, namespaceId, lifeti
               ["Docker image", image.image],
               ["Image ID / digest", image.imageId ?? "Unavailable"],
               ["Source commit", image.commit ?? "Unavailable (image has no provenance)"],
+              [
+                "OpenClaw commit",
+                image.openclawCommit ?? "Unavailable (image has no OpenClaw provenance)",
+              ],
             ]) {
               details.append(
                 element("dt", {}, label),

@@ -113,7 +113,9 @@ readable Agents in the selected Namespace.
 exact Agent read, resolves its active revision, then calls its Compute Driver.
 Docker follows attached immutable images. Kubernetes reads revision-owned Pods
 and binds provenance to Pod/container identity, with a two-second metadata deadline.
-The runtime Dockerfile bakes the commit into `/opt/oce/runtime/build.json`.
+The Dockerfile bakes Enterprise metadata into `build.json`;
+`scripts/build-runtime-assets.mjs` records upstream OpenClaw in `provenance.json`.
+Both live under `/opt/oce/runtime/`; Drivers expose separate commits.
 
 Navigation preserves the flag and rejects stale responses; removing it stops
 these reads. Missing provenance and failures remain explicit. The
@@ -319,6 +321,8 @@ uncertain response disables replay until refresh and inspection.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-24 17:20: Expose upstream OpenClaw provenance separately. (01a0c179-19f7-7111-8bb4-fc7680da5545 - bd1a5c46eb069bfa7feedbb99b074dc015c4e9bc)
 
 - 2026-09-24 15:44: Trace opt-in sidebar build metadata and authorized Compute image observations. (01a0c179-19f7-7111-8bb4-fc7680da5545 - 6b5c9093)
 

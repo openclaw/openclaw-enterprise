@@ -2729,8 +2729,9 @@ test(
           `${a.workload}/${a.container}`.localeCompare(`${b.workload}/${b.container}`);
         assert.deepEqual(
           imageRead.data.images
-            .map(({ commit, ...identity }) => {
+            .map(({ commit, openclawCommit, ...identity }) => {
               assert.ok(commit === null || /^[a-f0-9]{40}$/.test(commit));
+              assert.ok(openclawCommit === null || /^[a-f0-9]{40}$/.test(openclawCommit));
               return identity;
             })
             .sort(byContainer),

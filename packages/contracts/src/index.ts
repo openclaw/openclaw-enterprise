@@ -870,6 +870,7 @@ export interface RuntimeImage {
   readonly image: string;
   readonly imageId: string | null;
   readonly commit: string | null;
+  readonly openclawCommit: string | null;
 }
 
 export interface ComputePreflightWarning {

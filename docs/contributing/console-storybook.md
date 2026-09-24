@@ -165,7 +165,8 @@ storybook fixture is not evidence that the real API or infrastructure works.
 ## Debug image walkthrough
 
 Open **Pages / Navigation / Debug runtime images**. Expand an Agent and inspect
-the image reference, digest, and commit, including a sidecar with unknown provenance.
+the gateway image reference, digest, Enterprise source commit, and separate upstream
+OpenClaw commit. The sidecar has unknown provenance for both commits.
 Navigate to Namespaces and confirm `debug=true` persists. Repeat in the mobile
 drawer. **Debug metadata unavailable** covers a failed read; ordinary navigation
 stories keep diagnostics hidden. These are presentation fixtures; Docker image

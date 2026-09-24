@@ -1940,6 +1940,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         const spec = asRecord(pod.spec);
         const status = asRecord(pod.status);
         const commit = asRecord(provenance?.status)?.commit;
+        const openclawCommit = asRecord(provenance?.status)?.openclawCommit;
         const sameContainer =
           provenance?.podUid === metadata.uid &&
           provenance?.containerId !== undefined &&
@@ -1980,6 +1981,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
                 typeof commit === "string" &&
                 /^[a-f0-9]{40}$/.test(commit)
                   ? commit
+                  : null,
+              openclawCommit:
+                sameContainer &&
+                imageId !== null &&
+                imageId === runtimeImageId &&
+                typeof openclawCommit === "string" &&
+                /^[a-f0-9]{40}$/.test(openclawCommit)
+                  ? openclawCommit
                   : null,
             });
           }

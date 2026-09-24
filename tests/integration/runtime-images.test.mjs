@@ -24,6 +24,7 @@ test(
     const directory = await mkdtemp(join(tmpdir(), "oce-runtime-images-"));
     const tag = `oce-runtime-images:${randomUUID()}`;
     const commit = "1234567890abcdef1234567890abcdef12345678";
+    const openclawCommit = "abcdef1234567890abcdef1234567890abcdef12";
     const names = [];
     t.after(async () => {
       for (const name of names) {
@@ -34,7 +35,7 @@ test(
     });
     await writeFile(
       join(directory, "Dockerfile"),
-      `FROM ${base}\nLABEL org.opencontainers.image.revision=${commit}\nLABEL private.fixture=must-not-leak\n`,
+      `FROM ${base}\nLABEL org.opencontainers.image.revision=${commit}\nLABEL org.openclaw.image.revision=${openclawCommit}\nLABEL private.fixture=must-not-leak\n`,
     );
     await docker("build", "-t", tag, directory);
     const imageId = JSON.parse((await docker("image", "inspect", tag)).stdout)[0].Id;
@@ -70,7 +71,7 @@ test(
     await docker("tag", base, tag);
     const result = await compute.getRuntimeImages(revision);
     assert.deepEqual(result, [
-      { workload: name, container: "gateway", image: tag, imageId, commit },
+      { workload: name, container: "gateway", image: tag, imageId, commit, openclawCommit },
     ]);
     assert.doesNotMatch(JSON.stringify(result), /must-not-leak/);
     await docker("rm", "-f", name);
@@ -90,7 +91,7 @@ test(
 );
 
 test(
-  "runtime image metadata endpoint returns only a validated baked commit",
+  "runtime image metadata endpoint validates Enterprise and OpenClaw provenance independently",
   selected,
   async () => {
     const script = `${PLUGIN_RUNTIME_HELPERS}
@@ -101,12 +102,18 @@ startPluginRuntimeStatusServer();
 (async () => {
   const assert = require("node:assert/strict");
   for (const value of ["a".repeat(40), "invalid", null]) {
+    fs.writeFileSync("/opt/oce/runtime/provenance.json", JSON.stringify({source: "https://github.com/openclaw/openclaw", commit: value, secret: "never expose"}));
     fs.writeFileSync("/opt/oce/runtime/build.json", JSON.stringify({commit: value, secret: "never expose"}));
     const response = await fetch("http://127.0.0.1:18888/openclaw/runtime/image");
-    assert.deepEqual(await response.json(), {commit: typeof value === "string" && value.length === 40 ? value : null});
+    assert.deepEqual(await response.json(), {commit: typeof value === "string" && value.length === 40 ? value : null, openclawCommit: typeof value === "string" && value.length === 40 ? value : null});
   }
+  fs.writeFileSync("/opt/oce/runtime/provenance.json", JSON.stringify({source: "https://example.com/foreign", commit: "b".repeat(40)}));
+  assert.deepEqual(await (await fetch("http://127.0.0.1:18888/openclaw/runtime/image")).json(), {commit: null, openclawCommit: null});
+  fs.writeFileSync("/opt/oce/runtime/provenance.json", JSON.stringify({source: "https://github.com/openclaw/openclaw", commit: "b".repeat(40)}));
   fs.unlinkSync("/opt/oce/runtime/build.json");
-  assert.deepEqual(await (await fetch("http://127.0.0.1:18888/openclaw/runtime/image")).json(), {commit: null});
+  assert.deepEqual(await (await fetch("http://127.0.0.1:18888/openclaw/runtime/image")).json(), {commit: null, openclawCommit: "b".repeat(40)});
+  fs.unlinkSync("/opt/oce/runtime/provenance.json");
+  assert.deepEqual(await (await fetch("http://127.0.0.1:18888/openclaw/runtime/image")).json(), {commit: null, openclawCommit: null});
   process.exit(0);
 })().catch(error => { console.error(error); process.exit(1); });`;
     await docker(

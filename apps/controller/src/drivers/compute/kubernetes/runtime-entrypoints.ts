@@ -240,7 +240,15 @@ function startPluginRuntimeStatusServer() {
         if (typeof metadata.commit === "string" && /^[a-f0-9]{40}$/.test(metadata.commit)) commit = metadata.commit;
       } catch {}
       response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ commit }));
+      let openclawCommit = null;
+      try {
+        const provenance = JSON.parse(pluginReadFileSync("/opt/oce/runtime/provenance.json", "utf8"));
+        if (provenance.source === "https://github.com/openclaw/openclaw" &&
+            typeof provenance.commit === "string" && /^[a-f0-9]{40}$/.test(provenance.commit)) {
+          openclawCommit = provenance.commit;
+        }
+      } catch {}
+      response.end(JSON.stringify({ commit, openclawCommit }));
       return;
     }
     if (pathname === RUNTIME_STATUS_PATH) {

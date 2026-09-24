@@ -71,6 +71,7 @@ export const scenarios = {
           image: "ghcr.io/example/runtime:sha-1234567890abcdef1234567890abcdef12345678",
           imageId: `sha256:${"a".repeat(64)}`,
           commit: "1234567890abcdef1234567890abcdef12345678",
+          openclawCommit: "abcdef1234567890abcdef1234567890abcdef12",
         },
         {
           workload: "research/agent-runtime",
@@ -78,12 +79,13 @@ export const scenarios = {
           image: "example/log-forwarder:1",
           imageId: `sha256:${"b".repeat(64)}`,
           commit: null,
+          openclawCommit: null,
         },
       ],
     },
     actions: [{ selector: ".runtime-debug-images summary", click: true }],
     description:
-      "Inspect the OCE commit and each Agent's observed runtime images. Expand an Agent, compare image IDs and commits, then navigate to Namespaces: debug=true remains enabled. Remove the flag to hide diagnostics.",
+      "Inspect the OCE commit and each Agent's observed runtime images. Expand an Agent, compare the gateway image ID, Enterprise source commit, and upstream OpenClaw commit, then navigate to Namespaces: debug=true remains enabled. Remove the flag to hide diagnostics.",
     gap: "Simulated image identities demonstrate presentation. Native Driver integration verifies actual Docker and Kubernetes observations separately.",
   },
   runtimeImagesUnavailable: {

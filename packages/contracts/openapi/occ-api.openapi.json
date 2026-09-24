@@ -6470,9 +6470,22 @@
                               "container": { "type": "string" },
                               "image": { "type": "string" },
                               "imageId": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+                              "openclawCommit": {
+                                "anyOf": [
+                                  { "pattern": "^[a-f0-9]{40}$", "type": "string" },
+                                  { "type": "null" }
+                                ]
+                              },
                               "workload": { "type": "string" }
                             },
-                            "required": ["workload", "container", "image", "imageId", "commit"],
+                            "required": [
+                              "workload",
+                              "container",
+                              "image",
+                              "imageId",
+                              "commit",
+                              "openclawCommit"
+                            ],
                             "type": "object"
                           },
                           "type": "array"
