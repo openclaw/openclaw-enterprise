@@ -4734,7 +4734,14 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
       description: "Hosted plugin",
       interface: {
         short_description: "Hosted tools",
-        ...(name === "calendar" ? { logo_url: logoUrl } : {}),
+        ...(name === "calendar"
+          ? {
+              logo_url: logoUrl,
+              website_url: "https://calendar.example/",
+              privacy_policy_url: "https://calendar.example/privacy",
+              terms_of_service_url: "https://calendar.example/terms",
+            }
+          : {}),
         ...(name === "plugin-0" ? { composer_icon_url: brokenLogoUrl } : {}),
       },
       requires_local_executor: false,
@@ -4778,12 +4785,23 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
         plugins: url.searchParams.has("pageToken")
           ? [hosted("Documents")]
           : [
-              hosted("Admin-disabled", { status: "DISABLED_BY_ADMIN" }),
+              hosted("Admin-disabled", {
+                status: "DISABLED_BY_ADMIN",
+                disabled_reason: "disabled_by_admin",
+              }),
               hosted("calendar"),
               ...Array.from({ length: 18 }, (_, index) => hosted(`plugin-${index}`)),
             ],
         pagination: { next_page_token: url.searchParams.has("pageToken") ? null : "page-two" },
       });
+    }
+    if (url.pathname.endsWith("/plugins/remote-Admin-disabled")) {
+      return Response.json(
+        hosted("Admin-disabled", {
+          status: "DISABLED_BY_ADMIN",
+          disabled_reason: "disabled_by_admin",
+        }),
+      );
     }
     if (url.pathname.endsWith("/plugins/remote-calendar")) {
       if (failTools) {
@@ -4831,6 +4849,39 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
   const calendar = dialog.getByRole("button", { name: "Calendar", exact: true });
   await calendar.waitFor();
+  const setup = dialog.locator(".plugin-access-help");
+  await setup.getByText(/Service accounts/).waitFor();
+  assert.match(await setup.textContent(), /App connection status is not verified/);
+  for (const [name, href] of [
+    ["Manage workspace plugins", "https://chatgpt.com/admin/plugins?catalog=GLOBAL"],
+    ["Service account credentials", "https://admin.openai.com/"],
+    [
+      "OCE plugin setup",
+      "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/reference/drivers/plugin-bundled.md#selection-and-catalogs",
+    ],
+  ]) {
+    const link = setup.getByRole("link", { name, exact: true });
+    assert.equal(await link.getAttribute("href"), href);
+    assert.equal(await link.getAttribute("target"), "_blank");
+    assert.equal(await link.getAttribute("rel"), "noopener noreferrer");
+  }
+  // Access guidance is visible before opening details, with a separate actionable link.
+  const unavailableRow = dialog.locator(".plugin-list-row").filter({
+    has: page.getByRole("button", { name: "Admin-disabled", exact: true }),
+  });
+  assert.match(
+    await unavailableRow.locator(".plugin-unavailable").textContent(),
+    /Disabled by a ChatGPT workspace administrator/,
+  );
+  const rowHelp = unavailableRow.getByRole("link", {
+    name: "Manage workspace plugins",
+    exact: true,
+  });
+  assert.equal(
+    await rowHelp.getAttribute("href"),
+    "https://chatgpt.com/admin/plugins?catalog=GLOBAL",
+  );
+  assert.equal(await rowHelp.evaluate((node) => node.closest("button") === null), true);
   const listLogo = calendar.locator(".plugin-logo img");
   await listLogo.evaluate((image) => image.decode());
   assert.ok(await listLogo.evaluate((image) => image.naturalWidth > 0));
@@ -4858,6 +4909,23 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
       await dialog.getByRole("button", { name: "Admin-disabled", exact: true }).elementHandle(),
     ),
     true,
+  );
+
+  const unavailableDetails = page.waitForResponse((response) =>
+    response.url().endsWith("/agents/plugins/details"),
+  );
+  await unavailableRow.getByRole("button", { name: "Admin-disabled", exact: true }).click();
+  await unavailableDetails;
+  const disabledDetail = dialog.locator(".plugin-detail");
+  assert.match(
+    await disabledDetail.locator(".plugin-unavailable").textContent(),
+    /Disabled by a ChatGPT workspace administrator/,
+  );
+  assert.equal(
+    await disabledDetail
+      .getByRole("link", { name: "Manage workspace plugins", exact: true })
+      .getAttribute("href"),
+    "https://chatgpt.com/admin/plugins?catalog=GLOBAL",
   );
 
   // Each navigation fetches a server page and replaces the available list.
@@ -4901,18 +4969,50 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   assert.ok(await detailLogo.evaluate((image) => image.naturalWidth > 0));
   assert.equal(await detailLogo.getAttribute("alt"), "");
   assert.equal(await detailLogo.getAttribute("referrerpolicy"), "no-referrer");
+  for (const [name, href] of [
+    ["Website", "https://calendar.example/"],
+    ["Privacy policy", "https://calendar.example/privacy"],
+    ["Terms of service", "https://calendar.example/terms"],
+  ]) {
+    const link = dialog.getByRole("link", { name, exact: true });
+    assert.equal(await link.getAttribute("href"), href);
+    assert.equal(await link.getAttribute("target"), "_blank");
+    assert.equal(await link.getAttribute("rel"), "noopener noreferrer");
+  }
   await dialog.getByRole("button", { name: "Add Calendar", exact: true }).click();
   const selected = { "codex-plugin:calendar@openai-curated-remote": { enabled: true } };
   assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), selected);
   await dialog.getByRole("button", { name: "Configured plugins", exact: true }).click();
   await dialog.getByRole("button", { name: "Calendar", exact: true }).waitFor();
   await dialog.getByRole("button", { name: "Available plugins", exact: true }).click();
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  const reminder = page.locator(".plugin-setup-reminder");
+  assert.equal(await reminder.isVisible(), true);
+  await reminder
+    .getByText("Check plugin access and credentials before deployment", { exact: true })
+    .click();
+  await reminder.getByText(/App connection status is not verified/).waitFor();
+  assert.equal(
+    await reminder
+      .getByRole("link", { name: "Service account credentials", exact: true })
+      .getAttribute("href"),
+    "https://admin.openai.com/",
+  );
+  assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), selected);
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
 
   // A credential change fences an older page response while preserving explicit selections.
   holdList = true;
   await dialog.getByRole("button", { name: "Next page", exact: true }).click();
   await listPending;
   await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  await token.fill("");
+  const clearedSetup = page.locator(".plugin-access-help");
+  assert.equal(await clearedSetup.locator("a").count(), 0);
+  assert.equal((await clearedSetup.textContent()).trim(), "");
+  assert.equal(await reminder.isVisible(), false);
+  assert.equal(await reminder.locator("a").count(), 0);
+  assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), selected);
   await token.fill("at-browser-plugin-two");
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   await dialog.getByRole("button", { name: "New-account-plugin", exact: true }).waitFor();
