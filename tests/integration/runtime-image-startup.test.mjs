@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
+import { runInNewContext } from "node:vm";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT as DOCKER_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/docker/index.ts";
 import {
@@ -175,6 +176,68 @@ console.log("WORKSPACE_INITIALIZATION_PASSED");
     assert.match(stdout, /WORKSPACE_INITIALIZATION_PASSED/);
   },
 );
+test("Kubernetes runtime auth probe preserves the bounded Bedrock Pod Identity contract", () => {
+  assert.match(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT, /"models", "status"/);
+  assert.match(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT, /"agent", "exec", "Reply with READY\."/);
+  assert.match(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT, /"--config", configPath/);
+  assert.match(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT, /"--cwd", directory \+ "\/workspace"/);
+  assert.match(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT, /"--timeout", "15"/);
+  assert.match(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT, /amazon-bedrock/);
+  assert.match(
+    KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+    /configuration\.tools = \{ deny: \["\*"\] \}/,
+  );
+  assert.doesNotMatch(
+    KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+    /configuration\.agents\.defaults\.tools/,
+  );
+  assert.match(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT, /169\.254\.170\.23/);
+  assert.match(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT, /AWS_CONTAINER_CREDENTIALS_FULL_URI/);
+  assert.match(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT, /AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE/);
+  assert.doesNotMatch(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT, /--isolated/);
+  assert.doesNotMatch(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT, /--auth-env-only/);
+  assert.doesNotMatch(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT, /AWS_ACCESS_KEY_ID/);
+  assert.doesNotMatch(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT, /AWS_SECRET_ACCESS_KEY/);
+  assert.doesNotMatch(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT, /AWS_SESSION_TOKEN/);
+  assert.doesNotMatch(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT, /AWS_PROFILE/);
+});
+
+test("Bedrock readiness accepts zero bridge counters and rejects tool or failed model results", () => {
+  // Evaluate the production result classifier against the pinned native CLI envelope.
+  // This protects readiness parsing; it does not simulate AWS credential acquisition.
+  const start = KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT.indexOf(
+    "function bedrockAgentProbeSucceeded(",
+  );
+  const end = KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT.indexOf(
+    "function probeOpenClawAuthenticationFailureCode(",
+    start,
+  );
+  const accepts = runInNewContext(
+    KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT.slice(start, end) + "\nbedrockAgentProbeSucceeded",
+  );
+  const model = "amazon-bedrock/us.amazon.nova-micro-v1:0";
+  const valid = {
+    ok: true,
+    status: "ok",
+    provider: "amazon-bedrock",
+    model: "us.amazon.nova-micro-v1:0",
+    final: "READY",
+    payloads: [],
+    toolSummary: { calls: 0 },
+    bridgeCalls: { search: 0, describe: 0, call: 0 },
+  };
+  assert.equal(accepts(JSON.stringify(valid), model), true);
+  for (const delta of [
+    { bridgeCalls: { search: 0, describe: 0, call: 1 } },
+    { codeModeEngaged: true },
+    { toolSummary: { calls: 1 } },
+    { provider: "other" },
+    { status: "timeout" },
+    { final: "" },
+  ]) {
+    assert.equal(accepts(JSON.stringify({ ...valid, ...delta }), model), false);
+  }
+});
 
 async function runDocker(args, options = {}) {
   return execute(docker, args, {
@@ -361,6 +424,16 @@ function assertBundledSlackPluginLoaded(pluginList) {
   );
   assert.equal(slackPlugin.dependencyStatus?.requiredInstalled, true);
   assert.deepEqual(slackPlugin.dependencyStatus?.missing, []);
+}
+
+function assertBundledBedrockPluginLoaded(pluginList) {
+  const bedrockPlugin = assertBundledPluginLoaded(pluginList, "amazon-bedrock");
+  assert.match(
+    bedrockPlugin.source,
+    /\/app\/node_modules\/openclaw\/dist\/extensions\/amazon-bedrock\/index\.js$/,
+  );
+  assert.equal(bedrockPlugin.dependencyStatus?.requiredInstalled, true);
+  assert.deepEqual(bedrockPlugin.dependencyStatus?.missing, []);
 }
 
 function assertBundledPluginLoaded(pluginList, pluginId) {
@@ -721,6 +794,7 @@ test(
     assertGatewayReadyLog(entries);
     assertGatewayModelLog(entries, `openai/${runtimeImageModel}`);
     assertBundledSlackPluginLoaded(pluginList);
+    assertBundledBedrockPluginLoaded(pluginList);
     assertNoPackagingFailure(logs);
   },
 );

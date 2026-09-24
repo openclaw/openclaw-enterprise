@@ -16,7 +16,18 @@ private routing, also configure the namespace and Pod selectors in
 Each tenant starts with default-deny ingress and egress. Explicit policies allow
 DNS, approved gateway clients, and required communication between an Agent's
 gateway and dedicated Harness. Cross-tenant traffic, traffic between different
-Agents, Kubernetes API access, and cloud metadata access remain denied.
+Agents, Kubernetes API access, and EC2 instance metadata access remain denied.
+
+For embedded OpenClaw Agents using Amazon Bedrock with
+`harnessAuth.method: "runtime"`, the driver also allows the exact Agent gateway
+to reach the EKS Pod Identity credential endpoint at `169.254.170.23/32` on
+TCP/80. The operator must install EKS Pod Identity and associate the Agent's
+ServiceAccount with an authorized IAM role. The driver creates this policy
+during revision preparation; no separate credential-endpoint policy is needed.
+Other authentication methods and dedicated workloads receive no such allowance.
+Other link-local destinations, including EC2 IMDS at `169.254.169.254`, remain
+denied. Runtime authentication fails closed when workload credentials or the
+startup model turn fail.
 
 For Compute-owned startup failure evidence and plugin reporting, set
 `network.pluginStatusProxySourceCidrs` to the precise source addresses used by the

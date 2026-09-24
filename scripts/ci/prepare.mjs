@@ -992,7 +992,11 @@ async function prepareFixtureImage(statePath, state, cluster) {
     image,
     "OCC_TEST_KUBERNETES_IMAGE",
   );
-  return { image: registered.reference, resourceId: resource.id };
+  return {
+    dockerImage: registered.hostImageId,
+    image: registered.reference,
+    resourceId: resource.id,
+  };
 }
 
 async function pinFixtureImageInK3d(cluster, image) {
@@ -1595,6 +1599,7 @@ async function prepareLane({ lane, statePath }) {
       env.OCC_TEST_KUBERNETES_KUBECONFIG = cluster.kubeconfig;
       env.OCC_TEST_KUBERNETES_CONTEXT = cluster.context;
       env.OCC_TEST_KUBERNETES_IMAGE = fixture.image;
+      env.OCC_TEST_KUBERNETES_DOCKER_IMAGE = fixture.dockerImage;
       env.OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS = cluster.pluginStatusProxyCidrs;
       break;
     }

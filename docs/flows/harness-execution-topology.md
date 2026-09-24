@@ -114,10 +114,21 @@ places the Gateway Pod and private-state initializer on trusted nodes.
 Production dedicated workloads keep separate Agent-owned gateway/Codex
 ServiceAccounts, authenticated same-Agent transport, and default-deny network
 policies with auth-method-specific provider login egress. Embedded OpenClaw uses
-one combined workload with its exact Agent identity and model key. The worker
+one combined workload with its exact Agent identity and selected model credentials. The worker
 has scoped Secret permissions for admitted delivery and node enrollment. Its
 trusted workload-writing authority also projects tenant Secrets. Gateway Pods
 receive no controller or Harness Kubernetes credentials.
+
+`apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.agentNetworkPolicies`
+
+For embedded Bedrock runtime authentication, the generated Agent runtime policy
+adds the narrow EKS Pod Identity credential-endpoint allowance defined in
+[Kubernetes networking](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking).
+The worker applies the policy during revision preparation before starting the
+workload. The embedded startup probe obtains workload credentials and executes
+a bounded Bedrock model turn; credential or model failure keeps the gateway
+unready. EC2 instance metadata stays blocked, and the allowance is absent for
+managed API-key and dedicated workloads.
 
 The selected Sandbox consumes the same rendered projections and explicit login
 mode in `HarnessWorkloadRequirements`. Unsupported upstream projection fails

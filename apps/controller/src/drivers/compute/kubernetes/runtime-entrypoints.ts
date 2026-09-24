@@ -1053,12 +1053,101 @@ function holdFailedAuthentication(check = "model-probe", code = "UNAVAILABLE") {
 // Its JSON status, not its process exit status alone, establishes provider acceptance.
 const OPENCLAW_AUTH_PROBE_HELPERS = String.raw`
 ${AUTH_PROBE_FAILURE_HELPER}
+function writeProbeConfiguration(fs, directory, configuration, options = {}) {
+  configuration.agents.defaults.workspace = directory + "/workspace";
+  if (options.denyTools === true) {
+    configuration.tools = { deny: ["*"] };
+  }
+  fs.mkdirSync(directory + "/workspace", { mode: 0o700 });
+  const configPath = directory + "/openclaw.json";
+  fs.writeFileSync(configPath, JSON.stringify(configuration), { mode: 0o600 });
+  return configPath;
+}
+
+function bedrockCredentialEnvironment(directory, configPath, region) {
+  if (typeof region !== "string" || !/^[a-z0-9-]+$/.test(region)) return undefined;
+  for (const name of ["AWS_REGION", "AWS_DEFAULT_REGION"]) {
+    if (process.env[name]?.trim() && process.env[name] !== region) return undefined;
+  }
+  const credentialsUri = process.env.AWS_CONTAINER_CREDENTIALS_FULL_URI;
+  const tokenFile = process.env.AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE;
+  if (typeof credentialsUri !== "string" || typeof tokenFile !== "string") return undefined;
+  try {
+    const parsed = new URL(credentialsUri);
+    if (parsed.protocol !== "http:" || parsed.hostname !== "169.254.170.23") return undefined;
+    if (parsed.port !== "" && parsed.port !== "80") return undefined;
+  } catch {
+    return undefined;
+  }
+  return {
+    PATH: process.env.PATH,
+    HOME: directory,
+    OPENCLAW_STATE_DIR: directory + "/state",
+    OPENCLAW_CONFIG_PATH: configPath,
+    AWS_EC2_METADATA_DISABLED: "true",
+    AWS_REGION: region,
+    AWS_DEFAULT_REGION: region,
+    AWS_CONTAINER_CREDENTIALS_FULL_URI: credentialsUri,
+    AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE: tokenFile,
+  };
+}
+
+function runBedrockAgentProbe(spawnSync, directory, configPath, environment, model) {
+  return spawnSync("node", [
+    "/app/openclaw.mjs", "agent", "exec", "Reply with READY.",
+    "--config", configPath,
+    "--cwd", directory + "/workspace",
+    "--model", model,
+    "--timeout", "15",
+    "--json",
+  ], {
+    cwd: directory,
+    env: environment,
+    encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+    timeout: 30000, killSignal: "SIGKILL", maxBuffer: 262144,
+  });
+}
+
+function bedrockAgentProbeSucceeded(stdout, model) {
+  const payload = JSON.parse(stdout);
+  const expectedModel = model.slice("amazon-bedrock/".length);
+  const payloads = Array.isArray(payload.payloads) ? payload.payloads : [];
+  const toolSummary = payload.toolSummary;
+  const toolSummaryText = toolSummary === undefined ? "" : JSON.stringify(toolSummary).toLowerCase();
+  return payload.ok === true &&
+    payload.status === "ok" &&
+    payload.provider === "amazon-bedrock" &&
+    payload.model === expectedModel &&
+    typeof payload.final === "string" &&
+    payload.final.trim().length > 0 &&
+    payload.error === undefined &&
+    payload.codeModeEngaged !== true &&
+    (payload.bridgeCalls === undefined ||
+      (payload.bridgeCalls?.search === 0 && payload.bridgeCalls?.describe === 0 && payload.bridgeCalls?.call === 0)) &&
+    payloads.every((entry) => entry?.isError !== true) &&
+    (toolSummary === undefined ||
+      (toolSummary?.calls === 0 &&
+        !toolSummaryText.includes("bridge") &&
+        !toolSummaryText.includes("code")));
+}
+
 function probeOpenClawAuthenticationFailureCode() {
   const fs = require("node:fs");
   const { spawnSync } = require("node:child_process");
   const directory = fs.mkdtempSync("/tmp/openclaw-auth-probe-");
   try {
     const model = process.env.OPENCLAW_HARNESS_MODEL;
+    if (typeof model === "string" && model.startsWith("amazon-bedrock/")) {
+      const configuration = JSON.parse(process.env.OPENCLAW_HARNESS_PROBE_CONFIG);
+      if (configuration.agents?.defaults?.model !== model) return "UNAVAILABLE";
+      const configPath = writeProbeConfiguration(fs, directory, configuration, { denyTools: true });
+      const environment = bedrockCredentialEnvironment(directory, configPath, process.env.OPENCLAW_HARNESS_PROVIDER_REGION);
+      if (environment === undefined) return "UNAVAILABLE";
+      const result = runBedrockAgentProbe(spawnSync, directory, configPath, environment, model);
+      if (result.error?.code === "ETIMEDOUT" || result.signal === "SIGKILL") return "MODEL_PROBE_TIMEOUT";
+      if (result.status !== 0 || result.error) return "MODEL_PROBE_FAILED";
+      return bedrockAgentProbeSucceeded(result.stdout, model) ? undefined : "MODEL_PROBE_FAILED";
+    }
     const provider = process.env.OPENCLAW_HARNESS_PROVIDER;
     const credentialEnvironment = process.env.OPENCLAW_HARNESS_CREDENTIAL_ENV;
     if (typeof provider !== "string" || typeof credentialEnvironment !== "string" ||

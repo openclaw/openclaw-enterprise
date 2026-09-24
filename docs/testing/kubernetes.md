@@ -45,6 +45,12 @@ NetworkPolicies. They create scoped RBAC and resources, and configure the
 selected cluster's local-path provisioner for shared filesystem tests. Because
 that changes cluster-wide storage configuration, use a disposable cluster.
 
+The lifecycle fixture checks Pod Identity allowance, wrong-port/IMDS denial, and
+removal after switching to API-key auth using a disposable Docker link-local
+network. It proves networking only; the credential-free Bedrock gateway stays
+unready. For cluster-only image aliases, set `OCC_TEST_KUBERNETES_DOCKER_IMAGE`
+to the local image ID; CI supplies it.
+
 ### Fixture images and security controls
 
 The disposable `tests/fixtures/kubernetes` image runs as nonroot and uses the

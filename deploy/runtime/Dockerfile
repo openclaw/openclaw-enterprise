@@ -46,7 +46,7 @@ RUN --mount=type=secret,id=build-ca,required=false \
     rm -rf /tmp/pnpm-store
 # Follow the pinned upstream Docker assembly; plugin-local dependencies remain
 # separate when a plugin and core require different versions.
-RUN OPENCLAW_INTERNAL_DOCKER_BUILD_PLUGIN_IDS=codex,slack \
+RUN OPENCLAW_INTERNAL_DOCKER_BUILD_PLUGIN_IDS=codex,slack,amazon-bedrock \
     OPENCLAW_RUN_NODE_SKIP_DTS_BUILD=1 pnpm_config_verify_deps_before_run=false \
     pnpm build:docker \
     && pnpm_config_verify_deps_before_run=false pnpm ui:build
@@ -71,7 +71,7 @@ RUN rm -rf node_modules ui/node_modules \
 FROM openclaw-production-deps AS openclaw-runtime-assets
 COPY --from=openclaw-build-output /source/ ./
 RUN node scripts/postinstall-bundled-plugins.mjs \
-    && OPENCLAW_EXTENSIONS=codex,slack node scripts/prune-docker-plugin-dist.mjs \
+    && OPENCLAW_EXTENSIONS=codex,slack,amazon-bedrock node scripts/prune-docker-plugin-dist.mjs \
     && find dist -type f \( -name '*.d.ts' -o -name '*.d.mts' -o -name '*.d.cts' -o -name '*.map' \) -delete \
     && if [ -L node_modules/@openclaw/ai ]; then \
       target="$(readlink -f node_modules/@openclaw/ai)"; \
@@ -89,7 +89,7 @@ RUN node scripts/postinstall-bundled-plugins.mjs \
 RUN node --input-type=module <<'NODE'
 import { existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
-for (const plugin of ["codex", "slack"]) {
+for (const plugin of ["codex", "slack", "amazon-bedrock"]) {
   const root = resolve("dist/extensions", plugin);
   const manifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
   for (const name of Object.keys(manifest.dependencies ?? {})) {
@@ -109,7 +109,7 @@ RUN mkdir /out \
       node-host-launcher.mjs openclaw.mjs extensions skills docs qa \
     && cd /out \
     && sha256sum openclaw-runtime.tar.gz > openclaw-runtime.tar.gz.sha256 \
-    && node -e 'const fs = require("node:fs"); const crypto = require("node:crypto"); fs.writeFileSync("provenance.json", JSON.stringify({source: "https://github.com/openclaw/openclaw", commit: process.env.GIT_COMMIT, sourceArchiveSha256: "42a420286dcad558b9710b7b583dd9e489bb07b3a835e3e19b69184b22fd416b", artifactKind: "assembled-runtime-root", runtimeArchiveSha256: fs.readFileSync("openclaw-runtime.tar.gz.sha256", "utf8").split(" ")[0], lockfileSha256: crypto.createHash("sha256").update(fs.readFileSync("/source/pnpm-lock.yaml")).digest("hex"), packageManager: require("/source/package.json").packageManager, platform: process.platform, architecture: process.arch, plugins: ["codex", "slack"]}, null, 2) + "\n");'
+    && node -e 'const fs = require("node:fs"); const crypto = require("node:crypto"); fs.writeFileSync("provenance.json", JSON.stringify({source: "https://github.com/openclaw/openclaw", commit: process.env.GIT_COMMIT, sourceArchiveSha256: "42a420286dcad558b9710b7b583dd9e489bb07b3a835e3e19b69184b22fd416b", artifactKind: "assembled-runtime-root", runtimeArchiveSha256: fs.readFileSync("openclaw-runtime.tar.gz.sha256", "utf8").split(" ")[0], lockfileSha256: crypto.createHash("sha256").update(fs.readFileSync("/source/pnpm-lock.yaml")).digest("hex"), packageManager: require("/source/package.json").packageManager, platform: process.platform, architecture: process.arch, plugins: ["codex", "slack", "amazon-bedrock"]}, null, 2) + "\n");'
 
 FROM ${NODE_BASE_IMAGE} AS runtime
 
@@ -176,7 +176,8 @@ RUN mkdir -p node_modules/openclaw/dist/extensions ./plugin-skills /etc/openclaw
   && node -e 'if (typeof require("ws") !== "function") throw new Error("Runtime WebSocket dependency unavailable")' \
   && test "$(codex --version)" = "codex-cli ${OPENAI_CODEX_VERSION}" \
   && test -f /app/dist/extensions/codex/openclaw.plugin.json \
-  && test -f /app/dist/extensions/slack/openclaw.plugin.json
+  && test -f /app/dist/extensions/slack/openclaw.plugin.json \
+  && test -f /app/dist/extensions/amazon-bedrock/openclaw.plugin.json
 
 COPY --from=repository-client-build /build/.build/repository-credentials/client/package.json /opt/oce/repository-credentials/package.json
 COPY --from=repository-client-build /build/.build/repository-credentials/client/dist /opt/oce/repository-credentials/dist

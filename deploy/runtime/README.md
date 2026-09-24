@@ -9,7 +9,7 @@ entrypoints:
 
 The Dockerfile builds OpenClaw from a verified public source archive, using its
 pinned package manager, frozen dependency lockfile, and upstream Docker assembly.
-Codex and Slack come from that same source. The selected commit contains
+Codex, Slack, and Amazon Bedrock come from that same source. The selected commit contains
 the restricted workspace-node commands and saved-token-first pairing required by
 split storage; published `2026.9.5` packages do not contain that complete contract.
 
@@ -48,10 +48,12 @@ Kubernetes gateway entrypoint can publish it into the shared runtime-assets
 volume for dedicated Codex Pods. Do not flatten `/app/dist`; OpenClaw resolves
 package-local runtime dependencies from its installed package root.
 
-Codex and Slack are packaged under `/app/dist/extensions/` with their runtime
-dependencies. They must load from a fresh runtime home without downloading or
-installing packages at gateway startup. Slack credentials remain operator-owned
-runtime Secrets; do not put them in the image.
+Codex, Slack, and Amazon Bedrock are packaged under `/app/dist/extensions/`
+with their runtime dependencies. They must load from a fresh runtime home
+without downloading or installing packages at gateway startup. Slack credentials
+remain operator-owned runtime Secrets; do not put them in the image. Bedrock
+uses the AWS SDK credential chain at runtime, so do not bake AWS credentials
+into the image.
 
 Keep the source commit and archive checksum together when updating OpenClaw.
 Follow the [pinned upstream Docker assembly](https://github.com/openclaw/openclaw/blob/2765f7a3341b8be4835afacbff3d04c6e3c3c79b/Dockerfile)
@@ -121,7 +123,7 @@ The smoke starts task-owned containers with the Docker Compute Driver gateway
 entrypoint and the Kubernetes Compute Driver gateway entrypoint, UID
 `1000:1000`, a read-only root filesystem, and tmpfs-backed runtime directories.
 Passing means an embedded OpenClaw gateway reaches `/readyz` from a fresh home,
-the bundled Codex and Slack plugins load without missing package dependencies,
+the bundled Codex, Slack, and Bedrock plugins load without missing package dependencies,
 the installed Codex plugin successfully initializes the image's real Codex
 app-server, and the Kubernetes dedicated-gateway startup path publishes the
 bundled skills directory into `/home/node/openclaw-runtime-assets`. These checks

@@ -396,7 +396,7 @@ function prepareHarnessAuth(
         key: SERVICE_ACCOUNT_WORKSPACE_KEY,
       }),
     );
-  } else {
+  } else if (resolvedAuth.method !== "runtime") {
     throw new ConfigurationFailure("Harness authentication method is unsupported.");
   }
   if (harness.mode === "dedicated") {
@@ -441,6 +441,12 @@ const OPENCLAW_GATEWAY_PASSWORD = "OPENCLAW_GATEWAY_PASSWORD";
 const TRUSTED_PROXY_IDENTITY = "occ-workspace-files";
 const TRUSTED_PROXY_HEADER = "x-occ-identity";
 const MODEL_API_KEY = "OPENAI_API_KEY";
+const BEDROCK_PROVIDER_ID = "amazon-bedrock";
+const BEDROCK_MODEL_PREFIX = `${BEDROCK_PROVIDER_ID}/`;
+const BEDROCK_RUNTIME_API = "bedrock-converse-stream";
+const BEDROCK_RUNTIME_AUTH = "aws-sdk";
+const EKS_POD_IDENTITY_ENDPOINT_IP = "169.254.170.23";
+const EKS_POD_IDENTITY_ENDPOINT_PORT = 80;
 const SERVICE_ACCOUNT_TOKEN_KEY = "token";
 const SERVICE_ACCOUNT_WORKSPACE_KEY = "workspace-id";
 const CODEX_ACCESS_TOKEN = "CODEX_ACCESS_TOKEN";
@@ -799,44 +805,192 @@ function harnessPrimaryModel(configuration: OpenClawConfigurationDocument): stri
   return model;
 }
 
-function harnessProbeConfiguration(configuration: OpenClawConfigurationDocument): object {
+function configuredHarnessModels(configuration: OpenClawConfigurationDocument): readonly unknown[] {
+  const agents = asRecord(configuration.agents);
+  const defaults = asRecord(agents?.defaults);
+  const entries = Object.values(asRecord(agents?.entries) ?? {});
+  const selections = [defaults?.model, ...entries.map((entry) => asRecord(entry)?.model)].filter(
+    (value) => value !== undefined,
+  );
+  return selections.flatMap((selection) => {
+    const value = asRecord(selection);
+    return typeof selection === "string"
+      ? [selection]
+      : [value?.primary, ...(Array.isArray(value?.fallbacks) ? value.fallbacks : [])];
+  });
+}
+
+function usesBedrockRuntimeAuth(
+  harness: RevisionHarnessDescriptor,
+  auth: HarnessAuthSnapshot,
+  configuration: OpenClawConfigurationDocument | undefined,
+): boolean {
+  if (harness.mode !== "embedded" || auth.method !== "runtime" || configuration === undefined) {
+    return false;
+  }
+  const models = configuredHarnessModels(configuration);
+  return (
+    models.length > 0 &&
+    models.every(
+      (model) =>
+        typeof model === "string" &&
+        model.startsWith(BEDROCK_MODEL_PREFIX) &&
+        model.length > BEDROCK_MODEL_PREFIX.length,
+    )
+  );
+}
+
+function containsSecretOrEnvironmentReference(value: unknown): boolean {
+  if (typeof value === "string") {
+    return value.includes("${");
+  }
+  if (Array.isArray(value)) {
+    return value.some(containsSecretOrEnvironmentReference);
+  }
+  const record = asRecord(value);
+  return (
+    record !== undefined &&
+    ((typeof record.source === "string" && typeof record.id === "string") ||
+      Object.values(record).some(containsSecretOrEnvironmentReference))
+  );
+}
+
+function assertNoBedrockRuntimeTransportOverride(value: unknown): void {
+  const visit = (candidate: unknown): void => {
+    if (Array.isArray(candidate)) {
+      candidate.forEach(visit);
+      return;
+    }
+    const record = asRecord(candidate);
+    if (record === undefined) {
+      return;
+    }
+    for (const [key, nested] of Object.entries(record)) {
+      if (
+        /^(?:AWS_|apiKey$|headers$|profile$|endpoint$|baseUrl$|baseURL$|region$|bearerToken$|auth$)/i.test(
+          key,
+        )
+      ) {
+        throw new ConfigurationFailure(
+          "Bedrock runtime authentication cannot override provider transport or credentials.",
+        );
+      }
+      visit(nested);
+    }
+  };
+  visit(value);
+}
+
+function sanitizedBedrockRuntimeProvider(configuration: OpenClawConfigurationDocument): {
+  readonly fragment: Record<string, unknown>;
+  readonly region: string;
+} {
+  const provider = asRecord(
+    asRecord(asRecord(configuration.models)?.providers)?.[BEDROCK_PROVIDER_ID],
+  );
+  if (provider === undefined) {
+    throw new ConfigurationFailure(
+      "Bedrock runtime authentication requires an amazon-bedrock provider.",
+    );
+  }
+  const baseUrl = typeof provider.baseUrl === "string" ? provider.baseUrl.trim() : undefined;
+  const match = baseUrl?.match(/^https:\/\/bedrock-runtime\.([a-z0-9-]+)\.amazonaws\.com\/?$/);
+  if (!match) {
+    throw new ConfigurationFailure(
+      "Bedrock runtime authentication requires the canonical regional Bedrock runtime endpoint.",
+    );
+  }
+  if (provider.api !== BEDROCK_RUNTIME_API || provider.auth !== BEDROCK_RUNTIME_AUTH) {
+    throw new ConfigurationFailure(
+      "Bedrock runtime authentication requires aws-sdk bedrock-converse-stream transport.",
+    );
+  }
+  if (provider.apiKey !== undefined || provider.headers !== undefined) {
+    throw new ConfigurationFailure(
+      "Bedrock runtime authentication cannot override provider transport or credentials.",
+    );
+  }
+  for (const key of Object.keys(provider)) {
+    if (
+      !new Set(["baseUrl", "api", "auth", "models"]).has(key) &&
+      /^(?:AWS_|apiKey$|headers$|profile$|endpoint$|baseURL$|region$|bearerToken$)/i.test(key)
+    ) {
+      throw new ConfigurationFailure(
+        "Bedrock runtime authentication cannot override provider transport or credentials.",
+      );
+    }
+  }
+  assertNoBedrockRuntimeTransportOverride(provider.models);
+  return {
+    region: required(match[1], "Bedrock runtime region"),
+    fragment: {
+      baseUrl,
+      api: BEDROCK_RUNTIME_API,
+      auth: BEDROCK_RUNTIME_AUTH,
+      ...(provider.models === undefined ? {} : { models: provider.models }),
+    },
+  };
+}
+
+function harnessProbe(configuration: OpenClawConfigurationDocument): {
+  readonly configuration: object;
+  readonly providerRegion?: string;
+} {
   const model = harnessPrimaryModel(configuration);
+  const defaults = asRecord(asRecord(configuration.agents)?.defaults);
+  const modelEntry = asRecord(asRecord(defaults?.models)?.[model]);
+  if (containsSecretOrEnvironmentReference(modelEntry)) {
+    throw new ConfigurationFailure(
+      "Selected model provider transport configuration cannot require additional Secret or environment references.",
+    );
+  }
+  if (model.startsWith(BEDROCK_MODEL_PREFIX)) {
+    assertNoBedrockRuntimeTransportOverride(modelEntry);
+    const provider = sanitizedBedrockRuntimeProvider(configuration);
+    if (containsSecretOrEnvironmentReference(provider.fragment)) {
+      throw new ConfigurationFailure(
+        "Selected model provider transport configuration cannot require additional Secret or environment references.",
+      );
+    }
+    return {
+      providerRegion: provider.region,
+      configuration: {
+        agents: {
+          defaults: {
+            model,
+            models: { [model]: { ...modelEntry, agentRuntime: { id: "openclaw" } } },
+          },
+        },
+        models: { providers: { [BEDROCK_PROVIDER_ID]: provider.fragment } },
+      },
+    };
+  }
   const { providerId } = harnessModelAuthentication(configuration);
   const provider = asRecord(asRecord(asRecord(configuration.models)?.providers)?.[providerId]);
   const fragment = provider === undefined ? undefined : { ...provider };
   if (fragment !== undefined) {
     delete fragment.apiKey;
   }
-  const containsReference = (value: unknown): boolean => {
-    if (typeof value === "string") {
-      return value.includes("${");
-    }
-    if (Array.isArray(value)) {
-      return value.some(containsReference);
-    }
-    const record = asRecord(value);
-    return (
-      record !== undefined &&
-      ((typeof record.source === "string" && typeof record.id === "string") ||
-        Object.values(record).some(containsReference))
-    );
-  };
-  const defaults = asRecord(asRecord(configuration.agents)?.defaults);
-  const modelEntry = asRecord(asRecord(defaults?.models)?.[model]);
-  if (containsReference(fragment) || containsReference(modelEntry)) {
+  if (containsSecretOrEnvironmentReference(fragment)) {
     throw new ConfigurationFailure(
       "Selected model provider transport configuration cannot require additional Secret or environment references.",
     );
   }
   return {
-    agents: {
-      defaults: {
-        model,
-        models: { [model]: { ...modelEntry, agentRuntime: { id: "openclaw" } } },
+    configuration: {
+      agents: {
+        defaults: {
+          model,
+          models: { [model]: { ...modelEntry, agentRuntime: { id: "openclaw" } } },
+        },
       },
+      ...(fragment === undefined ? {} : { models: { providers: { [providerId]: fragment } } }),
     },
-    ...(fragment === undefined ? {} : { models: { providers: { [providerId]: fragment } } }),
   };
+}
+
+function harnessProbeConfiguration(configuration: OpenClawConfigurationDocument): object {
+  return harnessProbe(configuration).configuration;
 }
 
 // The immutable model selection owns both native credential projection and probing.
@@ -1290,8 +1444,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
       !auth ||
       (auth.method !== "api_key" &&
         auth.method !== "codex_pat" &&
-        auth.method !== "chatgpt_service_account") ||
-      (embedded && auth.method !== "api_key")
+        auth.method !== "chatgpt_service_account" &&
+        auth.method !== "runtime") ||
+      (embedded && auth.method !== "api_key" && auth.method !== "runtime") ||
+      (dedicated && auth.method === "runtime")
     ) {
       throw new ConfigurationFailure(
         "Harness authentication is incompatible with the selected topology.",
@@ -1308,22 +1464,33 @@ export class KubernetesComputeDriver implements ComputeDriver {
         "Harness authentication credential does not match the admitted account.",
       );
     }
-    const agents = asRecord(configuration.agents);
-    const defaults = asRecord(agents?.defaults);
-    const entries = Object.values(asRecord(agents?.entries) ?? {});
-    const selections = [defaults?.model, ...entries.map((entry) => asRecord(entry)?.model)].filter(
-      (value) => value !== undefined,
-    );
-    const models = selections.flatMap((selection) => {
-      const value = asRecord(selection);
-      return typeof selection === "string"
-        ? [selection]
-        : [value?.primary, ...(Array.isArray(value?.fallbacks) ? value.fallbacks : [])];
-    });
-    const native = harnessModelAuthentication(configuration);
-    const prefixes = embedded ? [`${native.providerId}/`] : ["openai/", "codex/"];
+    const models = configuredHarnessModels(configuration);
+    const runtimeAuth = embedded && auth.method === "runtime";
+    const runtimeBedrock = usesBedrockRuntimeAuth(harness, auth, configuration);
+    if (runtimeAuth && !runtimeBedrock) {
+      throw new ConfigurationFailure(
+        "Harness authentication is incompatible with the selected topology.",
+      );
+    }
+    const native = runtimeBedrock ? undefined : harnessModelAuthentication(configuration);
+    let prefixes = ["openai/", "codex/"];
+    if (runtimeBedrock) {
+      prefixes = [BEDROCK_MODEL_PREFIX];
+      const entries = asRecord(asRecord(asRecord(configuration.agents)?.defaults)?.models);
+      for (const model of models) {
+        const entry = entries?.[model as string];
+        assertNoBedrockRuntimeTransportOverride(entry);
+        if (containsSecretOrEnvironmentReference(entry)) {
+          throw new ConfigurationFailure(
+            "Bedrock model configuration cannot require additional Secret or environment references.",
+          );
+        }
+      }
+    } else if (embedded && native !== undefined) {
+      prefixes = [`${native.providerId}/`];
+    }
     if (
-      (embedded && native.providerId === "codex") ||
+      (embedded && native?.providerId === "codex") ||
       models.length === 0 ||
       models.some(
         (model) =>
@@ -1346,10 +1513,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const env = asRecord(configuration.env);
     for (const values of [env, asRecord(env?.vars)]) {
       if (
-        Object.keys(values ?? {}).some((name) =>
-          /^(?:OPENAI_|ANTHROPIC_|CODEX_(?:ACCESS_TOKEN|CHATGPT_WORKSPACE_ID|LOGIN_MODE)$)/i.test(
-            name,
-          ),
+        Object.keys(values ?? {}).some(
+          (name) =>
+            /^(?:OPENAI_|ANTHROPIC_|CODEX_(?:ACCESS_TOKEN|CHATGPT_WORKSPACE_ID|LOGIN_MODE)$)/i.test(
+              name,
+            ) ||
+            (runtimeBedrock && /^AWS_/i.test(name)),
         )
       ) {
         throw conflictingAuth();
@@ -1359,6 +1528,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const selectedProviders = new Set(models.map((model) => (model as string).split("/", 1)[0]));
     for (const provider of selectedProviders) {
       const config = asRecord(providers[provider!]);
+      if (runtimeBedrock && provider === BEDROCK_PROVIDER_ID) {
+        sanitizedBedrockRuntimeProvider(configuration);
+        continue;
+      }
       if (
         [config, ...(Array.isArray(config?.models) ? config.models : [])].some((model) =>
           Object.keys(asRecord(asRecord(model)?.headers) ?? {}).some((name) =>
@@ -1372,6 +1545,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
         continue;
       }
       if (!embedded) {
+        throw conflictingAuth();
+      }
+      if (native === undefined) {
         throw conflictingAuth();
       }
       if (config.apiKey === `\${${native.environmentName}}`) {
@@ -6680,12 +6856,24 @@ export class KubernetesComputeDriver implements ComputeDriver {
               ports: [{ protocol: "TCP", port: this.options.network.repositoryCredentials!.port }],
             },
           ];
+    const podIdentityEgress = usesBedrockRuntimeAuth(
+      revision.harness,
+      revision.harnessAuth,
+      revision.configuration,
+    )
+      ? [
+          {
+            to: [{ ipBlock: { cidr: `${EKS_POD_IDENTITY_ENDPOINT_IP}/32` } }],
+            ports: [{ protocol: "TCP", port: EKS_POD_IDENTITY_ENDPOINT_PORT }],
+          },
+        ]
+      : [];
     if (revision.harness.mode === "embedded") {
       return [
         policy("allow-agent-runtime", {
           podSelector: gateway,
           policyTypes: ["Egress"],
-          egress: [...modelEgress, ...repositoryEgress],
+          egress: [...modelEgress, ...repositoryEgress, ...podIdentityEgress],
         }),
         ...statusPolicies,
       ];
@@ -6750,22 +6938,32 @@ export class KubernetesComputeDriver implements ComputeDriver {
       }
     }
     const prepared = prepareHarnessAuth(revision.harness, auth, revision.configuration);
-    const native = harnessModelAuthentication(revision.configuration);
+    const native =
+      auth.method === "runtime" ? undefined : harnessModelAuthentication(revision.configuration);
+    const probe =
+      revision.harness.mode === "embedded" ? harnessProbe(revision.configuration) : undefined;
     return {
       ...prepared,
       environment: [
         ...prepared.environment,
         { name: "OPENCLAW_HARNESS_MODEL", value: harnessPrimaryModel(revision.configuration) },
-        ...(revision.harness.mode === "embedded"
-          ? [
-              { name: "OPENCLAW_HARNESS_PROVIDER", value: native.providerId },
-              { name: "OPENCLAW_HARNESS_CREDENTIAL_ENV", value: native.environmentName },
+        ...(probe === undefined
+          ? []
+          : [
+              ...(native === undefined
+                ? []
+                : [
+                    { name: "OPENCLAW_HARNESS_PROVIDER", value: native.providerId },
+                    { name: "OPENCLAW_HARNESS_CREDENTIAL_ENV", value: native.environmentName },
+                  ]),
               {
                 name: "OPENCLAW_HARNESS_PROBE_CONFIG",
-                value: JSON.stringify(harnessProbeConfiguration(revision.configuration)),
+                value: JSON.stringify(probe.configuration),
               },
-            ]
-          : []),
+              ...(probe.providerRegion === undefined
+                ? []
+                : [{ name: "OPENCLAW_HARNESS_PROVIDER_REGION", value: probe.providerRegion }]),
+            ]),
       ],
     };
   }
@@ -7277,6 +7475,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (secretEnvironment.length > 0) {
       if (role !== "gateway") {
         throw new ConfigurationFailure("Secret bindings can only be delivered to Agent gateways.");
+      }
+      if (secretEnvironment.some(({ name }) => /^AWS_/i.test(name))) {
+        throw new ConfigurationFailure(
+          "AWS runtime credentials cannot be delivered through AgentRevision Secret bindings.",
+        );
       }
       variables.push(
         ...secretEnvironment.map(({ name, backendRef }) => ({
