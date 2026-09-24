@@ -1,6 +1,6 @@
 # Two-cluster dedicated Gateway execution plan
 
-Status: Accepted for implementation; runtime implementation and acceptance are pending.
+Status: Experimental implementation with local full-stack lifecycle proof; runtime qualification remains incomplete. Keep the PR draft.
 
 Base: `e5f1dedbdb42931886ffd3e4f58789d8323d9140`, including merged PR #327.
 
@@ -12,8 +12,8 @@ manages dedicated Gateway resources in the control-plane target and Harness
 resources in the data-plane target through the regular Agent API/worker lifecycle.
 Do not equate namespace isolation or passing single-cluster tests with this support.
 
-This is a proposed implementation plan, not an implemented capability. The
-first implementation must define a bounded network contract and prove it with
+The implementation below is experimental. It defines a bounded network contract
+and must complete acceptance with
 two local disposable clusters; a selected cloud deployment is not a prerequisite. Keep the existing same-cluster mode supported. Embedded
 execution, N-target scheduling, sharding, automatic VPC networking, migration,
 cloud-specific provisioning, and a general credential broker are outside this change.
@@ -92,14 +92,48 @@ difference. Cloud portability is a design constraint, not cloud acceptance proof
 - [x] Inspect the current single-cluster implementation and review request.
 - [x] Merge PR #327 after refreshing its branch and passing CI (run 35933004388).
 - [x] Select full local dual-cluster OCE setup as the first acceptance target.
-- [ ] Define the portable network contract and select compatible runtime images.
-- [ ] Implement two-target lifecycle and bounded transport.
+- [x] Define explicit Kubernetes API, verified HTTPS, DNS, and NetworkPolicy inputs.
+- [ ] Select a released runtime pin satisfying all acceptance prerequisites.
+- [x] Implement explicit plane-aware lifecycle and bounded TLS transport.
 - [ ] Complete dual-cluster integration, runtime acceptance and deployment docs.
 
 ## Verification record
 
-No dual-cluster implementation or execution has been performed for this plan.
-Single-cluster CI on PR #327 remains evidence for that PR's stated scope only.
+The first local experiment installed independent Kubernetes 1.35.8 clusters,
+Envoy Gateway 1.6.7, cert-manager 1.18.4, PostgreSQL 18.6, and the standard OCE
+migration/bootstrap/API/worker Helm release. Explicit component credentials and
+five tenant RoleBindings exercised the normal API lifecycle.
+
+Observed: CP-only Gateway, DP-only Harness, successful deployment, real model
+answer, authenticated workspace read/write, and retained workspace plus another
+model answer after replacing the Harness Pod. Missing and incorrect app-server
+tokens returned 401. The DP delivery contained the selected model key, transport
+token and revision node material; the Gateway password remained in CP.
+
+Runtime: OpenClaw source revision `20db76a79212c7d0c4f2106fea4d61fdce9972a3`
+with Codex 0.156.0, local image manifest
+`sha256:df395d2c951dcecd708ffcd62956504089a9e410b94d1ea77a509f77c23d5dd5`.
+This source-built image is experimental, not a qualified release pin.
+
+Open findings: the selected runtime's workspace-template hash differs from OCE's
+pin; custom initial documents fail closed. Ubuntu AppArmor denies bubblewrap's
+network namespace setup despite the reviewed localhost seccomp profile. Gateway
+replacement exposed a native five-minute owner lease after shutdown. Do not
+clear that lease or weaken sandbox controls to claim acceptance. Replacement
+eventually succeeded and served another model answer after approximately six
+to seven minutes. Plugin-enabled transport, partial-target failure, and
+same-cluster integration still need completed evidence. `running` deployment status is in-progress;
+`succeeded` is the success condition.
+
+Local regressions: 218 Kubernetes/credential/plugin and HTTPS transport checks
+passed, together with 14 real Helm renderer checks. The complete local stack
+passed the new real API/worker integration without skips in 118 seconds:
+placement, workspace RPC, Harness Pod reconnect, revision replacement, predecessor
+retirement, Agent deletion, and deletion of both tenant namespaces. The HTTPS
+helper test separately rejects wrong token/revision, missing CA, redirects and
+plaintext; it does not prove an installed plugin workflow.
+CI fixture automation remains pending; the `k3d-two-cluster` lane consumes an
+explicit preinstalled test environment.
 
 ## Documentation owners
 

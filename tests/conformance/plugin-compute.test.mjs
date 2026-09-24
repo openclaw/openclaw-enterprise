@@ -1321,7 +1321,7 @@ function enrolledNodeSecret(driver, candidate, namespace) {
       "Secret",
       driver.workspaceNodeName(candidate),
       driver.pluginRuntimeOwnership(candidate),
-      namespace,
+      { name: namespace, plane: "execution" },
     ),
     data: { deviceId: Buffer.from("fixture-node").toString("base64") },
   };
@@ -1338,7 +1338,7 @@ test("embedded plugin preparation applies runtime egress before gateway readines
   const tenantOwnership = { namespaceId: tenant.id };
   const defaultPolicies = new Map(
     driver
-      .networkPolicies(tenantOwnership, namespace)
+      .networkPolicies(tenantOwnership, { name: namespace, plane: "execution" })
       .map((policy) => [policy.metadata.name, policy]),
   );
   const configMaps = new Map();
@@ -1381,10 +1381,13 @@ test("embedded plugin preparation applies runtime egress before gateway readines
       listNamespacedPod: async () => ({ apiVersion: "v1", kind: "PodList", items: [] }),
     },
   });
-  driver.resolveNamespace = async () => ({ name: namespace, external: false });
+  driver.resolveNamespace = async () => ({
+    name: { name: namespace, plane: "execution" },
+    external: false,
+  });
   driver.get = async (kind, name, target) =>
     kind === "Secret"
-      ? credentialObjects.get(`${target}:${name}`)
+      ? credentialObjects.get(`${target.name}:${name}`)
       : kind === "Namespace"
         ? {
             ...(name === cp
@@ -1395,7 +1398,7 @@ test("embedded plugin preparation applies runtime egress before gateway readines
         : undefined;
   driver.getOwned = async (kind, name, target) => {
     if (kind === "Secret" && name !== driver.workspaceNodeName(embedded)) {
-      return credentialObjects.get(`${target}:${name}`);
+      return credentialObjects.get(`${target.name}:${name}`);
     }
     if (kind === "NetworkPolicy") {
       return defaultPolicies.get(name);
@@ -1447,7 +1450,7 @@ test("embedded plugin preparation applies runtime egress before gateway readines
   const dedicatedTenantOwnership = { namespaceId: dedicated.namespaceId };
   const dedicatedDefaultPolicies = new Map(
     dedicatedDriver
-      .networkPolicies(dedicatedTenantOwnership, dedicatedNamespace)
+      .networkPolicies(dedicatedTenantOwnership, { name: dedicatedNamespace, plane: "execution" })
       .map((policy) => [policy.metadata.name, policy]),
   );
   const dedicatedReconciled = [];
@@ -1459,7 +1462,7 @@ test("embedded plugin preparation applies runtime egress before gateway readines
       "Secret",
       transportName,
       { namespaceId: tenant.id, agentId: dedicated.agentId },
-      cp,
+      { name: cp, plane: "execution" },
     ),
     type: "Opaque",
     data: { "app-server-token": Buffer.from("fixture-transport").toString("base64") },
@@ -1486,10 +1489,13 @@ test("embedded plugin preparation applies runtime egress before gateway readines
       listNamespacedPod: async () => ({ apiVersion: "v1", kind: "PodList", items: [] }),
     },
   });
-  dedicatedDriver.resolveNamespace = async () => ({ name: dedicatedNamespace, external: false });
+  dedicatedDriver.resolveNamespace = async () => ({
+    name: { name: dedicatedNamespace, plane: "execution" },
+    external: false,
+  });
   dedicatedDriver.get = async (kind, name, target) =>
     kind === "Secret"
-      ? credentialObjects.get(`${target}:${name}`)
+      ? credentialObjects.get(`${target.name}:${name}`)
       : kind === "Namespace"
         ? {
             ...(name === cp
@@ -1500,7 +1506,7 @@ test("embedded plugin preparation applies runtime egress before gateway readines
         : undefined;
   dedicatedDriver.getOwned = async (kind, name, target) => {
     if (kind === "Secret" && name !== dedicatedDriver.workspaceNodeName(dedicated)) {
-      return credentialObjects.get(`${target}:${name}`);
+      return credentialObjects.get(`${target.name}:${name}`);
     }
     if (kind === "Secret") {
       return enrolledNodeSecret(dedicatedDriver, dedicated, dedicatedNamespace);
@@ -1622,11 +1628,22 @@ test("Kubernetes plugin runtime status requires the exact ready Pod report", asy
       });
       if (expected === "rejects") {
         await assert.rejects(
-          () => driver.pluginRuntimeStatus(candidate, namespace, "gateway", []),
+          () =>
+            driver.pluginRuntimeStatus(
+              candidate,
+              { name: namespace, plane: "execution" },
+              "gateway",
+              [],
+            ),
           DependencyUnavailableError,
         );
       } else {
-        const status = await driver.pluginRuntimeStatus(candidate, namespace, "gateway", []);
+        const status = await driver.pluginRuntimeStatus(
+          candidate,
+          { name: namespace, plane: "execution" },
+          "gateway",
+          [],
+        );
         assert.deepEqual(status, expected === "not-ready" ? undefined : expected);
       }
     });
@@ -1679,7 +1696,10 @@ test("Kubernetes startup failure evidence requires the exact runtime Pod report"
     },
   });
 
-  const observed = await driver.safeRuntimeFailureObservation(candidate, namespace);
+  const observed = await driver.safeRuntimeFailureObservation(candidate, {
+    name: namespace,
+    plane: "execution",
+  });
 
   assert.deepEqual(observed, failure);
   assert.deepEqual(requests, [
@@ -2161,7 +2181,7 @@ test("Kubernetes dedicated Codex agent mounts plugin-free runtime without plugin
       agentId: agent.id,
       revisionId: "revision-plugin-compute-1",
     },
-    kubernetesNamespaceName(tenant.id),
+    { name: kubernetesNamespaceName(tenant.id), plane: "execution" },
     "openclaw-enterprise/agent-fixture:local",
     "agent-plugin-compute",
     "agent",
@@ -2170,11 +2190,10 @@ test("Kubernetes dedicated Codex agent mounts plugin-free runtime without plugin
     undefined,
     false,
     undefined,
-    driver.harnessAuthForRevision(
-      candidate,
-      harnessAuthContext(candidate),
-      kubernetesGatewayNamespaceName(tenant.id),
-    ),
+    driver.harnessAuthForRevision(candidate, harnessAuthContext(candidate), {
+      name: kubernetesGatewayNamespaceName(tenant.id),
+      plane: "control",
+    }),
     [],
     [],
     { name: "plugin-runtime-agent-plugin-compute", runtime },
@@ -2247,7 +2266,7 @@ test("Kubernetes dedicated successor readiness preserves the stable Agent Servic
   const predecessorRevisionName = `${agentName}-rev-${shortHash(predecessor.id)}`;
   const defaultPolicies = new Map(
     driver
-      .networkPolicies(tenantOwnership, namespace)
+      .networkPolicies(tenantOwnership, { name: namespace, plane: "execution" })
       .map((policy) => [policy.metadata.name, policy]),
   );
   const reconciled = [];
@@ -2268,7 +2287,7 @@ test("Kubernetes dedicated successor readiness preserves the stable Agent Servic
       "Secret",
       transportName,
       { namespaceId: tenant.id, agentId: candidate.agentId },
-      cp,
+      { name: cp, plane: "execution" },
     ),
     type: "Opaque",
     data: { "app-server-token": Buffer.from("fixture-transport").toString("base64") },
@@ -2291,10 +2310,13 @@ test("Kubernetes dedicated successor readiness preserves the stable Agent Servic
       listNamespacedPod: async () => ({ apiVersion: "v1", kind: "PodList", items: [] }),
     },
   });
-  driver.resolveNamespace = async () => ({ name: namespace, external: false });
+  driver.resolveNamespace = async () => ({
+    name: { name: namespace, plane: "execution" },
+    external: false,
+  });
   driver.get = async (kind, name, target) =>
     kind === "Secret"
-      ? credentialObjects.get(`${target}:${name}`)
+      ? credentialObjects.get(`${target.name}:${name}`)
       : kind === "Namespace"
         ? {
             ...(name === cp
@@ -2305,7 +2327,7 @@ test("Kubernetes dedicated successor readiness preserves the stable Agent Servic
         : undefined;
   driver.getOwned = async (kind, name, target) => {
     if (kind === "Secret" && name !== driver.workspaceNodeName(candidate)) {
-      return credentialObjects.get(`${target}:${name}`);
+      return credentialObjects.get(`${target.name}:${name}`);
     }
     if (kind === "Secret") {
       return enrolledNodeSecret(driver, candidate, namespace);
@@ -2320,7 +2342,7 @@ test("Kubernetes dedicated successor readiness preserves the stable Agent Servic
           "Deployment",
           name,
           { ...tenantOwnership, agentId: candidate.agentId },
-          namespace,
+          { name: namespace, plane: "execution" },
         ),
         metadata: {
           name,
@@ -2363,7 +2385,7 @@ test("Kubernetes dedicated successor readiness preserves the stable Agent Servic
                 servicePrincipalId: candidate.servicePrincipalId,
                 revisionId: candidate.id,
               },
-              namespace,
+              { name: namespace, plane: "execution" },
             )
           : structuredClone(reconciledCandidate)),
         metadata: { ...(reconciledCandidate?.metadata ?? { name }), generation: 1 },
@@ -2379,7 +2401,7 @@ test("Kubernetes dedicated successor readiness preserves the stable Agent Servic
           agentId: candidate.agentId,
           servicePrincipalId: candidate.servicePrincipalId,
         },
-        namespace,
+        { name: namespace, plane: "execution" },
         { "app.kubernetes.io/name": predecessorRevisionName },
       );
     }
@@ -2421,13 +2443,16 @@ test("Kubernetes dedicated Codex gateway mounts bridge runtime and prior plugin 
       agentId: agent.id,
       revisionId: "revision-plugin-compute-1",
     },
-    "oce-plugin-compute",
+    { name: "oce-plugin-compute", plane: "execution" },
     "openclaw-enterprise/gateway-fixture:local",
     "gateway-plugin-compute",
     "gateway",
     {},
     "info",
-    driver.gatewayConfiguration(revision(), undefined, "oce-plugin-compute"),
+    driver.gatewayConfiguration(revision(), undefined, {
+      name: "oce-plugin-compute",
+      plane: "execution",
+    }),
     false,
     undefined,
     undefined,

@@ -24,7 +24,8 @@
     "repository-credentials-container": "./test-suites/repository-credentials-container.json",
     "repository-credentials-live": "./test-suites/repository-credentials-live.json",
     "repository-credentials-platform": "./test-suites/repository-credentials-platform.json",
-    "repository-credentials-installed": "./test-suites/repository-credentials-installed.json"
+    "repository-credentials-installed": "./test-suites/repository-credentials-installed.json",
+    "k3d-two-cluster": "./test-suites/k3d-two-cluster.json"
   },
   "groups": {
     "ci": [

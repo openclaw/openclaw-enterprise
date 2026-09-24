@@ -1,0 +1,5 @@
+apiVersion: v2
+name: openclaw-execution
+description: Execution-cluster access and private Harness routing for OpenClaw Enterprise
+version: 0.1.0
+type: application

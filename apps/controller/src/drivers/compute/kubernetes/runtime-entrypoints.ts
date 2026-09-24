@@ -37,6 +37,7 @@ const {
 } = require("node:fs");
 const {
   createHmac,
+  timingSafeEqual: pluginTimingSafeEqual,
   randomUUID: pluginRandomUUID,
 } = require("node:crypto");
 const { spawnSync: pluginSpawnSync } = require("node:child_process");
@@ -45,6 +46,7 @@ const { createServer: pluginCreateServer } = require("node:http");
 const CODEX_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS = Number(process.env.OPENCLAW_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS ?? "10000");
 const CODEX_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS = Number(process.env.OPENCLAW_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS ?? "60000");
 const PLUGIN_STATUS_PATH = "/openclaw/plugin-runtime/status";
+const REMOTE_PLUGIN_STATUS_PATH = "/openclaw/plugin-runtime/remote-status";
 const RUNTIME_STATUS_PATH = "/openclaw/runtime/status";
 const PLUGIN_DIAGNOSTIC_CODES = new Set(["PLUGIN_INSTALL_FAILED", "PLUGIN_AUTH_REQUIRED"]);
 const RUNTIME_FAILURE_CODES = new Set([
@@ -222,12 +224,28 @@ function runtimeStatusReport() {
   };
 }
 
+function remotePluginStatusAuthorization() {
+  const token = requireNonEmptyString(pluginBaseAppServerToken, "Plugin status base token");
+  return "Bearer " + createHmac("sha256", token)
+    .update("openclaw-plugin-status/v1\\0" + pluginRuntimeRevisionId()).digest("hex");
+}
+
 function startPluginRuntimeStatusServer() {
   const port = runtimeStatusPort() ?? pluginRuntimeStatusPort();
   if (port === undefined) return;
   const server = pluginCreateServer((request, response) => {
     const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
-    if (request.method !== "GET" || (pathname !== RUNTIME_STATUS_PATH && pathname !== PLUGIN_STATUS_PATH)) {
+    const remote = pathname === REMOTE_PLUGIN_STATUS_PATH && process.env.OPENCLAW_REMOTE_PLUGIN_STATUS === "true";
+    if (remote) {
+      const expected = Buffer.from(remotePluginStatusAuthorization());
+      const supplied = Buffer.from(typeof request.headers.authorization === "string" ? request.headers.authorization : "");
+      if (expected.length !== supplied.length || !pluginTimingSafeEqual(expected, supplied)) {
+        response.writeHead(401, { "content-type": "application/json", "cache-control": "no-store" });
+        response.end(JSON.stringify({ error: "unauthorized" }));
+        return;
+      }
+    }
+    if (request.method !== "GET" || (!remote && pathname !== RUNTIME_STATUS_PATH && pathname !== PLUGIN_STATUS_PATH)) {
       response.writeHead(404, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: "not_found" }));
       return;
@@ -430,13 +448,24 @@ function readPluginFailuresFromEnvironment() {
 }
 
 async function readPeerPluginRuntimeStatus() {
-  if (typeof process.env.APP_SERVER_URL !== "string" || !process.env.APP_SERVER_URL.startsWith("ws://")) {
-    return undefined;
+  let url;
+  const remote = process.env.OPENCLAW_PEER_PLUGIN_STATUS_URL;
+  if (remote !== undefined) {
+    url = new URL(remote);
+    if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) {
+      throw new Error("Peer plugin status requires a verified HTTPS endpoint.");
+    }
+  } else {
+    if (typeof process.env.APP_SERVER_URL !== "string" || !process.env.APP_SERVER_URL.startsWith("ws://")) return undefined;
+    url = new URL(process.env.APP_SERVER_URL.replace(/^ws:/, "http:"));
+    url.port = String(pluginRuntimeStatusPort() ?? "");
+    url.pathname = PLUGIN_STATUS_PATH;
   }
-  const url = new URL(process.env.APP_SERVER_URL.replace(/^ws:/, "http:"));
-  url.port = String(pluginRuntimeStatusPort() ?? "");
-  url.pathname = PLUGIN_STATUS_PATH;
-  const response = await fetch(url, { signal: AbortSignal.timeout(CODEX_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS) });
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(CODEX_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS),
+    redirect: "error",
+    ...(remote === undefined ? {} : { headers: { authorization: remotePluginStatusAuthorization() } }),
+  });
   if (response.status !== 200) throw new Error("Peer plugin runtime status is unavailable.");
   const status = await response.json();
   if (

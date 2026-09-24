@@ -156,6 +156,40 @@ function chartAllowsIngress(objects, destination, source, port, protocol = "TCP"
 }
 
 test(
+  "two-cluster packaging separates remote API identities without optional services",
+  tooling,
+  async () => {
+    const execution = {
+      "executionCluster.enabled": "true",
+      "executionCluster.apiKubeconfigSecretName": "execution-api",
+      "executionCluster.workerKubeconfigSecretName": "execution-worker",
+      "executionCluster.apiCidrs[0]": "10.44.0.2/32",
+    };
+    // This guard must apply even when the unrelated repository service is disabled.
+    await assert.rejects(render({ "executionCluster.enabled": "true" }), /separate API and worker/);
+    await assert.rejects(
+      render({ ...execution, "executionCluster.workerKubeconfigSecretName": "execution-api" }),
+      /separate API and worker/,
+    );
+    await assert.rejects(
+      render({ ...execution, "executionCluster.apiKubeconfigSecretName": "occ-auth" }),
+      /dedicated Secrets/,
+    );
+    const objects = await resources((await render(execution)).stdout);
+    for (const component of ["api", "worker"]) {
+      const pod = objects.find(
+        (item) =>
+          item.kind === "Deployment" && item.metadata.name === `openclaw-enterprise-${component}`,
+      ).spec.template.spec;
+      assert.equal(
+        pod.volumes.find((volume) => volume.name === "execution-kubeconfig").secret.secretName,
+        `execution-${component}`,
+      );
+    }
+  },
+);
+
+test(
   "metrics chart requires exact scraper selectors and isolates the extra Pod ports",
   tooling,
   async () => {

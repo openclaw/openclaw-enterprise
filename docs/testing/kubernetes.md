@@ -4,6 +4,9 @@ Verify Kubernetes resources with an HTTP fixture, then select real-runtime
 tests for gateway, Codex, model, and Secret behavior. Prepare the
 [shared requirements](README.md#requirements-and-credentials) first.
 
+For the experimental complete OCE installation across two independent APIs, see
+[local two-cluster validation](two-cluster-local.md).
+
 ## Kubernetes HTTP fixture
 
 Requires Docker, k3d, `kubectl`, and the migrated `openclaw_k8s_local` database
