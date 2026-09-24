@@ -1,6 +1,6 @@
 # DevDay demo verification
 
-Captured from source commit `84032b03a076f773218d0a6e3339d06237a4b93d` on
+Captured from source commit `73e6b7b1e803bcd3c2b8dc27ba984e0db722829b` on
 September 23, 2026. Later evidence-only commits do not change the demonstrated UI.
 
 Environment: macOS, Node.js 24.15.0, pnpm 11.15.1, Storybook 10.6.0,
@@ -39,6 +39,10 @@ capture and the newly opened Admin UI window in chronological order.
 | [Existing message](06-admin-existing-message.png)   | Seeded `#openclaw-feedback` conversation.                                             |
 | [New reply](07-admin-reply.png)                     | Submitted message and visible simulated response.                                     |
 
+The Create Agent form no longer exposes the raw Secret bindings JSON editor.
+Preset bindings and Slack drawer selections remain in form state and are sent
+with the Configuration. [Updated form](01-create-options.png).
+
 ## Checks and limits
 
 - Storybook build, lint, formatting, workspace boundary, documentation build/link
@@ -48,12 +52,15 @@ capture and the newly opened Admin UI window in chronological order.
 - Both primary stories and both checkpoints reached their expected setup state.
   The generic native-admin boundary story remains separate.
 - Reset story and the sandboxed Admin UI popup/Send action passed in the actual
-  Storybook iframe. The MP4 opened in Chromium at 1440 × 1000, duration 28.8 seconds.
+  Storybook iframe. The MP4 opened in Chromium at 1440 × 1000, duration 29 seconds.
+- Three focused Console browser tests passed: API-key/Slack Secret creation,
+  creation without provisioning support, and Preset partial-save retries.
 - Independent code review reported no P1/P2 findings.
 
 This is simulated UI proof. The Console uses production modules; the Admin UI
 is a schematic chat fixture rather than the bundled OpenClaw Control UI.
 No real model credential, backend persistence, GitHub grant, workload deployment,
 Slack delivery, native gateway, or model response was exercised. All displayed
-Secrets and channel IDs are seeded fake values. No product runtime code changed,
-so no backend or cluster integration tests were run for these demo fixtures.
+Secrets and channel IDs are seeded fake values. The production UI change removes
+the raw bindings editor while preserving existing submission paths; no backend
+contract or runtime deployment implementation changed.
