@@ -154,23 +154,28 @@ export function replaceMatrixMarkdown(markdown, data) {
   return replaceDriverMatrixMarkdown(markdown, data, computeMatrixOptions);
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+export function runDriverMatrixGenerator(options, label, target) {
   if (process.argv.slice(2).some((arg) => arg !== "--check")) {
-    throw new Error("Usage: generate-compute-matrix.mjs [--check]");
+    throw new Error(`Usage: ${path.basename(options.generator)} [--check]`);
   }
-  const data = JSON.parse(fs.readFileSync(computeMatrixOptions.dataPath, "utf8"));
-  const target = "docs/reference/drivers/compute-matrix.md";
+  const data = JSON.parse(fs.readFileSync(options.dataPath, "utf8"));
   const current = fs.readFileSync(target, "utf8");
-  const expected = replaceMatrixMarkdown(current, data);
+  const expected = replaceDriverMatrixMarkdown(current, data, options);
   if (process.argv.includes("--check")) {
     if (current !== expected) {
-      throw new Error(
-        "Compute matrix fallback is stale; run node scripts/generate-compute-matrix.mjs",
-      );
+      throw new Error(`${label} matrix fallback is stale; run node ${options.generator}`);
     }
-    console.log(`Compute matrix fallback is current (${data.rows.length} rows).`);
+    console.log(`${label} matrix fallback is current (${data.rows.length} rows).`);
   } else {
     fs.writeFileSync(target, expected);
     console.log(`Updated ${target} (${data.rows.length} rows).`);
   }
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  runDriverMatrixGenerator(
+    computeMatrixOptions,
+    "Compute",
+    "docs/reference/drivers/compute-matrix.md",
+  );
 }

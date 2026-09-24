@@ -296,3 +296,62 @@ test("docs build renders a ComputeDriver matrix block and rejects stale fallback
   assert.notEqual(stale.status, 0, "Build accepted a stale ComputeDriver matrix fallback");
   assert.match(stale.stderr + stale.stdout, /compute-matrix fallback is stale/);
 });
+
+for (const [kind, label] of [
+  ["compute", "Compute"],
+  ["plugin", "Plugin"],
+]) {
+  test(`${label} matrix generator updates only its block and checks without writing`, async (t) => {
+    const fixture = await mkdtemp(join(tmpdir(), "enterprise-matrix-generator-"));
+    t.after(() => rm(fixture, { recursive: true, force: true }));
+    await mkdir(join(fixture, "docs/assets"), { recursive: true });
+    await mkdir(join(fixture, "docs/reference/drivers"), { recursive: true });
+    await writeFile(
+      join(fixture, `docs/assets/${kind}-driver-matrix.json`),
+      JSON.stringify(matrixFixtureData()),
+    );
+    const target = `docs/reference/drivers/${kind}-matrix.md`;
+    const page = join(fixture, target);
+    const before = `# Manual introduction\n\n<!-- ${kind}-matrix:start -->\nStale table\n<!-- ${kind}-matrix:end -->\n\nManual notes\n`;
+    await writeFile(page, before);
+    const run = (...args) =>
+      spawnSync(process.execPath, [join(root, `scripts/generate-${kind}-matrix.mjs`), ...args], {
+        cwd: fixture,
+        encoding: "utf8",
+        timeout: 30_000,
+      });
+
+    const invalid = run("--unknown");
+    assert.equal(invalid.status, 1);
+    assert.ok(invalid.stderr.includes(`Usage: generate-${kind}-matrix.mjs [--check]`));
+    assert.equal(await readFile(page, "utf8"), before);
+    const stale = run("--check");
+    assert.equal(stale.status, 1);
+    assert.ok(
+      stale.stderr.includes(
+        `${label} matrix fallback is stale; run node scripts/generate-${kind}-matrix.mjs`,
+      ),
+    );
+    assert.equal(await readFile(page, "utf8"), before);
+
+    const updated = run();
+    assert.equal(updated.status, 0, updated.stderr);
+    assert.equal(updated.stdout, `Updated ${target} (2 rows).\n`);
+    const generated = await readFile(page, "utf8");
+    assert.ok(generated.startsWith("# Manual introduction\n\n"));
+    assert.ok(generated.endsWith("\n\nManual notes\n"));
+    assert.ok(generated.includes("| Namespace lifecycle |"));
+    assert.ok(
+      generated.includes(
+        kind === "plugin"
+          ? "**✓ Supported.** Creates one Docker network per Namespace."
+          : "[✓ Supported](https://github.com/openclaw/openclaw-enterprise/blob/",
+      ),
+    );
+    assert.ok(!generated.includes("Stale table"));
+    const current = run("--check");
+    assert.equal(current.status, 0, current.stderr);
+    assert.equal(current.stdout, `${label} matrix fallback is current (2 rows).\n`);
+    assert.equal(await readFile(page, "utf8"), generated);
+  });
+}
