@@ -81,6 +81,14 @@ Matching bundled plugins replace
 independently installed plugin packages; the Dedicated Codex executable remains
 separately pinned. See the [runtime recipe](../../deploy/runtime/README.md) for
 source identity and installed-image checks.
+Before starting the runtime build,
+`scripts/ci/repository-platform-headroom.mjs:main` verifies it is running on the
+Ubuntu 24 GitHub-hosted runner and removes only its unused, fixed Android SDK
+directory. The helper rejects symlinks, mounts, and unexpected runner/SDK paths
+and logs free bytes and inodes before and after cleanup. This makes room for
+the source-build dependency layers before OCI export; local and self-hosted
+runners are rejected. Controller preparation does not use this cleanup.
+
 After OCI export, the job prunes only its dedicated Buildx builder's cache so
 the cache and unpacked smoke images do not exhaust the runner's disk together.
 
@@ -157,6 +165,8 @@ not rebuild them. Old amd64-only seals cannot satisfy this platform contract.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-09-24 00:30: Reclaim unused hosted Android SDK space before the runtime source build, retaining both platforms and all startup checks. (codex/01a0c179-19f7-7111-8bb4-fc7680da5545 - ae96345b)
 
 - 2026-09-24 00:05: Build and smoke PR merge commits without release artifacts or publication; keep manual main release validation. (codex/01a0c179-19f7-7111-8bb4-fc7680da5545 - 75ce7de8)
 

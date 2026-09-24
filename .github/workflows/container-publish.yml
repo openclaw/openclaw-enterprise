@@ -91,6 +91,11 @@ jobs:
           assert.match(image, /^docker\.io\/library\/node:24[.-][a-z0-9.-]+@sha256:[a-f0-9]{64}$/);
           appendFileSync(process.env.GITHUB_ENV, `NODE_BASE_IMAGE=${image}\n`);
           NODE
+      - name: Reclaim unused hosted SDK space before runtime build
+        if: ${{ matrix.image == 'runtime' }}
+        env:
+          OPENCLAW_CI_HEADROOM_LANE: container-runtime-build
+        run: node scripts/ci/repository-platform-headroom.mjs
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
         with:
           platforms: arm64

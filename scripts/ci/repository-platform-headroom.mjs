@@ -3,11 +3,12 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { lstat, readFile, realpath, statfs } from "node:fs/promises";
 
-// This fixed runner-image component is unused by the platform lane. Never
+// This fixed runner-image component is unused by these build/test jobs. Never
 // derive a deletion target from workflow inputs or Android environment values.
 const androidRoot = "/usr/local/lib/android";
 const receipt = {
   kind: "repository-platform-capacity",
+  lane: process.env.OPENCLAW_CI_HEADROOM_LANE,
   sourceSha: /^[a-f0-9]{40}$/.test(process.env.GITHUB_SHA ?? "")
     ? process.env.GITHUB_SHA
     : undefined,
@@ -107,8 +108,9 @@ async function main() {
       /^\d+$/.test(process.env.GITHUB_RUN_ATTEMPT ?? ""),
   );
   assert(
-    process.env.OPENCLAW_CI_HEADROOM_LANE === "repository-credentials-platform" &&
-      process.argv.length === 2,
+    ["repository-credentials-platform", "container-runtime-build"].includes(
+      process.env.OPENCLAW_CI_HEADROOM_LANE,
+    ) && process.argv.length === 2,
   );
   const os = await readFile("/etc/os-release", "utf8");
   assert(/^ID=ubuntu$/m.test(os) && /^VERSION_ID="24\.04"$/m.test(os));
