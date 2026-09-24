@@ -1,3 +1,5 @@
+/// <reference lib="es2024.string" />
+
 import {
   asRecord,
   isNonEmptyString,
@@ -94,33 +96,12 @@ function validateValue(value: string): void {
   if (value.includes("\0")) {
     throw new SecretValidationError("Secret value cannot contain NUL.");
   }
-  if (containsUnpairedSurrogate(value)) {
+  if (!value.isWellFormed()) {
     throw new SecretValidationError("Secret value must be well-formed UTF-16 for UTF-8 storage.");
   }
   if (Buffer.byteLength(value, "utf8") > MAX_SECRET_VALUE_BYTES) {
     throw new SecretValidationError("Secret value exceeds the application Secret size limit.");
   }
-}
-
-function containsUnpairedSurrogate(value: string): boolean {
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code < 0xd800 || code > 0xdfff) {
-      continue;
-    }
-    if (
-      code >= 0xd800 &&
-      code <= 0xdbff &&
-      index + 1 < value.length &&
-      value.charCodeAt(index + 1) >= 0xdc00 &&
-      value.charCodeAt(index + 1) <= 0xdfff
-    ) {
-      index += 1;
-      continue;
-    }
-    return true;
-  }
-  return false;
 }
 
 function validateBackendRef(reference: SecretBackendRef): void {
