@@ -35,14 +35,62 @@ const pluginCapabilities = {
     additionalProperties: false,
   },
 };
+const pluginSetup = {
+  message:
+    "App connection status is not verified. Catalog availability does not confirm linked credentials. In ChatGPT admin, select the same workspace as this PAT and enable plugin and app access for its user or service account. For service-account plugin credentials, open Service accounts, choose the account, and configure its app connections. Workspace administrator access is required. OCE policies do not grant access or configure credentials. Reload plugins after changes.",
+  links: [
+    { label: "Manage workspace plugins", url: "https://chatgpt.com/admin/plugins?catalog=GLOBAL" },
+    { label: "Service account credentials", url: "https://admin.openai.com/" },
+    {
+      label: "OCE plugin setup",
+      url: "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/reference/drivers/plugin-bundled.md#selection-and-catalogs",
+    },
+  ],
+};
+const unavailablePlugins = [
+  {
+    id: "codex-plugin:archive@openai-curated-remote",
+    remoteId: "plugin_demo_archive",
+    name: "Archive",
+    available: false,
+    unavailableReason:
+      "This plugin requires local components or skills that OCE hosted discovery does not support. Changing ChatGPT access will not enable it here.",
+    unavailableHelp: pluginSetup.links[2],
+    tools: null,
+  },
+  {
+    id: "codex-plugin:team-chat@openai-curated-remote",
+    remoteId: "plugin_demo_team_chat",
+    name: "Team chat",
+    available: false,
+    unavailableReason:
+      "Disabled by a ChatGPT workspace administrator. Ask an administrator to enable access for the user or service account behind this token.",
+    unavailableHelp: pluginSetup.links[0],
+    tools: null,
+  },
+  {
+    id: "codex-plugin:analytics@openai-curated-remote",
+    remoteId: "plugin_demo_analytics",
+    name: "Analytics",
+    available: false,
+    unavailableReason:
+      "This workspace's plan is not eligible for this plugin. Ask a workspace administrator to review plan availability.",
+    unavailableHelp: pluginSetup.links[0],
+    tools: null,
+  },
+];
 const pluginCatalog = {
   status: "ready",
+  setup: pluginSetup,
   entries: [
     {
       id: "codex-plugin:calendar@openai-curated-remote",
       remoteId: "plugin_demo_calendar",
       name: "Calendar",
       logoUrl: "/storybook-fixtures/plugin-logos/calendar.svg",
+      websiteUrl: "https://example.com/calendar",
+      privacyPolicyUrl: "https://example.com/calendar/privacy",
+      termsOfServiceUrl: "https://example.com/calendar/terms",
       description: "Find events and manage a team calendar.",
       available: true,
       tools: [
@@ -71,6 +119,7 @@ const pluginCatalog = {
       remoteId: "plugin_demo_documents",
       name: "Documents",
       logoUrl: "/storybook-fixtures/plugin-logos/documents.svg",
+      websiteUrl: "https://example.com/documents",
       available: true,
       tools: [
         {
@@ -92,6 +141,7 @@ const pluginCatalog = {
       logoUrl: "/storybook-fixtures/plugin-logos/missing.svg",
       tools: null,
     },
+    ...unavailablePlugins,
   ],
 };
 const pluginSelections = JSON.stringify(
@@ -113,22 +163,14 @@ const pluginPreviewGap =
 const pluginDiscovery = {
   pages: {
     initial: {
-      plugins: [
-        {
-          id: "codex-plugin:archive@openai-curated-remote",
-          remoteId: "plugin_demo_archive",
-          name: "Archive",
-          available: false,
-          unavailableReason: "This plugin requires an unsupported local runtime.",
-          tools: null,
-        },
-        { ...pluginCatalog.entries[0], tools: null },
-      ],
+      plugins: [...unavailablePlugins, { ...pluginCatalog.entries[0], tools: null }],
       nextCursor: "demo-page-2",
+      setup: pluginSetup,
     },
     "demo-page-2": {
-      plugins: pluginCatalog.entries.slice(1).map((entry) => ({ ...entry, tools: null })),
+      plugins: pluginCatalog.entries.slice(1, 3).map((entry) => ({ ...entry, tools: null })),
       nextCursor: null,
+      setup: pluginSetup,
     },
   },
   details: Object.fromEntries(pluginCatalog.entries.map((entry) => [entry.remoteId, entry])),
@@ -383,7 +425,9 @@ export const scenarios = {
     description:
       "The actual form lists the first catalog page, places enableable plugins first, and retains unavailable entries with their reason. Selecting a plugin loads its tools before Add becomes available.",
     steps: [
-      "Review the ChatGPT workspace access guidance. Available and Configured share a compact sidebar; page controls stay below the scrolling list. Next page and Previous page navigate server pages.",
+      "Review the Driver's workspace access and service account setup guidance. Connection status is unverified; catalog availability does not confirm linked credentials. External help links open separately from plugin navigation.",
+      "Compare the administrator, plan, and unsupported-runtime reasons in the list. Choose each unavailable plugin to see its reason and help link in detail; Add stays disabled.",
+      "Available and Configured share a compact sidebar; page controls stay below the scrolling list. Next page and Previous page navigate server pages.",
       "Choose Calendar to load its tools, then Add Calendar. Configure its plugin defaults and expand a tool to override them.",
       "Filter this page matches plugins on the current page; Filter tools matches the selected plugin’s tools.",
       "Click Done and expand Plugin selections JSON: one heading labels a bounded monospace editor. Replacing the dummy token or authentication method clears discovery results and preserves selections.",
@@ -398,7 +442,11 @@ export const scenarios = {
     pluginCapabilities,
     actions: [...pluginDiscoveryForm, { selector: 'button[aria-label="Calendar"]', click: true }],
     description:
-      "A details request uses the selected catalog entry's remote ID. Tool visibility is displayed separately from policy editing and invocation readiness.",
+      "A details request uses the selected catalog entry's remote ID. Website, privacy policy, and terms links describe the plugin; they do not confirm account access or invocation readiness.",
+    steps: [
+      "Review Calendar's website and policy links without following the external destinations during fixture review.",
+      "On the next page, choose Documents: only its provided website link appears. Missing privacy and terms links are omitted.",
+    ],
     gap: pluginDiscoveryGap,
   },
   createPluginsPolicies: {
@@ -427,6 +475,28 @@ export const scenarios = {
     ],
     gap: pluginDiscoveryGap,
   },
+  createPluginsSetupReminder: {
+    group: "Pages/Create Agent",
+    name: "Configured plugin access reminder",
+    path: create,
+    pluginDiscovery,
+    pluginCapabilities,
+    actions: [
+      ...pluginDiscoveryForm,
+      { selector: 'button[aria-label="Calendar"]', click: true },
+      click("Add Calendar"),
+      click("Done"),
+      { selector: ".plugin-setup-reminder > summary", click: true },
+    ],
+    description:
+      "After adding a plugin and closing the modal, the form keeps the Driver's access and credentials guidance beside the configured selections. Connection status remains unverified.",
+    steps: [
+      "Review the reminder before deployment: catalog availability does not confirm linked credentials, and OCE policies do not configure them.",
+      "Open Plugin selections JSON and confirm that Calendar has only enabled: true; presentation links and setup guidance are not stored in selections.",
+      "Reopen Configure plugins, remove Calendar, and click Done. With no configured plugins, the reminder is hidden.",
+    ],
+    gap: pluginDiscoveryGap,
+  },
   createPluginsSecondPage: {
     group: "Pages/Create Agent",
     name: "Browse the next plugin page",
@@ -435,16 +505,21 @@ export const scenarios = {
     pluginCapabilities,
     actions: [...pluginDiscoveryForm, click("Next page")],
     description:
-      "Catalog pages use upstream cursors. The fixture has two entries per page; actual pages contain up to 20 plugins. Filtering applies to the current page, and Previous page restores the prior catalog page.",
+      "Catalog pages use upstream cursors and contain up to 20 plugins. Driver setup guidance persists across pages. Filtering applies to the current page, and Previous page restores the prior catalog page.",
     gap: pluginDiscoveryGap,
   },
   createPluginsEmpty: {
     group: "Pages/Create Agent",
     name: "No plugins returned",
     path: create,
-    pluginDiscovery: { pages: { initial: { plugins: [], nextCursor: null } }, details: {} },
+    pluginDiscovery: {
+      pages: { initial: { plugins: [], nextCursor: null, setup: pluginSetup } },
+      details: {},
+    },
+    pluginCapabilities,
     actions: pluginDiscoveryForm,
-    description: "A successful empty discovery response is distinct from a failed request.",
+    description:
+      "A successful empty discovery response retains the Driver's access and credential setup guidance and is distinct from a failed request.",
     gap: pluginDiscoveryGap,
   },
   createPluginsLoading: {

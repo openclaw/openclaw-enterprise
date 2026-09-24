@@ -313,6 +313,11 @@ export interface PluginPolicyCapabilities {
   readonly driverPolicySchema: JSONSchema;
 }
 
+export interface PluginCatalogLink {
+  readonly label: string;
+  readonly url: string;
+}
+
 export interface PluginCatalogEntry {
   readonly id: string;
   readonly name: string;
@@ -320,14 +325,19 @@ export interface PluginCatalogEntry {
   readonly description?: string;
   /** Public HTTPS presentation image; may expire and is never selection state. */
   readonly logoUrl?: string;
+  readonly websiteUrl?: string;
+  readonly privacyPolicyUrl?: string;
+  readonly termsOfServiceUrl?: string;
   readonly available?: boolean;
   readonly unavailableReason?: string;
+  readonly unavailableHelp?: PluginCatalogLink;
   readonly tools: readonly PluginToolCatalogEntry[] | null;
 }
 
 export interface PluginCatalogPage {
   readonly plugins: readonly PluginCatalogEntry[];
   readonly nextCursor: string | null;
+  readonly setup?: { readonly message: string; readonly links: readonly PluginCatalogLink[] };
 }
 
 export interface PluginRevisionState {

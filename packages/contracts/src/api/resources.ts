@@ -48,15 +48,24 @@ export const AgentModelListResponse = Type.Object(
   { additionalProperties: false },
 );
 
+const PluginCatalogLinkSchema = Type.Object(
+  { label: Type.String(), url: Type.String() },
+  { additionalProperties: false },
+);
+
 const PluginCatalogEntrySchema = Type.Object(
   {
     id: Type.String(),
     name: Type.String(),
     remoteId: Type.Optional(Type.String()),
     logoUrl: Type.Optional(Type.String()),
+    websiteUrl: Type.Optional(Type.String()),
+    privacyPolicyUrl: Type.Optional(Type.String()),
+    termsOfServiceUrl: Type.Optional(Type.String()),
     description: Type.Optional(Type.String()),
     available: Type.Optional(Type.Boolean()),
     unavailableReason: Type.Optional(Type.String()),
+    unavailableHelp: Type.Optional(PluginCatalogLinkSchema),
     tools: Type.Union([
       Type.Null(),
       Type.Array(
@@ -85,6 +94,12 @@ export const AgentPluginCatalogResponse = Type.Object(
       {
         plugins: Type.Array(PluginCatalogEntrySchema),
         nextCursor: Type.Union([Type.String(), Type.Null()]),
+        setup: Type.Optional(
+          Type.Object(
+            { message: Type.String(), links: Type.Array(PluginCatalogLinkSchema) },
+            { additionalProperties: false },
+          ),
+        ),
       },
       { additionalProperties: false },
     ),

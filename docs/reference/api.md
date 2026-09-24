@@ -914,9 +914,20 @@ List available plugins for Agent creation without storing the supplied credentia
 | `data.plugins[].id` | `string` | Yes | — |
 | `data.plugins[].logoUrl` | `string` | No | — |
 | `data.plugins[].name` | `string` | Yes | — |
+| `data.plugins[].privacyPolicyUrl` | `string` | No | — |
 | `data.plugins[].remoteId` | `string` | No | — |
+| `data.plugins[].termsOfServiceUrl` | `string` | No | — |
 | `data.plugins[].tools` | `null or array<object>` | Yes | — |
+| `data.plugins[].unavailableHelp` | `object` | No | — |
+| `data.plugins[].unavailableHelp.label` | `string` | Yes | — |
+| `data.plugins[].unavailableHelp.url` | `string` | Yes | — |
 | `data.plugins[].unavailableReason` | `string` | No | — |
+| `data.plugins[].websiteUrl` | `string` | No | — |
+| `data.setup` | `object` | No | — |
+| `data.setup.links` | `array<object>` | Yes | — |
+| `data.setup.links[].label` | `string` | Yes | — |
+| `data.setup.links[].url` | `string` | Yes | — |
+| `data.setup.message` | `string` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -978,9 +989,15 @@ Read available plugin tools without storing the supplied credential
 | `data.id` | `string` | Yes | — |
 | `data.logoUrl` | `string` | No | — |
 | `data.name` | `string` | Yes | — |
+| `data.privacyPolicyUrl` | `string` | No | — |
 | `data.remoteId` | `string` | No | — |
+| `data.termsOfServiceUrl` | `string` | No | — |
 | `data.tools` | `null or array<object>` | Yes | — |
+| `data.unavailableHelp` | `object` | No | — |
+| `data.unavailableHelp.label` | `string` | Yes | — |
+| `data.unavailableHelp.url` | `string` | Yes | — |
 | `data.unavailableReason` | `string` | No | — |
+| `data.websiteUrl` | `string` | No | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 

@@ -44,6 +44,37 @@ function pluginIdentity(entry, heading = false) {
   );
 }
 
+function catalogLink(label, url) {
+  return element("a", { href: url, target: "_blank", rel: "noopener noreferrer" }, label);
+}
+
+function unavailableMessage(entry, id) {
+  return element(
+    "p",
+    { className: "hint plugin-unavailable", ...(id ? { id } : {}) },
+    entry.unavailableReason ?? "This plugin cannot be enabled by the selected Driver.",
+    entry.unavailableHelp
+      ? element(
+          "span",
+          {},
+          " ",
+          catalogLink(entry.unavailableHelp.label, entry.unavailableHelp.url),
+        )
+      : null,
+  );
+}
+
+function setupContent(setup) {
+  return [
+    element("p", { className: "hint" }, setup.message),
+    element(
+      "div",
+      { className: "plugin-external-links" },
+      ...setup.links.map(({ label, url }) => catalogLink(label, url)),
+    ),
+  ];
+}
+
 export function createPluginFields({
   input,
   catalog = null,
@@ -106,6 +137,8 @@ export function createPluginFields({
       loadPage("refresh");
     }
   });
+  const accessHelp = element("div", { className: "plugin-access-help" });
+  const setupReminder = element("details", { className: "plugin-setup-reminder" });
   dialog.append(
     element(
       "div",
@@ -114,20 +147,7 @@ export function createPluginFields({
       button("Done", () => dialog.close()),
     ),
     element("p", { className: "hint" }, "Changes are saved when you create the Agent."),
-    element(
-      "p",
-      { className: "hint plugin-access-help" },
-      "For Codex and ChatGPT plugins, manage plugin and app access in ChatGPT workspace settings. Apps must be enabled for the user or service account behind the PAT or token. OCE policies do not grant that access. ",
-      element(
-        "a",
-        {
-          href: "https://help.openai.com/en/articles/11509118",
-          target: "_blank",
-          rel: "noopener noreferrer",
-        },
-        "Manage workspace access",
-      ),
-    ),
+    accessHelp,
     policyStatus,
     feedback,
     workspace,
@@ -152,6 +172,7 @@ export function createPluginFields({
     element("h2", { id: "plugin-heading" }, "Plugins"),
     summary,
     configure,
+    setupReminder,
     json,
     dialog,
   );
@@ -291,6 +312,13 @@ export function createPluginFields({
     available.setAttribute("aria-pressed", String(!configuredOnly));
     configured.setAttribute("aria-pressed", String(configuredOnly));
     const count = Object.keys(values ?? {}).length;
+    accessHelp.hidden = !catalog?.setup;
+    setupReminder.hidden = !catalog?.setup || count === 0;
+    accessHelp.replaceChildren(...(catalog?.setup ? setupContent(catalog.setup) : []));
+    setupReminder.replaceChildren(
+      element("summary", {}, "Check plugin access and credentials before deployment"),
+      ...(catalog?.setup ? setupContent(catalog.setup) : []),
+    );
     summary.textContent = `${count} plugin${count === 1 ? "" : "s"} configured. Select plugins and set their tool policies.`;
     searchLabel.textContent = configuredOnly ? "Filter configured plugins" : "Filter this page";
     search.placeholder = searchLabel.textContent;
@@ -315,7 +343,7 @@ export function createPluginFields({
           a.name.localeCompare(b.name),
       );
     list.replaceChildren(
-      ...visible.map((entry) => {
+      ...visible.map((entry, index) => {
         const selected = values?.[entry.id];
         const item = button(pluginIdentity(entry), () => showPlugin(entry), {
           className: "plugin-list-item",
@@ -335,7 +363,16 @@ export function createPluginFields({
                 : "Not selected",
           ),
         );
-        return item;
+        const reasonId = `plugin-unavailable-${index}`;
+        if (entry.available === false) {
+          item.setAttribute("aria-describedby", reasonId);
+        }
+        return element(
+          "div",
+          { className: "plugin-list-row" },
+          item,
+          entry.available === false ? unavailableMessage(entry, reasonId) : null,
+        );
       }),
     );
     detail.replaceChildren(
@@ -371,13 +408,16 @@ export function createPluginFields({
           ),
           element("p", { className: "hint plugin-id" }, entry.id),
           entry.description ? element("p", { className: "hint" }, entry.description) : null,
-          entry.available === false
-            ? element(
-                "p",
-                { className: "hint" },
-                entry.unavailableReason ?? "This plugin cannot be enabled by the selected Driver.",
-              )
-            : null,
+          element(
+            "div",
+            { className: "plugin-external-links" },
+            entry.websiteUrl ? catalogLink("Website", entry.websiteUrl) : null,
+            entry.privacyPolicyUrl ? catalogLink("Privacy policy", entry.privacyPolicyUrl) : null,
+            entry.termsOfServiceUrl
+              ? catalogLink("Terms of service", entry.termsOfServiceUrl)
+              : null,
+          ),
+          entry.available === false ? unavailableMessage(entry) : null,
         );
         if (selected) {
           const enabled = element("input", {

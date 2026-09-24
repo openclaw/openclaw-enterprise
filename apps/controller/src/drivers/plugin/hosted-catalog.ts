@@ -9,6 +9,14 @@ import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 const CATALOG_URL = "https://chatgpt.com/backend-api/ps/";
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 const PAGE_SIZE = 20;
+const WORKSPACE_PLUGINS = {
+  label: "Manage workspace plugins",
+  url: "https://chatgpt.com/admin/plugins?catalog=GLOBAL",
+};
+const PLUGIN_SETUP = {
+  label: "OCE plugin setup",
+  url: "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/reference/drivers/plugin-bundled.md#selection-and-catalogs",
+};
 
 function invalid(): never {
   throw new PluginDiscoveryError("invalid_response");
@@ -121,7 +129,7 @@ async function withCredential<T>(
   }
 }
 
-function publicLogoUrl(value: unknown): string | undefined {
+function publicHttpsUrl(value: unknown): string | undefined {
   if (typeof value !== "string" || value.length > 8192 || /[\s\p{Cc}]/u.test(value)) {
     return undefined;
   }
@@ -150,28 +158,52 @@ function catalogEntry(value: unknown): PluginCatalogEntry {
     invalid();
   }
   let unavailableReason: string | undefined;
+  let unavailableHelp = PLUGIN_SETUP;
   if (plugin.status !== "ENABLED" || plugin.installation_policy === "NOT_AVAILABLE") {
-    unavailableReason =
-      "This plugin is unavailable for this account or disabled by its administrator.";
+    unavailableHelp = WORKSPACE_PLUGINS;
+    switch (plugin.disabled_reason) {
+      case "disabled_by_admin":
+        unavailableReason =
+          "Disabled by a ChatGPT workspace administrator. Ask an administrator to enable access for the user or service account behind this token.";
+        break;
+      case "plan_not_eligible":
+        unavailableReason =
+          "This workspace's plan is not eligible for this plugin. Ask a workspace administrator to review plan availability.";
+        break;
+      case "required_app_unavailable":
+        unavailableReason =
+          "A required app is unavailable. Ask a ChatGPT workspace administrator to review app access and setup for the user or service account behind this token.";
+        break;
+      default:
+        unavailableReason =
+          "Unavailable for this account. Ask a ChatGPT workspace administrator to review plugin access; the service did not provide a recognized reason.";
+    }
   } else if (release.requires_local_executor !== false || skills.length > 0) {
     // The list can rule out unsupported plugins; details must still check their local surfaces.
-    unavailableReason = "This plugin does not advertise a supported hosted-only integration.";
+    unavailableReason =
+      "This plugin requires local components or skills that OCE hosted discovery does not support. Changing ChatGPT access will not enable it here.";
   } else if (apps.length === 0) {
-    unavailableReason = "This plugin has no concrete hosted app available to this account.";
+    unavailableReason = "This plugin has no concrete hosted app supported by OCE.";
   }
   const presentation = record(release.interface);
   const description = presentation.short_description ?? release.description;
   // Public presentation URLs may expire; keep them out of persisted plugin selections.
   const logoUrl =
-    publicLogoUrl(presentation.logo_url) ?? publicLogoUrl(presentation.composer_icon_url);
+    publicHttpsUrl(presentation.logo_url) ?? publicHttpsUrl(presentation.composer_icon_url);
+  const websiteUrl = publicHttpsUrl(presentation.website_url);
+  const privacyPolicyUrl = publicHttpsUrl(presentation.privacy_policy_url);
+  const termsOfServiceUrl = publicHttpsUrl(presentation.terms_of_service_url);
   return {
     id: `codex-plugin:${slug}@openai-curated-remote`,
     remoteId: text(plugin.id, 256),
     name: isNonEmptyString(release.display_name) ? text(release.display_name, 512) : slug,
     ...(isNonEmptyString(description) ? { description: text(description) } : {}),
     ...(logoUrl ? { logoUrl } : {}),
+    ...(websiteUrl ? { websiteUrl } : {}),
+    ...(privacyPolicyUrl ? { privacyPolicyUrl } : {}),
+    ...(termsOfServiceUrl ? { termsOfServiceUrl } : {}),
     available: unavailableReason === undefined,
-    ...(unavailableReason ? { unavailableReason } : {}),
+    ...(unavailableReason ? { unavailableReason, unavailableHelp } : {}),
     tools: null,
   };
 }
@@ -191,7 +223,19 @@ export async function discoverHostedPlugins(
     if (nextCursor !== null && nextCursor === input.cursor) {
       invalid();
     }
-    return { plugins: array(response.plugins, PAGE_SIZE).map(catalogEntry), nextCursor };
+    return {
+      plugins: array(response.plugins, PAGE_SIZE).map(catalogEntry),
+      nextCursor,
+      setup: {
+        message:
+          "App connection status is not verified. Catalog availability does not confirm linked credentials. In ChatGPT admin, select the same workspace as this PAT and enable plugin and app access for its user or service account. For service-account plugin credentials, open Service accounts, choose the account, and configure its app connections. Workspace administrator access is required. OCE policies do not grant access or configure credentials. Reload plugins after changes.",
+        links: [
+          WORKSPACE_PLUGINS,
+          { label: "Service account credentials", url: "https://admin.openai.com/" },
+          PLUGIN_SETUP,
+        ],
+      },
+    };
   });
 }
 
@@ -227,16 +271,18 @@ export async function getHostedPlugin(
       return true;
     });
     if (
-      array(release.mcp_servers, 1000).some(
+      entry.available !== false &&
+      (array(release.mcp_servers, 1000).some(
         (server) => !declarations.some(([name]) => name === text(record(server).key, 256)),
       ) ||
-      (release.scheduled_tasks != null && array(release.scheduled_tasks, 1000).length > 0)
+        (release.scheduled_tasks != null && array(release.scheduled_tasks, 1000).length > 0))
     ) {
       entry = {
         ...entry,
         available: false,
         unavailableReason:
-          "This plugin includes components not supported by the selected Plugin Driver.",
+          "This plugin includes components not supported by the selected Plugin Driver. Changing ChatGPT access will not enable it here.",
+        unavailableHelp: PLUGIN_SETUP,
       };
     }
     const appIds = declarations.map(([, id]) => id);
@@ -244,11 +290,14 @@ export async function getHostedPlugin(
       invalid();
     }
     if (appIds.length === 0) {
-      return {
-        ...entry,
-        available: false,
-        unavailableReason: "This plugin has no concrete hosted app available to this account.",
-      };
+      return entry.available === false
+        ? entry
+        : {
+            ...entry,
+            available: false,
+            unavailableReason: "This plugin has no concrete hosted app supported by OCE.",
+            unavailableHelp: PLUGIN_SETUP,
+          };
     }
     const responseApps = await request("apps/batch", { app_ids: appIds, include_tools: true });
     const apps = new Map<string, Record<string, unknown>>();

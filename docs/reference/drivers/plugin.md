@@ -42,6 +42,15 @@ and shows initials if an image fails. URLs may expire and are never copied into
 Agent selections. Console CSP permits HTTPS images while retaining same-origin
 scripts and connections.
 
+Optional `websiteUrl`, `privacyPolicyUrl`, and `termsOfServiceUrl` provide public
+HTTPS links in plugin details. An unavailable entry can include `unavailableHelp`
+as `{label, url}`. Discovery pages can include `setup: {message, links}`, where
+each link has the same shape. The selected Driver owns these explanations and
+destinations; Console renders them without vendor-specific setup logic. This
+metadata never enters Agent selections and does not verify app connections,
+grant access, or configure credentials. Connection verification and deployment
+gates are not part of this metadata contract.
+
 Authorized `GET /installation` exposes the selected Driver's identity and policy
 capabilities. See the [capability response](../agent-plugins.md#discover-policy-controls).
 
@@ -52,7 +61,7 @@ saving Agent selections and deploying supported selections can still use the
 Agent runtime's discovery path.
 
 Two optional methods serve pre-Agent discovery: `discoverCatalog({accessToken,
-cursor?}, signal?)` returns `{plugins, nextCursor}`, and
+cursor?}, signal?)` returns `{plugins, nextCursor, setup?}`, and
 `getCatalogPlugin({accessToken, pluginId}, signal?)` returns tool details. Here
 `pluginId` is the opaque `remoteId` from a discovery entry; the entry's `id` is
 the stable selection key. The HTTP routes are `POST /namespaces/:namespaceId/agents/plugins`

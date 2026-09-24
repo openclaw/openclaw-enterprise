@@ -750,7 +750,8 @@ summary:focus-visible {
 .plugin-dialog > p:empty {
   display: none;
 }
-.plugin-access-help {
+.plugin-access-help,
+.plugin-setup-reminder {
   padding: 12px 16px;
   background: #f7f9f8;
   border: 1px solid var(--line);
@@ -832,6 +833,9 @@ summary:focus-visible {
   border-color: var(--accent);
 }
 .plugin-list-item {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
   width: 100%;
   text-align: left;
   overflow-wrap: anywhere;
@@ -869,6 +873,8 @@ summary:focus-visible {
   height: 40px;
 }
 .plugin-list-item .badge {
+  align-self: flex-start;
+  margin-left: 42px;
   font-size: 0.75rem;
 }
 .plugin-detail-empty {
@@ -1169,4 +1175,28 @@ summary:focus-visible {
   .harness-auth-fields {
     grid-template-columns: 1fr;
   }
+}
+
+.plugin-external-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  font-size: 0.875rem;
+}
+.plugin-external-links:empty {
+  display: none;
+}
+.plugin-access-help > p {
+  margin: 0 0 8px;
+}
+.plugin-access-help {
+  flex-shrink: 0;
+}
+.plugin-list-row .plugin-unavailable {
+  margin: 8px 4px 0;
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+.plugin-setup-reminder {
+  margin-top: 16px;
 }

@@ -724,7 +724,7 @@ function renderAgentForm(context, rendered) {
       pluginPageIds = page.plugins.map((entry) => entry.id);
       pluginCursors = [...pluginCursors.slice(0, pageIndex), cursor];
       pluginPageIndex = pageIndex;
-      pluginCatalog = { status: "ready", nextCursor: page.nextCursor };
+      pluginCatalog = { status: "ready", nextCursor: page.nextCursor, setup: page.setup };
     } catch (error) {
       if (!context.isCurrent() || generation !== pluginDiscoveryGeneration) {
         return;

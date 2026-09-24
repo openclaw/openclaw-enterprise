@@ -3125,7 +3125,9 @@
                               "id": { "type": "string" },
                               "logoUrl": { "type": "string" },
                               "name": { "type": "string" },
+                              "privacyPolicyUrl": { "type": "string" },
                               "remoteId": { "type": "string" },
+                              "termsOfServiceUrl": { "type": "string" },
                               "tools": {
                                 "anyOf": [
                                   { "type": "null" },
@@ -3149,12 +3151,42 @@
                                   }
                                 ]
                               },
-                              "unavailableReason": { "type": "string" }
+                              "unavailableHelp": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "label": { "type": "string" },
+                                  "url": { "type": "string" }
+                                },
+                                "required": ["label", "url"],
+                                "type": "object"
+                              },
+                              "unavailableReason": { "type": "string" },
+                              "websiteUrl": { "type": "string" }
                             },
                             "required": ["id", "name", "tools"],
                             "type": "object"
                           },
                           "type": "array"
+                        },
+                        "setup": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "links": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "label": { "type": "string" },
+                                  "url": { "type": "string" }
+                                },
+                                "required": ["label", "url"],
+                                "type": "object"
+                              },
+                              "type": "array"
+                            },
+                            "message": { "type": "string" }
+                          },
+                          "required": ["message", "links"],
+                          "type": "object"
                         }
                       },
                       "required": ["plugins", "nextCursor"],
@@ -3305,7 +3337,9 @@
                         "id": { "type": "string" },
                         "logoUrl": { "type": "string" },
                         "name": { "type": "string" },
+                        "privacyPolicyUrl": { "type": "string" },
                         "remoteId": { "type": "string" },
+                        "termsOfServiceUrl": { "type": "string" },
                         "tools": {
                           "anyOf": [
                             { "type": "null" },
@@ -3329,7 +3363,17 @@
                             }
                           ]
                         },
-                        "unavailableReason": { "type": "string" }
+                        "unavailableHelp": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "label": { "type": "string" },
+                            "url": { "type": "string" }
+                          },
+                          "required": ["label", "url"],
+                          "type": "object"
+                        },
+                        "unavailableReason": { "type": "string" },
+                        "websiteUrl": { "type": "string" }
                       },
                       "required": ["id", "name", "tools"],
                       "type": "object"
