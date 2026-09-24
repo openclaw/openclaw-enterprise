@@ -337,8 +337,8 @@ required review with compatible real runtimes. Schema tests, generated config,
 and Storybook fixtures do not establish runtime enforcement.
 
 Source evidence: Codex's [policy resolver](https://github.com/openai/codex/blob/a83ba61249443a9a0f911d452a8f54e3c7ebb1b8/codex-rs/connectors/src/app_tool_policy.rs#L169)
-establishes native precedence; the inspected [OC WebSocket policy defaults](https://github.com/openclaw/openclaw/blob/e912761b43fc7dfad31a3e99290600c7c98d5f08/extensions/codex/src/app-server/config-security.ts#L292)
-and [effective session settings](https://github.com/openclaw/openclaw/blob/e912761b43fc7dfad31a3e99290600c7c98d5f08/extensions/codex/src/app-server/config-runtime.ts#L247)
+establishes native precedence; the inspected [OC WebSocket policy defaults](https://github.com/openclaw/openclaw/blob/41d076f30b32737723a3410af395d43c1b6dd00c/extensions/codex/src/app-server/config-security.ts#L276)
+and [effective session settings](https://github.com/openclaw/openclaw/blob/41d076f30b32737723a3410af395d43c1b6dd00c/extensions/codex/src/app-server/config-options.ts#L260)
 explain the approval integration requirement. Codex [configuration types](https://github.com/openai/codex/blob/a83ba61249443a9a0f911d452a8f54e3c7ebb1b8/codex-rs/config/src/types.rs)
 define supported fields. These were read directly; live deployed enforcement
 remains unverified.

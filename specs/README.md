@@ -45,8 +45,9 @@ from [AGENTS.md](../AGENTS.md#running-integration-tests) instead.
 
 [Plugin policy enforcement](37-plugin-policy-enforcement.md) — Proposed for alignment;
 revises the earlier plugin policy proposals with nested defaults and tool overrides,
-Driver extensions, and admission-to-runtime enforcement. Policy implementation
-is paused; catalog discovery proceeds in the separate Create Agent workstream.
+Driver extensions, and admission-to-runtime enforcement. Draft implementation
+exists; enforcement delivery awaits alignment. Catalog discovery proceeds in the
+separate Create Agent workstream.
 
 [Native OpenClaw plugin tool policies](35-native-plugin-tool-policy.md) — Proposed;
 enforce Agent plugin policies through a managed native policy plugin and existing
