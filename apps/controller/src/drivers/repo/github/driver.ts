@@ -5,7 +5,6 @@ import type {
   Backend,
   RepositoryBindingRequest,
   RepoDriver,
-  RepositoryCredentialGrantIdentity,
   RepositoryCredentialResolution,
   RepositoryCredentialSessionStatus,
   RepositoryOption,
@@ -23,6 +22,7 @@ import {
 } from "./credentials/registry.ts";
 import { encodeRepositoryCredentialSessionFiles } from "./credentials/client/config.ts";
 import type { SessionStatus } from "../credentials/service-contracts.ts";
+import { sameBinding } from "../credentials/sessions.ts";
 
 function publicStatus(status: SessionStatus): RepositoryCredentialSessionStatus {
   return Object.freeze({
@@ -42,17 +42,6 @@ function hasControlCharacters(value: string): boolean {
     const code = character.charCodeAt(0);
     return code <= 0x1f || code === 0x7f;
   });
-}
-
-function sameBinding(
-  left: RepositoryCredentialGrantIdentity,
-  right: RepositoryCredentialGrantIdentity,
-): boolean {
-  return (
-    left.providerInstanceId === right.providerInstanceId &&
-    left.repositoryId === right.repositoryId &&
-    left.grantId === right.grantId
-  );
 }
 
 export class GitHubRepoDriver implements RepoDriver {
