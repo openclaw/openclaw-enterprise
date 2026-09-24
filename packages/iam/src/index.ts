@@ -14,7 +14,6 @@ import {
   type IAMPolicyManagementContext,
   type IAMPolicyReadContext,
   type IAMPolicyReadRepository,
-  type IAMPolicyRepository,
   type Identity,
   type IdentityLookup,
   type JSONSchema,
@@ -932,7 +931,7 @@ export class NativeIAMDriver implements IAMDriver {
     context: IAMPolicyManagementContext,
     input: IAMManagedRoleInput,
   ): Promise<Readonly<Role>> {
-    const repository = this.managementPolicyRepository(context, ["createRole"]);
+    const repository = this.policyRepository(context, ["createRole"]);
     return immutableRole(await repository.createRole(managedRole(input)));
   }
 
@@ -941,7 +940,7 @@ export class NativeIAMDriver implements IAMDriver {
     namespaceId: string,
     roleId: string,
   ): Promise<boolean> {
-    const repository = this.managementPolicyRepository(context, ["deleteRole"]);
+    const repository = this.policyRepository(context, ["deleteRole"]);
     this.assertNamespace(namespaceId);
     this.assertIdentifier(roleId, "Role");
     return repository.deleteRole(namespaceId, roleId);
@@ -972,7 +971,7 @@ export class NativeIAMDriver implements IAMDriver {
     context: IAMPolicyManagementContext,
     input: IAMManagedAccessBindingInput,
   ): Promise<Readonly<AccessBinding>> {
-    const repository = this.managementPolicyRepository(context, ["createAccessBinding"]);
+    const repository = this.policyRepository(context, ["createAccessBinding"]);
     return immutableBinding(await repository.createAccessBinding(managedAccessBinding(input)));
   }
 
@@ -981,31 +980,16 @@ export class NativeIAMDriver implements IAMDriver {
     namespaceId: string,
     bindingId: string,
   ): Promise<boolean> {
-    const repository = this.managementPolicyRepository(context, ["deleteAccessBinding"]);
+    const repository = this.policyRepository(context, ["deleteAccessBinding"]);
     this.assertNamespace(namespaceId);
     this.assertIdentifier(bindingId, "AccessBinding");
     return repository.deleteAccessBinding(namespaceId, bindingId);
   }
 
-  private policyRepository(
-    context: IAMPolicyReadContext,
-    methods: readonly (keyof IAMPolicyReadRepository)[],
-  ): IAMPolicyReadRepository {
-    const repository = context?.policy;
-    if (
-      typeof repository !== "object" ||
-      repository === null ||
-      !methods.every((method) => typeof repository[method] === "function")
-    ) {
-      throw new TypeError("Native IAM management requires a policy repository.");
-    }
-    return repository;
-  }
-
-  private managementPolicyRepository(
-    context: IAMPolicyManagementContext,
-    methods: readonly (keyof IAMPolicyRepository)[],
-  ): IAMPolicyRepository {
+  private policyRepository<Repository extends IAMPolicyReadRepository>(
+    context: { readonly policy: Repository },
+    methods: readonly (keyof Repository)[],
+  ): Repository {
     const repository = context?.policy;
     if (
       typeof repository !== "object" ||
