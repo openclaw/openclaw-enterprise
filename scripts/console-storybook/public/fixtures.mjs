@@ -1,6 +1,8 @@
 import standardCodexPreset from "/console/standard-codex-preset.mjs";
 import standardOpenclawPreset from "/console/standard-openclaw-preset.mjs";
 import devdayPreset from "/console/devday-preset.mjs";
+import devdayQaPreset from "/console/devday-qa-preset.mjs";
+import devdayOncallPreset from "/console/devday-oncall-preset.mjs";
 
 const createdAt = "2026-09-01T12:00:00.000Z";
 const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
@@ -254,10 +256,15 @@ export function installFixture(scenario, evidence) {
   }
   const presets = [preset];
   if (scenario.devdayPreset) {
-    for (const definition of [standardCodexPreset, standardOpenclawPreset]) {
+    for (const [name, definition] of [
+      ["standard-codex", standardCodexPreset],
+      ["standard-openclaw", standardOpenclawPreset],
+      ["devday-qa", devdayQaPreset],
+      ["devday-oncall", devdayOncallPreset],
+    ]) {
       presets.push({
         ...structuredClone(definition),
-        id: `pre_${definition.name.replaceAll("-", "_")}`,
+        id: `pre_${name.replaceAll("-", "_")}`,
         namespaceId,
       });
     }
