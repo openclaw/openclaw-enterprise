@@ -1920,14 +1920,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
       const pods = await this.revisionPods(revision, targetNamespace, role);
       // Old or external images can lack the metadata endpoint. Image identity
       // still comes from Kubernetes; never infer a commit from a configured tag.
+      // Optional provenance must leave room within the console's request deadline.
+      const ownerSignal = currentComputeAbortSignal();
+      const metadataDeadline = AbortSignal.timeout(2_000);
+      const metadataSignal = ownerSignal
+        ? AbortSignal.any([ownerSignal, metadataDeadline])
+        : metadataDeadline;
       const provenance =
         pods.length === 0
           ? undefined
-          : await this.privateStatusReadback(
-              revision,
-              namespace,
-              role,
-              "/openclaw/runtime/image",
+          : await withComputeAbortSignal(metadataSignal, () =>
+              this.privateStatusReadback(revision, namespace, role, "/openclaw/runtime/image"),
             ).catch(() => undefined);
       for (const pod of pods) {
         const metadata = asRecord(pod.metadata)!;
