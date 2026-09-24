@@ -89,7 +89,8 @@ jobs:
           CI_ATTEMPT: ${{ needs.validate.outputs.ci_attempt }}
         run: |
           node scripts/ci/container-release.mjs assemble "$RUNNER_TEMP/oci"
-          export IMAGE_DIGEST="$(sed -n 's/^digest=//p' "$GITHUB_OUTPUT")"
+          IMAGE_DIGEST="$(sed -n 's/^digest=//p' "$GITHUB_OUTPUT")"
+          export IMAGE_DIGEST
           node scripts/ci/container-release.mjs seal "$RUNNER_TEMP/oci"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
