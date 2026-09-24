@@ -121,6 +121,28 @@ upstream credential issuance, workspace administrator credentials, or creation o
 a new upstream account. Never print credential values or resolved account
 identifiers.
 
+## Per-call approval acceptance
+
+The Calendar scenario also redeploys the same Agent with
+`toolDefaults: { approval: "prompt", reviewer: "human" }`. It connects an
+operator approval client to the disposable Gateway, allows one read, then denies
+the repeated read in the same session. Transcript evidence must contain no tool
+result while approval is pending, a successful result after approval, and an
+error without the provider result after denial.
+
+It then redeploys with `reviewer: "auto"` and repeats the read twice in one
+session. Each successful call must carry a distinct approved automatic-review ID.
+Evidence is scoped to the marker-bearing user turn so an earlier successful call
+cannot satisfy a later assertion.
+
+Run with the Calendar prerequisites above and
+`OCC_TEST_PLUGIN_DRIVER_CODEX_CALENDAR_REAL=1`. The five turns exercise native
+approval once, human review twice, and automatic review twice. The fixture uses
+the admitted nested policy through the normal API/deployment flow; it does not
+patch the native runtime or change the fixture's existing session configuration.
+Missing review, an incompatible runtime, or rejected deployment fails the selected
+scenario. An unselected scenario is skipped and provides no enforcement proof.
+
 ## Current proof notes
 
 The nested policy contract and translation changes have not been verified in a

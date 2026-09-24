@@ -261,7 +261,7 @@ test(
 );
 
 test(
-  "curated Codex Google Calendar installs with the service-account credential and performs a harmless normal-turn read",
+  "curated Codex Google Calendar enforces per-call human and automatic review in normal Agent turns",
   {
     skip: pluginProofSkipReason("codex_calendar"),
     timeout: 900_000,
@@ -352,6 +352,77 @@ test(
       toolName,
       resultPattern,
     });
+
+    // Reuse one native session: allowing the first read must not authorize the next.
+    await fixture.updatePluginPolicy(agent.id, pluginId, {
+      toolDefaults: { approval: "prompt", reviewer: "human" },
+    });
+    const humanRevision = await fixture.deployAndWait(agent);
+    const humanSessionKey = `agent:main:codex-calendar-human-${randomUUID()}`;
+    for (const decision of ["allow-once", "deny"]) {
+      const marker = `CODEX_CALENDAR_HUMAN_${randomUUID()}`;
+      const evidence = { sessionKey: humanSessionKey, turnMarker: marker, toolName, resultPattern };
+      await fixture.normalGatewayTurn({
+        agent,
+        gatewayPassword: humanRevision.gatewayPassword,
+        sessionKey: humanSessionKey,
+        prompt: [
+          prompt,
+          "Make a fresh call to that tool exactly once, even if earlier results are available.",
+          "If the operator denies it, do not retry or call another tool; report the denial.",
+          `Include this marker in the final answer after success or denial: ${marker}`,
+        ].join("\n"),
+        expectedPatterns: [marker],
+        secrets: [credential.accessToken, credential.workspaceId],
+        humanReview: { decision, turnMarker: marker, toolName },
+      });
+      if (decision === "deny") {
+        await fixture.assertSessionToolDeniedEvidence(agent, evidence);
+      } else {
+        await fixture.assertSessionToolCallEvidence(agent, evidence);
+      }
+    }
+
+    // A harmless read normally skips automatic review under auto. Prompt must
+    // instead persist a fresh approval on each successful call, including repeats.
+    await fixture.updatePluginPolicy(agent.id, pluginId, {
+      toolDefaults: { approval: "prompt", reviewer: "auto" },
+    });
+    const automaticRevision = await fixture.deployAndWait(agent);
+    const automaticSessionKey = `agent:main:codex-calendar-automatic-${randomUUID()}`;
+    const reviewIds = new Set();
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const marker = `CODEX_CALENDAR_AUTOMATIC_${randomUUID()}`;
+      await fixture.normalGatewayTurn({
+        agent,
+        gatewayPassword: automaticRevision.gatewayPassword,
+        sessionKey: automaticSessionKey,
+        prompt: [
+          prompt,
+          "Make a fresh call to that tool exactly once, even if earlier results are available.",
+          `Include this marker in the final answer: ${marker}`,
+        ].join("\n"),
+        expectedPatterns: [marker],
+        secrets: [credential.accessToken, credential.workspaceId],
+      });
+      const evidence = await fixture.assertSessionToolCallEvidence(agent, {
+        sessionKey: automaticSessionKey,
+        turnMarker: marker,
+        toolName,
+        resultPattern,
+        requireAutomaticReview: true,
+      });
+      for (const id of evidence.approvedReviewIds) {
+        assert.equal(typeof id, "string");
+        assert.ok(id.length > 0);
+        assert.equal(
+          reviewIds.has(id),
+          false,
+          "a repeated read must receive a new automatic review",
+        );
+        reviewIds.add(id);
+      }
+    }
   },
 );
 
