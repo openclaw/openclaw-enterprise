@@ -26,6 +26,12 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }) {
 
   function pageUrl(feature, selection = getNamespaceId()) {
     const url = new URL(`/console/${feature}`, location.origin);
+    if (
+      !url.searchParams.has("debug") &&
+      new URL(location.href).searchParams.get("debug") === "true"
+    ) {
+      url.searchParams.set("debug", "true");
+    }
     if (selection !== null) {
       url.searchParams.set("namespace", selection);
     }

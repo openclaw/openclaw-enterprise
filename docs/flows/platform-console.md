@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: 2026-09-24
-last_updated_session: public-pr/348
+last_updated_session: 01a0c179-19f7-7111-8bb4-fc7680da5545
 ---
 
 # Platform console request flow
@@ -41,6 +41,8 @@ graph TD
     A["Open console or change page"] --> B["Clear old rows and check session"]
     B -->|no session| C["Login"]
     B -->|authenticated| D["Read readable Namespaces and validate selection"]
+    D -->|debug=true| DBG["Read accessible Agents and runtime image metadata"]
+    DBG --> F
     D --> E["Request current page resource"]
     E --> E1["Edit starter JSON and select associations"]
     E1 --> S1["Select Secret or open creation modal"]
@@ -93,37 +95,43 @@ graph TD
 
 `apps/controller/src/composition/development-postgres.ts:composePostgresDevelopment`
 
-Startup validates Backend definitions into safe `{id,type}` summaries passed to
-`createFastifyApp`. Requests never scan configuration live, read credentials, or
-contact a Backend. [Backend-managed credential delivery](service-account-driver-credential-delivery.md)
-owns client construction and Driver activation.
+Startup passes safe Backend `{id,type}` summaries to `createFastifyApp`.
+[Backend-managed delivery](service-account-driver-credential-delivery.md) owns
+Driver activation. Requests do not reread configuration or credentials.
 
-`apps/controller/src/console-assets.ts:readConsoleAsset` maps public console
-assets and capability modules to allowlisted files, with recognized page URLs
-using the shared HTML shell. Unknown console paths receive that shell with HTTP
-`404`. The controller sets MIME type and same-origin content security policy;
-other routes keep canonical API JSON errors. The Dockerfile copies these files
-into the controller image.
+`apps/controller/src/console-assets.ts:readConsoleAsset` serves allowlisted assets
+and the shared HTML shell with MIME types and same-origin CSP. Unknown console
+paths return the shell with `404`; API routes retain JSON errors.
 
-`scripts/build-console-metadata.mjs` stamps the console HTML during image build.
-The publisher supplies its checked `source_sha` as `OCC_BUILD_REVISION`, also used
-for the image revision label. Empty metadata stays empty; nonempty metadata must
-be a full lowercase Git SHA. `shell.mjs:renderShell` shows the short OCC hash
-beside OCE with the full revision in a tooltip; missing or invalid metadata shows
-**dev**. No browser or controller request inspects Git or an Agent gateway version.
+`scripts/build-console-metadata.mjs` bakes the publisher's checked
+`OCC_BUILD_REVISION` into HTML. With `debug=true`, `shell.mjs:renderShell` displays
+the full commit; invalid or absent metadata remains unknown.
+
+`runtime-images.mjs:renderRuntimeImages` issues at most three concurrent reads for
+readable Agents in the selected Namespace.
+`packages/occ/src/index.ts:OpenClawController.getAgentRuntimeImages` authorizes
+exact Agent read, resolves its active revision, then calls its Compute Driver.
+Docker follows attached immutable images. Kubernetes reads revision-owned Pods
+and binds provenance to Pod/container identity, with a two-second metadata deadline.
+The Dockerfile bakes Enterprise metadata into `build.json`;
+`scripts/build-runtime-assets.mjs` records upstream OpenClaw in `provenance.json`.
+Both live under `/opt/oce/runtime/`; Drivers expose separate commits.
+
+Navigation preserves the flag and rejects stale responses; removing it stops
+these reads. Missing provenance and failures remain explicit. The
+[Compute contract](../reference/drivers/compute.md) defines inspection scope.
 
 ### 2. Resolve the session before private reads
 
 `apps/controller/src/console/console.mjs:loadPage`
 
-The browser clears the prior view, advances its navigation generation, and
-requests `GET /api/auth/session`. No session opens login; unavailable inspection
-blocks private reads and offers Retry. Login submits exactly email and password.
-`apps/controller/src/auth/index.ts:requireTrustedBrowserOrigin` compares browser
-Origin to the configured controller origin before sign-in or sign-out. Server SDK
-calls bypass Better Auth's request-origin middleware, so this HTTP boundary keeps
-that check while retaining headerless CLI requests. Better Auth owns the session
-cookie and password verification; the browser stores no credentials or tokens.
+The browser clears the prior view, advances its generation, and requests
+`GET /api/auth/session`. Missing sessions open login; failed reads offer Retry.
+Login submits email and password.
+`apps/controller/src/auth/index.ts:requireTrustedBrowserOrigin` checks browser
+Origin before sign-in/out, including SDK calls that bypass Better Auth middleware.
+Headerless CLI requests remain supported. Better Auth owns session cookies and
+password verification; the browser stores no credentials or tokens.
 
 After authentication, the client reads `GET /namespaces`, validates the URL's
 selection against readable Namespaces, or chooses the first ready one followed by
@@ -146,12 +154,10 @@ empty configuration is a successful empty list; absent wiring and dependency
 failure return errors.
 
 `apps/controller/src/console/agents/create.mjs:renderCreateAgent` selects Provider,
-then Harness. OpenAI defaults to Codex (Dedicated) and offers OpenClaw (Embedded);
-Anthropic offers OpenClaw. Codex accepts API keys or **Service Accounts**
-(`codex_pat`); OpenClaw accepts API keys. Provider changes reset harness,
-credential, and model. Switching an unsaved service account token to OpenClaw
-clears token/model and selects API-key auth; API-key harness changes retain both.
-Credential hints link to the token console and show expected prefixes.
+then Harness: OpenAI defaults to Dedicated Codex and offers Embedded OpenClaw;
+Anthropic offers OpenClaw. Provider/Harness changes reset incompatible credentials
+and model choices. The [creation reference](../reference/console/create-and-deploy.md)
+defines authentication combinations and token handling.
 
 Presets fix saved credential providers and reject cross-provider JSON before
 writes. Saved service account tokens lock Codex; operator-managed credentials
@@ -315,6 +321,10 @@ uncertain response disables replay until refresh and inspection.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-24 17:20: Expose upstream OpenClaw provenance separately. (01a0c179-19f7-7111-8bb4-fc7680da5545 - bd1a5c46eb069bfa7feedbb99b074dc015c4e9bc)
+
+- 2026-09-24 15:44: Trace opt-in sidebar build metadata and authorized Compute image observations. (01a0c179-19f7-7111-8bb4-fc7680da5545 - 6b5c9093)
 
 - 2026-09-24 06:19: Replace Console model discovery with an intentional static starter list and preserve manual entry. (01a0d20c-dc1b-7d22-a965-60b9c244b29d - 24ecb94b)
 

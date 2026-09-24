@@ -46,6 +46,7 @@ const CODEX_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS = Number(process.env.OPENCLAW_PLUG
 const CODEX_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS = Number(process.env.OPENCLAW_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS ?? "60000");
 const PLUGIN_STATUS_PATH = "/openclaw/plugin-runtime/status";
 const RUNTIME_STATUS_PATH = "/openclaw/runtime/status";
+const RUNTIME_IMAGE_PATH = "/openclaw/runtime/image";
 const PLUGIN_DIAGNOSTIC_CODES = new Set(["PLUGIN_INSTALL_FAILED", "PLUGIN_AUTH_REQUIRED"]);
 const RUNTIME_FAILURE_CODES = new Set([
   "LOGIN_FAILED",
@@ -227,9 +228,27 @@ function startPluginRuntimeStatusServer() {
   if (port === undefined) return;
   const server = pluginCreateServer((request, response) => {
     const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
-    if (request.method !== "GET" || (pathname !== RUNTIME_STATUS_PATH && pathname !== PLUGIN_STATUS_PATH)) {
+    if (request.method !== "GET" || ![RUNTIME_STATUS_PATH, PLUGIN_STATUS_PATH, RUNTIME_IMAGE_PATH].includes(pathname)) {
       response.writeHead(404, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: "not_found" }));
+      return;
+    }
+    if (pathname === RUNTIME_IMAGE_PATH) {
+      let commit = null;
+      try {
+        const metadata = JSON.parse(pluginReadFileSync("/opt/oce/runtime/build.json", "utf8"));
+        if (typeof metadata.commit === "string" && /^[a-f0-9]{40}$/.test(metadata.commit)) commit = metadata.commit;
+      } catch {}
+      response.writeHead(200, { "content-type": "application/json" });
+      let openclawCommit = null;
+      try {
+        const provenance = JSON.parse(pluginReadFileSync("/opt/oce/runtime/provenance.json", "utf8"));
+        if (provenance.source === "https://github.com/openclaw/openclaw" &&
+            typeof provenance.commit === "string" && /^[a-f0-9]{40}$/.test(provenance.commit)) {
+          openclawCommit = provenance.commit;
+        }
+      } catch {}
+      response.end(JSON.stringify({ commit, openclawCommit }));
       return;
     }
     if (pathname === RUNTIME_STATUS_PATH) {

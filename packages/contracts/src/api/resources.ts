@@ -191,6 +191,36 @@ export const AgentRuntimeCredentialStatusSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const AgentRuntimeImagesResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        status: Type.Union([
+          Type.Literal("observed"),
+          Type.Literal("undeployed"),
+          Type.Literal("unsupported"),
+        ]),
+        images: Type.Array(
+          Type.Object(
+            {
+              workload: Type.String(),
+              container: Type.String(),
+              image: Type.String(),
+              imageId: Type.Union([Type.String(), Type.Null()]),
+              commit: Type.Union([Type.String({ pattern: "^[a-f0-9]{40}$" }), Type.Null()]),
+              openclawCommit: Type.Union([Type.String({ pattern: "^[a-f0-9]{40}$" }), Type.Null()]),
+            },
+            { additionalProperties: false },
+          ),
+        ),
+      },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);
+
 export const AgentProvisioningStatusSchema = Type.Object(
   {
     workId: Type.String({ minLength: 1, maxLength: 200 }),

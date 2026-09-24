@@ -31,6 +31,30 @@ URLs. Reload with **Reset story**, not the embedded frame's current console URL.
 The Storybook build workflow also uploads a static artifact; it does not publish
 or change access to the documentation site.
 
+## Appearance review
+
+Use **Pages/Agents → Populated** to review the shared shell and controls.
+Check desktop (1440 × 1000), tablet (768 × 1024), and mobile (390 × 844);
+use keyboard focus, search, navigation, and an open dialog. Include empty,
+loading, error, permission-denied, and missing-credential stories. The console
+stays light with either system appearance preference.
+
+The console's Claw palette, type scale, and surface geometry reference
+[OpenClaw `6e8d06876fd166064abbec4928fb3bb109ebe999`](https://github.com/openclaw/openclaw/tree/6e8d06876fd166064abbec4928fb3bb109ebe999/ui),
+particularly `src/styles/base.css`, `layout.css`, and `components.css`.
+OCE retains its own navigation and workflows. Input borders are stronger than
+the reference's decorative dividers to keep controls distinguishable. The
+self-hosted Instrument Sans subset retains its SIL Open Font License beside
+the font; unsupported glyphs use the system fallback.
+
+The styling comparison includes [before](../assets/console-style/agents-before.png),
+[after](../assets/console-style/agents-1440-light.png),
+[mobile](../assets/console-style/mobile-390-light.png), and a
+[walkthrough](../assets/console-style/walkthrough.mp4). These are simulated
+Storybook UI evidence, not live backend or deployment proof. The
+[reference screen](../assets/console-style/openclaw-reference-light.png) is the
+actual OpenClaw disconnected gateway screen at the revision above.
+
 ## Pages and components
 
 The sidebar contains these groups. Stories with open dialogs or errors reach
@@ -45,7 +69,7 @@ those states by interacting with the real controls after loading fixture data.
 | Settings and navigation | Signed-in account and unknown route.                                                                                                                                                                                                                                                                                                                                       |
 | Create Agent            | Preset variables, no Presets, fixed model choices before credential entry and manual model IDs, OpenAI Codex/OpenClaw and Anthropic OpenClaw harnesses, Service Accounts switching and bound Presets, seeded workspace files, storage/grant denial, repository selection/discovery and rejected-grant recovery, invalid JSON, partial save/conflict, unknown save outcome. |
 | Agent detail            | New revision, native JSON editor, invalid JSON, admitted snapshot, queued or failed deployment, denied deployment, missing Agent, unavailable Configuration and revision history.                                                                                                                                                                                          |
-| Navigation components   | Account menu, Namespace switcher, mobile drawer, OCE branding, simulated OCC revision, missing development metadata.                                                                                                                                                                                                                                                       |
+| Navigation components   | Account menu, Namespace switcher, mobile drawer, OCE branding, simulated OCC revision, missing development metadata, debug runtime image identities and unavailable metadata.                                                                                                                                                                                              |
 | Channels                | Unconfigured cards, Slack editor with pairing/open/disabled policies, everyone and restricted channel sender access, incomplete sender access, unsupported mixed sender lists, unsupported wildcard channel maps, read-only snapshot, save conflict.                                                                                                                       |
 | Credentials             | Stored and missing metadata, masked Slack tokens, one-token replacement, partially missing tokens, generated credentials locked after admission, metadata failure, missing authentication, operator-managed credentials, issued ChatGPT account.                                                                                                                           |
 | Native admin            | Available launch, stopped or unsupported runtime, denied panel hidden. The launch target is an explanatory fixture page.                                                                                                                                                                                                                                                   |
@@ -161,3 +185,13 @@ the console; configure API responses instead of writing replacement UI markup.
 Build Storybook, inspect the affected previews, and walk through changed flows.
 Keep backend and runtime verification in the existing code suites; a successful
 storybook fixture is not evidence that the real API or infrastructure works.
+
+## Debug image walkthrough
+
+Open **Pages / Navigation / Debug runtime images**. Expand an Agent and inspect
+the gateway image reference, digest, Enterprise source commit, and separate upstream
+OpenClaw commit. The sidecar has unknown provenance for both commits.
+Navigate to Namespaces and confirm `debug=true` persists. Repeat in the mobile
+drawer. **Debug metadata unavailable** covers a failed read; ordinary navigation
+stories keep diagnostics hidden. These are presentation fixtures; Docker image
+inspection and the Kubernetes API/worker integration suite verify Driver behavior.

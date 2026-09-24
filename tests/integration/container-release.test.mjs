@@ -469,7 +469,18 @@ test("separate platform exports assemble into a digest-bound archive and reject 
   t.after(() => rm(directory, { recursive: true, force: true }));
   async function prepare(name, fault) {
     const output = join(directory, name);
-    const env = { ...process.env, GITHUB_OUTPUT: join(output, "outputs") };
+    const env = {
+      ...process.env,
+      GITHUB_OUTPUT: join(output, "outputs"),
+      IMAGE: "runtime",
+      SOURCE_SHA: sourceSha,
+      GITHUB_WORKFLOW_SHA: sourceSha,
+      GITHUB_RUN_ID: "123",
+      GITHUB_RUN_ATTEMPT: "1",
+      CI_RUN_ID: "456",
+      CI_ATTEMPT: "1",
+      NODE_BASE_IMAGE: "pinned-node",
+    };
     const expected = [];
     for (const arch of ["amd64", "arm64"]) {
       const layout = join(output, arch);
@@ -518,8 +529,23 @@ test("separate platform exports assemble into a digest-bound archive and reject 
         join(layout, "index.json"),
         JSON.stringify({ schemaVersion: 2, manifests: [descriptor] }),
       );
-      env[`${arch.toUpperCase()}_DIGEST`] =
-        fault === "output-digest" ? `sha256:${"a".repeat(64)}` : descriptor.digest;
+      await writeFile(
+        join(layout, "platform.json"),
+        JSON.stringify({
+          sourceSha: fault === "source" ? "b".repeat(40) : sourceSha,
+          workflowSha: sourceSha,
+          runId: "123",
+          attempt: fault === "attempt" ? "2" : "1",
+          ciRunId: "456",
+          ciAttempt: "1",
+          nodeBaseImage: "pinned-node",
+          image: fault === "image" ? "controller" : "runtime",
+          platforms: ["linux/amd64", "linux/arm64"],
+          platform: `linux/${arch}`,
+          native: fault !== "emulated",
+          digest: fault === "output-digest" ? `sha256:${"a".repeat(64)}` : descriptor.digest,
+        }),
+      );
       if (fault === "layer" && arch === "arm64") {
         await writeFile(
           join(layout, "blobs/sha256", layer.digest.slice(7)),
@@ -547,9 +573,17 @@ test("separate platform exports assemble into a digest-bound archive and reject 
   for (const path of ["amd64", "arm64", "combined"]) {
     await assert.rejects(readFile(join(valid.output, path, "index.json")), { code: "ENOENT" });
   }
-  for (const fault of ["platform", "output-digest", "layer"]) {
+  for (const fault of [
+    "platform",
+    "output-digest",
+    "layer",
+    "source",
+    "attempt",
+    "image",
+    "emulated",
+  ]) {
     const invalid = await prepare(fault, fault);
-    assert.throws(() => run(invalid), /mismatch/);
+    assert.throws(() => run(invalid), /mismatch|native runner/);
     await assert.rejects(readFile(invalid.env.GITHUB_OUTPUT), { code: "ENOENT" });
   }
 });

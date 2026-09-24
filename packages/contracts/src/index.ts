@@ -865,6 +865,16 @@ export interface AgentRuntimeCredentialStatus {
   readonly transportConfigured: boolean;
 }
 
+/** Observed workload image identity; missing provenance must never be inferred from a tag. */
+export interface RuntimeImage {
+  readonly workload: string;
+  readonly container: string;
+  readonly image: string;
+  readonly imageId: string | null;
+  readonly commit: string | null;
+  readonly openclawCommit: string | null;
+}
+
 export interface ComputePreflightWarning {
   readonly code: string;
   readonly message: string;
@@ -882,6 +892,7 @@ export interface ComputeDriver extends Driver {
   readonly agentProvisioning?: ComputeAgentProvisioningCapabilities;
   readonly activationOrder?: "beforeCommit" | "afterCommit";
   readonly maintenanceIntervalMs?: number;
+  getRuntimeImages?(revision: AgentRevision): Promise<readonly RuntimeImage[]>;
   /** Read-only native model discovery; supplied credentials must never be persisted. */
   discoverHarnessModels?(input: {
     readonly authMethod: "api_key" | "codex_pat";

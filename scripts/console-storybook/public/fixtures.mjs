@@ -545,6 +545,9 @@ export function installFixture(scenario, evidence) {
             url: "/storybook-fixtures/native-admin.html",
           });
         }
+        if (suffix === "/runtime-images" && method === "GET") {
+          return response(scenario.runtimeImages ?? { status: "unsupported", images: [] });
+        }
         if (suffix === "/runtime-credentials") {
           if (method === "POST") {
             credentials.set(id, { transportConfigured: true });

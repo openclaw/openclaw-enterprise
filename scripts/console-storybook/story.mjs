@@ -6,7 +6,7 @@ export function story(id) {
     name: scenario.name,
     render() {
       const root = document.createElement("section");
-      root.style.cssText = "font:15px/1.5 system-ui;color:#183b33;background:#f5f8f7;padding:20px";
+      root.style.cssText = "font:14px/1.5 system-ui;color:#403c35;background:#faf9f7;padding:20px";
       const heading = document.createElement("h1");
       heading.textContent = scenario.name;
       const description = document.createElement("p");
@@ -34,7 +34,7 @@ export function story(id) {
       const frame = document.createElement("iframe");
       frame.title = `${scenario.name}: interactive console`;
       frame.src = `/storybook-fixtures/frame.html?story=${encodeURIComponent(id)}`;
-      frame.style.cssText = `display:block;width:100%;max-width:${scenario.mobile ? "390px" : "1600px"};height:min(900px, calc(100vh - 80px));min-height:480px;border:1px solid #ccd9d4;background:white`;
+      frame.style.cssText = `display:block;width:100%;max-width:${scenario.mobile ? "390px" : "1600px"};height:min(900px, calc(100vh - 80px));min-height:480px;border:1px solid #d6d0c5;background:white`;
       frame.setAttribute(
         "sandbox",
         "allow-scripts allow-same-origin allow-forms allow-modals allow-popups",
