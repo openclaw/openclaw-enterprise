@@ -150,6 +150,11 @@ Agent-deletion work requires the Agent to remain `deleting` and stopped, then
 rechecks the original actor's exact-Agent `delete`. It loads every owned revision
 and rejects ownership or Compute-Driver mismatches before teardown.
 
+Compute consumes immutable `revision.tags` from persisted admission state, including
+on worker restart. Binding the current Agent cannot change that snapshot. Sandbox
+provisioning and revision cleanup consume `context.revision.tags`; each predecessor
+retains its map during retirement after a newer deployment.
+
 ### 5. Invoke Compute while renewing the live claim
 
 `apps/controller/src/worker.ts:ControllerWorker.observe`,

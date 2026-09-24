@@ -450,6 +450,7 @@ test("production embedded and dedicated replacements preserve their active Servi
         source: { kind: "secret", namespaceId, id: "sec_production-model" },
         secretDriverId: "secret-kubernetes",
       },
+      tags: {},
       harness,
       compute: { id: computeDriver.id, implementation: computeDriver.implementation },
       servicePrincipalId,

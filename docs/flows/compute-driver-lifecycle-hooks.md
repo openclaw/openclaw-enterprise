@@ -82,9 +82,19 @@ prepare tenant infrastructure first, then run `afterNamespacePrepared` before re
 No gateway exists until Agent revision preparation. Failed preparation compensates completed
 owners with `beforeNamespaceDelete` in reverse.
 
+These Namespace hooks and Installation startup are shared across Agents. They
+do not consume one Agent's workload tags to configure shared infrastructure.
+
 ### 4. Validate launch contributions before starting a workload
 
 `apps/controller/src/drivers/compute/lifecycle-hooks.ts:ComputeLifecycleDispatcher.beforeWorkloadStart`
+
+Workload hooks receive the immutable admitted `revision.tags`. The map is
+persisted with the revision; current Agent tags, including those visible through
+`bindAgent`, cannot replace it. Trusted hooks can branch on supported values
+while retaining their existing bounded launch contract. See
+[Compute workload tags](../reference/drivers/compute.md#workload-tags) for policy
+boundaries and the conditional Sandbox example.
 
 Kubernetes `prepareRevision` invokes selected workload hooks for initial embedded gateway creation
 and for dedicated Codex workload preparation. Embedded replacement revisions are different: after
@@ -121,6 +131,10 @@ revision. Namespace deletion is limited to empty tenants and runs
 `beforeNamespaceDelete` before requesting Kubernetes deletion. A
 failed revocation preserves the owned resource for retry; aborted preparation receives a fresh,
 bounded cleanup signal so cancellation cannot suppress compensation.
+
+`beforeWorkloadStop` receives the retiring revision's original tags, so an Agent
+edit or worker restart cannot redirect cleanup to a newer policy or resource.
+Compute likewise passes that revision through Sandbox cleanup context.
 
 ## Debugging and Verification
 

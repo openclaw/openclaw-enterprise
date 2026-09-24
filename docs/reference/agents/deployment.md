@@ -76,7 +76,7 @@ an earlier revision or make the new revision active immediately.
 The revision records the source `configurationId`, `configurationKind`, and
 `configurationGeneration`, its complete admitted native `configuration`
 document, the approved Harness identity/version/mode, selected Compute identity,
-nullable `providerId`, and `harnessAuth` with its resolved internal source snapshot.
+nullable `providerId`, the Agent's [tags](../agents.md#workload-tags), and `harnessAuth` with its resolved internal source snapshot.
 The auth snapshot contains no credential bytes; public revisions omit private
 backend locators and Provider/workspace metadata. Native Configuration values must use
 unresolved inline SecretRefs because the admitted document is persisted and

@@ -326,6 +326,7 @@ test(
       providerId: null,
       harnessAuth: { method: "runtime" },
       executionMode: "embedded",
+      tags: {},
       servicePrincipalId: `service-agent-${randomUUID()}`,
       createdAt: new Date().toISOString(),
     };
@@ -348,6 +349,7 @@ test(
       },
       plugins: codexPluginRevisionState(pluginId),
       harnessAuth: { method: "runtime" },
+      tags: {},
       servicePrincipalId: owner.servicePrincipalId,
       createdAt: new Date().toISOString(),
     };

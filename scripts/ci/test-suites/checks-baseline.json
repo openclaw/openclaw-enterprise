@@ -1,6 +1,9 @@
 {
   "files": [
     {
+      "path": "tests/conformance/agent-workload-tags.test.mjs"
+    },
+    {
       "path": "tests/conformance/audit.test.mjs"
     },
     {

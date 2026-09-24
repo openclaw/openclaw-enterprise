@@ -166,6 +166,14 @@ partially mutating the Agent. AgentRevision snapshots retain the requested
 plugin IDs and policy. See [Agent plugins](agent-plugins.md) for field semantics
 and the selected-only runtime contract.
 
+## Workload tags
+
+Agents own non-secret string maps used by trusted Drivers during workload
+preparation. Tags grant no authority. Create omission stores `{}`; update omission
+preserves the map, a supplied map replaces it, and `{}` clears it. Deployment
+snapshots tags immutably, so edits cannot change queued or running revisions.
+See [workload tags](agents/workload-tags.md) for limits, authorization, and examples.
+
 ## Workspace files
 
 ### Initial contents at creation
@@ -348,7 +356,8 @@ planning a deployment. Other sandbox execution combinations are rejected.
 
 ## Failure semantics
 
-- `400 INVALID_REQUEST`: The Provider ID is malformed or empty.
+- `400 INVALID_REQUEST`: The Provider ID is malformed or empty, or the tag map
+  violates the [workload tag limits](#workload-tags).
 - `400 INVALID_REQUEST`: The plugin map is structurally invalid.
 - `404 NOT_FOUND`: The nonempty Provider ID does not name a configured Provider.
 - `401`: The session cookie is missing, invalid, expired, or revoked.

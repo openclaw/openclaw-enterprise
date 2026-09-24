@@ -1,5 +1,6 @@
 import type {
   InitialWorkspaceFiles,
+  AgentTags,
   AgentDesiredRuntimeState,
   AgentStatus,
   HarnessExecutionMode,
@@ -252,6 +253,10 @@ export const agents = occSchema.table(
       .notNull()
       .references(() => namespaces.id, { onDelete: "restrict", onUpdate: "restrict" }),
     name: collatedText("name").notNull(),
+    tags: jsonb("tags")
+      .$type<AgentTags>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
     configurationId: text("configuration_id").notNull(),
     providerId: text("provider_id"),
     executionMode: text("execution_mode").$type<HarnessExecutionMode>().notNull(),
@@ -283,6 +288,7 @@ export const agents = occSchema.table(
     ),
     check("agents_id_format", sql`${table.id} ~ ${identifierPatterns.agent}`),
     check("agents_name_length", sql`char_length(${table.name}) BETWEEN 1 AND 200`),
+    check("agents_tags_valid", sql`occ.agent_tags_are_valid(${table.tags})`),
     check("agents_execution_mode_valid", sql`${table.executionMode} IN ('embedded', 'dedicated')`),
     check(
       "agents_desired_runtime_state_valid",
@@ -472,11 +478,11 @@ export const agentRevisions = occSchema.table(
       "agent_revisions_admitted_snapshot",
       sql`(${table.admittedSpec} ?& ARRAY[
           'configuration_id', 'configuration_kind', 'configuration_generation',
-          'draft_spec', 'harness', 'compute', 'harness_auth'
+          'tags', 'draft_spec', 'harness', 'compute', 'harness_auth'
         ])
         AND (${table.admittedSpec}
           - 'configuration_id' - 'configuration_kind' - 'configuration_generation'
-          - 'draft_spec' - 'harness' - 'compute' - 'sandbox_driver_id'
+          - 'tags' - 'draft_spec' - 'harness' - 'compute' - 'sandbox_driver_id'
           - 'secret_driver_id' - 'secret_bindings' - 'harness_auth' - 'plugins'
           - 'repository_credentials') = '{}'::jsonb
         AND jsonb_typeof(${table.admittedSpec}->'configuration_id') = 'string'
@@ -487,6 +493,7 @@ export const agentRevisions = occSchema.table(
         AND (${table.admittedSpec}->>'configuration_generation')::numeric
           BETWEEN 1 AND 9007199254740991
         AND mod((${table.admittedSpec}->>'configuration_generation')::numeric, 1) = 0
+        AND occ.agent_tags_are_valid(${table.admittedSpec}->'tags')
         AND jsonb_typeof(${table.admittedSpec}->'draft_spec') = 'object'
         AND jsonb_typeof(${table.admittedSpec}->'harness') = 'object'
         AND ((${table.admittedSpec}->'harness') ?& ARRAY['id', 'version', 'mode'])

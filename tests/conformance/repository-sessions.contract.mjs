@@ -46,6 +46,7 @@ export async function seedSessionRevision(store, credentials = repositoryCredent
     providerId: null,
     harnessAuth,
     executionMode: "embedded",
+    tags: {},
     servicePrincipalId: `service-agent-${randomUUID()}`,
     repositoryBindings: credentials.bindings.map(({ repositoryRef, profile }) => ({
       repositoryRef,
@@ -66,6 +67,7 @@ export async function seedSessionRevision(store, credentials = repositoryCredent
     configuration: { agents: { defaults: { model: "openai/gpt-fixture" } } },
     harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
     compute: { id: "compute-test", implementation: "deterministic-test" },
+    tags: {},
     servicePrincipalId: agent.servicePrincipalId,
     repositoryCredentials: credentials,
     createdAt,

@@ -2960,6 +2960,7 @@ test("two Namespaces become independently ready and deletion tombstones only its
     "namespaceId",
     "providerId",
     "revision",
+    "tags",
   ]);
   assert.equal(readyDeployment.data.configurationId, firstConfiguration.id);
   assert.equal(readyDeployment.data.configurationKind, "agent");
@@ -3386,4 +3387,245 @@ test("runtime auth admits SSH revisions without source permissions but retains d
     effect: "deny",
   });
   assert.equal((await controller.request("POST", `${path}/deploy`)).status, 403);
+});
+
+test("Agent tags round-trip through real routes and snapshot each deployment", async () => {
+  const controller = await configuredController();
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, "tag-roundtrip");
+  const configuration = await createConfiguration(controller, namespace.id);
+  const collection = `/namespaces/${namespace.id}/agents`;
+  const untagged = await controller.request("POST", collection, {
+    body: { name: "untagged", configurationId: configuration.id },
+  });
+  assert.equal(untagged.status, 201);
+  assert.deepEqual(untagged.data.tags, {});
+  const personalTags = JSON.parse(
+    '{"usage":"personal","team":"开发 😀","empty":"","__proto__":"ordinary data","constructor":"also data","prototype":"data"}',
+  );
+  const tagged = await controller.request("POST", collection, {
+    body: { name: "tagged", configurationId: configuration.id, tags: personalTags },
+  });
+  assert.equal(tagged.status, 201, JSON.stringify(tagged.body));
+  assert.deepEqual(tagged.data.tags, personalTags);
+  assert.equal(Object.hasOwn(tagged.data.tags, "__proto__"), true);
+  const target = `${collection}/${tagged.data.id}`;
+  const preserved = await controller.request("PATCH", target, {
+    body: { configurationId: configuration.id },
+  });
+  assert.equal(preserved.status, 200);
+  assert.deepEqual(preserved.data.tags, personalTags);
+  await controller.fixture.controller.handleNamespaceLifecycle(
+    controller.fixture.principal.id,
+    namespace.id,
+    "ready",
+  );
+  await bindHarnessKey(controller.fixture, namespace.id, tagged.data);
+  await bindHarnessKey(controller.fixture, namespace.id, untagged.data);
+  const personal = await controller.request("POST", `${target}/deploy`);
+  assert.equal(personal.status, 202, JSON.stringify(personal.body));
+  assert.deepEqual(personal.data.tags, personalTags);
+  const securityTags = { usage: "security" };
+  const replaced = await controller.request("PATCH", target, {
+    body: { configurationId: configuration.id, tags: securityTags },
+  });
+  assert.equal(replaced.status, 200);
+  assert.deepEqual(replaced.data.tags, securityTags, "replacement removes omitted keys");
+  const security = await controller.request("POST", `${target}/deploy`);
+  assert.equal(security.status, 202);
+  assert.deepEqual(security.data.tags, securityTags);
+  const cleared = await controller.request("PATCH", target, {
+    body: { configurationId: configuration.id, tags: {} },
+  });
+  assert.equal(cleared.status, 200);
+  assert.deepEqual(cleared.data.tags, {});
+  assert.deepEqual((await controller.request("GET", target)).data.tags, {});
+  assert.deepEqual(
+    (await controller.request("GET", collection)).data.map(({ tags }) => tags),
+    [{}, {}],
+  );
+  // Editing the Agent cannot rewrite already admitted or queued revision metadata.
+  assert.deepEqual(
+    (await controller.request("GET", `${target}/revisions/${personal.data.id}`)).data.tags,
+    personalTags,
+  );
+  assert.deepEqual(
+    (await controller.request("GET", `${target}/revisions`)).data.map(({ tags }) => tags),
+    [personalTags, securityTags],
+  );
+  assert.deepEqual(
+    (await controller.request("POST", `${collection}/${untagged.data.id}/deploy`)).data.tags,
+    {},
+  );
+});
+
+test("Agent tag routes enforce map limits without coercion or prototype poisoning", async () => {
+  const controller = await configuredController();
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, "tag-validation");
+  const agent = await createAgent(controller, namespace.id, "validated-tags");
+  const collection = `/namespaces/${namespace.id}/agents`;
+  const target = `${collection}/${agent.id}`;
+  const valid = Object.fromEntries(Array.from({ length: 64 }, (_, i) => [`k${i}`, ""]));
+  valid["k0"] = "😀".repeat(1024);
+  delete valid.k1;
+  valid["😀".repeat(128)] = "case preserved";
+  const boundary = await controller.request("PATCH", target, {
+    body: { configurationId: agent.configurationId, tags: valid },
+  });
+  assert.equal(boundary.status, 200, JSON.stringify(boundary.body));
+  assert.deepEqual(boundary.data.tags, valid);
+  for (const tags of [
+    null,
+    [],
+    "text",
+    3,
+    true,
+    { nested: {} },
+    { list: [] },
+    { number: 1 },
+    { boolean: false },
+    { nil: null },
+    { "": "empty-key" },
+    { "a\0b": "x" },
+    { value: "a\0b" },
+    { "\ud800": "key" },
+    { value: "\udfff" },
+    { ["😀".repeat(129)]: "x" },
+    { value: "😀".repeat(1025) },
+    Object.fromEntries(Array.from({ length: 65 }, (_, i) => [`k${i}`, ""])),
+  ]) {
+    for (const [method, path, extra] of [
+      ["POST", collection, { name: "invalid-tags" }],
+      ["PATCH", target, {}],
+    ]) {
+      const result = await controller.request(method, path, {
+        body: { ...extra, configurationId: agent.configurationId, tags },
+      });
+      assert.equal(result.status, 400, JSON.stringify(result.body));
+      assert.equal(result.body.error.code, "INVALID_REQUEST");
+    }
+  }
+  const missingConfiguration = await controller.request("PATCH", target, { body: { tags: {} } });
+  assert.equal(missingConfiguration.status, 400);
+  for (const rawBody of [
+    `{"configurationId":"${agent.configurationId}","__proto__":"outside tags"}`,
+    `{"configurationId":"${agent.configurationId}","tags":{"__proto__":{"polluted":true}}}`,
+  ]) {
+    assert.equal(
+      (
+        await controller.request("PATCH", target, {
+          rawBody,
+          headers: { "content-type": "application/json" },
+        })
+      ).status,
+      400,
+    );
+  }
+  assert.equal(Object.prototype.polluted, undefined);
+  assert.deepEqual((await controller.request("GET", target)).data.tags, valid);
+  assert.deepEqual((await controller.request("GET", `${target}/revisions`)).data, []);
+  assert.equal((await controller.request("GET", collection)).data.length, 1);
+});
+
+test("Agent tags use exact IAM grants and denied writes admit no revision", async () => {
+  const fixture = await createInjectedFixture();
+  const controller = {
+    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
+  };
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, "tag-authority");
+  const agent = await createAgent(controller, namespace.id, "protected-tags");
+  const target = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  await controller.request("PATCH", target, {
+    body: { configurationId: agent.configurationId, tags: { usage: "personal" } },
+  });
+  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  await bindHarnessKey(fixture, namespace.id, agent);
+  const admitted = await controller.request("POST", `${target}/deploy`);
+  assert.equal(admitted.status, 202);
+  const { principal: reader } = await fixture.createAuthPrincipal("tag-reader");
+  fixture.state.identities.push(reader);
+  fixture.state.roles.push({
+    id: "tag-reader-role",
+    namespaceId: namespace.id,
+    permissions: [
+      { action: "read", resourceKind: "agent" },
+      { action: "read", resourceKind: "agent_revision" },
+    ],
+  });
+  fixture.state.bindings.push({
+    id: "tag-reader-binding",
+    namespaceId: namespace.id,
+    subjectKind: "identity",
+    subjectId: reader.id,
+    roleId: "tag-reader-role",
+  });
+  const readerApp = fixture.createApp(reader);
+  assert.deepEqual((await injectedRequest(readerApp, "GET", target)).data.tags, {
+    usage: "personal",
+  });
+  for (const [method, path, body] of [
+    ["PATCH", target, { configurationId: agent.configurationId, tags: { usage: "security" } }],
+    [
+      "POST",
+      `/namespaces/${namespace.id}/agents`,
+      { name: "forbidden", configurationId: agent.configurationId, tags: { usage: "security" } },
+    ],
+    ["POST", `${target}/deploy`, undefined],
+  ]) {
+    const denied = await injectedRequest(
+      readerApp,
+      method,
+      path,
+      body === undefined ? {} : { body },
+    );
+    assert.equal(denied.status, 403, JSON.stringify(denied.body));
+    assert.equal(denied.body.error.code, "FORBIDDEN");
+    assert.equal(fixture.auditSink.events.at(-1).kind, "authorization_denial");
+  }
+  const foreign = await createNamespace(controller, "tag-foreign");
+  const crossScope = await controller.request(
+    "PATCH",
+    `/namespaces/${foreign.id}/agents/${agent.id}`,
+    {
+      body: { configurationId: agent.configurationId, tags: { usage: "security" } },
+    },
+  );
+  assert.equal(crossScope.status, 404);
+  assert.deepEqual((await controller.request("GET", target)).data.tags, { usage: "personal" });
+  assert.deepEqual((await controller.request("GET", `${target}/revisions`)).data, [admitted.data]);
+});
+
+test("Agent tags and plugin policies preserve independent omission and clearing", async () => {
+  const controller = await configuredController();
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, "tag-plugin-independence");
+  const configuration = await createConfiguration(controller, namespace.id);
+  const replacement = await createConfiguration(controller, namespace.id);
+  const plugins = { [diffsPluginId]: pluginPolicy() };
+  const tags = { usage: "personal" };
+  const created = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: { name: "independent-metadata", configurationId: configuration.id, plugins, tags },
+  });
+  assert.equal(created.status, 201);
+  const target = `/namespaces/${namespace.id}/agents/${created.data.id}`;
+  const patch = (body) => controller.request("PATCH", target, { body });
+  const changed = await patch({
+    configurationId: replacement.id,
+    tags: { usage: "security" },
+  });
+  assert.equal(changed.status, 200);
+  assert.deepEqual(changed.data.plugins, plugins);
+
+  const clearedPlugins = await patch({ configurationId: replacement.id, plugins: {} });
+  assert.equal(clearedPlugins.status, 200);
+  assert.deepEqual(clearedPlugins.data.tags, { usage: "security" });
+  const restoredPlugins = await patch({ configurationId: replacement.id, plugins });
+  assert.equal(restoredPlugins.status, 200);
+  assert.deepEqual(restoredPlugins.data.tags, { usage: "security" });
+  const clearedTags = await patch({ configurationId: replacement.id, tags: {} });
+  assert.equal(clearedTags.status, 200);
+  assert.deepEqual(clearedTags.data.tags, {});
+  assert.deepEqual(clearedTags.data.plugins, plugins);
 });

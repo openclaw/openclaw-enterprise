@@ -26,6 +26,7 @@ const revision = Object.freeze({
   harness: Object.freeze({ id: "openclaw", version: "1.0.0" }),
   compute: Object.freeze({ id: "compute-docker-development", implementation: "docker-local" }),
   servicePrincipalId: "service-principal-support",
+  tags: Object.freeze({ usage: "personal", team: "support" }),
   createdAt: namespace.createdAt,
 });
 
@@ -205,33 +206,48 @@ test("failed namespace preparation preserves tenant ownership during rollback", 
   assert.equal(Object.isFrozen(mutableNamespace), false);
 });
 
-test("failed workload preparation preserves its exact tenant identity during revocation", async () => {
-  const mutableRevision = structuredClone(revision);
-  const original = structuredClone(mutableRevision);
-  let revokedRevision;
-  const dispatcher = new ComputeLifecycleDispatcher([
-    selectedDriver("configuration", "first", {
-      async beforeWorkloadStart() {},
-      async beforeWorkloadStop(actualRevision) {
-        revokedRevision = actualRevision;
-      },
-    }),
-    selectedDriver("iam", "malicious", {
-      async beforeWorkloadStart(actualRevision) {
-        actualRevision.namespaceId = "foreign-tenant";
-      },
-    }),
-  ]);
+test("failed workload preparation preserves its exact identity and tags during revocation", async () => {
+  for (const mutate of [
+    (actual) => {
+      actual.namespaceId = "foreign-tenant";
+    },
+    (actual) => {
+      actual.tags.usage = "security";
+    },
+  ]) {
+    const mutableRevision = structuredClone(revision);
+    const original = structuredClone(mutableRevision);
+    let preparedRevision;
+    let revokedRevision;
+    const dispatcher = new ComputeLifecycleDispatcher([
+      selectedDriver("configuration", "first", {
+        async beforeWorkloadStart(actualRevision) {
+          assert.equal(Object.isFrozen(actualRevision.tags), true);
+          preparedRevision = actualRevision;
+        },
+        async beforeWorkloadStop(actualRevision) {
+          revokedRevision = actualRevision;
+        },
+      }),
+      selectedDriver("iam", "malicious", {
+        async beforeWorkloadStart(actualRevision) {
+          mutate(actualRevision);
+        },
+      }),
+    ]);
 
-  await assert.rejects(
-    dispatcher.beforeWorkloadStart(mutableRevision),
-    /beforeWorkloadStart failed for iam:malicious/,
-  );
-  assert.deepEqual(revokedRevision, original);
-  assert.equal(revokedRevision.namespaceId, namespace.id);
-  assert.equal(revokedRevision.servicePrincipalId, revision.servicePrincipalId);
-  assert.deepEqual(mutableRevision, original);
-  assert.equal(Object.isFrozen(mutableRevision), false);
+    await assert.rejects(
+      dispatcher.beforeWorkloadStart(mutableRevision),
+      /beforeWorkloadStart failed for iam:malicious/,
+    );
+    assert.deepEqual(revokedRevision, original);
+    assert.equal(revokedRevision, preparedRevision);
+    assert.equal(revokedRevision.namespaceId, namespace.id);
+    assert.equal(revokedRevision.servicePrincipalId, revision.servicePrincipalId);
+    assert.deepEqual(mutableRevision, original);
+    assert.equal(Object.isFrozen(mutableRevision), false);
+    assert.equal(Object.isFrozen(mutableRevision.tags), false);
+  }
 });
 
 test("workload launches reject reserved variables, unsafe names, and plaintext credentials", async () => {
@@ -427,4 +443,38 @@ test("drivers without hooks remain valid selected owners", async () => {
   assert.deepEqual(await dispatcher.beforeWorkloadStart(revision), { environment: {} });
   assert.equal(await dispatcher.beforeWorkloadStop(revision), undefined);
   assert.equal(await dispatcher.beforeNamespaceDelete(namespace), undefined);
+});
+
+test("in-flight caller edits cannot change the tags supplied to later lifecycle owners", async () => {
+  const input = structuredClone(revision);
+  let continuePreparation;
+  let started;
+  const firstStarted = new Promise((resolve) => {
+    started = resolve;
+  });
+  const release = new Promise((resolve) => {
+    continuePreparation = resolve;
+  });
+  const observations = [];
+  const dispatcher = new ComputeLifecycleDispatcher([
+    selectedDriver("configuration", "first", {
+      async beforeWorkloadStart(actual) {
+        observations.push(actual.tags);
+        started();
+        await release;
+      },
+    }),
+    selectedDriver("iam", "second", {
+      async beforeWorkloadStart(actual) {
+        observations.push(actual.tags);
+      },
+    }),
+  ]);
+  const preparation = dispatcher.beforeWorkloadStart(input);
+  await firstStarted;
+  input.tags.usage = "security";
+  continuePreparation();
+  await preparation;
+  assert.deepEqual(observations, [revision.tags, revision.tags]);
+  assert.equal(observations[0], observations[1]);
 });

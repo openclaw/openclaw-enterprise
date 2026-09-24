@@ -185,6 +185,7 @@ test("an admitted AgentRevision is a detached and deeply immutable deployment sn
     configurationId: "configuration-a",
     configurationKind: "agent",
     configurationGeneration: 1,
+    tags: {},
     configuration: { model: "gpt-test", temperature: "0", tool: "lookup" },
     harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
     compute: { id: "compute-test", implementation: "deterministic-fake" },

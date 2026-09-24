@@ -226,6 +226,26 @@ The record is neither a live health check nor an acknowledgment.
 Restarting recalculates the warnings. Missing or untrusted startup status cannot
 prove readiness. See [Kubernetes startup status](kubernetes-compute.md#plugin-startup-status).
 
+## Workload tags
+
+`prepareRevision`, activation, deactivation, retirement, and workload lifecycle
+hooks receive immutable `revision.tags`. Use this admitted snapshot for
+per-workload decisions; `bindAgent` receives mutable Agent draft state and must
+not replace the revision's tags with that state. Queued and existing revisions
+retain their tags across Agent edits, retries, and worker restarts. The
+[Agent reference](../agents.md#workload-tags) owns the map and API semantics.
+
+Trusted Driver code may translate supported tags into validated backend
+settings. See [conditional Sandbox preparation](sandbox.md#conditional-workload-preparation)
+for the reviewed Driver example and its operator-approved policy boundaries.
+
+Installation startup and Namespace hooks are shared across Agents and cannot
+use one Agent's tags to configure shared infrastructure. Keep infrastructure
+labels and `HarnessWorkloadRequirements.labels` platform-owned. Do not copy
+arbitrary tags into selectors, environment variables, commands, or telemetry
+attributes. Additional per-workload preparation must be idempotent and unwind
+through the existing exact-revision cleanup paths.
+
 ## Limits
 
 - Implementations differ in topology, credentials, Namespace deletion, and

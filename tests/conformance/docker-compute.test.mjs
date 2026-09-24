@@ -51,6 +51,7 @@ test("Docker stop removes exact runtime containers and is retry-safe", async () 
     configuration: admitLoggingConfiguration({}, "info"),
     harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
     compute: { id: driver.id, implementation: driver.implementation },
+    tags: {},
     servicePrincipalId: "service-principal-docker-stop",
     createdAt: tenant.createdAt,
   };
@@ -283,6 +284,7 @@ function dockerGatewayRevision(driver, configuration = {}) {
     configuration: admitLoggingConfiguration(configuration, "info"),
     harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
     compute: { id: driver.id, implementation: driver.implementation },
+    tags: {},
     servicePrincipalId: "service-principal-docker-auth",
     createdAt: tenant.createdAt,
   };
@@ -343,6 +345,7 @@ test("Docker Compute recovery keeps dedicated transport paired across container 
     configuration: admitLoggingConfiguration({}, "info"),
     harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
     compute: { id: driver.id, implementation: driver.implementation },
+    tags: {},
     servicePrincipalId: "service-principal-docker-recovery",
     createdAt: tenant.createdAt,
   };
@@ -423,6 +426,7 @@ for (const mode of ["embedded", "dedicated"]) {
       ),
       harness: { id: mode === "embedded" ? "openclaw" : "codex", version: "1", mode },
       compute: { id: driver.id, implementation: driver.implementation },
+      tags: {},
       servicePrincipalId: "sp-workspace",
       createdAt: tenant.createdAt,
     };

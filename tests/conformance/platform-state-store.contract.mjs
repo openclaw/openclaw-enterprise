@@ -61,6 +61,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     configurationId: configuration.id,
     providerId: null,
     harnessAuth: apiKeyBinding,
+    tags: {},
     executionMode: "embedded",
     servicePrincipalId: identifier("service-agent"),
     desiredRuntimeState: "stopped",
@@ -75,6 +76,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     agentId: agent.id,
     revision: 1,
     providerId: null,
+    tags: {},
     configurationId: configuration.id,
     configurationKind: configuration.kind,
     configurationGeneration: configuration.generation,
@@ -297,6 +299,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     assert.deepEqual(storedRevision, revision);
     assert.ok(Object.isFrozen(storedRevision));
     assert.ok(Object.isFrozen(storedRevision.configuration));
+    assert.ok(Object.isFrozen(storedRevision.tags));
     assert.ok(Object.isFrozen(storedRevision.harness));
     assert.ok(Object.isFrozen(storedRevision.compute));
     assert.ok(Object.isFrozen(storedRevision.harnessAuth));
@@ -344,6 +347,117 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     ),
     "Existing Agent placement must reject unsupported execution modes.",
   );
+
+  // User-owned keys are plain data; replacement cannot mutate an admitted revision.
+  const personalTags = JSON.parse('{"usage":"personal","__proto__":"literal","empty":""}');
+  await assert.rejects(
+    store.transact(async (transaction) => {
+      const plugins = { "occ-plugin:diffs": { enabled: true, approvalMode: "always" } };
+      await transaction.agents.updateConfiguration(
+        namespace.id,
+        agent.id,
+        configuration.id,
+        undefined,
+        undefined,
+        undefined,
+        plugins,
+      );
+      const tagged = await transaction.agents.updateConfiguration(
+        namespace.id,
+        agent.id,
+        configuration.id,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        personalTags,
+      );
+      assert.deepEqual(tagged.tags, personalTags);
+      assert.deepEqual(tagged.plugins, plugins);
+      assert.equal(Object.hasOwn(tagged.tags, "__proto__"), true);
+      assert.deepEqual(
+        (await transaction.agents.updateConfiguration(namespace.id, agent.id, configuration.id))
+          .tags,
+        personalTags,
+        "An omitted tag update preserves every entry.",
+      );
+      const replaced = await transaction.agents.updateConfiguration(
+        namespace.id,
+        agent.id,
+        configuration.id,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { usage: "security" },
+      );
+      assert.deepEqual(replaced.tags, { usage: "security" });
+      assert.deepEqual(
+        (await transaction.revisions.findRevision(namespace.id, agent.id, revision.id)).tags,
+        {},
+        "Changes to Agent metadata cannot rewrite an admitted snapshot.",
+      );
+      const cleared = await transaction.agents.updateConfiguration(
+        namespace.id,
+        agent.id,
+        configuration.id,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        {},
+      );
+      assert.deepEqual(cleared, { ...agent, plugins });
+      const pluginCleared = await transaction.agents.updateConfiguration(
+        namespace.id,
+        agent.id,
+        configuration.id,
+        undefined,
+        undefined,
+        undefined,
+        {},
+      );
+      assert.deepEqual(pluginCleared.tags, {});
+      // Restore the original absent policy so later full-record assertions stay meaningful.
+      const { plugins: _plugins, ...rest } = pluginCleared;
+      assert.deepEqual(rest, agent);
+      throw new Error("rollback metadata contract updates");
+    }),
+    /rollback metadata contract updates/,
+  );
+
+  for (const tags of [
+    null,
+    [],
+    { usage: 1 },
+    { usage: {} },
+    { "": "value" },
+    { ["x".repeat(129)]: "value" },
+    { usage: "x".repeat(1025) },
+    { "bad\u0000key": "value" },
+    { usage: "bad\u0000value" },
+    Object.fromEntries(Array.from({ length: 65 }, (_, index) => [`key-${index}`, "value"])),
+  ]) {
+    await assert.rejects(
+      store.transact((transaction) =>
+        transaction.agents.updateConfiguration(
+          namespace.id,
+          agent.id,
+          configuration.id,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          tags,
+        ),
+      ),
+      "Both adapters reject malformed persisted tag maps.",
+    );
+  }
 
   for (const [description, malformed] of [
     ["missing Configuration identity", { configurationId: undefined }],
@@ -724,6 +838,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     configurationId: accountConfiguration.id,
     providerId: null,
     executionMode: "dedicated",
+    tags: {},
     servicePrincipalId: identifier("service-agent"),
     harnessAuth: { method: "chatgpt_service_account", serviceAccountId: account.id },
     desiredRuntimeState: "stopped",

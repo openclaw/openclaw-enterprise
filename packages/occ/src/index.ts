@@ -4,6 +4,7 @@ import type {
   Agent,
   InitialWorkspaceFiles,
   AgentRevision,
+  AgentTags,
   AgentRuntimeCredentialsInput,
   AgentRuntimeCredentialStatus,
   AccessBinding,
@@ -274,6 +275,7 @@ export interface CreateAgentInput {
   readonly executionMode?: HarnessExecutionMode;
   readonly plugins?: PluginDesiredState;
   readonly repositoryBindings?: readonly RepositoryBindingRequest[];
+  readonly tags?: AgentTags;
 }
 
 export interface UpdateAgentInput {
@@ -285,6 +287,7 @@ export interface UpdateAgentInput {
   readonly executionMode?: HarnessExecutionMode;
   readonly plugins?: PluginDesiredState;
   readonly repositoryBindings?: readonly RepositoryBindingRequest[];
+  readonly tags?: AgentTags;
 }
 
 export interface CreateServiceAccountInput {
@@ -2697,6 +2700,7 @@ export class OpenClawController {
     }
     const providerId = this.providerId(input.providerId);
     const plugins = normalizeAgentPlugins(input.plugins);
+    const tags = immutableCopy(input.tags === undefined ? {} : input.tags);
     return this.mutate(async (state) => {
       const namespace = await this.lockNamespace(state, input.namespaceId);
       if (namespace.status !== "provisioning" && namespace.status !== "ready") {
@@ -2746,6 +2750,7 @@ export class OpenClawController {
         executionMode,
         ...(plugins === undefined ? {} : { plugins }),
         ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
+        tags,
         servicePrincipalId: `service-agent-${agentId}`,
         desiredRuntimeState: "stopped",
         status: "active",
@@ -2778,6 +2783,7 @@ export class OpenClawController {
       throw new ScopeViolationError("The Agent Harness execution mode is invalid.");
     }
     const plugins = normalizeAgentPlugins(input.plugins);
+    const tags = input.tags === undefined ? undefined : immutableCopy(input.tags);
     return this.mutate(async (state) => {
       const namespace = await this.lockNamespace(state, input.namespaceId);
       const agent = await state.agents.lockAgent(namespace.id, input.agentId);
@@ -2831,6 +2837,7 @@ export class OpenClawController {
         input.providerId === undefined ? undefined : providerId,
         plugins,
         repositoryBindings,
+        tags,
       );
       if (!updated) {
         throw new ResourceConflictError("The Agent Configuration changed during its update.");
@@ -2939,9 +2946,10 @@ export class OpenClawController {
         ),
         metadata,
       );
+      const admittedTags = immutableCopy(lockedAgent.tags);
       const sandboxConfiguration =
         sandbox?.configureAgent !== undefined
-          ? frozenValues(sandbox.configureAgent(frozenValues(configuration.values)))
+          ? frozenValues(sandbox.configureAgent(frozenValues(configuration.values), admittedTags))
           : configuration.values;
       const admittedConfiguration = frozenValues(
         compute.runtimeLogging === "driver"
@@ -3018,6 +3026,7 @@ export class OpenClawController {
           configurationKind: configuration.kind,
           configurationGeneration: configuration.generation,
           configuration: admittedConfiguration,
+          tags: admittedTags,
           harness: {
             id: approvedHarness.id,
             version: approvedHarness.version,
@@ -3710,8 +3719,10 @@ export class OpenClawController {
           ? await this.serviceAccountHarnessAuthSnapshot(state, namespaceId, providerId, binding)
           : await this.admitHarnessAuth(state, principalId, { ...agent, harnessAuth: binding });
     const configuration =
-      this.sandboxDriver()?.configureAgent?.(plan.configuration.values) ??
-      plan.configuration.values;
+      this.sandboxDriver()?.configureAgent?.(
+        plan.configuration.values,
+        immutableCopy(agent?.tags ?? {}),
+      ) ?? plan.configuration.values;
     const harness = {
       id: resolveConfiguredHarnessId(configuration),
       version: "provisioning",
@@ -4163,6 +4174,7 @@ export class OpenClawController {
           id: agentId,
           namespaceId: namespace.id,
           name,
+          tags: {},
           configurationId: metadata.id,
           providerId,
           harnessAuth: plan.harnessAuth,

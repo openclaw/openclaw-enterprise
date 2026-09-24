@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
+import { createRequire } from "node:module";
 import test from "node:test";
 import {
   adminEmail,
+  createConfiguration,
   createDurableController,
   databaseUrl,
   parseJsonLines,
@@ -12,6 +14,7 @@ import {
   requiresPostgres,
   spawnWorker,
   startController,
+  stopController,
   verifyPlatformStateStoreContract,
 } from "../helpers/postgres-platform-state.mjs";
 
@@ -99,6 +102,7 @@ test(
       configurationId: `cfg_${randomUUID()}`,
       providerId: null,
       harnessAuth: null,
+      tags: {},
       draft_spec: {},
       executionMode: "embedded",
       servicePrincipalId: `service-agent-${randomUUID()}`,
@@ -110,6 +114,7 @@ test(
       agentId,
       revision: 1,
       providerId: null,
+      tags: {},
       configurationId: `cfg_${randomUUID()}`,
       configurationKind: "agent",
       configurationGeneration: 1,
@@ -151,6 +156,69 @@ test(
 
     const persisted = await pool.query(stateCounts);
     assert.deepEqual(persisted.rows[0], baseline.rows[0]);
+  },
+);
+
+test(
+  "Agent tag HTTP writes persist through PostgreSQL and an API process restart",
+  requiresPostgres,
+  async (context) => {
+    const { Pool } = await import("pg");
+    const pool = new Pool({ connectionString: databaseUrl });
+    context.after(() => pool.end());
+    const api = await startController(context);
+    const namespace = await request(api, "POST", "/namespaces", {
+      name: `durable-tag-api-${randomUUID()}`,
+    });
+    assert.equal(namespace.status, 201);
+    const configuration = await createConfiguration(api, namespace.data.id);
+    const tags = JSON.parse('{"usage":"personal","__proto__":"literal","team":"工具"}');
+    const created = await request(api, "POST", `/namespaces/${namespace.data.id}/agents`, {
+      name: `tag-api-${randomUUID()}`,
+      configurationId: configuration.id,
+      tags,
+    });
+    // The real HTTP process uses occ_app, so this also catches missing EXECUTE
+    // grants on the database's tag constraint function.
+    assert.equal(created.status, 201, JSON.stringify(created.error));
+    assert.deepEqual(created.data.tags, tags);
+    const path = `/namespaces/${namespace.data.id}/agents/${created.data.id}`;
+    const preserved = await request(api, "PATCH", path, { configurationId: configuration.id });
+    assert.equal(preserved.status, 200);
+    assert.deepEqual(preserved.data.tags, tags);
+
+    const invalid = await request(api, "PATCH", path, {
+      configurationId: configuration.id,
+      tags: { value: "\ud800" },
+    });
+    assert.equal(invalid.status, 400);
+    assert.equal(invalid.error.code, "INVALID_REQUEST");
+    const unchanged = await pool.query("SELECT tags FROM occ.agents WHERE id = $1", [
+      created.data.id,
+    ]);
+    assert.deepEqual(unchanged.rows, [{ tags }]);
+
+    const cleared = await request(api, "PATCH", path, {
+      configurationId: configuration.id,
+      tags: {},
+    });
+    assert.equal(cleared.status, 200);
+    assert.deepEqual(cleared.data.tags, {});
+    const replacement = { usage: "security" };
+    const updated = await request(api, "PATCH", path, {
+      configurationId: configuration.id,
+      tags: replacement,
+    });
+    assert.equal(updated.status, 200);
+    assert.deepEqual(updated.data.tags, replacement);
+
+    // Restart the actual API process: no in-memory Agent object survives this read.
+    // This is persistence proof, not workload provisioning or sandbox execution.
+    await stopController(api.child);
+    const restarted = await startController(context);
+    const restored = await request(restarted, "GET", path);
+    assert.equal(restored.status, 200);
+    assert.deepEqual(restored.data.tags, replacement);
   },
 );
 
@@ -554,6 +622,7 @@ test(
         providerId: null,
         harnessAuth: { method: "runtime" },
         executionMode: "embedded",
+        tags: {},
         servicePrincipalId: `service-agent-${agentId}`,
         desiredRuntimeState: "stopped",
         status: "active",
@@ -572,6 +641,7 @@ test(
         harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
         compute: { id: "compute-provisioning-success", implementation: "deterministic-test" },
         harnessAuth: { method: "runtime" },
+        tags: {},
         servicePrincipalId: `service-agent-${agentId}`,
         createdAt,
       });
@@ -900,6 +970,102 @@ test(
     assert.equal(durableSandboxRevision.rows[0].admitted_spec.sandbox_driver_id, sandboxDriverId);
     assert.equal(Object.hasOwn(durableSandboxRevision.rows[0].admitted_spec, "sandbox"), false);
 
+    // Evaluate the maintained Drizzle check against a row admitted by the SQL migration:
+    // migration-only coverage cannot detect a stale schema declaration rejecting tags.
+    const occRequire = createRequire(new URL("../../packages/occ/package.json", import.meta.url));
+    const { sql } = occRequire("drizzle-orm");
+    const { getTableConfig, PgDialect } = occRequire("drizzle-orm/pg-core");
+    const { agentRevisions } = await import("../../packages/occ/src/state/postgres-schema.ts");
+    const declaredSnapshotCheck = getTableConfig(agentRevisions).checks.find(
+      ({ name }) => name === "agent_revisions_admitted_snapshot",
+    );
+    assert.ok(declaredSnapshotCheck);
+    const declaredSnapshotQuery = new PgDialect().sqlToQuery(
+      sql`SELECT (${declaredSnapshotCheck.value}) AS valid
+          FROM ${agentRevisions} WHERE ${agentRevisions.id} = ${sandboxRevision.id}`,
+    );
+    assert.deepEqual(
+      (await pool.query(declaredSnapshotQuery.sql, declaredSnapshotQuery.params)).rows,
+      [{ valid: true }],
+      "The maintained schema must accept the admitted snapshot, including its tags.",
+    );
+
+    // Exercise SQL directly so adapter validation cannot hide missing database constraints.
+    const boundaryTags = Object.fromEntries([
+      ["😀".repeat(128), "😀".repeat(1024)],
+      ["__proto__", "literal prototype key"],
+      ...Array.from({ length: 62 }, (_, index) => [`key-${index}`, ""]),
+    ]);
+    await pool.query("UPDATE occ.agents SET tags = $1::jsonb WHERE id = $2", [
+      JSON.stringify(boundaryTags),
+      fixture.agent.id,
+    ]);
+    const reloadedTags = await state.read((unit) =>
+      unit.agents.findAgent(fixture.namespace.id, fixture.agent.id),
+    );
+    assert.deepEqual(reloadedTags.tags, boundaryTags);
+    assert.equal(Object.hasOwn(reloadedTags.tags, "__proto__"), true);
+    for (const [offset, invalid] of [
+      null,
+      [],
+      "personal",
+      { usage: null },
+      { usage: 1 },
+      { usage: true },
+      { usage: {} },
+      { usage: [] },
+      { "": "value" },
+      { ["😀".repeat(129)]: "value" },
+      { usage: "😀".repeat(1025) },
+      { "nul\u0000key": "value" },
+      { usage: "nul\u0000value" },
+      Object.fromEntries(Array.from({ length: 65 }, (_, index) => [`key-${index}`, ""])),
+    ].entries()) {
+      const invalidJson = JSON.stringify(invalid);
+      const rejectsInvalidMap = ({ code }) => code === "23514" || code === "22P05";
+      await assert.rejects(
+        pool.query("UPDATE occ.agents SET tags = $1::jsonb WHERE id = $2", [
+          invalidJson,
+          fixture.agent.id,
+        ]),
+        rejectsInvalidMap,
+      );
+      await assert.rejects(
+        pool.query(
+          `INSERT INTO occ.agent_revisions
+             (id, namespace_id, agent_id, revision_number, admitted_spec, admitted_at)
+           SELECT $2, namespace_id, agent_id, $3,
+                  jsonb_set(admitted_spec, '{tags}', $1::jsonb, true), admitted_at
+           FROM occ.agent_revisions WHERE id = $4`,
+          [
+            invalidJson,
+            `rev_${randomUUID()}`,
+            sandboxRevision.revision + 200 + offset,
+            sandboxRevision.id,
+          ],
+        ),
+        rejectsInvalidMap,
+      );
+    }
+    await assert.rejects(
+      pool.query(
+        `INSERT INTO occ.agent_revisions
+           (id, namespace_id, agent_id, revision_number, admitted_spec, admitted_at)
+         SELECT $2, namespace_id, agent_id, $3, admitted_spec - 'tags', admitted_at
+         FROM occ.agent_revisions WHERE id = $1`,
+        [sandboxRevision.id, `rev_${randomUUID()}`, sandboxRevision.revision + 300],
+      ),
+      ({ code }) => code === "23514",
+      "Current admitted snapshots must explicitly contain tags, even when empty.",
+    );
+    assert.deepEqual(
+      (await pool.query("SELECT tags FROM occ.agents WHERE id = $1", [fixture.agent.id])).rows[0]
+        .tags,
+      boundaryTags,
+      "Rejected writes leave the last valid Agent map intact.",
+    );
+    await pool.query("UPDATE occ.agents SET tags = '{}'::jsonb WHERE id = $1", [fixture.agent.id]);
+
     // The database accepts only a nonempty SandboxDriver identity, not descriptors or blank values.
     for (const [offset, invalid] of [null, "", " ", 1, { id: sandboxDriverId }].entries()) {
       await assert.rejects(
@@ -1004,6 +1170,7 @@ test(
         configurationId: fixture.configuration.id,
         providerId: null,
         harnessAuth: null,
+        tags: {},
         executionMode: "embedded",
         servicePrincipalId: `service-agent-${siblingId}`,
         createdAt: new Date().toISOString(),
@@ -1344,6 +1511,7 @@ test(
           providerId: null,
           harnessAuth: null,
           executionMode: "embedded",
+          tags: {},
           servicePrincipalId: `service-agent-${malformedCreateAgentId}`,
           plugins: {
             "occ-plugin:diffs": { enabled: true, approvalMode: "sometimes" },

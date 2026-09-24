@@ -113,6 +113,9 @@ function classifyReceipts(receipts, manifest) {
   if (receipts.length === 29) {
     return "workspaceSetup";
   }
+  if (receipts.length === 31) {
+    return "codexPat";
+  }
   if (receipts.length === 30) {
     return "agentProvisioning";
   }

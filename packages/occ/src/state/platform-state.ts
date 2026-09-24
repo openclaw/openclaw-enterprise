@@ -18,6 +18,7 @@ import type {
   AgentDesiredRuntimeState,
   AgentStatus,
   AgentRevision,
+  AgentTags,
   AuditEvent,
   HarnessExecutionMode,
   HarnessAuthBinding,
@@ -37,6 +38,7 @@ import type {
 import {
   normalizeInitialWorkspaceFiles,
   normalizeWorkspaceDefaultsId,
+  normalizeAgentTags,
   normalizePluginDesiredState,
   normalizeHarnessAuthBinding,
   harnessAuthBindingFromSnapshot,
@@ -126,6 +128,7 @@ export interface AgentRepository extends AgentReadRepository {
     providerId?: string | null,
     plugins?: PluginDesiredState,
     repositoryBindings?: readonly RepositoryBindingSelection[],
+    tags?: AgentTags,
   ): Promise<Readonly<Agent> | undefined>;
   compareAndSetActiveRevision(
     namespaceId: string,
@@ -274,6 +277,14 @@ const serviceAccountIdentifier =
 const secretName = /^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?(?:\.[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)*$/;
 const secretKey = /^[-._a-zA-Z0-9]+$/;
 const providerIdentifier = /^(?!\s)(?!.*\s$)(?!.*[\x00-\x1f\x7f]).{1,200}$/;
+
+function normalizedAgentTags(tags: unknown): AgentTags {
+  try {
+    return normalizeAgentTags(tags);
+  } catch {
+    throw new ScopeViolationError("Agent tags are invalid.");
+  }
+}
 
 function validCredential(credential: unknown): credential is ServiceAccountCredential {
   if (
@@ -1469,6 +1480,7 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
       } = agent;
       const saved = immutableCopy({
         ...withoutPlugins,
+        tags: normalizedAgentTags(agent.tags),
         ...(plugins === undefined ? {} : { plugins }),
         ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
         desiredRuntimeState: "stopped" as const,
@@ -1525,6 +1537,7 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
       providerId,
       nextPlugins,
       nextRepositoryBindings,
+      tags,
     ) => {
       const current = await agents.findAgent(namespaceId, agentId);
       if (!current) {
@@ -1557,10 +1570,12 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
         repositoryBindings: _currentRepositoryBindings,
         ...withoutPlugins
       } = current;
+      const nextTags = tags === undefined ? current.tags : normalizedAgentTags(tags);
       const updated = immutableCopy({
         ...withoutPlugins,
         configurationId,
         providerId: nextProviderId,
+        tags: nextTags,
         executionMode: executionMode ?? current.executionMode,
         harnessAuth: association,
         ...(plugins === undefined ? {} : { plugins }),
@@ -1646,6 +1661,7 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
       if (previous.some((existing) => existing.id === revision.id)) {
         throw new ResourceConflictError("The server generated an existing AgentRevision identity.");
       }
+      const tags = normalizedAgentTags(revision.tags);
       const {
         secretBindings: _providedSecretBindings,
         plugins: _providedPlugins,
@@ -1653,6 +1669,7 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
       } = revision;
       const saved = immutableCopy({
         ...withoutSecretBindings,
+        tags,
         ...(secretBindings === undefined ? {} : { secretBindings }),
         ...(plugins === undefined ? {} : { plugins }),
       });

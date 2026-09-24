@@ -110,6 +110,7 @@ const agent = Object.freeze({
   configurationId: "cfg_00000000-0000-4000-8000-000000000016",
   executionMode: "embedded",
   harnessAuth: null,
+  tags: {},
   servicePrincipalId: "service-principal-plugin-compute",
   createdAt: tenant.createdAt,
 });

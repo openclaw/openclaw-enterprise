@@ -192,6 +192,7 @@ function revision(driver, owner, agentId, number, harnessAuth) {
     harnessAuth: harnessAuth.snapshot,
     compute: { id: driver.id, implementation: driver.implementation },
     plugins: pluginRevisionState(),
+    tags: {},
     servicePrincipalId: `service-agent-${agentId}`,
     createdAt: new Date().toISOString(),
   };

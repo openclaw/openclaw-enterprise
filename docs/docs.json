@@ -79,6 +79,10 @@
                     "label": "Deployment"
                   },
                   {
+                    "page": "reference/agents/workload-tags",
+                    "label": "Workload Tags"
+                  },
+                  {
                     "page": "guides/topics/agent-presets",
                     "label": "Presets"
                   },

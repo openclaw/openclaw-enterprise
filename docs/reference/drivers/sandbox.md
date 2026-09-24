@@ -19,13 +19,13 @@ SSH, or installed Compute combinations. See [Driver selection](selection.md).
 The [shared interface](../../../packages/contracts/src/index.ts) exposes the
 required `facets` property and `cleanup` method, plus three optional methods.
 
-| Member                          | Contract                                                                                                                                                                         |
-| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `facets`                        | Declare at least one distinct facet. Unknown, duplicate, or empty declarations are rejected.                                                                                     |
-| `configureAgent(configuration)` | Optional synchronous transform. OCC passes a read-only native configuration and validates and freezes the returned configuration. If absent, the original configuration is used. |
-| `ensureNamespace(context)`      | Optional backend preparation after Compute has prepared baseline Namespace isolation. If absent, Compute continues without a Sandbox setup call.                                 |
-| `provisionHarness(context)`     | Optional creation of the dedicated Harness; returns a stable Sandbox resource reference. If absent, Compute creates the ordinary Harness workload.                               |
-| `cleanup(context)`              | Required for revision stop/retirement and Namespace deletion, even when Compute owns or has already removed the workload. No revision means cleanup of Namespace resources.      |
+| Member                                | Contract                                                                                                                                                                                                            |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `facets`                              | Declare at least one distinct facet. Unknown, duplicate, or empty declarations are rejected.                                                                                                                        |
+| `configureAgent(configuration, tags)` | Optional synchronous transform. OCC passes a read-only native configuration and the locked Agent's frozen tags and validates and freezes the returned configuration. If absent, the original configuration is used. |
+| `ensureNamespace(context)`            | Optional backend preparation after Compute has prepared baseline Namespace isolation. If absent, Compute continues without a Sandbox setup call.                                                                    |
+| `provisionHarness(context)`           | Optional creation of the dedicated Harness; returns a stable Sandbox resource reference. If absent, Compute creates the ordinary Harness workload.                                                                  |
+| `cleanup(context)`                    | Required for revision stop/retirement and Namespace deletion, even when Compute owns or has already removed the workload. No revision means cleanup of Namespace resources.                                         |
 
 ### Containment facets
 
@@ -87,6 +87,39 @@ Namespace setup, provisioning, and cleanup must be safe to repeat. Failed
 revision cleanup remains retryable. Unsupported topology, missing prerequisites,
 ambiguous resources, failed identity checks, or unavailable containment must
 prevent progress rather than weakening isolation.
+
+## Conditional workload preparation
+
+Use `context.revision.tags` in `provisionHarness` and revision `cleanup` to
+select per-workload behavior. These are the admission snapshot's values;
+subsequent Agent edits do not change queued, active, or retiring revisions.
+`configureAgent` receives the same frozen map used for admission. Namespace
+setup and Namespace cleanup are shared operations and cannot derive policy
+from one Agent's tags. See [Agent tags](../agents.md#workload-tags) for API and
+validation semantics.
+
+The [trusted Driver example](../../../examples/agent-workload-tags.ts) selects
+operator-provided network policies for `usage=personal` and `usage=security`.
+Missing `usage` selects the safe personal policy and unknown values are
+rejected. The example augments workload preparation while retaining Compute's
+baseline containment, exact workload identity, approved mounts, and credential
+references. Tags grant no privileges, and the platform has no built-in `usage`
+meaning or generic policy language. Install the example only as reviewed
+Driver code with operator-approved policies; user tags do not supply manifests
+or executable code.
+
+The example is not selected by bundled startup. Its constructor accepts the
+ordinary OpenShell options with the personal network allowlist and a separate
+security network allowlist. Both policies must be safe for every caller allowed
+to update Agent tags; the `security` value is not proof of a trusted caller.
+
+See [conditional workload tag verification](../../testing/openshell.md#conditional-workload-tags)
+for coverage limits and the remaining live deployment proof.
+
+Keep preparation idempotent and cleanup bound to the admitted Agent/revision
+identity. Arbitrary tags are not Kubernetes labels: the labels in the approved
+Harness requirements remain platform-owned, and tags must not be copied
+automatically into selectors, environment variables, commands, or telemetry.
 
 ## Limits
 

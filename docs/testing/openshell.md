@@ -85,6 +85,22 @@ Local `sandbox-driver-startup`, `controller-lifecycle`, and
 `postgres-platform-state` integration tests cover driver selection, revision
 lifecycle, and persistence. They do not exercise these real OpenShell tools.
 
+## Conditional workload tags
+
+The [conditional Sandbox example](../../examples/agent-workload-tags.ts) has two
+conformance paths:
+
+- [`agent-workload-tags.test.mjs`](../../tests/conformance/agent-workload-tags.test.mjs)
+  uses real OCC admission and direct OpenShell provider-contract calls to
+  inspect distinct policies through fixture transport.
+- [`kubernetes-compute.test.mjs`](../../tests/conformance/kubernetes-compute.test.mjs)
+  exercises tag propagation through Kubernetes Compute dispatch and fail-closed
+  rejection of unsupported `secretKeyRef` requirements.
+
+These tests do not establish a successful live Compute-to-OpenShell deployment. That proof requires the existing integration's credential bridge
+and an explicitly selected disposable cluster, following the
+[OpenShell Sandbox setup](#openshell-sandbox).
+
 ## OpenShell test environment
 
 [`sandbox-driver-openshell-k3d-real.test.mjs`](../../tests/integration/sandbox-driver-openshell-k3d-real.test.mjs)
