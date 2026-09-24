@@ -2,16 +2,17 @@
 
 ## Current preset flow
 
-Captured on September 24, 2026; connected walkthrough refreshed for source commit `6dca8848e220b7ff8d6198a49eb18c35a32733f1`.
+Captured on September 24, 2026; connected walkthrough refreshed for source commit `df3dfc0a9637848f68869e2139617113e4b977aa`.
 Existing-Secret and catalog-state captures retain matching UI from `3515dc6c`.
 Rebased onto main `4373b6e3`, including its updated Console styles.
 The Console uses the shipped `SWE Agent` JSON preset with editable model default
 `gpt-6-astra`, Codex service-account authentication, existing/new model Secret
 selection, prefilled Slack channel
 `C0C43A2QA11`, and workspace-file overrides. The raw Secret bindings JSON editor
-has been removed. DevDay includes the supplied Ocalot `AGENTS.md` verbatim,
-including its draft-decision section. The walkthrough checks exact content in
-the workspace editor before creation.
+has been removed. DevDay preserves the supplied Ocalot instructions, including the draft-decision
+section, with `You are {{vars.name}}` in the opening sentence. The walkthrough
+checks the rendered `You are devday claw` sentence and exact remaining content
+in the workspace editor before creation.
 
 Environment: macOS, Node.js 24.15.0, pnpm 11.15.1, Storybook 10.6.0,
 Playwright 1.63.0 with headed Chromium, 1440 × 1000 viewport. The static
