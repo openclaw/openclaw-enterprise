@@ -7,6 +7,9 @@
       "path": "tests/conformance/compute-lifecycle-hooks.test.mjs"
     },
     {
+      "path": "tests/conformance/codex-seccomp-profile.test.mjs"
+    },
+    {
       "path": "tests/conformance/configuration-occ.test.mjs"
     },
     {
