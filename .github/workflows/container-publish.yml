@@ -1,7 +1,6 @@
 name: Enterprise Containers
 
 on:
-  pull_request:
   workflow_dispatch:
     inputs:
       source_sha:
@@ -22,13 +21,12 @@ permissions:
   contents: read
 
 env:
-  SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.sha || inputs.source_sha }}
+  SOURCE_SHA: ${{ inputs.source_sha }}
   CI_RUN_ID: ${{ inputs.ci_run_id }}
   NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
 
 jobs:
   validate:
-    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -54,10 +52,6 @@ jobs:
   prepare:
     name: Prepare ${{ matrix.image }} OCI image
     needs: validate
-    if: ${{ !cancelled() && (github.event_name == 'pull_request' || needs.validate.result == 'success') }}
-    concurrency:
-      group: container-prepare-${{ github.event.pull_request.number || github.run_id }}-${{ matrix.image }}
-      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
@@ -75,22 +69,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.workflow_sha }}
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: "24.16.0"
-      - name: Select the PR's CI base image
-        if: ${{ github.event_name == 'pull_request' }}
-        run: |
-          node --input-type=module <<'NODE'
-          import assert from 'node:assert/strict';
-          import { appendFileSync, readFileSync } from 'node:fs';
-          const suites = JSON.parse(readFileSync('scripts/ci/test-suites.json', 'utf8'));
-          const image = suites.lanes['images-packaging'].prepare.defaultEnv.NODE_BASE_IMAGE;
-          assert.match(image, /^docker\.io\/library\/node:24[.-][a-z0-9.-]+@sha256:[a-f0-9]{64}$/);
-          appendFileSync(process.env.GITHUB_ENV, `NODE_BASE_IMAGE=${image}\n`);
-          NODE
       - name: Reclaim unused hosted SDK space before runtime build
         if: ${{ matrix.image == 'runtime' }}
         env:
@@ -115,10 +98,10 @@ jobs:
           platforms: linux/amd64,linux/arm64
           build-args: |
             NODE_BASE_IMAGE=${{ env.NODE_BASE_IMAGE }}
-            OCC_BUILD_REVISION=${{ env.SOURCE_SHA }}
+            OCC_BUILD_REVISION=${{ inputs.source_sha }}
           labels: |
             org.opencontainers.image.source=https://github.com/openclaw/openclaw-enterprise
-            org.opencontainers.image.revision=${{ env.SOURCE_SHA }}
+            org.opencontainers.image.revision=${{ inputs.source_sha }}
           outputs: type=oci,dest=${{ runner.temp }}/oci/image.tar
           provenance: false
           push: false
@@ -140,14 +123,12 @@ jobs:
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
         run: node scripts/ci/container-release.mjs smoke "$RUNNER_TEMP/oci"
       - name: Seal exact OCI archive
-        if: ${{ github.event_name == 'workflow_dispatch' }}
         env:
           IMAGE: ${{ matrix.image }}
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
           CI_ATTEMPT: ${{ needs.validate.outputs.ci_attempt }}
         run: node scripts/ci/container-release.mjs seal "$RUNNER_TEMP/oci"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: ${{ github.event_name == 'workflow_dispatch' }}
         with:
           name: container-${{ matrix.image }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/oci
@@ -157,7 +138,7 @@ jobs:
 
   publish:
     name: Publish exact OCI digests to private GHCR
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+    if: ${{ inputs.publish }}
     needs: [validate, prepare]
     runs-on: ubuntu-24.04
     timeout-minutes: 30

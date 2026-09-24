@@ -39,12 +39,6 @@ the Kubernetes fixture lanes on the compatible GitHub runner kernel.
 
 The PR workflow runs ten lanes on ephemeral runners: checks/baseline/browser, PostgreSQL migrations, PostgreSQL application, image/packaging, Kubernetes Compute/Configuration, Kubernetes state/lifecycle, Kubernetes plugin status, logging collector, `repository-credentials-container`, and `repository-credentials-platform`. The container lane builds separate emitted service/client images and a combined qualification image, then selects controlled provider and separate-container cases; it does not contact a live GitHub installation. The platform lane exercises ordinary Agent repository bindings through HTTP, PostgreSQL, Unix control and Kubernetes using a fixture Harness and controlled repositories; it does not use a model or live GitHub. Full Integration runs through manual dispatch using the immutable event commit. All lanes require `main` except `k3d-model`, which also accepts a branch explicitly allowed by the `integration-model` environment. Environment gates apply only to lanes that declare an environment; `helper-timeout` and standalone `logging-collector` declare none. The ChatGPT `provider-account` lane keeps its main-only credential environment without per-run approval. Other model, routing, Slack, OpenShell, and additional OpenTelemetry lanes require separately approved environments. A missing environment or selected prerequisite fails the run. A PR aggregate is not full credentialed coverage; targeted protected runs also report only their selected lanes.
 
-The separate [Enterprise Containers workflow](../../.github/containers.md#pull-request-builds)
-builds and smoke-tests controller and runtime images for amd64 and arm64 on
-every PR update. It checks the PR merge commit without publishing, package-write
-permissions, or release artifacts. These jobs are not included in `CI Required`;
-inspect their results separately. Publication still requires a manual main run.
-
 The `postgres` lane owns migration compatibility tests; `postgres-application`
 owns the remaining PostgreSQL files. Each has its own disposable PostgreSQL
 server. Kubernetes fixture files run in `k3d-fixture-configuration`,
