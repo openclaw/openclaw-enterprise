@@ -955,6 +955,7 @@ test("Dedicated repository Agent keeps its bindings through Slack save and the d
   await page.getByRole("button", { name: "Channels", exact: true }).click();
   await page.getByRole("button", { name: "Configure Slack", exact: true }).click();
   await page.getByLabel("Slack channel IDs").fill("CREPOSITORY123");
+  await page.getByLabel("Allow everyone in these channels to mention the agent").check();
   const savedResponse = page.waitForResponse(
     (result) =>
       result.url().endsWith(`/configurations/${agent.configurationId}`) &&
@@ -967,7 +968,11 @@ test("Dedicated repository Agent keeps its bindings through Slack save and the d
     `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
   );
   assert.equal(saved.data.values.channels.slack.enabled, true);
-  assert.ok(saved.data.values.channels.slack.channels.CREPOSITORY123);
+  assert.deepEqual(saved.data.values.channels.slack.channels.CREPOSITORY123, {
+    requireMention: true,
+    users: ["*"],
+  });
+  assert.equal(Object.hasOwn(saved.data.values.channels.slack, "allowFrom"), false);
   assert.equal(saved.data.values.plugins.entries.codex.enabled, true);
   const sameAgent = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
   assert.deepEqual(sameAgent.data.repositoryBindings, agent.repositoryBindings);
