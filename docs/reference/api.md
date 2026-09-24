@@ -45,7 +45,7 @@ Each operation lists its supported status codes.
 | [Authentication](#authentication) | 6 operations |
 | [Installation](#installation) | 2 operations |
 | [Namespaces](#namespaces) | 4 operations |
-| [Agents](#agents) | 17 operations |
+| [Agents](#agents) | 18 operations |
 | [Agent deployments](#agent-deployments) | 1 operation |
 | [Agent revisions](#agent-revisions) | 2 operations |
 | [Configurations](#configurations) | 4 operations |
@@ -620,6 +620,7 @@ Get an exact Installation-owned Namespace
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/native-admin`](#get-namespacesnamespaceidagentsagentidnativeadmin) | Resolve native admin UI launch availability for one Agent |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/runtime-credentials`](#get-namespacesnamespaceidagentsagentidruntimecredentials) | Get metadata for one Agent's provisioned runtime credentials |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/runtime-credentials`](#post-namespacesnamespaceidagentsagentidruntimecredentials) | Provision initial runtime credentials for one undeployed Agent |
+| [`GET /namespaces/{namespaceId}/agents/{agentId}/runtime-images`](#get-namespacesnamespaceidagentsagentidruntimeimages) | Read observed images and source commits for an Agent's active runtime |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/stop`](#post-namespacesnamespaceidagentsagentidstop) | Stop one Agent while retaining its revision and persistent state |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/workspace/files/{name}`](#get-namespacesnamespaceidagentsagentidworkspacefilesname) | Read an allowed workspace file from one active Agent |
 | [`PUT /namespaces/{namespaceId}/agents/{agentId}/workspace/files/{name}`](#put-namespacesnamespaceidagentsagentidworkspacefilesname) | Create or replace an allowed workspace file for one active Agent |
@@ -1474,6 +1475,54 @@ Schema: `object`.
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
 | `data.transportConfigured` | `boolean` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+#### `GET /namespaces/{namespaceId}/agents/{agentId}/runtime-images`
+
+<span id="get-namespacesnamespaceidagentsagentidruntimeimages"></span>
+
+Read observed images and source commits for an Agent's active runtime
+
+**Operation ID:** `getAgentRuntimeImages`
+
+**Permissions:** Requires read permission on the requested Agent.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `read` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints |
+| --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `500` | Internal Server Error |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.images` | `array<object>` | Yes | — |
+| `data.images[].commit` | `string or null` | Yes | — |
+| `data.images[].container` | `string` | Yes | — |
+| `data.images[].image` | `string` | Yes | — |
+| `data.images[].imageId` | `string or null` | Yes | — |
+| `data.images[].workload` | `string` | Yes | — |
+| `data.status` | `"observed" or "undeployed" or "unsupported"` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 

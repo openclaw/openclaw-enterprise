@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: 2026-09-24
-last_updated_session: public-pr/348
+last_updated_session: 01a0c179-19f7-7111-8bb4-fc7680da5545
 ---
 
 # Platform console request flow
@@ -41,6 +41,8 @@ graph TD
     A["Open console or change page"] --> B["Clear old rows and check session"]
     B -->|no session| C["Login"]
     B -->|authenticated| D["Read readable Namespaces and validate selection"]
+    D -->|debug=true| DBG["Read accessible Agents and runtime image metadata"]
+    DBG --> F
     D --> E["Request current page resource"]
     E --> E1["Edit starter JSON and select associations"]
     E1 --> S1["Select Secret or open creation modal"]
@@ -108,9 +110,24 @@ into the controller image.
 `scripts/build-console-metadata.mjs` stamps the console HTML during image build.
 The publisher supplies its checked `source_sha` as `OCC_BUILD_REVISION`, also used
 for the image revision label. Empty metadata stays empty; nonempty metadata must
-be a full lowercase Git SHA. `shell.mjs:renderShell` shows the short OCC hash
-beside OCE with the full revision in a tooltip; missing or invalid metadata shows
-**dev**. No browser or controller request inspects Git or an Agent gateway version.
+be a full lowercase Git SHA. With `debug=true`, `shell.mjs:renderShell` shows
+the short hash beside OCE and the full source commit in the debug sidebar.
+Missing or invalid metadata displays an unavailable commit.
+
+`runtime-images.mjs:renderRuntimeImages` lists readable Agents in the selected
+Namespace and makes at most three concurrent `runtime-images` reads. Each read
+passes exact Agent authorization to
+`packages/occ/src/index.ts:OpenClawController.getAgentRuntimeImages`, which resolves
+the active revision and its selected Compute Driver before external I/O.
+Docker inspects owned containers and their attached immutable images. Kubernetes
+reads revision-owned Pod specs/status and the private runtime image endpoint,
+binding commit provenance to the observed Pod UID and container ID. The runtime
+Dockerfile bakes that commit into `/opt/oce/runtime/build.json`.
+
+The browser labels absent provenance and Driver failures explicitly. Navigation
+preserves the flag and discards responses from earlier view generations; removing
+the flag stops diagnostic reads. The [Compute contract](../reference/drivers/compute.md)
+owns inspection scope and unsupported Driver behavior.
 
 ### 2. Resolve the session before private reads
 
@@ -315,6 +332,8 @@ uncertain response disables replay until refresh and inspection.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-24 15:44: Trace opt-in sidebar build metadata and authorized Compute image observations. (01a0c179-19f7-7111-8bb4-fc7680da5545 - 6b5c9093)
 
 - 2026-09-24 06:19: Replace Console model discovery with an intentional static starter list and preserve manual entry. (01a0d20c-dc1b-7d22-a965-60b9c244b29d - 24ecb94b)
 

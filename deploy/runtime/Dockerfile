@@ -192,4 +192,8 @@ RUN chmod -R a+rX /opt/oce/repository-credentials \
     && test -x /opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/hooks/pre-push \
     && /usr/bin/git config --system --add include.path /run/oce/repository-credentials/gitconfig
 
+ARG OCC_BUILD_REVISION=""
+LABEL org.opencontainers.image.revision=${OCC_BUILD_REVISION}
+RUN node -e 'const fs = require("node:fs"); const revision = process.argv[1]; if (revision && !/^[a-f0-9]{40}$/.test(revision)) throw new Error("Invalid OCE build revision"); fs.writeFileSync("/opt/oce/runtime/build.json", JSON.stringify({commit: revision || null}));' "$OCC_BUILD_REVISION"
+
 USER node

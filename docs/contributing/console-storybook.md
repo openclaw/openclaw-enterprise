@@ -45,7 +45,7 @@ those states by interacting with the real controls after loading fixture data.
 | Settings and navigation | Signed-in account and unknown route.                                                                                                                                                                                                                                                                                                                                       |
 | Create Agent            | Preset variables, no Presets, fixed model choices before credential entry and manual model IDs, OpenAI Codex/OpenClaw and Anthropic OpenClaw harnesses, Service Accounts switching and bound Presets, seeded workspace files, storage/grant denial, repository selection/discovery and rejected-grant recovery, invalid JSON, partial save/conflict, unknown save outcome. |
 | Agent detail            | New revision, native JSON editor, invalid JSON, admitted snapshot, queued or failed deployment, denied deployment, missing Agent, unavailable Configuration and revision history.                                                                                                                                                                                          |
-| Navigation components   | Account menu, Namespace switcher, mobile drawer, OCE branding, simulated OCC revision, missing development metadata.                                                                                                                                                                                                                                                       |
+| Navigation components   | Account menu, Namespace switcher, mobile drawer, OCE branding, simulated OCC revision, missing development metadata, debug runtime image identities and unavailable metadata.                                                                                                                                                                                              |
 | Channels                | Unconfigured cards, Slack editor with pairing/open/disabled policies, everyone and restricted channel sender access, incomplete sender access, unsupported mixed sender lists, unsupported wildcard channel maps, read-only snapshot, save conflict.                                                                                                                       |
 | Credentials             | Stored and missing metadata, masked Slack tokens, one-token replacement, partially missing tokens, generated credentials locked after admission, metadata failure, missing authentication, operator-managed credentials, issued ChatGPT account.                                                                                                                           |
 | Native admin            | Available launch, stopped or unsupported runtime, denied panel hidden. The launch target is an explanatory fixture page.                                                                                                                                                                                                                                                   |
@@ -161,3 +161,12 @@ the console; configure API responses instead of writing replacement UI markup.
 Build Storybook, inspect the affected previews, and walk through changed flows.
 Keep backend and runtime verification in the existing code suites; a successful
 storybook fixture is not evidence that the real API or infrastructure works.
+
+## Debug image walkthrough
+
+Open **Pages / Navigation / Debug runtime images**. Expand an Agent and inspect
+the image reference, digest, and commit, including a sidecar with unknown provenance.
+Navigate to Namespaces and confirm `debug=true` persists. Repeat in the mobile
+drawer. **Debug metadata unavailable** covers a failed read; ordinary navigation
+stories keep diagnostics hidden. These are presentation fixtures; Docker image
+inspection and the Kubernetes API/worker integration suite verify Driver behavior.

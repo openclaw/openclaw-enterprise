@@ -470,6 +470,8 @@ function driverHasCapabilityContract(driver: Driver): boolean {
     typeof candidate.deleteNamespace === "function" &&
     typeof candidate.prepareRevision === "function" &&
     typeof candidate.retireRevision === "function" &&
+    (candidate.getRuntimeImages === undefined ||
+      typeof candidate.getRuntimeImages === "function") &&
     (candidate.getAgentRuntimeCredentialStatus === undefined ||
       typeof candidate.getAgentRuntimeCredentialStatus === "function") &&
     (candidate.provisionAgentRuntimeCredentials === undefined ||
@@ -1247,6 +1249,35 @@ export class OpenClawController {
       }
       return agent;
     });
+  }
+
+  async getAgentRuntimeImages(principalId: string, namespaceId: string, agentId: string) {
+    const agent = await this.getAgent(principalId, namespaceId, agentId);
+    if (!agent.activeRevisionId) {
+      return { status: "undeployed" as const, images: [] };
+    }
+    const { revision } = await this.getReadableActiveAgentRevision(
+      principalId,
+      namespaceId,
+      agentId,
+    );
+    const driver = this.selectedDriver("compute");
+    if (
+      driver.id !== revision.compute.id ||
+      driver.implementation !== revision.compute.implementation
+    ) {
+      throw new DependencyUnavailableError("The active revision's Compute Driver is unavailable.");
+    }
+    if (!driver.getRuntimeImages) {
+      return { status: "unsupported" as const, images: [] };
+    }
+    // Driver I/O runs outside the state read transaction and after exact Agent authorization.
+    try {
+      const images = await driver.getRuntimeImages(revision);
+      return { status: "observed" as const, images };
+    } catch {
+      throw new DependencyUnavailableError("Runtime image metadata is unavailable.");
+    }
   }
 
   async getAgentRuntimeCredentialStatus(

@@ -164,6 +164,32 @@ p {
   letter-spacing: normal;
   font-family: ui-monospace, monospace;
 }
+.runtime-debug {
+  margin: 24px 8px 12px;
+  min-height: 0;
+  overflow-y: auto;
+  font-size: 12px;
+}
+.runtime-debug h2 {
+  font-size: 13px;
+}
+.runtime-debug code {
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.runtime-debug details {
+  margin-top: 16px;
+}
+.runtime-debug summary {
+  cursor: pointer;
+}
+.runtime-debug dt {
+  margin-top: 10px;
+  color: var(--muted);
+}
+.runtime-debug dd {
+  margin: 3px 0 0;
+}
 .nav {
   display: grid;
   gap: 6px;

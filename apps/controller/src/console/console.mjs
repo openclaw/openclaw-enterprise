@@ -4,6 +4,7 @@ import { createApiClient } from "./api-client.mjs";
 import { createViewLifetime } from "./view-lifetime.mjs";
 import { createNavigation, pages } from "./navigation.mjs";
 import { createShell, panel, sorted } from "./shell.mjs";
+import { renderRuntimeImages } from "./runtime-images.mjs";
 
 const app = document.querySelector("#app");
 const lifetime = createViewLifetime();
@@ -33,7 +34,16 @@ function resetReads() {
 }
 
 function renderShell(feature) {
-  return shellUI.renderShell(feature, { session, namespaces, namespaceId });
+  const shell = shellUI.renderShell(feature, { session, namespaces, namespaceId });
+  if (shell.diagnostics) {
+    void renderRuntimeImages(shell.diagnostics, {
+      request,
+      namespaceId,
+      lifetime,
+      active: lifetime.capture(),
+    });
+  }
+  return shell;
 }
 
 function clearPrivate() {

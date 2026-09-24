@@ -92,6 +92,23 @@ test("console collection APIs keep exact Namespace and Agent IAM boundaries", as
   assert.equal(hiddenAgents.body.error.code, "FORBIDDEN");
   assert.equal(betaAgent.name, "Beta agent");
 
+  const alphaImages = `/namespaces/${alpha.id}/agents/${alphaAgent.id}/runtime-images`;
+  const images = await fixture.request("GET", alphaImages, { session: limitedSession });
+  assert.equal(images.status, 200);
+  assert.deepEqual(images.data, { status: "undeployed", images: [] });
+  assert.equal((await fixture.request("GET", alphaImages, { session: null })).status, 401);
+  const hiddenImages = await fixture.request(
+    "GET",
+    `/namespaces/${beta.id}/agents/${betaAgent.id}/runtime-images`,
+    { session: limitedSession },
+  );
+  assert.equal(hiddenImages.status, 403);
+  const wrongNamespace = await fixture.request(
+    "GET",
+    `/namespaces/${alpha.id}/agents/${betaAgent.id}/runtime-images`,
+  );
+  assert.equal(wrongNamespace.status, 404);
+
   const providerDenied = await fixture.request("GET", "/providers", { session: limitedSession });
   assert.equal(providerDenied.status, 403);
   assert.equal(providerDenied.body.error.code, "FORBIDDEN");
@@ -105,6 +122,10 @@ test("console collection APIs keep exact Namespace and Agent IAM boundaries", as
   });
   assert.equal(revokedNamespaces.status, 200);
   assert.deepEqual(revokedNamespaces.data, []);
+  assert.equal(
+    (await fixture.request("GET", alphaImages, { session: limitedSession })).status,
+    403,
+  );
 });
 
 test("console static routes expose only public assets and preserve API JSON failures", async (t) => {

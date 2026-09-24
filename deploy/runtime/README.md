@@ -157,3 +157,12 @@ Before enabling Slack in an Installation, run the
 [live Slack test](../../docs/testing/slack.md#slack) with the verified image, projected
 credentials, and the required proxy configuration. It must prove a real mention,
 Codex turn, and gateway-authored reply; gateway readiness alone is insufficient.
+
+## Build provenance
+
+The publisher passes the checked Enterprise source SHA as `OCC_BUILD_REVISION`.
+The runtime image records it in the OCI revision label and
+`/opt/oce/runtime/build.json`. The private runtime status endpoint exposes only
+that validated commit for the console's `debug=true` image panel. Local builds
+can pass `--build-arg OCC_BUILD_REVISION=<full-lowercase-git-sha>`; omitted metadata
+remains unknown. Rebuild the runtime image to include this metadata.

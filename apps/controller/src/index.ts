@@ -2498,6 +2498,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
+    if (operation.operationId === "getAgentRuntimeImages") {
+      const images = await controller.getAgentRuntimeImages(context.actorId, namespaceId, agentId);
+      reply.send({ data: images, meta: { requestId: request.id } });
+      return;
+    }
+
     if (operation.operationId === "getAgentRuntimeCredentials") {
       const status = await controller.getAgentRuntimeCredentialStatus(
         context.actorId,

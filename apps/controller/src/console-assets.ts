@@ -26,6 +26,10 @@ const CONSOLE_ASSETS = new Map(
       path: new URL("shell.mjs", CONSOLE_ROOT),
       contentType: "text/javascript; charset=utf-8",
     },
+    "/console/runtime-images.mjs": {
+      path: new URL("runtime-images.mjs", CONSOLE_ROOT),
+      contentType: "text/javascript; charset=utf-8",
+    },
     "/console/agents/list.mjs": {
       path: new URL("agents/list.mjs", CONSOLE_ROOT),
       contentType: "text/javascript; charset=utf-8",

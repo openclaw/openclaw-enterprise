@@ -203,6 +203,36 @@ function apiRequests(page, origin) {
   return requests;
 }
 
+test("console debug flag is opt-in and follows Namespace navigation without leaking prior Agent reads", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const alpha = await fixture.createNamespace("Debug Alpha", { ready: true });
+  const beta = await fixture.createNamespace("Debug Beta", { ready: true });
+  await fixture.createAgent(alpha.id, "Alpha runtime");
+  await fixture.createAgent(beta.id, "Beta runtime");
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents?namespace=${alpha.id}&debug=false`);
+  await page.getByRole("heading", { name: "Agents" }).waitFor();
+  assert.equal(await page.locator(".runtime-debug").count(), 0);
+  assert.ok(!requests.some(({ path }) => path.endsWith("/runtime-images")));
+
+  await page.goto(`${fixture.origin}/console/agents?namespace=${alpha.id}&debug=true`);
+  const panel = page.getByRole("region", { name: "Build and runtime images" });
+  await panel.getByText("No deployed runtime images observed.").waitFor({ state: "attached" });
+  assert.match(await panel.textContent(), /OCE commit.*Unavailable/s);
+  await chooseNamespace(page, "Debug Beta");
+  await panel.getByText("Beta runtime", { exact: true }).waitFor();
+  assert.doesNotMatch(await panel.textContent(), /Alpha runtime/);
+  assert.equal(new URL(page.url()).searchParams.get("debug"), "true");
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("heading", { name: "Namespaces" }).waitFor();
+  assert.equal(new URL(page.url()).searchParams.get("debug"), "true");
+  await page.goto(`${fixture.origin}/console/agents?namespace=${beta.id}`);
+  await page.getByRole("heading", { name: "Agents" }).waitFor();
+  assert.equal(await page.locator(".runtime-debug").count(), 0);
+});
+
 test("console browser flow keeps Namespace URL state across global pages and logout", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -219,12 +249,9 @@ test("console browser flow keeps Namespace URL state across global pages and log
   await page.getByText("Beta agent").waitFor();
   assert.match(page.url(), new RegExp(`/console/agents\\?namespace=${beta.id}$`));
   assert.equal(await page.locator("img").count(), 0);
-  assert.equal(await page.locator(".sidebar .brand").textContent(), "OCEdev");
-  assert.equal(await page.locator(".sidebar .brand .occ-version").textContent(), "dev");
-  assert.equal(
-    await page.locator(".occ-version").getAttribute("title"),
-    "OCC build revision unavailable",
-  );
+  assert.equal(await page.locator(".sidebar .brand").textContent(), "OCE");
+  assert.equal(await page.locator(".occ-version").count(), 0);
+  assert.equal(await page.locator(".runtime-debug").count(), 0);
 
   assert.equal(await page.getByRole("link", { name: "Providers", exact: true }).count(), 0);
   await page.goto(`${fixture.origin}/console/providers?namespace=${beta.id}`);

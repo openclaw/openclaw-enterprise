@@ -57,6 +57,44 @@ const createProvisioningSecrets = [
 
 // API failures are injected at the HTTP boundary. The console owns their presentation.
 export const scenarios = {
+  runtimeImages: {
+    group: "Pages/Navigation",
+    name: "Debug runtime images",
+    path: "/console/agents?debug=true",
+    buildRevision: "1234567890abcdef1234567890abcdef12345678",
+    runtimeImages: {
+      status: "observed",
+      images: [
+        {
+          workload: "research/agent-runtime",
+          container: "gateway",
+          image: "ghcr.io/example/runtime:sha-1234567890abcdef1234567890abcdef12345678",
+          imageId: `sha256:${"a".repeat(64)}`,
+          commit: "1234567890abcdef1234567890abcdef12345678",
+        },
+        {
+          workload: "research/agent-runtime",
+          container: "log-forwarder",
+          image: "example/log-forwarder:1",
+          imageId: `sha256:${"b".repeat(64)}`,
+          commit: null,
+        },
+      ],
+    },
+    actions: [{ selector: ".runtime-debug-images summary", click: true }],
+    description:
+      "Inspect the OCE commit and each Agent's observed runtime images. Expand an Agent, compare image IDs and commits, then navigate to Namespaces: debug=true remains enabled. Remove the flag to hide diagnostics.",
+    gap: "Simulated image identities demonstrate presentation. Native Driver integration verifies actual Docker and Kubernetes observations separately.",
+  },
+  runtimeImagesUnavailable: {
+    group: "Pages/Navigation",
+    name: "Debug metadata unavailable",
+    path: "/console/agents?debug=true",
+    rules: [{ suffix: "/runtime-images", status: 503 }],
+    actions: [{ selector: ".runtime-debug-images summary", click: true }],
+    description:
+      "A failed runtime read leaves normal navigation available and tells the operator to refresh. Unknown commits are never inferred from tags.",
+  },
   overview: {
     group: "Overview",
     name: "Console coverage",
@@ -788,6 +826,7 @@ export const scenarios = {
   buildRevision: {
     group: "Components/Navigation",
     name: "OCC build revision",
+    path: "/console/agents?debug=true",
     buildRevision: "abcdef1234567890abcdef1234567890abcdef12",
     description:
       "OCE branding with an adjacent eight-character OCC commit. Hover the version for the full hash. This revision is simulated.",
@@ -795,6 +834,7 @@ export const scenarios = {
   developmentBuild: {
     group: "Components/Navigation",
     name: "OCC development build",
+    path: "/console/agents?debug=true",
     description:
       "OCE branding with an adjacent dev label when OCC build metadata is unavailable. No checkout or gateway revision is inferred.",
   },
