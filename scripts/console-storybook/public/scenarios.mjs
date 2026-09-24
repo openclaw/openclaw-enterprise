@@ -9,7 +9,7 @@ const readyForm = [
   ...form,
   { selector: "#agent-name", value: "Research assistant" },
   { selector: "#provider-api-key", value: "storybook-model-api-key" },
-  { selector: "#agent-model", value: "openai-story-model" },
+  { selector: "#agent-model", value: "gpt-5.6-sol" },
 ];
 const passwordPresetForm = [
   { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
@@ -35,7 +35,7 @@ const createWorkspaceFields = [
   ...form,
   { selector: "#agent-name", value: "Workspace seed demo" },
   { selector: "#provider-api-key", value: "storybook-model-api-key" },
-  { selector: "#agent-model", value: "openai-story-model" },
+  { selector: "#agent-model", value: "gpt-5.6-sol" },
   {
     selector: "#workspace-IDENTITY-md",
     value:
@@ -230,9 +230,9 @@ export const scenarios = {
     description:
       "OpenAI defaults to Codex. Choose the harness before entering its supported credential; execution mode follows the harness. No model is selected by default.",
     steps: [
-      "Keep OpenAI and the Codex harness, enter a dummy API key, and select a returned model.",
+      "Keep OpenAI and the Codex harness, enter a dummy API key, and select a listed model.",
       'In Configuration JSON, edit plugins.entries.codex.config.appServer: set sandbox to "workspace-write", approvalPolicy to "never", and remoteWorkspaceRoot to "/workspace/custom".',
-      "Change the model, then replace the dummy credential and choose a model again. Confirm all three edited appServer settings remain in Configuration JSON.",
+      "Change the model, then replace the dummy credential. Confirm the selected model remains. Confirm all three edited appServer settings remain in Configuration JSON.",
       "Choose Reset template and confirm to restore the standard runtime settings for the selected model.",
     ],
   },
@@ -520,7 +520,7 @@ export const scenarios = {
       { selector: "#provider-api-key", value: "storybook-anthropic-key" },
     ],
     description:
-      "Anthropic offers only the OpenClaw harness, with Embedded execution. Entering a key loads model choices without selecting one.",
+      "Anthropic offers only the OpenClaw harness, with Embedded execution. Its fixed model list is available before credential entry and starts without a selection.",
   },
   createCodexPat: {
     group: "Pages/Create Agent",
@@ -532,7 +532,7 @@ export const scenarios = {
       { selector: "#provider-api-key", value: "at-storybook-pat" },
     ],
     description:
-      "Service Accounts authentication is available with the Codex harness and loads the account's Codex models. Switching to OpenClaw selects API-key authentication and clears the credential and model selection.",
+      "Service Accounts authentication is available with the Codex harness and uses the same fixed OpenAI model list. Switching to OpenClaw selects API-key authentication and clears the credential and model selection.",
   },
   createPatToOpenClaw: {
     group: "Pages/Create Agent",
@@ -542,7 +542,7 @@ export const scenarios = {
       ...form,
       { selector: "#agent-auth-method", value: "codex_pat" },
       { selector: "#provider-api-key", value: "at-storybook-pat" },
-      { selector: "#agent-model", value: "codex-story-model" },
+      { selector: "#agent-model", value: "gpt-5.6-sol" },
       { selector: "#agent-harness", value: "openclaw" },
     ],
     description:
@@ -563,35 +563,27 @@ export const scenarios = {
   },
   createModels: {
     group: "Pages/Create Agent",
-    name: "Choose an available model",
+    name: "Model choices before credential entry",
     path: create,
-    actions: [...form, { selector: "#provider-api-key", value: "storybook-model-api-key" }],
+    actions: form,
     description:
-      "The model dropdown appears after key entry and starts with an unselected placeholder.",
+      "The fixed model list is available before entering a credential and starts with Choose a model. No model is selected by default.",
+    steps: [
+      "Choose a model before entering a dummy API key. Confirm the selection remains after entering or replacing the key.",
+      "Change the provider to Anthropic and inspect its model list. The previous provider's model and credential are cleared.",
+    ],
   },
-  createModelsEmpty: {
+  createModelManual: {
     group: "Pages/Create Agent",
-    name: "No model choices",
+    name: "Enter another model ID",
     path: create,
-    emptyModels: true,
-    actions: [...form, { selector: "#provider-api-key", value: "storybook-model-api-key" }],
-    description:
-      "An empty list allows an explicit model ID or a retry; no default model is invented.",
-  },
-  createModelsUnavailable: {
-    group: "Pages/Create Agent",
-    name: "Model discovery unavailable",
-    path: create,
-    actions: [...form, { selector: "#provider-api-key", value: "storybook-model-api-key" }],
-    rules: [
-      {
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/models",
-        method: "POST",
-        status: 503,
-      },
+    actions: [
+      ...form,
+      click("Enter model ID manually"),
+      { selector: "#agent-model-manual", value: "custom-model-id" },
     ],
     description:
-      "A discovery failure keeps the key private and lets the user retry or enter a known model ID.",
+      "Enter an explicit model ID when it is absent from the fixed list. The credential must have access to that model; the Console does not verify access.",
   },
   createSecretDenied: {
     group: "Pages/Create Agent",
@@ -1242,11 +1234,11 @@ export const scenarios = {
       "Choose the provider first, then a compatible harness. The production form updates native Configuration and execution mode; credentials and deployment remain simulated.",
     steps: [
       "OpenAI starts with Codex and Dedicated execution. Select OpenClaw: execution becomes Embedded and the API key and selected model remain available.",
-      "Select Anthropic: only OpenClaw is available, and the previous provider's credential and model are cleared. Enter a dummy API key and choose a returned demo model.",
-      "Select OpenAI again: Codex is selected by default. Choose Service Accounts, enter a dummy token, and choose a returned demo model.",
+      "Select Anthropic: only OpenClaw is available, and the previous provider's credential and model are cleared. Enter a dummy API key and choose a listed model.",
+      "Select OpenAI again: Codex is selected by default. Choose Service Accounts, enter a dummy token, and choose a listed model.",
       "Select OpenClaw: authentication changes to API key and the token and model are cleared. Enter a dummy API key and select a model to continue creation.",
     ],
-    gap: "This walkthrough covers form state and simulated discovery. Real API integration and runtime checks establish credential routing and model execution.",
+    gap: "This walkthrough covers form state and the fixed model choices. Real API integration and runtime checks establish credential routing and model execution.",
   },
   createWorkspaceFlow: {
     group: "Flows",
@@ -1257,7 +1249,7 @@ export const scenarios = {
     description:
       "Create a Dedicated Agent from the no-Preset form after editing IDENTITY.md and clearing USER.md, then inspect the seeded workspace after simulated provisioning.",
     steps: [
-      "Start without Preset, enter a demo Agent name, keep OpenAI with the Codex harness, enter a dummy API key or service account token, and choose one of the returned demo models.",
+      "Start without Preset, enter a demo Agent name, keep OpenAI with the Codex harness, enter a dummy API key or service account token, and choose a listed model or enter a model ID manually.",
       "Review AGENTS.md, SOUL.md, IDENTITY.md, and USER.md. Edit IDENTITY.md, leave USER.md empty, and create the Agent.",
       "Wait for automatic provisioning and deployment activation; the Console then opens Workspace files for the returned revision.",
       "Open Workspace files and inspect IDENTITY.md or USER.md to confirm the fixture carried the creation-time file contents into the deployed workspace.",

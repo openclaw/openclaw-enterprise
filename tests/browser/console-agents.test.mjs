@@ -19,7 +19,7 @@ import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/driv
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/providers/repository-credentials/control-client.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
-import { InMemoryPlatformState, ModelDiscoveryError } from "../../packages/occ/src/index.ts";
+import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture, providerFixtures } from "../helpers/console-app.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -105,11 +105,7 @@ function apiRequests(page, origin) {
 
 function nonAuthWriteRequests(requests) {
   return requests.filter(
-    (request) =>
-      request.method !== "GET" &&
-      !request.path.startsWith("/api/auth/sign-") &&
-      // Discovery uses POST to keep its write-only key out of URLs, but creates no resource.
-      !request.path.endsWith("/agents/models"),
+    (request) => request.method !== "GET" && !request.path.startsWith("/api/auth/sign-"),
   );
 }
 
@@ -117,7 +113,9 @@ async function enterManualModel(page, apiKey, modelId = "gpt-4.1") {
   await page.getByLabel("API key", { exact: true }).fill(apiKey);
   await page.getByLabel("API key", { exact: true }).press("Tab");
   const model = page.getByLabel("Model ID", { exact: true });
-  await model.waitFor();
+  if (!(await model.isVisible())) {
+    await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
+  }
   await model.fill(modelId);
   await model.press("Tab");
 }
@@ -480,18 +478,12 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     .waitFor();
   assert.equal(await page.getByRole("link", { name: "Create an API key", exact: true }).count(), 0);
   assert.equal(await page.getByLabel("Execution mode").isDisabled(), true);
-  assert.equal(await page.getByLabel("Model", { exact: true }).isVisible(), false);
+  assert.equal(await page.getByLabel("Model", { exact: true }).isVisible(), true);
   await page.getByLabel("Authentication method", { exact: true }).selectOption("api_key");
   assert.equal(await page.getByLabel("Harness", { exact: true }).isEnabled(), true);
   assert.equal(await keyInput.getAttribute("placeholder"), "sk-…");
   assert.equal(await page.getByRole("link", { name: "OpenAI admin", exact: true }).count(), 0);
   await enterManualModel(page, key, "gpt-5.1");
-  await page
-    .getByText(
-      "No models were returned. Enter a model ID enabled for this API key, or retry loading.",
-      { exact: true },
-    )
-    .waitFor();
   for (const [filename, content] of Object.entries(WORKSPACE_DEFAULTS)) {
     assert.equal(await page.getByLabel(filename, { exact: true }).inputValue(), content);
   }
@@ -2176,7 +2168,7 @@ test("Agent creation rejects non-object native Configuration JSON before any wri
   assert.deepEqual(nonAuthWriteRequests(requests), []);
 });
 
-test("Agent creation discovers available Anthropic models without saving the key before explicit selection", async (t) => {
+test("Agent creation offers mainline Anthropic models before credentials and saves an explicit selection", async (t) => {
   const audit = new InMemoryAuditSink();
   const state = new InMemoryPlatformState({ auditSink: audit });
   const secretDriver = createTestSecretDriver();
@@ -2184,10 +2176,6 @@ test("Agent creation discovers available Anthropic models without saving the key
     state,
     secretDriver,
     providerSummaries: undefined,
-    discoverHarnessModels: async () => [
-      { id: "claude-account-alpha", name: "Account Alpha" },
-      { id: "claude-account/beta", name: "Account Beta" },
-    ],
   });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Anthropic authoring", { ready: true });
@@ -2222,33 +2210,32 @@ test("Agent creation discovers available Anthropic models without saving the key
   assert.equal(await page.getByLabel("API key", { exact: true }).inputValue(), "");
   assert.equal(await page.getByLabel("Execution mode").isDisabled(), true);
   assert.equal(await page.getByLabel("Authentication source").count(), 0);
-  assert.equal(await page.getByLabel("Model", { exact: true }).isVisible(), false);
+  assert.equal(await page.getByLabel("Model", { exact: true }).isVisible(), true);
   assert.equal(await page.getByLabel("Model ID", { exact: true }).isVisible(), false);
   assert.equal(
     JSON.parse(await page.getByLabel("Configuration JSON").inputValue()).agents?.defaults?.model,
     undefined,
   );
+  const choice = page.getByLabel("Model", { exact: true });
+  assert.deepEqual(
+    (await optionValues(choice)).map(({ value }) => value),
+    ["", "claude-opus-5-5", "claude-sonnet-5", "claude-haiku-4-5"],
+  );
+  assert.equal(await choice.inputValue(), "");
+  await choice.selectOption("claude-sonnet-5");
+  const selectedConfiguration = await page.getByLabel("Configuration JSON").inputValue();
   await page.getByLabel("Agent name").fill("Anthropic Agent");
   await page.getByLabel("API key", { exact: true }).fill("test-anthropic-api-key");
   await page.getByLabel("API key", { exact: true }).press("Tab");
-  const choice = page.getByLabel("Model", { exact: true });
-  await choice.locator('option[value="claude-account/beta"]').waitFor({ state: "attached" });
-  assert.deepEqual(await optionValues(choice), [
-    { value: "", text: "Choose a model" },
-    { value: "claude-account-alpha", text: "Account Alpha" },
-    { value: "claude-account/beta", text: "Account Beta" },
-  ]);
-  assert.equal(await choice.inputValue(), "");
+  assert.equal(await choice.inputValue(), "claude-sonnet-5");
+  assert.equal(await page.getByLabel("Configuration JSON").inputValue(), selectedConfiguration);
   assert.deepEqual(nonAuthWriteRequests(requests), []);
   assert.equal(secretDriver.calls.length, 0);
   assert.equal(JSON.stringify(audit.events).includes("test-anthropic-api-key"), false);
-  assert.deepEqual(
-    pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/models`).map(
-      ({ body }) => body,
-    ),
-    [{ provider: "anthropic", authMethod: "api_key", apiKey: "test-anthropic-api-key" }],
+  assert.equal(
+    pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/models`).length,
+    0,
   );
-  await choice.selectOption("claude-account/beta");
   const saved = page.waitForResponse(
     (response) =>
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
@@ -2266,15 +2253,14 @@ test("Agent creation discovers available Anthropic models without saving the key
     "GET",
     `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
   );
-  assert.equal(configuration.data.values.agents.defaults.model, "anthropic/claude-account/beta");
+  assert.equal(configuration.data.values.agents.defaults.model, "anthropic/claude-sonnet-5");
   assert.deepEqual(configuration.data.values.models.providers.anthropic, {
     baseUrl: "https://api.anthropic.com",
     api: "anthropic-messages",
-    models: [{ id: "claude-account/beta", name: "claude-account/beta" }],
+    models: [{ id: "claude-sonnet-5", name: "claude-sonnet-5" }],
   });
   assert.equal(
-    configuration.data.values.agents.defaults.models["anthropic/claude-account/beta"].agentRuntime
-      .id,
+    configuration.data.values.agents.defaults.models["anthropic/claude-sonnet-5"].agentRuntime.id,
     "openclaw",
   );
   assert.equal(pathRequests(requests, "GET", "/providers").length, 0);
@@ -2285,192 +2271,108 @@ test("Agent creation discovers available Anthropic models without saving the key
   assert.equal(JSON.stringify(configuration.data).includes("test-anthropic-api-key"), false);
 });
 
-test(
-  "Model discovery discards stale responses after key, auth method, and provider changes",
-  { timeout: 30_000 },
-  async (t) => {
-    let releaseFirst;
-    let firstRequested;
-    let methodRefresh = false;
-    let releaseMethod;
-    let methodRequested;
-    const methodRequest = new Promise((resolve) => {
-      methodRequested = resolve;
-    });
-    let refresh = false;
-    let releaseRefresh;
-    let refreshRequested;
-    const refreshRequest = new Promise((resolve) => {
-      refreshRequested = resolve;
-    });
-    const firstRequest = new Promise((resolve) => {
-      firstRequested = resolve;
-    });
-    const fixture = await createConsoleAppFixture(t, {
-      discoverHarnessModels: async ({ provider, apiKey }) => {
-        if (apiKey === "first-openai-key") {
-          firstRequested();
-          return new Promise((resolve) => {
-            releaseFirst = resolve;
-          });
-        }
-        if (apiKey === "second-openai-key" && methodRefresh) {
-          methodRequested();
-          return new Promise((resolve) => {
-            releaseMethod = resolve;
-          });
-        }
-        if (apiKey === "second-openai-key" && refresh) {
-          refreshRequested();
-          return new Promise((resolve) => {
-            releaseRefresh = resolve;
-          });
-        }
-        return [{ id: `${provider}-current-model`, name: `${provider} current model` }];
-      },
-    });
-    await fixture.bootstrap();
-    const namespace = await fixture.createNamespace("Model response ordering", { ready: true });
-    const { page } = await newPage(t, fixture);
-    const requests = apiRequests(page, fixture.origin);
-    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.getByRole("button", { name: "Start without Preset" }).click();
-    const key = page.getByLabel("API key", { exact: true });
-    const choice = page.getByLabel("Model", { exact: true });
-    try {
-      await key.fill("first-openai-key");
-      await key.press("Tab");
-      await firstRequest;
-      await key.fill("second-openai-key");
-      await key.press("Tab");
-      await choice.selectOption("openai-current-model");
-      assert.equal(
-        JSON.parse(await page.getByLabel("Configuration JSON").inputValue()).agents.defaults.model,
-        "codex/openai-current-model",
-      );
-
-      const staleKeyResponse = page.waitForResponse(
-        (response) =>
-          response.url().endsWith(`/namespaces/${namespace.id}/agents/models`) &&
-          response.request().postDataJSON()?.apiKey === "first-openai-key",
-      );
-      releaseFirst([{ id: "stale-key-model", name: "Stale key model" }]);
-      await (await staleKeyResponse).finished();
-      await page.evaluate(() => new Promise(globalThis.requestAnimationFrame));
-      assert.equal(await key.inputValue(), "second-openai-key");
-      assert.equal(await choice.inputValue(), "openai-current-model");
-      assert.equal(
-        (await optionValues(choice)).some(({ value }) => value === "stale-key-model"),
-        false,
-      );
-
-      // A response from the previous auth method must not repopulate the cleared form.
-      methodRefresh = true;
-      await page.getByRole("button", { name: "Load models", exact: true }).click();
-      await methodRequest;
-      await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
-      const staleMethodResponse = page.waitForResponse(
-        (response) =>
-          response.url().endsWith(`/namespaces/${namespace.id}/agents/models`) &&
-          response.request().postDataJSON()?.apiKey === "second-openai-key",
-      );
-      releaseMethod([{ id: "stale-method-model", name: "Stale API-key model" }]);
-      await (await staleMethodResponse).finished();
-      await page.evaluate(() => new Promise(globalThis.requestAnimationFrame));
-      assert.equal(await page.getByLabel("Provider", { exact: true }).inputValue(), "openai");
-      assert.equal(
-        await page.getByLabel("Service account token", { exact: true }).inputValue(),
-        "",
-      );
-      assert.equal(await choice.isVisible(), false);
-      assert.equal(
-        (await optionValues(choice)).some(({ value }) => value === "stale-method-model"),
-        false,
-      );
-      assert.equal(
-        JSON.parse(await page.getByLabel("Configuration JSON").inputValue()).agents.defaults.model,
-        undefined,
-      );
-      methodRefresh = false;
-      await page.getByLabel("Authentication method", { exact: true }).selectOption("api_key");
-      await key.fill("second-openai-key");
-      await key.press("Tab");
-      await choice.selectOption("openai-current-model");
-
-      // Hold a refresh across a provider switch independently of the key-change fence above.
-      refresh = true;
-      await page.getByRole("button", { name: "Load models", exact: true }).click();
-      await refreshRequest;
-      await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
-      assert.equal(await key.inputValue(), "");
-      assert.equal(await choice.isVisible(), false);
-      assert.equal(
-        JSON.parse(await page.getByLabel("Configuration JSON").inputValue()).agents.defaults.model,
-        undefined,
-      );
-      await key.fill("current-anthropic-key");
-      await key.press("Tab");
-      await choice.selectOption("anthropic-current-model");
-      const staleResponse = page.waitForResponse(
-        (response) =>
-          response.url().endsWith(`/namespaces/${namespace.id}/agents/models`) &&
-          response.request().postDataJSON()?.apiKey === "second-openai-key",
-      );
-      releaseRefresh([{ id: "stale-openai-model", name: "Stale OpenAI model" }]);
-      await (await staleResponse).finished();
-      // Observe after the next render, once the delivered response could update the controls.
-      await page.evaluate(() => new Promise(globalThis.requestAnimationFrame));
-      assert.equal(await key.inputValue(), "current-anthropic-key");
-      assert.equal(await choice.inputValue(), "anthropic-current-model");
-      assert.deepEqual(await optionValues(choice), [
-        { value: "", text: "Choose a model" },
-        { value: "anthropic-current-model", text: "anthropic current model" },
-      ]);
-      assert.equal(
-        JSON.parse(await page.getByLabel("Configuration JSON").inputValue()).agents.defaults.model,
-        "anthropic/anthropic-current-model",
-      );
-      assert.deepEqual(nonAuthWriteRequests(requests), []);
-      assert.deepEqual(
-        pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/models`).map(
-          ({ body }) => body,
-        ),
-        [
-          { provider: "openai", authMethod: "api_key", apiKey: "first-openai-key" },
-          { provider: "openai", authMethod: "api_key", apiKey: "second-openai-key" },
-          { provider: "openai", authMethod: "api_key", apiKey: "second-openai-key" },
-          { provider: "openai", authMethod: "api_key", apiKey: "second-openai-key" },
-          { provider: "openai", authMethod: "api_key", apiKey: "second-openai-key" },
-          { provider: "anthropic", authMethod: "api_key", apiKey: "current-anthropic-key" },
-        ],
-      );
-    } finally {
-      releaseFirst?.([]);
-      releaseMethod?.([]);
-      releaseRefresh?.([]);
-    }
-  },
-);
-
-test("Model discovery failure permits an explicit manual model and still saves through the real Agent API", async (t) => {
-  const fixture = await createConsoleAppFixture(t, {
-    discoverHarnessModels: async () => {
-      throw new ModelDiscoveryError("credentials_rejected");
-    },
-  });
+test("Static model selection survives credential edits and resets for provider or authentication changes", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Manual model recovery", { ready: true });
+  const namespace = await fixture.createNamespace("Static model choices", { ready: true });
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  const key = page.getByLabel("API key", { exact: true });
+  const choice = page.getByLabel("Model", { exact: true });
+  const configuration = page.getByLabel("Configuration JSON");
+  assert.equal(await key.inputValue(), "");
+  assert.equal(await choice.isVisible(), true);
+  assert.equal(await choice.isEnabled(), true);
+  assert.deepEqual(
+    (await optionValues(choice)).map(({ value }) => value),
+    ["", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+  );
+  assert.equal(await choice.locator('option[value=""]').textContent(), "Choose a model");
+  assert.equal(await choice.inputValue(), "");
+  assert.equal(JSON.parse(await configuration.inputValue()).agents?.defaults?.model, undefined);
+  await choice.selectOption("gpt-5.6-sol");
+  const selectedConfiguration = await configuration.inputValue();
+  assert.equal(JSON.parse(selectedConfiguration).agents.defaults.model, "codex/gpt-5.6-sol");
+  for (const credential of ["first-openai-key", "replacement-openai-key", ""]) {
+    await key.fill(credential);
+    await key.press("Tab");
+    assert.equal(await choice.inputValue(), "gpt-5.6-sol");
+    assert.equal(await configuration.inputValue(), selectedConfiguration);
+  }
+
+  // Switching compatible harnesses changes the native transport without clearing the model.
+  await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+  assert.equal(await choice.inputValue(), "gpt-5.6-sol");
+  assert.equal(
+    JSON.parse(await configuration.inputValue()).agents.defaults.model,
+    "openai/gpt-5.6-sol",
+  );
+  await page.getByLabel("Harness", { exact: true }).selectOption("codex");
+  assert.equal(await choice.inputValue(), "gpt-5.6-sol");
+  assert.equal(
+    JSON.parse(await configuration.inputValue()).agents.defaults.model,
+    "codex/gpt-5.6-sol",
+  );
+
+  await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
+  assert.equal(await page.getByLabel("Service account token", { exact: true }).inputValue(), "");
+  assert.equal(await choice.isVisible(), true);
+  assert.equal(await choice.inputValue(), "");
+  assert.equal(JSON.parse(await configuration.inputValue()).agents.defaults.model, undefined);
+  await choice.selectOption("gpt-5.6-terra");
+  await page.getByLabel("Service account token", { exact: true }).fill("at-static-model-token");
+  await page.getByLabel("Service account token", { exact: true }).press("Tab");
+  assert.equal(await choice.inputValue(), "gpt-5.6-terra");
+  assert.equal(
+    JSON.parse(await configuration.inputValue()).agents.defaults.model,
+    "codex/gpt-5.6-terra",
+  );
+  await page.getByLabel("Authentication method", { exact: true }).selectOption("api_key");
+  assert.equal(await key.inputValue(), "");
+  assert.equal(await choice.inputValue(), "");
+  assert.equal(JSON.parse(await configuration.inputValue()).agents.defaults.model, undefined);
+
+  await choice.selectOption("gpt-5.6-luna");
+  await key.fill("discarded-openai-key");
+  await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
+  assert.equal(await key.inputValue(), "");
+  assert.equal(await choice.isVisible(), true);
+  assert.equal(await choice.inputValue(), "");
+  assert.equal(JSON.parse(await configuration.inputValue()).agents.defaults.model, undefined);
+  await choice.selectOption("claude-opus-5-5");
+  assert.equal(
+    JSON.parse(await configuration.inputValue()).agents.defaults.model,
+    "anthropic/claude-opus-5-5",
+  );
+  await page.getByLabel("Provider", { exact: true }).selectOption("openai");
+  assert.equal(await choice.inputValue(), "");
+  assert.equal(JSON.parse(await configuration.inputValue()).agents.defaults.model, undefined);
+  await choice.selectOption("gpt-5.6-luna");
+  assert.equal(
+    JSON.parse(await configuration.inputValue()).agents.defaults.model,
+    "codex/gpt-5.6-luna",
+  );
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  assert.equal(
+    pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/models`).length,
+    0,
+  );
+});
+
+test("Agent creation accepts a manual model outside the static list and saves through the real Agent API", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Manual model override", { ready: true });
   const { page } = await newPage(t, fixture);
   // Exercise the supported draft path; dedicated provisioning has separate workflow coverage.
   await routeInstallationWithoutProvisioning(page, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
-  await page.getByLabel("Agent name").fill("Manual recovery Agent");
-  await enterManualModel(page, "model-discovery-unavailable-key", "gpt-manual-account-model");
-  await page
-    .getByText("The provider rejected this API key or its permission to list models.")
-    .waitFor();
+  await page.getByLabel("Agent name").fill("Manual model Agent");
+  await enterManualModel(page, "manual-model-key", "gpt-manual-account-model");
   assert.deepEqual(nonAuthWriteRequests(requests), []);
   const saved = page.waitForResponse(
     (response) =>
@@ -2487,10 +2389,7 @@ test("Model discovery failure permits an explicit manual model and still saves t
     `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
   );
   assert.equal(configuration.data.values.agents.defaults.model, "codex/gpt-manual-account-model");
-  assert.equal(
-    JSON.stringify(configuration.data).includes("model-discovery-unavailable-key"),
-    false,
-  );
+  assert.equal(JSON.stringify(configuration.data).includes("manual-model-key"), false);
 });
 
 test("Agent creation reports unavailable Secret storage before creating Configuration or Agent", async (t) => {
@@ -2535,6 +2434,7 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
   await page.getByLabel("Service account token", { exact: true }).fill("at-discarded-pat");
   await page.getByLabel("Service account token", { exact: true }).press("Tab");
+  await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
   await page.getByLabel("Model ID", { exact: true }).fill("discarded-pat-model");
   await page.getByLabel("Model ID", { exact: true }).press("Tab");
   // OpenClaw requires a new API key, never the previous service account token.
@@ -2558,12 +2458,7 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
     true,
   );
   assert.deepEqual(nonAuthWriteRequests(requests), []);
-  assert.deepEqual(
-    pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/models`).map(
-      ({ body }) => body,
-    ),
-    [{ provider: "openai", authMethod: "codex_pat", apiKey: "at-discarded-pat" }],
-  );
+  assert.deepEqual(pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/models`), []);
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
   await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
   assert.equal(await page.getByLabel("Execution mode").inputValue(), "dedicated");
@@ -2571,12 +2466,10 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   const credential = page.getByLabel("Service account token", { exact: true });
   await credential.fill("at-browser-pat");
   await credential.press("Tab");
+  await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
   await page.getByLabel("Model ID", { exact: true }).fill("gpt-5.1");
   await page.getByLabel("Model ID", { exact: true }).press("Tab");
-  assert.deepEqual(
-    pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/models`).at(-1).body,
-    { provider: "openai", authMethod: "codex_pat", apiKey: "at-browser-pat" },
-  );
+  assert.deepEqual(pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/models`), []);
   requests.length = 0;
   await page.getByLabel("SOUL.md", { exact: true }).fill("# Keep this draft\n");
   await page.getByLabel("Agent name").fill("Retry Agent");
@@ -2862,7 +2755,7 @@ test("Agent creation preserves unrelated edited JSON across model changes and re
   await page.getByLabel("API key", { exact: true }).fill("same-provider-replacement-key");
   await page.getByLabel("API key", { exact: true }).press("Tab");
   await modelInput.waitFor();
-  assert.equal(await modelInput.inputValue(), "");
+  assert.equal(await modelInput.inputValue(), "gpt-4.1-updated");
   await assertCustomTransport();
   await modelInput.fill("gpt-4.1");
   await modelInput.press("Tab");
@@ -2904,17 +2797,17 @@ test("Agent creation preserves unrelated edited JSON across model changes and re
   await modelInput.press("Tab");
   assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins.entries.codex, customCodex);
 
-  // Changing the key temporarily retains model settings while the operator chooses again.
+  // Replacing the credential preserves the selected model and custom execution policy.
   await page.getByLabel("API key", { exact: true }).fill("replacement-template-key");
   await page.getByLabel("API key", { exact: true }).press("Tab");
   const nextModel = page.getByLabel("Model ID", { exact: true });
   await nextModel.waitFor();
-  assert.equal(await nextModel.inputValue(), "");
+  assert.equal(await nextModel.inputValue(), "gpt-4.1-codex-updated");
   assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins.entries.codex, customCodex);
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Reset template" }).click();
   const resetTemplate = JSON.parse(await configuration.inputValue());
-  assert.equal(resetTemplate.agents?.defaults?.model, undefined);
+  assert.equal(resetTemplate.agents.defaults.model, "codex/gpt-4.1-codex-updated");
   assert.ok(resetTemplate.plugins.entries.codex);
   await nextModel.fill("gpt-reset-model");
   await nextModel.press("Tab");
@@ -3022,15 +2915,15 @@ test("Agent creation saves explicitly selected models for both harnesses", async
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
 
   for (const [mode, provider, harness, selectedModel] of [
-    ["dedicated", "codex", "codex", "gpt-5.1"],
-    ["embedded", "openai", "openclaw", "gpt-5.1"],
-    ["embedded", "openai", "openclaw", "gpt-4.1"],
+    ["dedicated", "codex", "codex", "gpt-5.6-sol"],
+    ["embedded", "openai", "openclaw", "gpt-5.6-luna"],
   ]) {
     await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
     await page.getByRole("heading", { name: "Create Agent" }).waitFor();
     await page.getByRole("button", { name: "Start without Preset" }).click();
     await page.getByLabel("Harness", { exact: true }).selectOption(harness);
-    await enterManualModel(page, `test-${mode}-${selectedModel}-key`, selectedModel);
+    await page.getByLabel("Model", { exact: true }).selectOption(selectedModel);
+    await page.getByLabel("API key", { exact: true }).fill(`test-${mode}-${selectedModel}-key`);
     await page.getByLabel("Agent name").fill(`${mode}-${selectedModel}`);
     const saved = page.waitForResponse(
       (response) =>

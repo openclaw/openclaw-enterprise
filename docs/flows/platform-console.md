@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-09-23
-last_updated_session: 01a0d150-104a-71a3-9e56-6c5e3ee510ea
+updated: 2026-09-24
+last_updated_session: 01a0d20c-dc1b-7d22-a965-60b9c244b29d
 ---
 
 # Platform console request flow
@@ -158,17 +158,16 @@ writes. Saved service account tokens lock Codex; operator-managed credentials
 lock OpenClaw across provider changes. Installation Provider discovery is hidden. The [creation reference](../reference/console/create-and-deploy.md)
 owns permissions and partial-save recovery.
 
-The form starts with native JSON, optional plugins, and no model.
-`POST /namespaces/:namespaceId/agents/models` reaches
-`OpenClawController.discoverAgentModels`, which authorizes Namespace Agent creation
-and calls Compute outside a state transaction. `compute/model-discovery.ts` uses
-fixed provider URLs, bounded responses and pagination, and returns IDs/labels.
-`authMethod` selects API-key or service-account discovery; OpenAI API-key results
-exclude valid `shutdown_date` values on or before today (UTC). Discovery writes
-nothing. Empty/error results allow manual entry; credential/provider/method
-changes invalidate pending results. Model and key edits preserve provider transport
-and Codex plugin settings. Provider or Harness changes regenerate those entries
-while preserving unrelated JSON; reset restores the selected starter.
+The form starts with native JSON, optional plugins, and no selected model.
+`create.mjs:MODEL_CHOICES` supplies an intentionally hardcoded starter list per
+provider, visible before credential entry. The Console makes no model-discovery
+request and does not verify account access. Manual entry remains available;
+Presets retain their explicit model and saved authentication. Credential edits
+preserve model selection. Provider or authentication-method changes reset it.
+Model edits preserve provider transport and Codex plugin settings. Provider or
+Harness changes regenerate those entries while preserving unrelated JSON;
+reset restores the selected starter. The TODO beside the list tracks revisiting
+catalog refresh and credential-aware discovery.
 
 `configurationTemplate` enables Control UI with loopback origins on port 18789.
 Compute supplies gateway authentication from Installation trust; Presets replace
@@ -315,6 +314,8 @@ uncertain response disables replay until refresh and inspection.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-24 06:19: Replace Console model discovery with an intentional static starter list and preserve manual entry. (01a0d20c-dc1b-7d22-a965-60b9c244b29d - 24ecb94b)
 
 - 2026-09-23 21:41: Preserve edited Codex plugin settings across model and key changes. (01a0cce9-23e3-7072-aa3f-a2e26d2dbf11 - b8f23be17de4a4b077dab8d6b90b4add1f9146cb)
 

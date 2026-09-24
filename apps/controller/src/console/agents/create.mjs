@@ -7,6 +7,13 @@ import { createPresetFields } from "./presets.mjs";
 import { renderChannels } from "../channels.mjs";
 import { link, message, namespacePath } from "./list.mjs";
 
+// TODO: This starter list is intentionally hardcoded for the initial Console release.
+// Revisit catalog refresh and credential-aware discovery after the basic creation flow ships.
+const MODEL_CHOICES = {
+  openai: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+  anthropic: ["claude-opus-5-5", "claude-sonnet-5", "claude-haiku-4-5"],
+};
+
 function field(label, input, hint) {
   return element(
     "div",
@@ -276,10 +283,10 @@ function renderAgentForm(context, rendered) {
     element("option", { value: "anthropic" }, "Anthropic"),
   );
   nativeProvider.value = initialModel?.startsWith("anthropic/") ? "anthropic" : "openai";
-  const discoverModels = !binding && typeof initialModel !== "string";
+  const useModelChoices = !binding && typeof initialModel !== "string";
   const model = element("input", {
-    id: discoverModels ? "agent-model-manual" : "agent-model",
-    required: !discoverModels,
+    id: useModelChoices ? "agent-model-manual" : "agent-model",
+    required: !useModelChoices,
     autocomplete: "off",
     pattern: "\\S+",
   });
@@ -306,19 +313,15 @@ function renderAgentForm(context, rendered) {
   const credentialLabel = element("label", { for: apiKey.id }, "API key");
   const credentialHelp = element("p", { className: "hint", id: "provider-credential-help" });
   apiKey.setAttribute("aria-describedby", credentialHelp.id);
-  let discoveryGeneration = 0;
-  let modelsLoading = false;
-  let modelOptions = [];
-  let manualModel = !discoverModels;
+  let manualModel = !useModelChoices;
   let pendingModelSettings;
   let pendingProviderModel;
   const modelChoice = element(
     "select",
     { id: "agent-model" },
-    element("option", { value: "" }, "Load models to choose one"),
+    element("option", { value: "" }, "Choose a model"),
+    ...MODEL_CHOICES[nativeProvider.value].map((id) => element("option", { value: id }, id)),
   );
-  const modelStatus = element("p", { className: "hint", role: "status" });
-  const loadModels = button("Load models", () => void loadModelChoices());
   const enterModel = button("Enter model ID manually", () => {
     manualModel = true;
     model.value = "";
@@ -328,84 +331,28 @@ function renderAgentForm(context, rendered) {
     model.focus();
   });
   const modelField = field("Model ID", model, "Enter a model ID available to this credential.");
-  const choiceField = field("Model", modelChoice);
+  const choiceField = field(
+    "Model",
+    modelChoice,
+    "Choose a model your credential can access, or enter another model ID manually.",
+  );
   const modelSection = element(
     "section",
-    { className: "model-selection", hidden: discoverModels },
-    ...(discoverModels ? [loadModels, choiceField, enterModel, modelStatus] : []),
+    { className: "model-selection" },
+    ...(useModelChoices ? [choiceField, enterModel] : []),
     modelField,
   );
-  async function loadModelChoices() {
-    if (!discoverModels || !apiKey.value.trim() || savedSecret || pending || modelsLoading) {
-      return;
-    }
-    const generation = ++discoveryGeneration;
-    modelsLoading = true;
-    modelStatus.textContent = "Loading available models…";
-    updateControls();
-    try {
-      const choices = await request(`${namespacePath(namespaceId)}/agents/models`, {
-        method: "POST",
-        body: {
-          provider: nativeProvider.value,
-          authMethod: authMethod.value,
-          apiKey: apiKey.value,
-        },
-      });
-      if (!context.isCurrent() || generation !== discoveryGeneration) {
-        return;
-      }
-      modelOptions = choices;
-      modelChoice.replaceChildren(
-        element("option", { value: "" }, "Choose a model"),
-        ...choices.map((item) => element("option", { value: item.id }, item.name)),
-      );
-      manualModel = choices.length === 0;
-      model.value = "";
-      updateModelConfiguration();
-      modelStatus.textContent = choices.length
-        ? "Choose a text-generation model for this Agent."
-        : `No models were returned. Enter a model ID enabled for this ${authMethod.value === "codex_pat" ? "service account token" : "API key"}, or retry loading.`;
-    } catch (error) {
-      if (!context.isCurrent() || generation !== discoveryGeneration) {
-        return;
-      }
-      if (error.status === 401) {
-        context.onExpired();
-        return;
-      }
-      modelOptions = [];
-      manualModel = true;
-      const reason = {
-        MODEL_DISCOVERY_CREDENTIALS_REJECTED: `The provider rejected this ${authMethod.value === "codex_pat" ? "service account token" : "API key"} or its permission to list models.`,
-        MODEL_DISCOVERY_RATE_LIMITED: "The provider rate limit was reached. Try again later.",
-        MODEL_DISCOVERY_UNAVAILABLE:
-          "The provider could not be reached or is unavailable. Check the server's provider access.",
-        MODEL_DISCOVERY_INVALID_RESPONSE:
-          "The provider returned an unsupported model-list response.",
-      }[error.code];
-      modelStatus.textContent = `${reason ?? "Models could not be loaded. Check the credential and retry."} You can enter a model ID manually.${error.requestId ? ` Request: ${error.requestId}` : ""}`;
-    } finally {
-      if (context.isCurrent() && generation === discoveryGeneration) {
-        modelsLoading = false;
-        updateControls();
-      }
-    }
-  }
   function resetModelChoices(resetTransport = false) {
-    discoveryGeneration += 1;
-    modelsLoading = false;
-    modelOptions = [];
-    manualModel = !discoverModels;
+    manualModel = !useModelChoices;
     model.value = "";
-    modelChoice.replaceChildren(element("option", { value: "" }, "Load models to choose one"));
-    modelStatus.textContent = "";
+    modelChoice.replaceChildren(
+      element("option", { value: "" }, "Choose a model"),
+      ...MODEL_CHOICES[nativeProvider.value].map((id) => element("option", { value: id }, id)),
+    );
     updateModelConfiguration(resetTransport);
     updateControls();
   }
-  if (discoverModels) {
-    apiKey.addEventListener("input", () => resetModelChoices());
-    apiKey.addEventListener("change", () => void loadModelChoices());
+  if (useModelChoices) {
     modelChoice.addEventListener("change", () => {
       manualModel = false;
       model.value = modelChoice.value;
@@ -512,7 +459,7 @@ function renderAgentForm(context, rendered) {
       typeof previousModel === "string"
         ? previousModel.slice(previousModel.indexOf("/") + 1)
         : pendingProviderModel;
-    // Keep transport and model metadata while a key edit temporarily clears the selected model.
+    // Keep transport and model metadata while switching to manual entry clears the model.
     pendingProviderModel = selectedModel || resetTransport ? undefined : previousId;
     if (resetTransport) {
       delete providers.openai;
@@ -611,7 +558,6 @@ function renderAgentForm(context, rendered) {
         if (selectedProvider !== nativeProvider.value && !binding) {
           apiKey.value = "";
           authMethod.value = "api_key";
-          modelOptions = [];
         }
         nativeProvider.value = selectedProvider;
         if (selectedProvider === "anthropic") {
@@ -620,9 +566,7 @@ function renderAgentForm(context, rendered) {
         }
       }
       model.value = ref.slice(ref.indexOf("/") + 1);
-      if (discoverModels) {
-        discoveryGeneration += 1;
-        modelsLoading = false;
+      if (useModelChoices) {
         manualModel = true;
         modelChoice.value = "";
       }
@@ -1026,16 +970,12 @@ function renderAgentForm(context, rendered) {
     }
     apiKey.disabled ||= Boolean(savedSecret);
     startOver.disabled = pending || outcomeUnknown || saved || Boolean(savedSecret);
-    if (discoverModels) {
-      modelSection.hidden = !apiKey.value.trim() && !savedSecret;
+    if (useModelChoices) {
       choiceField.hidden = manualModel;
       modelField.hidden = !manualModel;
-      model.required = manualModel && !modelSection.hidden;
-      modelChoice.required = !manualModel && !modelSection.hidden && modelOptions.length > 0;
-      model.disabled ||= modelsLoading;
-      modelChoice.disabled ||= modelsLoading || modelOptions.length === 0;
-      loadModels.disabled ||= modelsLoading || Boolean(savedSecret) || !apiKey.value.trim();
-      enterModel.disabled ||= modelsLoading || Boolean(savedConfiguration);
+      model.required = manualModel;
+      modelChoice.required = !manualModel;
+      enterModel.disabled ||= Boolean(savedConfiguration);
     }
     reloadRepositories.disabled = pending || outcomeUnknown;
     startNewDraft.disabled = pending || outcomeUnknown;
@@ -1054,7 +994,6 @@ function renderAgentForm(context, rendered) {
           repositories.blocksCreate())) ||
       pending ||
       outcomeUnknown ||
-      modelsLoading ||
       !capabilityDiscoveryDone ||
       Boolean(provisioningAttempt);
     retryProvisioning.hidden = !provisioningAttempt;
