@@ -79,6 +79,18 @@ the test environment.
 
 ## Kubernetes model turns and Secrets
 
+Dedicated Codex command execution requires a compatible seccomp policy on each
+eligible node. Follow [Codex sandbox setup](../guides/deploy/codex-sandbox.md) for
+operator-managed baseline capture and profile installation. CI preparation uses
+the same profile generator in its run-owned k3d cluster and requires a sandboxed
+workspace write plus denial at a path proven writable by the container outside
+the sandbox. These credential-free probes establish sandbox enforcement; native
+Agent commands with `approvalPolicy: never` and credentialed repository reads
+remain separate integration outcomes.
+The dedicated workspace model case checks `approvalPolicy: never` through native
+tool history, an actual workspace write, and an unchanged outside-workspace
+marker after write denial; this coverage does not establish a live EKS result.
+
 ### Develop with local containers and k3d
 
 The repository can prepare a disposable k3d cluster, an isolated PostgreSQL

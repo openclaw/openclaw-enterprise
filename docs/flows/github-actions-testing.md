@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
-updated: 2026-09-23
-last_updated_session: codex/01a0d075-a358-7620-8c16-fd4290acddf1
+updated: 2026-09-24
+last_updated_session: codex/01a0d502-6efc-7063-a88c-4f1739da163c
 ---
 
 # GitHub Actions testing flow
@@ -75,6 +75,13 @@ The provider job selects the shared `blacksmith-8vcpu-ubuntu-2404` runner for di
 
 [CI resource preparation](github-actions-testing/preparation.md) traces tool setup, image and cluster preparation, protected credentials, and resource ownership. Continue below when preparation has produced the lane state.
 
+Dedicated Codex preparation and the operator's offline profile generator share
+`scripts/lib/codex-seccomp-profile.mjs:deriveCodexBwrapProfile`. Preparation
+requires an actual workspace write and denied write to a container-writable
+outside path before publishing the selected Localhost profile to the live suite.
+Production node provisioning remains outside CI ownership; see
+[Codex sandbox setup](../guides/deploy/codex-sandbox.md).
+
 ### 3. Execute and account for actual cases
 
 `scripts/ci/run-tests.mjs:main` and `scripts/ci/reporter.mjs:jsonLinesReporter`
@@ -118,6 +125,8 @@ The aggregate runs after success or failure and checks expected job outcomes plu
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-24 13:09: Document the shared offline seccomp generator and meaningful outside-workspace denial probe in the accompanying changes. (01a0d502-6efc-7063-a88c-4f1739da163c - b4b6a0e0d8700930f21d58b3724c055f8249c486)
 
 - 2026-09-23 23:07: Document lane-owned suite definitions and the shared loader; retain workflow selection, preparation, and result accounting. (01a0d075-a358-7620-8c16-fd4290acddf1 - 4df9f9800836dc1c2b57afd5f8af4d91f55088d5)
 

@@ -185,7 +185,8 @@ Edit the protected YAML copies before provisioning anything:
   For dedicated Codex command execution on nodes whose default syscall policy
   blocks user namespaces, install a reviewed compatibility profile on every
   eligible node and set `runtime.codexSeccompProfile` to its relative kubelet
-  profile path. See the [Kubernetes runtime requirements](../../reference/drivers/kubernetes-compute.md#requirements).
+  profile path. Follow [Codex sandbox setup](codex-sandbox.md) to capture the
+  effective baseline, generate the profile, and verify sandbox enforcement.
   Set `presets.includeDefaults: false` to disable the example's
   [bundled Presets](../../reference/presets.md#installation-defaults).
 - `$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml`: set the bootstrap PVC name,
