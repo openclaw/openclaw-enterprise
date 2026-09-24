@@ -136,6 +136,13 @@ Missing or mismatched images are pulled and checked again before import. Other
 Docker inspection failures stop preparation. Cleanup removes owned import tags
 and preserves the supplied source image.
 
+Imports use k3d's `tools-node` mode with a ten-minute limit per image. This stages
+one platform archive in the cluster's shared image volume, avoiding concurrent
+Docker exec input streams. Preparation verifies the immutable reference through
+containerd and CRI on every schedulable node before publishing it. An import error
+or timeout fails preparation; run the normal lane cleanup to remove the owned
+cluster, including any remaining tools container and image volume.
+
 ### Integration coverage by trigger
 
 The [CI workflow](../../.github/workflows/ci.yml) runs eleven noncredentialed lanes on

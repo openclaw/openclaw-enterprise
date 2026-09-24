@@ -1345,15 +1345,13 @@ async function registerImageInK3d(statePath, state, cluster, image, envName) {
       ]),
     );
     await timedPreparation(state.lane, "image-archive-import", () =>
-      execFile(process.env.OPENCLAW_CI_K3D_BIN ?? "k3d", [
-        "image",
-        "import",
-        "--mode",
-        "direct",
-        archive,
-        "-c",
-        cluster.name,
-      ]),
+      // k3d's direct mode streams into concurrent Docker exec sessions and can
+      // stall or close the stream early. Use its default shared-volume transport.
+      execFile(
+        process.env.OPENCLAW_CI_K3D_BIN ?? "k3d",
+        ["image", "import", "--mode", "tools-node", archive, "-c", cluster.name],
+        { timeoutMs: 600_000 },
+      ),
     );
   } finally {
     await rm(archive, { force: true });
