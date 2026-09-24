@@ -24,7 +24,10 @@ export const observabilitySelection = {
 
 // Own only test resources. API calls, lifecycle, telemetry and policy enforcement
 // all use the installed production implementations, with a credential-free runtime fixture.
-export async function installObservabilityControlPlane(t, { modelTurns = false } = {}) {
+export async function installObservabilityControlPlane(
+  t,
+  { modelTurns = false, demoStack = false } = {},
+) {
   if (modelTurns) {
     for (const name of ["OPENAI_API_KEY", "OCC_TEST_OPENAI_MODEL"]) {
       assert.ok(process.env[name], `${name} is required for explicit model-turn validation`);
@@ -51,9 +54,13 @@ export async function installObservabilityControlPlane(t, { modelTurns = false }
         : [
             ["runtime", "OCC_TEST_KUBERNETES_IMAGE"],
             ["collector", "OCC_TEST_OBSERVABILITY_COLLECTOR_IMAGE"],
-            ["prometheus", "OCC_TEST_OBSERVABILITY_PROMETHEUS_IMAGE"],
-            ["grafana", "OCC_TEST_OBSERVABILITY_GRAFANA_IMAGE"],
-            ["loki", "OCC_TEST_OBSERVABILITY_LOKI_IMAGE"],
+            ...(demoStack
+              ? [
+                  ["prometheus", "OCC_TEST_OBSERVABILITY_PROMETHEUS_IMAGE"],
+                  ["grafana", "OCC_TEST_OBSERVABILITY_GRAFANA_IMAGE"],
+                  ["loki", "OCC_TEST_OBSERVABILITY_LOKI_IMAGE"],
+                ]
+              : []),
           ]),
     ].map(([name, variable]) => {
       assert.match(
@@ -111,7 +118,6 @@ export async function installObservabilityControlPlane(t, { modelTurns = false }
     });
   const get = (kind, name, namespace = system) => kubernetes.resource(kind, name, namespace);
   const record = (message) => t.diagnostic(message);
-  let demoInstalled = false;
   t.after(async () => {
     // Register ownership before creation; cleanup failures must fail acceptance.
     const errors = [];
@@ -562,7 +568,6 @@ export async function installObservabilityControlPlane(t, { modelTurns = false }
       ],
       { timeout: 330_000 },
     );
-    demoInstalled = true;
     const demoSelectors = {
       scraperNamespaceLabels: { "kubernetes.io/metadata.name": monitoring },
       scraperPodLabels: {
@@ -607,29 +612,117 @@ export async function installObservabilityControlPlane(t, { modelTurns = false }
       ).data.result;
     return { query, prometheus, logs, password };
   }
-  async function removeDemo() {
-    // Removing the demo must preserve an explicit metrics opt-out. Re-enabling
-    // listeners here would needlessly roll both OCC Deployments before the read.
-    await upgrade({
-      logging: { collector: { enabled: false } },
-      metrics: { ...values.metrics, ...selectors },
+  async function installLogReceiver() {
+    // Use the already-imported Collector as a real OTLP receiver. Its file
+    // exporter exposes decoded records without installing a storage/query stack.
+    await apply({
+      apiVersion: "v1",
+      kind: "ConfigMap",
+      metadata: metadata("otlp-receiver", monitoring),
+      data: {
+        "receiver.yaml": `receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+exporters:
+  file:
+    path: /records/logs.jsonl
+service:
+  telemetry:
+    logs:
+      level: error
+  pipelines:
+    logs:
+      receivers: [otlp]
+      exporters: [file]
+`,
+      },
     });
-    if (demoInstalled) {
-      await run("helm", [
-        "uninstall",
-        demoRelease,
-        "-n",
-        monitoring,
-        "--kubeconfig",
-        selection.kubeconfigPath,
-        "--kube-context",
-        selection.kubernetesContext,
-        "--wait",
-        "--timeout",
-        "120s",
-      ]);
-      demoInstalled = false;
-    }
+    await apply({
+      apiVersion: "v1",
+      kind: "Pod",
+      metadata: metadata("otlp-receiver", monitoring, { app: "otlp-receiver" }),
+      spec: {
+        automountServiceAccountToken: false,
+        terminationGracePeriodSeconds: 1,
+        securityContext: {
+          runAsNonRoot: true,
+          runAsUser: 1000,
+          runAsGroup: 1000,
+          fsGroup: 1000,
+          seccompProfile: { type: "RuntimeDefault" },
+        },
+        containers: [
+          {
+            name: "reader",
+            image: images.node,
+            securityContext,
+            command: ["node", "-e", "setInterval(()=>{},1000)"],
+            resources: {
+              requests: { cpu: "10m", memory: "32Mi" },
+              limits: { cpu: "500m", memory: "128Mi" },
+            },
+            volumeMounts: [{ name: "records", mountPath: "/records", readOnly: true }],
+          },
+          {
+            name: "receiver",
+            image: images.collector,
+            securityContext,
+            args: ["--config=/config/receiver.yaml"],
+            readinessProbe: { tcpSocket: { port: 4318 }, periodSeconds: 1 },
+            resources: {
+              requests: { cpu: "50m", memory: "64Mi" },
+              limits: { cpu: "500m", memory: "256Mi" },
+            },
+            volumeMounts: [
+              { name: "config", mountPath: "/config", readOnly: true },
+              { name: "records", mountPath: "/records" },
+            ],
+          },
+        ],
+        volumes: [
+          { name: "config", configMap: { name: "otlp-receiver" } },
+          { name: "records", emptyDir: { sizeLimit: "32Mi" } },
+        ],
+      },
+    });
+    await apply({
+      apiVersion: "v1",
+      kind: "Service",
+      metadata: metadata("otlp-receiver", monitoring),
+      spec: { selector: { app: "otlp-receiver" }, ports: [{ port: 4318, targetPort: 4318 }] },
+    });
+    await kubectl(
+      "-n",
+      monitoring,
+      "wait",
+      "--for=condition=Ready",
+      "pod/otlp-receiver",
+      "--timeout=180s",
+    );
+    await configureCollector(
+      {
+        cidr: "",
+        namespaceLabels: { "kubernetes.io/metadata.name": monitoring },
+        podLabels: { app: "otlp-receiver" },
+        port: 4318,
+      },
+      `http://otlp-receiver.${monitoring}.svc:4318/v1/logs`,
+    );
+    return async () =>
+      JSON.parse(
+        await node(
+          "otlp-receiver",
+          monitoring,
+          `
+      import fs from 'node:fs';
+      const text=fs.existsSync('/records/logs.jsonl')?fs.readFileSync('/records/logs.jsonl','utf8'):'';
+      // Only complete lines are records; a concurrent exporter write may be partial.
+      console.log(JSON.stringify(text.split('\\n').slice(0,-1).filter(Boolean).map(JSON.parse)));
+    `,
+        ),
+      );
   }
   return {
     selection,
@@ -663,7 +756,7 @@ export async function installObservabilityControlPlane(t, { modelTurns = false }
     createSecret,
     configureCollector,
     installDemo,
-    removeDemo,
+    installLogReceiver,
     record,
   };
 }

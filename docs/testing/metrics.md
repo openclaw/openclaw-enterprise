@@ -171,15 +171,26 @@ up its recorded resources. It preserves your default kubeconfig and other cluste
 It prints a private results directory containing strict case counts and failures.
 
 The default requires no model credential, removes `OPENAI_API_KEY` from child
-environments, and makes no model calls. It uses the installed Helm API/worker,
-PostgreSQL with migrator/application roles, and a deterministic Kubernetes Compute
-fixture. Source checks exercise private listeners, real allow/deny networking,
-request and lifecycle metric changes, Pod replacement, attributed log receipt,
-filtering, one collection owner, exporter outage/recovery, and explicit opt-out.
-Demo smoke checks query both real data sources through Grafana and execute the
-shared dashboard queries. These checks share the production acceptance case's
-installed OCC, demo stack, and Agent workflow; the lane reports one combined case
-and verifies scoped demo removal at the end. Readiness alone is not acceptance.
+environments, and makes no model calls. It installs the real Helm API/worker and
+PostgreSQL with migrator/application roles on one node. Raw HTTP requests verify
+API/worker metrics, a request counter, default-deny access, and paired scraper
+selectors. The shipped chart Collector exports actual API and worker logs to a
+minimal OTLP receiver; the test reads the decoded records and checks attribution
+and credential exclusion. No Prometheus, Grafana, or Loki is installed.
+
+Run `pnpm test:observability --demo` for the separate demo smoke test. It installs
+the demo chart alongside OCC and queries real OCC metrics and a request-correlated
+log through Grafana's provisioned data sources. It runs in the
+[Observability Demo workflow](../../.github/workflows/observability-demo.yml) for
+relevant chart, logging, metrics, and test-infrastructure changes, on merge groups,
+and on manual dispatch. Readiness alone is not acceptance.
+
+These are installation smoke tests. They do not exercise Agent lifecycle, Pod
+replacement, Collector ownership handoff, metrics opt-out upgrades, or exporter
+outage/retry exhaustion. Metrics semantics and Collector resilience retain their
+focused integration coverage; Helm rendering covers the selector and opt-out
+configuration matrix. Those checks do not establish the omitted live Kubernetes
+upgrade or failure scenarios.
 
 Run `pnpm test:observability:models` separately for the protected `k3d-otel` lane.
 Select `OCC_TEST_OPENAI_MODEL` and a digest-pinned `NODE_BASE_IMAGE`, and provide

@@ -7,11 +7,15 @@ import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const options = process.argv.slice(2);
-if (options.length > 1 || (options.length === 1 && options[0] !== "--model-turns")) {
-  throw new Error("Usage: pnpm test:observability [--model-turns]");
+if (
+  options.length > 1 ||
+  (options.length === 1 && !["--model-turns", "--demo"].includes(options[0]))
+) {
+  throw new Error("Usage: pnpm test:observability [--model-turns | --demo]");
 }
 const modelTurns = options.includes("--model-turns");
-const lane = modelTurns ? "k3d-otel" : "k3d-observability";
+const lanes = { "--model-turns": "k3d-otel", "--demo": "k3d-observability-demo" };
+const lane = lanes[options[0]] ?? "k3d-observability";
 if (modelTurns) {
   for (const name of ["OPENAI_API_KEY", "OCC_TEST_OPENAI_MODEL", "NODE_BASE_IMAGE"]) {
     if (!process.env[name]) {

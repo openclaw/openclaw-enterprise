@@ -378,8 +378,8 @@ fixture readiness is not a substitute for model-backed acceptance.
 
 ## Production observability
 
-Use `pnpm test:observability` for credential-free Helm metrics/log validation and
-Prometheus/Loki/Grafana smoke testing on an owned k3d cluster. It also runs in
-ordinary PR CI. See [acceptance scope and prerequisites](metrics.md#kubernetes-observability-acceptance).
+Use `pnpm test:observability` for credential-free Helm metrics/log smoke testing
+on an owned k3d cluster, as in ordinary PR CI. Run
+`pnpm test:observability --demo` separately for Prometheus/Loki/Grafana. See [acceptance scope and prerequisites](metrics.md#kubernetes-observability-acceptance).
 Real model-turn log validation remains a separate explicit command and protected
 CI lane.

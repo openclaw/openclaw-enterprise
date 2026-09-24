@@ -19,9 +19,11 @@ const runtimeOnlyRoots = [
   "/usr/share/swift",
 ];
 const minimumRuntimeAvailableBytes = 36 * 1024 ** 3;
-const largeImageLane = ["container-runtime-build", "k3d-observability"].includes(
-  process.env.OPENCLAW_CI_HEADROOM_LANE,
-);
+const largeImageLane = [
+  "container-runtime-build",
+  "k3d-observability",
+  "k3d-observability-demo",
+].includes(process.env.OPENCLAW_CI_HEADROOM_LANE);
 const receipt = {
   kind: "repository-platform-capacity",
   lane: process.env.OPENCLAW_CI_HEADROOM_LANE,
@@ -144,7 +146,9 @@ async function main() {
     process.platform === "linux" &&
       process.env.RUNNER_OS === "Linux" &&
       (process.env.ImageOS === "ubuntu24" ||
-        (process.env.OPENCLAW_CI_HEADROOM_LANE === "k3d-observability" &&
+        (["k3d-observability", "k3d-observability-demo"].includes(
+          process.env.OPENCLAW_CI_HEADROOM_LANE,
+        ) &&
           process.env.ImageOS === "ubuntu22")),
   );
   assert(
@@ -153,9 +157,12 @@ async function main() {
       /^\d+$/.test(process.env.GITHUB_RUN_ATTEMPT ?? ""),
   );
   assert(
-    ["repository-credentials-platform", "container-runtime-build", "k3d-observability"].includes(
-      process.env.OPENCLAW_CI_HEADROOM_LANE,
-    ) && process.argv.length === 2,
+    [
+      "repository-credentials-platform",
+      "container-runtime-build",
+      "k3d-observability",
+      "k3d-observability-demo",
+    ].includes(process.env.OPENCLAW_CI_HEADROOM_LANE) && process.argv.length === 2,
   );
   const os = await readFile("/etc/os-release", "utf8");
   const expectedVersion = process.env.ImageOS === "ubuntu22" ? "22.04" : "24.04";
@@ -180,7 +187,7 @@ async function main() {
     }
   }
   receipt.stage = "sdk-removal";
-  const observability = receipt.lane === "k3d-observability";
+  const observability = ["k3d-observability", "k3d-observability-demo"].includes(receipt.lane);
   const groups = observability ? removalRoots.map((root) => [root]) : [removalRoots];
   const timeoutSeconds = observability ? 600 : 240;
   receipt.removals = groups.map((roots) => ({ roots, status: "pending" }));

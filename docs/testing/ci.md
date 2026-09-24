@@ -23,18 +23,11 @@ lane owner:
 node scripts/ci/run-tests.mjs audit
 ```
 
-Both workflows reuse the [run-ci-lane action](../../.github/actions/run-ci-lane/action.yml) for setup, tests and cleanup; each job retains its own environment and credentials.
+CI workflows reuse the [run-ci-lane action](../../.github/actions/run-ci-lane/action.yml) for setup, tests and cleanup; each job retains its own environment and credentials.
 
-The lane result artifact records `wallDurationMs` for each selected test file,
-including file-specific setup and cleanup. Preparation logs emit `[ci-timing]`
-lines with named phases for image-heavy and k3d lanes. Compare those values with
-the Actions step timestamps to separate preparation, tests, and runner overhead.
-The timing fields are diagnostic; lane pass/fail and required-test accounting
-remain authoritative.
-
-Image transport records `image-archive-save` for Docker archive creation and
-`image-archive-import` for loading that archive into k3d. When an enclosing image
-preparation phase is timed, its duration already includes these operations.
+Compare per-file `wallDurationMs`, preparation `[ci-timing]` phases, and Actions
+step timestamps to identify slow setup or tests. Enclosing preparation timings
+include image archive save/import times; do not add them twice.
 
 The `checks-baseline` lane runs `pnpm docs:check`: pages above 1,500 visible words
 are flagged for review and pages above 2,500 fail, except the approved single-page
@@ -44,7 +37,7 @@ and links must pass. Run `pnpm docs:check-length` for the word-count
 check alone.
 
 Suite Audit and the eleven PR lanes start independently on ephemeral runners.
-Kubernetes fixture lanes use `ubuntu-22.04` for bridge netfilter support; other lanes
+Kubernetes fixture and observability lanes use `ubuntu-22.04` for bridge netfilter support; other lanes
 and the audit use `blacksmith-8vcpu-ubuntu-2404`. `CI Required` uses `ubuntu-22.04` and
 still requires both the audit and every lane to pass, including result-artifact
 accounting. This avoids serial runner allocation before the test lanes without
@@ -136,10 +129,12 @@ Missing or mismatched images are pulled and checked again before import. Other
 Docker inspection failures stop preparation. Cleanup removes owned import tags
 and preserves the supplied source image.
 
-On GitHub-hosted runners, `k3d-observability` removes unused SDKs and requires
+On GitHub-hosted runners, both observability lanes remove unused SDKs and require
 36 GiB free before building and importing images. SDK removals run concurrently
 with a ten-minute deadline and per-directory timing receipts. Local runs do not invoke this
-guarded cleanup.
+guarded cleanup. Their single-node clusters prepare controller builds and image
+pulls concurrently, with at most two image imports in flight. State writes remain
+serialized, and all in-flight operations settle before failure cleanup.
 
 Image imports time out after ten minutes. Preparation verifies each immutable
 reference on every schedulable node. Errors or timeouts fail preparation; normal
@@ -255,15 +250,16 @@ suite-map groups and workflow entrypoints.
 
 ## Production observability lane
 
-`k3d-observability` runs in ordinary PR, main, merge-group and manual CI on
-Ubuntu 22.04 with bridge netfilter. It owns the installed-source test and demo
-Grafana smoke test, requires both named cases, and rejects skips or missing
-results. Its local equivalent is `pnpm test:observability`; see
-[proof and prerequisites](metrics.md#kubernetes-observability-acceptance).
-It builds the controller, imports immutable tooling images and uses dedicated
-Helm/PostgreSQL installations without model credentials.
+`k3d-observability` runs in ordinary PR/main CI on Ubuntu 22.04. It checks raw
+metrics and OTLP exports without the demo stack. Run it locally with
+`pnpm test:observability`.
 
-Gateway/Codex log checks remain in `k3d-otel`, selected by
-`pnpm test:observability:models` or the protected `integration-otel` dispatch.
-They exercise Helm-installed OCC with real model turns before/after revision
-cutover. Ordinary CI does not run or establish that credentialed proof.
+The separate [Observability Demo workflow](../../.github/workflows/observability-demo.yml)
+runs `k3d-observability-demo` for relevant changes, merge groups, and manual dispatch.
+Full Integration also includes it when `all` is selected.
+Run `pnpm test:observability --demo` locally. Both lanes retain strict case counts,
+image digests, and cleanup; see [scope and prerequisites](metrics.md#kubernetes-observability-acceptance).
+
+Gateway/Codex model-log proof remains in protected `k3d-otel`, selected by
+`pnpm test:observability:models` or `integration-otel` dispatch. Ordinary CI does
+not establish that credentialed proof.

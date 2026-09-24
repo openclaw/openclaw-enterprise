@@ -234,13 +234,50 @@ async function readState(path) {
   }
 }
 
+const stateWrites = new Map();
+
 async function writeState(path, state) {
+  // Concurrent preparation must never publish an older cleanup inventory after
+  // a newer one. A failed write still lets subsequent cleanup record its state.
+  const pending = (stateWrites.get(path) ?? Promise.resolve())
+    .catch(() => {})
+    .then(() => persistState(path, state));
+  stateWrites.set(path, pending);
+  try {
+    await pending;
+  } finally {
+    if (stateWrites.get(path) === pending) {
+      stateWrites.delete(path);
+    }
+  }
+}
+
+async function persistState(path, state) {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const temp = join(dirname(path), `.${basename(path)}.${process.pid}.${randomSuffix()}.tmp`);
   await writeFile(temp, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
   await chmod(temp, 0o600);
   await rename(temp, path);
   await chmod(path, 0o600);
+}
+
+async function prepareTogether(operations, concurrency = operations.length) {
+  const remaining = operations.entries();
+  const results = [];
+  const workers = await Promise.allSettled(
+    Array.from({ length: Math.min(concurrency, operations.length) }, async () => {
+      for (const [index, operation] of remaining) {
+        results[index] = await operation();
+      }
+    }),
+  );
+  // Wait for every in-flight command before cleanup can remove its resources.
+  for (const worker of workers) {
+    if (worker.status === "rejected") {
+      throw worker.reason;
+    }
+  }
+  return results;
 }
 
 async function appendGithubEnv(path, env) {
@@ -714,7 +751,7 @@ async function ensureK3dCluster(statePath, state) {
   }
   await commandAvailable(process.env.OPENCLAW_CI_K3D_BIN ?? "k3d", ["version"]);
   const openShell = state.lane === "openshell";
-  const crossNodePluginStatus = fixtureLanes.has(state.lane) || state.lane === "k3d-observability";
+  const crossNodePluginStatus = fixtureLanes.has(state.lane);
   if (!openShell) {
     await commandAvailable(process.env.OCC_KUBECTL_BIN ?? "kubectl", ["version", "--client=true"]);
   }
@@ -1656,22 +1693,10 @@ async function prepareLane({ lane, statePath }) {
       env.OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS = cluster.pluginStatusProxyCidrs;
       break;
     }
-    case "k3d-observability": {
+    case "k3d-observability":
+    case "k3d-observability-demo": {
       await commandAvailable(process.env.OCC_HELM_BIN ?? "helm", ["version", "--short"]);
       const inputs = effectiveLaneEnv(name, env);
-      await ensureDockerSourceImage(state, inputs.NODE_BASE_IMAGE, "NODE_BASE_IMAGE");
-      const cluster = await ensureK3dCluster(resolvedStatePath, state);
-      env.OCC_TEST_KUBERNETES_KUBECONFIG = cluster.kubeconfig;
-      env.OCC_TEST_KUBERNETES_CONTEXT = cluster.context;
-      env.OCC_TEST_KUBERNETES_IMAGE = (
-        await prepareFixtureImage(resolvedStatePath, state, cluster)
-      ).image;
-      await pinFixtureImageInK3d(cluster, env.OCC_TEST_KUBERNETES_IMAGE);
-      const built = await buildRuntimeImages(resolvedStatePath, state, {
-        controller: true,
-        nodeBaseImage: inputs.NODE_BASE_IMAGE,
-        localStore: true,
-      });
       const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
       const { loadYaml } = require("@kubernetes/client-node");
       const demo = loadYaml(
@@ -1683,20 +1708,69 @@ async function prepareLane({ lane, statePath }) {
       const production = loadYaml(
         await readFile(join(repositoryRoot, "deploy/helm/openclaw-enterprise/values.yaml"), "utf8"),
       );
-      for (const [variable, image] of Object.entries({
-        OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: built.env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE,
+      const externalImages = {
         OCC_TEST_PRODUCTION_NODE_IMAGE: inputs.NODE_BASE_IMAGE,
         OCC_TEST_PRODUCTION_POSTGRES_IMAGE: inputs.OCC_TEST_PRODUCTION_POSTGRES_IMAGE,
         OCC_TEST_OBSERVABILITY_COLLECTOR_IMAGE: production.logging.collector.image,
-        OCC_TEST_OBSERVABILITY_PROMETHEUS_IMAGE: demo.images.prometheus,
-        OCC_TEST_OBSERVABILITY_GRAFANA_IMAGE: demo.images.grafana,
-        OCC_TEST_OBSERVABILITY_LOKI_IMAGE: demo.images.loki,
-      })) {
-        progress(name, `Importing ${variable}.`);
-        env[variable] = (
-          await registerImageInK3d(resolvedStatePath, state, cluster, image, variable)
-        ).reference;
-      }
+        ...(name === "k3d-observability-demo"
+          ? {
+              OCC_TEST_OBSERVABILITY_PROMETHEUS_IMAGE: demo.images.prometheus,
+              OCC_TEST_OBSERVABILITY_GRAFANA_IMAGE: demo.images.grafana,
+              OCC_TEST_OBSERVABILITY_LOKI_IMAGE: demo.images.loki,
+            }
+          : {}),
+      };
+      const [cluster, built] = await timedPreparation(name, "cluster-build-pull", () =>
+        prepareTogether([
+          () => ensureK3dCluster(resolvedStatePath, state),
+          async () => {
+            await ensureDockerSourceImage(state, inputs.NODE_BASE_IMAGE, "NODE_BASE_IMAGE");
+            return buildRuntimeImages(resolvedStatePath, state, {
+              controller: true,
+              nodeBaseImage: inputs.NODE_BASE_IMAGE,
+              localStore: true,
+            });
+          },
+          () =>
+            prepareTogether(
+              Object.entries(externalImages)
+                .filter(([, image]) => image !== inputs.NODE_BASE_IMAGE)
+                .map(
+                  ([variable, image]) =>
+                    () =>
+                      ensureDockerSourceImage(state, image, variable),
+                ),
+              2,
+            ),
+        ]),
+      );
+      env.OCC_TEST_KUBERNETES_KUBECONFIG = cluster.kubeconfig;
+      env.OCC_TEST_KUBERNETES_CONTEXT = cluster.context;
+      // Bound archive/import concurrency to keep disk and containerd pressure
+      // predictable while overlapping independent transfers. Each import still
+      // verifies the immutable reference through CRI on every node.
+      await timedPreparation(name, "workload-image-imports", () =>
+        prepareTogether(
+          [
+            async () => {
+              env.OCC_TEST_KUBERNETES_IMAGE = (
+                await prepareFixtureImage(resolvedStatePath, state, cluster)
+              ).image;
+              await pinFixtureImageInK3d(cluster, env.OCC_TEST_KUBERNETES_IMAGE);
+            },
+            ...Object.entries({
+              OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: built.env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE,
+              ...externalImages,
+            }).map(([variable, image]) => async () => {
+              progress(name, `Importing ${variable}.`);
+              env[variable] = (
+                await registerImageInK3d(resolvedStatePath, state, cluster, image, variable)
+              ).reference;
+            }),
+          ],
+          2,
+        ),
+      );
       break;
     }
     case "repository-credentials-platform": {
