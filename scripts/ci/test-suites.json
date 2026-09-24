@@ -330,6 +330,12 @@
         },
         {
           "path": "tests/integration/repository-runtime-materialization.test.mjs"
+        },
+        {
+          "path": "tests/integration/kubernetes-peer-status.test.mjs",
+          "expectedTests": [
+            "real peer-status HTTPS transport authenticates its revision and verifies server trust"
+          ]
         }
       ]
     },
@@ -621,6 +627,7 @@
         {
           "path": "tests/integration/production-kubernetes-packaging.test.mjs",
           "expectedTests": [
+            "two-cluster packaging separates remote API identities without optional services",
             "production native examples satisfy the current Helm, Installation, and PVC schemas",
             "production Helm values example renders the providerless default chart",
             "the production Helm chart renders private least-privilege runtime and ordered bootstrap",
@@ -1294,6 +1301,17 @@
           "path": "tests/integration/repository-credentials-k3d-real.test.mjs",
           "expectedTests": [
             "installed embedded Agent clones, edits, commits, pushes and creates a native repository PR"
+          ]
+        }
+      ]
+    },
+    "k3d-two-cluster": {
+      "requiredEnv": ["OCC_TEST_TWO_CLUSTER_CONFIG", "OPENAI_API_KEY"],
+      "files": [
+        {
+          "path": "tests/integration/kubernetes-two-cluster-real.test.mjs",
+          "expectedTests": [
+            "installed OCE owns Gateway and Harness lifecycles across two real clusters"
           ]
         }
       ]

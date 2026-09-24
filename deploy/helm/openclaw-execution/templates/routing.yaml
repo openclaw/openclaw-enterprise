@@ -1,0 +1,103 @@
+{{- $r := .Values.routing }}
+{{- if or (not $r.hostname) (not $r.gatewayClassName) (not $r.tlsSecretName) (not $r.controlPlaneCidrs) }}
+{{- fail "routing requires hostname, GatewayClass, TLS Secret, and observed control-plane source CIDRs" }}
+{{- end }}
+{{- if not (has $r.serviceType (list "ClusterIP" "LoadBalancer")) }}
+{{- fail "routing.serviceType must be ClusterIP or LoadBalancer" }}
+{{- end }}
+{{- $membership := printf "%s/%s" .Release.Namespace $r.gatewayName | sha256sum | trunc 12 }}
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: {{ $r.gatewayName }}
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyService:
+        name: {{ $r.gatewayName }}
+        type: {{ $r.serviceType }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ $r.gatewayName }}
+spec:
+  gatewayClassName: {{ $r.gatewayClassName | quote }}
+  infrastructure:
+    parametersRef:
+      group: gateway.envoyproxy.io
+      kind: EnvoyProxy
+      name: {{ $r.gatewayName }}
+  listeners:
+    - name: https
+      hostname: {{ $r.hostname | quote }}
+      port: 443
+      protocol: HTTPS
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: {{ $r.tlsSecretName | quote }}
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              openclaw-enterprise.io/gateway: {{ $membership | quote }}
+        kinds:
+          - group: gateway.networking.k8s.io
+            kind: HTTPRoute
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-harness-proxy
+  namespace: {{ $r.envoyNamespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: proxy
+      app.kubernetes.io/managed-by: envoy-gateway
+      app.kubernetes.io/name: envoy
+      gateway.envoyproxy.io/owning-gateway-namespace: {{ .Release.Namespace }}
+      gateway.envoyproxy.io/owning-gateway-name: {{ $r.gatewayName }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        {{- range $r.controlPlaneCidrs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - { protocol: TCP, port: {{ $r.envoyHttpsTargetPort }} }
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.dns.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.dns.podLabels | nindent 14 }}
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              openclaw-enterprise.io/gateway: {{ $membership | quote }}
+          podSelector:
+            matchLabels:
+              openclaw.dev/workload-role: agent
+      ports:
+        - { protocol: TCP, port: 18790 }
+        - { protocol: TCP, port: 18791 }
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $r.envoyNamespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml $r.envoyGatewayPodLabels | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 18000 }

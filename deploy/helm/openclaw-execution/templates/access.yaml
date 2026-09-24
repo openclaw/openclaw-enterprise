@@ -1,0 +1,74 @@
+{{- range $component := list "api" "worker" }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openclaw-enterprise-{{ $component }}
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $.Release.Name }}-execution-namespace-{{ $component }}
+rules:
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: {{ ternary "[get, list]" "[get, list, create, patch, delete]" (eq $component "api") }}
+  - nonResourceURLs: [/version]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $.Release.Name }}-execution-namespace-{{ $component }}
+subjects:
+  - kind: ServiceAccount
+    name: openclaw-enterprise-{{ $component }}
+    namespace: {{ $.Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $.Release.Name }}-execution-namespace-{{ $component }}
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Name }}-execution-tenant-api
+rules:
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Name }}-execution-tenant-worker
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, create, update, delete]
+  - apiGroups: [""]
+    resources: [configmaps, serviceaccounts, services, resourcequotas, limitranges]
+    verbs: [get, list, create, patch, delete]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [pods/proxy]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [get, create, patch, delete]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list, create, patch, delete]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [get, list, create, patch, delete]
+  - apiGroups: [gateway.networking.k8s.io]
+    resources: [httproutes]
+    verbs: [get, create, patch, delete]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [get, list]

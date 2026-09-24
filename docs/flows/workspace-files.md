@@ -21,6 +21,11 @@ Dedicated execution uses Kubernetes Codex; see
 [workspace and launcher boundaries](../reference/drivers/kubernetes-compute/storage-and-credentials.md#shared-contracts-and-the-codex-implementation).
 Dedicated OpenClaw worker execution remains pending.
 
+`KubernetesComputeDriver.clients` uses `executionCluster` to select the plane.
+`prepareWorkspaceNode` enrolls the DP node with the CP Gateway;
+`reconcileHarnessRoute` supplies reverse TLS transport. Workspace RPC delegates
+from Gateway to node. See [two-cluster validation](../testing/two-cluster-local.md).
+
 ## Entry Points
 
 - `apps/controller/src/index.ts:createFastifyApp` accepts initial contents through

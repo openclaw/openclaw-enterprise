@@ -67,7 +67,7 @@ spec:
     kubernetes:
       envoyService:
         name: {{ $serviceName }}
-        type: ClusterIP
+        type: {{ $routing.serviceType }}
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
@@ -214,6 +214,10 @@ spec:
           podSelector:
             matchLabels:
               openclaw.dev/workload-role: agent
+        {{- range $routing.remoteNodeCidrs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
       ports:
         - protocol: TCP
           port: {{ $routing.envoyHttpsTargetPort }}
