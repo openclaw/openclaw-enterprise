@@ -2,16 +2,19 @@
 
 ## Current preset flow
 
-Captured on September 24, 2026 from source commit `2ad4637482198bc41b17e7834722115c7d2de3ac`.
+Captured on September 24, 2026 from source commit `706e1df35137dafbfd2083048916a3bfe2da7ea4`.
 The Console uses the shipped `devday` JSON preset, prefilled Slack channel
 `C0C43A2QA11`, and workspace-file overrides. The raw Secret bindings JSON editor
-has been removed. DevDay's custom `AGENTS.md` is pending user-supplied content.
+has been removed. DevDay includes the supplied Ocalot `AGENTS.md` verbatim,
+including its draft-decision section. The walkthrough checks exact content in
+the workspace editor before creation.
 
 Environment: macOS, Node.js 24.15.0, pnpm 11.15.1, Storybook 10.6.0,
 Playwright 1.63.0 with headed Chromium, 1440 × 1000 viewport. The static
 Storybook was rebuilt from this source and served only on loopback.
 
 - [DevDay preset and masked variables](presets/01-devday-preset.png)
+- [Supplied Ocalot instructions](presets/07-ocalot-instructions.png)
 - [Model and repository controls](presets/02-create.png)
 - [Prefilled Slack channel and Secret selection](presets/03-prefilled-slack.png)
 - [Simulated deployment success](presets/04-deployed.png)
