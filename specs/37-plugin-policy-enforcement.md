@@ -1,6 +1,6 @@
 # Plugin policy enforcement
 
-Status: **Proposed for alignment**, 2026-09-24. Policy implementation is paused.
+Status: **Proposed for alignment**, 2026-09-24. Draft implementation: [#362](https://github.com/openclaw/openclaw-enterprise/pull/362).
 The common policy model below records the agreed direction. Recommendations
 explicitly marked for alignment are not settled product decisions. This proposal
 does not establish implemented or deployed support.
@@ -34,7 +34,8 @@ account-wide uninstallation or credential-revocation promise.
 
 ```ts
 type Approval = "native" | "prompt" | "approve";
-type ToolPolicy = { enabled?: boolean; approval?: Approval };
+type Reviewer = "human" | "auto";
+type ToolPolicy = { enabled?: boolean; approval?: Approval; reviewer?: Reviewer };
 type PluginPolicy = {
   enabled: boolean;
   toolDefaults?: ToolPolicy;
@@ -48,8 +49,10 @@ type PluginPolicy = {
 | `enabled`               | Required plugin master switch. `false` defeats its tool overrides.                                         |
 | `toolDefaults.enabled`  | Optional default for tools without an explicit enablement override. Omission delegates to native defaults. |
 | `toolDefaults.approval` | Optional default review behavior. Omission means `native`.                                                 |
+| `toolDefaults.reviewer` | Optional reviewer default: `human` or `auto`; omission inherits the effective Harness reviewer.            |
 | `tools[id].enabled`     | Optional override of tool enablement, independent of approval.                                             |
 | `tools[id].approval`    | Optional override of review behavior, independent of enablement.                                           |
+| `tools[id].reviewer`    | Optional reviewer override, only when the Driver supports per-tool selection.                              |
 | `driverPolicy`          | Flat, typed fields owned by the selected Driver; unknown fields are rejected.                              |
 
 `native` delegates the review trigger to the runtime. `prompt` requires review
@@ -60,18 +63,26 @@ mandatory review. `native` does not imply an AI reviewer.
 Omit a field to inherit. Explicit `approval: "native"` overrides an inherited
 `prompt` or `approve` with native review behavior. `null` is invalid. An explicit
 tool/default object must contain at least one policy field. The common contract
-has no `never`, category approval rules, common reviewer, or `override_policy`.
+has no `never`, category approval rules, or `override_policy`.
+
+Approval controls **when** review is required; reviewer controls **who** reviews.
+Automatic review can deny. Reviewer omission inherits; OCE supplies no universal
+`human` or `auto` default. An explicit reviewer does not force review when the
+approval mode would skip it, and cannot weaken mandatory native review.
 
 ## Resolution rules
 
-Resolve enablement and approval separately, before translating to native rules:
+Resolve enablement, approval, and reviewer independently before translation:
 
 1. If the plugin is disabled, its tools cannot execute.
 2. Otherwise, tool enablement wins over `toolDefaults.enabled`; if both are
    omitted, the Driver uses native enablement, including supported Driver defaults.
 3. Tool approval wins over `toolDefaults.approval`; if both are omitted, use
    `native`.
-4. Existing independently enforced denies and mandatory review still apply.
+4. A supported tool reviewer overrides `toolDefaults.reviewer`; omission at both
+   levels inherits the effective Harness reviewer. Unsupported explicit choices
+   fail, even if they equal the default or the tool is disabled.
+5. Existing independently enforced denies and mandatory review still apply.
    Approval is evaluated only for enabled calls.
 
 The Driver implements these rules; OCC must not contain Codex/Claude branches.
@@ -114,19 +125,25 @@ IDs must come from discovery; these examples are not deployable catalog entries.
 OCE writes app defaults and explicit tool overrides directly. It does not expand
 category policies or copy app defaults onto every discovered tool.
 
-| OCE setting                       | Native Codex setting                                         |
-| --------------------------------- | ------------------------------------------------------------ |
-| Plugin enabled                    | Plugin/bridge selection and mapped app enablement            |
-| Tool enablement default           | `apps.<appId>.default_tools_enabled` when supplied           |
-| Approval default                  | `apps.<appId>.default_tools_approval_mode`                   |
-| Tool override                     | `apps.<appId>.tools.<rawToolName>.enabled` / `approval_mode` |
-| `native`, `prompt`, `approve`     | `auto`, `prompt`, `approve`                                  |
-| `driverPolicy.destructiveEnabled` | `apps.<appId>.destructive_enabled`                           |
-| `driverPolicy.approvalsReviewer`  | `apps.<appId>.approvals_reviewer`: `user` or `auto_review`   |
+| OCE setting                       | Native Codex setting                                                        |
+| --------------------------------- | --------------------------------------------------------------------------- |
+| Plugin enabled                    | Plugin/bridge selection and mapped app enablement                           |
+| Tool enablement default           | `apps.<appId>.default_tools_enabled` when supplied                          |
+| Approval default                  | `apps.<appId>.default_tools_approval_mode`                                  |
+| Tool override                     | `apps.<appId>.tools.<rawToolName>.enabled` / `approval_mode`                |
+| `native`, `prompt`, `approve`     | `auto`, `prompt`, `approve`                                                 |
+| `driverPolicy.destructiveEnabled` | `apps.<appId>.destructive_enabled`                                          |
+| `toolDefaults.reviewer`           | `apps.<appId>.approvals_reviewer`: `human` → `user`, `auto` → `auto_review` |
 
 Reviewer selects who reviews a call; approval selects when review occurs.
-`prompt` with `auto_review` requests automatic review on every call, not a human
-dialog on every call. Reviewer omission retains native reviewer selection.
+`prompt` with reviewer `auto` requires automatic review, which may deny the call.
+Omission retains native reviewer selection. Codex supports reviewer selection
+for the app as a whole; its per-tool policy has no reviewer field. Advertise
+`toolDefaults.reviewer:["human","auto"]` and `tools.reviewer:[]`; reject explicit
+per-tool reviewers without broadening them to the whole app.
+Codex routes ordinary automatic review only with session approval `on-request`
+or `granular`; startup must verify this requirement. Whether OCE establishes
+session constraints remains open; it must not silently substitute human review.
 
 **Enforcement prerequisite:** an app-level `prompt` setting alone is insufficient.
 Codex can bypass MCP review when session approval is `never` and the permission
@@ -164,7 +181,8 @@ producing tool allow/deny entries, because a native deny is terminal.
 
 Current Diffs support can implement tool enablement and `native`/`approve`.
 Advertise `prompt` only after a trusted runtime review gate exists and is tested.
-There is no generic native reviewer extension in this slice.
+Diffs has no supported explicit reviewer selection in this slice; advertise
+empty reviewer capabilities at both levels and reject explicit choices.
 
 Preserve operator restrictions during installation and configuration composition.
 Extend an existing `tools.allow`; otherwise use `tools.alsoAllow`. Never emit
@@ -210,7 +228,11 @@ credential can invoke a tool. Exact HTTP routes are a separate design handoff;
 this spec does not declare an existing endpoint.
 
 The proposed `/installation` capability view identifies the selected Driver and
-supported default/tool enablement and approval modes, plus `driverPolicySchema`.
+supported default/tool enablement, approval modes, and reviewer values, plus
+`driverPolicySchema`. Each scope has its own `reviewer` array; `[]` means no
+explicit reviewer selection. Reviewer availability means that reviewer handles
+the selected plugin calls at the advertised scope, not merely that the Harness
+has an automatic-review facility.
 Schema properties include titles, descriptions, enums, and constraints. The UI
 renders supported controls; the server independently validates every request.
 Capabilities describe a supported integration/runtime combination, not everything
@@ -238,7 +260,9 @@ flowchart TB
 
 1. **Save:** common schema validates shape; selected PluginDriver validates
    supported fields and combinations before create/update/provisioning writes.
-   This static check does not install or authenticate. Discovery can improve
+   Reject unsupported reviewer values/scopes here when knowable, with a safe error
+   identifying the unsupported setting and supported alternatives. This static
+   check does not install or authenticate. Discovery can improve
    feedback but cannot guarantee later availability.
 2. **Snapshot:** deployment revalidates and freezes the exact desired policy and
    Driver identity in an immutable AgentRevision. Editing the Agent does not
@@ -249,7 +273,9 @@ flowchart TB
    OCE owns its managed fields; unrelated operator restrictions remain effective.
 4. **Verify:** read back effective configuration before exposing tools. Reject
    unowned/unknown explicit tools, conflicting mappings, unsupported runtime
-   versions, and unenforceable policies. An isolated install/auth failure can leave
+   versions, and unenforceable policies. Revalidate actual plugin/Harness reviewer
+   availability and managed requirements; conflicting or unavailable reviewers
+   prevent readiness with a useful error, never silent substitution. An isolated install/auth failure can leave
    the selection disabled with a deployment warning while the Agent deploys; a
    policy/configuration failure must not leave that plugin executing with weaker
    settings.
@@ -279,7 +305,8 @@ provider differences:
   Independently managed organizational restrictions remain authoritative.
 
 Together with the destructive-default restriction and session approval settings
-above, these need alignment before policy implementation resumes. No generic
+above, these need alignment before the draft implementation becomes ready.
+The common reviewer model does not resolve the session-constraint decision. No generic
 category compiler, permission-order switch, database migration, or legacy policy
 shim is proposed.
 
@@ -289,7 +316,7 @@ After alignment, implement contracts/capability validation, then translators and
 runtime startup, then policy UI integration. Backend policy and Driver translation
 belong to the policy workstream. The separate Create Agent workstream owns hosted
 catalog discovery, its credential-scoped read routes, and the UI. Discovery may
-proceed independently while enforcement remains paused; it must not depend on
+proceed independently while enforcement remains in draft; it must not depend on
 unaccepted policy schemas. The workstreams coordinate shared Driver read contracts.
 
 Primary touchpoints: [contracts](../packages/contracts/src/index.ts),
