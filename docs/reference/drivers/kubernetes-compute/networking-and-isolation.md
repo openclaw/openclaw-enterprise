@@ -166,6 +166,14 @@ Services and HTTPRoutes live only in the Gateway target; Harness resources and
 model credentials remain in the data target. Explicit namespace **and** Pod
 selectors allow only the same Agent's selected Harness revision on app-server
 and private plugin-status ports. DNS uses `agent-<hash>.<harness-namespace>.svc`.
+The stable dedicated Harness Service keeps the same Namespace, Agent, revision,
+and workload-role labels as the gateway egress and Harness ingress policies
+while a revision is active. A prepared successor does not change that Service
+selector until activation; deactivation moves the Service back to an inactive
+selector. Active Gateway Services include Namespace, Agent, and gateway-role
+labels, satisfying gateway policy selectors without tying the stable route to a
+revision. These Service selectors support the
+[AWS VPC CNI pre-DNAT policy resolution requirement](https://github.com/aws/amazon-network-policy-controller-k8s#networkpolicy-podselector-must-match-the-target-services-selector).
 Current app-server transport is capability-token `ws://`, not mTLS; this change
 does not implement cross-cluster transport or runtime attestation.
 

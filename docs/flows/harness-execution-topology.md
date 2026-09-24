@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-09-23
-last_updated_session: 01a0cf72-6985-7712-ba92-d8cc32470f24
+updated: 2026-09-24
+last_updated_session: 01a0d504-19bd-7833-9ef5-237750f5831a
 ---
 
 # Harness Execution Topology Flow
@@ -108,8 +108,14 @@ Harness resources stay in the data-plane namespace. `deliverGatewaySecrets`
 validates direct references to canonical CP sources for dedicated Gateways;
 `deliverHarnessAuth` creates the selected DP runtime projection. Dedicated app-server
 DNS includes the Harness namespace, and NetworkPolicy peers combine namespace
-and exact Agent/revision selectors. `runtime.gatewayNodeSelector` independently
-places the Gateway Pod and private-state initializer on trusted nodes.
+and exact Agent/revision selectors. The active dedicated Harness Service selector
+carries the same Namespace, Agent, revision, and workload-role labels before
+adding a Compute-owned workload-name selector, so Service-IP traffic remains
+compatible with NetworkPolicy implementations that check Service selectors before
+destination translation. Active Gateway Services carry the Namespace, Agent, and
+gateway workload-role labels, satisfying gateway policy selectors without tying
+the stable Gateway route to a revision. `runtime.gatewayNodeSelector`
+independently places the Gateway Pod and private-state initializer on trusted nodes.
 
 Production dedicated workloads keep separate Agent-owned gateway/Codex
 ServiceAccounts, authenticated same-Agent transport, and default-deny network
@@ -227,6 +233,8 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-24 13:08: Align the dedicated Harness Service selector trace with gateway-to-Harness NetworkPolicy matching. (01a0d504-19bd-7833-9ef5-237750f5831a - b4b6a0e0d8700930f21d58b3724c055f8249c486)
 
 - 2026-09-23 13:13: Keep fixture credential delivery namespace-local, matching native runtime placement. (codex/01a0cf72-6985-7712-ba92-d8cc32470f24 - df4ca4474d90de2d4ab0dd6f6d03a64ebb92526a)
 

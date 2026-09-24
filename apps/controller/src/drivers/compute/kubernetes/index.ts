@@ -2394,11 +2394,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
           asRecord(existingGatewayService.spec?.selector)?.["app.kubernetes.io/name"] ===
             `${gatewayName}-inactive`);
       await this.reconcile(
-        this.service(gatewayName, gatewayOwnership, gatewayNamespace, {
-          "app.kubernetes.io/name": inactiveEmbeddedGateway
-            ? `${gatewayName}-inactive`
-            : gatewayName,
-        }),
+        this.service(
+          gatewayName,
+          gatewayOwnership,
+          gatewayNamespace,
+          inactiveEmbeddedGateway
+            ? { "app.kubernetes.io/name": `${gatewayName}-inactive` }
+            : this.gatewayServiceSelector(revision, gatewayName),
+        ),
         gatewayOwnership,
         gatewayNamespace,
       );
@@ -2541,12 +2544,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
       }
       const pluginWarnings = agentReadiness.warnings ?? [];
       await this.reconcile(
-        this.service(agentName, agentOwnership, namespace, {
-          "openclaw.dev/agent": revision.agentId,
-          "openclaw.dev/revision": revision.id,
-          "openclaw.dev/workload-role": "agent",
-          "app.kubernetes.io/name": revisionName,
-        }),
+        this.service(
+          agentName,
+          agentOwnership,
+          namespace,
+          this.agentServiceSelector(
+            revision,
+            sandboxDriver?.provisionHarness === undefined ? revisionName : undefined,
+          ),
+        ),
         agentOwnership,
         namespace,
       );
@@ -2875,22 +2881,26 @@ export class KubernetesComputeDriver implements ComputeDriver {
       gatewayNamespace,
     );
     await this.reconcile(
-      this.service(gatewayName, gatewayOwnership, gatewayNamespace, {
-        "app.kubernetes.io/name": gatewayName,
-      }),
+      this.service(
+        gatewayName,
+        gatewayOwnership,
+        gatewayNamespace,
+        this.gatewayServiceSelector(revision, gatewayName),
+      ),
       gatewayOwnership,
       gatewayNamespace,
     );
     await this.reconcileGatewayRoute(revision, gatewayOwnership, gatewayNamespace);
     await this.reconcile(
-      this.service(agentName, ownership, namespace, {
-        "openclaw.dev/agent": revision.agentId,
-        "openclaw.dev/revision": revision.id,
-        "openclaw.dev/workload-role": "agent",
-        ...(sandboxDriver?.provisionHarness === undefined
-          ? { "app.kubernetes.io/name": revisionName }
-          : {}),
-      }),
+      this.service(
+        agentName,
+        ownership,
+        namespace,
+        this.agentServiceSelector(
+          revision,
+          sandboxDriver?.provisionHarness === undefined ? revisionName : undefined,
+        ),
+      ),
       ownership,
       namespace,
     );
@@ -2948,7 +2958,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
       }),
       ownership,
       namespace,
-      { serviceSelector: { "openclaw.dev/revision": revision.id } },
+      {
+        serviceSelector: {
+          "openclaw.dev/agent": revision.agentId,
+          "openclaw.dev/revision": revision.id,
+          "openclaw.dev/workload-role": "agent",
+        },
+      },
     );
   }
 
@@ -6446,6 +6462,31 @@ export class KubernetesComputeDriver implements ComputeDriver {
         policyTypes: ["Egress"],
         egress,
       },
+    };
+  }
+
+  private agentServiceSelector(
+    revision: AgentRevision,
+    workloadName?: string,
+  ): Record<string, string> {
+    return {
+      "openclaw.dev/namespace": revision.namespaceId,
+      "openclaw.dev/agent": revision.agentId,
+      "openclaw.dev/revision": revision.id,
+      "openclaw.dev/workload-role": "agent",
+      ...(workloadName === undefined ? {} : { "app.kubernetes.io/name": workloadName }),
+    };
+  }
+
+  private gatewayServiceSelector(
+    revision: AgentRevision,
+    workloadName: string,
+  ): Record<string, string> {
+    return {
+      "openclaw.dev/namespace": revision.namespaceId,
+      "openclaw.dev/agent": revision.agentId,
+      "openclaw.dev/workload-role": "gateway",
+      "app.kubernetes.io/name": workloadName,
     };
   }
 

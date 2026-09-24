@@ -4424,6 +4424,7 @@ test("provider Harness preparation preserves readiness and cleanup contracts", a
   fixture.setObservation({ items: [fixture.pod("ready")] });
   await driver.activateRevision(revision, authContext(revision));
   assert.deepEqual(objects.get(key("Service", agentServiceName)).spec.selector, {
+    "openclaw.dev/namespace": revision.namespaceId,
     "openclaw.dev/agent": revision.agentId,
     "openclaw.dev/revision": revision.id,
     "openclaw.dev/workload-role": "agent",
@@ -6834,6 +6835,143 @@ for (const method of ["api_key", "codex_pat"]) {
     );
   });
 }
+
+test("dedicated Harness Service selector satisfies the gateway policy during cutover", async () => {
+  const fixture = workspaceSetupFixture(false);
+  const { driver, revision, namespace, objects, state } = fixture;
+  const gatewayNamespace = kubernetesGatewayNamespaceName(tenant.id);
+  const serviceName = `agent-${digest(revision.agentId)}`;
+  const serviceKey = `Service:${namespace}:${serviceName}`;
+  const gatewayName = `gateway-${digest(revision.agentId)}`;
+  const gatewayServiceKey = `Service:${gatewayNamespace}:${gatewayName}`;
+  const policyKey = (selectedRevision) =>
+    `NetworkPolicy:${gatewayNamespace}:allow-gateway-agent-${digest(selectedRevision.agentId)}`;
+  const serviceSelector = () => objects.get(serviceKey).spec.selector;
+  const gatewayServiceSelector = () => objects.get(gatewayServiceKey).spec.selector;
+  const gatewayTargetSelector = (selectedRevision) =>
+    objects.get(policyKey(selectedRevision)).spec.egress[0].to[0].podSelector.matchLabels;
+  const gatewayTargetNamespace = (selectedRevision) =>
+    objects.get(policyKey(selectedRevision)).spec.egress[0].to[0].namespaceSelector.matchLabels;
+  const storeTransportSecret = (selectedRevision) => {
+    const name = `transport-${digest(selectedRevision.agentId)}`;
+    objects.set(`Secret:${gatewayNamespace}:${name}`, {
+      ...driver.manifest(
+        "v1",
+        "Secret",
+        name,
+        { namespaceId: selectedRevision.namespaceId, agentId: selectedRevision.agentId },
+        gatewayNamespace,
+      ),
+      type: "Opaque",
+      metadata: {
+        ...driver.manifest(
+          "v1",
+          "Secret",
+          name,
+          { namespaceId: selectedRevision.namespaceId, agentId: selectedRevision.agentId },
+          gatewayNamespace,
+        ).metadata,
+        uid: `${name}-uid`,
+        resourceVersion: "1",
+      },
+      data: { "app-server-token": Buffer.from("test-transport").toString("base64") },
+    });
+  };
+  const assertServiceSatisfiesGatewayPolicy = (selectedRevision) => {
+    const selector = serviceSelector();
+    const target = gatewayTargetSelector(selectedRevision);
+    assert.deepEqual(gatewayTargetNamespace(selectedRevision), {
+      "kubernetes.io/metadata.name": namespace,
+    });
+    for (const [name, value] of Object.entries(target)) {
+      assert.equal(selector[name], value, `${name} must match the gateway egress selector`);
+    }
+    assert.equal(
+      selector["app.kubernetes.io/name"],
+      `${serviceName}-rev-${digest(selectedRevision.id)}`,
+    );
+    assert.equal(selector["openclaw.dev/namespace"], selectedRevision.namespaceId);
+    assert.equal(selector["openclaw.dev/agent"], selectedRevision.agentId);
+    assert.equal(selector["openclaw.dev/revision"], selectedRevision.id);
+    assert.equal(selector["openclaw.dev/workload-role"], "agent");
+  };
+  const assertGatewayServiceSatisfiesIngressPolicy = (selectedRevision) => {
+    const selector = gatewayServiceSelector();
+    const ingressPolicy = driver
+      .networkPolicies({ namespaceId: selectedRevision.namespaceId }, gatewayNamespace)
+      .find(({ metadata }) => metadata.name === "allow-gateway-ingress");
+    const target = ingressPolicy.spec.podSelector.matchLabels;
+    for (const [name, value] of Object.entries(target)) {
+      assert.equal(selector[name], value, `${name} must match the gateway ingress selector`);
+    }
+    assert.equal(selector["app.kubernetes.io/name"], gatewayName);
+    assert.equal(selector["openclaw.dev/namespace"], selectedRevision.namespaceId);
+    assert.equal(selector["openclaw.dev/agent"], selectedRevision.agentId);
+    assert.equal(selector["openclaw.dev/workload-role"], "gateway");
+    assert.equal(selector["openclaw.dev/revision"], undefined);
+  };
+
+  state.ready = true;
+  assert.equal((await driver.prepareRevision(revision, authContext(revision))).ready, true);
+  await driver.activateRevision(revision, authContext(revision));
+  assertServiceSatisfiesGatewayPolicy(revision);
+  assertGatewayServiceSatisfiesIngressPolicy(revision);
+
+  const successor = {
+    ...revision,
+    id: "revision-selector-successor",
+    revision: revision.revision + 1,
+  };
+  assert.equal((await driver.prepareRevision(successor, authContext(successor))).ready, true);
+  assert.equal(serviceSelector()["openclaw.dev/revision"], revision.id);
+
+  await driver.activateRevision(successor, authContext(successor));
+  assertServiceSatisfiesGatewayPolicy(successor);
+  assertGatewayServiceSatisfiesIngressPolicy(successor);
+
+  const sibling = {
+    ...revision,
+    agentId: "agent-selector-sibling",
+    id: "revision-selector-sibling",
+    servicePrincipalId: "service-principal-selector-sibling",
+  };
+  storeTransportSecret(sibling);
+  assert.equal((await driver.prepareRevision(sibling, authContext(sibling))).ready, true);
+  await driver.activateRevision(sibling, authContext(sibling));
+  const siblingSelector = objects.get(`Service:${namespace}:agent-${digest(sibling.agentId)}`).spec
+    .selector;
+  assert.equal(siblingSelector["openclaw.dev/namespace"], sibling.namespaceId);
+  assert.equal(siblingSelector["openclaw.dev/agent"], sibling.agentId);
+  assert.equal(siblingSelector["openclaw.dev/revision"], sibling.id);
+  assert.notEqual(
+    siblingSelector["openclaw.dev/agent"],
+    gatewayTargetSelector(successor)["openclaw.dev/agent"],
+  );
+  assert.notEqual(
+    siblingSelector["openclaw.dev/revision"],
+    gatewayTargetSelector(successor)["openclaw.dev/revision"],
+  );
+
+  await driver.deactivateRevision(successor);
+  assert.deepEqual(serviceSelector(), { "app.kubernetes.io/name": `${serviceName}-inactive` });
+});
+
+test("dedicated Harness deactivation still closes pre-upgrade Service selectors", async () => {
+  const fixture = workspaceSetupFixture(false);
+  const { driver, revision, namespace, objects, state } = fixture;
+  const serviceName = `agent-${digest(revision.agentId)}`;
+  const serviceKey = `Service:${namespace}:${serviceName}`;
+
+  state.ready = true;
+  assert.equal((await driver.prepareRevision(revision, authContext(revision))).ready, true);
+  await driver.activateRevision(revision, authContext(revision));
+
+  delete objects.get(serviceKey).spec.selector["openclaw.dev/namespace"];
+  await driver.deactivateRevision(revision);
+  assert.deepEqual(objects.get(serviceKey).spec.selector, {
+    "app.kubernetes.io/name": `${serviceName}-inactive`,
+  });
+});
 
 test("dedicated Gateway references canonical CP channel Secrets and rejects a replaced source", async () => {
   const { driver, revision, namespace, objects, records } = workspaceSetupFixture(false);
