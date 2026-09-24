@@ -84,6 +84,9 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if err := yaml.Unmarshal(config, &rendered); err != nil {
 		return fmt.Errorf("invalid rendered Compose configuration: %w", err)
 	}
+	if err := setKubernetesBridgeGateway(rendered); err != nil {
+		return err
+	}
 	if err := r.validateResourceOwnership(ctx, rendered, state); err != nil {
 		return err
 	}

@@ -91,6 +91,7 @@ import {
   AGENT_WITH_NODE_ENTRYPOINT,
   GATEWAY_RUNTIME_ENTRYPOINT,
   GATEWAY_READINESS_ENTRYPOINT,
+  GATEWAY_STOP_TIMEOUT_MS,
 } from "./runtime-entrypoints.ts";
 
 import {
@@ -3143,7 +3144,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
       "openclaw.dev/revision": revision.id,
       "openclaw.dev/workload-role": role,
     };
-    const deadline = Date.now() + WORKLOAD_TERMINATION_TIMEOUT_MS;
+    const timeoutMs =
+      role === "gateway"
+        ? GATEWAY_STOP_TIMEOUT_MS + REQUEST_TIMEOUT_MS
+        : WORKLOAD_TERMINATION_TIMEOUT_MS;
+    const deadline = Date.now() + timeoutMs;
     for (;;) {
       signal.throwIfAborted();
       const observed = asRecord(
@@ -6332,7 +6337,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
     writableConfiguration = false,
   ): KubernetesRecord {
     const directories = this.privateStateDirectories(role);
-    const volumeMounts: V1VolumeMount[] = [{ name: "runtime-state", mountPath: "/home/node" }];
+    const volumeMounts: V1VolumeMount[] = [
+      { name: "runtime-state", mountPath: "/home/node" },
+      { name: "runtime-temporary", mountPath: "/runtime-temporary" },
+    ];
     if (writableConfiguration) {
       volumeMounts.push({
         name: CONFIGURATION_VOLUME,
@@ -6356,6 +6364,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
       `for (const path of ${JSON.stringify(directories)}) {`,
       "  mkdirSync(path, { recursive: true });",
       "}",
+      // The emptyDir root is group-writable under fsGroup, without /tmp's sticky
+      // bit. Mount a private child so native safe-temp admission needs no privilege.
+      'mkdirSync("/runtime-temporary/tmp", { recursive: true, mode: 0o700 });',
       ...(writableConfiguration
         ? [
             `copyFileSync(${JSON.stringify(
@@ -7429,7 +7440,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
       volumeMounts.push(
         { name: "runtime-state", mountPath: "/home/node" },
-        { name: "runtime-temporary", mountPath: "/tmp" },
+        { name: "runtime-temporary", mountPath: "/tmp", subPath: "tmp" },
       );
     }
     if (dedicated && role === "agent") {
@@ -7647,6 +7658,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
           spec: {
             serviceAccountName,
             automountServiceAccountToken: false,
+            ...(role === "gateway"
+              ? { terminationGracePeriodSeconds: GATEWAY_STOP_TIMEOUT_MS / 1000 }
+              : {}),
             ...runtimeNodeSelector,
             ...(volumes.length === 0 ? {} : { volumes }),
             ...(initContainers.length === 0 ? {} : { initContainers }),

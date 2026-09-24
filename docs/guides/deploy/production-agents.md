@@ -354,46 +354,49 @@ override a matching Restriction. See [Namespace IAM policy](../../reference/auth
 
 ### Prepare transport credentials and deploy
 
-For an Agent without any revisions, the console can generate initial transport
-credentials through the exact-Agent API. It stores Slack tokens separately as
-Namespace Secrets and binds them to the Agent; see [initial runtime
-credentials](../../reference/console/create-and-deploy.md#initial-runtime-credentials)
-and the [Slack setup guide](../integrations/slack.md). The operator commands
-below can supply transport credentials externally. Do not use both paths to
-replace an existing transport bundle.
-
-Create the tenant transport Secret using the Agent ID suffix. Kubernetes
-gateways use trusted-proxy authentication; dedicated Codex separately requires
-`app-server-token`. Compute renders the gateway authentication from trusted
-Installation settings. To verify model responses through an
-operator's local Kubernetes connection, configure the `gateway-password` Secret
-reference and enable the native HTTP endpoint as described in
-[Model response verification](../operate/model-verification.md). The initial
-credential API generates this password too; it never returns it in an API response.
+For an Agent without revisions, use **Provision generated runtime credentials**
+in the Console, or call the same exact-Agent API below. Keep `OCC_URL` and
+`OCC_SERVICE_KEY_FILE` from Installation bootstrap. The API derives the correct
+Secret placement for the Agent's execution mode and never returns credential
+values. It does not rotate existing credentials.
 
 ```bash
-umask 077
-AGENT_SUFFIX="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:12])' "${AGENT_ID:?}")" &&
-SECRET_DIRECTORY="$(mktemp -d /tmp/occ-agent-transport.XXXXXXXX)" &&
-python3 -c 'import secrets,sys; sys.stdout.write(secrets.token_hex(32))' > "$SECRET_DIRECTORY/app-server-token" &&
-python3 -c 'import secrets,sys; sys.stdout.write(secrets.token_hex(32))' > "$SECRET_DIRECTORY/gateway-password" &&
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  -n "$TENANT_NAMESPACE" create secret generic "openclaw-agent-transport-$AGENT_SUFFIX" \
-  --from-file=app-server-token="$SECRET_DIRECTORY/app-server-token" \
-  --from-file=gateway-password="$SECRET_DIRECTORY/gateway-password"
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n "$TENANT_NAMESPACE" \
-  label secret "openclaw-agent-transport-$AGENT_SUFFIX" \
-  app.kubernetes.io/managed-by=openclaw-enterprise "openclaw.dev/namespace=$NAMESPACE_ID" "openclaw.dev/agent=$AGENT_ID"
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n "$TENANT_NAMESPACE" \
-  annotate secret "openclaw-agent-transport-$AGENT_SUFFIX" \
-  "openclaw.dev/namespace-id=$NAMESPACE_ID" "openclaw.dev/agent-id=$AGENT_ID"
+node --input-type=module <<'NODE'
+import { readFile } from "node:fs/promises";
+const { OCC_URL, OCC_SERVICE_KEY_FILE, NAMESPACE_ID, AGENT_ID } = process.env;
+if (![OCC_URL, OCC_SERVICE_KEY_FILE, NAMESPACE_ID, AGENT_ID].every(Boolean)) {
+  throw new Error("Set OCC_URL, OCC_SERVICE_KEY_FILE, NAMESPACE_ID, and AGENT_ID.");
+}
+const { data: { key } } = JSON.parse(await readFile(OCC_SERVICE_KEY_FILE, "utf8"));
+const response = await fetch(new URL(
+  `/namespaces/${encodeURIComponent(NAMESPACE_ID)}/agents/${encodeURIComponent(AGENT_ID)}/runtime-credentials`,
+  OCC_URL,
+), {
+  method: "POST",
+  redirect: "error",
+  headers: { "x-api-key": key, "content-type": "application/json" },
+  body: "{}",
+});
+if (!response.ok) throw new Error(`Credential provisioning failed: HTTP ${response.status}`);
+const { data } = await response.json();
+if (data.transportConfigured !== true) throw new Error("Transport credentials are not configured.");
+console.log("Agent transport credentials are configured.");
+NODE
 ```
 
-The gateway password enables the optional direct loopback checks below; the
-app-server token authenticates dedicated Codex transport. Model authentication comes
-from the saved `harnessAuth` binding.
-Kubernetes projects its source only into the model-executing workload; initial
-transport/channel provisioning does not accept model keys. Keep credential values
+If the request fails after creating a Secret, inspect the Agent's credential
+status before retrying; the API reuses complete, owned credential groups.
+See [initial runtime credentials](../../reference/console/create-and-deploy.md#initial-runtime-credentials)
+for permissions and conflicts. Dedicated Agents keep the canonical transport
+token and Gateway password in separate CP Secrets. Compute projects only the
+app-server token to the Harness. Embedded Agents use their tenant-local bundle.
+
+Kubernetes gateways use trusted-proxy authentication. For direct operator
+loopback checks, explicitly select the generated Gateway password and native HTTP
+endpoint as described in [Model response verification](../operate/model-verification.md).
+Model authentication comes from the saved `harnessAuth` binding and is projected
+only into the model-executing workload. Slack tokens use separate Namespace
+Secrets; follow [Slack setup](../integrations/slack.md). Keep credential values
 out of Helm values, Installation YAML, Configurations, shell history, and this
 repository.
 

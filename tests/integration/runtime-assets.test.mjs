@@ -53,9 +53,11 @@ test("runtime assembly preserves executable assets and links while excluding dev
   );
   const patch = join(directory, "codex.patch");
   await writeFile(patch, "reviewed dependency patch");
+  const sourceAlias = join(directory, "source-alias");
+  await symlink(root, sourceAlias, "dir");
   execFileSync(
     process.execPath,
-    ["scripts/build-runtime-assets.mjs", "package", root, output, patch],
+    ["scripts/build-runtime-assets.mjs", "package", sourceAlias, output, patch],
     {
       env: { ...process.env, GIT_COMMIT: "a".repeat(40) },
     },

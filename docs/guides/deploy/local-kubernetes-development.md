@@ -74,7 +74,10 @@ helper does not modify the default kubeconfig or current kubectl context.
 For separate stacks, select distinct state directories, Compose projects,
 cluster names, and published API ports. Set an unused, non-overlapping
 `OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR` and a distinct `OCC_POSTGRES_PORT` for each
-stack. Keep each stack's resources under the helper's lifecycle until cleanup;
+stack. Startup derives the development bridge gateway from the rendered subnet
+unless Compose explicitly supplies one. Generated runtime workloads have a
+2 GiB memory limit each; size the local engine VM for OCC plus the Agents you run.
+Keep each stack's resources under the helper's lifecycle until cleanup;
 do not reuse its names for unrelated resources.
 
 Podman delegates Compose to `podman-compose`. On rootless Linux, its

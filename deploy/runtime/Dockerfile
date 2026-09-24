@@ -1,4 +1,4 @@
-ARG OPENCLAW_COMMIT=2765f7a3341b8be4835afacbff3d04c6e3c3c79b
+ARG OPENCLAW_COMMIT=6d6a02223b2067f9454492793726dd1e1c750df7
 ARG NODE_BASE_IMAGE=docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584
 ARG NODE_RUNTIME_BASE_IMAGE=docker.io/library/node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03
 FROM ${NODE_BASE_IMAGE} AS repository-client-build
@@ -27,7 +27,7 @@ FROM ${NODE_BASE_IMAGE} AS openclaw-source
 # Keep the source identity separate from its unreleased package version.
 ARG OPENCLAW_COMMIT
 ENV GIT_COMMIT=${OPENCLAW_COMMIT}
-ENV OPENCLAW_BUILD_TIMESTAMP=2026-09-24T03:55:10Z
+ENV OPENCLAW_BUILD_TIMESTAMP=2026-09-24T21:06:45Z
 ENV OPENCLAW_PREFER_PNPM=1
 WORKDIR /source
 RUN --mount=type=secret,id=build-ca,required=false \
@@ -35,7 +35,7 @@ RUN --mount=type=secret,id=build-ca,required=false \
     if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \
     curl --fail --location --silent --show-error \
       "https://codeload.github.com/openclaw/openclaw/tar.gz/${GIT_COMMIT}" -o /tmp/openclaw-source.tar.gz; \
-    echo '42a420286dcad558b9710b7b583dd9e489bb07b3a835e3e19b69184b22fd416b  /tmp/openclaw-source.tar.gz' | sha256sum --check --strict; \
+    echo '6a918a4ca383e7ff90f47834d641b73f63b5fd8b017f42e6d6f0f22079480170  /tmp/openclaw-source.tar.gz' | sha256sum --check --strict; \
     tar -xzf /tmp/openclaw-source.tar.gz --strip-components=1; \
     rm /tmp/openclaw-source.tar.gz
 COPY deploy/runtime/codex-0.156.0.patch /tmp/codex.patch
@@ -46,7 +46,7 @@ RUN node /tmp/build-runtime-assets.mjs inputs /source /inputs
 FROM ${NODE_BASE_IMAGE} AS openclaw-dependency-inputs
 ARG OPENCLAW_COMMIT
 ENV GIT_COMMIT=${OPENCLAW_COMMIT}
-ENV OPENCLAW_BUILD_TIMESTAMP=2026-09-24T03:55:10Z
+ENV OPENCLAW_BUILD_TIMESTAMP=2026-09-24T21:06:45Z
 ENV OPENCLAW_PREFER_PNPM=1
 WORKDIR /source
 COPY --from=openclaw-source /inputs/ ./

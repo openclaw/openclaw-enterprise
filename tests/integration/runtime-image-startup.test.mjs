@@ -13,6 +13,7 @@ import {
   AGENT_WITH_NODE_ENTRYPOINT,
   AGENT_RUNTIME_ENTRYPOINT,
   GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+  GATEWAY_STOP_TIMEOUT_MS,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -859,6 +860,16 @@ test(
     assertGatewayReadyLog(entries);
     assertGatewayModelLog(entries, `codex/${runtimeImageModel}`);
     await assertDedicatedRuntimeAssets(containerName);
+    const { stdout } = await runDocker([
+      "exec",
+      containerName,
+      "node",
+      "--input-type=module",
+      "-e",
+      'import { GATEWAY_SERVICE_STOP_TIMEOUT_MS } from "/app/node_modules/openclaw/gateway-shutdown-budget.mjs"; console.log(GATEWAY_SERVICE_STOP_TIMEOUT_MS);',
+    ]);
+    const runtimeStopTimeoutMs = Number(stdout.trim());
+    assert.ok(runtimeStopTimeoutMs > 0 && runtimeStopTimeoutMs <= GATEWAY_STOP_TIMEOUT_MS);
     assertNoPackagingFailure(logs);
   },
 );

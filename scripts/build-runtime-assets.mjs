@@ -14,7 +14,8 @@ import {
 } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 
-const [command, root, output, patchPath] = process.argv.slice(2);
+const [command, sourceRoot, output, patchPath] = process.argv.slice(2);
+const root = await realpath(sourceRoot);
 const runtimePaths = [
   "dist",
   "node_modules",
@@ -206,7 +207,7 @@ if (command === "inputs") {
       {
         source: "https://github.com/openclaw/openclaw",
         commit: process.env.GIT_COMMIT,
-        sourceArchiveSha256: "42a420286dcad558b9710b7b583dd9e489bb07b3a835e3e19b69184b22fd416b",
+        sourceArchiveSha256: "6a918a4ca383e7ff90f47834d641b73f63b5fd8b017f42e6d6f0f22079480170",
         artifactKind: "assembled-runtime-root",
         runtimeContentsSha256: hash(contents),
         lockfileSha256: hash(await readFile(join(root, "pnpm-lock.yaml"))),

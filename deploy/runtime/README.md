@@ -15,14 +15,19 @@ Codex and Slack come from that same source. The selected commit contains
 the restricted workspace-node commands and saved-token-first pairing required by
 split storage; published `2026.9.5` packages do not contain that complete contract.
 
+This candidate also includes the remote Skills shutdown fix from
+[OpenClaw #157592](https://github.com/openclaw/openclaw/pull/157592). Its exact
+source commit and archive checksum below make the build reproducible while that
+upstream change is under review; this is not a published OpenClaw release.
+
 | Input                                        | Selection                                                                                                    |
 | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | Build base                                   | `docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584` |
-| OpenClaw source commit                       | `2765f7a3341b8be4835afacbff3d04c6e3c3c79b`                                                                   |
-| Source archive SHA-256                       | `42a420286dcad558b9710b7b583dd9e489bb07b3a835e3e19b69184b22fd416b`                                           |
+| OpenClaw source commit                       | `6d6a02223b2067f9454492793726dd1e1c750df7`                                                                   |
+| Source archive SHA-256                       | `6a918a4ca383e7ff90f47834d641b73f63b5fd8b017f42e6d6f0f22079480170`                                           |
 | Dedicated Codex CLI (`OPENAI_CODEX_VERSION`) | `0.156.0`                                                                                                    |
 
-The source's package version remains `2026.9.5`; it does not identify this custom
+The source's package version is `2026.9.6`; it does not identify this custom
 build. `/opt/oce/runtime/provenance.json` records the source commit, verified archive
 hash, lockfile hash, pinned package manager, selected plugins, architecture, and
 Codex patch hash and version, and the SHA-256 of `contents.json`, which inventories
@@ -64,7 +69,7 @@ installing packages at gateway startup. Slack credentials remain operator-owned
 runtime Secrets; do not put them in the image.
 
 Keep the source commit and archive checksum together when updating OpenClaw.
-Follow the [pinned upstream Docker assembly](https://github.com/openclaw/openclaw/blob/2765f7a3341b8be4835afacbff3d04c6e3c3c79b/Dockerfile)
+Follow the [pinned upstream Docker assembly](https://github.com/openclaw/openclaw/blob/6d6a02223b2067f9454492793726dd1e1c750df7/Dockerfile)
 to keep plugin dependencies and runtime assets consistent. Its plugin-local
 dependency layout preserves dependencies that differ from core versions.
 Plugin chunks emitted directly under `dist` also need package-root resolution.

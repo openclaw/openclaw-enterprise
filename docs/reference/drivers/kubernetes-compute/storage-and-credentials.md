@@ -58,6 +58,14 @@ gateway replacement uses one replica with `Recreate`; node partitions and
 forced replacements still require operator fencing before permitting another
 writer.
 
+When stopping a revision, the Driver first stops its Gateway while the Harness
+remains available to finish active work. The Gateway supervisor and Pod allow up
+to 330 seconds for the pinned runtime's drain and cleanup budget; idle Gateways
+should exit promptly. The controller waits for Gateway Pod disappearance before
+stopping the Harness. Forced termination can leave an owner lease until it
+expires and delay the successor; a longer grace period does not make forced
+termination a clean shutdown.
+
 Only the gateway Pod receives this claim. Its complete writable directories
 include database files and their WAL/SHM siblings:
 
@@ -82,6 +90,11 @@ without credentials or additional privileges. The nested
 `agents/main/agent/codex-home` is overmounted from Pod-local `emptyDir` so
 Codex credentials remain ephemeral. The remaining private runtime home is
 also ephemeral. Persisting these directories does not persist the entire home.
+
+The same nonroot initializer creates a private temporary directory in each
+Pod's `emptyDir`, mounted at `/tmp` for native safe temporary-file operations.
+OCE disables OpenClaw automatic package updates in the Gateway and workspace
+node; runtime upgrades use the operator-selected image and ordinary redeployment.
 
 ## Harness storage
 

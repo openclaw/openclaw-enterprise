@@ -4,10 +4,37 @@ import (
 	"encoding/json/v2"
 	"fmt"
 	"net"
+	"net/netip"
 	"regexp"
 	"strconv"
 	"strings"
 )
+
+// k3d needs an explicit gateway when joining a Compose-owned Docker network.
+// Resolve it from the rendered subnet so Compose overrides keep their meaning.
+func setKubernetesBridgeGateway(rendered any) error {
+	config, _ := rendered.(map[string]any)
+	networks, _ := config["networks"].(map[string]any)
+	development, _ := networks["development"].(map[string]any)
+	ipam, _ := development["ipam"].(map[string]any)
+	entries, _ := ipam["config"].([]any)
+	if len(entries) == 0 {
+		return fmt.Errorf("Kubernetes development requires a Compose development network subnet")
+	}
+	for _, raw := range entries {
+		entry, _ := raw.(map[string]any)
+		if gateway, _ := entry["gateway"].(string); gateway != "" {
+			continue
+		}
+		subnet, _ := entry["subnet"].(string)
+		prefix, err := netip.ParsePrefix(subnet)
+		if err != nil || prefix.Bits() >= prefix.Addr().BitLen()-1 {
+			return fmt.Errorf("Compose development subnet must have space for a bridge gateway and containers")
+		}
+		entry["gateway"] = prefix.Masked().Addr().Next().String()
+	}
+	return nil
+}
 
 type composeService struct {
 	Ports       []any          `json:"ports"`

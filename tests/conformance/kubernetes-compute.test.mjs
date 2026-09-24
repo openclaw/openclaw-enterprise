@@ -3225,7 +3225,7 @@ test("Anthropic API-key admission binds every embedded model to the canonical cr
   );
 });
 
-test("embedded startup probes its selected provider before starting the gateway", async (t) => {
+test("embedded startup probes its selected provider and allows graceful Gateway shutdown", async (t) => {
   const nodeRequire = createRequire(import.meta.url);
   for (const [provider, model, credentialName] of [
     ["openai", "gpt-5", "OPENAI_API_KEY"],
@@ -3248,6 +3248,11 @@ test("embedded startup probes its selected provider before starting the gateway"
         const files = new Map();
         const calls = [];
         const errors = [];
+        const signals = new Map();
+        const childEvents = new Map();
+        const childSignals = [];
+        const exits = [];
+        const timers = [];
         let started = false;
         let held = false;
         // Stub native process I/O only: execute the complete generated startup
@@ -3261,7 +3266,16 @@ test("embedded startup probes its selected provider before starting the gateway"
             env: Object.fromEntries(
               prepared.environment.map((entry) => [entry.name, entry.value ?? "fixture-model-key"]),
             ),
-            on() {},
+            on(signal, callback) {
+              signals.set(signal, callback);
+            },
+            exit(code) {
+              exits.push(code);
+            },
+          },
+          setTimeout(callback, delay) {
+            timers.push({ callback, delay });
+            return { unref() {} };
           },
           setInterval() {
             held = true;
@@ -3303,7 +3317,14 @@ test("embedded startup probes its selected provider before starting the gateway"
                 },
                 spawn() {
                   started = true;
-                  return { on() {} };
+                  return {
+                    kill(signal) {
+                      childSignals.push(signal);
+                    },
+                    on(event, callback) {
+                      childEvents.set(event, callback);
+                    },
+                  };
                 },
               };
             }
@@ -3325,6 +3346,20 @@ test("embedded startup probes its selected provider before starting the gateway"
         assert.equal(started, accepted);
         assert.equal(held, !accepted);
         assert.deepEqual(errors, accepted ? [] : ["Harness model authentication probe failed."]);
+        if (accepted) {
+          signals.get("SIGTERM")();
+          assert.deepEqual(childSignals, ["SIGTERM"]);
+          // An admitted turn can take longer than the old eight-second wrapper
+          // timeout to settle. Advance only the supervisor timers; native drain
+          // and model completion are proved by the real-runtime acceptance.
+          for (const timer of timers.filter(({ delay }) => delay <= 9_000)) {
+            timer.callback();
+          }
+          assert.deepEqual(childSignals, ["SIGTERM"], "must allow a nine-second drain");
+          assert.deepEqual(exits, [], "supervisor must wait for the child to finish");
+          childEvents.get("exit")(0, null);
+          assert.deepEqual(exits, [0], "clean Gateway completion exits the supervisor");
+        }
       });
     }
   }
@@ -4849,6 +4884,7 @@ test("Gateway and Harness storage are separate and preserve ephemeral Codex cred
       preparedAuth(driver, namespace, embedded),
     );
     const pod = gateway.spec.template.spec;
+    assert.equal(pod.terminationGracePeriodSeconds, 330);
     assert.deepEqual(pod.nodeSelector, embedded ? undefined : { "oce-role": "control-plane" });
     const privateVolume = pod.volumes.find(({ name }) => name === "openclaw-gateway-state");
     assert.deepEqual(privateVolume.persistentVolumeClaim, { claimName: claim.metadata.name });
@@ -4938,6 +4974,7 @@ test("Gateway and Harness storage are separate and preserve ephemeral Codex cred
     );
     assert.deepEqual(pod.initContainers[0].volumeMounts, [
       { name: "runtime-state", mountPath: "/home/node" },
+      { name: "runtime-temporary", mountPath: "/runtime-temporary" },
       { name: privateVolume.name, mountPath: "/gateway-state" },
     ]);
     assert.equal(pod.initContainers[0].env, undefined);
