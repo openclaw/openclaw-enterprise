@@ -248,7 +248,8 @@ test("console browser flow keeps Namespace URL state across global pages and log
   await page.getByRole("heading", { name: "Agents" }).waitFor();
   await page.getByText("Beta agent").waitFor();
   assert.match(page.url(), new RegExp(`/console/agents\\?namespace=${beta.id}$`));
-  assert.equal(await page.locator("img").count(), 0);
+  // Resource content must remain text; the shared shell includes the OCE mascot.
+  assert.equal(await page.locator(".content img").count(), 0);
   assert.equal(await page.locator(".sidebar .brand").textContent(), "OCE");
   assert.equal(await page.locator(".occ-version").count(), 0);
   assert.equal(await page.locator(".runtime-debug").count(), 0);
