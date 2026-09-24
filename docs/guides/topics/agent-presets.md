@@ -64,6 +64,11 @@ To reuse more settings, add fields from the [Preset contract](../../reference/pr
 4. Select **Create Agent**. Then follow [credentials and deployment](../../reference/console/create-and-deploy.md#initial-runtime-credentials)
    for that saved Agent. Creating the draft does not start a workload.
 
+Variables with defaults are prefilled and can be changed. A model password
+variable offers **Create new Secret** or **Use existing Secret** in the same
+Namespace. Enter a token only in new mode; it is stored when you create the Agent.
+Existing mode reuses the selected reference without reading credential bytes.
+
 Variables are used once to fill the form. Edit the resulting fields directly.
 Before saving, to choose another Preset or supply different variables, select **Start over**
 and confirm that the unsaved draft can be discarded. A supplied

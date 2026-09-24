@@ -5861,3 +5861,241 @@ test("standard Codex password Preset creates one scoped Secret and reuses it aft
     ),
   );
 });
+
+test("password Preset can reuse an existing Secret and retry an uncertain grant without duplicate writes", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const root = await mkdtemp(join(tmpdir(), "occ-existing-secret-preset-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  fixture.controller.registerDriver(configurationDriver);
+  fixture.controller.selectDriver("configuration", configurationDriver.id);
+  const namespace = await fixture.createNamespace("Existing Secret Preset", { ready: true });
+  const modelSecret = await fixture.createSecret(
+    namespace.id,
+    "Existing model token",
+    "hidden-model-token",
+  );
+  const artifact = JSON.parse(
+    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+  );
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: artifact,
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { page } = await newPage(t, fixture);
+  await routeInstallationWithoutProvisioning(page, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const bindingPath = `/namespaces/${namespace.id}/iam/access-bindings`;
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByLabel("Variable: name", { exact: true }).fill("Existing Secret Agent");
+  await page.getByLabel("Variable: model", { exact: true }).fill("gpt-5.1");
+  await page.getByLabel("Secret source for modelSecret", { exact: true }).selectOption("existing");
+  await page
+    .getByLabel("Existing Secret for modelSecret", { exact: true })
+    .selectOption(modelSecret.id);
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  await page
+    .getByText("Preset authentication: API key · Secret configured", { exact: true })
+    .waitFor();
+  assert.equal(await page.getByLabel("API key", { exact: true }).count(), 0);
+
+  await page.route(`**${bindingPath}`, async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    const response = await route.fetch();
+    assert.equal(response.status(), 201);
+    await route.abort("failed");
+  });
+  const createdResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const created = (await (await createdResponse).json()).data;
+  await page
+    .getByRole("alert")
+    .filter({ hasText: /credential access is not confirmed.*interrupted/ })
+    .waitFor();
+  await page.unroute(`**${bindingPath}`);
+  await page.getByRole("button", { name: "Retry credential access" }).click();
+  await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
+
+  assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 0);
+  assert.equal(agentPostRequests(requests, namespace.id).length, 1);
+  assert.deepEqual(agentPostRequests(requests, namespace.id)[0].body.harnessAuth, {
+    method: "api_key",
+    source: modelSecret.ref,
+  });
+  const bindings = await fixture.request("GET", bindingPath);
+  assert.equal(bindings.status, 200);
+  assert.equal(bindings.data.length, 1);
+  assert.equal(bindings.data[0].subjectId, created.servicePrincipalId);
+  assert.equal(bindings.data[0].resourceId, modelSecret.id);
+  const retained = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/presets/${preset.data.id}`,
+  );
+  assert.deepEqual(retained.data.template, artifact.template);
+});
+
+test("codex_pat password Preset creates one Secret and reuses it after an Agent conflict", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const root = await mkdtemp(join(tmpdir(), "occ-codex-pat-preset-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  fixture.controller.registerDriver(configurationDriver);
+  fixture.controller.selectDriver("configuration", configurationDriver.id);
+  const namespace = await fixture.createNamespace("Codex PAT Preset", { ready: true });
+  await fixture.createAgent(namespace.id, "Existing Codex Agent");
+  const artifact = JSON.parse(
+    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+  );
+  artifact.name = "standard-codex-pat";
+  artifact.template.agent.harnessAuth.method = "codex_pat";
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: artifact,
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { page } = await newPage(t, fixture);
+  await routeInstallationWithoutProvisioning(page, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByLabel("Variable: name", { exact: true }).fill("Existing Codex Agent");
+  await page.getByLabel("Variable: model", { exact: true }).fill("gpt-6-astra");
+  await page.getByLabel("Secret source for modelSecret", { exact: true }).selectOption("new");
+  const password = page.getByLabel("Variable: modelSecret", { exact: true });
+  await password.fill("at-codex-pat-preset-token");
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  const token = page.getByLabel("Service account token", { exact: true });
+  assert.equal(await token.inputValue(), "at-codex-pat-preset-token");
+  const save = page.getByRole("button", { name: "Create Agent", exact: true });
+  const conflict = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
+      response.request().method() === "POST",
+  );
+  await save.click();
+  assert.equal((await conflict).status(), 409);
+  await page.getByText(/conflicts with the saved state/).waitFor();
+  assert.equal(await token.inputValue(), "");
+  await page.getByLabel("Agent name", { exact: true }).fill("Codex PAT Agent");
+  const createdResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
+      response.request().method() === "POST",
+  );
+  await save.click();
+  const created = (await (await createdResponse).json()).data;
+  await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
+  const secretWrites = pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`);
+  assert.equal(secretWrites.length, 1);
+  assert.equal(secretWrites[0].body.value, "at-codex-pat-preset-token");
+  assert.equal(agentPostRequests(requests, namespace.id).length, 2);
+  assert.equal(created.harnessAuth.method, "codex_pat");
+});
+
+test("Preset Secret picker preserves existing mode on catalog failure and can switch to new", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const root = await mkdtemp(join(tmpdir(), "occ-catalog-failure-preset-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  fixture.controller.registerDriver(configurationDriver);
+  fixture.controller.selectDriver("configuration", configurationDriver.id);
+  const namespace = await fixture.createNamespace("Preset secret catalog failure", { ready: true });
+  const artifact = JSON.parse(
+    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+  );
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: artifact,
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { page } = await newPage(t, fixture);
+  await routeInstallationWithoutProvisioning(page, fixture);
+  await page.route(`**/namespaces/${namespace.id}/secrets`, async (route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: { code: "DEPENDENCY_UNAVAILABLE", message: "Secret catalog unavailable." },
+          meta: { requestId: "req_secret_catalog_unavailable" },
+        }),
+      });
+      return;
+    }
+    await route.fallback();
+  });
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  const source = page.getByLabel("Secret source for modelSecret", { exact: true });
+  await source.selectOption("existing");
+  await page.getByText(/Choose create-new mode to enter a new token/).waitFor();
+  assert.equal(await source.inputValue(), "existing");
+  await page.getByLabel("Variable: name", { exact: true }).fill("Catalog fallback Agent");
+  await page.getByLabel("Variable: model", { exact: true }).fill("gpt-5.1");
+  await source.selectOption("new");
+  await page
+    .getByLabel("Variable: modelSecret", { exact: true })
+    .fill("new-token-after-catalog-error");
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  await page.getByLabel("Agent name", { exact: true }).waitFor();
+  assert.equal(
+    await page.getByLabel("API key", { exact: true }).inputValue(),
+    "new-token-after-catalog-error",
+  );
+});
+
+test("Preset picker ignores stale Preset responses after switching selection", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Preset picker race", { ready: true });
+  const first = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: {
+      name: "First delayed Preset",
+      template: {
+        variables: { firstName: { type: "string" } },
+        agent: { name: "{{ vars.firstName }}", executionMode: "embedded" },
+      },
+    },
+  });
+  const second = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: {
+      name: "Second current Preset",
+      template: {
+        variables: { secondName: { type: "string" } },
+        agent: { name: "{{ vars.secondName }}", executionMode: "embedded" },
+      },
+    },
+  });
+  assert.equal(first.status, 201, JSON.stringify(first.body));
+  assert.equal(second.status, 201, JSON.stringify(second.body));
+  const { page } = await newPage(t, fixture);
+  await routeInstallationWithoutProvisioning(page, fixture);
+  let releaseFirst;
+  const firstBlocked = new Promise((resolve) => {
+    releaseFirst = resolve;
+  });
+  await page.route(`**/namespaces/${namespace.id}/presets/${first.data.id}`, async (route) => {
+    await firstBlocked;
+    await route.fallback();
+  });
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(first.data.id);
+  await page.getByLabel("Preset template").selectOption(second.data.id);
+  await page.getByLabel("Variable: secondName", { exact: true }).waitFor();
+  releaseFirst();
+  await page.waitForTimeout(50);
+  assert.equal(await page.getByLabel("Variable: firstName", { exact: true }).count(), 0);
+  await page.getByLabel("Variable: secondName", { exact: true }).fill("Current Agent");
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  await page.getByLabel("Agent name", { exact: true }).waitFor();
+  assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "Current Agent");
+});

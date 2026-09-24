@@ -678,7 +678,11 @@ export function installFixture(scenario, evidence) {
           return response(undefined, 403, "FORBIDDEN");
         }
         if (method === "GET") {
-          return response([...secrets.values()].map((secret) => structuredClone(secret)));
+          return response(
+            scenario.emptySecrets
+              ? []
+              : [...secrets.values()].map((secret) => structuredClone(secret)),
+          );
         }
         if (method === "POST") {
           const id = nextId("sec");

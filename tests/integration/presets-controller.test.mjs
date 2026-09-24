@@ -577,6 +577,110 @@ test("standard OpenClaw Preset installs and creates an embedded Agent with nativ
   assert.equal(JSON.stringify(installed.body).includes("synthetic-model-key"), false);
 });
 
+test("SWE Agent Preset defaults to Astra and reuses an existing service-account Secret", async (t) => {
+  const { renderPresetTemplate, validatePresetTemplate } =
+    await import("../../packages/contracts/src/index.ts");
+  const fixture = await createFixture(t);
+  const namespace = await fixture.createNamespace("SWE Agent service account", { ready: true });
+  const serviceAccount = await fixture.createSecret(
+    namespace.id,
+    "Existing service account token",
+    "synthetic-existing-service-account-token",
+  );
+  const artifact = JSON.parse(
+    await readFile(new URL("../../deploy/presets/devday.json", import.meta.url), "utf8"),
+  );
+  const originalTemplate = structuredClone(artifact.template);
+  validatePresetTemplate(originalTemplate);
+  assert.equal(artifact.name, "SWE Agent");
+  assert.equal(originalTemplate.variables.model.default, "gpt-6-astra");
+  assert.equal(originalTemplate.agent.executionMode, "dedicated");
+  assert.deepEqual(originalTemplate.agent.harnessAuth, {
+    method: "codex_pat",
+    secret: "{{ vars.modelSecret }}",
+  });
+
+  const installed = await fixture.request("POST", collection(namespace.id), { body: artifact });
+  assert.equal(installed.status, 201, JSON.stringify(installed.body));
+  assert.deepEqual(installed.data.template, originalTemplate);
+  const selectedTemplate = structuredClone(originalTemplate);
+  selectedTemplate.agent.harnessAuth = { method: "codex_pat", source: serviceAccount.ref };
+
+  const rendered = renderPresetTemplate(selectedTemplate, { name: "SWE lifecycle" });
+  assert.deepEqual(rendered.agent.harnessAuth, {
+    method: "codex_pat",
+    source: serviceAccount.ref,
+  });
+  assert.equal(rendered.configuration.values.agents.defaults.model, "codex/gpt-6-astra");
+  assert.equal(
+    rendered.configuration.values.agents.defaults.models["codex/gpt-6-astra"].agentRuntime.id,
+    "codex",
+  );
+
+  const override = renderPresetTemplate(selectedTemplate, {
+    name: "SWE override",
+    model: "gpt-6-sol",
+  });
+  assert.equal(override.configuration.values.agents.defaults.model, "codex/gpt-6-sol");
+  assert.deepEqual(Object.keys(override.configuration.values.agents.defaults.models), [
+    "codex/gpt-6-sol",
+  ]);
+  assert.equal(
+    override.configuration.values.agents.defaults.models["codex/gpt-6-sol"].agentRuntime.id,
+    "codex",
+  );
+
+  const retained = await fixture.request("GET", `${collection(namespace.id)}/${installed.data.id}`);
+  assert.equal(retained.status, 200, JSON.stringify(retained.body));
+  assert.deepEqual(retained.data.template, originalTemplate);
+
+  const configuration = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/configurations`,
+    {
+      body: { kind: "agent", ...rendered.configuration },
+    },
+  );
+  assert.equal(configuration.status, 201, JSON.stringify(configuration.body));
+  const before = await fixture.request("GET", `/namespaces/${namespace.id}/secrets`);
+  assert.deepEqual(
+    before.data.map((secret) => secret.id),
+    [serviceAccount.id],
+  );
+  const createAgent = (name) =>
+    fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+      body: {
+        ...rendered.agent,
+        name,
+        configurationId: configuration.data.id,
+      },
+    });
+  const first = await createAgent("SWE existing service account");
+  assert.equal(first.status, 201, JSON.stringify(first.body));
+  const second = await createAgent("SWE existing service account reuse");
+  assert.equal(second.status, 201, JSON.stringify(second.body));
+  for (const created of [first, second]) {
+    assert.equal(created.data.executionMode, "dedicated");
+    assert.deepEqual(created.data.harnessAuth, {
+      method: "codex_pat",
+      source: serviceAccount.ref,
+    });
+  }
+  const after = await fixture.request("GET", `/namespaces/${namespace.id}/secrets`);
+  assert.deepEqual(
+    after.data.map((secret) => secret.id),
+    [serviceAccount.id],
+  );
+  assert.equal(
+    JSON.stringify(installed.body).includes("synthetic-existing-service-account-token"),
+    false,
+  );
+  assert.equal(
+    JSON.stringify(first.body).includes("synthetic-existing-service-account-token"),
+    false,
+  );
+});
+
 test("password Presets reject stored credentials and password substitution outside credential inputs", async (t) => {
   const fixture = await createFixture(t);
   const namespace = await fixture.createNamespace("Password admission", { ready: true });
@@ -642,6 +746,8 @@ test("Installation YAML seeds authorized default Presets for new and existing Na
   assert.equal(list.data[0].template.variables.modelSecret.type, "password");
   const customDefault = list.data.find((preset) => preset.name === customPreset.name);
   assert.ok(customDefault, `missing ${customPreset.name}`);
+  assert.equal(customDefault.template.variables.model.default, "gpt-6-astra");
+  assert.equal(customDefault.template.agent.harnessAuth.method, "codex_pat");
   assert.equal(
     customDefault.template.configuration.values.channels.slack.channels.C0C43A2QA11.requireMention,
     true,

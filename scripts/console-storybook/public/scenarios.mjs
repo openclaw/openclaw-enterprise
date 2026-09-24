@@ -18,6 +18,12 @@ const passwordPresetForm = [
   { selector: "#preset-variable-modelSecret", value: "storybook-model-key" },
   click("Use Preset"),
 ];
+const existingPresetSecret = [
+  { selector: "#agent-preset", value: "pre_devday_codex" },
+  { selector: "#preset-variable-name", value: "SWE assistant" },
+  { selector: "#preset-variable-modelSecret-secret-source", value: "existing" },
+];
+const presetSecretsPath = "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets";
 const repositoryForm = [...readyForm, { selector: "#agent-name", value: "Repository assistant" }];
 const pluginCapabilities = {
   driver: { id: "codex-plugin", implementation: "occ/codex-plugin" },
@@ -223,8 +229,7 @@ const devdayCreateCheckpoint = [
   click("Create Agent"),
   { selector: "#agent-preset", value: "pre_devday_codex" },
   { selector: "#preset-variable-name", value: "devday claw" },
-  { selector: "#preset-variable-model", value: "gpt-6-astra" },
-  { selector: "#preset-variable-modelSecret", value: "sk-demo-devday-codex-api-key" },
+  { selector: "#preset-variable-modelSecret", value: "at-demo-devday-service-account-token" },
   click("Use Preset"),
   { selector: devdayRepositorySelector, click: true },
   { selector: "#repository-profile-git-write", click: true },
@@ -1106,6 +1111,52 @@ export const scenarios = {
       "A reusable template with required and defaulted variables. Use Preset copies values into an editable draft.",
     gap: "Preset CRUD has no console page; the fixture supplies a pre-existing Preset.",
   },
+  createPresetExistingSecret: {
+    group: "Pages/Create Agent",
+    name: "SWE existing service account Secret",
+    path: create,
+    devdayPreset: true,
+    extraSecrets: [
+      { id: "sec_devday_model_token", name: "DevDay Codex service account (simulated)" },
+    ],
+    actions: [
+      ...existingPresetSecret,
+      { selector: "#preset-variable-modelSecret-existing-secret", value: "sec_devday_model_token" },
+    ],
+    description:
+      "SWE defaults to gpt-6-astra and Codex Service Accounts. Use Preset reuses this Namespace Secret without reading its value; Create Agent grants access.",
+    gap: "Secret metadata and API responses are simulated. This does not validate a real service account token.",
+  },
+  createPresetSecretsLoading: {
+    group: "Pages/Create Agent",
+    name: "Preset Secrets loading",
+    path: create,
+    devdayPreset: true,
+    actions: existingPresetSecret,
+    rules: [{ path: presetSecretsPath, hold: true }],
+    description:
+      "Existing Secret selection waits for metadata. Users can explicitly switch to creating a new Secret.",
+  },
+  createPresetSecretsDenied: {
+    group: "Pages/Create Agent",
+    name: "Preset Secret metadata denied",
+    path: create,
+    devdayPreset: true,
+    actions: existingPresetSecret,
+    rules: [{ path: presetSecretsPath, status: 403 }],
+    description:
+      "Denied Secret metadata prevents existing selection. New-token entry remains available through an explicit mode change.",
+  },
+  createPresetSecretsEmpty: {
+    group: "Pages/Create Agent",
+    name: "No existing Preset Secrets",
+    path: create,
+    devdayPreset: true,
+    emptySecrets: true,
+    actions: existingPresetSecret,
+    description:
+      "An empty Namespace Secret catalog requires creating a new Secret or returning after a Secret is available.",
+  },
   createStandardOpenclawPreset: {
     group: "Pages/Create Agent",
     name: "Standard OpenClaw preset",
@@ -1971,6 +2022,10 @@ export const scenarios = {
     ],
     extraSecrets: [
       {
+        id: "sec_devday_model_token",
+        name: "DevDay Codex service account (simulated)",
+      },
+      {
         id: "sec_devday_slack_app_token",
         name: "devday claw Slack app token (simulated)",
       },
@@ -1981,11 +2036,11 @@ export const scenarios = {
     ],
     nextStory: "devdayAdminFlow",
     description:
-      "DevDay create-flow rehearsal using real Console controls with fake API-key and Slack Secret data. Provisioning and deployment progress are simulated in the Storybook fixture.",
+      "DevDay create-flow rehearsal using real Console controls with fake service-account and Slack Secret data. Provisioning and deployment progress are simulated in the Storybook fixture.",
     steps: [
       "Start on the Agents list with the already deployed oceclaw seed, then click Create Agent.",
       "Select the SWE Agent Preset copied from standard-codex and enter devday claw for its name.",
-      "Enter gpt-6-astra and fake modelSecret sk-demo-devday-codex-api-key, then Use Preset. Review the supplied Ocalot AGENTS.md and editable workspace defaults.",
+      "Keep the default gpt-6-astra model and enter fake modelSecret at-demo-devday-service-account-token, then Use Preset. Review the supplied Ocalot AGENTS.md and editable workspace defaults.",
       "Select openclaw/openclaw-enterprise with Contributor access.",
       "Open Edit Slack. Confirm prefilled channel C0C43A2QA11, allow simulated user UDEMO123, then bind the existing simulated DevDay Slack Secrets and apply settings.",
       "Create Agent and keep the Console visible while the fixture progresses through provisioning and deployment activation until Workspace files open for the admitted revision.",
@@ -2012,6 +2067,10 @@ export const scenarios = {
       },
     ],
     extraSecrets: [
+      {
+        id: "sec_devday_model_token",
+        name: "DevDay Codex service account (simulated)",
+      },
       {
         id: "sec_devday_slack_app_token",
         name: "devday claw Slack app token (simulated)",

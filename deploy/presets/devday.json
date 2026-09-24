@@ -8,11 +8,12 @@
       },
       "model": {
         "type": "string",
-        "description": "Codex model ID without the codex/ prefix"
+        "description": "Codex model ID without the codex/ prefix",
+        "default": "gpt-6-astra"
       },
       "modelSecret": {
         "type": "password",
-        "description": "Model API key; stored as a Secret when you create the Agent"
+        "description": "Codex service account token"
       }
     },
     "agent": {
@@ -20,7 +21,7 @@
       "executionMode": "dedicated",
       "providerId": null,
       "harnessAuth": {
-        "method": "api_key",
+        "method": "codex_pat",
         "secret": "{{ vars.modelSecret }}"
       },
       "plugins": {},

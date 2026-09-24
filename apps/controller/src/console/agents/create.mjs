@@ -240,12 +240,14 @@ export function renderCreateAgent(context) {
         { className: "muted" },
         "Start from a Preset to reuse your team's configuration.",
       ),
-      createPresetFields(context, (rendered) => renderAgentForm(context, rendered)),
+      createPresetFields(context, (rendered, options) =>
+        renderAgentForm(context, rendered, options),
+      ),
     ),
   );
 }
 
-function renderAgentForm(context, rendered) {
+function renderAgentForm(context, rendered, presetOptions = {}) {
   const { view, request, namespaceId } = context;
   const agent = rendered.agent ?? {};
   const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -283,8 +285,23 @@ function renderAgentForm(context, rendered) {
   ) {
     throw new Error("Rendered Preset contains invalid password authentication.");
   }
+  const presetModelSecret = presetOptions.modelSecret;
+  const presetExistingSecret =
+    presetModelSecret?.kind === "existing" ? presetModelSecret.secret : undefined;
   const binding = passwordAuth ? undefined : agent.harnessAuth;
   const hasBoundModelCredential = ["api_key", "codex_pat"].includes(binding?.method);
+  if (
+    presetExistingSecret &&
+    (presetExistingSecret.namespaceId !== namespaceId ||
+      presetExistingSecret.ref?.kind !== "secret" ||
+      presetExistingSecret.ref.namespaceId !== namespaceId ||
+      presetExistingSecret.ref.id !== presetExistingSecret.id ||
+      binding?.source?.kind !== "secret" ||
+      binding.source.namespaceId !== namespaceId ||
+      binding.source.id !== presetExistingSecret.id)
+  ) {
+    throw new Error("Rendered Preset selected a Secret outside this Namespace.");
+  }
   if (
     binding != null &&
     (!isObject(binding) ||
@@ -1499,8 +1516,9 @@ function renderAgentForm(context, rendered) {
       }
       // Grant retries reread exact bindings, so uncertain model or channel grants never recreate the Agent.
       mutationStarted = false;
-      if (savedSecret) {
-        await ensureSecretOperateBinding(context, savedAgent, savedSecret);
+      const modelSecret = savedSecret ?? presetExistingSecret;
+      if (modelSecret) {
+        await ensureSecretOperateBinding(context, savedAgent, modelSecret);
       }
       await grantConfigurationSecretAccess(savedAgent, stagedChannelSecrets);
       if (context.isCurrent()) {

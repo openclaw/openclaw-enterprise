@@ -4,8 +4,8 @@ Use the [platform console](../console.md) to create an Agent and, for supported
 Dedicated runtimes, start first-time provisioning from the same form. On an
 existing Kubernetes Installation,
 start with [production Agent prerequisites](../../guides/deploy/production-agents.md#prepare-each-namespace):
-you need a ready Namespace, configured Secret storage, and permission to
-create Secrets. First-time provisioning grants access to accepted Secret references;
+you need a ready Namespace and configured Secret storage. New tokens require
+Secret creation permission. First-time provisioning grants access to accepted Secret references;
 ordinary draft creation also requires permission to grant the Agent access to its key. After deployment, [verify this same
 Agent and revision](../../guides/deploy/production-agents.md#verify-production-workloads).
 If you are using [Local Setup](../../guides/quickstart.md) instead, the
@@ -25,7 +25,8 @@ Presets and edited Configuration JSON retain their settings.
 1. Sign in, select the intended Namespace, open **Agents**, and select
    **Create Agent**.
 2. To reuse a [Preset](../presets.md), choose one, fill its variables, and select
-   **Use Preset**. The chooser closes and the form opens with editable settings.
+   **Use Preset**. Review editable defaults and choose an existing or new model Secret.
+   The form opens with editable settings.
    Select **Start without Preset** to use standard defaults.
 3. Enter a name that is unique within the Namespace. Choose **OpenAI** or
    **Anthropic** under **Provider**, then choose **Harness**. OpenAI defaults to

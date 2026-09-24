@@ -66,7 +66,10 @@ sandbox and network proxy settings therefore apply only to `standard-codex`.
 
 [`SWE Agent`](../../deploy/presets/devday.json) copies
 `standard-codex` and adds Slack Socket Mode with channel `C0C43A2QA11` prefilled.
-It retains the same name, model, and masked API-key variables and Codex settings.
+It uses the Codex harness with **Service Accounts** authentication (`codex_pat`).
+The `model` variable defaults to `gpt-6-astra` and remains editable; its rendered
+model reference is `codex/gpt-6-astra`. Choose an existing Namespace Secret or
+enter a new service account token for `modelSecret`.
 Load a copy beside your YAML as in the example above, or reference the shipped
 container file at `/app/deploy/presets/devday.json`. It is opt-in and is not added
 by `includeDefaults` alone.
@@ -185,13 +188,20 @@ appear only as a whole token in `agent.harnessAuth.secret`, with method
 }
 ```
 
-**Use Preset** carries the entered value into the form's masked credential input.
+For the password variable bound to authentication, the Console offers **Create new Secret**
+or **Use existing Secret**. Existing mode lists readable Secret metadata from the
+current Namespace and uses the selected reference without fetching its value.
+Switching modes clears any entered token. The saved Preset remains unchanged.
+
+In new mode, **Use Preset** carries the entered value into the form's masked credential input.
 **Create Agent** creates a Secret in the current Namespace, then uses its reference
 for Agent authentication and grants the Agent access through the ordinary creation
 flow. The value never belongs in Preset storage, Agent JSON, or Configuration JSON.
 API clients rendering this form must likewise create a Secret and replace `secret`
 with `source: <SecretRef>` before submitting an ordinary Agent request. Rendering
-alone does not create resources. Partial saves follow normal creation recovery.
+alone does not create resources. Existing mode reuses the selected Secret and
+grants this Agent exact access through the same creation flow. Partial saves
+follow normal creation recovery; retrying credential access does not recreate the Agent.
 
 String variables can still supply existing credential reference IDs.
 [SecretRefs](configuration/secrets.md) remain structured, unresolved references;
