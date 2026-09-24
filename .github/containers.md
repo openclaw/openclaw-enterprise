@@ -133,8 +133,8 @@ grant a workstation credential additional scopes.
    both platforms in one OCI archive, checks the index and child manifest/config
    digests, and loads each platform into Docker separately. Its config ID must
    match that index entry. Both platforms run the existing controller or runtime
-   startup smoke before sealing/uploading. ARM64 builds and smoke tests use QEMU
-   on the amd64 runner; this is not native ARM64 performance proof. The publisher copies those exact
+   startup smoke before sealing/uploading. AMD64 and ARM64 builds and smoke tests
+   run on their matching native Linux architectures. The publisher copies those exact
    archive and all child manifests with Skopeo and verifies the remote index digests. Source, CI attempt,
    environment branch policy, and package visibility are rechecked before transfer.
 4. Use the `image@sha256:...` references in the job summary and

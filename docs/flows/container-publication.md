@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
 updated: 2026-09-24
-last_updated_session: public-pr/363
+last_updated_session: codex/01a0d171-59c4-7b42-95ab-4050d18eab79
 ---
 
 # Container publication flow
@@ -64,8 +64,10 @@ The standard AMD64 override retains guarded toolchain cleanup: required roots
 are checked, unsafe optional paths are skipped, and 36 GiB free is required.
 Larger runners do not depend on deleting preinstalled SDKs.
 
-Each Buildx builder runs at most two steps concurrently. GitHub Actions build
-caches are scoped by image and architecture, including intermediate stages.
+Each Buildx builder runs at most two steps concurrently. The default Blacksmith
+runners retain BuildKit layers on a sticky disk scoped by image and architecture,
+so builds do not export the large intermediate cache over the network. A custom
+non-Blacksmith runner uses the GitHub Actions cache with the same scope.
 The main-only publication gate and read-only build jobs remain unchanged.
 Maintainers can also dispatch `container-check.yml` on a branch for native image
 verification; manual `CI` dispatches call the same workflow so branches can be
@@ -159,6 +161,8 @@ not rebuild them. Old amd64-only seals cannot satisfy this platform contract.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-09-24 17:20: Keep the default native build cache on Blacksmith sticky disks and avoid exporting the same intermediate layers to the GitHub Actions cache. (codex/01a0d171-59c4-7b42-95ab-4050d18eab79 - 6b5c9093)
 
 - 2026-09-24 06:36: Build and smoke on native runners with architecture caches, slim images, and shared Codex 0.156.0. (public-pr/363 - 24ecb94b)
 

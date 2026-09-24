@@ -76,7 +76,15 @@ jobs:
         env:
           OPENCLAW_CI_HEADROOM_LANE: container-runtime-build
         run: node scripts/ci/repository-platform-headroom.mjs
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Set up persistent Blacksmith Buildx cache
+        if: ${{ startsWith(matrix.runner, 'blacksmith-') }}
+        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184 # v2.2.0
+        with:
+          cache-key: openclaw-enterprise/${{ matrix.image }}-${{ matrix.arch }}
+          max-parallelism: "2"
+      - name: Set up portable Buildx builder
+        if: ${{ !startsWith(matrix.runner, 'blacksmith-') }}
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         with:
           buildkitd-config-inline: |
             [worker.oci]
@@ -98,8 +106,8 @@ jobs:
             org.opencontainers.image.source=https://github.com/openclaw/openclaw-enterprise
             org.opencontainers.image.revision=${{ env.SOURCE_SHA }}
           outputs: type=oci,dest=${{ runner.temp }}/oci,tar=false
-          cache-from: type=gha,scope=enterprise-${{ matrix.image }}-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=enterprise-${{ matrix.image }}-${{ matrix.arch }}
+          cache-from: ${{ !startsWith(matrix.runner, 'blacksmith-') && format('type=gha,scope=enterprise-{0}-{1}', matrix.image, matrix.arch) || '' }}
+          cache-to: ${{ !startsWith(matrix.runner, 'blacksmith-') && format('type=gha,mode=max,scope=enterprise-{0}-{1}', matrix.image, matrix.arch) || '' }}
           provenance: false
           push: false
       - name: Install existing smoke test prerequisites
