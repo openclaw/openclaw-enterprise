@@ -41,7 +41,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 const agent = JSON.parse(readFileSync("agent-before-plugins.json", "utf8"));
 const plugins = {
   ...agent.plugins,
-  "occ-plugin:diffs": { enabled: true, approvalMode: "always" },
+  "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "native" } },
 };
 writeFileSync("agent-plugin-update.json",
   JSON.stringify({ configurationId: agent.configurationId, plugins }, null, 2) + "\n");
@@ -51,8 +51,8 @@ occ agent update "$AGENT_ID" --file agent-plugin-update.json --output json
 ```
 
 The returned `plugins` map should contain `occ-plugin:diffs` with `enabled: true`.
-The `always` policy allows supported plugin calls without prompting; the
-Agent's other authorization and sandbox restrictions still apply. The running
+The `native` policy uses Diffs' existing execution behavior, without an added
+approval step. The Agent's authorization and sandbox restrictions still apply. The running
 Agent has not changed yet.
 
 If other people are updating the same Agent, coordinate before submitting:

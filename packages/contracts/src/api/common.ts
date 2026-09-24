@@ -236,6 +236,29 @@ export const DiscoverAgentModelsBody = Type.Object(
   { additionalProperties: false },
 );
 
+const PluginDiscoveryAccessToken = Type.String({
+  minLength: 1,
+  maxLength: 16384,
+  pattern: "\\S",
+  writeOnly: true,
+});
+
+export const DiscoverAgentPluginsBody = Type.Object(
+  {
+    accessToken: PluginDiscoveryAccessToken,
+    cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
+  },
+  { additionalProperties: false },
+);
+
+export const DiscoverAgentPluginDetailsBody = Type.Object(
+  {
+    accessToken: PluginDiscoveryAccessToken,
+    pluginId: Type.String({ minLength: 1, maxLength: 256 }),
+  },
+  { additionalProperties: false },
+);
+
 export const PermissionActionSchema = Type.Union([
   Type.Literal("create"),
   Type.Literal("read"),
@@ -444,16 +467,12 @@ export const UpdateWorkspaceFileBody = Type.Object(
   { additionalProperties: false },
 );
 
-export const PluginApprovalModeSchema = Type.Union([
-  Type.Literal("always"),
-  Type.Literal("never"),
-  Type.Literal("prompt"),
-  Type.Literal("auto"),
-]);
+export const PluginReviewerSchema = Type.Union([Type.Literal("human"), Type.Literal("auto")]);
 
-export const PluginApprovalsReviewerSchema = Type.Union([
-  Type.Literal("user"),
-  Type.Literal("auto_review"),
+export const PluginApprovalModeSchema = Type.Union([
+  Type.Literal("native"),
+  Type.Literal("prompt"),
+  Type.Literal("approve"),
 ]);
 
 export const ERROR_DETAIL_CODES = Object.freeze([
@@ -488,6 +507,10 @@ export const ERROR_CODES = Object.freeze([
   "MODEL_DISCOVERY_RATE_LIMITED",
   "MODEL_DISCOVERY_UNAVAILABLE",
   "MODEL_DISCOVERY_INVALID_RESPONSE",
+  "PLUGIN_DISCOVERY_CREDENTIALS_REJECTED",
+  "PLUGIN_DISCOVERY_RATE_LIMITED",
+  "PLUGIN_DISCOVERY_UNAVAILABLE",
+  "PLUGIN_DISCOVERY_INVALID_RESPONSE",
 ] as const);
 
 export const ErrorDetail = Type.Object(
@@ -538,6 +561,10 @@ export const ErrorResponse = Type.Object(
           Type.Literal("MODEL_DISCOVERY_RATE_LIMITED"),
           Type.Literal("MODEL_DISCOVERY_UNAVAILABLE"),
           Type.Literal("MODEL_DISCOVERY_INVALID_RESPONSE"),
+          Type.Literal("PLUGIN_DISCOVERY_CREDENTIALS_REJECTED"),
+          Type.Literal("PLUGIN_DISCOVERY_RATE_LIMITED"),
+          Type.Literal("PLUGIN_DISCOVERY_UNAVAILABLE"),
+          Type.Literal("PLUGIN_DISCOVERY_INVALID_RESPONSE"),
         ]),
         message: Type.String({ minLength: 1, maxLength: 256 }),
         details: Type.Optional(Type.Array(ErrorDetail, { maxItems: 32 })),
@@ -628,12 +655,15 @@ export const PresetTemplateSchema = Type.Object(
     ),
     agent: Type.Optional(
       Type.Object(
-        Object.fromEntries(
-          ["name", "executionMode", "providerId", "harnessAuth", "plugins"].map((key) => [
-            key,
-            Type.Optional(Type.Ref("SafeJsonValue")),
-          ]),
-        ),
+        {
+          ...Object.fromEntries(
+            ["name", "executionMode", "providerId", "harnessAuth", "plugins"].map((key) => [
+              key,
+              Type.Optional(Type.Ref("SafeJsonValue")),
+            ]),
+          ),
+          initialWorkspaceFiles: Type.Optional(CreateAgentBody.properties.initialWorkspaceFiles),
+        },
         { additionalProperties: false },
       ),
     ),

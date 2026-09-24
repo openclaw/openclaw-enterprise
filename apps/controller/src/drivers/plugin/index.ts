@@ -2,13 +2,25 @@ import { asRecord, deepFreeze, immutableCopy } from "@openclaw-enterprise/utils"
 import {
   type JSONSchema,
   type PluginCatalogEntry,
+  type PluginCatalogPage,
   type PluginDriver,
+  type PluginDesiredState,
+  type PluginPolicyCapabilities,
   type PluginDriverContext,
   type PluginDriverIdentity,
 } from "@openclaw-enterprise/contracts";
-import { NotImplementedError, ScopeViolationError } from "@openclaw-enterprise/occ";
-import { openClawCatalogEntries, type CodexPluginCatalogReader } from "./runtime-translator.ts";
+import {
+  NotImplementedError,
+  PluginPolicyValidationError,
+  ScopeViolationError,
+} from "@openclaw-enterprise/occ";
+import {
+  openClawCatalogEntries,
+  validatePolicies,
+  type CodexPluginCatalogReader,
+} from "./runtime-translator.ts";
 import { NativeCodexPluginCatalogReader } from "./stdio-catalog-reader.ts";
+import { discoverHostedPlugins, getHostedPlugin } from "./hosted-catalog.ts";
 
 type ConfigurationRecord = Readonly<Record<string, unknown>>;
 
@@ -39,6 +51,19 @@ const CODEX_CONFIGURATION_SCHEMA: JSONSchema = deepFreeze({
     codexExecutable: { type: "string", minLength: 1 },
     codexHome: { type: "string", minLength: 1 },
     requestTimeoutMs: { type: "integer", minimum: 1, maximum: 60_000 },
+  },
+});
+
+const CODEX_POLICY_SCHEMA: JSONSchema = deepFreeze({
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    destructiveEnabled: {
+      type: "boolean",
+      title: "Destructive tools",
+      description:
+        "Whether destructive tools are enabled by default. Explicit tool enablement overrides this default. Leave toolDefaults.enabled unset when using this setting.",
+    },
   },
 });
 
@@ -126,6 +151,18 @@ class BundledPluginDriverBase {
     }
   }
 
+  protected validate(kind: "codex" | "openclaw", selections: PluginDesiredState): void {
+    try {
+      validatePolicies(kind, selections);
+    } catch (error) {
+      const field =
+        error instanceof Error && "policyField" in error ? error.policyField : undefined;
+      throw new PluginPolicyValidationError(
+        field === "toolDefaults.reviewer" || field === "tools[id].reviewer" ? field : undefined,
+      );
+    }
+  }
+
   protected catalog(catalog: readonly BundledCatalogEntry[]): readonly PluginCatalogEntry[] {
     return immutableCopy(catalog) as readonly PluginCatalogEntry[];
   }
@@ -133,6 +170,15 @@ class BundledPluginDriverBase {
 
 export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDriver {
   static readonly configurationSchema = EMPTY_CONFIGURATION_SCHEMA;
+  readonly policyCapabilities: PluginPolicyCapabilities = deepFreeze({
+    toolDefaults: { enabled: true, approval: ["native", "approve"], reviewer: [] },
+    tools: { enabled: true, approval: ["native", "approve"], reviewer: [] },
+    driverPolicySchema: EMPTY_CONFIGURATION_SCHEMA,
+  });
+
+  validatePolicies(selections: PluginDesiredState): void {
+    this.validate("openclaw", selections);
+  }
 
   static validateConfiguration(configuration: unknown): void {
     validateEmptyConfiguration(configuration, "OpenClaw Plugin Driver");
@@ -151,10 +197,39 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
 
 export class CodexPluginDriver extends BundledPluginDriverBase implements PluginDriver {
   static readonly configurationSchema = CODEX_CONFIGURATION_SCHEMA;
+  // TODO: gate prompt on enforceable session constraints before this draft ships.
+  // A permissive native session can bypass app-level review despite translation.
+  readonly policyCapabilities: PluginPolicyCapabilities = deepFreeze({
+    toolDefaults: {
+      enabled: true,
+      approval: ["native", "prompt", "approve"],
+      reviewer: ["human", "auto"],
+    },
+    tools: { enabled: true, approval: ["native", "prompt", "approve"], reviewer: [] },
+    driverPolicySchema: CODEX_POLICY_SCHEMA,
+  });
+
+  validatePolicies(selections: PluginDesiredState): void {
+    this.validate("codex", selections);
+  }
   private readonly catalogReader: CodexPluginCatalogReader | undefined;
 
   static validateConfiguration(configuration: unknown): void {
     validateCodexConfiguration(configuration);
+  }
+
+  discoverCatalog(
+    input: { readonly accessToken: string; readonly cursor?: string },
+    signal?: AbortSignal,
+  ): Promise<PluginCatalogPage> {
+    return discoverHostedPlugins(input, signal);
+  }
+
+  getCatalogPlugin(
+    input: { readonly accessToken: string; readonly pluginId: string },
+    signal?: AbortSignal,
+  ): Promise<PluginCatalogEntry> {
+    return getHostedPlugin(input, signal);
   }
 
   constructor(

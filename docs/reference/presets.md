@@ -12,15 +12,23 @@ uses this same API and chooser. Install it manually or enable the
 
 ## Installation defaults
 
-The trusted Installation YAML can opt into bundled Presets:
+The trusted Installation YAML can include bundled Presets and JSON files:
 
 ```yaml
 presets:
   includeDefaults: true
+  files:
+    - presets/devday.json
 ```
 
-Omitted or `false` disables automatic inclusion. Currently the bundle contains
-`standard-codex`. API startup adds missing defaults to existing ready or
+`includeDefaults: true` seeds exactly `standard-codex` and `standard-openclaw`.
+Omitting it or setting it to `false` disables both bundled Presets; explicit
+`files` still load. Each JSON file contains one
+`{ "name": "...", "template": { ... } }` object. Relative file paths resolve beside
+the Installation YAML, independent of the process working directory; absolute
+paths are also supported. Mount the files readably for both the API and worker.
+Missing, malformed, invalid, or duplicate-name definitions prevent startup.
+Files are read at startup, not watched for changes. API startup adds missing defaults to existing ready or
 provisioning Namespaces, including the bootstrap Namespace. New Namespace
 creation includes the same defaults atomically. Failed or deleting Namespaces
 are skipped during startup.
@@ -28,8 +36,8 @@ are skipped during startup.
 Each copy is an ordinary Namespace-owned Preset with its own ID and normal
 read/update/delete permissions. Matching names are preserved without comparing
 or overwriting their templates. Startup can restore a deleted or renamed
-default while enabled; bundle updates do not replace existing copies. Turning
-the option off stops seeding and leaves saved Presets and Agents unchanged.
+default while enabled; bundle updates do not replace existing copies. Removing the files and disabling
+`includeDefaults` stops seeding and leaves saved Presets and Agents unchanged.
 Restart the API after changing the YAML, keeping the worker configuration in sync.
 
 Startup selects a persisted Principal authorized to administer the Installation
@@ -38,6 +46,50 @@ creators likewise need `preset:create` when this option is enabled. Authorizatio
 or template validation failure rolls back initialization and prevents startup
 or Namespace creation. The selected Configuration Driver validates native
 values; seeding does not create workloads or credentials.
+
+## Standard harness presets
+
+Both bundled presets ask for an Agent name, model ID, and masked model API key.
+They share the gateway defaults and disabled browser, elevated tools, and web
+fetch settings.
+
+| Preset                                                             | Harness  | Execution mode | Model reference  |
+| ------------------------------------------------------------------ | -------- | -------------- | ---------------- |
+| `standard-codex`                                                   | Codex    | Dedicated      | `codex/<model>`  |
+| [`standard-openclaw`](../../deploy/presets/standard-openclaw.json) | OpenClaw | Embedded       | `openai/<model>` |
+
+OpenClaw uses the ordinary OpenAI provider endpoint and native harness. It does
+not load the Codex plugin, its app-server configuration, or its hosted cached-search override. The Codex-specific
+sandbox and network proxy settings therefore apply only to `standard-codex`.
+
+## DevDay custom presets
+
+[`SWE Agent`](../../deploy/presets/devday.json) copies
+`standard-codex` and adds Slack Socket Mode with channel `C0C43A2QA11` prefilled.
+It uses the Codex harness with **Service Accounts** authentication (`codex_pat`).
+The `model` variable defaults to `gpt-6-astra` and remains editable; its rendered
+model reference is `codex/gpt-6-astra`. Choose an existing Namespace Secret or
+enter a new service account token for `modelSecret`.
+Load a copy beside your YAML as in the example above, or reference the shipped
+container file at `/app/deploy/presets/devday.json`. It is opt-in and is not added
+by `includeDefaults` alone.
+
+[`Q&A Agent`](../../deploy/presets/devday-qa.json) and
+[`Oncall Agent`](../../deploy/presets/devday-oncall.json) copy the entire SWE Agent
+template, including its Slack and workspace instructions. Their separate file
+entries are commented out in the example Installation YAML, along with SWE Agent.
+Uncomment only the custom presets you want to install.
+
+In the Console, choose **SWE Agent**, fill its variables, then use **Edit Slack** to
+choose allowed senders and bind Slack app/bot Secrets. The preset allows channel members to mention the agent (`users: ["*"]`)
+in this channel and requires a mention. Narrow the sender list in the drawer if
+needed. No credentials are stored in the file.
+The preset includes the supplied Ocalot instructions in
+`template.agent.initialWorkspaceFiles.AGENTS.md`, including their draft decisions.
+Its opening sentence uses `You are {{vars.name}}`, filled from the entered `name`
+when applying the Preset. Later name edits do not re-render the copied file.
+To revise them, update that content and the existing Namespace Preset through the API. Restarting with a changed
+JSON file preserves already-installed same-name copies.
 
 ## Contents
 
@@ -52,6 +104,7 @@ is valid. Its optional fields are:
 | `agent.executionMode`          | Embedded or dedicated execution.                                                                     |
 | `agent.providerId`             | Installation-configured Provider ID, or null.                                                        |
 | `agent.harnessAuth`            | Credential binding or password variable token, or null; never stored credential bytes.               |
+| `agent.initialWorkspaceFiles`  | Optional creation-time workspace contents keyed by supported filename.                               |
 | `agent.plugins`                | Desired plugin selections and policies.                                                              |
 | `configuration.values`         | Native Agent Configuration JSON, including models, Harness settings, channels, and sandbox settings. |
 | `configuration.secretBindings` | Bindings to Secrets in this Namespace.                                                               |
@@ -61,6 +114,29 @@ contracts. Installation-owned Driver selection, generated identities, runtime
 state, and Agent revision IDs are not template settings. A supplied
 `configuration.values` replaces the console's starter JSON; it does not merge
 with it. Omitted settings use the form's normal defaults.
+
+## Workspace files
+
+`template.agent.initialWorkspaceFiles` is a partial map for `AGENTS.md`, `SOUL.md`,
+`IDENTITY.md`, and `USER.md`. Values must be valid Unicode strings without NUL,
+at most 16 KiB of UTF-8 per file. Limits also apply after variable expansion.
+Omitted files keep the Console defaults; an explicit empty string creates an
+empty file. Users can review and edit the rendered contents in **Advanced settings →
+Workspace files** before creation. Password variables are not allowed in files.
+
+For example, add this within `template.agent`:
+
+```json
+{
+  "initialWorkspaceFiles": {
+    "IDENTITY.md": "# Identity\nName: {{ vars.name }}\n",
+    "USER.md": ""
+  }
+}
+```
+
+The ordinary Agent/provisioning APIs stage these contents for first deployment.
+Preset files embed workspace contents; they do not read arbitrary workspace paths.
 
 ## Variables
 
@@ -114,13 +190,20 @@ appear only as a whole token in `agent.harnessAuth.secret`, with method
 }
 ```
 
-**Use Preset** carries the entered value into the form's masked credential input.
+For the password variable bound to authentication, the Console offers **Create new Secret**
+or **Use existing Secret**. Existing mode lists readable Secret metadata from the
+current Namespace and uses the selected reference without fetching its value.
+Switching modes clears any entered token. The saved Preset remains unchanged.
+
+In new mode, **Use Preset** carries the entered value into the form's masked credential input.
 **Create Agent** creates a Secret in the current Namespace, then uses its reference
 for Agent authentication and grants the Agent access through the ordinary creation
 flow. The value never belongs in Preset storage, Agent JSON, or Configuration JSON.
 API clients rendering this form must likewise create a Secret and replace `secret`
 with `source: <SecretRef>` before submitting an ordinary Agent request. Rendering
-alone does not create resources. Partial saves follow normal creation recovery.
+alone does not create resources. Existing mode reuses the selected Secret and
+grants this Agent exact access through the same creation flow. Partial saves
+follow normal creation recovery; retrying credential access does not recreate the Agent.
 
 String variables can still supply existing credential reference IDs.
 [SecretRefs](configuration/secrets.md) remain structured, unresolved references;

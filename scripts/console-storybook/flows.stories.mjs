@@ -21,4 +21,20 @@ export const CreateSlackSecretsFlow = {
   ...story("createSlackSecretsFlow"),
   name: "Create with Slack Secrets",
 };
+export const DevdayCreateFlow = {
+  ...story("devdayCreateFlow"),
+  name: "DevDay segment 1: create devday claw",
+};
+export const DevdayCreateCheckpoint = {
+  ...story("devdayCreateCheckpoint"),
+  name: "DevDay segment 1 checkpoint: deployed devday claw",
+};
+export const DevdayAdminFlow = {
+  ...story("devdayAdminFlow"),
+  name: "DevDay segment 2: oceclaw Admin UI",
+};
+export const DevdayAdminCheckpoint = {
+  ...story("devdayAdminCheckpoint"),
+  name: "DevDay segment 2 checkpoint: oceclaw detail",
+};
 export const DeleteFlow = { ...story("deleteFlow"), name: "Delete an Agent" };

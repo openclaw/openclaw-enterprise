@@ -81,11 +81,15 @@ the test environment.
 
 ## Kubernetes model turns and Secrets
 
+Follow [Codex sandbox setup](../guides/deploy/codex-sandbox.md) for seccomp
+prerequisites. CI checks workspace writes and outside-write denial; the native
+workspace case additionally requires tool-history evidence with `approvalPolicy: never`.
+Credentialed repository access requires separate proof.
+
 ### Develop with local containers and k3d
 
-The repository can prepare a disposable k3d cluster, an isolated PostgreSQL
-database, and the current gateway and Codex runtime images. Start Docker or a
-Podman API socket. On macOS, start Podman Machine. Then start the helper:
+The helper prepares disposable k3d, isolated PostgreSQL, and gateway/Codex images.
+Start Docker or Podman's API socket (Podman Machine on macOS), then run:
 
 ```sh
 export OCC_TEST_OPENAI_MODEL=gpt-6-astra

@@ -86,6 +86,7 @@ export interface ProviderSummary {
 
 export interface InstallationCapabilities {
   readonly agentProvisioning?: ComputeAgentProvisioningCapabilities;
+  readonly pluginPolicies?: PluginPolicyCapabilities & { readonly driver: PluginDriverIdentity };
 }
 
 export interface Provider<Client = unknown> {
@@ -262,9 +263,9 @@ export interface ComputeRevisionContext {
   readonly repositoryCredentials?: readonly RepositoryCredentialRuntimeBinding[];
 }
 
-export type PluginApprovalMode = "always" | "never" | "prompt" | "auto";
+export type PluginReviewer = "human" | "auto";
 
-export type PluginApprovalsReviewer = "user" | "auto_review";
+export type PluginApprovalMode = "native" | "prompt" | "approve";
 
 export interface PluginDriverIdentity {
   readonly id: string;
@@ -273,15 +274,15 @@ export interface PluginDriverIdentity {
 
 export interface PluginToolPolicy {
   readonly enabled?: boolean;
-  readonly approvalMode?: PluginApprovalMode;
+  readonly approval?: PluginApprovalMode;
+  readonly reviewer?: PluginReviewer;
 }
 
 export interface PluginDesiredSelection {
   readonly enabled: boolean;
-  readonly approvalMode: PluginApprovalMode;
-  readonly approvalsReviewer?: PluginApprovalsReviewer;
-  readonly destructiveActions?: PluginApprovalMode;
-  readonly writes?: PluginApprovalMode;
+  readonly toolDefaults?: PluginToolPolicy;
+  /** Validated by the selected Plugin Driver, never interpreted by the control plane. */
+  readonly driverPolicy?: Readonly<Record<string, unknown>>;
   readonly tools?: Readonly<Record<string, PluginToolPolicy>>;
 }
 
@@ -289,15 +290,54 @@ export type PluginDesiredState = Readonly<Record<string, PluginDesiredSelection>
 
 export interface PluginToolCatalogEntry {
   readonly id: string;
+  readonly ownerId: string;
   readonly name: string;
-  readonly destructive: boolean;
-  readonly writes: boolean;
+  readonly description?: string;
+  readonly available?: boolean;
+  readonly unavailableReason?: string;
+  readonly destructive?: boolean;
+  readonly writes?: boolean;
+}
+
+export interface PluginPolicyCapabilities {
+  readonly toolDefaults: {
+    readonly enabled: boolean;
+    readonly approval: readonly PluginApprovalMode[];
+    readonly reviewer: readonly PluginReviewer[];
+  };
+  readonly tools: {
+    readonly enabled: boolean;
+    readonly approval: readonly PluginApprovalMode[];
+    readonly reviewer: readonly PluginReviewer[];
+  };
+  readonly driverPolicySchema: JSONSchema;
+}
+
+export interface PluginCatalogLink {
+  readonly label: string;
+  readonly url: string;
 }
 
 export interface PluginCatalogEntry {
   readonly id: string;
   readonly name: string;
+  readonly remoteId?: string;
+  readonly description?: string;
+  /** Public HTTPS presentation image; may expire and is never selection state. */
+  readonly logoUrl?: string;
+  readonly websiteUrl?: string;
+  readonly privacyPolicyUrl?: string;
+  readonly termsOfServiceUrl?: string;
+  readonly available?: boolean;
+  readonly unavailableReason?: string;
+  readonly unavailableHelp?: PluginCatalogLink;
   readonly tools: readonly PluginToolCatalogEntry[] | null;
+}
+
+export interface PluginCatalogPage {
+  readonly plugins: readonly PluginCatalogEntry[];
+  readonly nextCursor: string | null;
+  readonly setup?: { readonly message: string; readonly links: readonly PluginCatalogLink[] };
 }
 
 export interface PluginRevisionState {
@@ -803,7 +843,19 @@ export interface PluginDriverContext {
 
 export interface PluginDriver extends Driver {
   readonly capability: "plugin";
+  readonly policyCapabilities: PluginPolicyCapabilities;
+  /** Checks policy support without installing plugins or performing authenticated discovery. */
+  validatePolicies(selections: PluginDesiredState): void;
   listCatalog(context: PluginDriverContext): Promise<readonly PluginCatalogEntry[]>;
+  /** Pre-Agent discovery uses a transient credential; neither it nor results are persisted. */
+  discoverCatalog?(
+    input: { readonly accessToken: string; readonly cursor?: string },
+    signal?: AbortSignal,
+  ): Promise<PluginCatalogPage>;
+  getCatalogPlugin?(
+    input: { readonly accessToken: string; readonly pluginId: string },
+    signal?: AbortSignal,
+  ): Promise<PluginCatalogEntry>;
 }
 
 export type NamespaceLifecycleFailure = "retryable" | "permanent";

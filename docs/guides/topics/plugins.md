@@ -3,7 +3,7 @@
 Plugins give an Agent extra tools or access to an integration. Select them per
 Agent: two Agents can share a Configuration without sharing plugins. New Agents
 start with no user-selected plugins. An Installation operator must select a
-compatible Plugin Driver before an Agent can deploy with plugins.
+compatible Plugin Driver before an Agent can save nonempty plugin selections.
 
 ## Choose a supported plugin
 

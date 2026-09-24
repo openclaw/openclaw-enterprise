@@ -498,11 +498,14 @@ test(
       const presetPath = `/namespaces/${defaultNamespace[0].id}/presets`;
       const defaults = await request("GET", presetPath);
       assert.equal(defaults.status, 200);
-      assert.deepEqual(
-        defaults.data.map((preset) => preset.name),
-        ["standard-codex"],
-      );
-      const copied = defaults.data[0];
+      assert.deepEqual(defaults.data.map((preset) => preset.name).sort(), [
+        "standard-codex",
+        "standard-openclaw",
+      ]);
+      const copied = defaults.data.find((preset) => preset.name === "standard-codex");
+      const copiedOpenClaw = defaults.data.find((preset) => preset.name === "standard-openclaw");
+      assert.ok(copied, "missing standard-codex");
+      assert.ok(copiedOpenClaw, "missing standard-openclaw");
       const worker = createControllerWorker({
         pool: new pg.Pool({ connectionString: databaseUrl }),
         mode: "production",
@@ -545,17 +548,35 @@ test(
       });
       endpoint = await app.listen({ port: 0, host: "127.0.0.1" });
       const afterRestart = await request("GET", presetPath);
-      assert.deepEqual(afterRestart.data, [customized.data]);
+      assert.deepEqual(afterRestart.data.map((preset) => preset.name).sort(), [
+        "standard-codex",
+        "standard-openclaw",
+      ]);
+      assert.deepEqual(
+        afterRestart.data.find((preset) => preset.name === "standard-codex"),
+        customized.data,
+      );
+      assert.deepEqual(
+        afterRestart.data.find((preset) => preset.name === "standard-openclaw"),
+        copiedOpenClaw,
+      );
       const newNamespace = await request("POST", "/namespaces", {
         name: "Preset startup namespace",
       });
       assert.equal(newNamespace.status, 201);
       const newPresets = await request("GET", `/namespaces/${newNamespace.data.id}/presets`);
-      assert.deepEqual(
-        newPresets.data.map((preset) => preset.name),
-        ["standard-codex"],
+      assert.deepEqual(newPresets.data.map((preset) => preset.name).sort(), [
+        "standard-codex",
+        "standard-openclaw",
+      ]);
+      assert.notEqual(
+        newPresets.data.find((preset) => preset.name === "standard-codex").id,
+        copied.id,
       );
-      assert.notEqual(newPresets.data[0].id, copied.id);
+      assert.notEqual(
+        newPresets.data.find((preset) => preset.name === "standard-openclaw").id,
+        copiedOpenClaw.id,
+      );
 
       const defaultConfiguration = await request(
         "POST",

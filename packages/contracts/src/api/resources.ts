@@ -29,7 +29,7 @@ import {
   Timestamp,
   WorkspaceFileName,
   PluginApprovalModeSchema,
-  PluginApprovalsReviewerSchema,
+  PluginReviewerSchema,
 } from "./common.ts";
 
 const RuntimeFailureIdentifier = Type.String({
@@ -48,6 +48,71 @@ export const AgentModelListResponse = Type.Object(
   { additionalProperties: false },
 );
 
+const PluginCatalogLinkSchema = Type.Object(
+  { label: Type.String(), url: Type.String() },
+  { additionalProperties: false },
+);
+
+const PluginCatalogEntrySchema = Type.Object(
+  {
+    id: Type.String(),
+    name: Type.String(),
+    remoteId: Type.Optional(Type.String()),
+    logoUrl: Type.Optional(Type.String()),
+    websiteUrl: Type.Optional(Type.String()),
+    privacyPolicyUrl: Type.Optional(Type.String()),
+    termsOfServiceUrl: Type.Optional(Type.String()),
+    description: Type.Optional(Type.String()),
+    available: Type.Optional(Type.Boolean()),
+    unavailableReason: Type.Optional(Type.String()),
+    unavailableHelp: Type.Optional(PluginCatalogLinkSchema),
+    tools: Type.Union([
+      Type.Null(),
+      Type.Array(
+        Type.Object(
+          {
+            id: Type.String(),
+            name: Type.String(),
+            description: Type.Optional(Type.String()),
+            ownerId: Type.String(),
+            available: Type.Optional(Type.Boolean()),
+            unavailableReason: Type.Optional(Type.String()),
+            destructive: Type.Optional(Type.Boolean()),
+            writes: Type.Optional(Type.Boolean()),
+          },
+          { additionalProperties: false },
+        ),
+      ),
+    ]),
+  },
+  { additionalProperties: false },
+);
+
+export const AgentPluginCatalogResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        plugins: Type.Array(PluginCatalogEntrySchema),
+        nextCursor: Type.Union([Type.String(), Type.Null()]),
+        setup: Type.Optional(
+          Type.Object(
+            { message: Type.String(), links: Type.Array(PluginCatalogLinkSchema) },
+            { additionalProperties: false },
+          ),
+        ),
+      },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);
+
+export const AgentPluginDetailsResponse = Type.Object(
+  { data: PluginCatalogEntrySchema, meta: Meta },
+  { additionalProperties: false },
+);
+
 const RuntimeEvidenceTimestamp = Type.String({
   format: "date-time",
   pattern:
@@ -59,6 +124,31 @@ const InstallationCapabilitiesSchema = Type.Object(
     agentProvisioning: Type.Optional(
       Type.Object(
         { executionModes: Type.Array(HarnessExecutionModeSchema, { minItems: 1, maxItems: 2 }) },
+        { additionalProperties: false },
+      ),
+    ),
+    pluginPolicies: Type.Optional(
+      Type.Object(
+        {
+          driver: Type.Ref("PluginDriverIdentity"),
+          toolDefaults: Type.Object(
+            {
+              enabled: Type.Boolean(),
+              approval: Type.Array(PluginApprovalModeSchema),
+              reviewer: Type.Array(PluginReviewerSchema),
+            },
+            { additionalProperties: false },
+          ),
+          tools: Type.Object(
+            {
+              enabled: Type.Boolean(),
+              approval: Type.Array(PluginApprovalModeSchema),
+              reviewer: Type.Array(PluginReviewerSchema),
+            },
+            { additionalProperties: false },
+          ),
+          driverPolicySchema: Type.Record(Type.String(), Type.Unknown()),
+        },
         { additionalProperties: false },
       ),
     ),
@@ -120,30 +210,30 @@ export const PluginDriverIdentitySchema = Type.Object(
 export const PluginToolPolicySchema = Type.Object(
   {
     enabled: Type.Optional(Type.Boolean()),
-    approvalMode: Type.Optional(PluginApprovalModeSchema),
+    approval: Type.Optional(PluginApprovalModeSchema),
+    reviewer: Type.Optional(PluginReviewerSchema),
   },
   { additionalProperties: false, minProperties: 1, $id: "PluginToolPolicy" },
 );
 
 const PluginIdPattern = "^[A-Za-z0-9._~:@-]{1,253}$";
+const PluginToolIdPattern = "^[^\\u0000-\\u0020\\u007f]{1,1024}$";
 const PluginToolPolicyMapSchema = Type.Unsafe({
   type: "object",
   description:
-    "Plugin tool policy map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$.",
-  propertyNames: { pattern: PluginIdPattern },
+    "Tool overrides keyed by exact opaque tool IDs from the selected Plugin Driver catalog.",
+  propertyNames: { pattern: PluginToolIdPattern },
   additionalProperties: false,
   patternProperties: {
-    [PluginIdPattern]: Type.Ref("PluginToolPolicy"),
+    [PluginToolIdPattern]: Type.Ref("PluginToolPolicy"),
   },
 });
 
 export const PluginDesiredSelectionSchema = Type.Object(
   {
     enabled: Type.Boolean(),
-    approvalMode: PluginApprovalModeSchema,
-    approvalsReviewer: Type.Optional(PluginApprovalsReviewerSchema),
-    destructiveActions: Type.Optional(PluginApprovalModeSchema),
-    writes: Type.Optional(PluginApprovalModeSchema),
+    toolDefaults: Type.Optional(Type.Ref("PluginToolPolicy")),
+    driverPolicy: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
     tools: Type.Optional(PluginToolPolicyMapSchema),
   },
   { additionalProperties: false, $id: "PluginDesiredSelection" },

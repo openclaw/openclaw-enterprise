@@ -80,9 +80,9 @@ test(
     const desired = await fixture.selectPlugin(primary.id, {
       pluginId,
       enabled: true,
-      approvalMode: "always",
+      toolDefaults: { approval: "approve" },
     });
-    assert.equal(desired.approvalMode, "always");
+    assert.equal(desired.toolDefaults.approval, "approve");
     const selectedAgent = await fixture.getAgent(primary.id);
     assert.equal(selectedAgent.plugins[pluginId].enabled, true);
 
@@ -121,6 +121,68 @@ test(
       turnMarker,
       toolName,
       resultPattern,
+    });
+
+    // A tool override wins in both directions. Redeployment must remove the
+    // generated denial while preserving the reusable Configuration's exec denial.
+    for (const enabled of [false, true]) {
+      const policy = await fixture.updatePluginPolicy(primary.id, pluginId, {
+        toolDefaults: { enabled: !enabled, approval: "approve" },
+        tools: { [toolName]: { enabled } },
+      });
+      const redeployed = await fixture.deployAndWait(primary);
+      assert.deepEqual(redeployed.revision.plugins.plugins[pluginId], policy);
+      assert.deepEqual(redeployed.status.warnings, []);
+      assert.deepEqual(await fixture.readOpenClawPluginPolicy(primary, nativePluginId), {
+        plugins: { allow: allowedPlugins, enabled: true },
+        tools: { allow: ["read", nativePluginId], deny: enabled ? ["exec"] : ["exec", toolName] },
+      });
+      const sessionKey = `agent:main:tool-override-${randomUUID()}`;
+      const marker = `OPENCLAW_TOOL_OVERRIDE_${randomUUID()}`;
+      await fixture.normalGatewayTurn({
+        agent: primary,
+        gatewayPassword: redeployed.gatewayPassword,
+        sessionKey,
+        prompt: `${prompt}\nIf the tool is unavailable, do not substitute another tool. Include ${marker} in the final answer.`,
+        expectedPatterns: [marker],
+        secrets: [modelSecret],
+      });
+      const evidence = { sessionKey, turnMarker: marker, toolName, resultPattern };
+      if (enabled) {
+        await fixture.assertSessionToolCallEvidence(primary, evidence);
+      } else {
+        await fixture.assertNoSessionToolCallEvidence(primary, evidence);
+      }
+    }
+
+    // The same enabled exception cannot remove an operator's native tool deny.
+    const toolDenied = await fixture.request("PATCH", configurationPath, {
+      values: {
+        ...restrictedConfiguration,
+        tools: { ...restrictedConfiguration.tools, deny: ["exec", toolName] },
+      },
+    });
+    assert.equal(toolDenied.status, 200, JSON.stringify(toolDenied.error));
+    const operatorDenied = await fixture.deployAndWait(primary);
+    assert.deepEqual(operatorDenied.status.warnings, []);
+    assert.deepEqual(await fixture.readOpenClawPluginPolicy(primary, nativePluginId), {
+      plugins: { allow: allowedPlugins, enabled: true },
+      tools: { allow: ["read", nativePluginId], deny: ["exec", toolName] },
+    });
+    const operatorDeniedSession = `agent:main:operator-tool-denied-${randomUUID()}`;
+    const operatorDeniedMarker = `OPENCLAW_OPERATOR_TOOL_DENIED_${randomUUID()}`;
+    await fixture.normalGatewayTurn({
+      agent: primary,
+      gatewayPassword: operatorDenied.gatewayPassword,
+      sessionKey: operatorDeniedSession,
+      prompt: `${prompt}\nIf the tool is unavailable, do not substitute another tool. Include ${operatorDeniedMarker} in the final answer.`,
+      expectedPatterns: [operatorDeniedMarker],
+      secrets: [modelSecret],
+    });
+    await fixture.assertNoSessionToolCallEvidence(primary, {
+      sessionKey: operatorDeniedSession,
+      turnMarker: operatorDeniedMarker,
+      toolName,
     });
 
     const disabled = await fixture.updatePluginPolicy(primary.id, pluginId, { enabled: false });
@@ -200,7 +262,11 @@ test(
 
     // A later contradictory selection must fail in the replacement's startup,
     // rather than allowing installation to erase the reusable Configuration deny.
-    await fixture.selectPlugin(primary.id, { pluginId, enabled: true, approvalMode: "always" });
+    await fixture.selectPlugin(primary.id, {
+      pluginId,
+      enabled: true,
+      toolDefaults: { approval: "approve" },
+    });
     const conflicting = await fixture.request(
       "POST",
       `/namespaces/${fixture.namespaceId}/agents/${primary.id}/deploy`,
@@ -257,7 +323,7 @@ test(
 );
 
 test(
-  "curated Codex Google Calendar installs with the service-account credential and performs a harmless normal-turn read",
+  "curated Codex Google Calendar enforces per-call human and automatic review in normal Agent turns",
   {
     skip: pluginProofSkipReason("codex_calendar"),
     timeout: 900_000,
@@ -314,11 +380,10 @@ test(
     const desired = await fixture.selectPlugin(agent.id, {
       pluginId,
       enabled: true,
-      approvalMode: "auto",
-      approvalsReviewer: "auto_review",
+      toolDefaults: { approval: "native", reviewer: "auto" },
     });
-    assert.equal(desired.approvalMode, "auto");
-    assert.equal(desired.approvalsReviewer, "auto_review");
+    assert.equal(desired.toolDefaults.approval, "native");
+    assert.equal(desired.toolDefaults.reviewer, "auto");
 
     const deployed = await fixture.deployAndWait(agent);
     assert.equal(deployed.revision.plugins?.driver.id, "codex-plugin");
@@ -348,6 +413,166 @@ test(
       turnMarker,
       toolName,
       resultPattern,
+    });
+
+    // Reuse one native session: allowing the first read must not authorize the next.
+    await fixture.updatePluginPolicy(agent.id, pluginId, {
+      toolDefaults: { approval: "prompt", reviewer: "human" },
+    });
+    const humanRevision = await fixture.deployAndWait(agent);
+    const humanSessionKey = `agent:main:codex-calendar-human-${randomUUID()}`;
+    for (const decision of ["allow-once", "deny"]) {
+      const marker = `CODEX_CALENDAR_HUMAN_${randomUUID()}`;
+      const evidence = { sessionKey: humanSessionKey, turnMarker: marker, toolName, resultPattern };
+      await fixture.normalGatewayTurn({
+        agent,
+        gatewayPassword: humanRevision.gatewayPassword,
+        sessionKey: humanSessionKey,
+        prompt: [
+          prompt,
+          "Make a fresh call to that tool exactly once, even if earlier results are available.",
+          "If the operator denies it, do not retry or call another tool; report the denial.",
+          `Include this marker in the final answer after success or denial: ${marker}`,
+        ].join("\n"),
+        expectedPatterns: [marker],
+        secrets: [credential.accessToken, credential.workspaceId],
+        humanReview: { decision, turnMarker: marker, toolName },
+      });
+      if (decision === "deny") {
+        await fixture.assertSessionToolDeniedEvidence(agent, evidence);
+      } else {
+        await fixture.assertSessionToolCallEvidence(agent, evidence);
+      }
+    }
+
+    // A harmless read normally skips automatic review under auto. Prompt must
+    // instead persist a fresh approval on each successful call, including repeats.
+    await fixture.updatePluginPolicy(agent.id, pluginId, {
+      toolDefaults: { approval: "prompt", reviewer: "auto" },
+    });
+    const automaticRevision = await fixture.deployAndWait(agent);
+    const automaticSessionKey = `agent:main:codex-calendar-automatic-${randomUUID()}`;
+    const reviewIds = new Set();
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const marker = `CODEX_CALENDAR_AUTOMATIC_${randomUUID()}`;
+      await fixture.normalGatewayTurn({
+        agent,
+        gatewayPassword: automaticRevision.gatewayPassword,
+        sessionKey: automaticSessionKey,
+        prompt: [
+          prompt,
+          "Make a fresh call to that tool exactly once, even if earlier results are available.",
+          `Include this marker in the final answer: ${marker}`,
+        ].join("\n"),
+        expectedPatterns: [marker],
+        secrets: [credential.accessToken, credential.workspaceId],
+      });
+      const evidence = await fixture.assertSessionToolCallEvidence(agent, {
+        sessionKey: automaticSessionKey,
+        turnMarker: marker,
+        toolName,
+        resultPattern,
+        requireAutomaticReview: true,
+      });
+      for (const id of evidence.approvedReviewIds) {
+        assert.equal(typeof id, "string");
+        assert.ok(id.length > 0);
+        assert.equal(
+          reviewIds.has(id),
+          false,
+          "a repeated read must receive a new automatic review",
+        );
+        reviewIds.add(id);
+      }
+    }
+
+    // Bind the known harmless read to the native raw name and owning app. These
+    // catalog entries are discovery metadata, not policy-filtered tool exposure.
+    const [entry] = await fixture.listCodexNativeCatalog(agent, [pluginId]);
+    assert.ok(entry?.detailAvailable && entry.appCount > 0);
+    const inventory = await fixture.codexPluginToolInventory(agent, entry);
+    const matchingTools = inventory.filter((tool) => tool.transcriptName === toolName);
+    assert.equal(matchingTools.length, 1, "the live read must identify one owned native tool.");
+    const selectedTool = matchingTools[0];
+    assert.equal(selectedTool.annotations.readOnlyHint, true, "the selected tool must be a read.");
+    assert.notEqual(selectedTool.annotations.destructiveHint, true);
+    assert.ok(inventory.length > 1, "the default-disabled proof requires sibling app tools.");
+    const toolId = `${encodeURIComponent(selectedTool.appId)}/${encodeURIComponent(selectedTool.name)}`;
+
+    // Only the explicit read exception is enabled; its approval overrides prompt.
+    // Verify all observed siblings' configuration without calling write tools.
+    const exceptionPolicy = await fixture.updatePluginPolicy(agent.id, pluginId, {
+      toolDefaults: { enabled: false, approval: "prompt", reviewer: "human" },
+      tools: { [toolId]: { enabled: true, approval: "approve" } },
+    });
+    const exceptionDeployment = await fixture.deployAndWait(agent);
+    assert.deepEqual(exceptionDeployment.revision.plugins.plugins[pluginId], exceptionPolicy);
+    assert.deepEqual(exceptionDeployment.status.warnings, []);
+    const exceptionConfig = await fixture.codexAppConfiguration(agent);
+    for (const appId of entry.appIds) {
+      const app = exceptionConfig.apps[appId];
+      assert.equal(app?.enabled, true, "the plugin must stay active with disabled tool defaults.");
+      assert.equal(app.default_tools_enabled, false);
+      assert.equal(app.default_tools_approval_mode, "prompt");
+      assert.equal(app.approvals_reviewer, "user");
+    }
+    for (const tool of inventory) {
+      const selected = tool.appId === selectedTool.appId && tool.name === selectedTool.name;
+      const policy = exceptionConfig.apps[tool.appId].tools?.[tool.name];
+      if (selected) {
+        assert.equal(policy?.enabled, true);
+        assert.equal(policy.approval_mode, "approve");
+      } else {
+        assert.ok(policy?.enabled == null, "siblings must inherit the disabled native default.");
+        assert.ok(policy?.approval_mode == null, "siblings must inherit prompt review.");
+      }
+    }
+    const exceptionMarker = `CODEX_CALENDAR_TOOL_EXCEPTION_${randomUUID()}`;
+    const exceptionSessionKey = `agent:main:codex-calendar-exception-${randomUUID()}`;
+    await fixture.normalGatewayTurn({
+      agent,
+      gatewayPassword: exceptionDeployment.gatewayPassword,
+      sessionKey: exceptionSessionKey,
+      prompt: `${prompt}\nInclude this marker in the final answer: ${exceptionMarker}`,
+      expectedPatterns: [exceptionMarker],
+      secrets: [credential.accessToken, credential.workspaceId],
+    });
+    await fixture.assertSessionToolCallEvidence(agent, {
+      sessionKey: exceptionSessionKey,
+      turnMarker: exceptionMarker,
+      toolName,
+      resultPattern,
+    });
+
+    // Enable siblings by default so only the explicit denial blocks this read.
+    // Approval must not enable it, even with approve selected.
+    const disabledToolPolicy = await fixture.updatePluginPolicy(agent.id, pluginId, {
+      toolDefaults: { enabled: true, approval: "prompt", reviewer: "human" },
+      tools: { [toolId]: { enabled: false, approval: "approve" } },
+    });
+    const disabledToolDeployment = await fixture.deployAndWait(agent);
+    assert.deepEqual(disabledToolDeployment.revision.plugins.plugins[pluginId], disabledToolPolicy);
+    assert.deepEqual(disabledToolDeployment.status.warnings, []);
+    const disabledToolConfig = await fixture.codexAppConfiguration(agent);
+    const disabledApp = disabledToolConfig.apps[selectedTool.appId];
+    assert.equal(disabledApp?.enabled, true);
+    assert.equal(disabledApp.default_tools_enabled, true);
+    assert.equal(disabledApp.tools?.[selectedTool.name]?.enabled, false);
+    assert.equal(disabledApp.tools[selectedTool.name].approval_mode, "approve");
+    const disabledToolMarker = `CODEX_CALENDAR_TOOL_DISABLED_${randomUUID()}`;
+    const disabledToolSessionKey = `agent:main:codex-calendar-tool-disabled-${randomUUID()}`;
+    await fixture.normalGatewayTurn({
+      agent,
+      gatewayPassword: disabledToolDeployment.gatewayPassword,
+      sessionKey: disabledToolSessionKey,
+      prompt: `${prompt}\nIf the requested tool is unavailable, do not substitute another tool. Include ${disabledToolMarker} in the final answer.`,
+      expectedPatterns: [disabledToolMarker],
+      secrets: [credential.accessToken, credential.workspaceId],
+    });
+    await fixture.assertNoSessionToolCallEvidence(agent, {
+      sessionKey: disabledToolSessionKey,
+      turnMarker: disabledToolMarker,
+      toolName,
     });
   },
 );
@@ -422,8 +647,7 @@ test(
     const selectedSuccess = await fixture.selectPlugin(primary.id, {
       pluginId: successPluginId,
       enabled: true,
-      approvalMode: "auto",
-      approvalsReviewer: "auto_review",
+      toolDefaults: { approval: "native", reviewer: "auto" },
     });
     assert.equal(selectedSuccess.enabled, true);
     const deployedPrimary = await fixture.deployAndWait(primary);
@@ -497,8 +721,7 @@ test(
     const selectedFailure = await fixture.selectPlugin(primary.id, {
       pluginId: failurePluginId,
       enabled: true,
-      approvalMode: "auto",
-      approvalsReviewer: "auto_review",
+      toolDefaults: { approval: "native", reviewer: "auto" },
     });
     assert.equal(selectedFailure.enabled, true);
     const deployedWithWarning = await fixture.deployAndWait(primary);

@@ -52,6 +52,7 @@ type ConfigurationRecord = Readonly<Record<string, unknown>>;
 
 export interface StartupConfigurationSnapshot {
   readonly configuration?: ConfigurationRecord;
+  readonly configurationPath?: string;
   readonly logging: LoggingConfiguration;
 }
 
@@ -65,7 +66,7 @@ export interface SelectedDriverConfiguration<T = ConfigurationRecord> {
 export interface InstallationStartupConfiguration {
   readonly occ: { readonly cluster: string };
   readonly logging: LoggingConfiguration;
-  readonly presets?: { readonly includeDefaults: boolean };
+  readonly presets?: { readonly includeDefaults: boolean; readonly files?: readonly string[] };
   readonly provider: readonly ProviderDefinition[];
   readonly drivers: {
     readonly configuration: SelectedDriverConfiguration;
@@ -125,18 +126,23 @@ export async function initializeInstallationPresets(
   );
 }
 
+interface LoadedStartupConfiguration {
+  readonly configuration?: ConfigurationRecord;
+  readonly path?: string;
+}
+
 async function startupConfiguration(
   options: {
     readonly mode: "development" | "production";
     readonly environment?: Readonly<Record<string, string | undefined>>;
   },
   required: boolean,
-): Promise<ConfigurationRecord | undefined> {
+): Promise<LoadedStartupConfiguration> {
   const environment = options.environment ?? process.env;
   const path = environment.OCC_CONFIG_PATH;
   if (path === undefined) {
     if (!required) {
-      return undefined;
+      return {};
     }
     throw new Error("OCC_CONFIG_PATH must identify the Installation startup YAML.");
   }
@@ -172,17 +178,19 @@ async function startupConfiguration(
     ["occ", "drivers", "provider", "logging", "presets"],
     "Installation startup configuration",
   );
-  return configuration;
+  return { configuration, path };
 }
 
 export async function loadStartupConfigurationSnapshot(options: {
   readonly mode: "development" | "production";
   readonly environment?: Readonly<Record<string, string | undefined>>;
 }): Promise<StartupConfigurationSnapshot> {
-  const configuration = await startupConfiguration(options, options.mode === "production");
+  const startup = await startupConfiguration(options, options.mode === "production");
+  const { configuration } = startup;
   const logging = operationalLoggingConfiguration(configuration?.logging);
   return Object.freeze({
     ...(configuration === undefined ? {} : { configuration }),
+    ...(startup.path === undefined ? {} : { configurationPath: startup.path }),
     logging,
   });
 }
@@ -306,6 +314,45 @@ function providerConfiguration(
     }
   }
   return providers;
+}
+
+function presetDefinition(value: unknown, path: string): Pick<Preset, "name" | "template"> {
+  const preset = object(value, path);
+  closed(preset, ["name", "template"], path);
+  return Object.freeze({
+    name: nonempty(preset.name, `${path}.name`),
+    template: validatePresetTemplate(preset.template),
+  });
+}
+
+async function loadPresetDefinition(
+  path: string | URL,
+): Promise<Pick<Preset, "name" | "template">> {
+  let contents: string;
+  try {
+    contents = await readFile(path, "utf8");
+  } catch {
+    throw new Error(`Preset file ${path} is unavailable.`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(contents);
+  } catch {
+    throw new Error(`Preset file ${path} must contain valid JSON.`);
+  }
+  return presetDefinition(parsed, `Preset file ${path}`);
+}
+
+function appendDefaultPreset(
+  presets: Pick<Preset, "name" | "template">[],
+  names: Set<string>,
+  preset: Pick<Preset, "name" | "template">,
+): void {
+  if (names.has(preset.name)) {
+    throw new Error(`Default Preset ${preset.name} is configured more than once.`);
+  }
+  names.add(preset.name);
+  presets.push(preset);
 }
 
 export function providerSummariesFromDefinitions(
@@ -509,7 +556,7 @@ export async function loadInstallationConfiguration(options: {
     }
   }
   const startup = options.startupConfiguration ?? (await loadStartupConfigurationSnapshot(options));
-  const { configuration, logging } = startup;
+  const { configuration, configurationPath, logging } = startup;
   if (configuration === undefined && options.mode === "production") {
     throw new Error("OCC_CONFIG_PATH must identify the Installation startup YAML.");
   }
@@ -529,27 +576,47 @@ export async function loadInstallationConfiguration(options: {
     configuration.presets === undefined ? {} : configuration.presets,
     "presets",
   );
-  closed(presets, ["includeDefaults"], "presets");
+  closed(presets, ["includeDefaults", "files"], "presets");
   if (presets.includeDefaults !== undefined && typeof presets.includeDefaults !== "boolean") {
     throw new Error("presets.includeDefaults must be a boolean.");
   }
+  if (
+    presets.files !== undefined &&
+    (!Array.isArray(presets.files) || presets.files.some((entry) => typeof entry !== "string"))
+  ) {
+    throw new Error("presets.files must be an array of Preset JSON file paths.");
+  }
   const includeDefaults = presets.includeDefaults === true;
   const defaultPresets: Pick<Preset, "name" | "template">[] = [];
+  const defaultPresetNames = new Set<string>();
   if (includeDefaults) {
-    const preset = object(
-      JSON.parse(
-        await readFile(
-          new URL("../../../../deploy/presets/standard-codex.json", import.meta.url),
-          "utf8",
-        ),
+    for (const preset of [
+      "../../../../deploy/presets/standard-codex.json",
+      "../../../../deploy/presets/standard-openclaw.json",
+    ]) {
+      appendDefaultPreset(
+        defaultPresets,
+        defaultPresetNames,
+        await loadPresetDefinition(new URL(preset, import.meta.url)),
+      );
+    }
+  }
+  const presetFiles = (presets.files ?? []) as readonly string[];
+  for (const entry of presetFiles) {
+    const trimmed = entry.trim();
+    if (trimmed.length === 0) {
+      throw new Error("presets.files entries must be nonempty file paths.");
+    }
+    if (!isAbsolute(trimmed) && configurationPath === undefined) {
+      throw new Error("Relative presets.files entries require an Installation startup YAML path.");
+    }
+    appendDefaultPreset(
+      defaultPresets,
+      defaultPresetNames,
+      await loadPresetDefinition(
+        isAbsolute(trimmed) ? trimmed : resolve(dirname(configurationPath!), trimmed),
       ),
-      "Bundled default Preset",
     );
-    closed(preset, ["name", "template"], "Bundled default Preset");
-    defaultPresets.push({
-      name: nonempty(preset.name, "Bundled default Preset name"),
-      template: validatePresetTemplate(preset.template),
-    });
   }
   const occ = object(configuration.occ, "occ");
   closed(occ, ["cluster"], "occ");
@@ -864,7 +931,7 @@ export async function loadOperationalLoggingConfiguration(options: {
   readonly mode: "development" | "production";
   readonly environment?: Readonly<Record<string, string | undefined>>;
 }): Promise<LoggingConfiguration> {
-  const configuration = await startupConfiguration(options, false);
+  const { configuration } = await startupConfiguration(options, false);
   return operationalLoggingConfiguration(configuration?.logging);
 }
 

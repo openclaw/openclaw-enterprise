@@ -200,6 +200,17 @@ test("an admitted AgentRevision is a detached and deeply immutable deployment sn
       },
     },
     sandboxDriverId: "sandbox-test",
+    plugins: {
+      driver: { id: "codex-plugin", implementation: "occ/codex-plugin" },
+      plugins: {
+        "codex-plugin:github@openai-curated-remote": {
+          enabled: true,
+          toolDefaults: { approval: "prompt", reviewer: "human" },
+          tools: { "repos/list": { enabled: true }, "repos/write": { approval: "approve" } },
+          driverPolicy: { destructiveEnabled: false },
+        },
+      },
+    },
     repositoryCredentials: {
       driver: { id: "repository-credentials", implementation: "repository-test" },
       deadlineWallMs: 1786755600000,
@@ -248,6 +259,18 @@ test("an admitted AgentRevision is a detached and deeply immutable deployment sn
   mutableRevision.sandboxDriverId = "changed-after-admission";
   mutableRevision.harnessAuth.credential.secretRef.name = "replacement-source";
   mutableRevision.harnessAuth.providerBinding.workspaceId = "replacement-workspace";
+  const draftPlugin = mutableRevision.plugins.plugins["codex-plugin:github@openai-curated-remote"];
+  draftPlugin.toolDefaults.approval = "approve";
+  draftPlugin.toolDefaults.reviewer = "auto";
+  draftPlugin.tools["repos/list"].enabled = false;
+  draftPlugin.driverPolicy.destructiveEnabled = true;
+  // Partial tool policies stay partial in the immutable deployment snapshot.
+  assert.deepEqual(admitted.plugins.plugins["codex-plugin:github@openai-curated-remote"], {
+    enabled: true,
+    toolDefaults: { approval: "prompt", reviewer: "human" },
+    tools: { "repos/list": { enabled: true }, "repos/write": { approval: "approve" } },
+    driverPolicy: { destructiveEnabled: false },
+  });
   // Draft mutation must not retarget or extend an already admitted repository grant.
   mutableRevision.repositoryCredentials.driver.id = "replacement-driver";
   mutableRevision.repositoryCredentials.deadlineWallMs += 60_000;
@@ -299,5 +322,10 @@ test("an admitted AgentRevision is a detached and deeply immutable deployment sn
   }, TypeError);
   assert.throws(() => {
     admitted.repositoryCredentials.bindings[0].grant.repositoryId = "unauthorized-repository";
+  }, TypeError);
+  assert.throws(() => {
+    admitted.plugins.plugins["codex-plugin:github@openai-curated-remote"].tools[
+      "repos/list"
+    ].enabled = false;
   }, TypeError);
 });

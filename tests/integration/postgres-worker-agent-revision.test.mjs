@@ -332,7 +332,7 @@ function codexPluginRevisionState(pluginId) {
     plugins: {
       [pluginId]: {
         enabled: true,
-        approvalMode: "auto",
+        toolDefaults: { approval: "native" },
       },
     },
   };
@@ -4105,7 +4105,7 @@ test(
       { code: "PLUGIN_INSTALL_FAILED", pluginId: otherPluginId },
     ];
     const pluginState = codexPluginRevisionState(pluginId);
-    pluginState.plugins[otherPluginId] = { enabled: true, approvalMode: "auto" };
+    pluginState.plugins[otherPluginId] = { enabled: true, toolDefaults: { approval: "native" } };
     const owner = await fixture.agent("plugin-warning", "dedicated");
     const candidate = await fixture.revision(
       owner,

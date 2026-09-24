@@ -4,6 +4,13 @@ const TOKEN = /^\{\{\s*vars\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}$/;
 const RESERVED = /\{\{\s*vars\./;
 const MAX_BYTES = 1024 * 1024;
 const MAX_DEPTH = 64;
+const MAX_WORKSPACE_FILE_BYTES = 16 * 1024;
+const INITIAL_WORKSPACE_FILE_NAMES = Object.freeze([
+  "AGENTS.md",
+  "SOUL.md",
+  "IDENTITY.md",
+  "USER.md",
+]);
 
 function record(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -57,6 +64,28 @@ function scalar(value, type) {
 function closedObject(value, fields, path) {
   if (!record(value) || Object.keys(value).some((key) => !fields.includes(key))) {
     fail(path, "contains unsupported fields or is not an object.");
+  }
+}
+
+function checkInitialWorkspaceFiles(value, path) {
+  if (value === undefined) {
+    return;
+  }
+  if (!record(value)) {
+    fail(path, "must be an object.");
+  }
+  for (const [name, content] of Object.entries(value)) {
+    if (!INITIAL_WORKSPACE_FILE_NAMES.includes(name)) {
+      fail(path, "contains an unsupported filename.");
+    }
+    if (
+      typeof content !== "string" ||
+      !content.isWellFormed() ||
+      content.includes("\0") ||
+      new TextEncoder().encode(content).byteLength > MAX_WORKSPACE_FILE_BYTES
+    ) {
+      fail(path, "content must be valid Unicode without NUL and at most 16 KiB.");
+    }
   }
 }
 
@@ -198,9 +227,10 @@ export function validatePresetTemplate(template) {
   if (Object.hasOwn(template, "agent")) {
     closedObject(
       template.agent,
-      ["name", "executionMode", "providerId", "harnessAuth", "plugins"],
+      ["name", "executionMode", "providerId", "harnessAuth", "plugins", "initialWorkspaceFiles"],
       "agent",
     );
+    checkInitialWorkspaceFiles(template.agent.initialWorkspaceFiles, "agent.initialWorkspaceFiles");
   }
   const auth = template.agent?.harnessAuth;
   if (record(auth) && Object.hasOwn(auth, "secret")) {
@@ -258,6 +288,7 @@ function render(template, inputs, partial) {
         walk(template[section], definitions, inputs, section, false, partial),
       ]),
   );
+  checkInitialWorkspaceFiles(result.agent?.initialWorkspaceFiles, "agent.initialWorkspaceFiles");
   checkSize(result);
   return result;
 }

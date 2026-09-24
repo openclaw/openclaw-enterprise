@@ -10,7 +10,9 @@ function openClawRuntime(selection = {}) {
   return {
     manifest: {
       kind: "openclaw",
-      selections: { "occ-plugin:diffs": { enabled: true, approvalMode: "always", ...selection } },
+      selections: {
+        "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "approve" }, ...selection },
+      },
     },
   };
 }
@@ -114,7 +116,10 @@ test("OpenClaw runtime helper fails before readiness when raw Codex bridge confi
     manifest: {
       kind: "codex",
       selections: {
-        "codex-plugin:linear@openai-curated-remote": { enabled: true, approvalMode: "auto" },
+        "codex-plugin:linear@openai-curated-remote": {
+          enabled: true,
+          toolDefaults: { approval: "native" },
+        },
       },
     },
   };
@@ -248,28 +253,29 @@ for (const [field, plugins] of [
   });
 }
 
-for (const selection of [{ enabled: false }, { approvalMode: "never" }]) {
-  test(`OpenClaw startup preserves restrictions for disabled selection: ${JSON.stringify(selection)}`, () => {
-    const plugins = { allow: ["memory-core"], deny: ["diffs"], enabled: false };
-    const { files, calls } = runOpenClawRuntimeHelper(
-      openClawRuntime(selection),
-      installedPluginResponses(),
-      {
-        baseConfig: { plugins },
-      },
-    );
-    const effective = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
-    assert.deepEqual(effective.plugins, { ...plugins, entries: { diffs: { enabled: false } } });
-    assert.ok(calls[0].args.includes("--no-enable"));
-  });
-}
+test("OpenClaw startup preserves restrictions for a disabled selection", () => {
+  const plugins = { allow: ["memory-core"], deny: ["diffs"], enabled: false };
+  const { files, calls } = runOpenClawRuntimeHelper(
+    openClawRuntime({ enabled: false }),
+    installedPluginResponses(),
+    {
+      baseConfig: { plugins },
+    },
+  );
+  const effective = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
+  assert.deepEqual(effective.plugins, { ...plugins, entries: { diffs: { enabled: false } } });
+  assert.ok(calls[0].args.includes("--no-enable"));
+});
 
 test("OpenClaw startup rejects a blocked Codex bridge before readiness", () => {
   const runtime = {
     manifest: {
       kind: "codex",
       selections: {
-        "codex-plugin:linear@openai-curated-remote": { enabled: true, approvalMode: "auto" },
+        "codex-plugin:linear@openai-curated-remote": {
+          enabled: true,
+          toolDefaults: { approval: "native" },
+        },
       },
     },
   };

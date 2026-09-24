@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import pg from "pg";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
@@ -863,10 +863,23 @@ test("Installation default Presets are opt-in and reject ambiguous YAML settings
     });
     assert.deepEqual(loaded.defaultPresets, []);
   }
+  const enabled = installation();
+  enabled.presets = { includeDefaults: true };
+  const enabledRuntime = await loadInstallationConfiguration({
+    mode: "production",
+    environment: { OCC_CONFIG_PATH: await fixture(t, enabled) },
+  });
+  assert.deepEqual(enabledRuntime.defaultPresets.map((preset) => preset.name).sort(), [
+    "standard-codex",
+    "standard-openclaw",
+  ]);
   for (const presets of [
     { includeDefaults: "true" },
     { includeDefaults: 1 },
     { includeDefault: true },
+    { files: "preset.json" },
+    { files: [1] },
+    { files: [""] },
     null,
   ]) {
     const configuration = installation();
@@ -877,6 +890,92 @@ test("Installation default Presets are opt-in and reject ambiguous YAML settings
         environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
       }),
       /presets/,
+    );
+  }
+});
+
+test("Installation Preset JSON files resolve beside startup YAML and fail closed", async (t) => {
+  const validPreset = {
+    name: "from-file",
+    template: {
+      variables: { name: { type: "string" } },
+      agent: {
+        name: "{{ vars.name }}",
+        initialWorkspaceFiles: {
+          "AGENTS.md": "# Agent\nName: {{ vars.name }}\n",
+          "USER.md": "",
+        },
+      },
+    },
+  };
+  const relativeConfiguration = installation();
+  relativeConfiguration.presets = { includeDefaults: false, files: ["presets/from-file.json"] };
+  const relativePath = await fixture(t, relativeConfiguration);
+  const relativeDirectory = dirname(relativePath);
+  await mkdir(join(relativeDirectory, "presets"), { recursive: true });
+  await writeFile(
+    join(relativeDirectory, "presets", "from-file.json"),
+    JSON.stringify(validPreset),
+  );
+  const relativeRuntime = await loadInstallationConfiguration({
+    mode: "production",
+    environment: { OCC_CONFIG_PATH: relativePath },
+  });
+  assert.deepEqual(
+    relativeRuntime.defaultPresets.map((preset) => preset.name),
+    ["from-file"],
+  );
+  assert.equal(
+    relativeRuntime.defaultPresets[0].template.agent.initialWorkspaceFiles["AGENTS.md"],
+    "# Agent\nName: {{ vars.name }}\n",
+  );
+
+  const absoluteConfiguration = installation();
+  const absolutePreset = join(relativeDirectory, "absolute.json");
+  absoluteConfiguration.presets = { includeDefaults: false, files: [absolutePreset] };
+  await writeFile(absolutePreset, JSON.stringify({ ...validPreset, name: "absolute-file" }));
+  const absoluteRuntime = await loadInstallationConfiguration({
+    mode: "production",
+    environment: { OCC_CONFIG_PATH: await fixture(t, absoluteConfiguration) },
+  });
+  assert.equal(absoluteRuntime.defaultPresets[0].name, "absolute-file");
+
+  for (const [filename, contents, expected] of [
+    ["missing.json", undefined, /Preset file .* is unavailable/],
+    ["malformed.json", '{"name":', /Preset file .* must contain valid JSON/],
+    [
+      "unsupported.json",
+      JSON.stringify({ name: "unsupported", template: {}, unexpected: true }),
+      /unsupported option unexpected/,
+    ],
+    [
+      "invalid-template.json",
+      JSON.stringify({ name: "invalid", template: { agent: { unsupported: true } } }),
+      /Preset agent: contains unsupported fields/,
+    ],
+    [
+      "duplicate.json",
+      JSON.stringify({ name: "standard-codex", template: {} }),
+      /configured more than once/,
+    ],
+  ]) {
+    const configuration = installation();
+    configuration.presets = {
+      includeDefaults: filename === "duplicate.json",
+      files: [`cases/${filename}`],
+    };
+    const path = await fixture(t, configuration);
+    const directory = dirname(path);
+    await mkdir(join(directory, "cases"), { recursive: true });
+    if (contents !== undefined) {
+      await writeFile(join(directory, "cases", filename), contents);
+    }
+    await assert.rejects(
+      loadInstallationConfiguration({
+        mode: "production",
+        environment: { OCC_CONFIG_PATH: path },
+      }),
+      expected,
     );
   }
 });

@@ -7,6 +7,9 @@
       "path": "tests/conformance/compute-lifecycle-hooks.test.mjs"
     },
     {
+      "path": "tests/conformance/codex-seccomp-profile.test.mjs"
+    },
+    {
       "path": "tests/conformance/configuration-occ.test.mjs"
     },
     {
@@ -121,6 +124,9 @@
       "path": "tests/integration/secret-api.test.mjs"
     },
     {
+      "path": "tests/integration/plugin-discovery-api.test.mjs"
+    },
+    {
       "path": "tests/integration/runtime-credentials-api.test.mjs"
     },
     {
@@ -215,6 +221,9 @@
     },
     {
       "path": "tests/conformance/plugin-driver.test.mjs"
+    },
+    {
+      "path": "tests/conformance/hosted-plugin-discovery.test.mjs"
     },
     {
       "path": "tests/conformance/plugin-runtime-templates.test.mjs"

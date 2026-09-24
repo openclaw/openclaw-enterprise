@@ -4,6 +4,24 @@ export default { title: "Pages/Create Agent" };
 
 export const CreateStart = { ...story("createStart"), name: "Choose a starting point" };
 export const CreateForm = { ...story("createForm"), name: "OpenAI with Codex harness" };
+export const PluginsUnavailable = {
+  ...story("createPluginsUnavailable"),
+  name: "Plugin discovery needs an entered token",
+};
+export const PluginsConfigured = {
+  ...story("createPluginsConfigured"),
+  name: "Edit existing plugin policies",
+};
+export const PluginsDiscovered = story("createPluginsDiscovered");
+export const PluginsTools = story("createPluginsTools");
+export const PluginsPolicies = story("createPluginsPolicies");
+export const PluginsSetupReminder = story("createPluginsSetupReminder");
+export const PluginsSecondPage = story("createPluginsSecondPage");
+export const PluginsEmpty = story("createPluginsEmpty");
+export const PluginsLoading = story("createPluginsLoading");
+export const PluginsRejected = story("createPluginsRejected");
+export const PluginsError = story("createPluginsError");
+export const PluginsDetailsError = story("createPluginsDetailsError");
 export const CreateSlackSecretMenu = {
   ...story("createSlackSecretMenu"),
   name: "Slack Secret menu before Agent exists",
@@ -31,6 +49,10 @@ export const CreateProvisioningSecrets = {
 export const CreateUnsupportedProvisioning = {
   ...story("createUnsupportedProvisioning"),
   name: "Unsupported provisioning",
+};
+export const CreatePresetWorkspaceFiles = {
+  ...story("createPresetWorkspaceFiles"),
+  name: "Preset workspace files",
 };
 export const CreateWorkspaceFiles = { ...story("createWorkspaceFiles"), name: "Workspace files" };
 export const CreateEmbedded = { ...story("createEmbedded"), name: "OpenAI with OpenClaw harness" };
@@ -114,4 +136,26 @@ export const CreatePasswordPresetDraft = {
 export const CreatePasswordPresetDenied = {
   ...story("createPasswordPresetDenied"),
   name: "Password Secret creation denied",
+};
+
+export const CreateStandardOpenclawPreset = {
+  ...story("createStandardOpenclawPreset"),
+  name: "Standard OpenClaw preset",
+};
+
+export const CreatePresetExistingSecret = {
+  ...story("createPresetExistingSecret"),
+  name: "SWE existing service account Secret",
+};
+export const CreatePresetSecretsLoading = {
+  ...story("createPresetSecretsLoading"),
+  name: "Preset Secrets loading",
+};
+export const CreatePresetSecretsDenied = {
+  ...story("createPresetSecretsDenied"),
+  name: "Preset Secret metadata denied",
+};
+export const CreatePresetSecretsEmpty = {
+  ...story("createPresetSecretsEmpty"),
+  name: "No existing Preset Secrets",
 };

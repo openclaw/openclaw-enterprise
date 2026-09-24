@@ -31,6 +31,30 @@ URLs. Reload with **Reset story**, not the embedded frame's current console URL.
 The Storybook build workflow also uploads a static artifact; it does not publish
 or change access to the documentation site.
 
+## Appearance review
+
+Use **Pages/Agents → Populated** to review the shared shell and controls.
+Check desktop (1440 × 1000), tablet (768 × 1024), and mobile (390 × 844);
+use keyboard focus, search, navigation, and an open dialog. Include empty,
+loading, error, permission-denied, and missing-credential stories. The console
+stays light with either system appearance preference.
+
+The console's Claw palette, type scale, and surface geometry reference
+[OpenClaw `6e8d06876fd166064abbec4928fb3bb109ebe999`](https://github.com/openclaw/openclaw/tree/6e8d06876fd166064abbec4928fb3bb109ebe999/ui),
+particularly `src/styles/base.css`, `layout.css`, and `components.css`.
+OCE retains its own navigation and workflows. Input borders are stronger than
+the reference's decorative dividers to keep controls distinguishable. The
+self-hosted Instrument Sans subset retains its SIL Open Font License beside
+the font; unsupported glyphs use the system fallback.
+
+The styling comparison includes [before](../assets/console-style/agents-before.png),
+[after](../assets/console-style/agents-1440-light.png),
+[mobile](../assets/console-style/mobile-390-light.png), and a
+[walkthrough](../assets/console-style/walkthrough.mp4). These are simulated
+Storybook UI evidence, not live backend or deployment proof. The
+[reference screen](../assets/console-style/openclaw-reference-light.png) is the
+actual OpenClaw disconnected gateway screen at the revision above.
+
 ## Pages and components
 
 The sidebar contains these groups. Stories with open dialogs or errors reach
@@ -74,6 +98,23 @@ OpenClaw and unsupported-runtime stories retain the draft workflow: provision
 credentials and deploy from Agent detail. These transitions demonstrate
 presentation only; they do not prove a worker ran.
 
+The DevDay create segment rehearses the same create-and-deploy path with a
+shipped SWE Agent Preset copied from standard Codex, a fake service account token,
+a prefilled `gpt-6-astra` default, an existing model Secret option, Calendar plugin
+configuration from the simulated discovery catalog, repository choices
+`openclaw/openclaw-enterprise` and `openclaw/openclaw`, prefilled channel
+`C0C43A2QA11`, and simulated Slack Secrets. The separate Preset workspace story
+demonstrates variable-rendered file contents and an intentionally empty file.
+The DevDay picker includes both bundled standard presets and all three custom
+presets: SWE Agent, Q&A Agent, and Oncall Agent.
+The Standard OpenClaw preset story previews its native harness settings.
+Preset Secret stories cover existing selection, pending metadata, denied reads,
+and an empty catalog; each leaves new-token entry available explicitly.
+Q&A Agent and Oncall Agent remain disabled in the example Installation YAML.
+
+Use the [DevDay storyboard](../../scripts/console-storybook/devday-storyboard.md)
+for the presenter actions, expected visible states, and fallbacks.
+
 **Choose provider and harness** walks through the OpenAI Codex default, OpenClaw
 selection, Anthropic's OpenClaw-only choice, and switching from an unsaved service account
 token to API-key authentication. Model choices are hardcoded in the Console and
@@ -96,6 +137,36 @@ requires a current nonempty repository selection before retrying. GitHub App
 setup, Namespace approvals, runtime images, and credential-service networking
 remain operator prerequisites; the fixture does not verify them.
 
+### Discover and configure plugins
+
+**Create Agent / Discover plugins with a service account token** uses a dummy
+token and simulated OCC discovery routes. Open **Configure plugins**, browse the
+pages, and select Calendar to load its details. **Add Calendar** exposes plugin
+policies; expand a tool row to edit an override. **Done** returns to the form,
+where **Plugin selections JSON** shows the draft. **Filter this page** searches
+only the current page. Replacing the token or switching authentication, provider,
+or Harness clears the catalog while preserving selections. Companion stories
+cover empty results, pending reads, rejected tokens, service failures, tool lookup
+errors, and the next page.
+
+Discovery requires an entered Service Accounts token with the Codex Harness;
+saved Preset credentials and API keys do not enable it. Fixtures provide the
+capability descriptor used by the editor. Catalog visibility does not establish
+that a plugin or tool can be invoked.
+
+**Components/Plugins** covers the modal with simulated catalogs and capabilities:
+available plugins, selected overrides, unknown tools, and empty, loading, denied,
+and capability-unavailable states. Select a plugin, expand a tool row, and inspect
+its enablement, approval, and reviewer fields. Each field inherits independently.
+Adding a plugin leaves its tool defaults omitted. Reviewer omission inherits the
+Harness reviewer, and automatic review can deny a call. The Codex fixture offers
+reviewer selection at the plugin default scope only. **Unsupported saved tool
+reviewer** keeps an unsupported override visible and lets you clear it to inherit.
+
+**Create Agent / Edit existing plugin policies** exercises that editor in the
+actual form with simulated policy capabilities. These previews do not verify live
+plugin-service access, installation, or policy enforcement by a runtime.
+
 ### Update
 
 Use **Edit Configuration** on the new revision to change native JSON, or edit
@@ -109,6 +180,11 @@ execution-mode fields. The Slack drawer preserves existing access policies; it
 does not provide a policy selector. Its channel sender controls edit per-channel
 `users` lists, including `users: ["*"]` for everyone, while direct-message
 `allowFrom` stays unchanged. See [Agent revisions](../guides/topics/agent-revisions.md).
+
+The DevDay Admin UI segment starts from a deployed `oceclaw` Agent whose Slack
+fixture represents `#openclaw-feedback`. Its native Admin UI target is a
+simulated page with a chat-shaped transcript and visible reply. It does not
+connect to a gateway, Slack, credentials, or a model.
 
 ### Stop
 

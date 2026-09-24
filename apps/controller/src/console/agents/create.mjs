@@ -4,6 +4,7 @@ import { harnessAuthDescription } from "./harness-auth.mjs";
 import { createRepositoryFields } from "./repositories.mjs";
 import { ensureSecretOperateBinding } from "./secret-access.mjs";
 import { createPresetFields } from "./presets.mjs";
+import { createPluginFields } from "./plugin-fields.mjs";
 import { renderChannels } from "../channels.mjs";
 import { link, message, namespacePath } from "./list.mjs";
 
@@ -239,21 +240,34 @@ export function renderCreateAgent(context) {
         { className: "muted" },
         "Start from a Preset to reuse your team's configuration.",
       ),
-      createPresetFields(context, (rendered) => renderAgentForm(context, rendered)),
+      createPresetFields(context, (rendered, options) =>
+        renderAgentForm(context, rendered, options),
+      ),
     ),
   );
 }
 
-function renderAgentForm(context, rendered) {
+function renderAgentForm(context, rendered, presetOptions = {}) {
   const { view, request, namespaceId } = context;
   const agent = rendered.agent ?? {};
   const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  const workspaceFileNames = Object.keys(WORKSPACE_DEFAULTS);
+  const initialWorkspaceFiles = isObject(agent.initialWorkspaceFiles)
+    ? agent.initialWorkspaceFiles
+    : {};
+  const hasRenderableWorkspaceFiles =
+    agent.initialWorkspaceFiles === undefined ||
+    (isObject(agent.initialWorkspaceFiles) &&
+      Object.keys(agent.initialWorkspaceFiles).every((filename) =>
+        workspaceFileNames.includes(filename),
+      ));
   if (
     (agent.name !== undefined && typeof agent.name !== "string") ||
     (agent.executionMode !== undefined &&
       !["embedded", "dedicated"].includes(agent.executionMode)) ||
     (agent.providerId != null && typeof agent.providerId !== "string") ||
     (agent.plugins !== undefined && !isObject(agent.plugins)) ||
+    !hasRenderableWorkspaceFiles ||
     (rendered.configuration?.secretBindings !== undefined &&
       !isObject(rendered.configuration.secretBindings))
   ) {
@@ -271,8 +285,23 @@ function renderAgentForm(context, rendered) {
   ) {
     throw new Error("Rendered Preset contains invalid password authentication.");
   }
+  const presetModelSecret = presetOptions.modelSecret;
+  const presetExistingSecret =
+    presetModelSecret?.kind === "existing" ? presetModelSecret.secret : undefined;
   const binding = passwordAuth ? undefined : agent.harnessAuth;
   const hasBoundModelCredential = ["api_key", "codex_pat"].includes(binding?.method);
+  if (
+    presetExistingSecret &&
+    (presetExistingSecret.namespaceId !== namespaceId ||
+      presetExistingSecret.ref?.kind !== "secret" ||
+      presetExistingSecret.ref.namespaceId !== namespaceId ||
+      presetExistingSecret.ref.id !== presetExistingSecret.id ||
+      binding?.source?.kind !== "secret" ||
+      binding.source.namespaceId !== namespaceId ||
+      binding.source.id !== presetExistingSecret.id)
+  ) {
+    throw new Error("Rendered Preset selected a Secret outside this Namespace.");
+  }
   if (
     binding != null &&
     (!isObject(binding) ||
@@ -592,6 +621,8 @@ function renderAgentForm(context, rendered) {
     updateControls();
   });
   configuration.addEventListener("input", () => {
+    const previousProvider = nativeProvider.value;
+    const previousHarness = harness.value;
     configuration.setCustomValidity("");
     feedback.textContent = "";
     const values = parseObject(configuration);
@@ -616,28 +647,181 @@ function renderAgentForm(context, rendered) {
         modelChoice.value = "";
       }
     }
+    if (previousProvider !== nativeProvider.value || previousHarness !== harness.value) {
+      resetPluginDiscovery();
+    }
     renderChannelEditor();
   });
 
   const plugins = element("textarea", { id: "agent-plugins", rows: "4", spellcheck: "false" });
   plugins.value = JSON.stringify(agent.plugins ?? {}, null, 2);
-  const secretBindings = element("textarea", {
-    id: "configuration-secret-bindings",
-    rows: "4",
-    spellcheck: "false",
+  let pluginDiscoveryGeneration = 0;
+  let pluginCatalog = { status: "idle", nextCursor: null };
+  const pluginEntries = new Map();
+  let pluginPageIds = [];
+  let pluginCursors = [null];
+  let pluginPageIndex = 0;
+  const pluginFields = createPluginFields({
+    input: plugins,
+    onLoadPlugins: (direction) => void loadPluginCatalog(direction),
+    onLoadTools: (id) => void loadPluginTools(id),
   });
-  secretBindings.value = JSON.stringify(rendered.configuration?.secretBindings ?? {}, null, 2);
-  secretBindings.addEventListener("input", () => {
-    secretBindings.setCustomValidity("");
-    renderChannelEditor();
-  });
+  function canDiscoverPlugins() {
+    return (
+      !binding &&
+      nativeProvider.value === "openai" &&
+      harness.value === "codex" &&
+      authMethod.value === "codex_pat" &&
+      Boolean(apiKey.value.trim())
+    );
+  }
+  function updatePluginDiscovery() {
+    pluginFields.setCatalog({
+      ...pluginCatalog,
+      entries: pluginPageIds.map((id) => pluginEntries.get(id)),
+      knownEntries: [...pluginEntries.values()],
+      pageNumber: pluginPageIndex + 1,
+      hasPrevious: pluginPageIndex > 0,
+      canLoad: canDiscoverPlugins(),
+      message:
+        pluginCatalog.message ??
+        (canDiscoverPlugins()
+          ? "Load plugins available to this service account token. Your plugin selections stay unchanged."
+          : "To discover plugins, choose Service Accounts with the Codex harness and enter a token. Saved Preset credentials cannot be used for discovery here."),
+    });
+  }
+  function resetPluginDiscovery() {
+    // A catalog belongs to the entered credential and harness; late responses cannot restore it.
+    pluginDiscoveryGeneration += 1;
+    pluginEntries.clear();
+    pluginPageIds = [];
+    pluginCursors = [null];
+    pluginPageIndex = 0;
+    pluginCatalog = { status: "idle", nextCursor: null };
+    updatePluginDiscovery();
+  }
+  function pluginDiscoveryError(error) {
+    const reason = {
+      PLUGIN_DISCOVERY_CREDENTIALS_REJECTED:
+        "The service account token was rejected or cannot access plugins. Check its permissions.",
+      PLUGIN_DISCOVERY_RATE_LIMITED: "The plugin service rate limit was reached. Try again later.",
+      PLUGIN_DISCOVERY_UNAVAILABLE:
+        "The plugin service is unavailable. Check the server's plugin service access and retry.",
+      PLUGIN_DISCOVERY_INVALID_RESPONSE:
+        "The plugin service returned an unsupported response. Retry or contact your operator.",
+    }[error.code];
+    return `${reason ?? "Plugins could not be loaded. Check the credential and retry."}${error.requestId ? ` Request: ${error.requestId}` : ""}`;
+  }
+  async function loadPluginCatalog(direction = "refresh") {
+    if (!canDiscoverPlugins() || pending || pluginCatalog.status === "loading") {
+      return;
+    }
+    let pageIndex = pluginPageIndex;
+    let cursor = pluginCursors[pageIndex];
+    if (direction === "next") {
+      if (!pluginCatalog.nextCursor) {
+        return;
+      }
+      pageIndex += 1;
+      cursor = pluginCatalog.nextCursor;
+    } else if (direction === "previous") {
+      if (pageIndex === 0) {
+        return;
+      }
+      pageIndex -= 1;
+      cursor = pluginCursors[pageIndex];
+    }
+    // Every navigation invalidates in-flight details; the service owns page boundaries.
+    const generation = ++pluginDiscoveryGeneration;
+    for (const [id, entry] of pluginEntries) {
+      pluginEntries.set(id, { ...entry, toolStatus: undefined });
+    }
+    pluginCatalog = { ...pluginCatalog, status: "loading" };
+    updatePluginDiscovery();
+    try {
+      const page = await request(`${namespacePath(namespaceId)}/agents/plugins`, {
+        method: "POST",
+        body: { accessToken: apiKey.value, ...(cursor ? { cursor } : {}) },
+      });
+      if (!context.isCurrent() || generation !== pluginDiscoveryGeneration) {
+        return;
+      }
+      for (const entry of page.plugins) {
+        pluginEntries.set(entry.id, entry);
+      }
+      pluginPageIds = page.plugins.map((entry) => entry.id);
+      pluginCursors = [...pluginCursors.slice(0, pageIndex), cursor];
+      pluginPageIndex = pageIndex;
+      pluginCatalog = { status: "ready", nextCursor: page.nextCursor, setup: page.setup };
+    } catch (error) {
+      if (!context.isCurrent() || generation !== pluginDiscoveryGeneration) {
+        return;
+      }
+      if (error.status === 401) {
+        context.onExpired();
+        return;
+      }
+      pluginCatalog = { ...pluginCatalog, status: "error", message: pluginDiscoveryError(error) };
+    } finally {
+      if (context.isCurrent() && generation === pluginDiscoveryGeneration) {
+        updatePluginDiscovery();
+      }
+    }
+  }
+  async function loadPluginTools(id) {
+    const entry = pluginEntries.get(id);
+    if (
+      !canDiscoverPlugins() ||
+      pending ||
+      pluginCatalog.status === "loading" ||
+      !entry?.remoteId ||
+      entry.toolStatus === "loading"
+    ) {
+      return;
+    }
+    const generation = pluginDiscoveryGeneration;
+    pluginEntries.set(id, { ...entry, toolStatus: "loading", toolError: undefined });
+    updatePluginDiscovery();
+    try {
+      const detail = await request(`${namespacePath(namespaceId)}/agents/plugins/details`, {
+        method: "POST",
+        body: { accessToken: apiKey.value, pluginId: entry.remoteId },
+      });
+      if (
+        !context.isCurrent() ||
+        generation !== pluginDiscoveryGeneration ||
+        pluginEntries.get(id)?.remoteId !== entry.remoteId
+      ) {
+        return;
+      }
+      pluginEntries.set(id, { ...entry, ...detail, toolStatus: undefined, toolError: undefined });
+    } catch (error) {
+      if (!context.isCurrent() || generation !== pluginDiscoveryGeneration) {
+        return;
+      }
+      if (error.status === 401) {
+        context.onExpired();
+        return;
+      }
+      pluginEntries.set(id, { ...entry, toolError: pluginDiscoveryError(error) });
+    } finally {
+      if (context.isCurrent() && generation === pluginDiscoveryGeneration) {
+        updatePluginDiscovery();
+      }
+    }
+  }
+  apiKey.addEventListener("input", resetPluginDiscovery);
+  for (const control of [nativeProvider, authMethod, harness]) {
+    control.addEventListener("change", resetPluginDiscovery);
+  }
+  let configurationSecretBindings = structuredClone(rendered.configuration?.secretBindings ?? {});
   const workspaceInputs = Object.entries(WORKSPACE_DEFAULTS).map(([filename, content]) => {
     const input = element("textarea", {
       id: `workspace-${filename.replace(".", "-")}`,
       rows: "8",
       spellcheck: "false",
     });
-    input.value = content;
+    input.value = initialWorkspaceFiles[filename] ?? content;
     return [filename, input];
   });
   const workspaceSection = element(
@@ -791,6 +975,7 @@ function renderAgentForm(context, rendered) {
       feedback.textContent = "";
       updateControls();
     })).section,
+    pluginFields.section,
     element(
       "details",
       { className: "launch-advanced" },
@@ -798,7 +983,7 @@ function renderAgentForm(context, rendered) {
       element(
         "p",
         { className: "hint" },
-        "Defaults are ready to use. Customize configuration, Secret bindings, plugins, or initial workspace files when needed.",
+        "Defaults are ready to use. Customize configuration or initial workspace files when needed.",
       ),
       field(
         "Configuration JSON",
@@ -806,12 +991,6 @@ function renderAgentForm(context, rendered) {
         "Provider and model selections update this JSON. Supported Dedicated runtimes provision and deploy from this form. Embedded and unsupported runtimes save a draft for later deployment. Slack token Secrets can be selected or created from the channel editor.",
       ),
       reset,
-      field(
-        "Secret bindings JSON",
-        secretBindings,
-        "Map environment names to existing Secret references in this Namespace. Do not enter credentials.",
-      ),
-      field("Plugin selections JSON", plugins, "Desired plugin selections and policies."),
       workspaceSection,
     ),
   );
@@ -892,8 +1071,7 @@ function renderAgentForm(context, rendered) {
   }
   function renderChannelEditor() {
     const values = parseObject(configuration);
-    const parsedSecretBindings = parseObject(secretBindings);
-    if (values === undefined || parsedSecretBindings === undefined) {
+    if (values === undefined) {
       channelEditor.replaceChildren(
         element(
           "section",
@@ -902,9 +1080,7 @@ function renderAgentForm(context, rendered) {
           element(
             "p",
             { className: "error" },
-            values === undefined
-              ? "Enter a valid Configuration JSON object before configuring channels."
-              : "Enter a valid Secret bindings JSON object before configuring channels.",
+            "Enter a valid Configuration JSON object before configuring channels.",
           ),
         ),
       );
@@ -918,7 +1094,7 @@ function renderAgentForm(context, rendered) {
         namespaceId,
         request,
         agentName: () => name.value,
-        secretBindings: parsedSecretBindings,
+        secretBindings: configurationSecretBindings,
       },
       copy: {
         editableDescription:
@@ -939,8 +1115,7 @@ function renderAgentForm(context, rendered) {
         edited = true;
         configuration.value = JSON.stringify(updatedValues, null, 2);
         if (options.secretBindings !== undefined) {
-          secretBindings.value = JSON.stringify(options.secretBindings, null, 2);
-          secretBindings.setCustomValidity("");
+          configurationSecretBindings = structuredClone(options.secretBindings);
           stagedChannelSecrets = [...stagedChannelSecrets, ...(options.changedSecrets ?? [])];
         }
         configuration.setCustomValidity("");
@@ -975,7 +1150,6 @@ function renderAgentForm(context, rendered) {
     // Unsaved Agent fields remain editable after a known rejection; reuse the saved Configuration.
     for (const node of [
       configuration,
-      secretBindings,
       nativeProvider,
       authMethod,
       model,
@@ -989,6 +1163,10 @@ function renderAgentForm(context, rendered) {
     for (const node of actions.querySelectorAll("button")) {
       node.disabled = pending;
     }
+    updatePluginDiscovery();
+    pluginFields.setDisabled(
+      pending || Boolean(savedAgent) || Boolean(provisioningAttempt) || outcomeUnknown,
+    );
     channelEditor.toggleAttribute("inert", pending || saved || outcomeUnknown);
     channelEditor.setAttribute("aria-busy", pending ? "true" : "false");
     const usesPat = (binding?.method ?? authMethod.value) === "codex_pat";
@@ -1105,6 +1283,7 @@ function renderAgentForm(context, rendered) {
       if (!context.isCurrent()) {
         return;
       }
+      pluginFields.setCapabilities(installation.capabilities?.pluginPolicies ?? null);
       provisionableExecutionModes.clear();
       for (const executionMode of installation.capabilities?.agentProvisioning?.executionModes ??
         []) {
@@ -1202,8 +1381,8 @@ function renderAgentForm(context, rendered) {
     }
     const values = parseObject(configuration, true);
     const desiredPlugins = parseObject(plugins, true);
-    const bindings = parseObject(secretBindings, true);
-    if (values === undefined || desiredPlugins === undefined || bindings === undefined) {
+    const bindings = configurationSecretBindings;
+    if (values === undefined || desiredPlugins === undefined) {
       return;
     }
     if (!savedAgent && !repositories.validate({ required: requiresRepositories() })) {
@@ -1337,8 +1516,9 @@ function renderAgentForm(context, rendered) {
       }
       // Grant retries reread exact bindings, so uncertain model or channel grants never recreate the Agent.
       mutationStarted = false;
-      if (savedSecret) {
-        await ensureSecretOperateBinding(context, savedAgent, savedSecret);
+      const modelSecret = savedSecret ?? presetExistingSecret;
+      if (modelSecret) {
+        await ensureSecretOperateBinding(context, savedAgent, modelSecret);
       }
       await grantConfigurationSecretAccess(savedAgent, stagedChannelSecrets);
       if (context.isCurrent()) {

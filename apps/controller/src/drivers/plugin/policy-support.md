@@ -1,11 +1,21 @@
-# Plugin policy support and translation plan
+# Historical plugin policy support and translation plan
 
-Use this matrix when extending [runtime-translator.ts](runtime-translator.ts).
-It separates what OpenClaw Enterprise (OCE) translates today from what the
-underlying harness can enforce. The [Agent plugin reference](../../../../../docs/reference/agent-plugins.md#approval-policy)
-owns policy semantics; the [Driver feature matrix](../../../../../docs/reference/drivers/plugin-matrix.md)
-records the supported product surface. This page owns the implementation gaps
-and proposed iteration order.
+This document preserves the source review and proposed ordering from the
+snapshot below. The later nested policy contract supersedes its vocabulary,
+category compiler proposal, and implementation order. It is not the current
+support matrix.
+
+Current behavior is defined by the [Agent plugin reference](../../../../../docs/reference/agent-plugins.md#approval-policy)
+and [bundled mappings](../../../../../docs/reference/drivers/plugin-bundled.md#native-mappings-and-limits).
+The current translator accepts independent `toolDefaults` and explicit tool
+fields, with `native`, `prompt`, and `approve` approval modes. Common reviewer
+choices are `human` and `auto`, advertised separately per scope; omission inherits
+the effective Harness reviewer. Driver-specific fields remain in `driverPolicy`;
+generic write/destructive category expansion
+is not part of that contract. Native OpenClaw supports `native` and `approve`
+only. Effective runtime proof remains separate from translation support.
+
+## Previous review
 
 Reviewed 2026-09-23 against OCE `f7e1f2d1`, OpenClaw `9a15bd82af`, and Codex
 `e4d0ba4e92`. Harness capability below is source evidence, not deployment proof.

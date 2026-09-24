@@ -49,11 +49,11 @@
   border: 0;
   border-radius: 0;
   padding: 0;
-  box-shadow: -18px 0 60px rgba(13, 20, 33, 0.24);
+  box-shadow: var(--shadow);
 }
 
 .channel-dialog::backdrop {
-  background: rgba(15, 23, 42, 0.32);
+  background: var(--overlay);
 }
 
 .channel-drawer-form {
@@ -78,16 +78,16 @@
 .channel-field select {
   width: 100%;
   padding: 11px 12px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: #ffffff;
-  color: #0f172a;
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
   font: inherit;
 }
 
 .channel-field input[readonly] {
-  background: #f8fafc;
-  color: #475569;
+  background: var(--surface-muted);
+  color: var(--muted);
   cursor: default;
 }
 
@@ -99,10 +99,10 @@
   display: block;
   width: 100%;
   padding: 11px 12px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: #f8fafc;
-  color: #475569;
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius);
+  background: var(--surface-muted);
+  color: var(--muted);
   overflow-wrap: anywhere;
 }
 
@@ -128,6 +128,11 @@
 }
 
 @media (max-width: 760px) {
+  .channel-field input,
+  .channel-field select {
+    font-size: 16px;
+  }
+
   .channel-heading,
   .channel-card-row,
   .channel-drawer-head {

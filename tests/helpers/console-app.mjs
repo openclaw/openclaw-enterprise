@@ -120,7 +120,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     bindings: seed.bindings.map((binding) => ({ ...binding })),
     restrictions: [],
   };
-  const auditSink = new InMemoryAuditSink();
+  const auditSink = options.auditSink ?? new InMemoryAuditSink();
   const iamDriver = new NativeIAMDriver(
     { loadNativeIAMState: async () => policy },
     { id: "console-native-iam" },

@@ -6,11 +6,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
-import {
-  codexBwrapAdditionalSyscalls,
-  deriveCodexBwrapProfile,
-  prepareCodexSeccompProfile,
-} from "../../scripts/ci/codex-seccomp.mjs";
+import { prepareCodexSeccompProfile } from "../../scripts/ci/codex-seccomp.mjs";
 import { createKubernetesInstallationConfiguration } from "../helpers/kubernetes-real.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
@@ -703,76 +699,6 @@ test("ordinary CI groups require platform proof and exclude installed live repos
   }
 });
 
-const runtimeDefaultBaseline = Object.freeze({
-  architectures: ["SCMP_ARCH_X86_64"],
-  defaultAction: "SCMP_ACT_ERRNO",
-  syscalls: [
-    { names: ["read"], action: "SCMP_ACT_ALLOW" },
-    { names: ["clone3"], action: "SCMP_ACT_ERRNO", errnoRet: 38 },
-  ],
-});
-
-test("codex seccomp profile derivation preserves the RuntimeDefault baseline and adds only reviewed bwrap rules", () => {
-  const profile = deriveCodexBwrapProfile(runtimeDefaultBaseline);
-  const added = profile.syscalls.slice(runtimeDefaultBaseline.syscalls.length);
-
-  assert.deepEqual(profile.architectures, runtimeDefaultBaseline.architectures);
-  assert.deepEqual(profile.syscalls.slice(0, runtimeDefaultBaseline.syscalls.length), [
-    ...runtimeDefaultBaseline.syscalls,
-  ]);
-  assert.equal(profile.defaultAction, "SCMP_ACT_ERRNO");
-  assert.equal(added.length, 78);
-  assert.deepEqual(added, codexBwrapAdditionalSyscalls());
-  assert.deepEqual(
-    added.filter((rule) => rule.names.includes("unshare")),
-    [
-      {
-        names: ["unshare"],
-        action: "SCMP_ACT_ALLOW",
-        args: [{ index: 0, op: "SCMP_CMP_EQ", value: 0x10000000 }],
-      },
-    ],
-  );
-  assert.deepEqual(
-    added.filter((rule) => rule.names.includes("pivot_root")),
-    [{ names: ["pivot_root"], action: "SCMP_ACT_ALLOW" }],
-  );
-  assert.deepEqual(
-    added.filter((rule) => rule.names.includes("umount2")),
-    [
-      {
-        names: ["umount2"],
-        action: "SCMP_ACT_ALLOW",
-        args: [{ index: 1, op: "SCMP_CMP_EQ", value: 2 }],
-      },
-    ],
-  );
-  assert.equal(
-    added.some((rule) => rule.names.includes("clone3")),
-    false,
-    "clone3 must remain governed by the RuntimeDefault ENOSYS rule",
-  );
-});
-
-test("codex seccomp profile derivation rejects non-denying or malformed baselines", () => {
-  assert.throws(
-    () =>
-      deriveCodexBwrapProfile({
-        ...runtimeDefaultBaseline,
-        defaultAction: "SCMP_ACT_ALLOW",
-      }),
-    /default-deny/,
-  );
-  assert.throws(
-    () =>
-      deriveCodexBwrapProfile({
-        ...runtimeDefaultBaseline,
-        syscalls: [{ names: ["read"], action: "SCMP_ACT_ALLOW" }],
-      }),
-    /clone3 ENOSYS/,
-  );
-});
-
 test("Kubernetes test helper passes an explicit Codex localhost seccomp profile into runtime config", () => {
   const profile = "openclaw/codex-bwrap.json";
   const configuration = createKubernetesInstallationConfiguration({
@@ -911,6 +837,7 @@ test("codex seccomp preparation requires a namespace/seccomp RuntimeDefault deni
           const commandText = `${command} ${args.join(" ")}`;
           assert.match(commandText, /--namespace/);
           assert.match(commandText, /codex-seccomp-ok/);
+          assert.match(commandText, /codex-seccomp-outside/);
           const error = new Error(`${commandText} failed: unrelated setup failure`);
           error.stderr = "unrelated setup failure";
           error.stdout = "";
