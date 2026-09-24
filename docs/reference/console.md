@@ -121,10 +121,16 @@ automatic replay. **Disable Slack** edits only the draft. It does not disable
 access, stop execution, or change an admitted revision.
 
 Slack editing preserves existing direct-message and channel policies, including
-pairing, open, disabled, and omitted policies. It also preserves per-channel user
-restrictions. New Slack configurations use allowlist policies. **Allowed user
-IDs** edits `allowFrom`; the existing policy determines how those entries affect
-access. The editor does not change the policy when saving channel settings. Slack Socket Mode uses fixed
+pairing, open, disabled, and omitted policies. It preserves unrelated
+per-channel settings while replacing the selected channels' sender lists.
+New Slack configurations use allowlist policies. **Allowed channel user IDs**
+edits each selected channel's `users` list. Selecting **Allow everyone in these
+channels to mention the agent** writes `users: ["*"]` on each selected channel
+and leaves direct-message `allowFrom` unchanged. The checkbox and user ID input
+are mutually exclusive: entering IDs disables the everyone option, clearing IDs
+makes everyone selectable, and turning everyone off re-enables ID entry.
+**Require a mention** is independent of sender access. The editor does not
+change DM or group policy when saving channel settings. Slack Socket Mode uses fixed
 unresolved references to `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN`.
 Slack requires dedicated execution and Kubernetes runtime projection.
 
@@ -150,9 +156,9 @@ in another tab, then refresh the original Agent page before editing again.
 
 The simple editor may reject native channel documents it cannot round-trip,
 including non-Socket Slack settings, non-standard credential references, mixed
-per-channel mention settings, or unsupported plugin shapes. Inspect unsupported
-settings in the native Configuration view and edit them through the API or
-operator workflow.
+per-channel mention settings, mixed per-channel sender lists, `*` channel maps,
+or unsupported plugin shapes. Inspect unsupported settings in the native
+Configuration view and edit them through the API or operator workflow.
 
 ## Stop and resume an Agent
 

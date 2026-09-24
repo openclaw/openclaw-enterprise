@@ -4,6 +4,15 @@ export default { title: "Components/Channels" };
 
 export const Slack = { ...story("slack"), name: "Slack configured" };
 export const SlackDrawer = { ...story("slackDrawer"), name: "Slack editor" };
+export const SlackEveryone = { ...story("slackEveryone"), name: "Slack everyone in channels" };
+export const SlackRestrictedUsers = {
+  ...story("slackRestrictedUsers"),
+  name: "Slack restricted channel users",
+};
+export const SlackChannelAccessIncomplete = {
+  ...story("slackChannelAccessIncomplete"),
+  name: "Slack sender access incomplete",
+};
 export const SlackSecretMenu = { ...story("slackSecretMenu"), name: "Slack Secret menu" };
 export const SlackCreateSecretModal = {
   ...story("slackCreateSecretModal"),
@@ -16,6 +25,18 @@ export const SlackSecretStaged = {
 export const SlackOpen = { ...story("slackOpen"), name: "Slack open policy" };
 export const SlackDisabled = { ...story("slackDisabled"), name: "Slack disabled policy" };
 export const SlackUnsupported = { ...story("slackUnsupported"), name: "Slack unsupported shape" };
+export const SlackMixedUsersUnsupported = {
+  ...story("slackMixedUsersUnsupported"),
+  name: "Slack mixed sender lists",
+};
+export const SlackWildcardUnsupported = {
+  ...story("slackWildcardUnsupported"),
+  name: "Slack wildcard channel map",
+};
+export const SlackChannelAccessFlow = {
+  ...story("slackChannelAccessFlow"),
+  name: "Change Slack channel senders",
+};
 export const ChannelsEmpty = { ...story("channelsEmpty"), name: "Not configured" };
 export const ChannelsReadOnly = { ...story("channelsReadOnly"), name: "Revision read only" };
 export const ChannelConflict = { ...story("channelConflict"), name: "Save conflict" };

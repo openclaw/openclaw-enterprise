@@ -207,7 +207,19 @@ function renderAgentForm(context, rendered) {
   ) {
     throw new Error("Rendered Preset contains invalid Agent fields or Secret bindings.");
   }
-  const binding = agent.harnessAuth;
+  const passwordAuth =
+    isObject(agent.harnessAuth) && Object.hasOwn(agent.harnessAuth, "secret")
+      ? agent.harnessAuth
+      : undefined;
+  if (
+    passwordAuth &&
+    (!["api_key", "codex_pat"].includes(passwordAuth.method) ||
+      typeof passwordAuth.secret !== "string" ||
+      Object.keys(passwordAuth).some((key) => !["method", "secret"].includes(key)))
+  ) {
+    throw new Error("Rendered Preset contains invalid password authentication.");
+  }
+  const binding = passwordAuth ? undefined : agent.harnessAuth;
   const hasBoundModelCredential = ["api_key", "codex_pat"].includes(binding?.method);
   if (
     binding != null &&
@@ -285,7 +297,11 @@ function renderAgentForm(context, rendered) {
     element("option", { value: "api_key" }, "OpenAI API key"),
     element("option", { value: "codex_pat" }, "Service Accounts"),
   );
-  authMethod.value = binding?.method ?? "api_key";
+  authMethod.value = passwordAuth?.method ?? binding?.method ?? "api_key";
+  if (passwordAuth) {
+    apiKey.value = passwordAuth.secret;
+    delete passwordAuth.secret;
+  }
   const authMethodField = field("Authentication method", authMethod);
   const credentialLabel = element("label", { for: apiKey.id }, "API key");
   const credentialHelp = element("p", { className: "hint", id: "provider-credential-help" });
@@ -430,7 +446,7 @@ function renderAgentForm(context, rendered) {
   );
   name.value = agent.name ?? "";
   mode.value = agent.executionMode ?? "dedicated";
-  if (binding?.method === "codex_pat") {
+  if (authMethod.value === "codex_pat") {
     nativeProvider.value = "openai";
     mode.value = "dedicated";
   } else if (nativeProvider.value === "anthropic" || binding?.method === "runtime") {
@@ -783,10 +799,14 @@ function renderAgentForm(context, rendered) {
       "Provider and model selections update this JSON. Supported Dedicated runtimes provision and deploy from this form. Embedded and unsupported runtimes save a draft for later deployment. Slack token Secrets can be selected or created from the channel editor.",
     ),
     reset,
-    field(
-      "Secret bindings JSON",
-      secretBindings,
-      "Map environment names to existing Secret references in this Namespace. Do not enter credentials.",
+    element(
+      "div",
+      { hidden: true },
+      field(
+        "Secret bindings JSON",
+        secretBindings,
+        "Map environment names to existing Secret references in this Namespace. Do not enter credentials.",
+      ),
     ),
     field("Plugin selections JSON", plugins, "Desired plugin selections and policies."),
     workspaceSection,

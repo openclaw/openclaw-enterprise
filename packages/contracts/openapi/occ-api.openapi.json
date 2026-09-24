@@ -8967,6 +8967,15 @@
                                     {
                                       "additionalProperties": false,
                                       "properties": {
+                                        "description": { "type": "string" },
+                                        "type": { "const": "password", "type": "string" }
+                                      },
+                                      "required": ["type"],
+                                      "type": "object"
+                                    },
+                                    {
+                                      "additionalProperties": false,
+                                      "properties": {
                                         "default": { "type": "string" },
                                         "description": { "type": "string" },
                                         "type": { "const": "string", "type": "string" }
@@ -9134,6 +9143,15 @@
                             {
                               "additionalProperties": false,
                               "properties": {
+                                "description": { "type": "string" },
+                                "type": { "const": "password", "type": "string" }
+                              },
+                              "required": ["type"],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
                                 "default": { "type": "string" },
                                 "description": { "type": "string" },
                                 "type": { "const": "string", "type": "string" }
@@ -9241,6 +9259,15 @@
                             "variables": {
                               "additionalProperties": {
                                 "anyOf": [
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "description": { "type": "string" },
+                                      "type": { "const": "password", "type": "string" }
+                                    },
+                                    "required": ["type"],
+                                    "type": "object"
+                                  },
                                   {
                                     "additionalProperties": false,
                                     "properties": {
@@ -9529,6 +9556,15 @@
                                   {
                                     "additionalProperties": false,
                                     "properties": {
+                                      "description": { "type": "string" },
+                                      "type": { "const": "password", "type": "string" }
+                                    },
+                                    "required": ["type"],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
                                       "default": { "type": "string" },
                                       "description": { "type": "string" },
                                       "type": { "const": "string", "type": "string" }
@@ -9704,6 +9740,15 @@
                             {
                               "additionalProperties": false,
                               "properties": {
+                                "description": { "type": "string" },
+                                "type": { "const": "password", "type": "string" }
+                              },
+                              "required": ["type"],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
                                 "default": { "type": "string" },
                                 "description": { "type": "string" },
                                 "type": { "const": "string", "type": "string" }
@@ -9810,6 +9855,15 @@
                             "variables": {
                               "additionalProperties": {
                                 "anyOf": [
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "description": { "type": "string" },
+                                      "type": { "const": "password", "type": "string" }
+                                    },
+                                    "required": ["type"],
+                                    "type": "object"
+                                  },
                                   {
                                     "additionalProperties": false,
                                     "properties": {

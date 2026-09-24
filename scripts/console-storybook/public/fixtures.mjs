@@ -1,7 +1,21 @@
+import standardCodexPreset from "/console/standard-codex-preset.mjs";
+
 const createdAt = "2026-09-01T12:00:00.000Z";
 const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
 const secretRef = (id) => ({ kind: "secret", namespaceId, id });
 const auth = { method: "api_key", source: secretRef("sec_demo_model") };
+
+function slackChannels(scenario) {
+  if (scenario.slackChannels !== undefined) {
+    return structuredClone(scenario.slackChannels);
+  }
+  return {
+    CDEMO123: {
+      requireMention: true,
+      users: scenario.slackAllowEveryone ? ["*"] : ["UDEMO123"],
+    },
+  };
+}
 
 function configurationValues(scenario) {
   const values = {
@@ -18,7 +32,7 @@ function configurationValues(scenario) {
       appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
       botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
       allowFrom: scenario.slackPolicy === "open" ? ["*"] : ["UDEMO123"],
-      channels: { CDEMO123: { requireMention: true, users: ["UDEMO123"] } },
+      channels: slackChannels(scenario),
     };
   }
   return values;
@@ -220,6 +234,9 @@ export function installFixture(scenario, evidence) {
       },
     },
   };
+  if (scenario.standardCodexPreset) {
+    Object.assign(preset, structuredClone(standardCodexPreset));
+  }
   const response = (data, status = 200, errorCode) =>
     new Response(
       JSON.stringify({
@@ -631,6 +648,9 @@ export function installFixture(scenario, evidence) {
         }
       }
       if (resource === "secrets") {
+        if (method === "POST" && scenario.denySecretCreate) {
+          return response(undefined, 403, "FORBIDDEN");
+        }
         if (method === "GET") {
           return response([...secrets.values()].map((secret) => structuredClone(secret)));
         }

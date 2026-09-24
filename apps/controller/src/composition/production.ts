@@ -15,7 +15,10 @@ import type {
   InstallationRuntimeDrivers,
   ServiceAccountDriverFactory,
 } from "./installation-config.ts";
-import { providerSummariesFromDefinitions } from "./installation-config.ts";
+import {
+  initializeInstallationPresets,
+  providerSummariesFromDefinitions,
+} from "./installation-config.ts";
 import { emitOccLogEvent, type OccLogger } from "../logging.ts";
 import { resolveApprovedProductionHarness } from "./production-harness.ts";
 import type { ControllerWorkspaceFilesAccess } from "../gateway/contracts.ts";
@@ -141,6 +144,7 @@ export async function composeProduction(config: ProductionConfig) {
       state,
       recordOperations: true,
       providers: installation.provider,
+      defaultPresets: config.drivers.defaultPresets ?? [],
       loggingLevel: config.drivers.installation.logging.level,
     });
     controller.registerDriver(iamDriver);
@@ -179,6 +183,12 @@ export async function composeProduction(config: ProductionConfig) {
       }
     }
     await controller.validateProviderConfiguration();
+    await initializeInstallationPresets(
+      controller,
+      iamDriver,
+      iamState.identities,
+      config.drivers.defaultPresets ?? [],
+    );
 
     let workspaceFilesAccess = config.workspaceFilesAccess;
     if (workspaceFilesAccess === undefined && config.gatewayApiKeyPath !== undefined) {

@@ -602,8 +602,12 @@ export type ErrorResponse = Type.Static<typeof ErrorResponse>;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 export type ErrorDetailCode = (typeof ERROR_DETAIL_CODES)[number];
 
-export const PresetVariableSchema = Type.Union(
-  (["string", "number", "boolean"] as const).map((type) =>
+export const PresetVariableSchema = Type.Union([
+  Type.Object(
+    { type: Type.Literal("password"), description: Type.Optional(Type.String()) },
+    { additionalProperties: false },
+  ),
+  ...(["string", "number", "boolean"] as const).map((type) =>
     Type.Object(
       {
         type: Type.Literal(type),
@@ -615,7 +619,7 @@ export const PresetVariableSchema = Type.Union(
       { additionalProperties: false },
     ),
   ),
-);
+]);
 
 export const PresetTemplateSchema = Type.Object(
   {

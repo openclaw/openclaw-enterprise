@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import {
   KubernetesComputeDriver,
+  kubernetesGatewayNamespaceName,
   kubernetesNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
@@ -162,6 +163,16 @@ export async function createConsoleRepositoryLaunchFixture(t) {
   const namespaceName = kubernetesNamespaceName(namespace.id);
   namespaces.set(namespaceName, {
     ...compute.manifest("v1", "Namespace", namespaceName, { namespaceId: namespace.id }),
+    status: { phase: "Active" },
+  });
+  const controlNamespaceName = kubernetesGatewayNamespaceName(namespace.id);
+  const controlNamespace = compute.manifest("v1", "Namespace", controlNamespaceName, {
+    namespaceId: namespace.id,
+  });
+  delete controlNamespace.metadata.labels["openclaw.dev/namespace"];
+  controlNamespace.metadata.labels["openclaw.dev/gateway-namespace"] = namespace.id;
+  namespaces.set(controlNamespaceName, {
+    ...controlNamespace,
     status: { phase: "Active" },
   });
   const repo = new GitHubRepoDriver(

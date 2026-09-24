@@ -147,7 +147,8 @@ export async function createConsoleAppFixture(t, options = {}) {
         repositoryCredentials: options.repositoryCredentials === true,
         discoverHarnessModels: options.discoverHarnessModels,
       }),
-    configurationDriver: createTestConfigurationDriver({ id: "console-configuration" }),
+    configurationDriver:
+      options.configurationDriver ?? createTestConfigurationDriver({ id: "console-configuration" }),
     ...(secretDriver === undefined || secretDriver === null ? {} : { secretDriver }),
     ...(publicOrigin === undefined ? {} : { publicOrigin }),
     ...(options.nativeAdmin === undefined ? {} : { nativeAdmin: options.nativeAdmin }),
@@ -160,6 +161,7 @@ export async function createConsoleAppFixture(t, options = {}) {
         state: platformState,
         recordOperations: options.recordOperations ?? false,
         providers,
+        defaultPresets: options.defaultPresets ?? [],
       });
       const modelProviders = providers.filter((provider) => provider.type === "chatgpt");
       if (modelProviders.length > 0) {

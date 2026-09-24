@@ -116,24 +116,6 @@ with package read access. Repository administration or an OAuth token with only
 `repo` scope does not establish that access. Workflow package permissions do not
 grant a workstation credential additional scopes.
 
-## Pull-request builds
-
-**Enterprise Containers** builds controller and runtime images on every pull
-request when it is opened, reopened, or updated. It tests the PR merge commit
-on disposable GitHub-hosted runners, using the Node base pinned in that
-revision's CI suite manifest. Both Linux amd64 and arm64 variants run the same
-startup checks used by manual release preparation. ARM64 uses QEMU.
-
-PR jobs have only `contents: read`, no publishing environment or registry login,
-and never publish images or upload sealed release archives. A new PR update
-cancels the previous preparation jobs for that PR. Fork runs remain subject to
-GitHub's workflow approval policy. These checks run alongside ordinary CI;
-`CI Required` does not aggregate this separate workflow.
-
-To publish a PR's changes, merge them and follow the manual process below with
-the resulting main commit and successful main-push CI. PR results and image
-bytes cannot substitute for that release evidence.
-
 ## Prepare and publish
 
 1. Merge the reviewed workflow and source changes to `main`. Wait for that exact

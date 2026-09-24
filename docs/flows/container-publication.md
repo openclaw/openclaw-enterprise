@@ -8,17 +8,14 @@ last_updated_session: codex/01a0c179-19f7-7111-8bb4-fc7680da5545
 
 ## Overview
 
-Enterprise Containers builds controller and runtime OCI archives for Linux amd64
-and arm64 on pull requests and manual dispatches. Both paths check each variant;
-only a validated manual main run can transfer the tested bytes to private GHCR.
-Published packages receive one multi-platform index digest. PR runs end with
-check results; publication ends with verified remote digests and a receipt.
-Neither path deploys workloads or changes package visibility.
+Manual Enterprise container publication builds controller and runtime OCI archives
+for Linux amd64 and arm64, checks both variants, and transfers the tested bytes
+to private GHCR packages. Each package receives one multi-platform index digest.
+This flow ends with verified remote digests and a publication receipt; it does
+not deploy workloads or change package visibility.
 
 ## Entry Points
 
-- `.github/workflows/container-publish.yml:jobs.prepare`: pull-request opened,
-  synchronize, and reopened events build and smoke the PR merge commit.
 - `.github/workflows/container-publish.yml:jobs.validate`: manual dispatch on
   `main` with its exact source SHA, successful main-push CI run ID, and publish flag.
 - `scripts/ci/container-release.mjs:main`: validation, smoke, seal, and publication
@@ -32,14 +29,11 @@ Neither path deploys workloads or changes package visibility.
 ```mermaid
 graph TD
   A["Operator selects main SHA and successful CI"] --> B["Validate source, CI and approved base"]
-  P["PR opened or updated"] --> Q["Select merge commit and its CI base"]
-  Q --> C["Build controller and runtime OCI indexes"]
-  B --> C
+  B --> C["Build controller and runtime OCI indexes"]
   C --> D["Verify amd64 and arm64 manifests and configs"]
   D --> E["Load and smoke each platform's exact config ID"]
   E -->|either fails| X["Stop before publication"]
-  E -->|PR passes| R["Finish checks without release artifacts"]
-  E -->|manual run passes| F["Seal and upload each archive"]
+  E -->|both pass| F["Seal and upload each archive"]
   F -->|publish false| G["Finish with retained artifacts"]
   F -->|publish true| I["Recheck source, CI, seals and private packages"]
   I --> J["Copy all manifests with digest preservation"]
@@ -58,16 +52,9 @@ main source and successful CI identity, and approved Node base digest. Publicati
 also checks the main-only environment branch policy. No-push preparation has no package write
 permission or protected-environment credentials.
 
-For pull requests, `.github/workflows/container-publish.yml:jobs.validate` is
-skipped. Preparation checks out `github.sha`, the PR merge commit, and selects
-the Node base from its CI suite manifest without repository-variable approval.
-PR jobs have only content-read permission, no environment, and no registry
-credentials. New revisions cancel older preparation jobs for the same PR and
-image. Manual runs retain independent preparation and release validation.
-
 `.github/workflows/container-publish.yml:jobs.prepare` runs once per image. It
-registers ARM64 QEMU support and asks Buildx for `linux/amd64,linux/arm64`, with
-provenance disabled, in a single OCI archive. The approved Node base index must
+registers ARM64 QEMU support and builds `linux/amd64` and `linux/arm64`
+separately with provenance disabled, then assembles a single OCI archive. The approved Node base index must
 provide both platforms. The controller and runtime use their existing recipes.
 `deploy/runtime/Dockerfile:openclaw-source` downloads the pinned public OpenClaw
 source archive, rejects a SHA-256 mismatch, installs its frozen dependency graph,
@@ -113,25 +100,23 @@ corrupt entries stop preparation.
 Buildx output, then uses Skopeo's explicit platform selection to load one variant
 at a time. Docker's loaded config ID must match the selected index entry before
 the existing controller or runtime startup suite runs against that ID. AMD64 runs
-natively and ARM64 under QEMU. The ARM64 invocation scales smoke command and
-probe deadlines by six; native deadlines and all outcome assertions stay unchanged.
+natively and ARM64 under QEMU. The ARM64 invocation selects an emulation timeout
+multiplier of six for timeout-aware commands; explicit unscaled test limits retain
+their own deadlines. Native deadlines and all outcome assertions stay unchanged.
 Both must pass, and the archive hash must remain
 unchanged. A failure prevents sealing and artifact upload for that image.
-PR runs end after smoke checks, without seals, uploaded archives, or publication.
 After each successful platform smoke, the loaded image tag is removed before
 the next variant is loaded. The exported archive remains the publication input.
 
 ### 3. Seal and enter publication
 
-For manual dispatches only, `scripts/ci/container-release.mjs:seal` rechecks the
-platform contents and records
+`scripts/ci/container-release.mjs:seal` rechecks the platform contents and records
 the archive hash, multi-platform index digest, platform list, source, workflow,
 run attempt, CI identity, and approved base. Both prepared artifacts must exist
-before `.github/workflows/container-publish.yml:jobs.publish` can start. Its
-event condition additionally requires manual dispatch and `publish: true`;
-release context validation still rejects PR events.
+before `.github/workflows/container-publish.yml:jobs.publish` can start. The
+publish job runs only when the operator selected `publish: true`.
 
-Manual no-push runs end with artifacts. Publishing runs proceed directly to automated
+No-push runs end with artifacts. Publishing runs proceed directly to automated
 validation. Archive retention and package access requirements are owned
 by the [operator instructions](../../.github/containers.md).
 
@@ -174,6 +159,10 @@ not rebuild them. Old amd64-only seals cannot satisfy this platform contract.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-09-24 05:30: Retain the updated main source and manual-only publication gate while applying sequential platform assembly. (codex/01a0c179-19f7-7111-8bb4-fc7680da5545 - b3469cc4)
+
+- 2026-09-24 04:30: Return Enterprise container builds to reviewed manual dispatch and update the runtime source to OpenClaw `2765f7a3341b8be4835afacbff3d04c6e3c3c79b` with its verified archive checksum. (codex/01a0d171-59c4-7b42-95ab-4050d18eab79 - 0224b638)
 
 - 2026-09-24 04:03: Export architectures sequentially, release build snapshots between them, and assemble validated OCI blobs before startup checks. (codex/01a0c179-19f7-7111-8bb4-fc7680da5545 - bac4602c)
 

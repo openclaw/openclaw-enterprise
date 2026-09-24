@@ -253,6 +253,7 @@ export interface ControllerOptions {
   readonly state?: PlatformStateStore;
   readonly recordOperations?: boolean;
   readonly providers?: readonly ProviderDefinition[];
+  readonly defaultPresets?: readonly Pick<Preset, "name" | "template">[];
   readonly loggingLevel?: LoggingLevel;
   readonly configuredServiceAccountDriverId?: string;
 }
@@ -776,6 +777,7 @@ export class OpenClawController {
   private readonly registry = new Map<string, RegisteredDriver>();
   private readonly selections = new Map<DriverCapability, RegisteredDriver>();
   private readonly providers: readonly ProviderDefinition[];
+  private readonly defaultPresets: readonly Pick<Preset, "name" | "template">[];
   private readonly loggingLevel: LoggingLevel;
   private readonly providerMap: ReadonlyMap<string, ProviderDefinition>;
   private readonly configuredServiceAccountDriverId: string | undefined;
@@ -801,6 +803,14 @@ export class OpenClawController {
     this.state = options.state ?? new InMemoryPlatformState();
     this.shouldRecordOperations = options.recordOperations ?? true;
     this.providers = validateProviderDefinitions(options.providers ?? []);
+    this.defaultPresets = immutableCopy(options.defaultPresets ?? []);
+    const presetNames = new Set<string>();
+    for (const preset of this.defaultPresets) {
+      if (!validName(preset.name) || presetNames.has(preset.name)) {
+        throw new PresetValidationError("Default Presets require distinct valid names.");
+      }
+      presetNames.add(preset.name);
+    }
     this.loggingLevel = normalizeLoggingLevel(options.loggingLevel);
     this.providerMap = providerDefinitionMap(this.providers);
     if (
@@ -1965,6 +1975,7 @@ export class OpenClawController {
         status: "provisioning",
         createdAt: this.timestamp(),
       });
+      await this.ensureNamespaceDefaultPresets(state, principalId, namespace);
       await this.record(state, {
         kind: "namespace",
         action: "reconcile",
@@ -1975,6 +1986,72 @@ export class OpenClawController {
       });
       return namespace;
     });
+  }
+
+  /** Apply trusted Installation defaults without replacing Namespace-owned copies. */
+  async initializeDefaultPresets(principalId: string): Promise<void> {
+    if (this.defaultPresets.length === 0) {
+      return;
+    }
+    await this.mutate(async (state) => {
+      await this.authorize(principalId, "administer", {
+        kind: "installation",
+        id: this.installation.id,
+      });
+      const namespaces = [...(await state.namespaces.listNamespaces())].sort((a, b) =>
+        a.id.localeCompare(b.id),
+      );
+      for (const namespace of namespaces) {
+        const current = await state.namespaces.lockNamespace(namespace.id);
+        if (current && ["provisioning", "ready"].includes(current.status)) {
+          await this.ensureNamespaceDefaultPresets(state, principalId, current);
+        }
+      }
+    });
+  }
+
+  private async ensureNamespaceDefaultPresets(
+    state: PlatformUnitOfWork,
+    principalId: string,
+    namespace: Readonly<Namespace>,
+  ): Promise<void> {
+    if (this.defaultPresets.length === 0) {
+      return;
+    }
+    const existing = new Set(
+      (await state.presets.listPresets(namespace.id)).map((preset) => preset.name),
+    );
+    for (const preset of this.defaultPresets) {
+      if (existing.has(preset.name)) {
+        continue;
+      }
+      await this.authorize(principalId, "create", {
+        kind: "preset",
+        id: namespace.id,
+        namespaceId: namespace.id,
+      });
+      const template = await this.admitPresetTemplate(preset.template, namespace.id);
+      const created = await state.presets.createPreset({
+        id: this.nextIdentifier("preset"),
+        namespaceId: namespace.id,
+        name: preset.name,
+        template,
+        createdAt: this.timestamp(),
+      });
+      await state.audit.append({
+        id: `aud_${crypto.randomUUID()}`,
+        installationId: this.installation.id,
+        namespaceId: namespace.id,
+        occurredAt: this.timestamp(),
+        kind: "mutation",
+        actorId: principalId,
+        source: "occ",
+        action: "openclaw.presets.create",
+        resource: { kind: "preset", id: created.id, namespaceId: namespace.id },
+        outcome: "success",
+        details: { source: "installation-defaults" },
+      });
+    }
   }
 
   async createPreset(principalId: string, input: CreatePresetInput): Promise<Readonly<Preset>> {

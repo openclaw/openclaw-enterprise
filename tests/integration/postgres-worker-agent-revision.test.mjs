@@ -3711,7 +3711,24 @@ test(
   "the revision worker retries transient Provider binding read failures without activating",
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
-    const fixture = await setup(context);
+    const events = [];
+    const releaseRetry = Promise.withResolvers();
+    const fixture = await setup(context, {
+      async onHealthy() {
+        if (
+          events.some(
+            ({ event, code, namespaceId }) =>
+              event === "worker.completed" &&
+              code === "DEPENDENCY_UNAVAILABLE" &&
+              namespaceId === fixture.namespace.id,
+          )
+        ) {
+          // Hold the next pass while inspecting the failed attempt, regardless
+          // of how much of the retry backoff the observer has already consumed.
+          await releaseRetry.promise;
+        }
+      },
+    });
     const provider = providerDefinition();
     const cleanup = { serviceAccountIds: [], agentIds: [], revisionIds: [] };
 
@@ -3731,7 +3748,6 @@ test(
     cleanup.agentIds.push(owner.id);
 
     const effects = [];
-    const events = [];
     try {
       await fixture.start(
         {
@@ -3750,6 +3766,17 @@ test(
       const candidate = await fixture.revision(owner, 1);
       cleanup.revisionIds.push(candidate.id);
 
+      // A different connection can see the committed retry before the worker
+      // receives COMMIT's acknowledgment and emits its completion event.
+      const completion = await waitFor("transient Provider read failure completion", async () =>
+        events.find(
+          ({ event, code, revisionId }) =>
+            event === "worker.completed" &&
+            code === "DEPENDENCY_UNAVAILABLE" &&
+            revisionId === candidate.id,
+        ),
+      );
+      assert.equal(completion.outcome, "retry");
       const retried = await waitFor(
         "transient Provider binding read failure retry evidence",
         async () => {
@@ -3773,22 +3800,15 @@ test(
           return undefined;
         },
       );
-      assert.ok(retried.attempt_count >= 1);
+      assert.deepEqual(retried, { state: "queued", attempt_count: 1, dependency_failures: 1 });
       assert.deepEqual(effects, [], "transient binding read failures must not invoke Compute");
-      assert.ok(
-        events.some(
-          ({ event, code, revisionId }) =>
-            event === "worker.completed" &&
-            code === "DEPENDENCY_UNAVAILABLE" &&
-            revisionId === candidate.id,
-        ),
-      );
       const inactive = await fixture.observerPool.query(
         "SELECT active_revision_id FROM occ.agents WHERE namespace_id = $1 AND id = $2",
         [fixture.namespace.id, owner.id],
       );
       assert.equal(inactive.rows[0].active_revision_id, null);
 
+      releaseRetry.resolve();
       await fixture.work(candidate, "succeeded");
       assert.deepEqual(effects, [{ action: "prepare", revisionId: candidate.id }]);
       const active = await fixture.observerPool.query(
@@ -3797,6 +3817,7 @@ test(
       );
       assert.equal(active.rows[0].active_revision_id, candidate.id);
     } finally {
+      releaseRetry.resolve();
       await fixture.stop();
       await cleanupProviderFixtures(fixture.observerPool, fixture.namespace.id, cleanup);
     }

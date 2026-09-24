@@ -72,20 +72,21 @@ See the [Agent repository flow](flows/agent-repository-credentials.md).
 
 ## Deployment, tooling, and checks
 
-| Path                                                     | Responsibility                                                                                 |
-| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `deploy/helm/openclaw-enterprise/`                       | Helm chart for Kubernetes installation.                                                        |
-| `deploy/runtime/`, `deploy/logging/`, `deploy/examples/` | Runtime packaging, logging configuration, and deployment examples.                             |
-| `Dockerfile`, `compose*.yaml`                            | Controller image and local stack definitions or overlays.                                      |
-| `migrations/`, `drizzle.config.ts`                       | Database migrations and Drizzle tooling configuration.                                         |
-| `scripts/`                                               | Build, bootstrap, migration, generation, and maintenance commands.                             |
-| `scripts/ci/`, `.github/workflows/`                      | CI execution helpers and workflow definitions.                                                 |
-| `.agents/skills/`                                        | Repository-owned development workflows; see the [skills catalog](testing/developer-skills.md). |
-| `.githooks/`                                             | Managed Git hooks; installation is described in [Contributing](../CONTRIBUTING.md).            |
-| `tests/conformance/`                                     | Platform and Driver contract checks.                                                           |
-| `tests/integration/`                                     | API, persistence, and infrastructure integrations.                                             |
-| `tests/browser/`, `tests/docs/`                          | Browser-console and documentation-tooling suites.                                              |
-| `tests/fixtures/`, `tests/helpers/`                      | Suite fixtures and reusable test support.                                                      |
+| Path                                                     | Responsibility                                                                                   |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `deploy/helm/openclaw-enterprise/`                       | Helm chart for Kubernetes installation.                                                          |
+| `deploy/runtime/`, `deploy/logging/`, `deploy/examples/` | Runtime packaging, logging configuration, and deployment examples.                               |
+| `deploy/presets/`                                        | Installable Agent Preset requests; see [standard Codex](guides/topics/standard-codex-preset.md). |
+| `Dockerfile`, `compose*.yaml`                            | Controller image and local stack definitions or overlays.                                        |
+| `migrations/`, `drizzle.config.ts`                       | Database migrations and Drizzle tooling configuration.                                           |
+| `scripts/`                                               | Build, bootstrap, migration, generation, and maintenance commands.                               |
+| `scripts/ci/`, `.github/workflows/`                      | CI execution helpers and workflow definitions.                                                   |
+| `.agents/skills/`                                        | Repository-owned development workflows; see the [skills catalog](testing/developer-skills.md).   |
+| `.githooks/`                                             | Managed Git hooks; installation is described in [Contributing](../CONTRIBUTING.md).              |
+| `tests/conformance/`                                     | Platform and Driver contract checks.                                                             |
+| `tests/integration/`                                     | API, persistence, and infrastructure integrations.                                               |
+| `tests/browser/`, `tests/docs/`                          | Browser-console and documentation-tooling suites.                                                |
+| `tests/fixtures/`, `tests/helpers/`                      | Suite fixtures and reusable test support.                                                        |
 
 Repository credential Dockerfiles live under
 `deploy/runtime/repository-credentials/`, with the standalone Compose example

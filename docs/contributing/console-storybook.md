@@ -46,7 +46,7 @@ those states by interacting with the real controls after loading fixture data.
 | Create Agent            | Preset variables, no Presets, OpenAI Codex/OpenClaw and Anthropic OpenClaw harnesses, Service Accounts switching and bound Presets, seeded workspace files, storage/grant denial, repository selection/discovery and rejected-grant recovery, invalid JSON, partial save/conflict, unknown save outcome. |
 | Agent detail            | New revision, native JSON editor, invalid JSON, admitted snapshot, queued or failed deployment, denied deployment, missing Agent, unavailable Configuration and revision history.                                                                                                                        |
 | Navigation components   | Account menu, Namespace switcher, mobile drawer, OCE branding, simulated OCC revision, missing development metadata.                                                                                                                                                                                     |
-| Channels                | Unconfigured cards, Slack editor with pairing/open/disabled policies, unsupported Slack shape, read-only snapshot, save conflict.                                                                                                                                                                        |
+| Channels                | Unconfigured cards, Slack editor with pairing/open/disabled policies, everyone and restricted channel sender access, incomplete sender access, unsupported mixed sender lists, unsupported wildcard channel maps, read-only snapshot, save conflict.                                                     |
 | Credentials             | Stored and missing metadata, masked Slack tokens, one-token replacement, partially missing tokens, generated credentials locked after admission, metadata failure, missing authentication, operator-managed credentials, issued ChatGPT account.                                                         |
 | Native admin            | Available launch, stopped or unsupported runtime, denied panel hidden. The launch target is an explanatory fixture page.                                                                                                                                                                                 |
 | Workspace               | Four editable deployed files, undeployed Agent, denied reads, missing file, unknown write outcome.                                                                                                                                                                                                       |
@@ -104,7 +104,9 @@ Workspace-file writes apply immediately and do not create a revision.
 
 Native JSON editing changes Configuration values, not Agent-owned Provider or
 execution-mode fields. The Slack drawer preserves existing access policies; it
-does not provide a policy selector. See [Agent revisions](../guides/topics/agent-revisions.md).
+does not provide a policy selector. Its channel sender controls edit per-channel
+`users` lists, including `users: ["*"]` for everyone, while direct-message
+`allowFrom` stays unchanged. See [Agent revisions](../guides/topics/agent-revisions.md).
 
 ### Stop
 
