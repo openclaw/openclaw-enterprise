@@ -75,11 +75,14 @@ All native scenarios use Kubernetes. Provide
 `OCC_TEST_PLUGIN_DRIVER_CODEX_CALENDAR_DATABASE_URL`. The Codex failure scenario
 requires its own distinct `OCC_TEST_PLUGIN_DRIVER_CODEX_FAILURE_DATABASE_URL`.
 The OpenClaw scenario also requires `OPENAI_API_KEY` in the process environment
-and a runtime image with `plugins install --no-enable` support. The repository
-still pins OpenClaw `2026.9.1`, which lacks that flag; update the pin after the
-prerequisite release. The extended scenario checks explicit tool allowlist
-composition, preserved plugin deny policy on a disabled deployment, and rejection
-of a later conflicting enabled selection before the replacement becomes ready.
+and a runtime image with `plugins install --no-enable` support. The repository's
+OpenClaw pin lacks that flag; select a compatible runtime before running this
+scenario. It checks explicit tool allowlist composition, per-tool disable and
+re-enable over opposite defaults, and preservation of operator tool denies on
+redeploy. Prompt inventory and transcript evidence must exclude the disabled
+Diffs tool. The final deployment checks a disabled selection alongside native
+plugin deny and rejects a later conflicting enabled selection before the
+replacement becomes ready.
 
 Codex scenarios additionally need a Codex runtime image via
 `OCC_TEST_KUBERNETES_AGENT_IMAGE` or `OCC_TEST_KUBERNETES_CODEX_IMAGE`, an
@@ -142,6 +145,25 @@ the admitted nested policy through the normal API/deployment flow; it does not
 patch the native runtime or change the fixture's existing session configuration.
 Missing review, an incompatible runtime, or rejected deployment fails the selected
 scenario. An unselected scenario is skipped and provides no enforcement proof.
+
+## Tool override acceptance
+
+The same Calendar scenario continues after per-call review with two deployments.
+It binds the known harmless read's raw MCP name and connector owner from
+`mcpServerStatus/list` to its app-scoped OCE tool ID. With
+`toolDefaults: { enabled: false, approval: "prompt", reviewer: "human" }`, only
+that tool receives `{ enabled: true, approval: "approve" }`. The read must execute
+without a human approval client and return the expected provider result. A second
+deployment enables tools by default but sets that tool's `enabled` to `false`
+while retaining `approve`; a completed native turn must contain no call to the
+previously working read.
+
+Native configuration is checked for every app and observed sibling tool. The raw
+MCP catalog is discovery metadata, not filtered model exposure: these assertions
+prove configured defaults and exceptions, while transcript evidence proves the
+selected read's execution or non-execution. The scenario never calls sibling write
+or destructive tools. It does not prove title-alias collision handling, managed
+requirements, or future session/model compatibility.
 
 ## Current proof notes
 

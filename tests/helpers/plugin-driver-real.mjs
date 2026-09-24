@@ -763,6 +763,35 @@ ${codexLocalAppServerTokenScript}
 });
 `;
 
+// Read raw names and connector ownership from the authenticated native catalog.
+// This is discovery metadata; it is not a policy-filtered model tool inventory.
+const codexPluginToolInventoryScript = String.raw`
+${PLUGIN_RUNTIME_HELPERS}
+${codexLocalAppServerTokenScript}
+(async () => {
+  await useLocalPluginRuntimeAppServerToken();
+  const appIds = new Set(JSON.parse(process.argv[1]));
+  const servers = (await readCodexToolStatuses()).filter((server) => server.name === "codex_apps");
+  const server = servers[0];
+  if (servers.length !== 1 || !isPlainObject(server.tools) || server.toolsError != null) {
+    throw new Error("Native app tool inventory is unavailable.");
+  }
+  const tools = Object.values(server.tools).flatMap((tool) => {
+    const appId = tool?._meta?.connector_id;
+    if (!appIds.has(appId)) return [];
+    if (typeof tool.name !== "string" || !tool.name) throw new Error("Native tool name is missing.");
+    return [{
+      appId, name: tool.name, transcriptName: server.name + "." + tool.name,
+      annotations: tool.annotations ?? {},
+    }];
+  });
+  process.stdout.write(JSON.stringify(tools));
+})().catch(() => {
+  process.stderr.write("Native Codex tool inventory query failed.");
+  process.exitCode = 1;
+});
+`;
+
 const codexAppConfigurationScript = String.raw`
 ${PLUGIN_RUNTIME_HELPERS}
 ${codexLocalAppServerTokenScript}
@@ -1215,20 +1244,29 @@ function createNativePluginAssertions({
       false,
       `${options.sessionKey} assistant turn must succeed.`,
     );
-    assert.ok(
-      Array.isArray(evidence.promptToolNames),
-      `${options.sessionKey} must have a run-sourced systemPromptReport.tools.entries snapshot.`,
-    );
-    assert.equal(
-      evidence.promptToolNames.includes(options.toolName),
-      false,
-      `${options.sessionKey} prompt tools still advertised ${options.toolName}: ${JSON.stringify({
-        runtime: evidence.runtime,
-        sessionId: evidence.sessionId,
-        promptReportSource: evidence.promptReportSource,
-        promptToolNames: evidence.promptToolNames,
-      })}`,
-    );
+    if (proofMode === "openclaw") {
+      assert.ok(
+        Array.isArray(evidence.promptToolNames),
+        `${options.sessionKey} must have a run-sourced systemPromptReport.tools.entries snapshot.`,
+      );
+      assert.equal(
+        evidence.promptToolNames.includes(options.toolName),
+        false,
+        `${options.sessionKey} prompt tools still advertised ${options.toolName}: ${JSON.stringify({
+          runtime: evidence.runtime,
+          sessionId: evidence.sessionId,
+          promptReportSource: evidence.promptReportSource,
+          promptToolNames: evidence.promptToolNames,
+        })}`,
+      );
+    } else {
+      // The gateway prompt report does not include native Codex tools. Require
+      // the completed native turn as well as zero calls, not just an empty mirror.
+      assert.ok(
+        evidence.codexTurns.some((turn) => turn.promptSeen && turn.terminalAssistantSeen),
+        `${options.sessionKey} must include a completed marker-bearing native Codex turn.`,
+      );
+    }
     assert.equal(
       evidence.calls.length,
       0,
@@ -1271,6 +1309,19 @@ function createNativePluginAssertions({
       entry.remotePluginId,
     ]);
     return { runtime: execution.label, ...JSON.parse(execution.stdout) };
+  }
+
+  async function codexPluginToolInventory(agent, entry) {
+    assert.equal(proofMode, "codex", "native tool inventory requires Codex proof mode.");
+    const execution = await execCodex(agent, [
+      "node",
+      "-e",
+      codexPluginToolInventoryScript,
+      JSON.stringify(entry.appIds),
+    ]);
+    const tools = JSON.parse(execution.stdout);
+    assert.ok(Array.isArray(tools) && tools.length > 0, "selected app tool inventory is empty.");
+    return tools;
   }
 
   async function codexAppConfiguration(agent) {
@@ -1350,6 +1401,8 @@ function createNativePluginAssertions({
     readOpenClawPluginPolicy,
     listCodexNativeCatalog,
     codexNativePluginDetail,
+    codexPluginToolInventory,
+    codexAppConfiguration,
     codexEffectivePluginConfiguration,
     writeWorkspaceSentinel,
     readWorkspaceSentinel,
@@ -2164,6 +2217,8 @@ export async function createPluginDriverRealFixture(
     readOpenClawPluginPolicy: nativeAssertions.readOpenClawPluginPolicy,
     listCodexNativeCatalog: nativeAssertions.listCodexNativeCatalog,
     codexNativePluginDetail: nativeAssertions.codexNativePluginDetail,
+    codexPluginToolInventory: nativeAssertions.codexPluginToolInventory,
+    codexAppConfiguration: nativeAssertions.codexAppConfiguration,
     codexEffectivePluginConfiguration: nativeAssertions.codexEffectivePluginConfiguration,
     writeWorkspaceSentinel: nativeAssertions.writeWorkspaceSentinel,
     readWorkspaceSentinel: nativeAssertions.readWorkspaceSentinel,
