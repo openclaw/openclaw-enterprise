@@ -106,7 +106,7 @@ instead of writing outside the Agent's managed storage. Provider-owned Sandbox
 startup cannot carry this init container and rejects workspace setup rather than
 dropping initialization.
 
-The runner validates identity, paths, OpenClaw `2026.9.5`, and the rendered
+The runner validates identity, paths, OpenClaw `2026.9.6`, and the rendered
 template digest against Console defaults before initialization. Submitted
 defaults identities must match; links and conflicts fail. Without a completion
 marker, native `setup` initializes the workspace and Git without starting the Gateway.
