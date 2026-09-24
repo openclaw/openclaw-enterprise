@@ -1091,7 +1091,7 @@ export class ControllerWorker {
         });
         return;
       }
-      const denied = await this.authorizeAgentStop(claim, authorizedAgent);
+      const denied = await this.authorizeAgentAction(claim, authorizedAgent, "operate");
       if (denied !== undefined) {
         await this.finalizeAgentStop(claim, { ...denied, agent: authorizedAgent });
         return;
@@ -1274,7 +1274,7 @@ export class ControllerWorker {
         });
         return;
       }
-      const denied = await this.authorizeAgentDeletion(claim, agent);
+      const denied = await this.authorizeAgentAction(claim, agent, "delete");
       if (denied !== undefined) {
         await this.finalizeAgentDeletion(claim, { ...denied, namespace, agent, revisions });
         return;
@@ -1379,16 +1379,18 @@ export class ControllerWorker {
     await this.finalizeAgentDeletion(claim, result);
   }
 
-  private async authorizeAgentDeletion(
+  private async authorizeAgentAction(
     claim: ClaimedWork,
     agent: Readonly<Agent>,
-  ): Promise<AgentDeletionDispatchResult | undefined> {
+    action: "delete" | "operate",
+  ): Promise<DispatchResult | undefined> {
     const authorization: AuthorizationRequest = {
       principalId: claim.actorId,
-      action: "delete",
+      action,
       resource: { kind: "agent", id: agent.id, namespaceId: agent.namespaceId },
     };
     const state = await this.loadIAMState();
+    // Consult IAM before classifying a revoked actor so Driver failures still retry.
     const decision = await this.iamDecision(this.iam, authorization);
     if (!state.identities.some((identity) => identity.id === claim.actorId)) {
       return { outcome: "permanent", code: "ACTOR_REVOKED", authorization, decision };
@@ -1521,31 +1523,6 @@ export class ControllerWorker {
       reasonCode: result.code,
       outcome: "denied",
     });
-  }
-
-  private async authorizeAgentStop(
-    claim: ClaimedWork,
-    agent: Readonly<Agent>,
-  ): Promise<AgentStopDispatchResult | undefined> {
-    const authorization: AuthorizationRequest = {
-      principalId: claim.actorId,
-      action: "operate",
-      resource: { kind: "agent", id: agent.id, namespaceId: agent.namespaceId },
-    };
-    const state = await this.loadIAMState();
-    const decision = await this.iamDecision(this.iam, authorization);
-    if (!state.identities.some((identity) => identity.id === claim.actorId)) {
-      return { outcome: "permanent", code: "ACTOR_REVOKED", authorization, decision };
-    }
-    if (!decision.allowed) {
-      return {
-        outcome: "permanent",
-        code: "AUTHORIZATION_DENIED",
-        authorization,
-        decision,
-      };
-    }
-    return undefined;
   }
 
   private async finalizeAgentStop(

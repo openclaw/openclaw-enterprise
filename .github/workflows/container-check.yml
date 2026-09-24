@@ -1,0 +1,132 @@
+name: Check Native Container Images
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      ci_run_id:
+        required: true
+        type: string
+      ci_attempt:
+        required: true
+        type: string
+      node_base_image:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+  CI_RUN_ID: ${{ inputs.ci_run_id }}
+  CI_ATTEMPT: ${{ inputs.ci_attempt }}
+  NODE_BASE_IMAGE: ${{ inputs.node_base_image || vars.CONTAINER_NODE_BASE_IMAGE }}
+
+jobs:
+  prepare:
+    name: Prepare ${{ matrix.image }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [controller, runtime]
+        arch: [amd64, arm64]
+        include:
+          - image: controller
+            file: Dockerfile
+            target: runtime
+          - image: runtime
+            file: deploy/runtime/Dockerfile
+            target: ""
+          - arch: amd64
+            runner: ${{ vars.CONTAINER_AMD64_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}
+          - arch: arm64
+            runner: ${{ vars.CONTAINER_ARM64_RUNNER || 'blacksmith-8vcpu-ubuntu-2404-arm' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "24.16.0"
+      - name: Report native runner resources
+        env:
+          PLATFORM: linux/${{ matrix.arch }}
+        run: |
+          node <<'NODE'
+          const os = require("node:os");
+          const arch = process.arch === "x64" ? "amd64" : process.arch;
+          if (process.env.PLATFORM !== `linux/${arch}`) {
+            throw new Error("Select a native Linux runner");
+          }
+          console.log({arch, cpus: os.availableParallelism(), memoryBytes: os.totalmem()});
+          if (os.availableParallelism() < 4 || os.totalmem() < 12 * 1024 ** 3) {
+            throw new Error("Container builds require at least 4 CPUs and 12 GiB RAM; select a larger runner");
+          }
+          NODE
+          df -h / "$RUNNER_TEMP"
+      - name: Reclaim unused toolchains on the standard AMD64 runtime runner
+        if: ${{ matrix.image == 'runtime' && matrix.arch == 'amd64' && vars.CONTAINER_AMD64_RUNNER == 'ubuntu-24.04' }}
+        env:
+          OPENCLAW_CI_HEADROOM_LANE: container-runtime-build
+        run: node scripts/ci/repository-platform-headroom.mjs
+      - name: Set up persistent Blacksmith Buildx cache
+        if: ${{ startsWith(matrix.runner, 'blacksmith-') }}
+        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184 # v2.2.0
+        with:
+          cache-key: openclaw-enterprise/${{ matrix.image }}-${{ matrix.arch }}
+          max-parallelism: "2"
+      - name: Set up portable Buildx builder
+        if: ${{ !startsWith(matrix.runner, 'blacksmith-') }}
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          buildkitd-config-inline: |
+            [worker.oci]
+              max-parallelism = 2
+      - name: Build native OCI image without publication
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          target: ${{ matrix.target }}
+          platforms: linux/${{ matrix.arch }}
+          build-args: |
+            NODE_BASE_IMAGE=${{ env.NODE_BASE_IMAGE }}
+            OCC_BUILD_REVISION=${{ env.SOURCE_SHA }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/openclaw/openclaw-enterprise
+            org.opencontainers.image.revision=${{ env.SOURCE_SHA }}
+          outputs: type=oci,dest=${{ runner.temp }}/oci,tar=false
+          cache-from: ${{ !startsWith(matrix.runner, 'blacksmith-') && format('type=gha,scope=enterprise-{0}-{1}', matrix.image, matrix.arch) || '' }}
+          cache-to: ${{ !startsWith(matrix.runner, 'blacksmith-') && format('type=gha,mode=max,scope=enterprise-{0}-{1}', matrix.image, matrix.arch) || '' }}
+          provenance: false
+          push: false
+      - name: Install existing smoke test prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y skopeo
+          skopeo --version | grep -Fx 'skopeo version 1.13.3'
+          corepack pnpm install --frozen-lockfile --ignore-scripts
+      - name: Smoke the exact export on its native architecture
+        env:
+          IMAGE: ${{ matrix.image }}
+          PLATFORM: linux/${{ matrix.arch }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          CI_ATTEMPT: ${{ env.CI_ATTEMPT }}
+        run: node scripts/ci/container-release.mjs smoke "$RUNNER_TEMP/oci"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: platform-${{ matrix.image }}-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/oci
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error

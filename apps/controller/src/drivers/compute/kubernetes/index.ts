@@ -57,6 +57,7 @@ import type {
   SecretEnvironmentProjection,
   LoggingLevel,
   RuntimeFailureEvidence,
+  RuntimeImage,
   OpenClawConfigurationValue,
 } from "@openclaw-enterprise/contracts";
 import { admittedLoggingLevel, normalizeSecretBindings } from "@openclaw-enterprise/contracts";
@@ -1902,6 +1903,99 @@ export class KubernetesComputeDriver implements ComputeDriver {
     } catch (error) {
       return { ...result, failure: failure(error) };
     }
+  }
+
+  async getRuntimeImages(revision: AgentRevision): Promise<readonly RuntimeImage[]> {
+    if (
+      revision.compute.id !== this.id ||
+      revision.compute.implementation !== this.implementation
+    ) {
+      throw new OwnershipFailure("The revision belongs to another Compute Driver.");
+    }
+    const { name: namespace } = await this.resolveNamespace(revision.namespaceId);
+    const images: RuntimeImage[] = [];
+    for (const role of ["gateway", "agent"] as const) {
+      const targetNamespace =
+        role === "gateway" ? this.gatewayNamespace(revision, namespace) : namespace;
+      const pods = await this.revisionPods(revision, targetNamespace, role);
+      // Old or external images can lack the metadata endpoint. Image identity
+      // still comes from Kubernetes; never infer a commit from a configured tag.
+      // Optional provenance must leave room within the console's request deadline.
+      const ownerSignal = currentComputeAbortSignal();
+      const metadataDeadline = AbortSignal.timeout(2_000);
+      const metadataSignal = ownerSignal
+        ? AbortSignal.any([ownerSignal, metadataDeadline])
+        : metadataDeadline;
+      const provenance =
+        pods.length === 0
+          ? undefined
+          : await withComputeAbortSignal(metadataSignal, () =>
+              this.privateStatusReadback(revision, namespace, role, "/openclaw/runtime/image"),
+            ).catch(() => undefined);
+      for (const pod of pods) {
+        const metadata = asRecord(pod.metadata)!;
+        if (metadata.deletionTimestamp !== undefined) {
+          continue;
+        }
+        const spec = asRecord(pod.spec);
+        const status = asRecord(pod.status);
+        const commit = asRecord(provenance?.status)?.commit;
+        const openclawCommit = asRecord(provenance?.status)?.openclawCommit;
+        const sameContainer =
+          provenance?.podUid === metadata.uid &&
+          provenance?.containerId !== undefined &&
+          provenance.containerId === this.podContainerId(pod, role);
+        const runtimeImageId = (
+          Array.isArray(status?.containerStatuses) ? status.containerStatuses : []
+        )
+          .map(asRecord)
+          .find((item) => item?.name === role)?.imageID;
+        for (const [containers, states] of [
+          [spec?.containers, status?.containerStatuses],
+          [spec?.initContainers, status?.initContainerStatuses],
+          [spec?.ephemeralContainers, status?.ephemeralContainerStatuses],
+        ]) {
+          if (!Array.isArray(containers)) {
+            continue;
+          }
+          for (const value of containers) {
+            const container = asRecord(value);
+            if (!isNonEmptyString(container?.name) || !isNonEmptyString(container?.image)) {
+              throw new DependencyUnavailableError(
+                "Kubernetes returned incomplete image identity.",
+              );
+            }
+            const observed = (Array.isArray(states) ? states : [])
+              .map(asRecord)
+              .find((item) => item?.name === container.name);
+            const imageId = isNonEmptyString(observed?.imageID) ? observed.imageID : null;
+            images.push({
+              workload: `${targetNamespace}/${metadata.name}`,
+              container: container.name,
+              image: container.image,
+              imageId,
+              commit:
+                sameContainer &&
+                imageId !== null &&
+                imageId === runtimeImageId &&
+                typeof commit === "string" &&
+                /^[a-f0-9]{40}$/.test(commit)
+                  ? commit
+                  : null,
+              openclawCommit:
+                sameContainer &&
+                imageId !== null &&
+                imageId === runtimeImageId &&
+                typeof openclawCommit === "string" &&
+                /^[a-f0-9]{40}$/.test(openclawCommit)
+                  ? openclawCommit
+                  : null,
+            });
+          }
+        }
+      }
+    }
+    return images;
   }
 
   async prepareRevision(

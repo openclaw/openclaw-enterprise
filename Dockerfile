@@ -1,5 +1,6 @@
 # Operators must select an approved, immutable Node 24 base image explicitly.
 ARG NODE_BASE_IMAGE
+ARG NODE_RUNTIME_BASE_IMAGE=docker.io/library/node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03
 FROM ${NODE_BASE_IMAGE} AS dependencies
 
 WORKDIR /app
@@ -39,7 +40,7 @@ USER node
 ENTRYPOINT ["node"]
 CMD ["apps/controller/src/server.mjs"]
 
-FROM ${NODE_BASE_IMAGE} AS runtime
+FROM ${NODE_RUNTIME_BASE_IMAGE} AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
 

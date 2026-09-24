@@ -207,6 +207,7 @@
               }
             ],
             "hidden": [
+              "reference/console/debug-fields",
               "reference/configuration/secrets",
               "reference/security/runtime-isolation",
               "reference/agents",

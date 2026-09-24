@@ -6939,6 +6939,147 @@
         ]
       }
     },
+    "/namespaces/{namespaceId}/agents/{agentId}/runtime-images": {
+      "get": {
+        "description": "Requires read permission on the requested Agent.",
+        "operationId": "getAgentRuntimeImages",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "images": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "commit": {
+                                "anyOf": [
+                                  { "pattern": "^[a-f0-9]{40}$", "type": "string" },
+                                  { "type": "null" }
+                                ]
+                              },
+                              "container": { "type": "string" },
+                              "image": { "type": "string" },
+                              "imageId": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+                              "openclawCommit": {
+                                "anyOf": [
+                                  { "pattern": "^[a-f0-9]{40}$", "type": "string" },
+                                  { "type": "null" }
+                                ]
+                              },
+                              "workload": { "type": "string" }
+                            },
+                            "required": [
+                              "workload",
+                              "container",
+                              "image",
+                              "imageId",
+                              "commit",
+                              "openclawCommit"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "status": {
+                          "anyOf": [
+                            { "const": "observed", "type": "string" },
+                            { "const": "undeployed", "type": "string" },
+                            { "const": "unsupported", "type": "string" }
+                          ]
+                        }
+                      },
+                      "required": ["status", "images"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Read observed images and source commits for an Agent's active runtime",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          { "action": "read", "resourceKind": "agent", "scope": "requested" }
+        ]
+      }
+    },
     "/namespaces/{namespaceId}/agents/{agentId}/stop": {
       "post": {
         "description": "Requires operate permission on the requested Agent.",

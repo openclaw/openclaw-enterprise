@@ -31,11 +31,11 @@ missing or expired session clears private content and asks you to sign in again.
 
 ## Identify the control-plane build
 
-The sidebar shows **OCE** followed by the first eight characters of the running
-OCC image's source commit; hover over the hash for the full OCC revision. Published images bake the checked release revision into the console HTML.
-The hash identifies OCC, not an Agent's gateway. A source checkout or image built
-without revision metadata shows **dev** beside OCE, with a tooltip explaining
-that the build revision is unavailable.
+With `debug=true`, the sidebar shows **OCE** followed by the first eight
+characters of the running OCC image's source commit. Hover for the full revision
+or use the [build and runtime image panel](#inspect-build-and-runtime-images).
+Published images bake the checked release revision into the console HTML.
+Builds without metadata show **dev** beside OCE.
 
 ## Browse and select a Namespace
 
@@ -47,6 +47,9 @@ Providers tab is hidden. Namespace rows remain read-only collection entries.
 | ---------- | ------------------------------------------------------------------------ |
 | Agents     | Selected Namespace; Namespace `read`, then exact Agent `read` filtering. |
 | Namespaces | Installation-wide collection filtered by exact Namespace `read`.         |
+
+The console uses a light appearance. Its fonts are served by OCC;
+no external font service is required.
 
 Use the bottom **OpenClaw Enterprise** menu for **Namespace**, **Settings**, or
 **Logout**. Settings shows the signed-in account and no configurable settings.
@@ -60,6 +63,19 @@ Switching Namespace from Agent detail or creation returns to the Agents list in
 the new scope. Global pages stay open because Namespaces remain
 Installation-wide. The API makes all authorization decisions; the selector does
 not broaden access.
+
+## Inspect build and runtime images
+
+Append `debug=true` to the console URL, for example
+`/console/agents?debug=true` (or `&debug=true` after an existing query).
+The sidebar shows the full OCE source commit and expandable entries for readable
+Agents in the selected Namespace. Each container lists its configured Docker
+image, observed image ID or digest, and source commit when available.
+Navigation preserves the flag; remove it to hide diagnostics and stop these reads.
+
+See [Debug sidebar fields](console/debug-fields.md) for every field, Docker and
+Kubernetes differences, inspection scope, and unavailable states.
+Use **Refresh** to retry unavailable metadata or update the snapshot.
 
 ## Agent creation and deployment
 

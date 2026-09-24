@@ -12,6 +12,7 @@
     {
       "path": "tests/integration/runtime-image-startup.test.mjs",
       "expectedTests": [
+        "runtime image shares Codex 0.156.0 between the plugin and Dedicated command",
         "runtime image gateway ignores inherited OPENCLAW_LOG_LEVEL in favor of native configuration",
         "runtime image starts an embedded OpenClaw gateway with the Docker driver entrypoint",
         "runtime image discovers the bundled Codex plugin from a fresh gateway home",
@@ -67,6 +68,13 @@
         "native workspace setup preserves stock provisioning, template parity, and later edits across restart",
         "native workspace setup preserves empty/exact API content and resumes partial writes without clobbering divergence",
         "native workspace setup rejects stale defaults and hard-linked files without modifying external data"
+      ]
+    },
+    {
+      "path": "tests/integration/runtime-images.test.mjs",
+      "expectedTests": [
+        "Docker runtime image inspection follows attached images and rejects foreign revisions",
+        "runtime image metadata endpoint validates Enterprise and OpenClaw provenance independently"
       ]
     }
   ]

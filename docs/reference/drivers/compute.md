@@ -21,6 +21,21 @@ The [shared contracts](../../../packages/contracts/src/index.ts) define the type
 Every `ComputeDriver` has an `id`,
 an `implementation`, and `capability: "compute"`.
 
+The optional `getRuntimeImages(revision)` method observes containers belonging to
+that admitted revision and returns `{workload, container, image, imageId, commit, openclawCommit}`
+entries. OCC requires exact Agent read authority and calls the Driver pinned by
+the active revision. The `runtime-images` API reports `undeployed` without an
+active revision and `unsupported` when the Driver omits this method.
+
+Docker reads the immutable image attached to each owned container and its OCI
+revision label plus `org.openclaw.image.revision` for the upstream OpenClaw commit,
+even if the configured tag has moved. Kubernetes reads image
+references and IDs from revision-owned Pods, including init and ephemeral
+containers. Its private runtime metadata read is bound to the Pod UID and running
+container ID; both commits apply only to containers with that same image ID.
+Commits must be full lowercase Git SHAs. Missing IDs or provenance remain `null`.
+These observations do not inventory separate Sandbox Driver workloads.
+
 The optional `discoverHarnessModels({provider, apiKey})` method returns native
 model IDs and names for Agent setup without persisting credentials. OCC checks
 Agent creation authority before calling it. Bundled Kubernetes and Docker use

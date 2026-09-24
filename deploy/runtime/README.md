@@ -9,13 +9,15 @@ entrypoints:
 
 The Dockerfile builds OpenClaw from a verified public source archive, using its
 pinned package manager, frozen dependency lockfile, and upstream Docker assembly.
+The reviewed `codex-0.156.0.patch` updates only Codex dependency versions and package
+integrities before the frozen install. Both Codex entrypoints share that installation.
 Codex and Slack come from that same source. The selected commit contains
 the restricted workspace-node commands and saved-token-first pairing required by
 split storage; published `2026.9.5` packages do not contain that complete contract.
 
 | Input                                        | Selection                                                                                                    |
 | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| Node base                                    | `docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584` |
+| Build base                                   | `docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584` |
 | OpenClaw source commit                       | `2765f7a3341b8be4835afacbff3d04c6e3c3c79b`                                                                   |
 | Source archive SHA-256                       | `42a420286dcad558b9710b7b583dd9e489bb07b3a835e3e19b69184b22fd416b`                                           |
 | Dedicated Codex CLI (`OPENAI_CODEX_VERSION`) | `0.156.0`                                                                                                    |
@@ -23,11 +25,19 @@ split storage; published `2026.9.5` packages do not contain that complete contra
 The source's package version remains `2026.9.5`; it does not identify this custom
 build. `/opt/oce/runtime/provenance.json` records the source commit, verified archive
 hash, lockfile hash, pinned package manager, selected plugins, architecture, and
-assembled runtime archive SHA-256. This archive is a runtime directory tree, not
-an npm package. The final stage verifies its checksum before extraction. The
-build installs production dependencies for the target architecture with lifecycle
+Codex patch hash and version, and the SHA-256 of `contents.json`, which inventories
+packaged files, modes, hashes, and symlinks. The final stage copies the assembled
+directory directly, without an intermediate compressed archive. Its pinned
+`node:24-bookworm-slim` base retains required runtime libraries, Git/SSH, GitHub CLI,
+Python, and process utilities. Build compilers stay in the full Bookworm stages.
+The build selects upstream required bundled plugins plus Codex and Slack before
+installing dependencies for the target architecture with lifecycle
 scripts enabled and runs upstream postinstall, plugin pruning, import-closure,
-and native filesystem-addon checks. Building requires registry access.
+and native filesystem-addon checks. Extension tests, QA source, and documentation
+media are excluded; help text, skills, and runtime templates remain. A dependency
+walk removes unreachable pnpm store entries while retaining importer-specific
+versions and installed optional dependencies. Building
+requires registry access.
 
 Build it from the repository root:
 
@@ -56,16 +66,17 @@ runtime Secrets; do not put them in the image.
 Keep the source commit and archive checksum together when updating OpenClaw.
 Follow the [pinned upstream Docker assembly](https://github.com/openclaw/openclaw/blob/2765f7a3341b8be4835afacbff3d04c6e3c3c79b/Dockerfile)
 to keep plugin dependencies and runtime assets consistent. Its plugin-local
-dependency layout preserves Slack’s `undici@7.29.1` alongside core’s `undici@8.10.2`.
+dependency layout preserves dependencies that differ from core versions.
 Plugin chunks emitted directly under `dist` also need package-root resolution.
 The assembly links missing plugin dependencies into that root without replacing
 existing core dependencies.
 The custom npm-distribution packer rejects that combination because it requires
 one shared dependency version. Alternate
 `NODE_BASE_IMAGE` values must provide Node.js 24.16 or newer within the 24 series.
-The separately installed Dedicated Codex CLI remains
-[0.156.0](https://github.com/openai/codex/releases/tag/rust-v0.156.0); the bundled
-plugin's managed CLI dependency is a separate selection. Run the compatibility
+The Dedicated command and bundled plugin both resolve the same
+[Codex 0.156.0](https://github.com/openai/codex/releases/tag/rust-v0.156.0) installation.
+Update the reviewed dependency patch and compatibility assertion together when
+changing that version. Run the compatibility
 check below against the resulting image. Provider model availability still
 requires a real model turn with the selected credential.
 
@@ -98,6 +109,17 @@ For Kubernetes, publish the rebuilt image and update both Installation image
 references to its verified immutable digest. Separate gateway and Codex images
 require verification of that exact pair through the
 [Kubernetes runtime tests](../../docs/testing/kubernetes.md#kubernetes-model-turns-and-secrets).
+
+## Verify both native architectures
+
+Dispatch **Check Native Container Images** (`container-check.yml`) on the branch
+to build and smoke controller and runtime on native AMD64 and ARM64 runners without
+publishing. It uses the same reusable preparation jobs as Enterprise Containers.
+Manual `CI` dispatches also call this native verification workflow, including on
+a branch before its first merge. The default Blacksmith runner labels can be overridden with repository
+variables `CONTAINER_AMD64_RUNNER` and `CONTAINER_ARM64_RUNNER`. Each override must
+name a provisioned Linux runner with the matching architecture, at least four
+CPUs and 12 GiB RAM, and sufficient disk.
 
 ## Verify the local image
 
@@ -135,3 +157,15 @@ Before enabling Slack in an Installation, run the
 [live Slack test](../../docs/testing/slack.md#slack) with the verified image, projected
 credentials, and the required proxy configuration. It must prove a real mention,
 Codex turn, and gateway-authored reply; gateway readiness alone is insufficient.
+
+## Build provenance
+
+The publisher passes the checked Enterprise source SHA as `OCC_BUILD_REVISION`.
+The runtime image records it in the OCI revision label and
+`/opt/oce/runtime/build.json`. The private runtime status endpoint exposes only
+that validated commit and the upstream OpenClaw commit from
+`/opt/oce/runtime/provenance.json` for the console's `debug=true` image panel.
+The `org.openclaw.image.revision` label records the same upstream commit for
+Docker inspection; the build checks that it matches packaged provenance. Local builds
+can pass `--build-arg OCC_BUILD_REVISION=<full-lowercase-git-sha>`; omitted metadata
+remains unknown. Rebuild the runtime image to include this metadata.

@@ -2989,72 +2989,98 @@ for (const admissionDuring of ["active", "candidate"]) {
   );
 }
 
-test(
-  "Agent stop reauthorizes the recorded actor before Compute mutation",
-  requiresPostgres,
-  async (context) => {
-    const metrics = createOccMetrics("worker", () =>
-      new PostgresMetricsSnapshot(fixture.observerPool).collect(),
-    );
-    const fixture = await setup(context, { metrics });
-    const before = await new PostgresMetricsSnapshot(fixture.observerPool).collect();
-    const owner = await fixture.agent("stop-reauthorization");
-    const revision = await fixture.revision(owner, 1);
-    const stoppedRevisions = [];
-    const compute = {
-      ...fixture.compute,
-      async stopRevision(candidate) {
-        stoppedRevisions.push(candidate.id);
-      },
-    };
-    await fixture.start(compute);
-    await fixture.work(revision, "succeeded");
+for (const { operation, action } of [
+  { operation: "stop", action: "operate" },
+  { operation: "delete", action: "delete" },
+]) {
+  test(
+    `Agent ${operation} reauthorizes the recorded actor before Compute mutation`,
+    requiresPostgres,
+    async (context) => {
+      const metrics = createOccMetrics("worker", () =>
+        new PostgresMetricsSnapshot(fixture.observerPool).collect(),
+      );
+      const fixture = await setup(context, { metrics });
+      const before = await new PostgresMetricsSnapshot(fixture.observerPool).collect();
+      const owner = await fixture.agent(`${operation}-reauthorization`);
+      const revision = await fixture.revision(owner, 1);
+      const effects = [];
+      const compute = {
+        ...fixture.compute,
+        async stopRevision(candidate) {
+          effects.push({ action: "stop", agentId: candidate.agentId });
+        },
+        async retireRevision(candidate) {
+          effects.push({ action: "retire", agentId: candidate.agentId });
+        },
+        async deleteAgentRuntimeCredentials({ agent }) {
+          effects.push({ action: "credentials", agentId: agent.id });
+        },
+      };
+      await fixture.start(compute);
+      await fixture.work(revision, "succeeded");
 
-    await fixture.stop();
-    const stop = await fixture.requestStop(owner);
-    // Admission was authorized; revoke before restarting the worker to prove
-    // dispatch independently rechecks the recorded actor's permission.
-    await fixture.observerPool.query(
-      `INSERT INTO occ.iam_restrictions
+      await fixture.stop();
+      const work = await (operation === "stop"
+        ? fixture.requestStop(owner)
+        : fixture.requestDeletion(owner));
+      // Admission was authorized; revoke before restarting the worker to prove
+      // dispatch independently rechecks the recorded actor's permission.
+      await fixture.observerPool.query(
+        `INSERT INTO occ.iam_restrictions
          (id, namespace_id, action, resource_kind, resource_id, effect)
-       VALUES ($1, $2, 'operate', 'agent', $3, 'deny')`,
-      [`restriction-${randomUUID()}`, fixture.namespace.id, owner.id],
-    );
-    await fixture.start(compute, () => {}, undefined, undefined, fixture.createWorkerPool());
-    await fixture.work(stop, "failed_permanent");
-    assert.equal(
-      (await new PostgresMetricsSnapshot(fixture.observerPool).collect()).agents.failed,
-      before.agents.failed + 1,
-    );
-    assert.match(
-      await metrics.exposition(),
-      /occ_agent_operation_duration_seconds_count\{[^\n]*operation="stop"[^\n]*\} 0(?:\n|$)/,
-    );
+       VALUES ($1, $2, $3, 'agent', $4, 'deny')`,
+        [`restriction-${randomUUID()}`, fixture.namespace.id, action, owner.id],
+      );
+      await fixture.start(compute, () => {}, undefined, undefined, fixture.createWorkerPool());
+      assert.equal((await fixture.work(work, "failed_permanent")).attempt_count, 1);
+      if (operation === "stop") {
+        assert.equal(
+          (await new PostgresMetricsSnapshot(fixture.observerPool).collect()).agents.failed,
+          before.agents.failed + 1,
+        );
+        assert.match(
+          await metrics.exposition(),
+          /occ_agent_operation_duration_seconds_count\{[^\n]*operation="stop"[^\n]*\} 0(?:\n|$)/,
+        );
+      }
 
-    assert.deepEqual(stoppedRevisions, []);
-    const current = await fixture.state.read((view) =>
-      view.agents.findAgent(fixture.namespace.id, owner.id),
-    );
-    assert.equal(current.activeRevisionId, revision.id);
-    assert.equal(current.desiredRuntimeState, "stopped");
-    const audit = await fixture.observerPool.query(
-      `SELECT kind, action, outcome,
+      // The shared queue can also dispatch another fixture's durable cleanup.
+      assert.deepEqual(
+        effects.filter(({ agentId }) => agentId === owner.id),
+        [],
+      );
+      const current = await fixture.state.read((view) =>
+        view.agents.findAgent(fixture.namespace.id, owner.id),
+      );
+      assert.equal(current.activeRevisionId, revision.id);
+      assert.equal(current.desiredRuntimeState, "stopped");
+      assert.equal(current.status, operation === "delete" ? "deleting" : "active");
+      const audit = await fixture.observerPool.query(
+        `SELECT kind, action, outcome,
+              details->'__occAuditMetadata'->'authorization' AS authorization,
               details->'__occAuditMetadata'->>'reasonCode' AS reason_code
        FROM occ.audit_events
        WHERE namespace_id = $1 AND resource_id = $2
          AND kind = 'authorization_denial'`,
-      [fixture.namespace.id, owner.id],
-    );
-    assert.deepEqual(audit.rows, [
-      {
-        kind: "authorization_denial",
-        action: "openclaw.agents.stop",
-        outcome: "denied",
-        reason_code: "AUTHORIZATION_DENIED",
-      },
-    ]);
-  },
-);
+        [fixture.namespace.id, owner.id],
+      );
+      assert.deepEqual(audit.rows, [
+        {
+          kind: "authorization_denial",
+          action: `openclaw.agents.${operation}`,
+          outcome: "denied",
+          authorization: {
+            principalId: fixture.actor.id,
+            action,
+            resource: { kind: "agent", id: owner.id, namespaceId: fixture.namespace.id },
+          },
+          reason_code: "AUTHORIZATION_DENIED",
+        },
+      ]);
+    },
+  );
+}
 
 test(
   "active revision maintenance defers shutdown to the separately authorized Agent stop work",

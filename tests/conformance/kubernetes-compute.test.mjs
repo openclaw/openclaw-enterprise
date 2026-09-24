@@ -7014,3 +7014,91 @@ for (const embedded of [true, false]) {
     assert.equal(modelConsumers, 1);
   });
 }
+
+test("runtime image provenance survives missing metadata but never crosses Pod or image identity", async () => {
+  const driver = new KubernetesComputeDriver(options());
+  const revision = routedRevision(driver);
+  const commit = "a".repeat(40);
+  let generation = 1;
+  let mode = "ready";
+  driver.apiClients = Promise.resolve({
+    core: {
+      async listNamespace() {
+        return { items: [] };
+      },
+      async listNamespacedPod({ namespace, labelSelector }) {
+        const labels = Object.fromEntries(
+          labelSelector.split(",").map((entry) => entry.split("=")),
+        );
+        const role = labels["openclaw.dev/workload-role"];
+        return {
+          items: [
+            {
+              metadata: { name: `${role}-pod`, namespace, labels, uid: `${role}-${generation}` },
+              spec: {
+                containers: [
+                  { name: role, image: "runtime:mutable" },
+                  { name: "sidecar", image: "sidecar:1" },
+                ],
+                initContainers: [{ name: "initialize", image: "runtime:mutable" }],
+              },
+              status: {
+                containerStatuses: [
+                  { name: role, imageID: "sha256:runtime", containerID: `${role}-${generation}` },
+                  { name: "sidecar", imageID: "sha256:sidecar", containerID: "sidecar" },
+                ],
+                initContainerStatuses: [{ name: "initialize", imageID: "sha256:runtime" }],
+              },
+            },
+          ],
+        };
+      },
+      async connectGetNamespacedPodProxyWithPath() {
+        if (mode === "restart") {
+          generation += 1;
+        }
+        if (mode === "missing") {
+          throw Object.assign(new Error("not found"), { statusCode: 404 });
+        }
+        if (mode === "timeout") {
+          return new Promise((resolve, reject) => {
+            const signal = currentComputeAbortSignal();
+            const timer = setTimeout(
+              () => reject(new Error("metadata deadline was not applied")),
+              15_000,
+            );
+            signal.addEventListener(
+              "abort",
+              () => {
+                clearTimeout(timer);
+                reject(signal.reason);
+              },
+              { once: true },
+            );
+          });
+        }
+        return { commit, openclawCommit: "b".repeat(40), private: "must not escape" };
+      },
+    },
+  });
+  const images = await driver.getRuntimeImages(revision);
+  assert.equal(images.length, 6);
+  assert.equal(images.filter((image) => image.commit === commit).length, 4);
+  assert.equal(images.filter((image) => image.openclawCommit === "b".repeat(40)).length, 4);
+  assert.ok(
+    images
+      .filter((image) => image.container === "sidecar")
+      .every((image) => image.commit === null && image.openclawCommit === null),
+  );
+  assert.doesNotMatch(JSON.stringify(images), /must not escape/);
+  for (mode of ["restart", "missing", "timeout"]) {
+    const observed = await driver.getRuntimeImages(revision);
+    assert.equal(observed.length, 6);
+    assert.ok(
+      observed.every(
+        (image) => image.imageId !== null && image.commit === null && image.openclawCommit === null,
+      ),
+      mode,
+    );
+  }
+});

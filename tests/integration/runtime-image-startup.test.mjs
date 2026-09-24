@@ -170,7 +170,7 @@ console.log("WORKSPACE_INITIALIZATION_PASSED");
         launch,
         AGENT_WITH_NODE_ENTRYPOINT,
       ],
-      { timeout: 120_000 },
+      { timeout: 120_000 * imageSmokeTimeoutMultiplier },
     );
     assert.match(stdout, /WORKSPACE_INITIALIZATION_PASSED/);
   },
@@ -246,7 +246,7 @@ function createAdmittedRuntimeImageConfiguration(harnessId, options = {}) {
 
 async function waitForGatewayReady(containerName) {
   let lastReadinessOutput = "";
-  for (let attempt = 0; attempt < 60; attempt += 1) {
+  for (let attempt = 0; attempt < 60 * imageSmokeTimeoutMultiplier; attempt += 1) {
     const inspect = await runDocker([
       "inspect",
       containerName,
@@ -886,5 +886,41 @@ test(
     assert.equal(result.sameIdentityAfterRestart, true);
     assert.equal(result.singleBootstrapCompletion, true);
     assert.equal(result.commands.length, 7);
+  },
+);
+
+test(
+  "runtime image shares Codex 0.156.0 between the plugin and Dedicated command",
+  imageTestOptions,
+  async () => {
+    const script = String.raw`
+const assert = require("node:assert/strict");
+const { createRequire } = require("node:module");
+const { realpathSync, readFileSync } = require("node:fs");
+const { execFileSync } = require("node:child_process");
+const plugin = createRequire("/app/dist/extensions/codex/package.json");
+const installed = plugin.resolve("@openai/codex/package.json");
+assert.equal(JSON.parse(readFileSync(installed, "utf8")).version, "0.156.0");
+const bundledCommand = plugin.resolve("@openai/codex/bin/codex.js");
+assert.equal(realpathSync("/app/node_modules/.bin/codex"), realpathSync(bundledCommand));
+assert.equal(execFileSync("codex", ["--version"], {encoding: "utf8"}).trim(), "codex-cli 0.156.0");
+assert.equal(execFileSync(process.execPath, [bundledCommand, "--version"], {encoding: "utf8"}).trim(), "codex-cli 0.156.0");
+const provenance = JSON.parse(readFileSync("/opt/oce/runtime/provenance.json", "utf8"));
+assert.equal(provenance.codexVersion, "0.156.0");
+assert.equal(require("node:crypto").createHash("sha256").update(readFileSync("/opt/oce/runtime/contents.json")).digest("hex"), provenance.runtimeContentsSha256);
+process.stdout.write("shared-codex-0.156.0-ready\n");
+`;
+    const { stdout } = await runDocker([
+      "run",
+      "--rm",
+      "--network",
+      "none",
+      "--entrypoint",
+      "node",
+      image,
+      "-e",
+      script,
+    ]);
+    assert.match(stdout, /shared-codex-0.156.0-ready/);
   },
 );

@@ -221,6 +221,46 @@ const createProvisioningSecrets = [
 
 // Page failures use the HTTP boundary; isolated component previews receive their input state.
 export const scenarios = {
+  runtimeImages: {
+    group: "Pages/Navigation",
+    name: "Debug runtime images",
+    path: "/console/agents?debug=true",
+    buildRevision: "1234567890abcdef1234567890abcdef12345678",
+    runtimeImages: {
+      status: "observed",
+      images: [
+        {
+          workload: "research/agent-runtime",
+          container: "gateway",
+          image: "ghcr.io/example/runtime:sha-1234567890abcdef1234567890abcdef12345678",
+          imageId: `sha256:${"a".repeat(64)}`,
+          commit: "1234567890abcdef1234567890abcdef12345678",
+          openclawCommit: "abcdef1234567890abcdef1234567890abcdef12",
+        },
+        {
+          workload: "research/agent-runtime",
+          container: "log-forwarder",
+          image: "example/log-forwarder:1",
+          imageId: `sha256:${"b".repeat(64)}`,
+          commit: null,
+          openclawCommit: null,
+        },
+      ],
+    },
+    actions: [{ selector: ".runtime-debug-images summary", click: true }],
+    description:
+      "Inspect the OCE commit and each Agent's observed runtime images. Expand an Agent, compare the gateway image ID, Enterprise source commit, and upstream OpenClaw commit, then navigate to Namespaces: debug=true remains enabled. Remove the flag to hide diagnostics.",
+    gap: "Simulated image identities demonstrate presentation. Native Driver integration verifies actual Docker and Kubernetes observations separately.",
+  },
+  runtimeImagesUnavailable: {
+    group: "Pages/Navigation",
+    name: "Debug metadata unavailable",
+    path: "/console/agents?debug=true",
+    rules: [{ suffix: "/runtime-images", status: 503 }],
+    actions: [{ selector: ".runtime-debug-images summary", click: true }],
+    description:
+      "A failed runtime read leaves normal navigation available and tells the operator to refresh. Unknown commits are never inferred from tags.",
+  },
   overview: {
     group: "Overview",
     name: "Console coverage",
@@ -283,7 +323,12 @@ export const scenarios = {
     group: "Pages/Agents",
     name: "Populated",
     description:
-      "Searchable Agent table with draft and deployed Agents. Open an Agent to explore its tabs.",
+      "Searchable Agent table with draft and deployed Agents. Open an Agent to explore its tabs. The shared shell, table, and controls use the Claw palette and typography.",
+    steps: [
+      "Check text, search input, buttons, and the current navigation item. The console stays light with either system appearance preference.",
+      "Tab through the search and creation controls, then search for an Agent and open its detail page.",
+      "At a narrow viewport, use Open navigation and choose a page; the drawer must close and return focus to the page.",
+    ],
   },
   agentsEmpty: {
     group: "Pages/Agents",
@@ -1348,6 +1393,7 @@ export const scenarios = {
   buildRevision: {
     group: "Components/Navigation",
     name: "OCC build revision",
+    path: "/console/agents?debug=true",
     buildRevision: "abcdef1234567890abcdef1234567890abcdef12",
     description:
       "OCE branding with an adjacent eight-character OCC commit. Hover the version for the full hash. This revision is simulated.",
@@ -1355,6 +1401,7 @@ export const scenarios = {
   developmentBuild: {
     group: "Components/Navigation",
     name: "OCC development build",
+    path: "/console/agents?debug=true",
     description:
       "OCE branding with an adjacent dev label when OCC build metadata is unavailable. No checkout or gateway revision is inferred.",
   },

@@ -2692,6 +2692,52 @@ test(
         await waitForActive(namespaceId, agent.id, candidate.id);
         const placement = placements.get(namespaceId);
         await assertReadyGateway(placement, agent.id, namespaceId, candidate);
+        const imagePath = `/namespaces/${namespaceId}/agents/${agent.id}/runtime-images`;
+        const imageRead = await request("GET", imagePath);
+        assert.equal(imageRead.status, 200, JSON.stringify(imageRead.error));
+        assert.equal(imageRead.data.status, "observed");
+        const observedPods = (
+          await Promise.all(
+            [...new Set([placement, kubernetesGatewayNamespaceName(namespaceId)])].map(
+              (namespace) => resources("pods", namespace),
+            ),
+          )
+        )
+          .flat()
+          .filter(
+            (pod) =>
+              pod.metadata.labels?.["openclaw.dev/agent"] === agent.id &&
+              pod.metadata.labels?.["openclaw.dev/revision"] === candidate.id &&
+              !pod.metadata.deletionTimestamp,
+          );
+        const expectedImages = observedPods.flatMap((pod) =>
+          [
+            [pod.spec.containers, pod.status.containerStatuses],
+            [pod.spec.initContainers, pod.status.initContainerStatuses],
+            [pod.spec.ephemeralContainers, pod.status.ephemeralContainerStatuses],
+          ].flatMap(([containers = [], statuses = []]) =>
+            containers.map((container) => ({
+              workload: `${pod.metadata.namespace}/${pod.metadata.name}`,
+              container: container.name,
+              image: container.image,
+              imageId: statuses.find((state) => state.name === container.name)?.imageID ?? null,
+            })),
+          ),
+        );
+        assert.ok(expectedImages.length > 0);
+        const byContainer = (a, b) =>
+          `${a.workload}/${a.container}`.localeCompare(`${b.workload}/${b.container}`);
+        assert.deepEqual(
+          imageRead.data.images
+            .map(({ commit, openclawCommit, ...identity }) => {
+              assert.ok(commit === null || /^[a-f0-9]{40}$/.test(commit));
+              assert.ok(openclawCommit === null || /^[a-f0-9]{40}$/.test(openclawCommit));
+              return identity;
+            })
+            .sort(byContainer),
+          expectedImages.sort(byContainer),
+        );
+        assert.equal((await request("GET", imagePath, undefined, { session: false })).status, 401);
         if (runtimeImage !== undefined) {
           // These bytes came through normal HTTP creation, PostgreSQL and the worker;
           // readiness cannot be reported before native setup and private delivery cleanup.
