@@ -1,18 +1,17 @@
 ---
 created: 2026-09-01
 updated: 2026-09-24
-last_updated_session: 01a0d1dd-aa36-7622-9f43-8376f6ff935e
+last_updated_session: authoring-run/fdba83e7-9f34-4b8b-8af2-625214851f27
 ---
 
 # Platform console request flow
 
 ## Overview
 
-Opening `/console/` resolves a cookie session and renders authorized resources.
-This trace follows Namespace selection, Agent creation and editing, runtime
-actions, Backends, and logout. It stops at rendered state or a submitted API
-mutation; deletion additionally confirms absence. The [console reference](../reference/console.md)
-owns user-visible behavior, while API and IAM retain resource authority.
+Opening `/console/` resolves a session and renders authorized resources.
+This trace follows Namespace selection, Agent workflows, Backends, and logout.
+The [console reference](../reference/console.md) owns user-visible behavior;
+API and IAM authorize resources.
 
 ## Entry Points
 
@@ -133,11 +132,14 @@ Origin before sign-in/out, including SDK calls that bypass Better Auth middlewar
 Headerless CLI requests remain supported. Better Auth owns session cookies and
 password verification; the browser stores no credentials or tokens.
 
-After authentication, the client reads `GET /namespaces`, validates the URL's
-selection against readable Namespaces, or chooses the first ready one followed by
-the first readable one. An unavailable explicit ID stays unavailable until the
-user selects another. Selection stays in the URL and never becomes an API query
-selector.
+After authentication, `loadPage` reads `GET /namespaces`, preserving explicit URL
+selection or choosing the first ready/readable Namespace. Unreadable IDs stay
+unavailable; selection never becomes an API query selector.
+
+`shell.mjs:namespaceSelector` lists readable choices in headers except Namespaces,
+disabled while loading or empty. Changes call `navigation.mjs:navigate` with the
+current feature and chosen ID: Agent detail/creation return to the Agents list;
+global pages stay open.
 
 ### 3. Authorize the selected page resource
 
@@ -329,6 +331,8 @@ uncertain response disables replay until refresh and inspection.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-24 17:13: Trace the header Namespace selector and preserved navigation scope. (authoring-run/fdba83e7-9f34-4b8b-8af2-625214851f27 - 1a458b227585c572ec0ac70fd10efc3834165075)
 
 - 2026-09-24: Keep Preset bindings internal.
 

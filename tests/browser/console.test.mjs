@@ -99,9 +99,9 @@ async function openShellMenu(page) {
 }
 
 async function chooseNamespace(page, name) {
-  await openShellMenu(page);
-  await page.getByRole("menuitem", { name: new RegExp(`Namespace: .*`, "i") }).click();
-  await page.getByRole("menuitemradio", { name }).click();
+  await page
+    .getByRole("combobox", { name: "Namespace", exact: true })
+    .selectOption({ label: name });
 }
 
 function deferred() {
@@ -247,11 +247,21 @@ test("console browser flow keeps Namespace URL state across global pages and log
   await login(page, fixture, `/console/?namespace=${beta.id}`);
   await page.getByRole("heading", { name: "Agents" }).waitFor();
   await page.getByText("Beta agent").waitFor();
+  assert.equal(
+    await page.getByRole("combobox", { name: "Namespace", exact: true }).isVisible(),
+    true,
+  );
   assert.match(page.url(), new RegExp(`/console/agents\\?namespace=${beta.id}$`));
   assert.equal(await page.locator("img").count(), 0);
   assert.equal(await page.locator(".sidebar .brand").textContent(), "OCE");
   assert.equal(await page.locator(".occ-version").count(), 0);
   assert.equal(await page.locator(".runtime-debug").count(), 0);
+
+  // The Namespace collection is Installation-wide and has no selectable scope.
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  assert.equal(await page.getByRole("combobox", { name: "Namespace", exact: true }).count(), 0);
+  assert.equal(new URL(page.url()).searchParams.get("namespace"), beta.id);
 
   assert.equal(await page.getByRole("link", { name: "Backends", exact: true }).count(), 0);
   await page.goto(`${fixture.origin}/console/backends?namespace=${beta.id}`);
@@ -259,6 +269,17 @@ test("console browser flow keeps Namespace URL state across global pages and log
   assert.match(page.url(), new RegExp(`/console/backends\\?namespace=${beta.id}$`));
   await page.getByText("openai-primary").waitFor();
   await expectNoText(page, /apiKeyPath|workspaceId|credentialTtlSeconds/);
+
+  // Changing scope on an Installation-wide page preserves the page and browser history.
+  await chooseNamespace(page, "Alpha");
+  await page.getByText("openai-primary").waitFor();
+  assert.match(page.url(), new RegExp(`/console/backends\\?namespace=${alpha.id}$`));
+  await page.goBack();
+  await page.getByText("openai-primary").waitFor();
+  assert.equal(
+    await page.getByRole("combobox", { name: "Namespace", exact: true }).inputValue(),
+    beta.id,
+  );
 
   await openShellMenu(page);
   await page.getByRole("menuitem", { name: "Settings" }).click();
@@ -330,7 +351,7 @@ test("console ignores stale collection successes and errors while switching Name
   await expectNoText(page, /Slow agent|unavailable|failed/i);
 });
 
-test("mobile Namespace menu selects another Namespace without signing out", async (t) => {
+test("mobile header switches Namespace without opening the navigation drawer", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const alpha = await fixture.createNamespace("Alpha", { ready: true });
@@ -342,14 +363,41 @@ test("mobile Namespace menu selects another Namespace without signing out", asyn
   await login(page, fixture, `/console/agents?namespace=${alpha.id}`);
   await page.getByText("Alpha mobile agent").waitFor();
 
-  await page.getByRole("button", { name: "Open navigation" }).click();
-  await page.getByRole("button", { name: /OpenClaw Enterprise/ }).click();
-  await page.getByRole("menuitem", { name: /Namespace:/ }).click();
-  await page.getByRole("menuitemradio", { name: "Beta" }).click();
+  await chooseNamespace(page, "Beta");
 
   await page.getByText("Beta mobile agent").waitFor();
   assert.match(page.url(), new RegExp(`/console/agents\\?namespace=${beta.id}$`));
   await expectNoText(page, /Welcome back|Your session has expired|Could not confirm logout/);
+});
+
+test("header Namespace selection leaves Agent detail and creation for the selected collection", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const alpha = await fixture.createNamespace("Alpha", { ready: true });
+  const beta = await fixture.createNamespace("Beta", { ready: true });
+  const agent = await fixture.createAgent(alpha.id, "Alpha agent");
+  await fixture.createAgent(beta.id, "Beta agent");
+  const { page } = await newPage(t, fixture);
+
+  await login(page, fixture, `/console/agents/${agent.id}?namespace=${alpha.id}`);
+  await page.getByRole("heading", { name: "Alpha agent", exact: true }).waitFor();
+  await chooseNamespace(page, "Beta");
+  await page.getByText("Beta agent").waitFor();
+  assert.equal(new URL(page.url()).pathname, "/console/agents");
+  assert.equal(new URL(page.url()).searchParams.get("namespace"), beta.id);
+
+  // A draft form belongs to its original Namespace; switching opens a fresh collection.
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page.getByRole("heading", { name: "Create Agent", exact: true }).waitFor();
+  await chooseNamespace(page, "Alpha");
+  await page.getByText("Alpha agent").waitFor();
+  assert.equal(new URL(page.url()).pathname, "/console/agents");
+  await page.reload();
+  await page.getByText("Alpha agent").waitFor();
+  assert.equal(
+    await page.getByRole("combobox", { name: "Namespace", exact: true }).inputValue(),
+    alpha.id,
+  );
 });
 
 test("console clears private content after session expiry, access revocation, and failed logout", async (t) => {
@@ -382,7 +430,12 @@ test("console clears private content after session expiry, access revocation, an
     effect: "deny",
   });
   await page.getByRole("button", { name: "Refresh" }).click();
-  await page.getByText("Namespace unavailable").waitFor();
+  await page.getByRole("heading", { name: "Namespace unavailable", exact: true }).waitFor();
+  assert.equal(
+    await page.getByRole("combobox", { name: "Namespace", exact: true }).inputValue(),
+    "",
+  );
+  assert.equal(await page.getByRole("option", { name: "Revoked", exact: true }).count(), 0);
   await expectNoText(page, /Revoked agent/);
   fixture.policy.restrictions.length = 0;
 

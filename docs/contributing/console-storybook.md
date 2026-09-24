@@ -84,6 +84,18 @@ reset them to replay loading.
 
 ## Agent flows and UI gaps
 
+In **Components → Navigation → Namespace switcher**, use the header selector to
+switch between Engineering and Research. Check the URL, collection, and browser
+Back behavior, and confirm the Namespaces page omits the selector.
+**Mobile Namespace selector** covers the same control without
+opening the drawer. The existing no-readable, unavailable, loading, and denied
+Namespace stories cover the selector's restricted states.
+
+Saved simulated UI examples show the [desktop selector](../assets/console-namespace-selector/desktop.png),
+[mobile empty collection](../assets/console-namespace-selector/mobile.png),
+[Namespaces page without a selector](../assets/console-namespace-selector/namespaces.png),
+and a [switching walkthrough](../assets/console-namespace-selector/namespace-switching.webm).
+
 Each flow includes steps above an interactive console frame.
 
 ### Create and deploy

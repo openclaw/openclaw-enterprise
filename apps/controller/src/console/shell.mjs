@@ -1,9 +1,5 @@
 import { element, button } from "./dom.mjs";
 
-function supportsDesktopHover() {
-  return window.matchMedia("(min-width: 761px) and (hover: hover)").matches;
-}
-
 export function panel(target, title, description, actionLabel, action, requestId) {
   target.replaceChildren(
     element(
@@ -23,7 +19,7 @@ function menuItems(menu) {
   );
 }
 
-function enableMenuKeys(menu, close, openChild) {
+function enableMenuKeys(menu, close) {
   menu.addEventListener("keydown", (event) => {
     if (event.target.closest('[role="menu"]') !== menu) {
       return;
@@ -52,10 +48,6 @@ function enableMenuKeys(menu, close, openChild) {
       event.stopPropagation();
       close();
     }
-    if (event.key === "ArrowRight" && openChild) {
-      event.preventDefault();
-      openChild(event.target);
-    }
   });
   menu.addEventListener("focusin", (event) => {
     for (const item of menuItems(menu)) {
@@ -76,6 +68,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
   let namespaceId = null;
   let menuControls = null;
   let drawerControls = null;
+  let namespaceSelect = null;
 
   function publicPanel(title, description, actionLabel, action) {
     app.replaceChildren(
@@ -99,37 +92,6 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       "aria-label": "Account",
       hidden: "",
     });
-    const submenu = element("div", {
-      className: "menu namespace-submenu",
-      id: "namespace-menu",
-      role: "menu",
-      "aria-label": "Namespaces",
-      hidden: "",
-    });
-    const selected = namespaces.find((item) => item.id === namespaceId);
-    const namespaceButton = button(
-      `Namespace: ${selected?.name ?? (namespaceId === null ? "None" : "Unavailable")}`,
-      () => openNamespace(true),
-      {
-        role: "menuitem",
-        tabindex: "-1",
-        "aria-haspopup": "menu",
-        "aria-expanded": "false",
-        "aria-controls": "namespace-menu",
-      },
-    );
-    for (const item of namespaces) {
-      submenu.append(
-        button(item.name, () => navigate(route().feature, item.id), {
-          role: "menuitemradio",
-          tabindex: "-1",
-          "aria-checked": item.id === namespaceId,
-        }),
-      );
-    }
-    if (!namespaces.length) {
-      submenu.append(element("p", { className: "muted" }, "No readable Namespaces"));
-    }
     const toggle = button(
       "OpenClaw Enterprise",
       () => (menu.hidden ? openAccount() : closeAccount()),
@@ -144,15 +106,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       element("span", { className: "account-label" }, "OpenClaw Enterprise"),
       element("span", { className: "account-chevron", "aria-hidden": "true" }, "⌃"),
     );
-    function closeNamespace(focus = true) {
-      submenu.hidden = true;
-      namespaceButton.setAttribute("aria-expanded", "false");
-      if (focus) {
-        namespaceButton.focus();
-      }
-    }
     function closeAccount(focus = true) {
-      closeNamespace(false);
       menu.hidden = true;
       toggle.setAttribute("aria-expanded", "false");
       if (focus) {
@@ -166,35 +120,16 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
         menuItems(menu)[0]?.focus();
       }
     }
-    function openNamespace(focus) {
-      submenu.hidden = false;
-      namespaceButton.setAttribute("aria-expanded", "true");
-      if (focus) {
-        menuItems(submenu)[0]?.focus();
-      }
-    }
     toggle.addEventListener("keydown", (event) => {
       if (["ArrowDown", "ArrowUp"].includes(event.key)) {
         event.preventDefault();
         openAccount();
       }
     });
-    namespaceButton.addEventListener("pointerenter", () => {
-      if (supportsDesktopHover()) {
-        openNamespace(false);
-      }
-    });
-    enableMenuKeys(menu, closeAccount, (target) => {
-      if (target === namespaceButton) {
-        openNamespace(true);
-      }
-    });
-    enableMenuKeys(submenu, closeNamespace);
+    enableMenuKeys(menu, closeAccount);
     menu.append(
-      namespaceButton,
       button("Settings", () => navigate("settings"), { role: "menuitem", tabindex: "-1" }),
       button("Logout", () => void logout(), { role: "menuitem", tabindex: "-1" }),
-      submenu,
     );
     account.append(menu, toggle);
     account.addEventListener("focusout", (event) => {
@@ -205,16 +140,43 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     menuControls = {
       account,
       close: () => closeAccount(false),
-      openNamespace: () => {
-        openAccount(false);
-        openNamespace(true);
-      },
     };
     return account;
   }
 
+  function namespaceSelector() {
+    namespaceSelect = element("select", {
+      id: "namespace-selector",
+      disabled: !session || namespaces.length === 0,
+    });
+    if (!namespaces.some((item) => item.id === namespaceId)) {
+      let placeholder = "Checking access…";
+      if (session) {
+        placeholder = namespaceId === null ? "No readable Namespaces" : "Namespace unavailable";
+      }
+      namespaceSelect.append(
+        element("option", { value: "", disabled: true, selected: true }, placeholder),
+      );
+    }
+    for (const item of namespaces) {
+      namespaceSelect.append(
+        element("option", { value: item.id, selected: item.id === namespaceId }, item.name),
+      );
+    }
+    namespaceSelect.addEventListener("change", (event) => {
+      navigate(route().feature, event.target.value);
+    });
+    return element(
+      "div",
+      { className: "namespace-selector" },
+      element("label", { for: "namespace-selector" }, "Namespace"),
+      namespaceSelect,
+    );
+  }
+
   function renderShell(feature, state) {
     ({ session, namespaces, namespaceId } = state);
+    namespaceSelect = null;
     const nav = element("nav", { className: "nav", "aria-label": "Main navigation" });
     const icons = { agents: "◇", namespaces: "▤" };
     for (const name of ["agents", "namespaces"]) {
@@ -298,7 +260,12 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
         element("h1", {}, pages[feature]),
         element("p", { className: "scope" }, scope),
       ),
-      feature === "settings" ? null : refresh,
+      element(
+        "div",
+        { className: "page-actions" },
+        feature === "namespaces" ? null : namespaceSelector(),
+        feature === "settings" ? null : refresh,
+      ),
     );
     const view = element("div", { "aria-live": "polite", "aria-busy": "true" });
     main.append(header);
@@ -387,10 +354,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
   }
 
   function switchNamespace() {
-    if (window.matchMedia("(max-width: 760px)").matches) {
-      drawerControls?.open();
-    }
-    menuControls?.openNamespace();
+    namespaceSelect?.focus();
   }
 
   document.addEventListener("pointerdown", (event) => {
@@ -429,6 +393,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close());
       menuControls = null;
       drawerControls = null;
+      namespaceSelect = null;
       session = null;
       namespaces = [];
       namespaceId = null;

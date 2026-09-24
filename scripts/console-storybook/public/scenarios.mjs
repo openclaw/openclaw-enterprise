@@ -438,7 +438,8 @@ export const scenarios = {
     group: "Pages/Namespaces",
     name: "Ready and provisioning",
     path: "/console/namespaces",
-    description: "Namespace identity and status cards. Selection is in the account menu.",
+    description:
+      "Installation-wide Namespace identity and status cards, without a Namespace selector.",
   },
   namespacesEmpty: {
     group: "Pages/Namespaces",
@@ -1529,13 +1530,24 @@ export const scenarios = {
     name: "Account menu",
     actions: account,
     description:
-      "Account, Namespace switching, Settings, and Logout. Keyboard navigation uses the production handlers.",
+      "Account Settings and Logout. Namespace selection is available directly in the page header.",
   },
   namespaceMenu: {
     group: "Components/Navigation",
     name: "Namespace switcher",
-    actions: [...account, { selector: '[aria-controls="namespace-menu"]', click: true }],
-    description: "Current Namespace and alternative scopes.",
+    description: "The header selector shows the current Namespace and readable alternatives.",
+    steps: [
+      "Choose Research in the Namespace selector; the URL changes and its empty Agents collection appears.",
+      "Choose Engineering to return to its Agents, then use browser Back to restore Research.",
+      "Open Namespaces; the Installation-wide list has no Namespace selector. Return to Agents to switch scope.",
+    ],
+  },
+  namespaceSelectorMobile: {
+    group: "Components/Navigation",
+    name: "Mobile Namespace selector",
+    mobile: true,
+    description:
+      "Choose a Namespace directly from the header at 390px, without opening navigation.",
   },
   mobile: {
     group: "Components/Navigation",
