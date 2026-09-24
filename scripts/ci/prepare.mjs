@@ -368,7 +368,8 @@ function execFile(command, args, options = {}) {
         reject(error);
       }),
     );
-    child.on("exit", (code, signal) => {
+    // Exit can precede pipe drain; callers need complete diagnostics to classify failures.
+    child.on("close", (code, signal) => {
       finish(() => {
         if (timedOut) {
           reject(

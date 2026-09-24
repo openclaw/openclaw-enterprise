@@ -52,6 +52,7 @@ async function fixtureImageCommands(
   await mkdir(home);
   const commandSource = `#!${process.execPath}\n${String.raw`
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 
@@ -95,6 +96,14 @@ if (command === "docker" || command === "podman") {
   }
   const sourceImage = process.env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE;
   if (sourceImage && equals(args, ["image", "inspect", "--format", "{{json .RepoDigests}}", sourceImage])) {
+    if (scenario === "image-absent-late-stderr" && !state.pulled) {
+      // Keep the real stderr pipe open after the command exits, so its missing
+      // image diagnostic arrives during stream drain rather than process exit.
+      spawn(process.execPath, ["-e", 'setTimeout(() => process.stderr.write("Error response from daemon: No such image\\n"), 75)'], {
+        stdio: ["ignore", "ignore", process.stderr],
+      });
+      process.exit(1);
+    }
     if (scenario === "inspect-failed" || (["image-absent", "podman-image-absent"].includes(scenario) && !state.pulled)) {
       process.stderr.write(scenario === "inspect-failed" ? "Cannot connect to the Docker daemon\n" : scenario === "podman-image-absent" ? "Error: image not known\n" : "Error response from daemon: No such image\n");
       process.exit(1);
@@ -636,6 +645,7 @@ test("k3d preparation reuses only matching local immutable images and verifies f
     "local-digest",
     "image-absent",
     "podman-image-absent",
+    "image-absent-late-stderr",
     "local-mismatch",
     "pull-mismatch",
     "inspect-failed",
