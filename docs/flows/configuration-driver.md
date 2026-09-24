@@ -93,6 +93,11 @@ ServiceAccount branches. Existing AgentRevisions retain their selected Compute
 identity and immutable admitted configuration; subsequent Configuration edits
 apply only to later deployments.
 
+Provisioning's `KubernetesConfigurationDriver.createExact` and `inspectExact`
+use the same verified CP namespace as ordinary Configuration CRUD. Recovery checks
+the exact identity and document there; an adopted data-plane namespace does not
+change canonical Configuration ownership.
+
 ### 3. Authorize the exact Namespace Configuration operation
 
 `packages/occ/src/index.ts:OpenClawController.createConfiguration`
@@ -174,6 +179,8 @@ its optional integration is skipped.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 13:13: Align provisioning Configuration creation and recovery with canonical CP storage. (codex/01a0cf72-6985-7712-ba92-d8cc32470f24 - df4ca4474d90de2d4ab0dd6f6d03a64ebb92526a)
 
 - 2026-09-01 19:09: Trace Secret-binding admission and optional Sandbox transformation before immutable revision creation; remove the obsolete TODO link. (01a05f95-dd80-7011-990f-d1c46b5bb3cc - aa366c49c44834d59f74994c5fd37fb8096f169f)
 - 2026-08-28 17:58: Updated moved feature-reference links for the documentation organization. (01a036f4-cf1d-7cc1-bbc1-000879038ac8 - 4270aa29b7015562049f46c6027962fd85b584a9)

@@ -148,6 +148,7 @@
       "path": "tests/integration/postgres-agent-provisioning.test.mjs",
       "expectedTests": [
         "provisioning API queues one job with existing Secret references and replays only the exact same request",
+        "provisioning worker creates Configuration and Agent from existing Secrets, then hands off one revision",
         "api_key provisioning grants existing Secret access and hands off one revision",
         "codex_pat provisioning grants existing Secret access and hands off one revision",
         "queued provisioning leaves existing Secrets but creates no Agent or Configuration before a worker runs",

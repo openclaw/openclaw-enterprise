@@ -37,26 +37,45 @@ after creation. Complete the tenant RoleBindings below, then wait until
 
 ### Grant tenant RoleBindings
 
-Grant the chart's worker, Configuration, and Secret ClusterRoles in each tenant
-namespace. Replace the `oce-` prefix if the Helm release name differs:
+Grant the worker runtime role in the data plane. The API needs list-only
+Deployment access there for dedicated credential preflight. Replace the `oce-` prefix if the Helm release name differs:
 
 ```bash
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
   -n "$TENANT_NAMESPACE" create rolebinding openclaw-enterprise-worker \
   --clusterrole=oce-openclaw-tenant-worker --serviceaccount=openclaw-system:openclaw-enterprise-worker
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  -n "$TENANT_NAMESPACE" create rolebinding openclaw-enterprise-api \
-  --clusterrole=oce-openclaw-tenant-configuration --serviceaccount=openclaw-system:openclaw-enterprise-api
+  -n "$TENANT_NAMESPACE" create rolebinding openclaw-enterprise-api-observer \
+  --clusterrole=oce-openclaw-gateway-observer --serviceaccount=openclaw-system:openclaw-enterprise-api
+```
+
+After the data-plane grant, the worker creates a second namespace. Discover it
+and grant worker runtime permissions plus API canonical Configuration/Secret
+storage and Deployment preflight access:
+
+```bash
+GATEWAY_RUNTIME_NAMESPACE="$(kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
+  get namespaces -l "openclaw.dev/gateway-namespace=$NAMESPACE_ID" -o json | \
+  python3 -c 'import json,sys; items=json.load(sys.stdin)["items"]; print(items[0]["metadata"]["name"]) if len(items)==1 else sys.exit("Expected one Gateway runtime namespace; retry after worker creation")')" && export GATEWAY_RUNTIME_NAMESPACE
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  -n "$TENANT_NAMESPACE" create rolebinding openclaw-enterprise-api-secrets \
+  -n "$GATEWAY_RUNTIME_NAMESPACE" create rolebinding openclaw-enterprise-worker \
+  --clusterrole=oce-openclaw-tenant-worker --serviceaccount=openclaw-system:openclaw-enterprise-worker
+kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
+  -n "$GATEWAY_RUNTIME_NAMESPACE" create rolebinding openclaw-enterprise-api-secrets \
   --clusterrole=oce-openclaw-tenant-api --serviceaccount=openclaw-system:openclaw-enterprise-api
+kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
+  -n "$GATEWAY_RUNTIME_NAMESPACE" create rolebinding openclaw-enterprise-api-configuration \
+  --clusterrole=oce-openclaw-tenant-configuration --serviceaccount=openclaw-system:openclaw-enterprise-api
 ```
 
 The Secret RoleBinding grants tenant-local Secret access and list-only
 Deployment access to the API. The API lists Deployments to check for existing
 Agent workloads before provisioning initial runtime credentials. This binding
-does not give the worker Secret API permission or replace OCC IAM grants for
-bound Secrets.
+does not replace OCC IAM grants for bound Secrets. Worker permissions in both
+targets allow admitted credential delivery. Workload ServiceAccounts receive no
+Secret API access. For separately supported embedded execution, the API also
+needs the tenant-api role in the data plane to provision its combined transport
+bundle. Wait for Namespace `ready` only after granting both targets.
 
 ## Prepare each Agent
 
@@ -362,6 +381,12 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
   -n "$TENANT_NAMESPACE" create secret generic "openclaw-agent-transport-$AGENT_SUFFIX" \
   --from-file=app-server-token="$SECRET_DIRECTORY/app-server-token" \
   --from-file=gateway-password="$SECRET_DIRECTORY/gateway-password"
+kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n "$TENANT_NAMESPACE" \
+  label secret "openclaw-agent-transport-$AGENT_SUFFIX" \
+  app.kubernetes.io/managed-by=openclaw-enterprise "openclaw.dev/namespace=$NAMESPACE_ID" "openclaw.dev/agent=$AGENT_ID"
+kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n "$TENANT_NAMESPACE" \
+  annotate secret "openclaw-agent-transport-$AGENT_SUFFIX" \
+  "openclaw.dev/namespace-id=$NAMESPACE_ID" "openclaw.dev/agent-id=$AGENT_ID"
 ```
 
 The gateway password enables the optional direct loopback checks below; the
@@ -436,6 +461,12 @@ for OCC to select it and for exactly one Ready gateway Pod to mount its
 immutable ConfigMap. A previous revision cannot satisfy both checks:
 
 ```bash
+# Embedded stays in the tenant target; dedicated uses the prepared Gateway target.
+GATEWAY_NAMESPACE="$TENANT_NAMESPACE"
+if [ "${AGENT_EXECUTION_MODE:?}" = dedicated ]; then
+  GATEWAY_NAMESPACE="${GATEWAY_RUNTIME_NAMESPACE:?}"
+fi
+export GATEWAY_NAMESPACE
 find_gateway_for_revision() {
   local agent agent_suffix revision_suffix expected_configmap pods pod status attempt
   if [ "${OCC_NAMESPACE:?}" != "${NAMESPACE_ID:?}" ]; then
@@ -454,7 +485,7 @@ if agent.get("activeRevisionId") != sys.argv[1]:
     sys.exit(3)
 ' "$REVISION_ID"; then
       pods="$(kubectl --kubeconfig "${KUBECONFIG_FILE:?}" --context "${CONTEXT:?}" \
-        -n "${TENANT_NAMESPACE:?}" get pods \
+        -n "${GATEWAY_NAMESPACE:?}" get pods \
         -l "app.kubernetes.io/managed-by=openclaw-enterprise,openclaw.dev/workload-role=gateway,openclaw.dev/namespace=$NAMESPACE_ID,openclaw.dev/agent=$AGENT_ID,openclaw.dev/revision=$REVISION_ID" \
         -o json)" || return 1
       if pod="$(printf '%s' "$pods" | python3 -c '
@@ -500,7 +531,7 @@ previous Pod or the Agent-wide Service.
 if GATEWAY_POD="$(find_gateway_for_revision)"; then
   TUI_SESSION="production-tui-$(date +%Y%m%d%H%M%S)" &&
   NONCE="$(python3 -c 'import secrets; print("OPENCLAW_TUI_" + secrets.token_hex(8))')" &&
-  kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n "$TENANT_NAMESPACE" \
+  kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n "$GATEWAY_NAMESPACE" \
     exec -it "$GATEWAY_POD" -c gateway -- env -u OPENAI_API_KEY \
     OPENCLAW_STATE_DIR=/tmp/occ-tui-client node /app/openclaw.mjs tui \
     --session "$TUI_SESSION" --message "Reply exactly: $NONCE"

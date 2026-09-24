@@ -1,7 +1,7 @@
 ---
 created: 2026-08-31
 updated: 2026-09-23
-last_updated_session: 01a0cf27-71c6-7042-8357-74d1811a2ef8
+last_updated_session: public-pr/295
 ---
 
 # Agent Workspace Files Flow
@@ -106,18 +106,17 @@ instead of writing outside the Agent's managed storage. Provider-owned Sandbox
 startup cannot carry this init container and rejects workspace setup rather than
 dropping initialization.
 
-The runner validates setup identity, workspace path, and the OpenClaw manifest;
-it rejects links and conflicting files. The optional preview digest must match
-installed templates, independently of package version. Changed templates block
-pending setup. Without a completion marker, native `setup --baseline` must
-succeed, including Git initialization, without starting the gateway.
+The runner validates identity, paths, OpenClaw `2026.9.5`, and the rendered
+template digest against Console defaults before initialization. Submitted
+defaults identities must match; links and conflicts fail. Without a completion
+marker, native `setup` initializes the workspace and Git without starting the Gateway.
 It atomically replaces supplied files, including empty strings, only if the
 existing value is absent, stock, or already submitted. It runs native setup
 again so native `BOOTSTRAP.md` lifecycle sees the submitted profile, verifies
 the results, then atomically writes `.oce-workspace-setup.json`.
 
-A matching marker skips application, including after lost acknowledgement.
-Incomplete writes retry against the same safe-content conditions. A divergent
+Matching markers skip application after lost acknowledgement.
+Incomplete writes retry with the same safety checks. A divergent
 file or missing/mismatched marker after recorded completion blocks startup;
 it never authorizes replay over later user edits. Native setup output and
 failure details are suppressed at the delivery boundary to avoid disclosing
@@ -322,6 +321,8 @@ replays it. The native client closes in the operation's cleanup path.
 - 2026-09-23 19:22: Condense setup prose within the documentation length budget. (01a0cf27-71c6-7042-8357-74d1811a2ef8 - 6c6c3e4308946e7e66d656fb553da4dd5177f2c4)
 
 - 2026-09-23 17:23: Check installed template identity independently of the OpenClaw package release; retain native setup and replay guards. (authoring-run/94dba260-c3e1-421a-876a-1159e514db05 - 63ceabdbba3528553a9c5f04d7c57831bb8cb6eb)
+
+- 2026-09-23 21:30: Align setup, Console defaults, and runtime template integrity. (public-pr/295 - 7f019dee)
 
 - 2026-09-22 21:24: Render Kubernetes operator proxy trust and retain optional loopback passwords. (authoring-run/ffffed03-0b85-4984-990e-aa0705a91645 - cbf1851308a2db398820ae9e1000f57837703ace)
 - Kubernetes Compute uses trusted proxy for native gateway authentication. (NOT_IN_SPEC)

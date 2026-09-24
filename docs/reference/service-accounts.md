@@ -66,7 +66,7 @@ A representative account-creation body is:
 accepts `{}` and issues a credential through the selected Driver. The `201`
 account envelope exposes safe credential readiness metadata; backend Secret
 locators and Provider/workspace identities remain private.
-Compute creates one account-owned token/workspace Secret; the Driver privately
+Compute creates one account-owned token/workspace Secret in the tenant control plane; the Driver privately
 persists the upstream credential ID for exact cleanup. A second issuance fails
 with `409`; rotation and reconciliation are not implemented. Calling issuance
 without a selected provider Driver fails with `503 DEPENDENCY_UNAVAILABLE`.
@@ -103,7 +103,8 @@ For an `access_token`, the Agent must select the binding's exact nonnull
 Admission and worker reconciliation validate that private metadata before
 workload effects; a public credential kind is not proof of ownership. Only
 dedicated Codex execution is supported. Kubernetes
-projects both keys directly from the one account-owned Secret into the exact
+delivers both keys from the account-owned CP source through a revision-owned
+data-plane runtime Secret into the exact
 Codex Pod:
 
 | Account Secret key | Codex environment variable   | Purpose                              |
@@ -114,8 +115,9 @@ Codex Pod:
 Codex authenticates through
 `codex -c cli_auth_credentials_store=file -c forced_chatgpt_workspace_id="<workspace-id>" login --with-access-token`
 and saves login state only in its bounded ephemeral workload volume. Its
-gateway receives neither key; there is no duplicate token Secret, API-key
-fallback, or direct worker/workload Secret access.
+gateway receives neither key. The trusted worker reads the source and manages
+the revision projection; workloads receive no Secret API permission. No API-key
+fallback is used. The projection does not narrow provider-side token authority.
 
 ### Native API-key references
 

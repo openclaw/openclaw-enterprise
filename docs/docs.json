@@ -83,6 +83,10 @@
                     "label": "Presets"
                   },
                   {
+                    "page": "guides/topics/standard-codex-preset",
+                    "label": "Standard Codex Preset"
+                  },
+                  {
                     "page": "guides/topics/agent-compute",
                     "label": "Compute"
                   },

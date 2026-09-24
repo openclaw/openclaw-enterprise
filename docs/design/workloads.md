@@ -64,10 +64,19 @@ current delivery exceptions from target mediation outside Harness execution.
 
 Runtime targets initially use one Kubernetes cluster, with distinct namespace
 placements for dedicated gateway and Harness. They may later use separate
-clusters or other Compute-backed locations. This placement is a target
-direction, not a shipped capability; [current Harness execution](../reference/harness-execution.md)
-describes the implemented embedded and dedicated topologies. One selected
-`ComputeDriver` orchestrates both targets under the
+clusters or other Compute-backed locations. Kubernetes Compute implements the
+same-cluster split: a managed Gateway runtime namespace per logical Namespace,
+separate from its Harness namespace and from OCC's own API/worker namespace.
+This per-tenant namespace allocation is a Kubernetes isolation choice, not a
+required mapping for every Compute implementation. It preserves namespace-scoped
+RBAC, quotas and tenant cleanup boundaries. Control-plane Gateway placement and
+its acceptance scope cover dedicated execution only; embedded OpenClaw is excluded.
+An explicit Gateway node selector places dedicated Gateways on the operator's
+trusted node pool; Harnesses retain their data-plane selector. Operators must
+keep those pools disjoint. Namespace separation alone does not provide node
+isolation. [Current Harness execution](../reference/harness-execution.md)
+describes supported runtimes. One selected `ComputeDriver` owns preparation,
+activation, stop, retirement, and deletion in both targets under the
 [Driver ownership contract](drivers.md#computedriver).
 
 The selected Harness comes from the Agent's native provider/model configuration;
@@ -86,6 +95,15 @@ Realization must preserve the exact owner and admitted revision across target
 boundaries. The [runtime trust boundary](access.md#runtime-trust-across-targets)
 applies even when both targets share a cluster. Detailed file ownership and
 transfer mechanisms remain outside this placement design.
+
+Canonical configuration, policy and credentials belong to trusted control-plane
+storage. Dedicated Gateways consume admitted channel credentials and their own
+password there. Compute delivers only revision-scoped execution material to the
+data plane: selected model authorization, app-server transport, node enrollment
+and execution configuration. Harnesses cannot write canonical CP sources, routes
+or active-revision state. Current raw model-token delivery and bearer app-server
+transport remain explicit limitations, not brokered or mutually authenticated
+workload identity. See the [implementation follow-ups](../../specs/36-control-plane-gateways-plan.md#open-work-and-release-boundaries).
 
 ## Agent deployment
 

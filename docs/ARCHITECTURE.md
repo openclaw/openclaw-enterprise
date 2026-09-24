@@ -10,6 +10,8 @@ including capabilities that have not shipped.
 The control plane contains an API, an independent worker, PostgreSQL, and
 Installation-selected Drivers. The API also serves the [platform console](reference/console.md)
 at `/console/`; browser actions use the same authorized APIs.
+Kubernetes Compute also maintains dedicated Agent Gateways in per-tenant
+control-plane runtime namespaces, separate from both OCC services and Harnesses.
 
 ```mermaid
 flowchart LR
@@ -23,9 +25,11 @@ flowchart LR
     Worker --> Compute["ComputeDriver"]
     Config --> ConfigStore["Configuration storage"]
     Secret --> SecretStore["Secret storage"]
-    Compute --> Namespace["Tenant infrastructure"]
-    Namespace --> Gateway["Agent-owned gateway"]
-    Gateway --> Harness["Embedded or dedicated Harness"]
+    Compute --> Gateway["Dedicated Agent Gateway: control-plane target"]
+    Compute --> Namespace["Tenant data-plane infrastructure"]
+    Namespace --> Harness["Dedicated Harness"]
+    Namespace --> Embedded["Embedded Gateway and Harness"]
+    Gateway --> Harness
 ```
 
 OCC owns platform resources and desired state. Drivers operate the backing
@@ -86,8 +90,12 @@ selections and renders native runtime policy during revision startup.
 ## Agent execution
 
 An Agent's gateway serves client connections. Embedded OpenClaw runs the gateway
-and Harness together; dedicated Codex uses separate workloads with separate
-identities and an Agent-owned shared workspace. See
+and Harness together in the data plane. Dedicated Kubernetes execution separates
+the Gateway's control-plane namespace, node selector, identity and private state
+from the Harness's data-plane namespace, identity and workspace. The Gateway uses
+scoped remote file operations instead of mounting the Harness workspace. Operators
+must configure disjoint trusted and untrusted node pools; distinct namespaces
+alone do not prove node isolation. Compute owns both targets' lifecycle. See
 [Harness execution](reference/harness-execution.md) for topology and credential boundaries.
 
 ### Agent provisioning sequence

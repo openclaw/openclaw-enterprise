@@ -11,8 +11,8 @@ an interactive check with the same loopback password, use the
 
 You need a working model credential, the Agent's local gateway password, Bash,
 Python 3, and `kubectl` permission to get and list Pods and create
-`pods/portforward` requests in the tenant namespace. If you retrieve the generated
-password from Kubernetes, you also need read access to that exact Secret. Keep `AGENT_ID`, `NAMESPACE_ID`, `TENANT_NAMESPACE`,
+`pods/portforward` requests in the Gateway's physical namespace. If you retrieve the generated
+password from Kubernetes, you also need read access to that exact Secret. Keep `AGENT_ID`, `NAMESPACE_ID`, `TENANT_NAMESPACE`, `GATEWAY_RUNTIME_NAMESPACE`,
 `KUBECONFIG_FILE`, and `CONTEXT` from the [production Agent guide](../deploy/production-agents.md).
 Set `REVISION_ID` to the immutable revision you want to verify.
 
@@ -51,10 +51,15 @@ attempts. No match, multiple Ready matches, or a Kubernetes error stops the
 check without opening a connection to another revision.
 
 ```bash
+GATEWAY_NAMESPACE="$TENANT_NAMESPACE"
+if [ "${AGENT_EXECUTION_MODE:?}" = dedicated ]; then
+  GATEWAY_NAMESPACE="${GATEWAY_RUNTIME_NAMESPACE:?}"
+fi
+export GATEWAY_NAMESPACE
 forward_requested_gateway() {
   local expected_configmap pods_json pod selection_code attempt
   if [ -z "${AGENT_ID:-}" ] || [ -z "${REVISION_ID:-}" ] || [ -z "${NAMESPACE_ID:-}" ] ||
-     [ -z "${TENANT_NAMESPACE:-}" ] || [ -z "${KUBECONFIG_FILE:-}" ] || [ -z "${CONTEXT:-}" ]; then
+     [ -z "${GATEWAY_NAMESPACE:-}" ] || [ -z "${KUBECONFIG_FILE:-}" ] || [ -z "${CONTEXT:-}" ]; then
     printf '%s\n' 'Set the Agent, revision, OCC and Kubernetes namespaces, kubeconfig, and context first.' >&2
     return 1
   fi
@@ -68,7 +73,7 @@ print(f"gateway-{digest(sys.argv[1])}-rev-{digest(sys.argv[2])}")
   fi
   for ((attempt = 1; attempt <= 60; attempt++)); do
     if ! pods_json="$(kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-      -n "$TENANT_NAMESPACE" get pods \
+      -n "$GATEWAY_NAMESPACE" get pods \
       -l "app.kubernetes.io/managed-by=openclaw-enterprise,openclaw.dev/workload-role=gateway,openclaw.dev/namespace=$NAMESPACE_ID,openclaw.dev/agent=$AGENT_ID,openclaw.dev/revision=$REVISION_ID" \
       -o json)"; then
       return 1
@@ -93,7 +98,7 @@ if not ready:
 print(ready[0]["metadata"]["name"])
 ' "$expected_configmap")"; then
       printf 'Forwarding to revision %s on Pod %s.\n' "$REVISION_ID" "$pod" >&2
-      kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n "$TENANT_NAMESPACE" \
+      kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n "$GATEWAY_NAMESPACE" \
         port-forward --address 127.0.0.1 "pod/$pod" 18789:http
       return $?
     else
@@ -124,7 +129,7 @@ fetch_gateway_password() {
   local working_directory agent_suffix transport_secret secret_json
   unset GATEWAY_PASSWORD_FILE GATEWAY_PASSWORD_DIRECTORY
   if [ -z "${AGENT_ID:-}" ] || [ -z "${KUBECONFIG_FILE:-}" ] ||
-     [ -z "${CONTEXT:-}" ] || [ -z "${TENANT_NAMESPACE:-}" ]; then
+     [ -z "${CONTEXT:-}" ] || [ -z "${GATEWAY_NAMESPACE:-}" ]; then
     printf '%s\n' 'Set the Agent, kubeconfig, context, and Kubernetes namespace first.' >&2
     return 1
   fi

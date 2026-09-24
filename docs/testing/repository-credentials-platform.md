@@ -18,11 +18,20 @@ client-contract validator alongside the GitHub client modules. Run the source ch
 prepared dependencies:
 
 ```sh
+pnpm build
 node --test tests/integration/repository-credentials-admission.test.mjs
 node --test tests/integration/repository-credentials-driver.test.mjs
 node --test tests/integration/repository-runtime-materialization.test.mjs
 node --test tests/integration/repository-credentials-router.test.mjs
 ```
+
+The build supplies emitted code for the detached materialization tests. They
+execute both initializers and the relocated client, including fsGroup-style
+group-writable parents. Relocation models the private subPath view; it does not
+exercise a container mount. The separate
+[runtime volume test](images.md#repository-runtime-volume-test-environment)
+uses the image-installed client and real Docker mounts. It is required in the
+`images-packaging` CI lane.
 
 Follow [PostgreSQL setup](postgresql.md) for a migrated disposable application-role
 database, then select `tests/integration/postgres-repository-sessions.test.mjs`
@@ -97,8 +106,9 @@ The [standalone live smoke](repository-credentials.md#run-an-authorized-live-smo
 does not exercise OCC admission or a model.
 Use `repository-credentials-k3d-real.test.mjs` for the joined installed path:
 fresh Helm controller/PostgreSQL, API-created Namespace and Agent, worker-opened
-session, private Kubernetes runtime material and the embedded model's own
-clone/edit/commit/push/native-PR task. One explicitly authorized disposable
+session, private Kubernetes runtime material and the model's own
+clone/edit/commit/push/native-PR task in both embedded OpenClaw and Dedicated
+Codex. The Dedicated case creates a draft PR. One explicitly authorized disposable
 repository is sufficient; two-repository deterministic coverage remains in the
 controlled platform case.
 
@@ -112,6 +122,10 @@ Supply existing authorized `OPENAI_API_KEY`, `OCC_TEST_OPENAI_MODEL`, and immuta
 `NODE_BASE_IMAGE` (approved Node 24), `OCC_TEST_PRODUCTION_POSTGRES_IMAGE` and
 `OCC_TEST_PRODUCTION_NODE_IMAGE`. Preparation builds controller and runtime from
 current source, imports immutable references and supplies kubeconfig/context.
+It also installs the pinned Envoy Gateway and cert-manager controllers. Dedicated
+setup enables the production Helm private route and CA, admits only the observed
+Envoy proxy address, and configures the disposable cluster's shared workspace
+storage. OCC enrolls the native workspace node through that authenticated route.
 The Helm fixture creates its own PostgreSQL; no external test database is needed.
 The installed case additionally uses these variables with prefix
 `OCC_TEST_REPOSITORY_CREDENTIALS_`:
@@ -127,7 +141,40 @@ The installed case additionally uses these variables with prefix
 | `GH_BINARY`       | Optional absolute managed host `gh` path for independently authenticated readback and guarded cleanup |
 
 The runner sets `OCC_TEST_REPOSITORY_CREDENTIALS_REAL=1` and runs
-`tests/integration/repository-credentials-k3d-real.test.mjs` from prepared state.
+`tests/integration/repository-credentials-k3d-real.test.mjs` from prepared state;
+both execution modes must pass. To select only Dedicated against an already
+prepared disposable cluster, supply the same protected inputs and immutable
+image variables, then run:
+
+```sh
+OCC_TEST_REPOSITORY_CREDENTIALS_REAL=1 node --test \
+  --test-name-pattern='^installed dedicated Agent' \
+  tests/integration/repository-credentials-k3d-real.test.mjs
+```
+
+This selected command proves only Dedicated. The full lane retains the embedded
+case and rejects skips.
+
+Before cleanup after a failure, the test records container readiness, restart
+counts, the plugin-ready marker state, and allowlisted runtime startup failure
+codes. These diagnostics distinguish login and model-probe failures from later
+readiness failures without exporting Pod logs, credentials, or model responses.
+An unavailable diagnostic never replaces the original failure or prevents cleanup.
+
+Dedicated uses the supported Codex `mode: yolo`, `approvalPolicy: never` and
+`sandbox: danger-full-access` configuration, with `tools.exec.mode: full`, for this
+authorized unattended task.
+Its nonroot container, read-only root filesystem, private volume mounts and
+Kubernetes NetworkPolicies remain the isolation boundary. The case checks separate
+Gateway/Codex Pod identities, repository material and model-key delivery to Codex
+only, and credential-service connectivity from Codex with denial from Gateway.
+It pairs the Gateway's mirrored task with read-only native Codex thread evidence,
+requiring completed commands, zero exit codes and matching remote commit/PR
+readback. It does not start a second turn or execute repository commands from
+the test runner. Dedicated task submission uses the private authenticated route
+from the installed worker, which already holds its Gateway key and CA for node
+enrollment. Console file transfer and Slack remain outside this shell-task proof;
+see [Kubernetes testing](kubernetes.md).
 
 The fixture installs OCC before constructing the registry, because its exact
 Namespace ID comes from the API. It then enables the optional sidecar and

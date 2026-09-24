@@ -20,6 +20,12 @@
       ]
     },
     {
+      "path": "tests/integration/repository-runtime-volume.test.mjs",
+      "expectedTests": [
+        "repository init uses a private subPath of a root-owned fsGroup memory volume"
+      ]
+    },
+    {
       "path": "tests/integration/production-image-startup.test.mjs",
       "expectedTests": [
         "production image server startup loads bundled Kubernetes, OpenShell, and ChatGPT modules",

@@ -136,6 +136,11 @@ test("run resolves lane documents relative to the manifest and preserves ordered
     ["tests/integration/first.test.mjs", "tests/integration/second.test.mjs"],
   );
   assert.equal(summary.files[0].cleanup.status, "passed");
+  assert.ok(
+    summary.files.every(
+      (file) => Number.isInteger(file.wallDurationMs) && file.wallDurationMs >= 0,
+    ),
+  );
   assert.match(await readFile(statePath, "utf8"), /first\.test\.mjs/);
 });
 

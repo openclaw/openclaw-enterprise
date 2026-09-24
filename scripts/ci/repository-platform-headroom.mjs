@@ -3,17 +3,32 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { lstat, readFile, realpath, statfs } from "node:fs/promises";
 
-// This fixed runner-image component is unused by the platform lane. Never
-// derive a deletion target from workflow inputs or Android environment values.
+// These fixed runner-image components are unused by the selected jobs. Never
+// derive a deletion target from workflow inputs or runner environment values.
 const androidRoot = "/usr/local/lib/android";
+const runtimeOnlyRoots = [
+  "/opt/az",
+  "/opt/hostedtoolcache/PyPy",
+  "/opt/hostedtoolcache/Python",
+  "/opt/hostedtoolcache/Ruby",
+  "/opt/hostedtoolcache/go",
+  "/usr/local/.ghcup",
+  "/usr/local/share/vcpkg",
+  "/usr/share/dotnet",
+  "/usr/share/miniconda",
+  "/usr/share/swift",
+];
+const minimumRuntimeAvailableBytes = 36 * 1024 ** 3;
 const receipt = {
   kind: "repository-platform-capacity",
+  lane: process.env.OPENCLAW_CI_HEADROOM_LANE,
   sourceSha: /^[a-f0-9]{40}$/.test(process.env.GITHUB_SHA ?? "")
     ? process.env.GITHUB_SHA
     : undefined,
   status: "failed",
   stage: "hosted-guard",
   sdkRemoved: false,
+  rootsRemoved: [],
 };
 
 // Bound the command and its descendants; never forward raw command output.
@@ -92,6 +107,26 @@ async function capacity() {
   return counters;
 }
 
+async function guardRemovalRoot(root, rootInfo, mounts, required) {
+  let info;
+  try {
+    info = await lstat(root);
+  } catch (error) {
+    assert(!required && error.code === "ENOENT");
+    return false;
+  }
+  assert(info.isDirectory() && !info.isSymbolicLink() && info.uid === 0);
+  assert((await realpath(root)) === root);
+  assert(info.dev === rootInfo.dev);
+  assert(
+    !mounts.split("\n").some((line) => {
+      const path = line.split(" ")[4];
+      return path === root || path?.startsWith(`${root}/`);
+    }),
+  );
+  return true;
+}
+
 async function main() {
   assert(
     process.env.GITHUB_ACTIONS === "true" && process.env.RUNNER_ENVIRONMENT === "github-hosted",
@@ -107,8 +142,9 @@ async function main() {
       /^\d+$/.test(process.env.GITHUB_RUN_ATTEMPT ?? ""),
   );
   assert(
-    process.env.OPENCLAW_CI_HEADROOM_LANE === "repository-credentials-platform" &&
-      process.argv.length === 2,
+    ["repository-credentials-platform", "container-runtime-build"].includes(
+      process.env.OPENCLAW_CI_HEADROOM_LANE,
+    ) && process.argv.length === 2,
   );
   const os = await readFile("/etc/os-release", "utf8");
   assert(/^ID=ubuntu$/m.test(os) && /^VERSION_ID="24\.04"$/m.test(os));
@@ -118,17 +154,17 @@ async function main() {
     process.env.ANDROID_HOME === `${androidRoot}/sdk` &&
       process.env.ANDROID_SDK_ROOT === `${androidRoot}/sdk`,
   );
-  const info = await lstat(androidRoot);
-  assert(info.isDirectory() && !info.isSymbolicLink() && info.uid === 0);
-  assert((await realpath(androidRoot)) === androidRoot);
-  assert(info.dev === (await lstat("/")).dev);
+  const rootInfo = await lstat("/");
   const mounts = await readFile("/proc/self/mountinfo", "utf8");
-  assert(
-    !mounts.split("\n").some((line) => {
-      const path = line.split(" ")[4];
-      return path === androidRoot || path?.startsWith(`${androidRoot}/`);
-    }),
-  );
+  const removalRoots = [androidRoot];
+  assert(await guardRemovalRoot(androidRoot, rootInfo, mounts, true));
+  if (receipt.lane === "container-runtime-build") {
+    for (const root of runtimeOnlyRoots) {
+      if (await guardRemovalRoot(root, rootInfo, mounts, false)) {
+        removalRoots.push(root);
+      }
+    }
+  }
   receipt.stage = "sdk-removal";
   // The privileged timeout can terminate root-owned rm; the runner cannot.
   await execute(
@@ -139,24 +175,32 @@ async function main() {
       "/usr/bin/timeout",
       "--signal=TERM",
       "--kill-after=5s",
-      "120s",
+      "240s",
       "/usr/bin/rm",
       "--recursive",
       "--force",
       "--one-file-system",
       "--preserve-root=all",
       "--",
-      androidRoot,
+      ...removalRoots,
     ],
-    130_000,
+    250_000,
   );
-  try {
-    await lstat(androidRoot);
-    assert.fail("SDK removal incomplete.");
-  } catch (error) {
-    assert(error.code === "ENOENT");
+  for (const root of removalRoots) {
+    try {
+      await lstat(root);
+      assert.fail("Runner cleanup incomplete.");
+    } catch (error) {
+      assert(error.code === "ENOENT");
+    }
   }
   receipt.sdkRemoved = true;
+  receipt.rootsRemoved = removalRoots;
+  if (receipt.lane === "container-runtime-build") {
+    receipt.minimumAvailableBytes = minimumRuntimeAvailableBytes;
+    receipt.stage = "capacity-guard";
+    assert((await capacity()).availableBytes >= minimumRuntimeAvailableBytes);
+  }
   receipt.stage = "complete";
   receipt.status = "passed";
 }

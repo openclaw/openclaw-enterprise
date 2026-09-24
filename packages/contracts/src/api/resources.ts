@@ -17,6 +17,7 @@ import {
   NamespaceId,
   PermissionActionSchema,
   ProviderId,
+  RepositoryBindingSelectionSchema,
   RepositoryBindingSelectionsSchema,
   RevisionId,
   ResourceKindSchema,
@@ -282,6 +283,19 @@ export const ProviderSummarySchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const RepositoryOptionSchema = Type.Object(
+  {
+    repositoryRef: RepositoryBindingSelectionSchema.properties.repositoryRef,
+    displayName: Name,
+    allowedProfiles: Type.Array(RepositoryBindingSelectionSchema.properties.profile, {
+      minItems: 1,
+      maxItems: 16,
+      uniqueItems: true,
+    }),
+  },
+  { additionalProperties: false },
+);
+
 export const InstallationResponse = Type.Object(
   { data: InstallationSchema, meta: Meta },
   { additionalProperties: false },
@@ -380,6 +394,11 @@ export const AgentListResponse = Type.Object(
 
 export const ProviderListResponse = Type.Object(
   { data: Type.Array(ProviderSummarySchema), meta: Meta },
+  { additionalProperties: false },
+);
+
+export const RepositoryOptionListResponse = Type.Object(
+  { data: Type.Array(RepositoryOptionSchema, { maxItems: 128 }), meta: Meta },
   { additionalProperties: false },
 );
 
@@ -588,6 +607,7 @@ export type AgentListResponse = Type.Static<typeof AgentListResponse>;
 export type ProviderListResponse = Type.Static<typeof ProviderListResponse>;
 export type AgentProvisioningResponse = Type.Static<typeof AgentProvisioningResponse>;
 export type AgentProvisioningStatusResponse = Type.Static<typeof AgentProvisioningStatusResponse>;
+export type RepositoryOptionListResponse = Type.Static<typeof RepositoryOptionListResponse>;
 export type AgentRevisionResponse = Type.Static<typeof AgentRevisionResponse>;
 export type AgentRevisionListResponse = Type.Static<typeof AgentRevisionListResponse>;
 export type AgentDeploymentStatusResponse = Type.Static<typeof AgentDeploymentStatusResponse>;

@@ -6,7 +6,7 @@ import test from "node:test";
 import {
   arrangeProductionTopology,
   assertDeniedConnection,
-  channelPrefix,
+  storedSecret,
   hash,
   kubectl,
   requiresLiveSlack,
@@ -76,7 +76,7 @@ test(
     const topology = await arrangeProductionTopology(context, "dedicated", slack);
     assert.ok(topology.harnessPod, "channels must preserve their separate dedicated Codex Agent");
     const suffix = hash(topology.agent.id);
-    const gateway = await resource("deployment", `gateway-${suffix}`, topology.placement);
+    const gateway = await resource("deployment", `gateway-${suffix}`, topology.gatewayPlacement);
     const agent = await resource(
       "deployment",
       `agent-${suffix}-rev-${hash(topology.revision.id)}`,
@@ -85,10 +85,19 @@ test(
     const gatewayEnvironment = gateway.spec.template.spec.containers[0].env;
     const agentEnvironment = agent.spec.template.spec.containers[0].env;
     for (const key of ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"]) {
+      const source = await storedSecret(
+        topology.observerPool,
+        topology.agent.namespaceId,
+        topology.secretApi[key === "SLACK_APP_TOKEN" ? "slackApp" : "slackBot"].id,
+      );
+      const { optional, ...ref } = gatewayEnvironment.find(({ name }) => name === key).valueFrom
+        .secretKeyRef;
+      assert.equal(source.backendRef.namespaceName, topology.gatewayPlacement);
+      assert.equal(optional ?? false, false);
       assert.deepEqual(
-        gatewayEnvironment.find(({ name }) => name === key)?.valueFrom?.secretKeyRef,
-        { name: `${channelPrefix}-${suffix}`, key },
-        "only the owning gateway may receive operator-owned channel credential references",
+        ref,
+        { name: source.backendRef.name, key: source.backendRef.key },
+        "only the owning Gateway may reference the admitted canonical channel source",
       );
       assert.equal(
         agentEnvironment.some(({ name }) => name === key),
@@ -120,9 +129,10 @@ test(
     const policy = await resource(
       "networkpolicy",
       `allow-gateway-channels-${suffix}`,
-      topology.placement,
+      topology.gatewayPlacement,
     );
     assert.deepEqual(policy.spec.podSelector.matchLabels, {
+      "openclaw.dev/namespace": topology.agent.namespaceId,
       "openclaw.dev/workload-role": "gateway",
       "openclaw.dev/agent": topology.agent.id,
     });
@@ -134,7 +144,7 @@ test(
     ]);
     const target = await resource("pod", topology.approvedClient, topology.platformNamespace);
     await assertDeniedConnection(
-      topology.placement,
+      topology.gatewayPlacement,
       topology.gatewayPod.metadata.name,
       target.status.podIP,
     );
@@ -144,7 +154,7 @@ test(
         "logs",
         topology.gatewayPod.metadata.name,
         "--namespace",
-        topology.placement,
+        topology.gatewayPlacement,
       );
       assert.equal(logs.includes(slack.appToken), false, "gateway logs must not expose app tokens");
       assert.equal(logs.includes(slack.botToken), false, "gateway logs must not expose bot tokens");
@@ -159,7 +169,7 @@ test(
       "logs",
       topology.gatewayPod.metadata.name,
       "--namespace",
-      topology.placement,
+      topology.gatewayPlacement,
     );
     const nonce = `OCC-SLACK-${randomUUID()}`;
     const message = {
@@ -206,7 +216,7 @@ test(
       "logs",
       topology.gatewayPod.metadata.name,
       "--namespace",
-      topology.placement,
+      topology.gatewayPlacement,
     );
     const turnLogs = gatewayLogs.slice(baselineLogs.length);
     const ingress = turnLogs
@@ -241,7 +251,7 @@ test(
         "exec",
         topology.gatewayPod.metadata.name,
         "--namespace",
-        topology.placement,
+        topology.gatewayPlacement,
         "--",
         "node",
         "-e",

@@ -233,23 +233,26 @@ operator must reconcile these two fields for existing ready Namespaces.
 This changes ingress for **every gateway in that Namespace**; coordinate the
 cutover with its other Agents and preserve unrelated policies and labels.
 
-Select the existing tenant Kubernetes namespace, distinct from its OCC
-Namespace ID. The following uses the same Gateway name/namespace as the examples
+Select the Gateway's physical Kubernetes namespace, distinct from its OCC
+Namespace ID: the managed Gateway runtime namespace for dedicated execution,
+or the tenant namespace for embedded execution. The commands below use
+`GATEWAY_NAMESPACE` for that target. This repairs routing on an already placed
+Gateway; it does not migrate a Gateway or move its PVC between namespaces. The following uses the same Gateway name/namespace as the examples
 above, `jq`, and the protected directory from production installation:
 
 ```sh
 set -e
-export TENANT_NAMESPACE='<existing-tenant-kubernetes-namespace>'
+export GATEWAY_NAMESPACE='<existing-gateway-kubernetes-namespace>'
 export NAMESPACE_ID='<existing-occ-namespace-id>'
 ROUTING_BACKUP="$(mktemp -d "$OCC_INPUT_DIRECTORY/workspace-routing.XXXXXX")"
 export ROUTING_BACKUP
-kubectl get namespace "$TENANT_NAMESPACE" -o json > "$ROUTING_BACKUP/namespace.json"
-kubectl -n "$TENANT_NAMESPACE" get networkpolicy allow-gateway-ingress -o json \
+kubectl get namespace "$GATEWAY_NAMESPACE" -o json > "$ROUTING_BACKUP/namespace.json"
+kubectl -n "$GATEWAY_NAMESPACE" get networkpolicy allow-gateway-ingress -o json \
   > "$ROUTING_BACKUP/ingress.json"
 kubectl -n openclaw-system get gateway oce-agent-gateways -o json \
   > "$ROUTING_BACKUP/gateway.json"
 jq -e --arg id "$NAMESPACE_ID" \
-  '.metadata.labels["openclaw.dev/namespace"] == $id and
+  '(.metadata.labels["openclaw.dev/namespace"] == $id or .metadata.labels["openclaw.dev/gateway-namespace"] == $id) and
    .metadata.annotations["openclaw.dev/namespace-id"] == $id' \
   "$ROUTING_BACKUP/namespace.json"
 jq -e --arg id "$NAMESPACE_ID" \
@@ -283,9 +286,9 @@ jq --arg label "$ROUTING_LABEL" '{metadata: {
   resourceVersion: .metadata.resourceVersion,
   labels: {"openclaw-enterprise.io/gateway": $label}
 }}' "$ROUTING_BACKUP/namespace.json" > "$ROUTING_BACKUP/namespace-patch.json"
-kubectl -n "$TENANT_NAMESPACE" patch networkpolicy allow-gateway-ingress \
+kubectl -n "$GATEWAY_NAMESPACE" patch networkpolicy allow-gateway-ingress \
   --type=merge --patch-file="$ROUTING_BACKUP/ingress-patch.json"
-kubectl patch namespace "$TENANT_NAMESPACE" \
+kubectl patch namespace "$GATEWAY_NAMESPACE" \
   --type=merge --patch-file="$ROUTING_BACKUP/namespace-patch.json"
 ```
 
@@ -303,7 +306,7 @@ After applying the Helm and Installation changes, check the resources:
 ```sh
 kubectl -n openclaw-system get gateway oce-agent-gateways -o yaml
 kubectl -n openclaw-system get issuer,certificate,securitypolicy
-kubectl -n "$TENANT_NAMESPACE" get httproute
+kubectl -n "${GATEWAY_NAMESPACE:?select the Agent Gateway target}" get httproute
 ```
 
 Wait for the Gateway to report `Accepted` and `Programmed`, the certificate to
@@ -347,13 +350,13 @@ native client does not expose mTLS client-certificate options.
 
 ### Troubleshooting
 
-| Symptom                                                           | What to check                                                                                                                                                                                  |
-| ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `503 DEPENDENCY_UNAVAILABLE`                                      | Confirm routing and the service key are configured, the Compute Driver supports routing, and Envoy and the native gateway are reachable. The Docker Driver does not support this routing path. |
-| HTTPRoute reports `Accepted=False` with `NotAllowedByListeners`   | Compare the Gateway listener's namespace selector with the tenant Namespace labels. Follow [existing Namespace reconciliation](#enable-routing-for-existing-namespaces-and-agents).            |
-| HTTPRoute is accepted but the backend is unreachable              | Check the Envoy and tenant NetworkPolicies together, including their selectors and translated ports.                                                                                           |
-| `404 NOT_FOUND` and `The requested workspace file was not found.` | The native file is missing. Do not create or overwrite it just to clear the Console notice.                                                                                                    |
-| `503 UNKNOWN_OUTCOME` after a write                               | Read the file before deciding whether to repeat the write. OCC does not automatically replay it.                                                                                               |
+| Symptom                                                           | What to check                                                                                                                                                                                            |
+| ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `503 DEPENDENCY_UNAVAILABLE`                                      | Confirm routing and the service key are configured, the Compute Driver supports routing, and Envoy and the native gateway are reachable. The Docker Driver does not support this routing path.           |
+| HTTPRoute reports `Accepted=False` with `NotAllowedByListeners`   | Compare the Gateway listener's namespace selector with the labels on the HTTPRoute's physical namespace. Follow [existing Namespace reconciliation](#enable-routing-for-existing-namespaces-and-agents). |
+| HTTPRoute is accepted but the backend is unreachable              | Check the Envoy and tenant NetworkPolicies together, including their selectors and translated ports.                                                                                                     |
+| `404 NOT_FOUND` and `The requested workspace file was not found.` | The native file is missing. Do not create or overwrite it just to clear the Console notice.                                                                                                              |
+| `503 UNKNOWN_OUTCOME` after a write                               | Read the file before deciding whether to repeat the write. OCC does not automatically replay it.                                                                                                         |
 
 The [Agents reference](../../reference/agents.md#workspace-files) lists file
 limits and permissions. The [Kubernetes testing guide](../../testing/kubernetes.md#kubernetes-model-turns-and-secrets)

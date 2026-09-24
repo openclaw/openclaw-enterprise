@@ -9,7 +9,10 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import {
+  kubernetesNamespaceName,
+  kubernetesGatewayNamespaceName,
+} from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { verifyPlatformStateStoreContract } from "../conformance/platform-state-store.contract.mjs";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
@@ -241,8 +244,11 @@ async function createKubernetesStartupEnvironment(context) {
   return startup;
 }
 
-async function waitForKubernetesNamespace(context, namespaceId) {
-  const name = kubernetesNamespaceName(namespaceId);
+async function waitForKubernetesNamespace(
+  context,
+  namespaceId,
+  name = kubernetesNamespaceName(namespaceId),
+) {
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
     try {
@@ -263,20 +269,25 @@ async function grantTenantAccess(context, namespaceId) {
   // this mirrors the operator-owned RoleBinding handoff required by the real driver.
   const { platformNamespace, account, tenantRole } =
     await createKubernetesStartupEnvironment(context);
-  const name = await waitForKubernetesNamespace(context, namespaceId);
-  try {
-    await kubectl(
-      "create",
-      "rolebinding",
-      "openclaw-controller",
-      "--namespace",
-      name,
-      `--clusterrole=${tenantRole}`,
-      `--serviceaccount=${platformNamespace}:${account}`,
-    );
-  } catch (error) {
-    if (!/AlreadyExists|already exists/i.test(error.stderr ?? error.message)) {
-      throw error;
+  for (const name of [
+    kubernetesNamespaceName(namespaceId),
+    kubernetesGatewayNamespaceName(namespaceId),
+  ]) {
+    await waitForKubernetesNamespace(context, namespaceId, name);
+    try {
+      await kubectl(
+        "create",
+        "rolebinding",
+        "openclaw-controller",
+        "--namespace",
+        name,
+        `--clusterrole=${tenantRole}`,
+        `--serviceaccount=${platformNamespace}:${account}`,
+      );
+    } catch (error) {
+      if (!/AlreadyExists|already exists/i.test(error.stderr ?? error.message)) {
+        throw error;
+      }
     }
   }
 }
@@ -284,15 +295,14 @@ async function grantTenantAccess(context, namespaceId) {
 function cleanupKubernetesNamespaces(context, namespaceIds) {
   context.after(async () => {
     const cleanup = await Promise.allSettled(
-      namespaceIds.map((namespaceId) =>
-        kubectl(
-          "delete",
-          "namespace",
+      namespaceIds
+        .flatMap((namespaceId) => [
           kubernetesNamespaceName(namespaceId),
-          "--ignore-not-found=true",
-          "--wait=true",
+          kubernetesGatewayNamespaceName(namespaceId),
+        ])
+        .map((name) =>
+          kubectl("delete", "namespace", name, "--ignore-not-found=true", "--wait=true"),
         ),
-      ),
     );
     const failures = cleanup.filter((result) => result.status === "rejected");
     if (failures.length > 0) {

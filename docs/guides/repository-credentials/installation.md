@@ -4,8 +4,9 @@ Enable the optional repository credential service alongside the single OCC
 worker. Complete the [production installation prerequisites](../deploy/production-installation.md)
 and use its operator shell, `KUBECONFIG_FILE`, `CONTEXT`, `OCC_INPUT_DIRECTORY`
 and `openclaw-system` namespace. Run these commands from the repository root.
-The supported consumer is Kubernetes Compute-owned embedded OpenClaw with
-`api_key` authentication and no Sandbox Driver.
+Use Kubernetes Compute-owned embedded OpenClaw or dedicated Codex with compatible
+[Harness authentication](../../reference/agents.md#harness-authentication) and no
+Sandbox Driver.
 
 ## Prepare the registry and protected inputs
 
@@ -141,8 +142,10 @@ repositoryCredentials:
 ```
 
 Supply current operator-approved ranges for GitHub HTTPS destinations. The chart
-adds worker-Pod egress on port 443 and tenant-gateway ingress on port 8443; the
-Compute peer enables the corresponding Agent egress. Existing model/network
+adds worker-Pod egress on port 443 and ingress from tenant embedded gateways and
+dedicated Agent Pods on port 8443. Compute grants corresponding egress only to
+the repository consumer; see the
+[network selectors](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking). Existing model/network
 rules still apply. Because worker and sidecar share a Pod network namespace,
 these rules are not a per-container isolation boundary.
 

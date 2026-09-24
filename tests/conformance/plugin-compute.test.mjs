@@ -10,6 +10,7 @@ import {
   createKubernetesComputeDriver,
   KubernetesComputeDriver,
   kubernetesNamespaceName,
+  kubernetesGatewayNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
@@ -158,7 +159,7 @@ function harnessAuthContext(candidate) {
     harnessAuth: {
       ...candidate.harnessAuth,
       backendRef: {
-        namespaceName: kubernetesNamespaceName(tenant.id),
+        namespaceName: kubernetesGatewayNamespaceName(tenant.id),
         name: "plugin-model-key",
         key: "value",
         uid: "plugin-model-key-uid",
@@ -244,6 +245,7 @@ function kubernetesOptions(overrides = {}) {
     runtime: {
       transportSecretPrefix: "transport",
       gatewayStorageClassName: "local-path",
+      gatewayNodeSelector: { "openclaw.dev/plane": "control" },
     },
     ...overrides,
   };
@@ -1343,9 +1345,25 @@ test("embedded plugin preparation applies runtime egress before gateway readines
   const reconciled = [];
 
   // This fresh Agent has no prior authentication-probe workloads to retire.
+  const credentialObjects = new Map();
+  const cp = kubernetesGatewayNamespaceName(tenant.id);
+  credentialObjects.set(`${cp}:plugin-model-key`, {
+    apiVersion: "v1",
+    kind: "Secret",
+    metadata: { name: "plugin-model-key", namespace: cp, uid: "plugin-model-key-uid" },
+    data: { value: Buffer.from("fixture-model").toString("base64") },
+  });
   driver.clients = async () => ({
     apps: { listNamespacedDeployment: async () => ({ items: [] }) },
     core: {
+      createNamespacedSecret: async ({ body }) => {
+        const observed = {
+          ...body,
+          metadata: { ...body.metadata, uid: `${body.metadata.name}-uid`, resourceVersion: "1" },
+        };
+        credentialObjects.set(`${body.metadata.namespace}:${body.metadata.name}`, observed);
+        return observed;
+      },
       createNamespacedConfigMap: async ({ body }) => {
         configMaps.set(body.metadata.name, {
           ...structuredClone(body),
@@ -1364,14 +1382,21 @@ test("embedded plugin preparation applies runtime egress before gateway readines
     },
   });
   driver.resolveNamespace = async () => ({ name: namespace, external: false });
-  driver.get = async (kind, name) =>
-    kind === "Namespace"
-      ? {
-          ...driver.manifest("v1", "Namespace", name, tenantOwnership),
-          status: { phase: "Active" },
-        }
-      : undefined;
-  driver.getOwned = async (kind, name) => {
+  driver.get = async (kind, name, target) =>
+    kind === "Secret"
+      ? credentialObjects.get(`${target}:${name}`)
+      : kind === "Namespace"
+        ? {
+            ...(name === cp
+              ? driver.gatewayNamespaceManifest(tenantOwnership)
+              : driver.manifest("v1", "Namespace", name, tenantOwnership)),
+            status: { phase: "Active" },
+          }
+        : undefined;
+  driver.getOwned = async (kind, name, target) => {
+    if (kind === "Secret" && name !== driver.workspaceNodeName(embedded)) {
+      return credentialObjects.get(`${target}:${name}`);
+    }
     if (kind === "NetworkPolicy") {
       return defaultPolicies.get(name);
     }
@@ -1404,6 +1429,7 @@ test("embedded plugin preparation applies runtime egress before gateway readines
   assert.ok(gatewayDeploymentIndex >= 0);
   assert.ok(runtimePolicyIndex < gatewayDeploymentIndex);
   assert.deepEqual(reconciled[runtimePolicyIndex].spec.podSelector.matchLabels, {
+    "openclaw.dev/namespace": embedded.namespaceId,
     "openclaw.dev/workload-role": "gateway",
     "openclaw.dev/agent": embedded.agentId,
   });
@@ -1426,23 +1452,56 @@ test("embedded plugin preparation applies runtime egress before gateway readines
   );
   const dedicatedReconciled = [];
 
+  const transportName = `transport-${shortHash(dedicated.agentId)}`;
+  const transport = {
+    ...dedicatedDriver.manifest(
+      "v1",
+      "Secret",
+      transportName,
+      { namespaceId: tenant.id, agentId: dedicated.agentId },
+      cp,
+    ),
+    type: "Opaque",
+    data: { "app-server-token": Buffer.from("fixture-transport").toString("base64") },
+  };
+  transport.metadata.uid = "transport-uid";
+  credentialObjects.set(`${cp}:${transportName}`, transport);
   dedicatedDriver.clients = async () => ({
     apps: { listNamespacedDeployment: async () => ({ items: [] }) },
     core: {
+      createNamespacedSecret: async ({ body }) => {
+        const observed = {
+          ...body,
+          metadata: { ...body.metadata, uid: `${body.metadata.name}-uid`, resourceVersion: "1" },
+        };
+        credentialObjects.set(`${body.metadata.namespace}:${body.metadata.name}`, observed);
+        return observed;
+      },
+      replaceNamespacedSecret: async ({ body }) => {
+        credentialObjects.set(`${body.metadata.namespace}:${body.metadata.name}`, body);
+        return body;
+      },
       createNamespacedConfigMap: async () => ({}),
       patchNamespacedConfigMap: async () => ({}),
       listNamespacedPod: async () => ({ apiVersion: "v1", kind: "PodList", items: [] }),
     },
   });
   dedicatedDriver.resolveNamespace = async () => ({ name: dedicatedNamespace, external: false });
-  dedicatedDriver.get = async (kind, name) =>
-    kind === "Namespace"
-      ? {
-          ...dedicatedDriver.manifest("v1", "Namespace", name, dedicatedTenantOwnership),
-          status: { phase: "Active" },
-        }
-      : undefined;
-  dedicatedDriver.getOwned = async (kind, name) => {
+  dedicatedDriver.get = async (kind, name, target) =>
+    kind === "Secret"
+      ? credentialObjects.get(`${target}:${name}`)
+      : kind === "Namespace"
+        ? {
+            ...(name === cp
+              ? dedicatedDriver.gatewayNamespaceManifest(dedicatedTenantOwnership)
+              : dedicatedDriver.manifest("v1", "Namespace", name, dedicatedTenantOwnership)),
+            status: { phase: "Active" },
+          }
+        : undefined;
+  dedicatedDriver.getOwned = async (kind, name, target) => {
+    if (kind === "Secret" && name !== dedicatedDriver.workspaceNodeName(dedicated)) {
+      return credentialObjects.get(`${target}:${name}`);
+    }
     if (kind === "Secret") {
       return enrolledNodeSecret(dedicatedDriver, dedicated, dedicatedNamespace);
     }
@@ -2114,7 +2173,7 @@ test("Kubernetes dedicated Codex agent mounts plugin-free runtime without plugin
     driver.harnessAuthForRevision(
       candidate,
       harnessAuthContext(candidate),
-      kubernetesNamespaceName(tenant.id),
+      kubernetesGatewayNamespaceName(tenant.id),
     ),
     [],
     [],
@@ -2194,23 +2253,60 @@ test("Kubernetes dedicated successor readiness preserves the stable Agent Servic
   const reconciled = [];
   let candidateRevisionName;
 
+  const credentialObjects = new Map();
+  const cp = kubernetesGatewayNamespaceName(tenant.id);
+  credentialObjects.set(`${cp}:plugin-model-key`, {
+    apiVersion: "v1",
+    kind: "Secret",
+    metadata: { name: "plugin-model-key", namespace: cp, uid: "plugin-model-key-uid" },
+    data: { value: Buffer.from("fixture-model").toString("base64") },
+  });
+  const transportName = `transport-${shortHash(candidate.agentId)}`;
+  const transport = {
+    ...driver.manifest(
+      "v1",
+      "Secret",
+      transportName,
+      { namespaceId: tenant.id, agentId: candidate.agentId },
+      cp,
+    ),
+    type: "Opaque",
+    data: { "app-server-token": Buffer.from("fixture-transport").toString("base64") },
+  };
+  transport.metadata.uid = "transport-uid";
+  credentialObjects.set(`${cp}:${transportName}`, transport);
   driver.clients = async () => ({
     apps: { listNamespacedDeployment: async () => ({ items: [] }) },
     core: {
+      createNamespacedSecret: async ({ body }) => {
+        const observed = {
+          ...body,
+          metadata: { ...body.metadata, uid: `${body.metadata.name}-uid`, resourceVersion: "1" },
+        };
+        credentialObjects.set(`${body.metadata.namespace}:${body.metadata.name}`, observed);
+        return observed;
+      },
       createNamespacedConfigMap: async () => ({}),
       patchNamespacedConfigMap: async () => ({}),
       listNamespacedPod: async () => ({ apiVersion: "v1", kind: "PodList", items: [] }),
     },
   });
   driver.resolveNamespace = async () => ({ name: namespace, external: false });
-  driver.get = async (kind, name) =>
-    kind === "Namespace"
-      ? {
-          ...driver.manifest("v1", "Namespace", name, tenantOwnership),
-          status: { phase: "Active" },
-        }
-      : undefined;
-  driver.getOwned = async (kind, name) => {
+  driver.get = async (kind, name, target) =>
+    kind === "Secret"
+      ? credentialObjects.get(`${target}:${name}`)
+      : kind === "Namespace"
+        ? {
+            ...(name === cp
+              ? driver.gatewayNamespaceManifest(tenantOwnership)
+              : driver.manifest("v1", "Namespace", name, tenantOwnership)),
+            status: { phase: "Active" },
+          }
+        : undefined;
+  driver.getOwned = async (kind, name, target) => {
+    if (kind === "Secret" && name !== driver.workspaceNodeName(candidate)) {
+      return credentialObjects.get(`${target}:${name}`);
+    }
     if (kind === "Secret") {
       return enrolledNodeSecret(driver, candidate, namespace);
     }
@@ -2331,7 +2427,7 @@ test("Kubernetes dedicated Codex gateway mounts bridge runtime and prior plugin 
     "gateway",
     {},
     "info",
-    undefined,
+    driver.gatewayConfiguration(revision(), undefined, "oce-plugin-compute"),
     false,
     undefined,
     undefined,

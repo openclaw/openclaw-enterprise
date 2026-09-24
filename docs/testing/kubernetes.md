@@ -353,3 +353,19 @@ production OCC API mounts only a public trust bundle.
 
 - [Choose another test suite](README.md).
 - [Results, cleanup, and troubleshooting](README.md#results-cleanup-and-troubleshooting).
+
+## Dedicated Gateway placement
+
+Dedicated Gateway resources now live in the logical Namespace's managed Gateway
+runtime namespace. Fixture bootstrap must grant the worker scoped access there
+as well as in the Harness namespace before waiting for Namespace readiness.
+Runtime helper results expose `gatewayPlacement` separately from `placement`.
+Use the former for Gateway Pods, routes, private PVCs and port-forwards; use the
+latter for Harness execution, model credentials and workspace storage.
+
+Disposable runtime helpers accept `OCC_TEST_KUBERNETES_GATEWAY_NODE_SELECTOR` as
+a JSON selector and default to Linux nodes. The default tests namespace and
+credential separation; it does not prove production node-pool isolation. Configure
+separate reviewed node pools for that proof. Current tests must still pass with
+the actual supported Gateway/Codex images and authenticated node reconnect;
+fixture readiness is not a substitute for model-backed acceptance.

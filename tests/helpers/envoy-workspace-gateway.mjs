@@ -215,7 +215,11 @@ export async function createEnvoyWorkspaceGatewayPlan(context, { platformNamespa
         async assertNodeAuthentication() {
           const name = `${topology.gatewayServiceName}-node`;
           await helpers.waitFor("Compute-created native node route policy acceptance", async () => {
-            const policy = await helpers.resource("securitypolicy", name, topology.placement);
+            const policy = await helpers.resource(
+              "securitypolicy",
+              name,
+              topology.gatewayPlacement,
+            );
             return policy.status?.ancestors?.some((ancestor) =>
               ancestor.conditions?.some(
                 ({ type, status }) => type === "Accepted" && status === "True",
@@ -476,7 +480,7 @@ async function waitForEnvoyService(platformNamespace, { resources, waitFor }) {
 async function waitForComputeGatewayRoute(topology, { resource, waitFor }) {
   const expectedMembership = hash(`${topology.platformNamespace}/${gatewayName}`);
   await waitFor("Compute-created tenant namespace gateway membership label", async () => {
-    const namespace = await resource("namespace", topology.placement);
+    const namespace = await resource("namespace", topology.gatewayPlacement);
     return namespace.metadata?.labels?.["openclaw-enterprise.io/gateway"] === expectedMembership
       ? namespace
       : undefined;
@@ -484,7 +488,11 @@ async function waitForComputeGatewayRoute(topology, { resource, waitFor }) {
   return await waitFor(
     "Compute-created Agent HTTPRoute accepted by workspace Gateway",
     async () => {
-      const route = await resource("httproute", topology.gatewayServiceName, topology.placement);
+      const route = await resource(
+        "httproute",
+        topology.gatewayServiceName,
+        topology.gatewayPlacement,
+      );
       const parent = route.status?.parents?.find(
         (entry) =>
           entry.parentRef?.name === gatewayName &&

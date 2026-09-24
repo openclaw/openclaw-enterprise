@@ -22,10 +22,11 @@ docker pull "$RUNTIME_IMAGE"
 OCC_TEST_PRODUCTION_IMAGE="$CONTROLLER_IMAGE" \
 OCC_TEST_RUNTIME_IMAGE="$RUNTIME_IMAGE" \
   node --test tests/integration/production-image-startup.test.mjs \
-    tests/integration/runtime-image-startup.test.mjs
+    tests/integration/runtime-image-startup.test.mjs \
+    tests/integration/repository-runtime-volume.test.mjs
 ```
 
-Both image suites must run without skips. If the registry denies a pull, check
+All three image suites must run without skips. If the registry denies a pull, check
 the account's package access and token scope; successful `git clone` alone does not
 establish `read:packages` token scope. These checks verify the release images,
 not unbuilt changes in the working tree. Source CI continues to build the
@@ -37,9 +38,10 @@ Build the [runtime image](../../deploy/runtime/README.md), then run its startup 
 
 ```sh
 docker build -f deploy/runtime/Dockerfile \
-  --tag openclaw-enterprise-runtime:test deploy/runtime
+  --tag openclaw-enterprise-runtime:test .
 OCC_TEST_RUNTIME_IMAGE=openclaw-enterprise-runtime:test \
-  node --test tests/integration/runtime-image-startup.test.mjs
+  node --test tests/integration/runtime-image-startup.test.mjs \
+    tests/integration/repository-runtime-volume.test.mjs
 ```
 
 This checks gateway readiness and bundled Codex/Slack plugin loading from a
@@ -138,6 +140,32 @@ This check proves an embedded OpenClaw gateway reaches `/readyz` from a fresh
 runtime home and the bundled Codex plugin can be discovered without missing
 package dependencies. It does not prove Docker Compose orchestration,
 Kubernetes reconciliation, model credentials, or a model turn.
+
+## Repository runtime volume test environment
+
+[`repository-runtime-volume.test.mjs`](../../tests/integration/repository-runtime-volume.test.mjs)
+runs both production repository initializers and the client installed in the
+selected runtime image. It creates a root-owned mode-02775 tmpfs volume and mounts
+its private subPath into nonroot init and consumer containers, with networking
+disabled. Docker must support `volume-subpath` mounts.
+
+```sh
+OCC_TEST_RUNTIME_IMAGE=openclaw-enterprise-runtime:test \
+  node --test tests/integration/repository-runtime-volume.test.mjs
+```
+
+`OCC_DOCKER_BIN` optionally selects the Docker executable. An unset image selector
+skips this standalone invocation. The `images-packaging` CI lane requires
+`OCC_TEST_RUNTIME_IMAGE` and this exact case; a missing prerequisite, failure or
+skip fails the selected lane. Build the image from the candidate being qualified.
+The test resolves its selector to an immutable image ID and uses the installed
+bundle without mounting a detached client overlay.
+
+The case checks rejection of a different UID, repair of partial native Git
+configuration, repeat preparation and read-only consumer delivery. It removes
+its owned container and volume. This proves the exercised Docker mounts and
+installed client composition; it does not prove Kubernetes fsGroup behavior,
+NetworkPolicy enforcement, a model turn or live GitHub operations.
 
 ## Helm packaging test environment
 

@@ -238,7 +238,11 @@ async function save(state, values, dialog, targetError, secretBindingUpdate) {
   if (!dialog) {
     state.error.replaceChildren();
   }
-  for (const node of controlsRoot.querySelectorAll("button, input, select")) {
+  const controls = [...controlsRoot.querySelectorAll("button, input, select")].map((node) => ({
+    node,
+    disabled: node.disabled,
+  }));
+  for (const { node } of controls) {
     node.disabled = true;
   }
   let succeeded = false;
@@ -261,8 +265,8 @@ async function save(state, values, dialog, targetError, secretBindingUpdate) {
     if (succeeded || !dialog || state.outcomeUnknown) {
       state.rerender();
     } else {
-      for (const node of controlsRoot.querySelectorAll("button, input, select")) {
-        node.disabled = false;
+      for (const { node, disabled } of controls) {
+        node.disabled = disabled;
       }
     }
   }

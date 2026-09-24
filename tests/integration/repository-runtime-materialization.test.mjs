@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
   cp,
+  chmod,
   lstat,
   mkdir,
   mkdtemp,
   readFile,
   readdir,
+  rename,
   rm,
   symlink,
   writeFile,
@@ -20,7 +22,6 @@ import {
   repositoryMaterialDeployment,
   repositoryMaterialSpec,
 } from "../../apps/controller/src/drivers/compute/kubernetes/repository-material.ts";
-import { REPOSITORY_MATERIAL_INIT_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/repository-material-init.ts";
 
 const deadlineWallMs = Date.now() + 86400000;
 const client = {
@@ -70,9 +71,7 @@ before(async (t) => {
   const artifact = join(root, "client");
   await cp(join(build, ".build/repository-credentials/client"), artifact, { recursive: true });
   await rm(build, { recursive: true, force: true });
-  const nativeClient = pathToFileURL(
-    join(artifact, "dist/drivers/repo/github/credentials/client/native-git.js"),
-  ).href;
+  const nativeClient = pathToFileURL(artifact + "/").href;
   // Relocate only the installed module lookup. The initializer and emitted
   // preparer execute unchanged, with their real detached dependency closure.
   // This does not prove the runtime image installs the bundle at /opt/oce.
@@ -81,8 +80,8 @@ before(async (t) => {
     registerHooks({
       resolve(specifier, context, nextResolve) {
         return nextResolve(
-          specifier === "/opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/native-git.js"
-            ? ${JSON.stringify(nativeClient)} : specifier,
+          specifier.startsWith("/opt/oce/repository-credentials/")
+            ? ${JSON.stringify(nativeClient)} + specifier.slice("/opt/oce/repository-credentials/".length) : specifier,
           context,
         );
       },
@@ -96,7 +95,9 @@ async function projectionFixture(t, { count = 1 } = {}) {
   const sourceRoot = join(root, "projection");
   const targetRoot = join(root, "output", "private");
   await mkdir(sourceRoot);
-  await mkdir(dirname(targetRoot), { mode: 0o700 });
+  // Kubernetes fsGroup makes the emptyDir root group-writable and setgid.
+  await mkdir(dirname(targetRoot));
+  await chmod(dirname(targetRoot), 0o2775);
   const bindings = Array.from({ length: count }, (_, index) => {
     const sessionId = `session_material_${index}`;
     return {
@@ -131,8 +132,8 @@ async function projectionFixture(t, { count = 1 } = {}) {
     "runtime-fixture:local",
   );
   const argument = [
-    ...(deployment.initContainer.command ?? []),
-    ...(deployment.initContainer.args ?? []),
+    ...(deployment.initContainers[0].command ?? []),
+    ...(deployment.initContainers[0].args ?? []),
   ].find((value) => value.startsWith('{"sourceRoot"'));
   assert.ok(argument, "the production init container must carry its material descriptor");
   const descriptor = { ...JSON.parse(argument), sourceRoot, targetRoot };
@@ -157,7 +158,7 @@ async function projectionFixture(t, { count = 1 } = {}) {
         "--import",
         nativeClientImport,
         "-e",
-        REPOSITORY_MATERIAL_INIT_ENTRYPOINT,
+        deployment.initContainers[0].args[0],
         JSON.stringify(descriptor),
       ],
       {
@@ -166,7 +167,35 @@ async function projectionFixture(t, { count = 1 } = {}) {
         env: { PATH: process.env.PATH },
       },
     );
-  return { root, sourceRoot, targetRoot, generation, descriptor, bindings, run };
+  const runNativeAt = (directory) =>
+    spawnSync(
+      process.execPath,
+      ["--import", nativeClientImport, "-e", deployment.initContainers[1].args[0], directory],
+      { encoding: "utf8", timeout: 10000, env: { PATH: process.env.PATH } },
+    );
+  const runNative = async () => {
+    // Relocation models the second init's subPath view, not a live volume mount.
+    // repository-runtime-volume.test.mjs exercises the actual container mounts.
+    const mounted = join(root, "private-mount");
+    await rename(targetRoot, mounted);
+    try {
+      return runNativeAt(mounted);
+    } finally {
+      await rename(mounted, targetRoot);
+    }
+  };
+  return {
+    root,
+    sourceRoot,
+    targetRoot,
+    generation,
+    descriptor,
+    bindings,
+    deployment,
+    run,
+    runNative,
+    runNativeAt,
+  };
 }
 
 test("the actual repository init process turns projected Secrets into private runtime files", async (t) => {
@@ -174,8 +203,12 @@ test("the actual repository init process turns projected Secrets into private ru
   const result = fixture.run();
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "");
+  const native = await fixture.runNative();
+  assert.equal(native.status, 0, native.stderr);
   const retry = fixture.run();
   assert.equal(retry.status, 0, retry.stderr);
+  const nativeRetry = await fixture.runNative();
+  assert.equal(nativeRetry.status, 0, nativeRetry.stderr);
   assert.equal((await lstat(fixture.targetRoot)).mode & 0o777, 0o700);
   const gitconfig = join(fixture.targetRoot, "gitconfig");
   assert.equal((await lstat(gitconfig)).mode & 0o777, 0o600);
@@ -225,7 +258,7 @@ test("the actual repository init process turns projected Secrets into private ru
   }
 });
 
-test("repository init does not publish sessions when native Git configuration cannot be prepared", async (t) => {
+test("the second repository init fails when native Git configuration cannot be prepared", async (t) => {
   const fixture = await projectionFixture(t, { count: 2 });
   const binding = fixture.descriptor.manifest.bindings[1];
   // Both sessions remain individually valid, but one canonical host cannot be
@@ -246,12 +279,13 @@ test("repository init does not publish sessions when native Git configuration ca
     await rm(join(directory, name));
     await writeFile(join(directory, name), content, { mode: 0o444 });
   }
-  const result = fixture.run();
+  const material = fixture.run();
+  assert.equal(material.status, 0, material.stderr);
+  const result = await fixture.runNative();
   assert.equal(result.status, 1);
   assert.equal(result.stdout, "");
-  assert.equal(result.stderr, "Repository credential material initialization failed.\n");
-  await assert.rejects(lstat(fixture.targetRoot), { code: "ENOENT" });
-  assert.deepEqual(await readdir(dirname(fixture.targetRoot)), []);
+  assert.equal(result.stderr, "Repository native Git configuration initialization failed.\n");
+  await assert.rejects(lstat(join(fixture.targetRoot, "gitconfig")), { code: "ENOENT" });
 });
 
 test("repository init validates the complete projection before publishing any session", async (t) => {
@@ -337,4 +371,44 @@ test("repository init never follows an existing output symlink", async (t) => {
   assert.notEqual(result.status, 0);
   assert.deepEqual(await readdir(outside), ["sentinel"]);
   assert.equal(await readFile(join(outside, "sentinel"), "utf8"), "preserve");
+});
+
+test("native preparation retries partial output and retains directory custody checks", async (t) => {
+  const fixture = await projectionFixture(t);
+  await chmod(dirname(fixture.targetRoot), 0o770);
+  assert.equal(fixture.run().status, 0);
+  // Even a valid private child cannot make a writable ancestor safe for clients.
+  assert.equal(fixture.runNativeAt(fixture.targetRoot).status, 1);
+  const config = join(fixture.targetRoot, "gitconfig");
+  await writeFile(config, "partial output", { mode: 0o600 });
+  const prepared = await fixture.runNative();
+  assert.equal(prepared.status, 0, prepared.stderr);
+  const expected = await readFile(config, "utf8");
+  assert.match(expected, /git-helper\.js/);
+  assert.equal((await fixture.runNative()).status, 0);
+  assert.equal(await readFile(config, "utf8"), expected);
+
+  await chmod(config, 0o640);
+  assert.equal((await fixture.runNative()).status, 1);
+  assert.equal(await readFile(config, "utf8"), expected);
+  await rm(config);
+  const manifest = join(fixture.targetRoot, "manifest.json");
+  const original = await readFile(manifest, "utf8");
+  await symlink(manifest, config);
+  assert.equal((await fixture.runNative()).status, 1);
+  assert.equal((await lstat(config)).isSymbolicLink(), true);
+  assert.equal(await readFile(manifest, "utf8"), original);
+});
+
+test("native preparation refuses altered private client material", async (t) => {
+  const fixture = await projectionFixture(t);
+  assert.equal(fixture.run().status, 0);
+  const directory = join(
+    fixture.targetRoot,
+    "sessions",
+    basename(fixture.descriptor.manifest.bindings[0].directory),
+  );
+  await chmod(join(directory, "client.json"), 0o640);
+  assert.equal((await fixture.runNative()).status, 1);
+  await assert.rejects(lstat(join(fixture.targetRoot, "gitconfig")), { code: "ENOENT" });
 });

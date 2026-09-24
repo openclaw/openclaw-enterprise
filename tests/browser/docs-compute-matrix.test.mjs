@@ -35,7 +35,28 @@ async function waitForPreview(child) {
 
 test("docs preview filters the ComputeDriver matrix in a browser", async (t) => {
   const fixture = await mkdtemp(join(tmpdir(), "enterprise-docs-compute-matrix-browser-"));
-  t.after(() => rm(fixture, { recursive: true, force: true }));
+  let child;
+  let browser;
+  t.after(async () => {
+    try {
+      await browser?.close();
+    } finally {
+      try {
+        if (child && child.exitCode === null && child.signalCode === null) {
+          const exited = once(child, "exit");
+          const killTimer = setTimeout(() => child.kill("SIGKILL"), 5_000);
+          child.kill("SIGTERM");
+          try {
+            await exited;
+          } finally {
+            clearTimeout(killTimer);
+          }
+        }
+      } finally {
+        await rm(fixture, { recursive: true, force: true });
+      }
+    }
+  });
   await mkdir(join(fixture, "docs/assets"), { recursive: true });
   await copyFile(
     join(root, "docs/assets/lobster-mech-transparent.png"),
@@ -80,24 +101,16 @@ test("docs preview filters the ComputeDriver matrix in a browser", async (t) => 
   });
   assert.equal(build.status, 0, build.stderr || build.stdout);
 
-  const child = spawn(
-    process.execPath,
-    [join(root, "scripts/docs-site/serve.mjs"), "--port", "0"],
-    {
-      cwd: fixture,
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
-  t.after(async () => {
-    if (child.exitCode === null) {
-      const exited = once(child, "exit");
-      child.kill("SIGTERM");
-      await exited;
-    }
+  child = spawn(process.execPath, [join(root, "scripts/docs-site/serve.mjs"), "--port", "0"], {
+    cwd: fixture,
+    stdio: ["ignore", "pipe", "pipe"],
   });
   const origin = await waitForPreview(child);
-  const browser = await chromium.launch();
-  t.after(() => browser.close());
+  browser = await chromium.launch({
+    ...(process.env.OCC_TEST_BROWSER_EXECUTABLE
+      ? { executablePath: process.env.OCC_TEST_BROWSER_EXECUTABLE }
+      : {}),
+  });
   const page = await browser.newPage();
   await page.goto(origin);
   await assert.doesNotReject(

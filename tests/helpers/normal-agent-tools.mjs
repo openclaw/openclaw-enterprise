@@ -1,12 +1,4 @@
-export const sessionEvidenceScript = String.raw`
-  const { DatabaseSync } = require("node:sqlite");
-  const sessionKey = process.argv[1];
-  const marker = process.argv[2];
-  const toolName = process.argv[3];
-  const resultPattern = process.argv[4];
-  // Optional bounded summaries let installed scenarios inspect real calls without
-  // exporting their raw arguments, output, or credential-bearing environment.
-  const summary = process.argv[5] ? JSON.parse(process.argv[5]) : undefined;
+const repositoryCommandEvidence = String.raw`
   // This is the deliberately small grammar requested by this installed task,
   // not a general shell parser: one command, literal arguments and explicit cwd.
   // Shell operators, expansions, comments and multiline commands are not proof.
@@ -39,12 +31,24 @@ export const sessionEvidenceScript = String.raw`
     if (started) args.push(word);
     return args;
   }
+`;
+
+export const sessionEvidenceScript = String.raw`
+  const { DatabaseSync } = require("node:sqlite");
+  const sessionKey = process.argv[1];
+  const marker = process.argv[2];
+  const toolName = process.argv[3];
+  const resultPattern = process.argv[4];
+  // Optional bounded summaries let installed scenarios inspect real calls without
+  // exporting their raw arguments, output, or credential-bearing environment.
+  const summary = process.argv[5] ? JSON.parse(process.argv[5]) : undefined;
+  ${repositoryCommandEvidence}
   function operationsFor(block) {
-    if (block.name !== "exec") return [];
+    if (!["exec", "bash"].includes(block.name)) return [];
     const args = standaloneArguments(block.arguments?.command);
     if (!args || !["git", "gh"].includes(args[0])) return [];
     return (summary.commands ?? []).filter(expected =>
-      block.arguments.workdir === expected.workdir && args.length === expected.argv.length &&
+      (block.name === "bash" ? block.arguments.cwd : block.arguments.workdir) === expected.workdir && args.length === expected.argv.length &&
       args.every((argument, index) => argument === expected.argv[index])
     ).map(expected => expected.operation);
   }
@@ -221,4 +225,75 @@ export const sessionEvidenceScript = String.raw`
   } finally {
     db.close();
   }
+`;
+
+// Read only: command success comes from the owning Codex thread, whose mirrored
+// display transcript can omit exit status. Never start or replay a model turn.
+export const codexRepositoryEvidenceScript = String.raw`
+  const assert = require("node:assert/strict");
+  const marker = process.argv[1];
+  const expected = JSON.parse(process.argv[2]);
+  ${repositoryCommandEvidence}
+  const socket = new WebSocket(process.env.APP_SERVER_URL, {
+    headers: { Authorization: "Bearer " + process.env.APP_SERVER_TOKEN },
+  });
+  const pending = new Map();
+  let nextId = 0;
+  const deadline = setTimeout(() => {
+    process.stderr.write("Codex repository evidence timed out\n");
+    socket.close();
+    process.exitCode = 1;
+  }, 20000);
+  const request = (method, params) => new Promise((resolve, reject) => {
+    const id = ++nextId;
+    pending.set(id, { resolve, reject });
+    socket.send(JSON.stringify({ id, method, params }));
+  });
+  socket.addEventListener("message", ({ data }) => {
+    const message = JSON.parse(String(data));
+    const operation = pending.get(message.id);
+    if (!operation) return;
+    pending.delete(message.id);
+    message.error ? operation.reject(new Error("Codex evidence request failed")) : operation.resolve(message.result);
+  });
+  socket.addEventListener("error", () => { process.exitCode = 1; });
+  socket.addEventListener("open", async () => {
+    try {
+      await request("initialize", { clientInfo: { name: "repository-acceptance-observer", version: "1.0.0" } });
+      socket.send(JSON.stringify({ method: "initialized" }));
+      const listed = await request("thread/list", { limit: 20, sourceKinds: ["appServer"], modelProviders: [] });
+      assert.equal(listed.nextCursor, null, "fresh Agent must have a bounded thread inventory");
+      const matches = [];
+      for (const candidate of listed.data) {
+        const { thread } = await request("thread/read", { threadId: candidate.id, includeTurns: true });
+        for (const turn of thread.turns) {
+          if (!turn.items.some(item => item.type === "userMessage" && item.content.some(block => block.type === "text" && block.text.includes(marker)))) continue;
+          const commands = turn.items.filter(item => item.type === "commandExecution").map(item => {
+            // Codex reports the actual shell argv as a quoted command. Accept
+            // only its single non-login shell wrapper around one literal command.
+            let args = standaloneArguments(item.command);
+            if (args?.length === 3 && ["/bin/bash", "/bin/sh", "/usr/bin/bash"].includes(args[0]) && args[1] === "-c") args = standaloneArguments(args[2]);
+            const lines = typeof item.aggregatedOutput === "string" ? item.aggregatedOutput.split(/\r?\n/).map(line => line.trim()) : [];
+            return {
+              id: item.id,
+              operations: expected.filter(command => item.cwd === command.workdir && args?.length === command.argv.length && args.every((arg, index) => arg === command.argv[index])).map(command => command.operation),
+              status: item.status,
+              exitCode: item.exitCode,
+              commitShas: lines.filter(line => /^[a-f0-9]{40}$/.test(line)),
+              pullUrls: lines.filter(line => /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/[1-9][0-9]*$/.test(line)),
+            };
+          });
+          matches.push({ threadId: thread.id, turnId: turn.id, status: turn.status, commands });
+        }
+      }
+      assert.equal(matches.length, 1, "the repository task must identify one native Codex turn");
+      process.stdout.write(JSON.stringify(matches[0]));
+    } catch {
+      process.stderr.write("Codex repository evidence unavailable\n");
+      process.exitCode = 1;
+    } finally {
+      clearTimeout(deadline);
+      socket.close();
+    }
+  });
 `;

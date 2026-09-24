@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-09-17
-last_updated_session: codex/01a0acc2-a404-77e3-b1a0-9fa4ffbbdb04
+updated: 2026-09-23
+last_updated_session: codex/01a0cf72-6985-7712-ba92-d8cc32470f24
 ---
 
 # Service Account Driver Credential Delivery Flow
@@ -98,7 +98,7 @@ query observes active pointers and pending work together during worker cutover.
 `OpenClawController.createServiceAccountCredential` authorizes account `update`
 before `ChatGPTServiceAccountDriver.createCredential` issues a Codex-scoped
 token. `KubernetesComputeDriver.storeServiceAccountCredential` stores it with
-the workspace ID in one account-owned Secret. The private credential ID, internal
+the workspace ID in one account-owned control-plane Secret. The private credential ID, internal
 credential reference, and audit changes commit together;
 confirmed failures compensate created provider and Kubernetes resources.
 
@@ -134,10 +134,11 @@ and issuance metadata leave the repository; upstream account IDs, admin keys,
 and credential values stay private.
 
 `KubernetesComputeDriver.prepareRevision` uses its internal `prepareHarnessAuth`
-rendering step and explicit login mode to project the account Secret directly
-into dedicated Codex. Embedded execution is rejected for managed access tokens.
-The gateway receives no model credential, and the worker receives no direct
-Secret API permission.
+rendering step and explicit login mode, then delivers the selected account fields
+into a revision-owned data-plane Secret for dedicated Codex. Embedded execution
+is rejected for managed access tokens. The Gateway receives no model credential.
+The trusted worker reads the CP source and manages the DP projection; workload
+ServiceAccounts receive no Secret API permission.
 
 ### 6. Authenticate Codex under the exact workspace
 
@@ -160,7 +161,7 @@ Refresh, rotation, and automated reconciliation remain deferred.
   `OCC_TEST_CHATGPT_WORKSPACE_ID`, disposable Kubernetes/PostgreSQL, and real
   digest-pinned OpenClaw/Codex images; do not use `OPENAI_API_KEY`.
 - Verify the provider account, private credential ID, exact-account Secret,
-  direct Codex-only projection, and genuine model response. For ownership,
+  revision-scoped Codex-only projection, and genuine model response. For ownership,
   compensation, and ambiguous commits, see the [service-account guide](../reference/service-accounts.md)
   and [security model](../reference/security.md).
 
@@ -179,6 +180,8 @@ Refresh, rotation, and automated reconciliation remain deferred.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 12:22: Move canonical credential sources to CP and describe revision-scoped Harness delivery in the accompanying change. (codex/01a0cf72-6985-7712-ba92-d8cc32470f24 - 623d56dec26a8ef0f72b562254687cabecdbbf82)
 
 - 2026-09-17 00:31: Align credential selection and delivery with Agent harnessAuth and the shared Kubernetes rendering path. (01a0acc2-a404-77e3-b1a0-9fa4ffbbdb04 - d2bcbd1c53acb2582a774b5158f254d726abd33f)
 

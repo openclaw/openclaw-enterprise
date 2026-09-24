@@ -3,7 +3,7 @@ title: OpenClaw as the Open Enterprise Agent Platform
 authors:
   - Kevin Lin
 created: 2026-07-08
-last_updated: 2026-09-11
+last_updated: 2026-09-23
 ---
 
 # OpenClaw as the Open Enterprise Agent Platform
@@ -11,18 +11,18 @@ last_updated: 2026-09-11
 ## Implementation status
 
 This page and its design chapters, including their diagrams, define the normative
-**target architecture**, not a record of implemented capabilities. At commit
-`ea6a7d56`, the Kubernetes dedicated gateway and Harness still run in the same
-tenant namespace and share an Agent-owned workspace PVC.
-[Control-plane gateway placement (#75)](https://github.com/openclaw/openclaw-enterprise/issues/75)
-and [removal of the common PVC requirement (#76)](https://github.com/openclaw/openclaw-enterprise/issues/76)
-remain unimplemented. These statements reflect source and test assertions, not
-a live deployment verification.
+**target architecture**, not a record of every implemented capability. Kubernetes
+Compute now separates dedicated Gateway and Harness storage and places them in
+distinct runtime namespaces. The worker maintains the Gateway in a managed
+control-plane namespace using an explicit trusted-node selector; the Harness
+retains its data-plane placement. Embedded execution remains in the data plane.
+These are implementation properties, not proof of a live deployment, disjoint
+node pools, or runtime replacement and reconnect acceptance.
 
 See [current architecture](ARCHITECTURE.md) and
 [Kubernetes execution modes](reference/drivers/kubernetes-compute.md#execution-modes)
 for implemented behavior, and verify current code and tests before relying on a
-target-design capability. Update this note as these gaps close.
+target-design capability.
 
 ## Native admin pilot exception
 

@@ -11,6 +11,7 @@ import {
 } from "./preset-variables.mjs";
 
 export type PresetVariable =
+  | { readonly type: "password"; readonly description?: string }
   | { readonly type: "string"; readonly description?: string; readonly default?: string }
   | { readonly type: "number"; readonly description?: string; readonly default?: number }
   | { readonly type: "boolean"; readonly description?: string; readonly default?: boolean };
@@ -106,6 +107,12 @@ function validateCredentials(template: PresetTemplate, namespaceId: string) {
     isRecord(auth) &&
     isRecord(value) &&
     ((hasFields(auth, ["method"]) && scalar(auth.method, value.method, Type.Literal("runtime"))) ||
+      (hasFields(auth, ["method", "secret"]) &&
+        scalar(
+          auth.method,
+          value.method,
+          Type.Union([Type.Literal("api_key"), Type.Literal("codex_pat")]),
+        )) ||
       (hasFields(auth, ["method", "source"]) &&
         scalar(
           auth.method,
@@ -126,7 +133,21 @@ function validateCredentials(template: PresetTemplate, namespaceId: string) {
 
 /** Store a safe template; ordinary create/deploy admission owns concrete launch settings. */
 export function normalizePresetTemplate(input: unknown, namespaceId: string): PresetTemplate {
-  const template = validatePresetTemplate(input);
+  const template = structuredClone(validatePresetTemplate(input));
+  // Preset writes already carry an authorized Namespace; relative SecretRefs use it.
+  const bindings = [
+    template.agent?.harnessAuth,
+    ...Object.values(template.configuration?.secretBindings ?? {}),
+  ];
+  for (const binding of bindings) {
+    if (
+      isRecord(binding) &&
+      isRecord(binding.source) &&
+      !Object.hasOwn(binding.source, "namespaceId")
+    ) {
+      binding.source.namespaceId = namespaceId;
+    }
+  }
   validateCredentials(template, namespaceId);
   return immutableCopy(template);
 }

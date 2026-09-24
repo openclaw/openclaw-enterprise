@@ -73,6 +73,7 @@ import {
   NamespaceNotEmptyError,
   NamespaceNotReadyError,
   NotImplementedError,
+  RepositoryOptionsUnavailableError,
   ResourceConflictError,
   ScopeViolationError,
   type DeploymentStatusResult,
@@ -418,7 +419,9 @@ function operationTarget(
     return { kind: "secret", id: secretId, namespaceId };
   }
   if (
-    (operation.operationId === "createAgent" || operation.operationId === "provisionAgent") &&
+    (operation.operationId === "createAgent" ||
+      operation.operationId === "provisionAgent" ||
+      operation.operationId === "listRepositoryOptions") &&
     namespaceId
   ) {
     return { kind: "agent", id: namespaceId, namespaceId };
@@ -2775,6 +2778,30 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         };
       });
       reply.status(202).send({ data: result, meta: { requestId: request.id } });
+      return;
+    }
+
+    if (operation.operationId === "listRepositoryOptions") {
+      const options = await controller!
+        .listRepositoryOptions(context.actorId, namespaceId)
+        .catch((error: unknown) => {
+          if (error instanceof RepositoryOptionsUnavailableError) {
+            throw failure(
+              503,
+              "REPOSITORY_OPTIONS_UNAVAILABLE",
+              "Repository options are unavailable.",
+            );
+          }
+          throw error;
+        });
+      reply.send({
+        data: options.map(({ repositoryRef, displayName, allowedProfiles }) => ({
+          repositoryRef,
+          displayName,
+          allowedProfiles,
+        })),
+        meta: { requestId: request.id },
+      });
       return;
     }
 

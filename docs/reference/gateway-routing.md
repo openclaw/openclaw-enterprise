@@ -24,7 +24,8 @@ For caller permissions and file operations, see the
 
 The shared Gateway and certificate resources are in the Helm release namespace.
 Envoy's proxy Service and Pods are in `envoyNamespace`. Each Agent's HTTPRoute
-and gateway Service are in its tenant Kubernetes namespace. The installer needs
+and gateway Service are in its Gateway runtime namespace for dedicated execution,
+or its tenant data-plane namespace for embedded execution. The installer needs
 permission to create the shared resources, including the NetworkPolicy in the
 Envoy namespace. The worker needs tenant HTTPRoute and SecurityPolicy permissions; the API does
 not need to write routes or execute commands in gateway Pods.
@@ -108,9 +109,10 @@ The Gateway-level SecurityPolicy references the same Secret. OCC reads the key
 for each operation and sends it as `x-api-key`. Envoy validates and strips that
 header before forwarding.
 
-With routing enabled, the tenant-worker role gains Secret get/create/update/delete
-for Compute-owned node enrollment. Operators bind this role only in approved
-tenant namespaces; the chart creates no cluster-wide binding for it. The worker
+The tenant-worker role grants Secret get/create/update/delete for admitted Gateway
+credential delivery and Compute-owned node enrollment. Operators bind this role
+only in approved data-plane and Gateway namespaces; the chart creates no
+cluster-wide binding for it. The worker
 is part of the trusted control plane. Harnesses receive a node-only setup code
 and public CA bundle, never this administrative service key.
 
@@ -127,8 +129,8 @@ This password is separate from the Envoy service key. See the complete
 
 This key grants native administrative access across the Installation's routed
 gateways. OCC separately checks the caller's exact Agent permission. Keep the
-key separate from Better Auth, provider, and native Agent credentials; workers
-and Agent workloads do not receive it.
+key separate from Better Auth, provider, and native Agent credentials. The trusted
+OCC API and worker receive it; Agent Gateway and Harness Pods do not.
 
 ## TLS and certificate lifecycle
 

@@ -9,6 +9,9 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
+import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
+import { createControllerWorker } from "../../apps/controller/src/worker.ts";
+import { setTimeout as delay } from "node:timers/promises";
 import { composeProduction } from "../../apps/controller/src/composition/production.ts";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
@@ -105,8 +108,9 @@ function parseLogEvents(stderr) {
     .map((line) => JSON.parse(line));
 }
 
-async function productionDrivers() {
+async function productionDrivers({ includeDefaults = false, configurationRoot } = {}) {
   const configuration = createInstallationDriverConfiguration();
+  configuration.presets = { includeDefaults };
   configuration.drivers.compute.id = "compute-production-wireup";
   configuration.drivers.iam.id = "native-iam";
   const runtime = await loadInstallationConfiguration({
@@ -121,10 +125,11 @@ async function productionDrivers() {
   const { installation } = runtime;
   return {
     installation,
+    defaultPresets: runtime.defaultPresets,
     computeDriver: createPassiveComputeDriver(),
-    configurationDriver: createTestConfigurationDriver({
-      id: installation.drivers.configuration.id,
-    }),
+    configurationDriver: configurationRoot
+      ? new FilesystemConfigurationDriver(configurationRoot)
+      : createTestConfigurationDriver({ id: installation.drivers.configuration.id }),
     secretDriver: createTestSecretDriver({
       id: installation.drivers.secret.id,
     }),
@@ -397,7 +402,10 @@ test(
           domain: "agents.example.test",
           sharedCookieDomain: "example.test",
         },
-        drivers: await productionDrivers(),
+        drivers: await productionDrivers({
+          includeDefaults: true,
+          configurationRoot: join(passwordDirectory, "configurations"),
+        }),
         logger: apiLog.logger,
       });
       assert.deepEqual(
@@ -487,6 +495,68 @@ test(
         };
       }
 
+      const presetPath = `/namespaces/${defaultNamespace[0].id}/presets`;
+      const defaults = await request("GET", presetPath);
+      assert.equal(defaults.status, 200);
+      assert.deepEqual(
+        defaults.data.map((preset) => preset.name),
+        ["standard-codex"],
+      );
+      const copied = defaults.data[0];
+      const worker = createControllerWorker({
+        pool: new pg.Pool({ connectionString: databaseUrl }),
+        mode: "production",
+        drivers: await productionDrivers(),
+        pollIntervalMs: 20,
+        emit: () => {},
+      });
+      try {
+        await worker.start();
+        const deadline = Date.now() + 10000;
+        while (Date.now() < deadline) {
+          const current = await request("GET", `/namespaces/${defaultNamespace[0].id}`);
+          if (current.data.status === "ready") {
+            break;
+          }
+          await delay(20);
+        }
+        assert.equal(
+          (await request("GET", `/namespaces/${defaultNamespace[0].id}`)).data.status,
+          "ready",
+        );
+      } finally {
+        await worker.stop();
+      }
+      const customized = await request("PATCH", `${presetPath}/${copied.id}`, {
+        template: { agent: { name: "Kept across restart" } },
+      });
+      assert.equal(customized.status, 200);
+      await app.close();
+      app = await composeProduction({
+        mode: "production",
+        host: "127.0.0.1",
+        databaseUrl,
+        authSecret,
+        authBaseURL,
+        drivers: await productionDrivers({
+          includeDefaults: true,
+          configurationRoot: join(passwordDirectory, "configurations"),
+        }),
+      });
+      endpoint = await app.listen({ port: 0, host: "127.0.0.1" });
+      const afterRestart = await request("GET", presetPath);
+      assert.deepEqual(afterRestart.data, [customized.data]);
+      const newNamespace = await request("POST", "/namespaces", {
+        name: "Preset startup namespace",
+      });
+      assert.equal(newNamespace.status, 201);
+      const newPresets = await request("GET", `/namespaces/${newNamespace.data.id}/presets`);
+      assert.deepEqual(
+        newPresets.data.map((preset) => preset.name),
+        ["standard-codex"],
+      );
+      assert.notEqual(newPresets.data[0].id, copied.id);
+
       const defaultConfiguration = await request(
         "POST",
         `/namespaces/${defaultNamespace[0].id}/configurations`,
@@ -529,7 +599,10 @@ test(
         },
       );
       assert.match(repeatAfterUserState.stdout, /installation\.already-bootstrapped/);
-      assert.deepEqual(await defaultNamespaceRows(pool), defaultNamespace);
+      assert.deepEqual(
+        await defaultNamespaceRows(pool),
+        defaultNamespace.map((namespace) => ({ ...namespace, status: "ready" })),
+      );
       assert.deepEqual(
         await request("GET", `/namespaces/${defaultNamespace[0].id}`),
         persistedDefaultNamespace,

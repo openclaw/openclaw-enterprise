@@ -53,9 +53,9 @@ test(
 
     const [gatewayEnvironment, harnessEnvironment, gatewayIdentity, harnessIdentity] =
       await Promise.all([
-        inspectWorkloadEnvironment(topology.placement, topology.gatewayPod.metadata.name),
+        inspectWorkloadEnvironment(topology.gatewayPlacement, topology.gatewayPod.metadata.name),
         inspectWorkloadEnvironment(topology.placement, topology.harnessPod.metadata.name),
-        inspectProjectedIdentity(topology.placement, topology.gatewayPod.metadata.name),
+        inspectProjectedIdentity(topology.gatewayPlacement, topology.gatewayPod.metadata.name),
         inspectProjectedIdentity(topology.placement, topology.harnessPod.metadata.name),
       ]);
     assert.deepEqual(gatewayEnvironment, {
@@ -148,8 +148,8 @@ test(
     const privateClaim = await assertGatewayPrivateResources(topology);
 
     const [environment, identity] = await Promise.all([
-      inspectWorkloadEnvironment(topology.placement, topology.gatewayPod.metadata.name),
-      inspectProjectedIdentity(topology.placement, topology.gatewayPod.metadata.name),
+      inspectWorkloadEnvironment(topology.gatewayPlacement, topology.gatewayPod.metadata.name),
+      inspectProjectedIdentity(topology.gatewayPlacement, topology.gatewayPod.metadata.name),
     ]);
     assert.deepEqual(environment, {
       OPENAI_API_KEY: true,
@@ -205,8 +205,8 @@ test(
     await assertGatewayPrivateResources(topology);
 
     const [environment, identity] = await Promise.all([
-      inspectWorkloadEnvironment(topology.placement, topology.gatewayPod.metadata.name),
-      inspectProjectedIdentity(topology.placement, topology.gatewayPod.metadata.name),
+      inspectWorkloadEnvironment(topology.gatewayPlacement, topology.gatewayPod.metadata.name),
+      inspectProjectedIdentity(topology.gatewayPlacement, topology.gatewayPod.metadata.name),
     ]);
     assert.deepEqual(environment, {
       OPENAI_API_KEY: true,

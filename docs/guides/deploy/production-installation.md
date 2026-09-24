@@ -53,14 +53,14 @@ Repository maintainers can use the separately approved
 [private container publication workflow](../../../.github/containers.md).
 Build these images for a registry your cluster can access:
 
-| Image      | Source                                                                                                    | Used by                                          |
-| ---------- | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
-| Controller | Root [`Dockerfile`](../../../Dockerfile), target `runtime`                                                | API, worker, migration, and bootstrap            |
-| Runtime    | [`deploy/runtime/Dockerfile`](../../../deploy/runtime/Dockerfile), installing OpenClaw and Codex from npm | Gateways and Agents (the same image serves both) |
+| Image      | Source                                                                                                         | Used by                                          |
+| ---------- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| Controller | Root [`Dockerfile`](../../../Dockerfile), target `runtime`                                                     | API, worker, migration, and bootstrap            |
+| Runtime    | [`deploy/runtime/Dockerfile`](../../../deploy/runtime/Dockerfile), assembling pinned OpenClaw source and Codex | Gateways and Agents (the same image serves both) |
 
 With Docker Buildx and registry push access, replace the example registry and
-repository and select your Kubernetes nodes’ platform. The base image below matches the [runtime recipe](../../../deploy/runtime/README.md),
-which also documents package-version overrides.
+repository and select your Kubernetes nodes’ platform. The base image below
+matches the [runtime recipe](../../../deploy/runtime/README.md).
 
 Authenticate the builder before running the build block. For a standard registry,
 run `docker login <registry-host>` using your approved credentials; for private
@@ -186,6 +186,8 @@ Edit the protected YAML copies before provisioning anything:
   blocks user namespaces, install a reviewed compatibility profile on every
   eligible node and set `runtime.codexSeccompProfile` to its relative kubelet
   profile path. See the [Kubernetes runtime requirements](../../reference/drivers/kubernetes-compute.md#requirements).
+  Set `presets.includeDefaults: false` to disable the example's
+  [bundled Presets](../../reference/presets.md#installation-defaults).
 - `$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml`: set the bootstrap PVC name,
   namespace, size, and protected `storageClassName` for the cluster.
 

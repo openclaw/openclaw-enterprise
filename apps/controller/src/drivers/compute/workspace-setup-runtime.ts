@@ -1,3 +1,4 @@
+import { WORKSPACE_DEFAULTS_ID, WORKSPACE_DEFAULTS_VERSION } from "@openclaw-enterprise/contracts";
 import { asRecord } from "@openclaw-enterprise/utils";
 import type { OpenClawConfigurationDocument, WorkspaceSetup } from "@openclaw-enterprise/contracts";
 
@@ -123,12 +124,11 @@ function main() {
       }
       packageRoot = path.dirname(packageRoot);
     }
-    // The saved preview must match the installed templates, independently of the
-    // package release. Native setup below still must succeed before completion.
-    if (manifest === undefined) fail();
+    if (manifest?.version !== "${WORKSPACE_DEFAULTS_VERSION}") fail();
     const templates = names.map((name) => [name, renderTemplate(fs.readFileSync(
       path.join(packageRoot, "docs", "reference", "templates", name), "utf8"))]);
     const defaultsId = createHash("sha256").update(JSON.stringify(templates)).digest("hex");
+    if (defaultsId !== "${WORKSPACE_DEFAULTS_ID}") fail();
     if (setup.defaultsId !== undefined && setup.defaultsId !== defaultsId) fail();
     const stock = Object.fromEntries(templates);
     // Validate every native file before setup can create defaults or modify lifecycle state.

@@ -229,10 +229,6 @@ async function materialize(descriptor) {
       for (const [name, file] of Object.entries(files)) writePrivate(path.join(directory, name), file.contents);
     }
     writePrivate(path.join(staging, "manifest.json"), JSON.stringify(manifest) + "\n");
-    const { prepareNativeGitConfiguration } = await import(
-      "/opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/native-git.js"
-    );
-    await prepareNativeGitConfiguration(staging, "/run/oce/repository-credentials");
     requireValid(manifest.bindings.every((binding) => binding.deadlineWallMs > Date.now()));
     requireDirectoriesWithoutSymlinks(parent);
     const parentAfter = metadata(parent);
@@ -253,6 +249,36 @@ Promise.resolve().then(async () => {
   await materialize(JSON.parse(process.argv[1]));
 }).catch(() => {
   process.stderr.write("Repository credential material initialization failed.\n");
+  process.exitCode = 1;
+});
+`;
+
+/** Runs after the private subPath exists, without the fsGroup-writable volume root. */
+export const REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT = String.raw`
+"use strict";
+const fs = require("node:fs/promises");
+const path = require("node:path");
+Promise.resolve().then(async () => {
+  process.umask(0o077);
+  const root = process.argv[1];
+  const { readPrivateFile } = await import(
+    "/opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/private-files.js"
+  );
+  const { prepareNativeGitConfiguration } = await import(
+    "/opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/native-git.js"
+  );
+  const config = path.join(root, "gitconfig");
+  // An interrupted init may have left a partial file. Only this init can write
+  // the private mount; validate custody before removing its previous output.
+  try {
+    await readPrivateFile(config, 256 * 1024);
+    await fs.unlink(config);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  await prepareNativeGitConfiguration(root, "/run/oce/repository-credentials");
+}).catch(() => {
+  process.stderr.write("Repository native Git configuration initialization failed.\n");
   process.exitCode = 1;
 });
 `;

@@ -1,13 +1,8 @@
-# Disposable systemd host for the SSH Compute Driver real-host proof.
-# Uses the runtime image's Node.js base so the host runs the same Node 24 on
-# amd64 and arm64, with systemd as PID 1, sshd, an unprivileged openclaw
-# account, and the pinned OpenClaw/Codex packages from deploy/runtime/Dockerfile.
+# Disposable SSH host using the same assembled runtime as Docker and Kubernetes.
+ARG RUNTIME_IMAGE=localhost/openclaw-runtime:local
+FROM ${RUNTIME_IMAGE} AS runtime
 FROM docker.io/library/node:24-bookworm
 
-ARG OPENCLAW_VERSION=2026.9.1
-ARG OPENCLAW_CODEX_PLUGIN_VERSION=2026.9.1
-ARG OPENCLAW_SLACK_PLUGIN_VERSION=2026.9.1
-ARG OPENAI_CODEX_VERSION=0.156.0
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update \
@@ -16,19 +11,10 @@ RUN apt-get update \
   && useradd --system --create-home --home-dir /var/lib/openclaw --shell /usr/sbin/nologin openclaw
 
 WORKDIR /opt/openclaw
-RUN npm init -y >/dev/null \
-  && npm install --omit=dev --no-audit --no-fund \
-    "openclaw@${OPENCLAW_VERSION}" \
-    "@openclaw/codex@${OPENCLAW_CODEX_PLUGIN_VERSION}" \
-    "@openclaw/slack@${OPENCLAW_SLACK_PLUGIN_VERSION}" \
-    "@openai/codex@${OPENAI_CODEX_VERSION}" \
-  && mkdir -p node_modules/openclaw/dist/extensions \
-  && cp -R node_modules/@openclaw/codex node_modules/openclaw/dist/extensions/codex \
-  && cp -R node_modules/@openclaw/slack node_modules/openclaw/dist/extensions/slack \
-  && ln -s node_modules/openclaw current \
+COPY --from=runtime /app/node_modules ./node_modules
+RUN ln -s node_modules/openclaw current \
   && chmod -R a+rX /opt/openclaw \
-  && node /opt/openclaw/current/dist/index.js --version \
-  && npm cache clean --force
+  && node /opt/openclaw/current/dist/index.js --version
 
 RUN mkdir -p /run/sshd /root/.ssh \
   && chmod 700 /root/.ssh \

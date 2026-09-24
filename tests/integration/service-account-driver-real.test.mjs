@@ -1,3 +1,4 @@
+import { kubernetesGatewayNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -178,6 +179,8 @@ test(
     let externalAccountId;
     let createdServiceAccountId;
     let tenantNamespace;
+    let gatewayRuntimeNamespace;
+    let gatewayPlacement;
     let observerPool;
     let worker;
     let productionApp;
@@ -215,6 +218,15 @@ test(
       }
       if (observerPool !== undefined) {
         await cleanup(() => observerPool.end());
+      }
+      if (gatewayRuntimeNamespace !== undefined) {
+        await kubectl(
+          "delete",
+          "namespace",
+          gatewayRuntimeNamespace,
+          "--ignore-not-found=true",
+          "--wait=true",
+        );
       }
       if (tenantNamespace !== undefined) {
         await cleanup(() =>
@@ -297,7 +309,7 @@ test(
       "--resource=secrets",
     );
 
-    // Separate real Kubernetes identities prove API Secret access never leaks to the worker.
+    // Separate Kubernetes identities scope canonical storage and worker runtime delivery.
     const [api, workerIdentity] = await Promise.all(
       ["api", "worker"].map((role) =>
         createControllerIdentity({
@@ -428,6 +440,8 @@ test(
     assertControllerStatus(createdNamespace, 201);
     const namespaceId = createdNamespace.data.id;
     tenantNamespace = kubernetesNamespaceName(namespaceId);
+    gatewayRuntimeNamespace = kubernetesGatewayNamespaceName(createdNamespace.data.id);
+    gatewayPlacement = gatewayRuntimeNamespace;
     await waitFor(`the worker to create ${tenantNamespace}`, async () => {
       try {
         return await kubernetesResource("namespace", tenantNamespace);
@@ -458,9 +472,45 @@ test(
       `--clusterrole=oce-sa-driver-secrets-${suffix}`,
       `--serviceaccount=${platformNamespace}:${api.account}`,
     );
+    await waitFor(`Gateway runtime namespace ${gatewayRuntimeNamespace}`, async () => {
+      try {
+        return await kubernetesResource("namespace", gatewayRuntimeNamespace);
+      } catch (error) {
+        if (/NotFound|not found/i.test(error.stderr ?? error.message)) {
+          return undefined;
+        }
+        throw error;
+      }
+    });
+    for (const role of [`oce-sa-driver-tenant-${suffix}`, `oce-sa-driver-secrets-${suffix}`]) {
+      await kubectl(
+        "create",
+        "rolebinding",
+        `${role}-api`,
+        "--namespace",
+        gatewayRuntimeNamespace,
+        `--clusterrole=${role}`,
+        `--serviceaccount=${platformNamespace}:${api.account}`,
+      );
+    }
+    for (const [role, target] of [
+      [`oce-sa-driver-tenant-${suffix}`, gatewayRuntimeNamespace],
+      [`oce-sa-driver-secrets-${suffix}`, gatewayRuntimeNamespace],
+      [`oce-sa-driver-secrets-${suffix}`, tenantNamespace],
+    ]) {
+      await kubectl(
+        "create",
+        "rolebinding",
+        `${role}-worker`,
+        "--namespace",
+        target,
+        `--clusterrole=${role}`,
+        `--serviceaccount=${platformNamespace}:${workerIdentity.account}`,
+      );
+    }
     for (const [identity, expected] of [
       [api, "yes"],
-      [workerIdentity, "no"],
+      [workerIdentity, "yes"],
     ]) {
       for (const verb of ["get", "create"]) {
         const access = await kubectl(
@@ -531,7 +581,11 @@ test(
       false,
       "provider credential identity must remain private to the Driver",
     );
-    const accountSecret = await kubernetesResource("secret", secretRef.name, tenantNamespace);
+    const accountSecret = await kubernetesResource(
+      "secret",
+      secretRef.name,
+      gatewayRuntimeNamespace,
+    );
     assert.equal(accountSecret.metadata.annotations?.["openclaw.dev/namespace-id"], namespaceId);
     assert.equal(
       accountSecret.metadata.annotations?.["openclaw.dev/service-account-id"],
@@ -623,10 +677,15 @@ test(
       return observation.data.activeRevisionId === revision.data.id ? observation.data : undefined;
     });
     const pods = await waitFor("separate real ready OpenClaw and Codex Pods", async () => {
-      const response = JSON.parse(
-        await kubectl("get", "pods", "--namespace", tenantNamespace, "-o", "json"),
-      );
-      const ready = response.items.filter((pod) =>
+      const items = (
+        await Promise.all(
+          [tenantNamespace, gatewayPlacement].map(
+            async (target) =>
+              JSON.parse(await kubectl("get", "pods", "--namespace", target, "-o", "json")).items,
+          ),
+        )
+      ).flat();
+      const ready = items.filter((pod) =>
         pod.status.conditions?.some(({ type, status }) => type === "Ready" && status === "True"),
       );
       return ready.length === 2 ? ready : undefined;
@@ -647,13 +706,19 @@ test(
     );
     assert.deepEqual(
       codexEnvironment.find(({ name }) => name === "CODEX_ACCESS_TOKEN")?.valueFrom.secretKeyRef,
-      { name: secretRef.name, key: secretRef.key },
-      "Codex must directly project the associated account's one exact token Secret",
+      {
+        name: `harness-secrets-${hash(agent.data.id)}-${hash(revision.data.id)}`,
+        key: "CODEX_ACCESS_TOKEN",
+      },
+      "Codex receives only its revision-owned runtime projection",
     );
     assert.deepEqual(
       codexEnvironment.find(({ name }) => name === "CODEX_CHATGPT_WORKSPACE_ID")?.valueFrom
         .secretKeyRef,
-      { name: secretRef.name, key: "workspace-id" },
+      {
+        name: `harness-secrets-${hash(agent.data.id)}-${hash(revision.data.id)}`,
+        key: "CODEX_CHATGPT_WORKSPACE_ID",
+      },
     );
     for (const name of ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN", "CODEX_CHATGPT_WORKSPACE_ID"]) {
       assert.equal(
@@ -672,7 +737,7 @@ test(
     );
     assert.equal(JSON.stringify(events).includes(accessToken), false);
 
-    forwarding = await startPortForward(tenantNamespace, `gateway-${hash(agent.data.id)}`);
+    forwarding = await startPortForward(gatewayPlacement, `gateway-${hash(agent.data.id)}`);
     const nonce = `OCC-CHATGPT-SERVICE-ACCOUNT-${randomUUID()}`;
     await assertGatewayModelTurn({
       gatewayUrl: forwarding.url,

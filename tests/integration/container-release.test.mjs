@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -461,5 +461,95 @@ test("metadata GET transport retries are bounded, diagnostic and do not retry de
     });
     await assert.rejects(github(path), new RegExp(`\\(${status}\\)`));
     assert.equal(calls, 1);
+  }
+});
+
+test("separate platform exports assemble into a digest-bound archive and reject corrupt inputs", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "container-platform-assembly-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  async function prepare(name, fault) {
+    const output = join(directory, name);
+    const env = { ...process.env, GITHUB_OUTPUT: join(output, "outputs") };
+    const expected = [];
+    for (const arch of ["amd64", "arm64"]) {
+      const layout = join(output, arch);
+      await mkdir(join(layout, "blobs/sha256"), { recursive: true });
+      async function blob(value, mediaType) {
+        const bytes = Buffer.from(JSON.stringify(value));
+        const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+        await writeFile(join(layout, "blobs/sha256", digest.slice(7)), bytes);
+        return { digest, size: bytes.length, mediaType };
+      }
+      const config = await blob(
+        { os: "linux", architecture: fault === "platform" ? "amd64" : arch },
+        "application/vnd.oci.image.config.v1+json",
+      );
+      const layer = await blob(
+        { content: "retained layer bytes" },
+        "application/vnd.oci.image.layer.v1.tar",
+      );
+      const manifest = await blob(
+        {
+          schemaVersion: 2,
+          mediaType: "application/vnd.oci.image.manifest.v1+json",
+          config,
+          layers: [layer],
+        },
+        "application/vnd.oci.image.manifest.v1+json",
+      );
+      expected.push({
+        platform: `linux/${arch}`,
+        digest: manifest.digest,
+        configDigest: config.digest,
+      });
+      // BuildKit may export a manifest directly or wrap it in a one-platform index.
+      const descriptor =
+        arch === "amd64"
+          ? manifest
+          : await blob(
+              {
+                schemaVersion: 2,
+                mediaType: "application/vnd.oci.image.index.v1+json",
+                manifests: [manifest],
+              },
+              "application/vnd.oci.image.index.v1+json",
+            );
+      await writeFile(
+        join(layout, "index.json"),
+        JSON.stringify({ schemaVersion: 2, manifests: [descriptor] }),
+      );
+      env[`${arch.toUpperCase()}_DIGEST`] =
+        fault === "output-digest" ? `sha256:${"a".repeat(64)}` : descriptor.digest;
+      if (fault === "layer" && arch === "arm64") {
+        await writeFile(
+          join(layout, "blobs/sha256", layer.digest.slice(7)),
+          "corrupted layer bytes",
+        );
+      }
+    }
+    return { output, env, expected };
+  }
+  function run(input) {
+    return execFileSync(
+      process.execPath,
+      ["scripts/ci/container-release.mjs", "assemble", input.output],
+      {
+        env: input.env,
+        encoding: "utf8",
+        stdio: "pipe",
+      },
+    );
+  }
+  const valid = await prepare("valid");
+  run(valid);
+  const digest = (await readFile(valid.env.GITHUB_OUTPUT, "utf8")).trim().slice("digest=".length);
+  assert.deepEqual(readArchivePlatforms(join(valid.output, "image.tar"), digest), valid.expected);
+  for (const path of ["amd64", "arm64", "combined"]) {
+    await assert.rejects(readFile(join(valid.output, path, "index.json")), { code: "ENOENT" });
+  }
+  for (const fault of ["platform", "output-digest", "layer"]) {
+    const invalid = await prepare(fault, fault);
+    assert.throws(() => run(invalid), /mismatch/);
+    await assert.rejects(readFile(invalid.env.GITHUB_OUTPUT), { code: "ENOENT" });
   }
 });

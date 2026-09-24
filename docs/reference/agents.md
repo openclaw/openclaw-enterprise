@@ -194,7 +194,7 @@ removed after activation or Agent deletion. Pending inputs have no read/update
 API; correction requires deleting and recreating the Agent.
 
 The optional `workspaceDefaultsId` is a SHA-256 defaults identity. Console sends
-all four rendered `2026.9.1` defaults with this identity. A stale identity rejects
+all four rendered `2026.9.5` defaults with this identity. A stale identity rejects
 creation with `409 RESOURCE_CONFLICT`; runtime mismatch blocks initial setup.
 See the [workspace guide](../guides/topics/workspace-files.md) and
 [setup flow](../flows/workspace-files.md) for recovery and runtime requirements.

@@ -41,14 +41,7 @@ function createDriver(authentication = { mode: "inCluster" }) {
 }
 
 function physicalNamespaceName(id) {
-  const slug =
-    id
-      .toLowerCase()
-      .replace(/[^a-z0-9-]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 46)
-      .replace(/-+$/g, "") || "ns";
-  return `oce-${slug}-${createHash("sha256").update(id).digest("hex").slice(0, 12)}`;
+  return `oce-gateways-${createHash("sha256").update(id).digest("hex").slice(0, 24)}`;
 }
 
 class FakeConfigurationCoreV1Api {
@@ -63,7 +56,7 @@ class FakeConfigurationCoreV1Api {
         name,
         labels: {
           "app.kubernetes.io/managed-by": "openclaw-enterprise",
-          "openclaw.dev/namespace": id,
+          "openclaw.dev/gateway-namespace": id,
         },
         annotations: { "openclaw.dev/namespace-id": id },
       },
@@ -72,13 +65,12 @@ class FakeConfigurationCoreV1Api {
     return name;
   }
 
-  async listNamespace({ labelSelector }) {
-    const [, requestedNamespaceId] = labelSelector.split("=");
-    return {
-      items: [...this.namespaces.values()].filter(
-        ({ metadata }) => metadata.labels?.["openclaw.dev/namespace"] === requestedNamespaceId,
-      ),
-    };
+  async readNamespace({ name }) {
+    const namespace = this.namespaces.get(name);
+    if (namespace === undefined) {
+      throw Object.assign(new Error("missing Namespace"), { code: 404 });
+    }
+    return structuredClone(namespace);
   }
 
   async createNamespacedConfigMap({ namespace, body }) {

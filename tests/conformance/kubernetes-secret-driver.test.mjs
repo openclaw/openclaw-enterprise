@@ -14,14 +14,7 @@ function clone(value) {
 }
 
 function kubernetesNamespaceName(namespaceId) {
-  const slug =
-    namespaceId
-      .toLowerCase()
-      .replace(/[^a-z0-9-]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 46)
-      .replace(/-+$/g, "") || "ns";
-  return `oce-${slug}-${createHash("sha256").update(namespaceId).digest("hex").slice(0, 12)}`;
+  return `oce-gateways-${createHash("sha256").update(namespaceId).digest("hex").slice(0, 24)}`;
 }
 
 class FakeCoreV1Api {
@@ -39,7 +32,7 @@ class FakeCoreV1Api {
         name,
         labels: {
           "app.kubernetes.io/managed-by": "openclaw-enterprise",
-          "openclaw.dev/namespace": namespaceId,
+          "openclaw.dev/gateway-namespace": namespaceId,
         },
         annotations: { "openclaw.dev/namespace-id": namespaceId },
       },

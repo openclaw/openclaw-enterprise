@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-09-21
-last_updated_session: codex/01a0c580-9e39-7e21-bb0f-28fcc4752c59
+updated: 2026-09-23
+last_updated_session: codex/01a0cf72-6985-7712-ba92-d8cc32470f24
 ---
 
 # Secret Storage and Gateway Delivery Flow
@@ -83,7 +83,7 @@ request/driver memory, never in the reconciliation queue or resource metadata.
 `apps/controller/src/drivers/secret/kubernetes/index.ts:KubernetesSecretDriver.create`
 
 [KubernetesSecretDriver.create](../../apps/controller/src/drivers/secret/kubernetes/index.ts)
-uses Compute-owned Namespace placement. It creates a mutable Opaque Secret with
+uses Compute-owned tenant control-plane placement. It creates a mutable Opaque Secret with
 a Namespace-derived name, exact Namespace ownership metadata, and a fixed
 `value` key. Its result contains only backend identity, including UID. [OCC state](../../packages/occ/src/state/postgres-state.ts)
 persists immutable Namespace, driver, and backend metadata while public metadata
@@ -163,16 +163,18 @@ installation and resources in place on exit.
 [ControllerWorker](../../apps/controller/src/worker.ts) rechecks
 consumption authority and resolves revision refs from OCC metadata before each
 preparation and activation. It passes an ephemeral `ComputeRevisionContext`; it
-does not call the Kubernetes Secret API or add backend metadata to the revision.
+does not add backend metadata to the revision. Its Compute Driver performs
+the physical Secret reads and scoped runtime delivery.
 
 [KubernetesComputeDriver.prepareRevision](../../apps/controller/src/drivers/compute/kubernetes/index.ts)
-checks the revision, projection identities, and verified backing Namespace. It
-renders `env[].valueFrom.secretKeyRef` with `optional: false` only in each
+checks the revision, source UIDs, projection identities and verified CP Namespace.
+Dedicated Gateways directly reference admitted canonical CP Secrets. It renders `env[].valueFrom.secretKeyRef` with `optional: false` only in each
 selected consuming gateway. Model-auth projections are prepared separately from
 Agent `harnessAuth`. ConfigMaps retain native references only. A missing
 Secret/key prevents startup; normal readiness and cutover rules still control
-activation. Dispatch checks OCC metadata, not the physical Secret UID. Physical
-Secret replacement by a Kubernetes administrator is outside that check.
+activation. Dispatch checks OCC metadata; Compute also rejects a replaced source UID before
+delivery. Kubernetes environment references themselves bind a name and key, so
+Kubernetes administrators remain trusted.
 
 For an embedded replacement, preparation stages its immutable ConfigMap without
 requiring the old gateway to be healthy. The worker commits the selected revision
@@ -188,9 +190,9 @@ per-Agent channel Secret injects additional values. Dedicated gateways receive
 channel bytes; the dedicated Harness receives only its separately admitted model
 authentication. Embedded channel credentials remain unsupported.
 
-The worker/workload have no Secret API verbs, but a trusted workload writer can
-indirectly project namespace Secrets; Kubernetes RBAC alone does not remove that
-trust boundary.
+The trusted worker reads CP sources and manages DP runtime projections; workload
+ServiceAccounts have no Secret API verbs. A trusted workload writer can still
+project namespace Secrets, so controller compromise remains outside workload isolation.
 
 <span id="5-update-restart-or-remove"></span>
 <span id="5.-update,-restart,-or-remove"></span>
@@ -210,11 +212,18 @@ For coordinated channel replacement, stop the Agent and wait for shutdown before
 updating each Secret. A partial update leaves it stopped until repaired; there is
 no multi-Secret transaction or rollback of stored bytes.
 
-An explicit deployment for each consuming Agent creates a new revision and
-restarts that gateway with the current value. An infrastructure restart of an
-older admitted revision also reads the current value; failed cutover does not
-restore old secret bytes. Revoking `operate` blocks new OCC admission, not
-kubelet process starts or already delivered bytes.
+For model-key replacement, update the OCC Secret and explicitly deploy each
+consuming Agent through OCE. The new revision's preparation calls
+`KubernetesComputeDriver.deliverHarnessAuth`, which reads the current CP source
+and writes the revision-owned DP Secret before the Harness starts. Wait for
+activation and verify a real model request before revoking the old key upstream.
+A Harness Pod recreation reads its existing DP projection; it does not deliver
+current CP values. This remains true when the Configuration and Secret reference
+are unchanged.
+
+Dedicated Gateway infrastructure restarts read canonical CP channel Secrets
+directly. Failed cutover does not restore old source values. Revoking `operate`
+blocks new OCC admission, not kubelet process starts or already delivered bytes.
 
 [deleteSecret](../../packages/occ/src/index.ts) rejects current Configuration,
 Agent harness-binding draft, active revision, and pending-work dependencies under the same serialization
@@ -260,6 +269,10 @@ credential at its issuer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 14:12: Clarify model-key replacement through OCE deployment and distinguish Harness Pod recreation from credential delivery. (codex/01a0cf72-6985-7712-ba92-d8cc32470f24 - 240c72f2ef96c034c4e05c4775a79a94ebbe64ab)
+
+- 2026-09-23 12:22: Move canonical credential sources to CP and describe revision-scoped Harness delivery in the accompanying change. (codex/01a0cf72-6985-7712-ba92-d8cc32470f24 - 623d56dec26a8ef0f72b562254687cabecdbbf82)
 
 - 2026-09-21 19:52: Trace the local Agent default and preservation or rejection of recorded model selections. (01a0c580-9e39-7e21-bb0f-28fcc4752c59 - 4ec004dbefd25070ff1bdeb89cfb16d245296ac9)
 

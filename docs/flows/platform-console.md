@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: 2026-09-23
-last_updated_session: 01a0cce9-23e3-7072-aa3f-a2e26d2dbf11
+last_updated_session: 01a0d150-104a-71a3-9e56-6c5e3ee510ea
 ---
 
 # Platform console request flow
@@ -10,9 +10,9 @@ last_updated_session: 01a0cce9-23e3-7072-aa3f-a2e26d2dbf11
 
 Opening `/console/` resolves a cookie session and renders authorized resources.
 This trace follows Namespace selection, Agent creation and editing, runtime
-actions, Providers, and logout. It ends at rendered state or an API mutation;
-deletion additionally confirms absence. The [console reference](../reference/console.md)
-owns user-visible behavior. API and IAM retain resource authority.
+actions, Providers, and logout. It stops at rendered state or a submitted API
+mutation; deletion additionally confirms absence. The [console reference](../reference/console.md)
+owns user-visible behavior, while API and IAM retain resource authority.
 
 ## Entry Points
 
@@ -57,8 +57,8 @@ graph TD
     F -->|Providers and Installation admin| H["Project loaded Provider IDs and types"]
     S1 -->|create| S2["POST stores Namespace Secret immediately"]
     S2 --> S3
-    E1 -->|ordinary draft| M1["POST creates Configuration with staged bindings"]
-    E1 -->|supported Dedicated runtime| M3["POST queues provisioning with inline Configuration"]
+    E1 -->|draft or optional discovery outage| M1["POST creates Configuration with staged bindings"]
+    E1 -->|supported Dedicated and successful discovery| M3["POST queues provisioning with inline Configuration"]
     M3 --> M4["Worker creates resources, grants and first deployment"]
     M1 -->|returned Configuration ID| M["POST creates Agent draft only"]
     M --> M2["Console grants Agent use of selected Secrets"]
@@ -71,6 +71,7 @@ graph TD
     G --> I["Accept only current navigation response"]
     H --> I
     M2 --> I
+    M4 --> I
     N --> I
     O --> I
     P -->|accepted or uncertain| Q["Show status and refresh exact Agent"]
@@ -92,48 +93,43 @@ graph TD
 
 `apps/controller/src/composition/development-postgres.ts:composePostgresDevelopment`
 
-Startup projects validated Provider definitions into safe `{id,type}` summaries
-and passes them to `createFastifyApp`. This is a startup snapshot, not a live
-configuration scan. The request path never reads credentials or contacts a
-Provider. The existing [Provider-managed credential delivery](service-account-driver-credential-delivery.md) owns
-client construction and Driver activation.
+Startup validates Provider definitions into safe `{id,type}` summaries passed to
+`createFastifyApp`. Requests never scan configuration live, read credentials, or
+contact a Provider. [Provider-managed credential delivery](service-account-driver-credential-delivery.md)
+owns client construction and Driver activation.
 
 `apps/controller/src/console-assets.ts:readConsoleAsset` maps public console
-assets to individually allowlisted files, including each capability module, and
-recognized page URLs to the HTML shell. No module directory is served wholesale. Agent create
-and detail paths share the shell. Unknown console paths receive the same shell
-with HTTP `404`. The controller sets the HTML, CSS, or JavaScript MIME type and
-a same-origin content security policy. Other routes retain canonical API JSON
-errors. The Dockerfile copies these files into the existing controller image.
+assets and capability modules to allowlisted files, with recognized page URLs
+using the shared HTML shell. Unknown console paths receive that shell with HTTP
+`404`. The controller sets MIME type and same-origin content security policy;
+other routes keep canonical API JSON errors. The Dockerfile copies these files
+into the controller image.
 
 `scripts/build-console-metadata.mjs` stamps the console HTML during image build.
 The publisher supplies its checked `source_sha` as `OCC_BUILD_REVISION`, also used
-for the image revision label. Empty metadata stays empty; a nonempty value must
-be a full lowercase Git SHA. `apps/controller/src/console/shell.mjs:renderShell`
-reads that HTML metadata and renders the short hash beside OCE at the top of the
-sidebar, with the full OCC revision in a tooltip. Missing or invalid metadata
-displays **dev** beside OCE. No browser or controller request inspects Git or an Agent gateway version.
+for the image revision label. Empty metadata stays empty; nonempty metadata must
+be a full lowercase Git SHA. `shell.mjs:renderShell` shows the short OCC hash
+beside OCE with the full revision in a tooltip; missing or invalid metadata shows
+**dev**. No browser or controller request inspects Git or an Agent gateway version.
 
 ### 2. Resolve the session before private reads
 
 `apps/controller/src/console/console.mjs:loadPage`
 
 The browser clears the prior view, advances its navigation generation, and
-requests `GET /api/auth/session`. No session opens login; unavailable session
-inspection blocks private reads and offers Retry. Login submits exactly email
-and password to the existing sign-in route.
+requests `GET /api/auth/session`. No session opens login; unavailable inspection
+blocks private reads and offers Retry. Login submits exactly email and password.
 `apps/controller/src/auth/index.ts:requireTrustedBrowserOrigin` compares browser
-Origin to the configured controller origin before either sign-in or sign-out.
-The server SDK calls do not run Better Auth's request-origin middleware, so this
-HTTP boundary performs that check while retaining headerless CLI requests.
-Better Auth then owns the session cookie and password verification; the browser
-stores no credentials or tokens.
+Origin to the configured controller origin before sign-in or sign-out. Server SDK
+calls bypass Better Auth's request-origin middleware, so this HTTP boundary keeps
+that check while retaining headerless CLI requests. Better Auth owns the session
+cookie and password verification; the browser stores no credentials or tokens.
 
-After authentication, the client reads `GET /namespaces`. It validates the URL's
-explicit selection against that readable list, or chooses the first ready
-Namespace followed by the first readable one. An unavailable explicit ID stays
-unavailable until the user selects another. The selection is carried in the URL
-through global pages and history, without becoming an API query selector.
+After authentication, the client reads `GET /namespaces`, validates the URL's
+selection against readable Namespaces, or chooses the first ready one followed by
+the first readable one. An unavailable explicit ID stays unavailable until the
+user selects another. Selection stays in the URL and never becomes an API query
+selector.
 
 ### 3. Authorize the selected page resource
 
@@ -159,11 +155,10 @@ Credential hints link to the token console and show expected prefixes.
 
 Presets fix saved credential providers and reject cross-provider JSON before
 writes. Saved service account tokens lock Codex; operator-managed credentials
-lock OpenClaw across provider changes. These choices do not discover Installation
-Providers; that navigation item is hidden. The [creation reference](../reference/console/create-and-deploy.md)
+lock OpenClaw across provider changes. Installation Provider discovery is hidden. The [creation reference](../reference/console/create-and-deploy.md)
 owns permissions and partial-save recovery.
 
-The form starts with editable native JSON, optional plugins, and no model.
+The form starts with native JSON, optional plugins, and no model.
 `POST /namespaces/:namespaceId/agents/models` reaches
 `OpenClawController.discoverAgentModels`, which authorizes Namespace Agent creation
 and calls Compute outside a state transaction. `compute/model-discovery.ts` uses
@@ -180,11 +175,18 @@ Compute supplies gateway authentication from Installation trust; Presets replace
 the starter unchanged. [OCE native admin access](agent-native-admin.md) still
 requires isolated HTTPS origins. [Agent editing](platform-console/agent-editing.md#4-render-draft-revision-or-channels)
 traces Slack Secret selection/creation. **Apply channel settings** copies values
-and bindings into the form; cancellation discards selections but retains Secrets
-already created in the Namespace.
+and bindings into the form. Channel sender access is stored on each selected
+Slack channel; the drawer does not edit direct-message `allowFrom`. Cancellation
+discards selections but retains Secrets already created in the Namespace.
+Pending grants accumulate across drawer applications.
 
-For supported Dedicated runtimes, submission sends the inline Configuration and
-ordinary Secret references to the [provisioning API](agent-provisioning.md).
+`GET /namespaces/:namespaceId/agents/repository-options` discovers approved choices.
+The Console submits opaque references and an explicit common profile. Only
+`503 REPOSITORY_OPTIONS_UNAVAILABLE` permits a fresh draft without bindings;
+it never enables provisioning. Other failures block submission until retry succeeds.
+
+For supported Dedicated runtimes with successful repository discovery, submission
+sends the inline Configuration, selected repository bindings and ordinary Secret references to the [provisioning API](agent-provisioning.md).
 Console polls the accepted job before an Agent exists, then opens the returned
 Agent revision. The worker creates resources and exact Secret grants before
 admitting deployment; Console does not duplicate those grants.
@@ -198,31 +200,38 @@ outside Agent/Configuration; [workspace setup](workspace-files.md) applies them
 before execution.
 
 `create.mjs:grantConfigurationSecretAccess` grants the returned Agent exact
-Secret `operate` through separate Namespace IAM writes. Failure preserves the
-Agent and enables **Retry credential access**, which rereads exact grants without
-duplicating resources; the saved Agent link permits manual recovery. Failed Agent
-writes retain the Configuration ID and lock JSON/Harness; explicit retries reuse
-it. Writes never retry automatically. Draft creation neither admits revisions,
-validates the plugin catalog, nor starts runtime work.
+Secret `operate` through separate Namespace IAM writes. Only final same-Namespace
+`env` bindings receive grants; superseded selections receive none. Failure keeps
+the Agent and enables **Retry credential access**, which rereads exact grants
+without duplicating resources; the saved Agent link permits manual recovery.
+Failed Agent writes retain the Configuration ID and lock JSON/Harness; explicit
+retries reuse it. Writes never retry automatically. Draft creation neither
+admits revisions, validates the plugin catalog, nor starts runtime work.
 
 `apps/controller/src/console/agents/harness-auth.mjs:createHarnessAuthFields`
-masks the existing Secret ID input in the Credentials editor. `harnessAuthDescription` reports a configured Secret
-without displaying its ID in either draft or revision summaries. Native
-Configuration displays unresolved references; the console does not fetch
-Secret values for these views.
+masks the existing Secret ID input in the Credentials editor.
+`harnessAuthDescription` reports a configured Secret without displaying its ID
+in draft or revision summaries. Native Configuration displays unresolved
+references; the console does not fetch Secret values for these views.
 
 ### 4–6. Edit the Agent and access runtime files
 
 [Console Agent editing and runtime requests](platform-console/agent-editing.md)
 traces draft/revision rendering, channel changes, credential provisioning,
-workspace reads/writes, Agent stopping, and Agent deletion. Each request returns through the
+workspace reads/writes, stopping, and deletion. Each request returns through the
 response-ordering checks below.
 
 `apps/controller/src/console/channels/slack.mjs:supportSlack` checks whether the
 channel editor can preserve the stored settings. Existing `dmPolicy` and
 `groupPolicy` values do not block editing. `updatedSlack` copies those values
-unchanged, including their absence, when saving channel IDs, allowed users, or
-mention settings. Only a new Slack configuration receives allowlist defaults.
+unchanged, including their absence, when saving channel IDs, channel sender
+users, or mention settings. It preserves unrelated properties on selected
+channel entries, then writes the selected channels' `users` lists from the
+drawer. The everyone option writes `users: ["*"]` on each selected channel;
+direct-message `allowFrom` is not changed by channel edits. Only a new Slack
+configuration receives allowlist defaults. Existing channel maps with mixed
+sender lists or a `*` channel entry are rejected by the simple editor so native
+Configuration JSON remains the source of truth.
 
 `apps/controller/src/console/agents/detail.mjs:renderAgentDetail` registers a
 handler for tab-only navigation with `console.mjs:loadPage`. For the same Agent,
@@ -242,14 +251,13 @@ preflight. Session expiry still clears the whole private view.
 
 `apps/controller/src/console/console.mjs:loadPage`, `logout`
 
-Page or revision navigation, Namespace changes, refocus, and logout invalidate prior reads. The
-client cancels their requests and checks generation before accepting either
-success or failure. A late response cannot restore rows, change selection, or
-redirect a newer session. Current authorization and dependency errors clear
-rows and expose recovery; a current protected `401` clears private state and
-opens login immediately, without waiting for sibling reads. A late error from an
-older view cannot redirect a newer session. Only locally defined reason messages
-and bounded server request IDs enter failure views; backend error text is omitted.
+Page or revision navigation, Namespace changes, refocus, and logout invalidate
+prior reads. The client cancels requests and checks generation before accepting
+success or failure. Late responses cannot restore rows, change selection, or
+redirect a newer session. Current authorization and dependency errors clear rows
+and expose recovery; a current protected `401` clears private state and opens
+login immediately. Failure views include only local reason messages and bounded
+request IDs, not backend error text.
 Global Providers and Namespaces pages remain visibly Installation-wide.
 
 The [detail action flow](platform-console/agent-editing.md#stop-agent) traces
@@ -269,16 +277,15 @@ this client never infers it from a network error.
 
 ## Deploy the new revision
 
-The **New revision** detail view exposes **Deploy new revision**. The **Operator-managed
-credentials** option persists `{ "method": "runtime" }` and explains that OCC does
-not validate host credentials. It bypasses only the managed runtime-credential
-metadata gate. Deployment rereads the Agent and
-Configuration, checks their loaded association and generation, then sends the existing
-bodyless `POST /namespaces/:namespaceId/agents/:agentId/deploy`. The server retains
-its existing authorization and admission checks. The returned admitted revision opens
-the workspace view; gateway startup and file availability are checked by subsequent
-workspace reads. An uncertain deployment response disables replay until the user
-refreshes and inspects the Agent and revision history.
+The **New revision** detail view exposes **Deploy new revision**.
+**Operator-managed credentials** persist `{ "method": "runtime" }` and bypass
+only the managed runtime-credential metadata gate; OCC does not validate host
+credentials. Deployment rereads the Agent and Configuration, checks their loaded
+association and generation, then sends the existing bodyless
+`POST /namespaces/:namespaceId/agents/:agentId/deploy`. The server retains
+authorization and admission checks. The returned revision opens Workspace files;
+subsequent workspace reads check gateway startup and file availability. An
+uncertain response disables replay until refresh and inspection.
 
 ## Debugging and Verification
 
@@ -320,6 +327,13 @@ refreshes and inspects the Agent and revision history.
 - 2026-09-23 18:48: Keep saved API-key and PAT Presets bound to their provider before Configuration or Agent writes. (01a0cf27-71c6-7042-8357-74d1811a2ef8 - 4da114ac7b11f926d4b774b8d32a09fa136135eb)
 
 - 2026-09-23 18:35: Reconcile provider credential creation with staged Slack Secret grants and shared retry recovery. (authoring-run/2516b0a6-7a82-4268-a586-d821679b2a78 - ae092fc7c13aad4c637b0238ae2f41ecb2b03219)
+
+- 2026-09-23 20:21: Integrate repository selections with asynchronous provisioning and preserve draft-only discovery recovery. (public-pr/295 - 8bd367636aff766d484b4e684d42f6b4419c9e4e)
+
+- 2026-09-23 19:39: Trace pending Slack grants across drawer applications and reconciliation with final saved bindings. (public-pr/295 - 7f6d9107dcb23ff1ad093c4914c89a0210169d20)
+
+- 2026-09-23 19:52: Trace channel-scoped Slack sender access and leave direct-message access outside the drawer. (01a0d150-104a-71a3-9e56-6c5e3ee510ea - 77aedc620f443056f9ee859050b8dc657a9c3133)
+
 - 2026-09-23 19:09: Trace image-baked OCC revision metadata and OCE sidebar branding. (01a0cfaa-2b68-7e61-b8ff-a7eb82f1edc5 - 150ec08f059cebc4897b839d8318f7b1e3aba0e3)
 
 - 2026-09-23 11:20: Distinguished worker-owned first-time provisioning and Secret grants from ordinary Console draft creation. (01a0cc7f-028b-7803-acf5-803c3d799d75 - f2dd1d3f)

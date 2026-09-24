@@ -10,9 +10,12 @@ import { isAbsolute, join } from "node:path";
 import {
   createKubernetesClient,
   createKubernetesInstallationConfiguration,
+  configureExistingK3dLocalPathSharedFileSystem,
+  kubernetesHash,
   kubectlArguments,
 } from "./kubernetes-real.mjs";
 import { installProductionHelmControlPlane } from "./production-helm-real.mjs";
+import { ensureEnvoyGatewayControllers } from "./envoy-workspace-gateway.mjs";
 
 export async function readProtectedInput(path, label) {
   assert.ok(path && isAbsolute(path), `${label} requires an explicit absolute file`);
@@ -35,7 +38,11 @@ export async function readProtectedInput(path, label) {
   }
 }
 
-export async function createInstalledRepositoryFixture(context, { selection, images, modelKey }) {
+export async function createInstalledRepositoryFixture(
+  context,
+  { selection, images, modelKey, executionMode },
+) {
+  const dedicated = executionMode === "dedicated";
   const suffix = randomBytes(12).toString("hex");
   const system = `oce-repository-${suffix}`;
   const release = `repository-${suffix}`;
@@ -44,6 +51,11 @@ export async function createInstalledRepositoryFixture(context, { selection, ima
   context.diagnostic(`Installed proof directory: ${directory}`);
   const names = [system];
   const secrets = [modelKey];
+  const gatewayName = `${release}-agent-gateways`;
+  const gatewayClassName = `repository-${suffix}`;
+  const envoyNamespace = process.env.OCC_TEST_ENVOY_GATEWAY_NAMESPACE ?? "envoy-gateway-system";
+  const gatewayHostname = `occ-gateway-${kubernetesHash(`${system}/${gatewayName}`)}.${envoyNamespace}.svc`;
+  let gatewayConfiguration;
   let forwarding;
   let localServiceKeyFile;
   let closed = false;
@@ -200,6 +212,16 @@ export async function createInstalledRepositoryFixture(context, { selection, ima
         failures.push("namespace removal readback unavailable");
       }
     }
+    if (dedicated) {
+      await kubectl(
+        "delete",
+        "gatewayclass",
+        gatewayClassName,
+        "--ignore-not-found",
+        "--wait=true",
+        "--timeout=90s",
+      ).catch(() => failures.push("owned GatewayClass removal"));
+    }
     for (const file of [
       "tls.key",
       "tls.crt",
@@ -214,6 +236,15 @@ export async function createInstalledRepositoryFixture(context, { selection, ima
     assert.deepEqual(failures, [], "installed fixture cleanup must complete");
   };
   context.after(close);
+  if (dedicated) {
+    assert.equal(
+      process.env.OCC_TEST_GATEWAY_ROUTING_REAL,
+      "1",
+      "Dedicated repository proof requires prepared private Gateway routing",
+    );
+    await ensureEnvoyGatewayControllers({ kubectl, waitFor });
+    await configureExistingK3dLocalPathSharedFileSystem(selection);
+  }
   await apply({
     apiVersion: "v1",
     kind: "Namespace",
@@ -234,6 +265,20 @@ export async function createInstalledRepositoryFixture(context, { selection, ima
     codexImage: images.runtime,
     cluster: system,
   });
+  if (dedicated) {
+    // Use the same authenticated route for native node enrollment and task
+    // submission. The production Driver owns enrollment and shared storage.
+    const compute = configuration.drivers.compute.configuration;
+    compute.gatewayRouting = { gatewayName, gatewayNamespace: system, envoyNamespace };
+    delete compute.network.gatewayClients;
+    await createSecret("repository-gateway-api-key", { occ: secret() });
+    await apply({
+      apiVersion: "gateway.networking.k8s.io/v1",
+      kind: "GatewayClass",
+      metadata: { name: gatewayClassName, labels: { "oce-test": suffix } },
+      spec: { controllerName: "gateway.envoyproxy.io/gatewayclass-controller" },
+    });
+  }
   await installProductionHelmControlPlane({
     selection,
     images,
@@ -245,11 +290,60 @@ export async function createInstalledRepositoryFixture(context, { selection, ima
     authBaseURL: baseURL,
     installationName: system,
     apiClients: [{ namespace: system, podLabels: { app: "production-tui-proxy" } }],
+    ...(dedicated
+      ? {
+          gatewayRouting: {
+            enabled: true,
+            gatewayName,
+            gatewayClassName,
+            envoyNamespace,
+            apiKeySecretName: "repository-gateway-api-key",
+          },
+        }
+      : {}),
     run,
     kubernetes,
     createSecretValue: secret,
     record,
   });
+  if (dedicated) {
+    await waitFor("private Gateway programmed", async () => {
+      const gateway = await get("gateway", gatewayName);
+      return gateway.status?.conditions?.some(
+        (condition) => condition.type === "Programmed" && condition.status === "True",
+      );
+    });
+    const proxy = await waitFor("one Ready private Envoy proxy", async () => {
+      const pods = await kubernetes.resources(
+        "pods",
+        envoyNamespace,
+        "-l",
+        `gateway.envoyproxy.io/owning-gateway-namespace=${system},gateway.envoyproxy.io/owning-gateway-name=${gatewayName}`,
+      );
+      const ready = pods.filter(
+        (pod) =>
+          !pod.metadata.deletionTimestamp &&
+          pod.status?.conditions?.some(
+            (condition) => condition.type === "Ready" && condition.status === "True",
+          ),
+      );
+      assert.ok(ready.length <= 1, "the disposable route must have one Envoy proxy");
+      return ready[0];
+    });
+    assert.ok(net.isIPv4(proxy.status.podIP));
+    const trustedProxies = [`${proxy.status.podIP}/32`];
+    configuration.drivers.compute.configuration.network.gatewayTrustedProxyCidrs = trustedProxies;
+    gatewayConfiguration = {
+      auth: {
+        mode: "trusted-proxy",
+        identityScopes: { "occ-workspace-files": ["operator.admin"] },
+        trustedProxy: { userHeader: "x-occ-identity", allowUsers: ["occ-workspace-files"] },
+      },
+      allowRealIpFallback: true,
+      trustedProxies,
+    };
+    await record("Private authenticated Gateway routing ready", { gatewayName });
+  }
   await run("openssl", [
     "req",
     "-x509",
@@ -577,6 +671,8 @@ export async function createInstalledRepositoryFixture(context, { selection, ima
     namespace,
     tenant,
     configuration,
+    gatewayConfiguration,
+    gatewayHostname,
     secrets,
     record,
     run,
@@ -630,25 +726,57 @@ export function createRepositoryObserver({ run, repository, binary = "gh" }) {
 }
 
 export const submitRepositoryTaskScript = String.raw`
+  let stage = "input";
   (async () => {
     let input = "";
     for await (const chunk of process.stdin) {
       input += chunk;
       if (input.length > 32768) throw new Error("task input too large");
     }
-    const { sessionKey, prompt } = JSON.parse(input);
+    const { sessionKey, prompt, gatewayUrl } = JSON.parse(input);
+    stage = "authentication";
     if (process.env.OPENAI_API_KEY) throw new Error("request client must not receive model credentials");
-    const password = process.env.OPENCLAW_GATEWAY_PASSWORD;
-    if (!password) throw new Error("gateway loopback credential unavailable");
-    const response = await fetch("http://127.0.0.1:" + (process.env.OPENCLAW_GATEWAY_PORT || "8080") + "/v1/chat/completions", {
-      method: "POST", signal: AbortSignal.timeout(600000),
-      headers: { authorization: "Bearer " + password, "content-type": "application/json", "x-openclaw-session-key": sessionKey },
+    let url;
+    let authentication;
+    if (gatewayUrl !== undefined) {
+      url = new URL(gatewayUrl);
+      if (url.protocol !== "https:" || url.port || url.username || url.password ||
+          !/^occ-gateway-[a-f0-9]{12}\.[a-z0-9-]+\.svc$/.test(url.hostname) ||
+          !/^\/namespaces\/[A-Za-z0-9_-]+\/agents\/[A-Za-z0-9_-]+$/.test(url.pathname) ||
+          url.search || url.hash) throw new Error("invalid private Gateway route");
+      const key = require("node:fs").readFileSync(process.env.OCC_GATEWAY_API_KEY_PATH, "utf8");
+      if (!key || !/^[\x21-\x7e]+$/.test(key)) throw new Error("Gateway API key unavailable");
+      authentication = { "x-api-key": key };
+      url.pathname += "/v1/chat/completions";
+    } else {
+      const password = process.env.OPENCLAW_GATEWAY_PASSWORD;
+      if (!password) throw new Error("gateway loopback credential unavailable");
+      authentication = { authorization: "Bearer " + password };
+      url = "http://127.0.0.1:" + (process.env.OPENCLAW_GATEWAY_PORT || "8080") + "/v1/chat/completions";
+    }
+    stage = "request";
+    const response = await fetch(url, {
+      method: "POST", signal: AbortSignal.timeout(600000), redirect: "error",
+      headers: { ...authentication, "content-type": "application/json", "x-openclaw-session-key": sessionKey },
       body: JSON.stringify({ model: "openclaw/default", stream: false, messages: [{ role: "user", content: prompt }] }),
     });
     // Persisted transcript and independent provider reads establish success, never reply prose.
+    stage = "response-body";
     await response.arrayBuffer();
     process.stdout.write(JSON.stringify({ status: response.status }));
-  })().catch(() => { process.stderr.write("gateway task outcome unresolved\n"); process.exitCode = 1; });
+  })().catch((error) => {
+    const code = error?.cause?.code ?? error?.code;
+    const allowed = [
+      "ECONNREFUSED", "ENOTFOUND", "ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT",
+      "ERR_TLS_CERT_ALTNAME_INVALID", "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+      "SELF_SIGNED_CERT_IN_CHAIN", "DEPTH_ZERO_SELF_SIGNED_CERT",
+    ];
+    // Return only fixed diagnostic vocabulary; the caller still requires HTTP 200.
+    process.stdout.write(JSON.stringify({
+      status: null,
+      failure: { stage, code: allowed.includes(code) ? code : "OTHER" },
+    }));
+  });
 `;
 
 // Read-only private control observation. The production worker remains the only

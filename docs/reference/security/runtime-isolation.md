@@ -6,19 +6,21 @@ limits for Kubernetes Agent runtimes. Apply these boundaries together with the
 
 ## Temporary runtime credential exceptions
 
-Every Agent retains one Agent-specific transport Secret in its exact tenant
-namespace, provisioned by the selected Compute Driver through the initial
-credential API or by an operator. Kubernetes gateway authentication uses trusted
-proxy, with an optional separately configured loopback password. The Driver does
-not generate or project gateway admission tokens. Dedicated Codex receives a
-distinct `APP_SERVER_TOKEN`: its separate gateway connects only to
-its exact Agent Service over same-Namespace `ws://`, and the real app-server
-verifies the capability token's SHA-256 digest. Embedded OpenClaw has no
-app-server transport.
+Dedicated Agents retain separate canonical app-server transport and Gateway
+password Secrets in their tenant control-plane namespace. Compute delivers the
+app-server token, never the Gateway password, into a revision-owned Harness
+Secret in the data plane. Kubernetes gateway authentication uses trusted proxy,
+with an optional separately configured loopback password. Dedicated Codex and
+its Gateway use the existing capability-token app-server protocol over
+cross-namespace `ws://`; the server verifies the token's SHA-256 digest.
+Namespace separation does not encrypt that connection or implement mutual TLS.
+Embedded OpenClaw retains its combined data-plane workload and transport bundle;
+it is outside the dedicated control-plane boundary.
 
 The initial credential API requires exact Agent read and operate access, a ready
 Namespace, and no historical revisions. It generates an app-server transport
-token and a local gateway password internally and stores supplied Slack values in correctly owned Kubernetes Secrets.
+token and a local gateway password internally in separately owned CP Secrets.
+Channel credentials use the separately authorized OCC Secret API.
 Those values pass transiently through the authorized API; they are excluded from
 Configuration, database records, audit fields, responses, and logs. Provisioning
 creates missing whole Secrets only and rejects foreign, malformed, or conflicting
@@ -32,14 +34,14 @@ There are two supported model-credential paths:
   Secret. Admission requires the actor and Agent principal's exact Secret
   `operate`; dispatch rechecks both. The Secret Driver owns storage, and
   Kubernetes supplies `OPENAI_API_KEY` only to dedicated Codex or the combined
-  embedded OpenClaw gateway/Harness. No per-Agent credential copy is created.
+  embedded OpenClaw gateway/Harness through a revision-owned runtime projection.
 
 - **Driver-issued access token:** After exact OCC and independent ChatGPT
   authorization, API-side Kubernetes Compute creates one account-owned Secret
-  in the exact backing namespace. Its `token` and `workspace-id` keys are
-  projected directly into each associated dedicated Codex workload as
+  in the tenant control-plane namespace. Its `token` and `workspace-id` keys are
+  delivered into each selected revision's data-plane Secret and exposed as
   `CODEX_ACCESS_TOKEN` and `CODEX_CHATGPT_WORKSPACE_ID`. Kubernetes resolves
-  the Secret references; no Agent-specific token copy is created. Codex logs
+  these runtime Secret references. Codex logs
   in with `--with-access-token` under its forced ChatGPT workspace and stores
   login state only in its bounded ephemeral workload volume. Embedded access
   tokens are rejected before deployment.
@@ -53,21 +55,21 @@ private: the internal immutable auth snapshot retains verified Provider/workspac
 ownership, while public responses expose only safe references. The runtime
 Secret retains the credential material required for authentication.
 
-The API's dedicated controller identity receives tenant-local Secret `get`,
+The API's dedicated controller identity receives tenant control-plane Secret `get`,
 `create`, `update`, `patch`, and `delete` permissions for credential provisioning
 and account-credential lifecycle operations. It also receives Deployment `list`
 to reject initial credential provisioning when an Agent runtime already exists.
 Its operator-provisioned RoleBindings grant no cluster-wide Secret access or
 Secret `list` or `watch` permissions.
 
-By default, the Helm worker role grants no direct Secret API permissions.
-Enabling [repository credentials](../repository-credentials.md) adds tenant-local
-Secret `get`, `list`, `create`, and `delete` for session material delivery and
-cleanup. These RBAC grants cover each bound namespace; the Compute Driver's
-ownership checks restrict normal operations to the exact session material.
+The Helm worker role reads canonical CP Secrets and creates, updates and deletes
+revision-owned runtime Secrets in the data plane. Enabling
+[repository credentials](../repository-credentials.md) also permits Secret listing
+for session material cleanup. Grants are namespace-scoped; Compute checks exact
+owner and admitted source identities before normal operations.
 Agent workload identities receive no direct Secret API permissions.
 Kubernetes RBAC cannot constrain dynamic Secret creation by `resourceNames`, so
-compromise of the API or repository-enabled worker identity can affect Secrets
+compromise of the API or worker identity can affect Secrets
 across each granted tenant namespace. Even without direct Secret permissions,
 a compromised worker with tenant Deployment write permissions can indirectly
 project and expose any Secret in that namespace. Distinct identities and exact
@@ -81,8 +83,9 @@ or the worker. Restrict provider TLS egress to the API Pod and an explicitly
 approved provider/proxy CIDR. The worker receives no provider egress exception.
 Managed account bindings carry exact Provider, Driver, and workspace identity.
 Issuance/deletion, deployment, and worker reconciliation reject conflicting
-ownership; the worker reads only binding metadata and confirms issuance, never
-external IDs or secret values. Startup does not scan saved references. Removing
+ownership; the worker validates binding metadata and confirms issuance. Its Compute Driver
+reads admitted credential bytes only to deliver selected runtime fields; it does
+not receive upstream account administration credentials. Startup does not scan saved references. Removing
 or retargeting configuration does not adopt or revoke existing credentials;
 restore the original configuration for exact cleanup of old bindings.
 The issued account credential requests only
