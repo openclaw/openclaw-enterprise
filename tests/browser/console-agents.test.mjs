@@ -7,7 +7,6 @@ import test from "node:test";
 
 import { chromium } from "playwright";
 
-import { secretIdForBinding } from "../../apps/controller/src/console/agents/credentials.mjs";
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";

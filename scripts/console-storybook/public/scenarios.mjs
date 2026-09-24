@@ -231,6 +231,17 @@ const devdayCreateCheckpoint = [
   { selector: "#preset-variable-name", value: "devday claw" },
   { selector: "#preset-variable-modelSecret", value: "at-demo-devday-service-account-token" },
   click("Use Preset"),
+  click("Configure plugins"),
+  click("Load plugins"),
+  { selector: 'button[aria-label="Calendar"]', click: true },
+  click("Add Calendar"),
+  { selector: 'select[aria-label="Calendar default reviewer"]', value: "auto" },
+  {
+    selector: 'details.plugin-tool-row[data-tool="app_calendar/create_event"] > summary',
+    click: true,
+  },
+  { selector: 'select[aria-label="Create event approval"]', value: "prompt" },
+  click("Done"),
   { selector: devdayRepositorySelector, click: true },
   { selector: "#repository-profile-git-write", click: true },
   click("Edit Slack"),
@@ -2013,6 +2024,8 @@ export const scenarios = {
     nativeAdmin: "available",
     nativeAdminUrl: "/storybook-fixtures/devday-admin.html?agent=oceclaw&channel=openclaw-feedback",
     devdayPreset: true,
+    pluginDiscovery,
+    pluginCapabilities,
     repositoryOptions: [
       {
         repositoryRef: "openclaw/openclaw-enterprise",
@@ -2046,6 +2059,7 @@ export const scenarios = {
       "Start on the Agents list with the already deployed oceclaw seed, then click Create Agent.",
       "The picker includes SWE Agent, Q&A Agent, and Oncall Agent. Select SWE Agent and enter devday claw for its name.",
       "Keep the default gpt-6-astra model and enter fake modelSecret at-demo-devday-service-account-token, then Use Preset. Review AGENTS.md: its opening sentence now says You are devday claw. Workspace defaults remain editable.",
+      "Open Configure plugins, load the simulated catalog with the fake service-account token, add Calendar, set Calendar default reviewer to Automatic review, and set Create event approval to Ask for approval.",
       "Repository access offers openclaw/openclaw-enterprise and openclaw/openclaw. Select either or both with Contributor access.",
       "Open Edit Slack. Confirm prefilled channel C0C43A2QA11, allow simulated user UDEMO123, then bind the existing simulated DevDay Slack Secrets and apply settings.",
       "Create Agent and keep the Console visible while the fixture progresses through provisioning and deployment activation until Workspace files open for the admitted revision.",
@@ -2064,6 +2078,8 @@ export const scenarios = {
     nativeAdmin: "available",
     nativeAdminUrl: "/storybook-fixtures/devday-admin.html?agent=oceclaw&channel=openclaw-feedback",
     devdayPreset: true,
+    pluginDiscovery,
+    pluginCapabilities,
     repositoryOptions: [
       {
         repositoryRef: "openclaw/openclaw-enterprise",
@@ -2095,7 +2111,7 @@ export const scenarios = {
       "Auto-run checkpoint for reviewers who want the deployed end state of the DevDay create segment without replaying every presenter click.",
     steps: [
       "Use the primary DevDay segment 1 story for recording the manual presenter flow.",
-      "This checkpoint clicks through the same controls and waits until Workspace files open for the admitted revision.",
+      "This checkpoint clicks through the same controls, including the Calendar plugin policy choices, and waits until Workspace files open for the admitted revision.",
     ],
     gap: "Checkpoint automation is a setup aid. Use the manual story for the demo video.",
   },
