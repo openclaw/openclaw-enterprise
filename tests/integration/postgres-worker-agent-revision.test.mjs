@@ -3677,6 +3677,11 @@ test(
   requiresPostgres,
   async (context) => {
     const fixture = await setup(context);
+    // The shared worker must drain another Namespace without including its
+    // Compute effects in this Namespace's issuance-revocation assertions.
+    const foreign = await setup(context);
+    const foreignOwner = await foreign.agent("issuance-foreign");
+    const foreignRevision = await foreign.revision(foreignOwner, 1);
     const provider = backendDefinition();
     const accounts = await Promise.all(
       ["valid", "issuance-revoked"].map((label) =>
@@ -3699,10 +3704,14 @@ test(
       {
         ...fixture.compute,
         async bindAgent({ agent }) {
-          effects.push({ action: "bind", agentId: agent.id });
+          if (agent.namespaceId === fixture.namespace.id) {
+            effects.push({ action: "bind", agentId: agent.id });
+          }
         },
         async prepareRevision(revision) {
-          effects.push({ action: "prepare", revisionId: revision.id });
+          if (revision.namespaceId === fixture.namespace.id) {
+            effects.push({ action: "prepare", revisionId: revision.id });
+          }
           return fixture.compute.prepareRevision(revision);
         },
       },
@@ -3715,6 +3724,7 @@ test(
         fixture.work(candidate, index === 0 ? "succeeded" : "failed_permanent"),
       ),
     );
+    await foreign.work(foreignRevision, "succeeded");
     assert.deepEqual(effects, [
       { action: "bind", agentId: owners[0].id },
       { action: "prepare", revisionId: candidates[0].id },
