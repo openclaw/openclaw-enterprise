@@ -2,9 +2,9 @@
 
 ## Current preset flow
 
-Captured on September 24, 2026 from source commit `3710048625523716ab7a869b3d45f36d288ba901`.
+Captured on September 24, 2026; contents match source commit `add58c0a0f49a3425c63cd07759163b1d4302c49`.
 Rebased onto main `4373b6e3`, including its updated Console styles.
-The Console uses the shipped `devday` JSON preset, prefilled Slack channel
+The Console uses the shipped `SWE Agent` JSON preset, prefilled Slack channel
 `C0C43A2QA11`, and workspace-file overrides. The raw Secret bindings JSON editor
 has been removed. DevDay includes the supplied Ocalot `AGENTS.md` verbatim,
 including its draft-decision section. The walkthrough checks exact content in
@@ -14,25 +14,31 @@ Environment: macOS, Node.js 24.15.0, pnpm 11.15.1, Storybook 10.6.0,
 Playwright 1.63.0 with headed Chromium, 1440 × 1000 viewport. The static
 Storybook was rebuilt from this source and served only on loopback.
 
-- [DevDay preset and masked variables](presets/01-devday-preset.png)
+- [SWE Agent preset and masked variables](presets/01-devday-preset.png)
 - [Supplied Ocalot instructions](presets/07-ocalot-instructions.png)
 - [Model and repository controls](presets/02-create.png)
 - [Prefilled Slack channel and Secret selection](presets/03-prefilled-slack.png)
 - [Simulated deployment success](presets/04-deployed.png)
 - [Admin UI message and simulated reply](presets/05-admin-reply.png)
 - [Rendered workspace overrides, including an empty file](presets/06-workspace-overrides.png)
+- [Standard OpenClaw preset with native harness](presets/08-standard-openclaw.png)
 - [Connected Console recording](presets/console-walkthrough.webm)
 - [Admin UI message recording](presets/admin-message.webm)
 
-The connected walkthrough selected DevDay, supplied fake credentials, verified
+The picker includes `standard-codex`, `standard-openclaw`, and the explicitly
+enabled SWE Agent. Q&A Agent and Oncall Agent remain disabled in the Installation
+example and are not seeded by this demo.
+
+The connected walkthrough selected SWE Agent, supplied fake credentials, verified
 the channel prefill, selected repository access and simulated Slack Secrets,
 completed creation, returned to the same Agent list, opened `oceclaw`'s sandboxed
 Admin UI popup, and sent a message. It made 36 intercepted fixture requests with
 no unhandled requests or browser errors. The preset permits mentions by channel
 members; the recording demonstrates narrowing this to fake sender `UDEMO123`.
 
-Both starting stories, both checkpoints, and the workspace override story
-reached their intended states. Reset story and Admin UI popup/Send passed in
+Both starting stories, both checkpoints, the workspace override story, and the
+standard OpenClaw story reached their intended states. The latter verifies that
+the native OpenClaw harness is selected. Reset story and Admin UI popup/Send passed in
 the actual Storybook iframe. The Console recording played in Chromium at
 1440 × 1000. The workspace example verifies a variable-expanded `IDENTITY.md`
 and an explicitly empty `USER.md` while leaving omitted defaults intact.
@@ -53,6 +59,7 @@ open these story paths:
 - `/?path=/story/flows--devday-create-checkpoint`: deployed creation checkpoint.
 - `/?path=/story/flows--devday-admin-checkpoint`: Admin UI launch checkpoint.
 - `/?path=/story/pages-create-agent--create-preset-workspace-files`: workspace override example.
+- `/?path=/story/pages-create-agent--create-standard-openclaw-preset`: native OpenClaw preset.
 
 ## Historical evidence
 
