@@ -29,6 +29,7 @@ const receipt = {
   stage: "hosted-guard",
   sdkRemoved: false,
   rootsRemoved: [],
+  rootsSkipped: [],
 };
 
 // Bound the command and its descendants; never forward raw command output.
@@ -112,19 +113,24 @@ async function guardRemovalRoot(root, rootInfo, mounts, required) {
   try {
     info = await lstat(root);
   } catch (error) {
-    assert(!required && error.code === "ENOENT");
+    if (error.code !== "ENOENT") {
+      throw error;
+    }
+    assert(!required);
     return false;
   }
-  assert(info.isDirectory() && !info.isSymbolicLink() && info.uid === 0);
-  assert((await realpath(root)) === root);
-  assert(info.dev === rootInfo.dev);
-  assert(
+  const safe =
+    info.isDirectory() &&
+    !info.isSymbolicLink() &&
+    info.uid === 0 &&
+    (await realpath(root)) === root &&
+    info.dev === rootInfo.dev &&
     !mounts.split("\n").some((line) => {
       const path = line.split(" ")[4];
       return path === root || path?.startsWith(`${root}/`);
-    }),
-  );
-  return true;
+    });
+  assert(safe || !required, required ? "Required cleanup root failed safety checks." : undefined);
+  return safe;
 }
 
 async function main() {
@@ -162,6 +168,8 @@ async function main() {
     for (const root of runtimeOnlyRoots) {
       if (await guardRemovalRoot(root, rootInfo, mounts, false)) {
         removalRoots.push(root);
+      } else {
+        receipt.rootsSkipped.push(root);
       }
     }
   }

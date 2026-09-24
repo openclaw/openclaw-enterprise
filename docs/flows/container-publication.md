@@ -72,9 +72,9 @@ Before starting the runtime build,
 `scripts/ci/repository-platform-headroom.mjs:main` verifies it is running on the
 Ubuntu 24 GitHub-hosted runner and removes fixed, unused Android, language SDK,
 and non-Node tool-cache directories. The helper rejects symlinks, mounts, and
-unexpected paths, then requires 36 GiB free and logs capacity before and after
-cleanup. Local and self-hosted runners are rejected. Controller preparation does
-not use this cleanup.
+unexpected required paths, skips unsafe optional paths, then requires 36 GiB
+free and logs capacity before and after cleanup. Local and self-hosted runners
+are rejected. Controller preparation does not use this cleanup.
 
 BuildKit runs one build step at a time to avoid overlapping dependency-install
 peaks. Each runtime dependency-install stage removes its temporary pnpm store
