@@ -74,7 +74,7 @@
       "path": "tests/integration/runtime-images.test.mjs",
       "expectedTests": [
         "Docker runtime image inspection follows attached images and rejects foreign revisions",
-        "runtime image metadata endpoint returns only a validated baked commit"
+        "runtime image metadata endpoint validates Enterprise and OpenClaw provenance independently"
       ]
     }
   ]
