@@ -7,7 +7,7 @@ Pod replacement can lose telemetry. Use your existing collection infrastructure
 for production; start with [metrics discovery](metrics.md) and
 [operational-log collection](../observability.md).
 
-Run from the repository root with Helm, `kubectl`, an explicitly selected
+Run from the repository root with Helm, `kubectl`, `yq` v4, an explicitly selected
 kubeconfig/context, and an enforcing NetworkPolicy implementation. You need
 permission to install the demo namespace and a Pod-discovery Role/RoleBinding in
 the OCC namespace. The optional Collector additionally needs the permissions in
@@ -80,44 +80,50 @@ kubectl --context "$HELM_KUBECONTEXT" -n openclaw-system create secret generic o
   --from-literal=OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://demo-loki.oce-observability-demo.svc:3100/otlp/v1/logs
 ```
 
-Create `$OBS_FILES/occ-demo.yaml`. The explicit flags enable metrics even if the
-saved OCC values disabled them. Match the demo's `occ.metricsPort` to the OCC
-chart's `metrics.port` if you changed it from 9464. For existing collection, omit
-`logging` and configure that Collector's egress to the same selected Loki Pods instead.
+Create a complete `$OBS_FILES/occ-demo.yaml` from the saved OCC values. Replace
+the selector maps: Helm merges maps across values files, so an overlay or empty
+map can retain old labels and block the demo scraper. Keep `occ-before.yaml`
+unchanged for restoration. These commands enable metrics even if previously
+disabled and preserve the configured metrics port. Match the demo's
+`occ.metricsPort` to the OCC chart's `metrics.port` if you changed it from 9464.
 
-```yaml
-metrics:
-  enabled: true
-  scraperNamespaceLabels:
-    kubernetes.io/metadata.name: oce-observability-demo
-  scraperPodLabels:
-    app.kubernetes.io/instance: demo
-    app.kubernetes.io/component: prometheus
-logging:
-  collector:
-    enabled: true
-    configSecretName: occ-demo-collector-config
-    envSecretName: occ-demo-collector-exporter
-    exporter:
-      cidr: ""
-      namespaceLabels:
-        kubernetes.io/metadata.name: oce-observability-demo
-      podLabels:
-        app.kubernetes.io/instance: demo
-        app.kubernetes.io/component: loki
-      port: 3100
-    metrics:
-      enabled: true
-      scraperNamespaceLabels:
-        kubernetes.io/metadata.name: oce-observability-demo
-      scraperPodLabels:
-        app.kubernetes.io/instance: demo
-        app.kubernetes.io/component: prometheus
+```bash
+yq '.metrics.enabled = true |
+  .metrics.scraperNamespaceLabels = {"kubernetes.io/metadata.name": "oce-observability-demo"} |
+  .metrics.scraperPodLabels = {
+    "app.kubernetes.io/instance": "demo",
+    "app.kubernetes.io/component": "prometheus"
+  }' "$OBS_FILES/occ-before.yaml" > "$OBS_FILES/occ-demo.yaml"
 ```
+
+For the chart-managed Collector, also replace its scraper and exporter selectors.
+If an existing cluster Collector owns the streams, skip this command and configure
+that Collector's egress to the selected Loki Pods instead.
+
+```bash
+yq -i '.logging.collector.enabled = true |
+  .logging.collector.configSecretName = "occ-demo-collector-config" |
+  .logging.collector.envSecretName = "occ-demo-collector-exporter" |
+  .logging.collector.exporter.cidr = "" |
+  .logging.collector.exporter.namespaceLabels = {"kubernetes.io/metadata.name": "oce-observability-demo"} |
+  .logging.collector.exporter.podLabels = {
+    "app.kubernetes.io/instance": "demo",
+    "app.kubernetes.io/component": "loki"
+  } |
+  .logging.collector.exporter.port = 3100 |
+  .logging.collector.metrics.enabled = true |
+  .logging.collector.metrics.scraperNamespaceLabels = {"kubernetes.io/metadata.name": "oce-observability-demo"} |
+  .logging.collector.metrics.scraperPodLabels = {
+    "app.kubernetes.io/instance": "demo",
+    "app.kubernetes.io/component": "prometheus"
+  }' "$OBS_FILES/occ-demo.yaml"
+```
+
+Upgrade using only the complete demo values, resetting any saved release values:
 
 ```bash
 helm upgrade oce deploy/helm/openclaw-enterprise -n openclaw-system \
-  -f "$OBS_FILES/occ-before.yaml" -f "$OBS_FILES/occ-demo.yaml" --wait --timeout 5m
+  --reset-values -f "$OBS_FILES/occ-demo.yaml" --wait --timeout 5m
 kubectl --context "$HELM_KUBECONTEXT" -n oce-observability-demo \
   port-forward service/demo-grafana 3001:3000 --address 127.0.0.1
 ```
