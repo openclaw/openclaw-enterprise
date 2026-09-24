@@ -1,7 +1,8 @@
 # DevDay demo verification
 
-Captured from source commit `73e6b7b1e803bcd3c2b8dc27ba984e0db722829b` on
-September 23, 2026. Later evidence-only commits do not change the demonstrated UI.
+Captured from source commit `19c5184ed827e093dcf2b2cecde8753bc3f8d028` on
+September 24, 2026, after reconciling main at `f23f7f4d`. Later evidence-only
+commits do not change the demonstrated UI.
 
 Environment: macOS, Node.js 24.15.0, pnpm 11.15.1, Storybook 10.6.0,
 Playwright 1.63.0 with headed Chromium, 1440 × 1000 viewport. Static Storybook
@@ -26,18 +27,18 @@ and send a new message. Checkpoint stories offer a resettable fallback.
 [Watch the 29-second walkthrough](walkthrough.mp4). The video joins the Console
 capture and the newly opened Admin UI window in chronological order.
 
-| Capture                                             | Visible state                                                                         |
-| --------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| [Agents](00-agents.png)                             | The starting Console with deployed `oceclaw`.                                         |
-| [Codex Preset](00-codex-preset.png)                 | Codex selected and `devday claw` entered.                                             |
-| [Model credential](01-codex-configuration.png)      | Codex harness and masked fake API key.                                                |
-| [Model](01-model.png)                               | Selected `gpt-6-astra`. Repository selection is shown in the video.                   |
-| [Channels and Secrets](02-channels-and-secrets.png) | Fake OpenClaw channel IDs and pre-existing simulated Slack app/bot Secret selections. |
-| [Deployment progress](03-deployment-progress.png)   | Waiting for deployment activation.                                                    |
-| [Deployment success](04-deployment-succeeded.png)   | `devday claw`, admitted revision, and `succeeded` deployment.                         |
-| [Admin UI launch](05-oceclaw-admin-launch.png)      | Deployed `oceclaw` and **Open native admin UI**.                                      |
-| [Existing message](06-admin-existing-message.png)   | Seeded `#openclaw-feedback` conversation.                                             |
-| [New reply](07-admin-reply.png)                     | Submitted message and visible simulated response.                                     |
+| Capture                                             | Visible state                                                                     |
+| --------------------------------------------------- | --------------------------------------------------------------------------------- |
+| [Agents](00-agents.png)                             | The starting Console with deployed `oceclaw`.                                     |
+| [Codex Preset](00-codex-preset.png)                 | Codex selected and `devday claw` entered.                                         |
+| [Model credential](01-codex-configuration.png)      | Codex harness and masked fake API key.                                            |
+| [Model](01-model.png)                               | Selected `gpt-6-astra`. Repository selection is shown in the video.               |
+| [Channels and Secrets](02-channels-and-secrets.png) | Fake channel IDs, allowed user `UDEMO123`, and simulated Slack Secret selections. |
+| [Deployment progress](03-deployment-progress.png)   | Waiting for deployment activation.                                                |
+| [Deployment success](04-deployment-succeeded.png)   | `devday claw`, admitted revision, and `succeeded` deployment.                     |
+| [Admin UI launch](05-oceclaw-admin-launch.png)      | Deployed `oceclaw` and **Open native admin UI**.                                  |
+| [Existing message](06-admin-existing-message.png)   | Seeded `#openclaw-feedback` conversation.                                         |
+| [New reply](07-admin-reply.png)                     | Submitted message and visible simulated response.                                 |
 
 The Create Agent form no longer exposes the raw Secret bindings JSON editor.
 Preset bindings and Slack drawer selections remain in form state and are sent
@@ -53,9 +54,11 @@ with the Configuration. [Updated form](01-create-options.png).
   The generic native-admin boundary story remains separate.
 - Reset story and the sandboxed Admin UI popup/Send action passed in the actual
   Storybook iframe. The MP4 opened in Chromium at 1440 × 1000, duration 29 seconds.
-- Three focused Console browser tests passed: API-key/Slack Secret creation,
-  creation without provisioning support, and Preset partial-save retries.
-- Independent code review reported no P1/P2 findings.
+- All 19 focused Console browser tests passed, with no failures or skips, covering
+  Secret creation, regular/provisioning creation, Preset retries, standard Codex
+  password Presets, provider/runtime controls, and Slack sender access.
+- Independent source review reported no P1/P2 findings. PNG/MP4 evidence was
+  excluded from automated source review and inspected through browser playback.
 
 This is simulated UI proof. The Console uses production modules; the Admin UI
 is a schematic chat fixture rather than the bundled OpenClaw Control UI.
