@@ -86,6 +86,8 @@ in this channel and requires a mention. Narrow the sender list in the drawer if
 needed. No credentials are stored in the file.
 The preset includes the supplied Ocalot instructions in
 `template.agent.initialWorkspaceFiles.AGENTS.md`, including their draft decisions.
+Its opening sentence uses `You are {{vars.name}}`, filled from the entered `name`
+when applying the Preset. Later name edits do not re-render the copied file.
 To revise them, update that content and the existing Namespace Preset through the API. Restarting with a changed
 JSON file preserves already-installed same-name copies.
 

@@ -2045,7 +2045,7 @@ export const scenarios = {
     steps: [
       "Start on the Agents list with the already deployed oceclaw seed, then click Create Agent.",
       "Select the SWE Agent Preset copied from standard-codex and enter devday claw for its name.",
-      "Keep the default gpt-6-astra model and enter fake modelSecret at-demo-devday-service-account-token, then Use Preset. Review the supplied Ocalot AGENTS.md and editable workspace defaults.",
+      "Keep the default gpt-6-astra model and enter fake modelSecret at-demo-devday-service-account-token, then Use Preset. Review AGENTS.md: its opening sentence now says You are devday claw. Workspace defaults remain editable.",
       "Repository access offers openclaw/openclaw-enterprise and openclaw/openclaw. Select either or both with Contributor access.",
       "Open Edit Slack. Confirm prefilled channel C0C43A2QA11, allow simulated user UDEMO123, then bind the existing simulated DevDay Slack Secrets and apply settings.",
       "Create Agent and keep the Console visible while the fixture progresses through provisioning and deployment activation until Workspace files open for the admitted revision.",

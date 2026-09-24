@@ -10,6 +10,8 @@ The **devday** Preset is loaded from `deploy/presets/devday.json`, a copy of the
 standard Codex Preset with Slack prefilled. Installation file loading is described
 in the [Preset reference](../../docs/reference/presets.md#installation-defaults).
 The preset includes the supplied Ocalot `AGENTS.md`, with its draft decisions preserved.
+The opening sentence uses `You are {{vars.name}}`; entering `devday claw` produces
+`You are devday claw` when applying the preset.
 
 ## Segment 1: create `devday claw`
 
