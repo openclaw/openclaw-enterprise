@@ -92,8 +92,14 @@ the installed dependencies and frozen lockfiles remain unchanged. These steps
 reduce peak disk use before OCI export. The SDK helper rejects local and
 self-hosted runners. Controller preparation does not use the SDK cleanup.
 
-After OCI export, the job prunes only its dedicated Buildx builder's cache so
-the cache and unpacked smoke images do not exhaust the runner's disk together.
+Each image job exports amd64 to an OCI directory, prunes only its dedicated
+Buildx builder's cache, then repeats for arm64. This keeps one architecture's
+build snapshots on disk at a time, alongside the earlier compressed export.
+`scripts/ci/container-release.mjs:assemble` checks each action's output digest,
+blob sizes and hashes, and platform configuration before linking both sets of
+blobs into one OCI layout. It writes one multi-platform index and archive, then
+removes the temporary layouts. The existing smoke and seal steps consume that
+archive and its new index digest. No registry is involved in assembly.
 
 ### 2. Verify and execute both platform variants
 
@@ -168,6 +174,8 @@ not rebuild them. Old amd64-only seals cannot satisfy this platform contract.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-09-24 04:03: Export architectures sequentially, release build snapshots between them, and assemble validated OCI blobs before startup checks. (codex/01a0c179-19f7-7111-8bb4-fc7680da5545 - bac4602c)
 
 - 2026-09-24 03:01: Limit concurrent BuildKit steps and remove temporary pnpm stores before committing dependency layers. (codex/01a0c179-19f7-7111-8bb4-fc7680da5545 - 1a126137)
 
