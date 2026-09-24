@@ -116,9 +116,10 @@ Dispatch **Check Native Container Images** (`container-check.yml`) on the branch
 to build and smoke controller and runtime on native AMD64 and ARM64 runners without
 publishing. It uses the same reusable preparation jobs as Enterprise Containers.
 Manual `CI` dispatches also call this native verification workflow, including on
-a branch before its first merge. The default Blacksmith 8-vCPU runner labels can be overridden with repository
+a branch before its first merge. The default Blacksmith runner labels can be overridden with repository
 variables `CONTAINER_AMD64_RUNNER` and `CONTAINER_ARM64_RUNNER`. Each override must
-name a provisioned Linux runner with the matching architecture and sufficient disk.
+name a provisioned Linux runner with the matching architecture, at least four
+CPUs and 12 GiB RAM, and sufficient disk.
 
 ## Verify the local image
 

@@ -54,14 +54,15 @@ permission or protected-environment credentials.
 
 `.github/workflows/container-publish.yml:jobs.prepare` calls the reusable
 `.github/workflows/container-check.yml:jobs.prepare` image/architecture matrix. Controller and runtime each build on native AMD64 and ARM64 Linux runners.
-The defaults are `blacksmith-8vcpu-ubuntu-2404` and
+The defaults are `blacksmith-16vcpu-ubuntu-2404` and
 `blacksmith-8vcpu-ubuntu-2404-arm`; `CONTAINER_AMD64_RUNNER` and
 `CONTAINER_ARM64_RUNNER` repository variables can select other provisioned labels.
 Each job checks its architecture and logs CPU, memory, and available disk.
-Blacksmith documents 160 GB disk for these tiers, with 32 GB AMD64 or 24 GB ARM64
-RAM; inspect the actual job receipt before attributing performance to those sizes.
-The standard AMD64 override retains guarded toolchain cleanup. Larger runners do
-not depend on deleting preinstalled SDKs.
+Jobs require at least four CPUs and 12 GiB RAM; the reported runner label alone
+is not evidence of allocated capacity.
+The standard AMD64 override retains guarded toolchain cleanup: required roots
+are checked, unsafe optional paths are skipped, and 36 GiB free is required.
+Larger runners do not depend on deleting preinstalled SDKs.
 
 Each Buildx builder runs at most two steps concurrently. GitHub Actions build
 caches are scoped by image and architecture, including intermediate stages.
