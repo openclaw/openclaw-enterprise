@@ -1,0 +1,335 @@
+{
+  "files": [
+    {
+      "path": "tests/conformance/audit.test.mjs"
+    },
+    {
+      "path": "tests/conformance/compute-lifecycle-hooks.test.mjs"
+    },
+    {
+      "path": "tests/conformance/configuration-occ.test.mjs"
+    },
+    {
+      "path": "tests/conformance/contracts.test.mjs"
+    },
+    {
+      "path": "tests/conformance/docker-compute.test.mjs"
+    },
+    {
+      "path": "tests/conformance/iam.test.mjs"
+    },
+    {
+      "path": "tests/conformance/kubernetes-compute.test.mjs"
+    },
+    {
+      "path": "tests/conformance/kubernetes-preflight.test.mjs"
+    },
+    {
+      "path": "tests/conformance/kubernetes-runtime-credentials.test.mjs"
+    },
+    {
+      "path": "tests/conformance/kubernetes-configuration.test.mjs"
+    },
+    {
+      "path": "tests/conformance/kubernetes-ownership.test.mjs"
+    },
+    {
+      "path": "tests/conformance/kubernetes-secret-driver.test.mjs"
+    },
+    {
+      "path": "tests/conformance/occ-api-security.test.mjs"
+    },
+    {
+      "path": "tests/conformance/occ-read.test.mjs"
+    },
+    {
+      "path": "tests/conformance/openshell-gateway-wire.test.mjs"
+    },
+    {
+      "path": "tests/conformance/platform-state-memory.test.mjs"
+    },
+    {
+      "path": "tests/conformance/presets.test.mjs"
+    },
+    {
+      "path": "tests/conformance/secret-gateway-delivery.test.mjs"
+    },
+    {
+      "path": "tests/conformance/secret-occ.test.mjs"
+    },
+    {
+      "path": "tests/conformance/service-account-driver.test.mjs"
+    },
+    {
+      "path": "tests/conformance/test-files.test.mjs"
+    },
+    {
+      "path": "tests/conformance/utils.test.mjs"
+    },
+    {
+      "path": "tests/conformance/workspace-files-configuration.test.mjs"
+    },
+    {
+      "path": "tests/conformance/workspace-files.test.mjs"
+    },
+    {
+      "path": "tests/conformance/workspace-node-supervisor.test.mjs"
+    },
+    {
+      "path": "tests/integration/presets-controller.test.mjs"
+    },
+    {
+      "path": "tests/integration/bootstrap-output.test.mjs"
+    },
+    {
+      "path": "tests/integration/bootstrap-volume.test.mjs"
+    },
+    {
+      "path": "tests/integration/configuration-controller.test.mjs"
+    },
+    {
+      "path": "tests/integration/configuration-startup.test.mjs"
+    },
+    {
+      "path": "tests/integration/console-api.test.mjs"
+    },
+    {
+      "path": "tests/integration/console-build-metadata.test.mjs"
+    },
+    {
+      "path": "tests/integration/controller-lifecycle.test.mjs"
+    },
+    {
+      "path": "tests/integration/driver-plugin-installation.test.mjs"
+    },
+    {
+      "path": "tests/integration/git-hooks.test.mjs"
+    },
+    {
+      "path": "tests/integration/occ-api.test.mjs"
+    },
+    {
+      "path": "tests/integration/production-controller-security.test.mjs"
+    },
+    {
+      "path": "tests/integration/production-healthcheck.test.mjs"
+    },
+    {
+      "path": "tests/integration/sandbox-driver-startup.test.mjs"
+    },
+    {
+      "path": "tests/integration/secret-api.test.mjs"
+    },
+    {
+      "path": "tests/integration/runtime-credentials-api.test.mjs"
+    },
+    {
+      "path": "tests/integration/secret-driver-startup.test.mjs"
+    },
+    {
+      "path": "tests/integration/service-api-keys.test.mjs"
+    },
+    {
+      "path": "tests/integration/startup-ipv6-loopback.test.mjs"
+    },
+    {
+      "path": "tests/integration/common-logging.test.mjs"
+    },
+    {
+      "path": "tests/integration/dev-up.test.mjs",
+      "expectedTests": [
+        "dev-up builds the default runtime only when real Compose leaves runtime images unselected",
+        "dev-up preserves a selected custom runtime image and skips the quickstart build",
+        "dev-up applies per-image overrides on top of the shared runtime image",
+        "dev-up rejects a public controller port rendered by real Compose",
+        "dev-up refuses an existing key destination before invoking Compose",
+        "dev-up fails closed when bootstrap exits unsuccessfully",
+        "dev-up fails closed when the worker exits before readiness",
+        "dev-up preserves a copied key when the authenticated installation check is rejected",
+        "dev-up rejects an authenticated installation response for a different Installation"
+      ]
+    },
+    {
+      "path": "tests/integration/compute-singleton-worker.test.mjs",
+      "expectedTests": [
+        "before-commit Compute Drivers must expose an activation operation",
+        "Compute Driver maintenance intervals must be positive safe integers"
+      ]
+    },
+    {
+      "path": "tests/integration/ci-runner.test.mjs"
+    },
+    {
+      "path": "tests/integration/full-integration-preflight.test.mjs"
+    },
+    {
+      "path": "tests/integration/ci-cleanup.test.mjs"
+    },
+    {
+      "path": "tests/integration/ci-prepare.test.mjs"
+    },
+    {
+      "path": "tests/integration/k3d-launcher.test.mjs"
+    },
+    {
+      "path": "tests/integration/ci-openshell.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-agents.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-repository-dedicated.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-runtime-credentials.test.mjs"
+    },
+    {
+      "path": "tests/browser/console.test.mjs"
+    },
+    {
+      "path": "tests/browser/docs-compute-matrix.test.mjs"
+    },
+    {
+      "path": "tests/integration/ci-logging.test.mjs"
+    },
+    {
+      "path": "tests/integration/container-release.test.mjs"
+    },
+    {
+      "path": "tests/integration/container-resume.test.mjs"
+    },
+    {
+      "path": "tests/integration/container-promote.test.mjs"
+    },
+    {
+      "path": "tests/conformance/ssh-compute.test.mjs"
+    },
+    {
+      "path": "tests/integration/ssh-compute-startup.test.mjs"
+    },
+    {
+      "path": "tests/conformance/plugin-compute.test.mjs"
+    },
+    {
+      "path": "tests/conformance/plugin-runtime-policy.test.mjs"
+    },
+    {
+      "path": "tests/conformance/plugin-driver.test.mjs"
+    },
+    {
+      "path": "tests/conformance/plugin-runtime-templates.test.mjs"
+    },
+    {
+      "path": "tests/integration/plugin-driver-startup.test.mjs"
+    },
+    {
+      "path": "tests/conformance/repository-transactions.test.mjs"
+    },
+    {
+      "path": "tests/conformance/postgres-transaction-commit.test.mjs"
+    },
+    {
+      "path": "tests/integration/native-admin-access.test.mjs",
+      "expectedTests": [
+        "native admin status requires exact Agent administer and reports lifecycle availability",
+        "native admin disabled status still requires exact Agent administer",
+        "native admin shared session configuration validates cookie scope and rejects keys",
+        "native admin proxy strips browser credentials and preserves the Agent gateway base path"
+      ]
+    },
+    {
+      "path": "tests/integration/workspace-setup-api.test.mjs"
+    },
+    {
+      "path": "tests/conformance/repository-credentials-source-boundary.test.mjs"
+    },
+    {
+      "path": "tests/conformance/repository-credentials-contracts.test.mjs"
+    },
+    {
+      "path": "tests/conformance/repository-credentials-github.test.mjs"
+    },
+    {
+      "path": "tests/conformance/repository-credentials-sessions.test.mjs"
+    },
+    {
+      "path": "tests/conformance/repository-credentials-custody.test.mjs"
+    },
+    {
+      "path": "tests/conformance/repository-credentials-lifecycle.test.mjs"
+    },
+    {
+      "path": "tests/conformance/repository-credentials-ownership-boundaries.test.mjs"
+    },
+    {
+      "path": "tests/conformance/repository-credentials-fixture-ownership.test.mjs",
+      "expectedTests": [
+        "runner timeout cancels and joins commands before teardown admits cleanup",
+        "accepted network creation with a lost response stays owned until verified absent",
+        "creation completes after 0ms",
+        "creation completes after 500ms",
+        "uncertain network creation remains unresolved when its cleanup budget expires empty",
+        "network cleanup reports failed readback and refuses foreign ownership"
+      ]
+    },
+    {
+      "path": "tests/integration/repository-credentials-config.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-credentials-http.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-credentials-transport-bounds.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-credentials-server-timeout.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-credentials-control.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-credentials-shutdown.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-credentials-client-config.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-credentials-router.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-credentials-package.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-credentials-service-loss.test.mjs",
+      "expectedTests": [
+        "TEST-001: SIGKILL after confirmed GitHub issuance loses session inventory",
+        "TEST-002: lost GitHub issuance response stays charged while service survives",
+        "TEST-002: SIGKILL before GitHub issuance response loses local reservation"
+      ]
+    },
+    {
+      "path": "tests/conformance/repository-credentials-registry.test.mjs"
+    },
+    {
+      "path": "tests/conformance/repository-runtime-material.test.mjs"
+    },
+    {
+      "path": "tests/conformance/repository-sessions-memory.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-credentials-admission.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-credentials-driver.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-credentials-projected-inputs.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-credentials-restart.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-runtime-materialization.test.mjs"
+    }
+  ]
+}

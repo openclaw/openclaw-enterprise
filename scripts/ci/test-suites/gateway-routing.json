@@ -1,0 +1,43 @@
+{
+  "requiredEnv": [
+    "OCC_TEST_KUBERNETES_KUBECONFIG",
+    "OCC_TEST_KUBERNETES_CONTEXT",
+    "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE",
+    "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+    "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+    "OPENAI_API_KEY",
+    "OCC_TEST_OPENAI_MODEL",
+    "OCC_TEST_GATEWAY_CA_CERT_PATH",
+    "OCC_TEST_GATEWAY_CA_KEY_PATH"
+  ],
+  "env": {
+    "OCC_TEST_GATEWAY_ROUTING_REAL": "1",
+    "OCC_TEST_SLACK_LIVE": "0",
+    "OCC_TEST_NATIVE_ADMIN_REAL": "1"
+  },
+  "prepare": {
+    "postgres": true,
+    "k3d": true,
+    "codexSeccomp": true,
+    "requiresPreparedStateForFile": true,
+    "requireEnv": ["OPENAI_API_KEY", "OCC_TEST_OPENAI_MODEL", "NODE_BASE_IMAGE"],
+    "immutableOptionalEnvImages": [
+      "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+      "OCC_TEST_KUBERNETES_AGENT_IMAGE"
+    ]
+  },
+  "files": [
+    {
+      "path": "tests/integration/harness-topology-k3d-routing-real.test.mjs",
+      "expectedTests": [
+        "production dedicated Codex consumes Envoy-routed workspace files through OCC"
+      ]
+    },
+    {
+      "path": "tests/integration/native-admin-k3d-real.test.mjs",
+      "expectedTests": [
+        "production native admin UI opens through OCC and preserves Agent boundaries"
+      ]
+    }
+  ]
+}

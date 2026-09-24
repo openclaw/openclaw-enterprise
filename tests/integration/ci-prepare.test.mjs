@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
 import {
   codexBwrapAdditionalSyscalls,
   deriveCodexBwrapProfile,
@@ -692,9 +693,7 @@ test("installed repository preparation requires explicit authorization and prote
 });
 
 test("ordinary CI groups require platform proof and exclude installed live repository writes", async () => {
-  const manifest = JSON.parse(
-    await readFile(join(repositoryRoot, "scripts/ci/test-suites.json"), "utf8"),
-  );
+  const manifest = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"));
   for (const name of ["ci", "full"]) {
     assert.ok(manifest.groups[name].includes("repository-credentials-platform"));
     assert.ok(!manifest.groups[name].includes("repository-credentials-installed"));

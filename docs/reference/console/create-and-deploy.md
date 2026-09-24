@@ -42,10 +42,10 @@ does not make that link available.
    Service Accounts, open [OpenAI admin](https://admin.openai.com/), choose your
    workspace, open **Service accounts**, and create a token with Codex scope.
    The fields show `sk-…` and `at-…` hints; prefixes do not select the method.
-   Enter the credential to show model controls. **Load models** queries the
-   selected provider and lets you choose the gateway's default model; no model
-   is preselected. Choose a text-generation model compatible with your runtime.
-   If the list is empty or unavailable, retry or select **Enter model ID manually**.
+   Choose a model from the starter list or select **Enter model ID manually**.
+   The list appears before credential entry, with no preselected model.
+   It is intentionally hardcoded pending a future discovery iteration; confirm
+   your credential and runtime support your choice.
    The form writes the corresponding native model configuration. Credentials
    remain separate from Configuration JSON.
 4. Confirm your Installation has access to the chosen model. Primary and fallback

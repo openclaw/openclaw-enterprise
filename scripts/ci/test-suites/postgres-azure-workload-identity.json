@@ -1,0 +1,15 @@
+{
+  "requiredEnv": [
+    "OCC_TEST_AZURE_DATABASE_URL",
+    "AZURE_TENANT_ID",
+    "AZURE_CLIENT_ID",
+    "AZURE_FEDERATED_TOKEN_FILE"
+  ],
+  "prepare": {},
+  "files": [
+    {
+      "path": "tests/integration/postgres-azure-workload-identity.test.mjs",
+      "expectedTests": ["Azure workload identity opens successive real PostgreSQL TLS connections"]
+    }
+  ]
+}

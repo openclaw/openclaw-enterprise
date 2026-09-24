@@ -1,7 +1,7 @@
 ---
 created: "2026-09-20"
-updated: "2026-09-20"
-last_updated_session: "codex/01a0bce5-9f29-7110-85fd-6b140674d362"
+updated: "2026-09-23"
+last_updated_session: "codex/01a0d075-a358-7620-8c16-fd4290acddf1"
 ---
 
 # Namespace IAM Policy Flow
@@ -20,7 +20,7 @@ together in the platform state transaction.
 - Trigger: `GET`, `POST`, or `DELETE` under `/namespaces/:namespaceId/iam/*`
 - Source: `packages/contracts/src/api/routes.ts:occApiRoutes`
 - Source: `apps/controller/src/index.ts:requiredPermissions`
-- Source: `apps/controller/src/index.ts:perform`
+- Source: `apps/controller/src/http/iam.ts:iamHandlers`
 - Assumptions: the caller is admitted to the Installation, the selected IAM
   Driver implements Namespace policy management, and the requested Namespace
   already exists.
@@ -46,13 +46,15 @@ graph TD
 `apps/controller/src/index.ts:requiredPermissions`
 
 The API route declares IAM operations as Installation administration plus exact
-Namespace read. The controller resolves the caller before the handler runs and
-uses the selected IAM Driver for both checks. Ordinary access to the target
-resource does not authorize policy delegation.
+Namespace read. Admission and identity resolution remain in
+`apps/controller/src/index.ts`; they resolve the caller before dispatching to
+the IAM handler. The OCC controller uses the selected IAM Driver for both
+permission checks. Ordinary access to the target resource does not authorize
+policy delegation.
 
 ### 2. Role and AccessBinding commands reach the controller
 
-`apps/controller/src/index.ts:perform`
+`apps/controller/src/http/iam.ts:iamHandlers`
 
 List and read operations call the corresponding `OpenClawController` IAM method
 and return policy metadata. Create and delete operations run inside
@@ -110,4 +112,5 @@ authorization requests read the current policy through the IAM Driver.
 
 ## Changelog
 
+- 2026-09-23 22:56: Update source ownership for extracted IAM HTTP handlers; preserve admission and transaction boundaries. (codex/01a0d075-a358-7620-8c16-fd4290acddf1 - 4df9f9800836dc1c2b57afd5f8af4d91f55088d5)
 - 2026-09-20 09:32: Document Namespace IAM policy management flow. (codex/01a0bce5-9f29-7110-85fd-6b140674d362 - 5f7728e8c5d128bc7067b7035e07f06c3c4da92c)

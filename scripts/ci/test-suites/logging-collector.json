@@ -1,0 +1,31 @@
+{
+  "env": {
+    "OCC_TEST_LOGGING_COLLECTOR": "1",
+    "OCC_TEST_METRICS_MONITORING": "1"
+  },
+  "requiredEnv": ["OCC_TEST_LOGGING_NODE_IMAGE"],
+  "prepare": {
+    "defaultEnv": {
+      "OCC_TEST_LOGGING_NODE_IMAGE": "docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584"
+    }
+  },
+  "files": [
+    {
+      "path": "tests/integration/logging-collector.test.mjs",
+      "expectedTests": [
+        "native Collector filters actual Docker forwarding, binds transport identity, and survives exporter outage",
+        "native Collector preserves Kubernetes identity after a dropped record sharing Pod metadata"
+      ]
+    },
+    {
+      "path": "tests/integration/ci-logging-collector.test.mjs",
+      "expectedTests": ["prepareLogging backend receives real OTLP/HTTP logs and writes JSONL"]
+    },
+    {
+      "path": "tests/integration/occ-metrics-monitoring.test.mjs",
+      "expectedTests": [
+        "Prometheus remote write records real OCC traffic and Grafana provisions its dashboard"
+      ]
+    }
+  ]
+}

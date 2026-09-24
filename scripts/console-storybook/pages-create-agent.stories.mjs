@@ -89,12 +89,11 @@ export const CreateBoundPatPreset = {
   ...story("createBoundPatPreset"),
   name: "Preset with saved service account token",
 };
-export const CreateModels = { ...story("createModels"), name: "Choose an available model" };
-export const CreateModelsEmpty = { ...story("createModelsEmpty"), name: "No model choices" };
-export const CreateModelsUnavailable = {
-  ...story("createModelsUnavailable"),
-  name: "Model discovery unavailable",
+export const CreateModels = {
+  ...story("createModels"),
+  name: "Model choices before credential entry",
 };
+export const CreateModelManual = { ...story("createModelManual"), name: "Enter another model ID" };
 export const CreateSecretDenied = {
   ...story("createSecretDenied"),
   name: "API key storage denied",

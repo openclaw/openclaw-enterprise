@@ -1,0 +1,19 @@
+{
+  "prepare": {
+    "postgres": true,
+    "requiresPreparedStateForFile": true
+  },
+  "files": [
+    {
+      "path": "tests/integration/postgres-migration-compatibility.test.mjs",
+      "expectedTests": [
+        "Canonical repository-prefix upgrade retains exact attempt cleanup context",
+        "Drizzle generates repository schema migrations without redundant regeneration",
+        "Migration rejects legacy active_runtime state without changing persisted rows",
+        "Migration rejects legacy harness_revision state without changing persisted rows",
+        "Migration rejects legacy harness_account state without changing persisted rows",
+        "Drizzle second migration preserves the applied journal and PostgreSQL schema"
+      ]
+    }
+  ]
+}

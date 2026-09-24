@@ -4,6 +4,8 @@ import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
+import { loadTestSuites } from "./test-suites.mjs";
+
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const reporterPath = fileURLToPath(new URL("./reporter.mjs", import.meta.url));
 const defaultManifestPath = "scripts/ci/test-suites.json";
@@ -154,10 +156,6 @@ function normalizeManifest(raw) {
 
 async function readJson(path) {
   return JSON.parse(await readFile(path, "utf8"));
-}
-
-async function loadManifest(path) {
-  return normalizeManifest(await readJson(path));
 }
 
 function absoluteInputPath(root, path) {
@@ -876,7 +874,7 @@ async function main() {
   const { command, positionals, options } = parseArgs(process.argv.slice(2));
   const root = resolve(options.root ?? repositoryRoot);
   const manifestPath = resolve(root, options.manifest ?? defaultManifestPath);
-  const manifest = await loadManifest(manifestPath);
+  const manifest = normalizeManifest(loadTestSuites(manifestPath));
 
   if (command === "audit") {
     const summary = await auditManifest(root, manifest);

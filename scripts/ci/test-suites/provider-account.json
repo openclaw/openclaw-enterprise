@@ -1,0 +1,39 @@
+{
+  "requiredEnv": [
+    "OCC_TEST_KUBERNETES_KUBECONFIG",
+    "OCC_TEST_KUBERNETES_CONTEXT",
+    "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+    "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+    "OCC_TEST_OPENAI_MODEL",
+    "OCC_TEST_CHATGPT_WORKSPACE_ID",
+    "OCC_TEST_CHATGPT_ADMIN_KEY_PATH"
+  ],
+  "env": {
+    "OCC_TEST_CHATGPT_SERVICE_ACCOUNT_REAL": "1"
+  },
+  "prepare": {
+    "postgres": true,
+    "k3d": true,
+    "codexSeccomp": true,
+    "requiresPreparedStateForFile": true,
+    "requireEnv": [
+      "OCC_TEST_OPENAI_MODEL",
+      "OCC_TEST_CHATGPT_WORKSPACE_ID",
+      "OCC_TEST_CHATGPT_ADMIN_KEY_PATH"
+    ],
+    "immutableOptionalEnvImages": [
+      "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+      "OCC_TEST_KUBERNETES_AGENT_IMAGE"
+    ],
+    "mode0600Env": "OCC_TEST_CHATGPT_ADMIN_KEY_PATH",
+    "mode0600Description": "ChatGPT admin key"
+  },
+  "files": [
+    {
+      "path": "tests/integration/service-account-driver-real.test.mjs",
+      "expectedTests": [
+        "a real ChatGPT-managed account powers its exact dedicated Codex Agent model turn"
+      ]
+    }
+  ]
+}

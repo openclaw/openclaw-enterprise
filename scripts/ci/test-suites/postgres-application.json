@@ -1,0 +1,220 @@
+{
+  "prepare": {
+    "postgres": true,
+    "requiresPreparedStateForFile": true
+  },
+  "files": [
+    {
+      "path": "tests/integration/postgres-connection-auth.test.mjs",
+      "expectedTests": [
+        "password authentication preserves the existing pg connection configuration",
+        "the password pool authenticates to the selected real PostgreSQL database",
+        "the real pg client retains the Azure token callback and verified TLS after URL parsing",
+        "workload authentication rejects password fallback and unverified TLS"
+      ]
+    },
+    {
+      "path": "tests/integration/occ-metrics.test.mjs",
+      "expectedTests": [
+        "API metrics follow real authenticated routes and keep replica registries isolated",
+        "metrics settings reject exposed development binds and disabled stray settings",
+        "worker inventory reflects PostgreSQL activation and redeployment without replica multiplication",
+        "real table contention fails overlapping scrapes and recovers"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-auth-accounts.test.mjs",
+      "expectedTests": [
+        "fresh PostgreSQL development bootstrap writes a usable administrator service key",
+        "PostgreSQL auth account provisioning is visible to another controller without rebuilding IAM Driver",
+        "PostgreSQL auth account audit failure rolls back IAM and Better Auth account state"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-bootstrap-failures.test.mjs",
+      "expectedTests": [
+        "concurrent development bootstrap subprocesses reject the loser and reload the committed winner",
+        "production bootstrap preserves committed credentials when COMMIT acknowledgement is lost",
+        "known bootstrap failures preserve created artifacts and report safe diagnostics",
+        "development bootstrap preserves credentials when COMMIT acknowledgement is lost"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-controller-work-targets.test.mjs",
+      "expectedTests": ["PostgreSQL controller work requires exactly one complete target shape"]
+    },
+    {
+      "path": "tests/integration/postgres-platform-state.test.mjs",
+      "expectedTests": [
+        "PostgreSQL rejects platform writes until the singleton Installation is bootstrapped",
+        "real OCC Namespace lifecycle persists provisioning, readiness, deletion, and its tombstone",
+        "PostgreSQL platform state satisfies memory adapter ownership, immutability, and atomicity",
+        "the PostgreSQL worker reloads exact Namespace restrictions and never dispatches revoked provisioning"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-production-wireup.test.mjs",
+      "expectedTests": [
+        "production bootstrap creates a generated-password administrator that can authenticate"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-provider-ownership.test.mjs",
+      "expectedTests": [
+        "development API starts with stale Provider references and permits repair through Agent update",
+        "PostgreSQL Provider ownership persists exact Agent associations and admits only matching managed bindings"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-namespace-iam-policy.test.mjs",
+      "expectedTests": [
+        "PostgreSQL native IAM creates exact Namespace bindings atomically with audit",
+        "PostgreSQL native IAM serializes AccessBinding creation before target deletion",
+        "PostgreSQL native IAM serializes target deletion before AccessBinding creation",
+        "PostgreSQL native IAM rolls back policy mutations when transaction audit fails",
+        "PostgreSQL native IAM authorizes Namespace-local service identities without Agent ownership",
+        "PostgreSQL native IAM creates exact AgentRevision bindings with limited app privileges",
+        "PostgreSQL native IAM rejects foreign subjects, broad grants, and absent targets"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-restart-recovery.test.mjs",
+      "expectedTests": [
+        "Namespace creation and deletion retain distinct durable work targets",
+        "durable work deduplicates exact ownership and rejects actor or owner collisions",
+        "Namespace convergence and admitted revision work share one durable queue with exact resource ownership",
+        "stale and exhausted recovery includes admitted revisions and Namespace lifecycle work",
+        "transaction-scoped queue fencing rolls back Namespace mutation, completion, and audit together",
+        "concurrent claims exclude one Namespace lifecycle and one Agent while distinct Agents progress",
+        "a restarted queue recovers expired claims, fences old tokens, and persists exhausted failures",
+        "batch stale recovery reports each expired claim once and writes one audit event per item",
+        "Agent deletion retains exact cleanup obligations on fail",
+        "Agent deletion retains exact cleanup obligations on retry",
+        "Agent deletion retains exact cleanup obligations on expired claim",
+        "Agent deletion retains exact cleanup obligations on exhausted queued"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-presets.test.mjs",
+      "expectedTests": [
+        "in-memory Presets preserve template copies, Namespace isolation, and deletion boundaries",
+        "PostgreSQL Presets survive reopening and enforce names, ownership, and Namespace deletion"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-secret-state.test.mjs",
+      "expectedTests": [
+        "in-memory state persists Secret metadata and binding references without values",
+        "PostgreSQL state persists Secret metadata and enforces binding dependencies"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-service-account-deletion.test.mjs",
+      "expectedTests": [
+        "ServiceAccount deletion protects draft, queued, claimed, and active references before Driver effects"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-service-api-keys.test.mjs",
+      "expectedTests": [
+        "PostgreSQL Better Auth keys remain hashed, scoped, and revocable across instances"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-worker-agent-revision.test.mjs",
+      "expectedTests": [
+        "worker revalidates admitted repository selections through the concrete GitHub Driver and Unix control",
+        "Agent stop clears only the exact active pointer after Compute shutdown and retries safely",
+        "Agent stop cleans a terminal candidate without an active revision",
+        "a deployment during active cleanup supersedes the remaining Agent stop effects",
+        "a deployment during candidate cleanup supersedes the remaining Agent stop effects",
+        "maintenance retains its real lease across consecutive short predecessor retirements",
+        "the revision worker activates admitted candidates, retires predecessors, and rejects revoked, malformed, and wrong-owner effects",
+        "the revision worker rejects associated-account access revoked after admission before invoking Compute",
+        "the revision worker rejects managed ServiceAccount issuance revoked after admission before Compute",
+        "the revision worker retries transient Provider binding read failures without activating",
+        "an older revision retry is superseded without preparing or retiring a newer active revision",
+        "real PostgreSQL preserves the failure budget while an Agent runtime converges",
+        "an overdue Agent runtime fails closed without activating its incomplete revision",
+        "one worker reconciles embedded OpenClaw and dedicated Codex but rejects unapproved pinned Harnesses",
+        "a lost retirement claim preserves the activated replacement and cannot complete stolen work",
+        "api_key revision dispatch rechecks Configuration and exact harness Secret grants without backend Secret reads",
+        "codex_pat revision dispatch rechecks Configuration and exact harness Secret grants without backend Secret reads",
+        "revision dispatch refuses a different selected Secret Driver before binding or activating the Agent",
+        "revision dispatch never substitutes a later ChatGPT credential or reconfigured Provider for its admitted snapshot"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-agent-provisioning.test.mjs",
+      "expectedTests": [
+        "provisioning API queues one job with existing Secret references and replays only the exact same request",
+        "provisioning worker creates Configuration and Agent from existing Secrets, then hands off one revision",
+        "api_key provisioning grants existing Secret access and hands off one revision",
+        "codex_pat provisioning grants existing Secret access and hands off one revision",
+        "queued provisioning leaves existing Secrets but creates no Agent or Configuration before a worker runs",
+        "provisioning worker reauthorizes after admission and revoked authority creates no backend effects",
+        "failed provisioning can retry through the API and resume without duplicating the Agent",
+        "Stop and Delete cancel failed pre-handoff provisioning Agents without deployment resurrection",
+        "failed provisioning keeps the accepted plan reserved until retry or deletion"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-worker-stale-claim.test.mjs",
+      "expectedTests": [
+        "a worker that loses its claim during Compute cannot publish Namespace status, lifecycle audit, or completion"
+      ]
+    },
+    {
+      "path": "tests/integration/compute-singleton-worker-postgres.test.mjs",
+      "expectedTests": [
+        "production worker emits Compute preflight warnings before worker.started and continues startup",
+        "a worker binds persisted Namespace, Agent, and service principal before provider effects",
+        "a production singleton driver activates under its claim heartbeat before CAS and retires only after CAS",
+        "failed singleton activation retries without publishing or retiring the previous revision",
+        "production Drivers without an activation preference retain after-commit Kubernetes ordering",
+        "an opted-in active runtime continuously repairs under its original authorized actor",
+        "active maintenance recovers from observation failures beyond its retry budget and stops when its actor is denied",
+        "active maintenance recovers from binding failures beyond its retry budget and stops when its actor is denied"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-repository-transactions.test.mjs",
+      "expectedTests": ["PostgreSQL repository ownership, lifetime, and atomicity"]
+    },
+    {
+      "path": "tests/integration/postgres-transaction-commit.test.mjs",
+      "expectedTests": [
+        "a lost real COMMIT response preserves the unknown outcome and committed resource"
+      ]
+    },
+    {
+      "path": "tests/integration/native-admin-session-postgres.test.mjs",
+      "expectedTests": [
+        "PostgreSQL native admin shared session and HTTP proxy work across two OCC API replicas",
+        "PostgreSQL native admin WebSocket lease closes within thirty seconds after parent logout",
+        "PostgreSQL native admin WebSocket lease closes within thirty seconds after parent session expiry",
+        "PostgreSQL native admin WebSocket lease closes within thirty seconds after IAM administer restriction",
+        "PostgreSQL native admin WebSocket lease closes within thirty seconds after Agent stop",
+        "PostgreSQL native admin WebSocket lease closes within thirty seconds after active revision replacement",
+        "PostgreSQL native admin WebSocket closes on API shutdown and disabled redeploy denies reuse"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-workspace-setup.test.mjs",
+      "expectedTests": [
+        "OCC stages workspace input atomically, isolates it, and clears bytes on completion or deletion",
+        "PostgreSQL workspace setup survives reopen and enforces immutable input and completed state"
+      ]
+    },
+    {
+      "path": "tests/integration/workspace-setup-worker.test.mjs",
+      "expectedTests": [
+        "worker retains exact-Agent workspace input through activation failure and purges it only after success",
+        "worker rejects unsupported workspace setup before Compute preparation and retains pending files"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-repository-sessions.test.mjs"
+    }
+  ]
+}

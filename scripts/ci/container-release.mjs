@@ -6,6 +6,7 @@ import { appendFile, link, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { loadTestSuites } from "./test-suites.mjs";
 
 export const repository = "openclaw/openclaw-enterprise";
 export const publishWorkflow = ".github/workflows/container-publish.yml";
@@ -208,7 +209,7 @@ async function validate(env) {
     execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
     env.SOURCE_SHA,
   );
-  const suites = JSON.parse(await readFile("scripts/ci/test-suites.json", "utf8"));
+  const suites = loadTestSuites("scripts/ci/test-suites.json");
   const testedBase = suites.lanes["images-packaging"].prepare.defaultEnv.NODE_BASE_IMAGE;
   assert.match(
     env.NODE_BASE_IMAGE ?? "",
