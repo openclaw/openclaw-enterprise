@@ -1,5 +1,32 @@
 # DevDay demo verification
 
+## Current Console refresh
+
+Refreshed against main `5ebd7305b0876db33276a249934bc82073b63424`.
+Source `ca25228f678140837f03cc6f005cdc7d20b266b7` preserves the production
+Console from main, including Advanced settings and manual Secret binding edits.
+The walkthrough exercises the same UI as this source; its final cleanup removes
+an unused fixture option without changing the rendered states.
+
+Environment: Linux, Node.js 24.20.0, pnpm 11.15.1, Storybook 10.6.0,
+Playwright 1.63.0, headless Chromium 151.0.7922.34, 1440 × 1000 viewport.
+The rebuilt static Storybook uses only a loopback server and fake fixture data.
+
+- [Current model and repository controls](current/01-create.png)
+- [Slack sender access and Secret selection](current/02-slack.png)
+- [Simulated deployment success](current/03-deployed.png)
+- [Admin UI message and simulated reply](current/04-admin-reply.png)
+- [Connected Console walkthrough](current/console-walkthrough.webm)
+- [Admin UI message recording](current/admin-message.webm)
+
+Both starting stories and both checkpoints loaded without browser errors or
+unhandled fixture requests. The connected walkthrough used the actual Storybook
+iframe, created the Agent, returned to the same seeded list, opened the sandboxed
+Admin UI popup, sent a message, and verified Reset story. These are simulated UI
+checks, not deployed runtime qualification.
+
+## Earlier capture environment
+
 Captured from source commit `19c5184ed827e093dcf2b2cecde8753bc3f8d028` on
 September 24, 2026, after reconciling main at `f23f7f4d`. Later evidence-only
 commits originally changed evidence only. These captures are historical: the current Console has built-in model choices and retains Secret bindings under Advanced settings. They are not verification of the refreshed source.
