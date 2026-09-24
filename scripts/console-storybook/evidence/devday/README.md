@@ -1,5 +1,34 @@
 # DevDay demo verification
 
+## Plugin configuration in the DevDay create flow
+
+Verified source `a27ec9ad9d032cba731b4703621a1dd44008f867`, rebased onto
+`fbbc0e42`, in headed Chromium on macOS on September 24, 2026. The manual
+segment 1 walkthrough selects SWE Agent with a fake newly entered service-account
+token, loads the plugin catalog, adds Calendar, sets automatic review by default,
+and requires approval for Create event. It then selects both repositories,
+configures Slack, creates the simulated Agent, and opens the Admin UI.
+The checkpoint completes the same plugin controls automatically.
+
+- [Plugin catalog](plugins/01-plugin-catalog.png),
+  [tool policy](plugins/02-tool-policy.png), and
+  [configured selection](plugins/03-configured-plugin.png).
+- [Connected walkthrough](plugins/console-walkthrough.webm): 13 seconds,
+  1440 × 1000; 40 intercepted requests, no unhandled requests or browser errors.
+- [Admin recording](plugins/admin-message.webm): 1.88 seconds; both recordings
+  were opened and decoded in Chromium.
+- Real-controller browser checks: 7 passed, zero skipped, covering plugin discovery,
+  policy persistence, and preset credential selection/retry behavior.
+- Preset conformance/controller integration: 16 passed, zero skipped.
+  Typecheck, full lint, formatting, workspace boundaries, documentation checks
+  (196 pages, 3325 links), and the isolated Storybook build passed.
+
+Stories: **Flows / DevDay segment 1: create devday claw** and its deployed checkpoint.
+This is simulated UI evidence, not live plugin access, credential readiness,
+policy enforcement, deployment, model execution, or Slack delivery. Preset files
+were unchanged. The rehearsal build on port 6011 was preserved; verification used
+an isolated build on port 6012.
+
 ## All DevDay preset choices
 
 Verified source `67c2d332af138b84e4295c11686da63c3162334f` in headed Chromium on September 24, 2026.
