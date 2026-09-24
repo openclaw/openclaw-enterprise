@@ -1,4 +1,5 @@
 ARG NODE_BASE_IMAGE=docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584
+ARG NODE_RUNTIME_BASE_IMAGE=docker.io/library/node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03
 FROM ${NODE_BASE_IMAGE} AS repository-client-build
 
 WORKDIR /build
@@ -35,15 +36,31 @@ RUN --mount=type=secret,id=build-ca,required=false \
     echo '42a420286dcad558b9710b7b583dd9e489bb07b3a835e3e19b69184b22fd416b  /tmp/openclaw-source.tar.gz' | sha256sum --check --strict; \
     tar -xzf /tmp/openclaw-source.tar.gz --strip-components=1; \
     rm /tmp/openclaw-source.tar.gz
-FROM openclaw-source AS openclaw-build
+COPY deploy/runtime/codex-0.156.0.patch /tmp/codex.patch
+RUN git apply /tmp/codex.patch
+COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
+RUN node /tmp/build-runtime-assets.mjs inputs /source /inputs
+
+FROM ${NODE_BASE_IMAGE} AS openclaw-dependency-inputs
+ENV GIT_COMMIT=2765f7a3341b8be4835afacbff3d04c6e3c3c79b
+ENV OPENCLAW_BUILD_TIMESTAMP=2026-09-24T03:55:10Z
+ENV OPENCLAW_PREFER_PNPM=1
+WORKDIR /source
+COPY --from=openclaw-source /inputs/ ./
+
+FROM openclaw-dependency-inputs AS openclaw-build
 # Keep package-store downloads out of retained layers; installed files remain.
 RUN --mount=type=secret,id=build-ca,required=false \
     --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
     set -eu; \
     if [ -f /run/secrets/build-ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/build-ca; fi; \
     corepack enable; \
-    pnpm install --frozen-lockfile --store-dir=/tmp/pnpm-store; \
+    pnpm install --frozen-lockfile --store-dir=/tmp/pnpm-store \
+      --config.supportedArchitectures.os=linux \
+      --config.supportedArchitectures.cpu="$(node -p 'process.arch')" \
+      --config.supportedArchitectures.libc=glibc; \
     rm -rf /tmp/pnpm-store
+COPY --from=openclaw-source /source/ ./
 # Follow the pinned upstream Docker assembly; plugin-local dependencies remain
 # separate when a plugin and core require different versions.
 RUN OPENCLAW_INTERNAL_DOCKER_BUILD_PLUGIN_IDS=codex,slack \
@@ -51,7 +68,7 @@ RUN OPENCLAW_INTERNAL_DOCKER_BUILD_PLUGIN_IDS=codex,slack \
     pnpm build:docker \
     && pnpm_config_verify_deps_before_run=false pnpm ui:build
 
-FROM openclaw-source AS openclaw-production-deps
+FROM openclaw-dependency-inputs AS openclaw-production-deps
 RUN --mount=type=secret,id=build-ca,required=false \
     --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
     set -eu; \
@@ -101,20 +118,16 @@ for (const plugin of ["codex", "slack"]) {
   }
 }
 NODE
-RUN mkdir /out \
-    && tar -czf /out/openclaw-runtime.tar.gz \
-      dist node_modules package.json pnpm-lock.yaml pnpm-workspace.yaml patches \
-      node-version.mjs node-sqlite.mjs node-runtime-update.mjs node-runtime-recovery.mjs \
-      cli-root-options.mjs gateway-run-argv.mjs gateway-shutdown-budget.mjs \
-      node-host-launcher.mjs openclaw.mjs extensions skills docs qa \
-    && cd /out \
-    && sha256sum openclaw-runtime.tar.gz > openclaw-runtime.tar.gz.sha256 \
-    && node -e 'const fs = require("node:fs"); const crypto = require("node:crypto"); fs.writeFileSync("provenance.json", JSON.stringify({source: "https://github.com/openclaw/openclaw", commit: process.env.GIT_COMMIT, sourceArchiveSha256: "42a420286dcad558b9710b7b583dd9e489bb07b3a835e3e19b69184b22fd416b", artifactKind: "assembled-runtime-root", runtimeArchiveSha256: fs.readFileSync("openclaw-runtime.tar.gz.sha256", "utf8").split(" ")[0], lockfileSha256: crypto.createHash("sha256").update(fs.readFileSync("/source/pnpm-lock.yaml")).digest("hex"), packageManager: require("/source/package.json").packageManager, platform: process.platform, architecture: process.arch, plugins: ["codex", "slack"]}, null, 2) + "\n");'
+COPY --from=openclaw-source /tmp/codex.patch /tmp/codex.patch
+COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
+RUN --mount=type=bind,from=openclaw-source,source=/source/scripts,target=/verify-scripts \
+    node /tmp/build-runtime-assets.mjs package /source /out /tmp/codex.patch \
+    && NODE_PATH=/source/node_modules node /verify-scripts/check-package-dist-imports.mjs /source
 
-FROM ${NODE_BASE_IMAGE} AS runtime
+FROM ${NODE_RUNTIME_BASE_IMAGE} AS runtime
 
 ARG TARGETARCH
-ARG OPENAI_CODEX_VERSION=0.156.0
+ENV OPENAI_CODEX_VERSION=0.156.0
 
 ENV NODE_ENV=production
 ENV PATH=/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -123,7 +136,7 @@ WORKDIR /app
 
 RUN node -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 16) throw new Error(`OpenClaw Enterprise runtime images require Node.js 24.16+; found ${process.version}.`);'
 
-RUN apt-get update && apt-get install -y --no-install-recommends tini git ca-certificates curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends tini git ca-certificates curl openssh-client libstdc++6 libgomp1 python3 procps && rm -rf /var/lib/apt/lists/*
 RUN --mount=type=secret,id=build-ca,required=false \
     set -eu; \
     if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \
@@ -139,22 +152,13 @@ RUN --mount=type=secret,id=build-ca,required=false \
     /usr/bin/git --version; \
     /usr/local/bin/gh --version | grep '^gh version 2.100.0 '
 
-COPY --from=openclaw-runtime-assets /out/provenance.json /opt/oce/runtime/provenance.json
-# Driver entrypoints resolve ws from /app; reuse the pinned OpenClaw dependency.
-RUN --mount=type=bind,from=openclaw-runtime-assets,source=/out,target=/runtime-package \
-    --mount=type=secret,id=build-ca,required=false \
-    --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
-    set -eu; \
-    if [ -f /run/secrets/build-ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/build-ca; fi; \
-    (cd /runtime-package && sha256sum --check --strict openclaw-runtime.tar.gz.sha256); \
-    npm init -y >/dev/null; \
-    npm install --omit=dev --no-audit --no-fund \
-      "@openai/codex@${OPENAI_CODEX_VERSION}"; \
-    mkdir -p node_modules/openclaw; \
-    tar -xzf /runtime-package/openclaw-runtime.tar.gz -C node_modules/openclaw; \
-    ln -s openclaw/node_modules/ws node_modules/ws; \
-    ln -s ../openclaw/openclaw.mjs node_modules/.bin/openclaw; \
-    npm cache clean --force
+COPY --from=openclaw-runtime-assets /out/ /opt/oce/runtime/
+COPY --from=openclaw-runtime-assets /source/ /app/node_modules/openclaw/
+# Both gateway plugins and the Dedicated Harness resolve the same pinned Codex.
+RUN mkdir -p node_modules/.bin \
+    && ln -s openclaw/node_modules/ws node_modules/ws \
+    && ln -s ../openclaw/openclaw.mjs node_modules/.bin/openclaw \
+    && ln -s ../openclaw/node_modules/@openai/codex/bin/codex.js node_modules/.bin/codex
 
 RUN mkdir -p node_modules/openclaw/dist/extensions ./plugin-skills /etc/openclaw /home/node/.codex/generated_images \
   && chown node:node /home/node/.codex /home/node/.codex/generated_images \

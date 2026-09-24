@@ -330,6 +330,9 @@
     },
     {
       "path": "tests/integration/repository-runtime-materialization.test.mjs"
+    },
+    {
+      "path": "tests/integration/runtime-assets.test.mjs"
     }
   ]
 }

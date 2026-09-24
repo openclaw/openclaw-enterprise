@@ -12,6 +12,7 @@
     {
       "path": "tests/integration/runtime-image-startup.test.mjs",
       "expectedTests": [
+        "runtime image shares Codex 0.156.0 between the plugin and Dedicated command",
         "runtime image gateway ignores inherited OPENCLAW_LOG_LEVEL in favor of native configuration",
         "runtime image starts an embedded OpenClaw gateway with the Docker driver entrypoint",
         "runtime image discovers the bundled Codex plugin from a fresh gateway home",
