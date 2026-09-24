@@ -16,8 +16,10 @@ await copyFile(
   new URL("preset-variables.mjs", assets),
 );
 
-// Preview the shipped Preset so screenshots follow its current contract.
-await writeFile(
-  new URL("standard-codex-preset.mjs", assets),
-  `export default ${await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8")};\n`,
-);
+// Preview shipped Presets so screenshots follow their current contracts.
+for (const name of ["standard-codex", "devday"]) {
+  await writeFile(
+    new URL(`${name}-preset.mjs`, assets),
+    `export default ${await readFile(new URL(`../../deploy/presets/${name}.json`, import.meta.url), "utf8")};\n`,
+  );
+}

@@ -249,12 +249,23 @@ function renderAgentForm(context, rendered) {
   const { view, request, namespaceId } = context;
   const agent = rendered.agent ?? {};
   const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  const workspaceFileNames = Object.keys(WORKSPACE_DEFAULTS);
+  const initialWorkspaceFiles = isObject(agent.initialWorkspaceFiles)
+    ? agent.initialWorkspaceFiles
+    : {};
+  const hasRenderableWorkspaceFiles =
+    agent.initialWorkspaceFiles === undefined ||
+    (isObject(agent.initialWorkspaceFiles) &&
+      Object.keys(agent.initialWorkspaceFiles).every((filename) =>
+        workspaceFileNames.includes(filename),
+      ));
   if (
     (agent.name !== undefined && typeof agent.name !== "string") ||
     (agent.executionMode !== undefined &&
       !["embedded", "dedicated"].includes(agent.executionMode)) ||
     (agent.providerId != null && typeof agent.providerId !== "string") ||
     (agent.plugins !== undefined && !isObject(agent.plugins)) ||
+    !hasRenderableWorkspaceFiles ||
     (rendered.configuration?.secretBindings !== undefined &&
       !isObject(rendered.configuration.secretBindings))
   ) {
@@ -786,23 +797,14 @@ function renderAgentForm(context, rendered) {
   for (const control of [nativeProvider, authMethod, harness]) {
     control.addEventListener("change", resetPluginDiscovery);
   }
-  const secretBindings = element("textarea", {
-    id: "configuration-secret-bindings",
-    rows: "4",
-    spellcheck: "false",
-  });
-  secretBindings.value = JSON.stringify(rendered.configuration?.secretBindings ?? {}, null, 2);
-  secretBindings.addEventListener("input", () => {
-    secretBindings.setCustomValidity("");
-    renderChannelEditor();
-  });
+  let configurationSecretBindings = structuredClone(rendered.configuration?.secretBindings ?? {});
   const workspaceInputs = Object.entries(WORKSPACE_DEFAULTS).map(([filename, content]) => {
     const input = element("textarea", {
       id: `workspace-${filename.replace(".", "-")}`,
       rows: "8",
       spellcheck: "false",
     });
-    input.value = content;
+    input.value = initialWorkspaceFiles[filename] ?? content;
     return [filename, input];
   });
   const workspaceSection = element(
@@ -964,7 +966,7 @@ function renderAgentForm(context, rendered) {
       element(
         "p",
         { className: "hint" },
-        "Defaults are ready to use. Customize configuration, Secret bindings, or initial workspace files when needed.",
+        "Defaults are ready to use. Customize configuration or initial workspace files when needed.",
       ),
       field(
         "Configuration JSON",
@@ -972,11 +974,6 @@ function renderAgentForm(context, rendered) {
         "Provider and model selections update this JSON. Supported Dedicated runtimes provision and deploy from this form. Embedded and unsupported runtimes save a draft for later deployment. Slack token Secrets can be selected or created from the channel editor.",
       ),
       reset,
-      field(
-        "Secret bindings JSON",
-        secretBindings,
-        "Map environment names to existing Secret references in this Namespace. Do not enter credentials.",
-      ),
       workspaceSection,
     ),
   );
@@ -1057,8 +1054,7 @@ function renderAgentForm(context, rendered) {
   }
   function renderChannelEditor() {
     const values = parseObject(configuration);
-    const parsedSecretBindings = parseObject(secretBindings);
-    if (values === undefined || parsedSecretBindings === undefined) {
+    if (values === undefined) {
       channelEditor.replaceChildren(
         element(
           "section",
@@ -1067,9 +1063,7 @@ function renderAgentForm(context, rendered) {
           element(
             "p",
             { className: "error" },
-            values === undefined
-              ? "Enter a valid Configuration JSON object before configuring channels."
-              : "Enter a valid Secret bindings JSON object before configuring channels.",
+            "Enter a valid Configuration JSON object before configuring channels.",
           ),
         ),
       );
@@ -1083,7 +1077,7 @@ function renderAgentForm(context, rendered) {
         namespaceId,
         request,
         agentName: () => name.value,
-        secretBindings: parsedSecretBindings,
+        secretBindings: configurationSecretBindings,
       },
       copy: {
         editableDescription:
@@ -1104,8 +1098,7 @@ function renderAgentForm(context, rendered) {
         edited = true;
         configuration.value = JSON.stringify(updatedValues, null, 2);
         if (options.secretBindings !== undefined) {
-          secretBindings.value = JSON.stringify(options.secretBindings, null, 2);
-          secretBindings.setCustomValidity("");
+          configurationSecretBindings = structuredClone(options.secretBindings);
           stagedChannelSecrets = [...stagedChannelSecrets, ...(options.changedSecrets ?? [])];
         }
         configuration.setCustomValidity("");
@@ -1140,7 +1133,6 @@ function renderAgentForm(context, rendered) {
     // Unsaved Agent fields remain editable after a known rejection; reuse the saved Configuration.
     for (const node of [
       configuration,
-      secretBindings,
       nativeProvider,
       authMethod,
       model,
@@ -1372,8 +1364,8 @@ function renderAgentForm(context, rendered) {
     }
     const values = parseObject(configuration, true);
     const desiredPlugins = parseObject(plugins, true);
-    const bindings = parseObject(secretBindings, true);
-    if (values === undefined || desiredPlugins === undefined || bindings === undefined) {
+    const bindings = configurationSecretBindings;
+    if (values === undefined || desiredPlugins === undefined) {
       return;
     }
     if (!savedAgent && !repositories.validate({ required: requiresRepositories() })) {

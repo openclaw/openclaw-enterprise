@@ -18,6 +18,10 @@ provider: []
 # Omitted or false disables seeding; existing Presets are retained.
 presets:
   includeDefaults: true
+  # Optional: load the shipped DevDay copy, or mount your own JSON beside this YAML.
+  # Relative paths resolve beside installation.yaml; mount files for API and worker.
+  # files:
+  #   - /app/deploy/presets/devday.json
 
 # Bundled Drivers omit `package`; selection IDs and options are trusted startup inputs.
 # See [Driver selections](../../../docs/reference/drivers/selection.md#supported-selections).

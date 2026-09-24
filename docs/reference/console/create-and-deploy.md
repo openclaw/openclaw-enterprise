@@ -64,7 +64,8 @@ Presets and edited Configuration JSON retain their settings.
    the Configuration when you select **Create Agent**. You can also supply Slack
    credentials from the Agent's **Credentials** tab after creation.
 7. Optionally configure plugins as described below, or open **Advanced settings**
-   to review Configuration JSON, Secret bindings, and **Workspace files**. Workspace fields contain OpenClaw defaults.
+   to review Configuration JSON and **Workspace files**. Preset workspace
+   overrides prefill their matching fields; omitted files use OpenClaw defaults.
    Edit any of the four files, keep the text to submit that default, or clear a
    field to create an empty file. The browser submits LF newlines. See
    [initial contents](../agents.md#initial-contents-at-creation) for limits.

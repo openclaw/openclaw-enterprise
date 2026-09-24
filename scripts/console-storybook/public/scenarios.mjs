@@ -223,13 +223,13 @@ const devdayCreateCheckpoint = [
   click("Create Agent"),
   { selector: "#agent-preset", value: "pre_devday_codex" },
   { selector: "#preset-variable-name", value: "devday claw" },
+  { selector: "#preset-variable-model", value: "gpt-6-astra" },
+  { selector: "#preset-variable-modelSecret", value: "sk-demo-devday-codex-api-key" },
   click("Use Preset"),
-  { selector: "#provider-api-key", value: "sk-demo-devday-codex-api-key" },
-  { selector: "#agent-model", value: "gpt-6-astra" },
   { selector: devdayRepositorySelector, click: true },
   { selector: "#repository-profile-git-write", click: true },
-  click("Configure Slack"),
-  { selector: "#slack-channel-ids", value: "COPENCLAW, COPENCLAWFEEDBACK" },
+  click("Edit Slack"),
+  { selector: "#slack-allow-everyone", click: true },
   { selector: "#slack-allowed-user-ids", value: "UDEMO123" },
   { selector: "#slack-secret-slack-app-token", value: "sec_devday_slack_app_token" },
   { selector: "#slack-secret-slack-bot-token", value: "sec_devday_slack_bot_token" },
@@ -920,7 +920,7 @@ export const scenarios = {
       click("Apply channel settings"),
     ],
     description:
-      "Applying channel settings retains staged Slack Secret bindings for creation. The raw Secret bindings JSON editor is hidden; token values stay masked.",
+      "Applying channel settings retains staged Slack Secret bindings for creation. There is no raw Secret bindings JSON editor; token values stay masked.",
   },
   createSlackChannelAccessRequired: {
     group: "Pages/Create Agent",
@@ -950,6 +950,23 @@ export const scenarios = {
     ],
     description:
       'The create drawer stores users: ["*"] on the selected channel while leaving direct-message allowFrom out of the new draft.',
+  },
+  createPresetWorkspaceFiles: {
+    group: "Pages/Create Agent",
+    name: "Preset workspace files",
+    path: create,
+    presetWorkspaceFiles: {
+      "IDENTITY.md": "# Identity\nName: {{ vars.name }}\n",
+      "USER.md": "",
+    },
+    actions: [
+      { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
+      { selector: "#preset-variable-name", value: "Workspace preset example" },
+      click("Use Preset"),
+      { selector: ".launch-advanced summary", click: true },
+    ],
+    description:
+      "The Preset renders IDENTITY.md and explicitly clears USER.md. Omitted files keep the ordinary defaults; these are editable creation-time copies.",
   },
   createWorkspaceFiles: {
     group: "Pages/Create Agent",
@@ -1111,7 +1128,7 @@ export const scenarios = {
     standardCodexPreset: true,
     actions: passwordPresetForm,
     description:
-      "The password remains masked in the editable draft; Configuration JSON contains no model key. The raw Secret bindings JSON editor is hidden.",
+      "The password remains masked in the editable draft; Configuration JSON contains no model key. There is no raw Secret bindings JSON editor.",
   },
   createPasswordPresetDenied: {
     group: "Pages/Create Agent",
@@ -1951,10 +1968,10 @@ export const scenarios = {
       "DevDay create-flow rehearsal using real Console controls with fake API-key and Slack Secret data. Provisioning and deployment progress are simulated in the Storybook fixture.",
     steps: [
       "Start on the Agents list with the already deployed oceclaw seed, then click Create Agent.",
-      "Select the Codex Preset and enter devday claw as the Preset name variable.",
-      "Enter the fake Codex API key sk-demo-devday-codex-api-key and select gpt-6-astra from the built-in model choices.",
+      "Select the devday Preset copied from standard-codex and enter devday claw for its name.",
+      "Enter gpt-6-astra and fake modelSecret sk-demo-devday-codex-api-key, then Use Preset. Review the editable workspace defaults; custom DevDay AGENTS.md content is still pending.",
       "Select openclaw/openclaw-enterprise with Contributor access.",
-      "Open Configure Slack. Enter COPENCLAW and COPENCLAWFEEDBACK, representing #openclaw and #openclaw-feedback, allow UDEMO123 to send in those channels, then bind the pre-existing simulated devday claw Slack Secrets.",
+      "Open Edit Slack. Confirm prefilled channel C0C43A2QA11, allow simulated user UDEMO123, then bind the existing simulated DevDay Slack Secrets and apply settings.",
       "Create Agent and keep the Console visible while the fixture progresses through provisioning and deployment activation until Workspace files open for the admitted revision.",
       "Use ← Agents and open oceclaw in the same fixture to continue segment 2. The next-segment link starts an independent resettable fixture.",
     ],

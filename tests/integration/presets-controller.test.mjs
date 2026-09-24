@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
@@ -143,6 +144,11 @@ test("Preset variables create independent ordinary Agent drafts that survive tem
       executionMode: "{{ vars.mode }}",
       plugins: { github: { enabled: "unfinished", toolDefaults: { approval: "prompt" } } },
       harnessAuth: null,
+      initialWorkspaceFiles: {
+        "AGENTS.md": "# {{ vars.name }}\n",
+        "IDENTITY.md": "",
+        "USER.md": "Model {{ vars.model }}",
+      },
     },
     configuration: {
       values: {
@@ -188,6 +194,11 @@ test("Preset variables create independent ordinary Agent drafts that survive tem
     configuration.data.values.models.providers.openai.apiKey,
     template.configuration.values.models.providers.openai.apiKey,
   );
+  assert.deepEqual(rendered.agent.initialWorkspaceFiles, {
+    "AGENTS.md": '# My "Agent"\n',
+    "IDENTITY.md": "",
+    "USER.md": "Model openai/gpt-5.1",
+  });
   // Presets may be unfinished. The ordinary API rejects invalid launch fields
   // after Configuration creation; correcting the draft reuses that Configuration.
   const rejected = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
@@ -208,6 +219,10 @@ test("Preset variables create independent ordinary Agent drafts that survive tem
   assert.equal(created.data.name, 'My "Agent"');
   assert.equal(created.data.configurationId, configuration.data.id);
   assert.equal(Object.hasOwn(created.data, "presetId"), false);
+  const workspaceSetup = await fixture.state.read((state) =>
+    state.workspaceSetups.find(namespace.id, created.data.id),
+  );
+  assert.deepEqual(workspaceSetup?.files, rendered.agent.initialWorkspaceFiles);
 
   const replaced = await fixture.request("PATCH", `${collection(namespace.id)}/${preset.id}`, {
     body: { template: { agent: { name: "Changed later" } } },
@@ -551,7 +566,10 @@ test("Installation YAML seeds authorized default Presets for new and existing Na
   t.after(() => rm(directory, { recursive: true, force: true }));
   const path = join(directory, "installation.yaml");
   const configuration = createInstallationDriverConfiguration();
-  configuration.presets = { includeDefaults: true };
+  configuration.presets = {
+    includeDefaults: true,
+    files: [fileURLToPath(new URL("../../deploy/presets/devday.json", import.meta.url))],
+  };
   await writeFile(path, JSON.stringify(configuration));
   const runtime = await loadInstallationConfiguration({
     mode: "production",
@@ -561,11 +579,14 @@ test("Installation YAML seeds authorized default Presets for new and existing Na
   const namespace = await fixture.createNamespace("Default catalog", { ready: true });
   const list = await fixture.request("GET", collection(namespace.id));
   assert.equal(list.status, 200);
-  assert.deepEqual(
-    list.data.map((preset) => preset.name),
-    ["standard-codex"],
-  );
+  assert.deepEqual(list.data.map((preset) => preset.name).sort(), ["devday", "standard-codex"]);
   assert.equal(list.data[0].template.variables.modelSecret.type, "password");
+  const devday = list.data.find((preset) => preset.name === "devday");
+  assert.equal(
+    devday.template.configuration.values.channels.slack.channels.C0C43A2QA11.requireMention,
+    true,
+  );
+  assert.equal(devday.template.configuration.values.plugins.entries.slack.enabled, true);
   const principal = fixture.policy.identities.find((identity) => identity.kind === "principal");
   const renamedTemplate = { agent: { name: "Operator customization" } };
   const custom = await fixture.request("PATCH", `${collection(namespace.id)}/${list.data[0].id}`, {
@@ -589,8 +610,7 @@ test("Installation YAML seeds authorized default Presets for new and existing Na
   const retained = await fixture.request("GET", `${collection(namespace.id)}/${list.data[0].id}`);
   assert.deepEqual(retained.data.template, renamedTemplate);
   const seeded = await fixture.request("GET", collection(existing.id));
-  assert.equal(seeded.data.length, 1);
-  assert.equal(seeded.data[0].name, "standard-codex");
+  assert.deepEqual(seeded.data.map((preset) => preset.name).sort(), ["devday", "standard-codex"]);
   const audit = fixture.audit.events.filter(
     (event) => event.details?.source === "installation-defaults",
   );
@@ -633,9 +653,11 @@ test("Installation YAML seeds authorized default Presets for new and existing Na
     body: { name: "Denied defaults" },
   });
   assert.equal(permitted.status, 201);
-  assert.equal(
-    (await fixture.request("GET", collection(permitted.data.id))).data[0].name,
-    "standard-codex",
+  assert.deepEqual(
+    (await fixture.request("GET", collection(permitted.data.id))).data
+      .map((preset) => preset.name)
+      .sort(),
+    ["devday", "standard-codex"],
   );
   // Startup must skip a persisted non-administrator even when it is returned first.
   await initializeInstallationPresets(
@@ -645,7 +667,7 @@ test("Installation YAML seeds authorized default Presets for new and existing Na
     runtime.defaultPresets,
   );
   // Disabling startup defaults never removes a saved Preset.
-  configuration.presets.includeDefaults = false;
+  configuration.presets = { includeDefaults: false };
   await writeFile(path, JSON.stringify(configuration));
   const disabledRuntime = await loadInstallationConfiguration({
     mode: "production",
@@ -656,5 +678,10 @@ test("Installation YAML seeds authorized default Presets for new and existing Na
     defaultPresets: disabledRuntime.defaultPresets,
   });
   await disabled.initializeDefaultPresets(principal.id);
-  assert.equal((await fixture.request("GET", collection(existing.id))).data.length, 1);
+  assert.deepEqual(
+    (await fixture.request("GET", collection(existing.id))).data
+      .map((preset) => preset.name)
+      .sort(),
+    ["devday", "standard-codex"],
+  );
 });

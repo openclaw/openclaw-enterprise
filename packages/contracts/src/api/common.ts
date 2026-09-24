@@ -655,12 +655,15 @@ export const PresetTemplateSchema = Type.Object(
     ),
     agent: Type.Optional(
       Type.Object(
-        Object.fromEntries(
-          ["name", "executionMode", "providerId", "harnessAuth", "plugins"].map((key) => [
-            key,
-            Type.Optional(Type.Ref("SafeJsonValue")),
-          ]),
-        ),
+        {
+          ...Object.fromEntries(
+            ["name", "executionMode", "providerId", "harnessAuth", "plugins"].map((key) => [
+              key,
+              Type.Optional(Type.Ref("SafeJsonValue")),
+            ]),
+          ),
+          initialWorkspaceFiles: Type.Optional(CreateAgentBody.properties.initialWorkspaceFiles),
+        },
         { additionalProperties: false },
       ),
     ),

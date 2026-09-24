@@ -7,10 +7,10 @@ import test from "node:test";
 
 import { chromium } from "playwright";
 
+import { secretIdForBinding } from "../../apps/controller/src/console/agents/credentials.mjs";
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { secretIdForBinding } from "../../apps/controller/src/console/agents/credentials.mjs";
 import {
   WORKSPACE_DEFAULTS,
   WORKSPACE_DEFAULTS_ID,
@@ -506,17 +506,6 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
   await openAdvancedSettings(page);
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
-  // Invalid manual bindings must not be replaced by a channel editor's empty snapshot.
-  await page.getByLabel("Secret bindings JSON").fill("[]");
-  await page
-    .getByText("Enter a valid Secret bindings JSON object before configuring channels.")
-    .waitFor();
-  assert.equal(await page.getByRole("button", { name: "Configure Slack" }).count(), 0);
-  // Applying Slack must preserve independent bindings authored in Advanced settings.
-  const manualBinding = { source: replacementSlackAppSecret.ref, delivery: { type: "env" } };
-  await page
-    .getByLabel("Secret bindings JSON")
-    .fill(JSON.stringify({ CUSTOM_CONTEXT: manualBinding }));
   await page.getByRole("button", { name: "Configure Slack" }).click();
   const createChannelDialog = page.getByRole("dialog", { name: /^(Configure|Edit) Slack$/ });
   await createChannelDialog
@@ -552,10 +541,6 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     "password",
   );
   await createSecretDialog.getByRole("button", { name: "Cancel" }).click();
-  assert.equal(
-    JSON.parse(await page.getByLabel("Secret bindings JSON").inputValue()).SLACK_BOT_TOKEN,
-    undefined,
-  );
   await createChannelDialog
     .getByLabel("Slack bot token")
     .selectOption({ label: "Create new Secret..." });
@@ -563,18 +548,23 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     .getByRole("dialog", { name: "Create Slack bot token Secret" })
     .getByLabel("Secret value")
     .fill(createdSlackBotSecretValue);
+  const botSecretResponse = page.waitForResponse((response) => {
+    if (
+      response.url() !== `${fixture.origin}/namespaces/${namespace.id}/secrets` ||
+      response.request().method() !== "POST"
+    ) {
+      return false;
+    }
+    return response.request().postDataJSON()?.name === "Console-created Agent Slack bot token";
+  });
   await page
     .getByRole("dialog", { name: "Create Slack bot token Secret" })
     .getByRole("button", { name: "Create Secret" })
     .click();
+  const createdSlackBotSecret = (await (await botSecretResponse).json()).data;
   await createChannelDialog
     .getByText("Secret binding staged. Apply the channel settings to save it.")
-
     .waitFor();
-  assert.equal(
-    JSON.parse(await page.getByLabel("Secret bindings JSON").inputValue()).SLACK_BOT_TOKEN,
-    undefined,
-  );
   await createChannelDialog.getByRole("button", { name: "Apply channel settings" }).click();
   await createChannelDialog.waitFor({ state: "hidden" });
   await page.getByRole("button", { name: "Edit Slack" }).click();
@@ -583,19 +573,16 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     .getByLabel("Slack app token")
     .selectOption(replacementSlackAppSecret.id);
   await createChannelDialog.getByRole("button", { name: "Apply channel settings" }).click();
-  const stagedSecretBindings = JSON.parse(
-    await page.getByLabel("Secret bindings JSON").inputValue(),
-  );
-  assert.deepEqual(stagedSecretBindings.CUSTOM_CONTEXT, manualBinding);
-  assert.deepEqual(stagedSecretBindings.SLACK_APP_TOKEN, {
-    source: replacementSlackAppSecret.ref,
-    delivery: { type: "env" },
-  });
-  const stagedBotSecretId = secretIdForBinding(stagedSecretBindings.SLACK_BOT_TOKEN);
-  assert.match(
-    stagedBotSecretId,
-    /^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-  );
+  const stagedSecretBindings = {
+    SLACK_APP_TOKEN: {
+      source: replacementSlackAppSecret.ref,
+      delivery: { type: "env" },
+    },
+    SLACK_BOT_TOKEN: {
+      source: createdSlackBotSecret.ref,
+      delivery: { type: "env" },
+    },
+  };
   await openAdvancedSettings(page);
   const stagedValues = JSON.parse(await page.getByLabel("Configuration JSON").inputValue());
   await page.getByLabel("Agent name").fill("A".repeat(200));
@@ -719,14 +706,16 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     access.data
       .map(({ id, ...binding }) => binding)
       .sort((a, b) => a.resourceId.localeCompare(b.resourceId)),
-    [secret.id, replacementSlackAppSecret.id, stagedBotSecretId].sort().map((resourceId) => ({
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: created.data.servicePrincipalId,
-      roleId: roles.data[0].id,
-      resourceKind: "secret",
-      resourceId,
-    })),
+    [secret.id, replacementSlackAppSecret.id, createdSlackBotSecret.id]
+      .sort()
+      .map((resourceId) => ({
+        namespaceId: namespace.id,
+        subjectKind: "identity",
+        subjectId: created.data.servicePrincipalId,
+        roleId: roles.data[0].id,
+        resourceKind: "secret",
+        resourceId,
+      })),
   );
   assert.ok(audit.events.some((event) => event.resource.id === created.data.id));
   assert.equal(JSON.stringify(audit.events).includes(key), false);
@@ -1643,6 +1632,23 @@ test("Dedicated Agent creation provisions inline Configuration and masked new Se
     compute: { id: "kubernetes-test", implementation: "kubernetes" },
     servicePrincipalId: agent.servicePrincipalId,
   };
+  const workspacePreset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: {
+      name: "Provision workspace preset",
+      template: {
+        agent: {
+          name: agent.name,
+          executionMode: "dedicated",
+          initialWorkspaceFiles: {
+            "AGENTS.md": "# Provision preset\n",
+            "USER.md": "Provision user",
+          },
+        },
+      },
+    },
+  });
+  assert.equal(workspacePreset.status, 201, JSON.stringify(workspacePreset.body));
+
   const json = (data, status = 200) => ({
     status,
     contentType: "application/json",
@@ -1749,12 +1755,19 @@ test("Dedicated Agent creation provisions inline Configuration and masked new Se
 
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
-  await page.getByRole("button", { name: "Start without Preset" }).click();
-  await page.getByLabel("Agent name").fill(agent.name);
+  await page.getByLabel("Preset template").selectOption(workspacePreset.data.id);
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  await page.getByLabel("Agent name", { exact: true }).waitFor();
   await page.locator("#repository-application").check();
   await page.locator("#repository-profile-git-write").check();
   await page.getByLabel("API key", { exact: true }).fill("model-secret-value");
   await openAdvancedSettings(page);
+  assert.equal(
+    await page.getByLabel("AGENTS.md", { exact: true }).inputValue(),
+    "# Provision preset\n",
+  );
+  assert.equal(await page.getByLabel("USER.md", { exact: true }).inputValue(), "Provision user");
+  await page.getByLabel("AGENTS.md", { exact: true }).fill("# Provision edited\n");
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
   await page.getByRole("button", { name: "Configure Slack" }).click();
   const channelDialog = page.getByRole("dialog", { name: "Configure Slack" });
@@ -1809,6 +1822,12 @@ test("Dedicated Agent creation provisions inline Configuration and masked new Se
     { repositoryRef: "application", profile: "git-write" },
   ]);
   assert.equal(provisionBody.executionMode, "dedicated");
+  assert.deepEqual(provisionBody.initialWorkspaceFiles, {
+    ...WORKSPACE_DEFAULTS,
+    "AGENTS.md": "# Provision edited\n",
+    "USER.md": "Provision user",
+  });
+  assert.equal(provisionBody.workspaceDefaultsId, WORKSPACE_DEFAULTS_ID);
   assert.deepEqual(provisionBody.harnessAuth, agent.harnessAuth);
   assert.deepEqual(provisionBody.configuration.values.channels.slack, {
     enabled: true,
@@ -5345,6 +5364,11 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
           providerId: providerFixtures[0].id,
           harnessAuth: { method: "codex_pat", source: secret.ref },
           plugins,
+          initialWorkspaceFiles: {
+            "AGENTS.md": "# {{ vars.name }} workspace\n",
+            "IDENTITY.md": "",
+            "USER.md": "marker {{ vars.marker }}",
+          },
         },
         configuration: { values, secretBindings },
       },
@@ -5392,6 +5416,12 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
     false,
   );
   assert.equal(await save.isEnabled(), true);
+  assert.equal(
+    await page.getByLabel("AGENTS.md", { exact: true }).inputValue(),
+    "# Existing Agent workspace\n",
+  );
+  assert.equal(await page.getByLabel("IDENTITY.md", { exact: true }).inputValue(), "");
+  assert.equal(await page.getByLabel("USER.md", { exact: true }).inputValue(), "marker changed");
   const rendered = JSON.parse(
     await page.getByLabel("Configuration JSON", { exact: true }).inputValue(),
   );
@@ -5405,11 +5435,6 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   assert.deepEqual(
     JSON.parse(await page.getByLabel("Plugin selections JSON").inputValue()),
     plugins,
-  );
-  assert.equal(await page.getByLabel("Secret bindings JSON").isVisible(), false);
-  assert.deepEqual(
-    JSON.parse(await page.getByLabel("Secret bindings JSON").inputValue()),
-    secretBindings,
   );
   // Deletion after selection must not invalidate this independent local copy.
   assert.equal(
@@ -5427,6 +5452,7 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   edited.plugins.entries.knowledge.config.thresholds = [5, 6];
   await openAdvancedSettings(page);
   await page.getByLabel("Configuration JSON", { exact: true }).fill(JSON.stringify(edited));
+  await page.getByLabel("AGENTS.md", { exact: true }).fill("# Edited workspace\n");
   // Canceling Start over keeps the ordinary draft and its ability to save.
   page.once("dialog", (dialog) => dialog.dismiss());
   await page.getByRole("button", { name: "Start over" }).click();
@@ -5445,7 +5471,6 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   assert.equal((await conflict).status(), 409);
   await page.getByText(/conflicts with the saved state/).waitFor();
   assert.equal(await page.getByRole("button", { name: "Start over" }).isDisabled(), true);
-  assert.equal(await page.getByLabel("Secret bindings JSON").isDisabled(), true);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
   await page.getByLabel("Agent name", { exact: true }).fill("Preset Agent");
   const createdResponse = page.waitForResponse(
@@ -5460,6 +5485,20 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
     0,
   );
   assert.equal(created.data.name, "Preset Agent");
+  const expectedWorkspaceFiles = {
+    ...WORKSPACE_DEFAULTS,
+    "AGENTS.md": "# Edited workspace\n",
+    "IDENTITY.md": "",
+    "USER.md": "marker changed",
+  };
+  assert.deepEqual(
+    agentPostRequests(requests, namespace.id).map((request) => request.body.initialWorkspaceFiles),
+    [expectedWorkspaceFiles, expectedWorkspaceFiles],
+  );
+  assert.deepEqual(
+    agentPostRequests(requests, namespace.id).map((request) => request.body.workspaceDefaultsId),
+    [WORKSPACE_DEFAULTS_ID, WORKSPACE_DEFAULTS_ID],
+  );
   assert.deepEqual(created.data.plugins, plugins);
   assert.equal(created.data.providerId, providerFixtures[0].id);
   assert.deepEqual(created.data.harnessAuth, { method: "codex_pat", source: secret.ref });

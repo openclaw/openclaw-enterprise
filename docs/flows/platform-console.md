@@ -164,9 +164,10 @@ Codex; operator-managed credentials fix OpenClaw. Installation Provider
 discovery is hidden. The [creation reference](../reference/console/create-and-deploy.md)
 owns permissions and recovery.
 
-Advanced settings holds Configuration JSON, Secret bindings, and initial workspace files; no model is selected initially.
-Binding edits refresh channel settings, preserving unrelated bindings when applying
-Slack. Invalid binding JSON blocks channel editing.
+Advanced settings holds Configuration JSON and initial workspace files; no model
+is selected initially. Preset Secret bindings stay in form state. Applying Slack
+preserves unrelated bindings. Preset workspace files prefill editors before
+submission.
 
 `agents/plugin-fields.mjs:createPluginFields` edits Agent-owned `plugins` through
 `#agent-plugins`, separately from Configuration. Invalid JSON and untouched fields
@@ -328,6 +329,8 @@ uncertain response disables replay until refresh and inspection.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-24: Keep Preset bindings internal.
 
 - 2026-09-24 17:20: Expose upstream OpenClaw provenance separately. (01a0c179-19f7-7111-8bb4-fc7680da5545 - bd1a5c46eb069bfa7feedbb99b074dc015c4e9bc)
 

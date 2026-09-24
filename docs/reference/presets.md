@@ -12,15 +12,22 @@ uses this same API and chooser. Install it manually or enable the
 
 ## Installation defaults
 
-The trusted Installation YAML can opt into bundled Presets:
+The trusted Installation YAML can include bundled Presets and JSON files:
 
 ```yaml
 presets:
   includeDefaults: true
+  files:
+    - presets/devday.json
 ```
 
-Omitted or `false` disables automatic inclusion. Currently the bundle contains
-`standard-codex`. API startup adds missing defaults to existing ready or
+Omitting `includeDefaults` or setting it to `false` disables only the bundled
+`standard-codex` Preset; explicit `files` still load. Each JSON file contains one
+`{ "name": "...", "template": { ... } }` object. Relative file paths resolve beside
+the Installation YAML, independent of the process working directory; absolute
+paths are also supported. Mount the files readably for both the API and worker.
+Missing, malformed, invalid, or duplicate-name definitions prevent startup.
+Files are read at startup, not watched for changes. API startup adds missing defaults to existing ready or
 provisioning Namespaces, including the bootstrap Namespace. New Namespace
 creation includes the same defaults atomically. Failed or deleting Namespaces
 are skipped during startup.
@@ -28,8 +35,8 @@ are skipped during startup.
 Each copy is an ordinary Namespace-owned Preset with its own ID and normal
 read/update/delete permissions. Matching names are preserved without comparing
 or overwriting their templates. Startup can restore a deleted or renamed
-default while enabled; bundle updates do not replace existing copies. Turning
-the option off stops seeding and leaves saved Presets and Agents unchanged.
+default while enabled; bundle updates do not replace existing copies. Removing the files and disabling
+`includeDefaults` stops seeding and leaves saved Presets and Agents unchanged.
 Restart the API after changing the YAML, keeping the worker configuration in sync.
 
 Startup selects a persisted Principal authorized to administer the Installation
@@ -38,6 +45,24 @@ creators likewise need `preset:create` when this option is enabled. Authorizatio
 or template validation failure rolls back initialization and prevents startup
 or Namespace creation. The selected Configuration Driver validates native
 values; seeding does not create workloads or credentials.
+
+## DevDay preset
+
+[`deploy/presets/devday.json`](../../deploy/presets/devday.json) copies
+`standard-codex` and adds Slack Socket Mode with channel `C0C43A2QA11` prefilled.
+It retains the same name, model, and masked API-key variables and Codex settings.
+Load a copy beside your YAML as in the example above, or reference the shipped
+container file at `/app/deploy/presets/devday.json`. It is opt-in and is not added
+by `includeDefaults` alone.
+
+In the Console, choose **devday**, fill its variables, then use **Edit Slack** to
+choose allowed senders and bind Slack app/bot Secrets. The preset allows channel members to mention the agent (`users: ["*"]`)
+in this channel and requires a mention. Narrow the sender list in the drawer if
+needed. No credentials are stored in the file.
+The custom DevDay `AGENTS.md` is pending; no replacement instructions are supplied.
+When available, put its contents in `template.agent.initialWorkspaceFiles.AGENTS.md`
+and update the existing Namespace Preset through the API. Restarting with a changed
+JSON file preserves already-installed same-name copies.
 
 ## Contents
 
@@ -52,6 +77,7 @@ is valid. Its optional fields are:
 | `agent.executionMode`          | Embedded or dedicated execution.                                                                     |
 | `agent.providerId`             | Installation-configured Provider ID, or null.                                                        |
 | `agent.harnessAuth`            | Credential binding or password variable token, or null; never stored credential bytes.               |
+| `agent.initialWorkspaceFiles`  | Optional creation-time workspace contents keyed by supported filename.                               |
 | `agent.plugins`                | Desired plugin selections and policies.                                                              |
 | `configuration.values`         | Native Agent Configuration JSON, including models, Harness settings, channels, and sandbox settings. |
 | `configuration.secretBindings` | Bindings to Secrets in this Namespace.                                                               |
@@ -61,6 +87,29 @@ contracts. Installation-owned Driver selection, generated identities, runtime
 state, and Agent revision IDs are not template settings. A supplied
 `configuration.values` replaces the console's starter JSON; it does not merge
 with it. Omitted settings use the form's normal defaults.
+
+## Workspace files
+
+`template.agent.initialWorkspaceFiles` is a partial map for `AGENTS.md`, `SOUL.md`,
+`IDENTITY.md`, and `USER.md`. Values must be valid Unicode strings without NUL,
+at most 16 KiB of UTF-8 per file. Limits also apply after variable expansion.
+Omitted files keep the Console defaults; an explicit empty string creates an
+empty file. Users can review and edit the rendered contents in **Advanced settings →
+Workspace files** before creation. Password variables are not allowed in files.
+
+For example, add this within `template.agent`:
+
+```json
+{
+  "initialWorkspaceFiles": {
+    "IDENTITY.md": "# Identity\nName: {{ vars.name }}\n",
+    "USER.md": ""
+  }
+}
+```
+
+The ordinary Agent/provisioning APIs stage these contents for first deployment.
+Preset files embed workspace contents; they do not read arbitrary workspace paths.
 
 ## Variables
 

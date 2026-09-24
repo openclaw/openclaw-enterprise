@@ -50,6 +50,10 @@ export const CreateUnsupportedProvisioning = {
   ...story("createUnsupportedProvisioning"),
   name: "Unsupported provisioning",
 };
+export const CreatePresetWorkspaceFiles = {
+  ...story("createPresetWorkspaceFiles"),
+  name: "Preset workspace files",
+};
 export const CreateWorkspaceFiles = { ...story("createWorkspaceFiles"), name: "Workspace files" };
 export const CreateEmbedded = { ...story("createEmbedded"), name: "OpenAI with OpenClaw harness" };
 export const RepositorySelection = {

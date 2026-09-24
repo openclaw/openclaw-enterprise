@@ -2743,6 +2743,11 @@ List readable Presets in one Namespace
 | `data[].template.agent` | `object` | No | — |
 | `data[].template.agent.executionMode` | `SafeJsonValue` | No | — |
 | `data[].template.agent.harnessAuth` | `SafeJsonValue` | No | — |
+| `data[].template.agent.initialWorkspaceFiles` | `object` | No | — |
+| `data[].template.agent.initialWorkspaceFiles.AGENTS.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
+| `data[].template.agent.initialWorkspaceFiles.IDENTITY.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
+| `data[].template.agent.initialWorkspaceFiles.SOUL.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
+| `data[].template.agent.initialWorkspaceFiles.USER.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
 | `data[].template.agent.name` | `SafeJsonValue` | No | — |
 | `data[].template.agent.plugins` | `SafeJsonValue` | No | — |
 | `data[].template.agent.providerId` | `SafeJsonValue` | No | — |
@@ -2786,6 +2791,11 @@ Create a reusable Namespace-owned Agent Preset
 | `template.agent` | `object` | No | — |
 | `template.agent.executionMode` | `SafeJsonValue` | No | — |
 | `template.agent.harnessAuth` | `SafeJsonValue` | No | — |
+| `template.agent.initialWorkspaceFiles` | `object` | No | — |
+| `template.agent.initialWorkspaceFiles.AGENTS.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
+| `template.agent.initialWorkspaceFiles.IDENTITY.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
+| `template.agent.initialWorkspaceFiles.SOUL.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
+| `template.agent.initialWorkspaceFiles.USER.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
 | `template.agent.name` | `SafeJsonValue` | No | — |
 | `template.agent.plugins` | `SafeJsonValue` | No | — |
 | `template.agent.providerId` | `SafeJsonValue` | No | — |
@@ -2822,6 +2832,11 @@ Create a reusable Namespace-owned Agent Preset
 | `data.template.agent` | `object` | No | — |
 | `data.template.agent.executionMode` | `SafeJsonValue` | No | — |
 | `data.template.agent.harnessAuth` | `SafeJsonValue` | No | — |
+| `data.template.agent.initialWorkspaceFiles` | `object` | No | — |
+| `data.template.agent.initialWorkspaceFiles.AGENTS.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
+| `data.template.agent.initialWorkspaceFiles.IDENTITY.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
+| `data.template.agent.initialWorkspaceFiles.SOUL.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
+| `data.template.agent.initialWorkspaceFiles.USER.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
 | `data.template.agent.name` | `SafeJsonValue` | No | — |
 | `data.template.agent.plugins` | `SafeJsonValue` | No | — |
 | `data.template.agent.providerId` | `SafeJsonValue` | No | — |
@@ -2912,6 +2927,11 @@ Read one exact Namespace-owned Preset
 | `data.template.agent` | `object` | No | — |
 | `data.template.agent.executionMode` | `SafeJsonValue` | No | — |
 | `data.template.agent.harnessAuth` | `SafeJsonValue` | No | — |
+| `data.template.agent.initialWorkspaceFiles` | `object` | No | — |
+| `data.template.agent.initialWorkspaceFiles.AGENTS.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
+| `data.template.agent.initialWorkspaceFiles.IDENTITY.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
+| `data.template.agent.initialWorkspaceFiles.SOUL.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
+| `data.template.agent.initialWorkspaceFiles.USER.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
 | `data.template.agent.name` | `SafeJsonValue` | No | — |
 | `data.template.agent.plugins` | `SafeJsonValue` | No | — |
 | `data.template.agent.providerId` | `SafeJsonValue` | No | — |
@@ -2956,6 +2976,11 @@ Update a Preset without changing existing Agents
 | `template.agent` | `object` | No | — |
 | `template.agent.executionMode` | `SafeJsonValue` | No | — |
 | `template.agent.harnessAuth` | `SafeJsonValue` | No | — |
+| `template.agent.initialWorkspaceFiles` | `object` | No | — |
+| `template.agent.initialWorkspaceFiles.AGENTS.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
+| `template.agent.initialWorkspaceFiles.IDENTITY.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
+| `template.agent.initialWorkspaceFiles.SOUL.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
+| `template.agent.initialWorkspaceFiles.USER.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
 | `template.agent.name` | `SafeJsonValue` | No | — |
 | `template.agent.plugins` | `SafeJsonValue` | No | — |
 | `template.agent.providerId` | `SafeJsonValue` | No | — |
@@ -2992,6 +3017,11 @@ Update a Preset without changing existing Agents
 | `data.template.agent` | `object` | No | — |
 | `data.template.agent.executionMode` | `SafeJsonValue` | No | — |
 | `data.template.agent.harnessAuth` | `SafeJsonValue` | No | — |
+| `data.template.agent.initialWorkspaceFiles` | `object` | No | — |
+| `data.template.agent.initialWorkspaceFiles.AGENTS.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
+| `data.template.agent.initialWorkspaceFiles.IDENTITY.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
+| `data.template.agent.initialWorkspaceFiles.SOUL.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
+| `data.template.agent.initialWorkspaceFiles.USER.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
 | `data.template.agent.name` | `SafeJsonValue` | No | — |
 | `data.template.agent.plugins` | `SafeJsonValue` | No | — |
 | `data.template.agent.providerId` | `SafeJsonValue` | No | — |

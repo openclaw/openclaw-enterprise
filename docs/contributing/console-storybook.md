@@ -99,8 +99,10 @@ credentials and deploy from Agent detail. These transitions demonstrate
 presentation only; they do not prove a worker ran.
 
 The DevDay create segment rehearses the same create-and-deploy path with a
-Codex Preset, fake API key, `gpt-6-astra`, `openclaw/openclaw-enterprise`,
-simulated OpenClaw Slack channel IDs, and pre-existing simulated Slack Secrets.
+shipped DevDay Preset copied from standard Codex, a fake API key, `gpt-6-astra`,
+`openclaw/openclaw-enterprise`, prefilled channel `C0C43A2QA11`, and simulated
+Slack Secrets. The separate Preset workspace story demonstrates variable-rendered
+file contents and an intentionally empty file.
 Use the [DevDay storyboard](../../scripts/console-storybook/devday-storyboard.md)
 for the presenter actions, expected visible states, and fallbacks.
 

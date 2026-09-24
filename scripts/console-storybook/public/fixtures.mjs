@@ -1,4 +1,5 @@
 import standardCodexPreset from "/console/standard-codex-preset.mjs";
+import devdayPreset from "/console/devday-preset.mjs";
 
 const createdAt = "2026-09-01T12:00:00.000Z";
 const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
@@ -215,47 +216,34 @@ export function installFixture(scenario, evidence) {
   const preset = {
     id: scenario.devdayPreset ? "pre_devday_codex" : "pre_00000000-0000-4000-8000-000000000001",
     namespaceId,
-    name: scenario.devdayPreset ? "Codex" : "Research assistant",
+    name: "Research assistant",
     template: {
       variables: {
         name: { type: "string", description: "Name for this Agent." },
-        ...(scenario.devdayPreset
-          ? {}
-          : {
-              model: {
-                type: "string",
-                default: "codex/gpt-6-astra",
-                description: "Model reference copied into the draft.",
-              },
-            }),
+        model: {
+          type: "string",
+          default: "codex/gpt-6-astra",
+          description: "Model reference copied into the draft.",
+        },
       },
       agent: {
         name: "{{ vars.name }}",
         executionMode: "dedicated",
-        ...(scenario.devdayPreset
-          ? {}
-          : { harnessAuth: { ...auth, method: scenario.presetAuth ?? auth.method } }),
+        harnessAuth: { ...auth, method: scenario.presetAuth ?? auth.method },
       },
       configuration: {
-        values: scenario.devdayPreset
-          ? {
-              gateway: {
-                mode: "local",
-                bind: "lan",
-                controlUi: {
-                  enabled: true,
-                  allowedOrigins: ["http://127.0.0.1:18789", "http://localhost:18789"],
-                },
-                http: { endpoints: { chatCompletions: { enabled: true } } },
-              },
-              channels: {},
-            }
-          : { ...configurationValues({}), agents: { defaults: { model: "{{ vars.model }}" } } },
+        values: { ...configurationValues({}), agents: { defaults: { model: "{{ vars.model }}" } } },
       },
     },
   };
-  if (scenario.standardCodexPreset) {
-    Object.assign(preset, structuredClone(standardCodexPreset));
+  if (scenario.standardCodexPreset || scenario.devdayPreset) {
+    Object.assign(
+      preset,
+      structuredClone(scenario.devdayPreset ? devdayPreset : standardCodexPreset),
+    );
+  }
+  if (scenario.presetWorkspaceFiles) {
+    preset.template.agent.initialWorkspaceFiles = structuredClone(scenario.presetWorkspaceFiles);
   }
   const presets = [preset];
   const response = (data, status = 200, errorCode) =>
