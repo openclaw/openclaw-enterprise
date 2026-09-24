@@ -833,7 +833,7 @@ test("SSH revisions fail closed on unbound identities, unsupported topology, san
       ...rev,
       plugins: {
         driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
-        plugins: { "occ-plugin:diffs": { enabled: true, approvalMode: "always" } },
+        plugins: { "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "approve" } } },
       },
     }),
     /PluginDriver installation/,

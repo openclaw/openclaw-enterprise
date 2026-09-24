@@ -133,7 +133,7 @@ test("preset admission preserves credential structure and literal and default sc
     },
     agent: {
       executionMode: "{{ vars.mode }}",
-      plugins: { github: { enabled: "{{ vars.enabled }}", approvalMode: "prompt" } },
+      plugins: { github: { enabled: "{{ vars.enabled }}", toolDefaults: { approval: "prompt" } } },
     },
     configuration: {
       secretBindings: {
@@ -161,7 +161,7 @@ test("preset admission preserves credential structure and literal and default sc
   // User-chosen map keys must receive the same admission as ordinary names.
   for (const key of ["__proto__", "constructor", "toString"]) {
     const valid = {
-      agent: { plugins: { [key]: { enabled: true, approvalMode: "prompt" } } },
+      agent: { plugins: { [key]: { enabled: true, toolDefaults: { approval: "prompt" } } } },
       configuration: {
         secretBindings: { [key]: { source: { kind: "secret", namespaceId, id: secretId } } },
       },

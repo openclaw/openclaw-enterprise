@@ -449,7 +449,7 @@ test("dedicated startup initializes Harness plugins before enrolling its workspa
   const revision = routedRevision(driver, {
     plugins: {
       driver: { id: "codex-plugin", implementation: "occ/codex-plugin" },
-      plugins: { "codex-plugin:example": { enabled: true, approvalMode: "auto" } },
+      plugins: { "codex-plugin:example": { enabled: true, toolDefaults: { approval: "native" } } },
     },
   });
   const operatorSuppliedConfiguration = {
@@ -5711,7 +5711,7 @@ test("retiring a running embedded revision waits for gateway Pods and removes ow
     },
     plugins: {
       driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
-      plugins: { "occ-plugin:diffs": { enabled: true, approvalMode: "always" } },
+      plugins: { "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "approve" } } },
     },
   });
   const namespace = kubernetesNamespaceName(revision.namespaceId);

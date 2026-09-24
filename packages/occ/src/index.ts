@@ -84,6 +84,7 @@ import {
   NamespaceNotEmptyError,
   NamespaceNotReadyError,
   NotImplementedError,
+  PluginPolicyValidationError,
   RepositoryOptionsUnavailableError,
   ResourceConflictError,
   ScopeViolationError,
@@ -146,6 +147,7 @@ export {
   NamespaceNotEmptyError,
   NamespaceNotReadyError,
   NotImplementedError,
+  PluginPolicyValidationError,
   RepositoryOptionsUnavailableError,
   ResourceConflictError,
   ScopeViolationError,
@@ -755,8 +757,8 @@ function validRepositoryOption(value: unknown): value is RepositoryOption {
   );
 }
 
-function invalidPluginRequest(message: string): never {
-  throw new ScopeViolationError(message);
+function invalidPluginRequest(): never {
+  throw new PluginPolicyValidationError();
 }
 
 function normalizeAgentPlugins(
@@ -899,7 +901,20 @@ export class OpenClawController {
       kind: "installation",
       id: this.installation.id,
     });
-    return this.installation;
+    if (!this.selections.has("plugin")) {
+      return this.installation;
+    }
+    const driver = this.pluginDriver();
+    return immutableCopy({
+      ...this.installation,
+      capabilities: {
+        ...this.installation.capabilities,
+        pluginPolicies: {
+          driver: { id: driver.id, implementation: driver.implementation },
+          ...driver.policyCapabilities,
+        },
+      },
+    });
   }
 
   async listNamespaces(principalId: string): Promise<readonly Readonly<Namespace>[]> {
@@ -1434,6 +1449,7 @@ export class OpenClawController {
         id: namespace.id,
         namespaceId: namespace.id,
       });
+      this.validatePluginPolicies(plugins);
       await this.authorizeProvisioningSecretSources(
         state,
         principalId,
@@ -2755,6 +2771,7 @@ export class OpenClawController {
       }
       await this.guardProvisioningConfiguration(state, namespace.id, input.configurationId);
       await this.authorizeHarnessAuthSource(state, principalId, namespace.id, harnessAuth);
+      this.validatePluginPolicies(plugins);
       const agentId = this.nextIdentifier("agent");
       await this.authorizeBindings(
         state,
@@ -2853,6 +2870,7 @@ export class OpenClawController {
         input.repositoryBindings === undefined
           ? undefined
           : (this.repositoryBindingSelections(namespace.id, input.repositoryBindings) ?? []);
+      this.validatePluginPolicies(plugins);
       const updated = await state.agents.updateConfiguration(
         namespace.id,
         agent.id,
@@ -3024,6 +3042,7 @@ export class OpenClawController {
           ? undefined
           : (() => {
               const driver = this.pluginDriver();
+              driver.validatePolicies(lockedAgent.plugins);
               return immutableCopy({
                 driver: { id: driver.id, implementation: driver.implementation },
                 plugins: lockedAgent.plugins,
@@ -3760,10 +3779,9 @@ export class OpenClawController {
         "The configured model, authentication, or channel bindings cannot be provisioned.",
       );
     }
-    const plugins = asRecord(record.plan.plugins);
-    if (plugins !== undefined && Object.keys(plugins).length > 0) {
-      this.pluginDriver();
-    }
+    this.validatePluginPolicies(
+      normalizeAgentPlugins(record.plan.plugins as PluginDesiredState | undefined),
+    );
     if (agent !== undefined) {
       this.admitRepositoryCredentials(
         agent,
@@ -4863,6 +4881,12 @@ export class OpenClawController {
       return this.selectedDriver("sandbox");
     } catch {
       throw new DependencyUnavailableError("The selected Sandbox Driver is unavailable.");
+    }
+  }
+
+  private validatePluginPolicies(plugins: PluginDesiredState | undefined): void {
+    if (plugins !== undefined && Object.keys(plugins).length > 0) {
+      this.pluginDriver().validatePolicies(plugins);
     }
   }
 

@@ -87,6 +87,7 @@ export interface BackendSummary {
 
 export interface InstallationCapabilities {
   readonly agentProvisioning?: ComputeAgentProvisioningCapabilities;
+  readonly pluginPolicies?: PluginPolicyCapabilities & { readonly driver: PluginDriverIdentity };
 }
 
 /** Experimental authenticated client shared by related Installation Drivers. */
@@ -264,9 +265,9 @@ export interface ComputeRevisionContext {
   readonly repositoryCredentials?: readonly RepositoryCredentialRuntimeBinding[];
 }
 
-export type PluginApprovalMode = "always" | "never" | "prompt" | "auto";
+export type PluginReviewer = "human" | "auto";
 
-export type PluginApprovalsReviewer = "user" | "auto_review";
+export type PluginApprovalMode = "native" | "prompt" | "approve";
 
 export interface PluginDriverIdentity {
   readonly id: string;
@@ -275,15 +276,15 @@ export interface PluginDriverIdentity {
 
 export interface PluginToolPolicy {
   readonly enabled?: boolean;
-  readonly approvalMode?: PluginApprovalMode;
+  readonly approval?: PluginApprovalMode;
+  readonly reviewer?: PluginReviewer;
 }
 
 export interface PluginDesiredSelection {
   readonly enabled: boolean;
-  readonly approvalMode: PluginApprovalMode;
-  readonly approvalsReviewer?: PluginApprovalsReviewer;
-  readonly destructiveActions?: PluginApprovalMode;
-  readonly writes?: PluginApprovalMode;
+  readonly toolDefaults?: PluginToolPolicy;
+  /** Validated by the selected Plugin Driver, never interpreted by the control plane. */
+  readonly driverPolicy?: Readonly<Record<string, unknown>>;
   readonly tools?: Readonly<Record<string, PluginToolPolicy>>;
 }
 
@@ -291,9 +292,24 @@ export type PluginDesiredState = Readonly<Record<string, PluginDesiredSelection>
 
 export interface PluginToolCatalogEntry {
   readonly id: string;
+  readonly ownerId: string;
   readonly name: string;
-  readonly destructive: boolean;
-  readonly writes: boolean;
+  readonly destructive?: boolean;
+  readonly writes?: boolean;
+}
+
+export interface PluginPolicyCapabilities {
+  readonly toolDefaults: {
+    readonly enabled: boolean;
+    readonly approval: readonly PluginApprovalMode[];
+    readonly reviewer: readonly PluginReviewer[];
+  };
+  readonly tools: {
+    readonly enabled: boolean;
+    readonly approval: readonly PluginApprovalMode[];
+    readonly reviewer: readonly PluginReviewer[];
+  };
+  readonly driverPolicySchema: JSONSchema;
 }
 
 export interface PluginCatalogEntry {
@@ -805,6 +821,9 @@ export interface PluginDriverContext {
 
 export interface PluginDriver extends Driver {
   readonly capability: "plugin";
+  readonly policyCapabilities: PluginPolicyCapabilities;
+  /** Checks policy support without installing plugins or performing authenticated discovery. */
+  validatePolicies(selections: PluginDesiredState): void;
   listCatalog(context: PluginDriverContext): Promise<readonly PluginCatalogEntry[]>;
 }
 

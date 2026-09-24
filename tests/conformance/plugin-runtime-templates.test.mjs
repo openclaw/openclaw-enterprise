@@ -9,8 +9,7 @@ const nativeId = "fixture@openai-curated-remote";
 const selections = {
   [`codex-plugin:${nativeId}`]: {
     enabled: true,
-    approvalMode: "auto",
-    approvalsReviewer: "user",
+    toolDefaults: { approval: "native", reviewer: "human" },
   },
 };
 const detail = {

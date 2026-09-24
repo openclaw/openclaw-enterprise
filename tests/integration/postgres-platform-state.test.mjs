@@ -1331,7 +1331,11 @@ test(
       values: { runtime: { revision: "replacement" } },
     });
     const initialPlugins = {
-      "occ-plugin:diffs": { enabled: true, approvalMode: "always" },
+      "occ-plugin:diffs": {
+        enabled: true,
+        toolDefaults: { enabled: false, approval: "approve" },
+        tools: { diffs: { enabled: true } },
+      },
     };
     const malformedCreateAgentId = `agt_${randomUUID()}`;
     await assert.rejects(
@@ -1346,7 +1350,7 @@ test(
           executionMode: "embedded",
           servicePrincipalId: `service-agent-${malformedCreateAgentId}`,
           plugins: {
-            "occ-plugin:diffs": { enabled: true, approvalMode: "sometimes" },
+            "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "sometimes" } },
           },
           createdAt: new Date().toISOString(),
         }),
@@ -1414,7 +1418,7 @@ test(
           undefined,
           undefined,
           undefined,
-          { "occ-plugin:diffs": { enabled: true, approvalMode: "sometimes" } },
+          { "occ-plugin:diffs": { enabled: true, approvalMode: "always" } },
         );
       }),
       { name: "ScopeViolationError" },
@@ -1483,10 +1487,10 @@ test(
     });
     assert.deepEqual(omittedPlugins.plugins, initialPlugins);
     const replacementPlugins = {
-      "codex-plugin:third-plugin@openai-curated-remote": {
+      "occ-plugin:diffs": {
         enabled: true,
-        approvalMode: "auto",
-        approvalsReviewer: "auto_review",
+        toolDefaults: { approval: "native" },
+        tools: { diffs: { approval: "approve" } },
       },
     };
     const replacedPlugins = await controller.updateAgent(principalId, {
@@ -1509,7 +1513,7 @@ test(
       await view.revisions.findRevision(namespace.id, agent.id, revision.id),
     ]);
     assert.deepEqual(reloadedAgent.plugins, {});
-    assert.equal(reloadedRevision.plugins.plugins["occ-plugin:diffs"].enabled, true);
+    assert.deepEqual(reloadedRevision.plugins.plugins, initialPlugins);
 
     const durableRevision = await pool.query(
       "SELECT admitted_spec FROM occ.agent_revisions WHERE id = $1",

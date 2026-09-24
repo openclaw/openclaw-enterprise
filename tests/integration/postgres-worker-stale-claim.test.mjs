@@ -74,7 +74,7 @@ function codexPluginRevisionState(pluginId) {
     plugins: {
       [pluginId]: {
         enabled: true,
-        approvalMode: "auto",
+        toolDefaults: { approval: "native" },
       },
     },
   };

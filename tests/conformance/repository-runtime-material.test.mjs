@@ -731,7 +731,7 @@ for (const mode of ["embedded", "dedicated"]) {
     const driverId = mode === "embedded" ? "openclaw-plugin" : "codex-plugin";
     f.revision.plugins = {
       driver: { id: driverId, implementation: `occ/${driverId}` },
-      plugins: { [pluginId]: { enabled: true, approvalMode: "auto" } },
+      plugins: { [pluginId]: { enabled: true, toolDefaults: { approval: "native" } } },
     };
     let loseMaterialReadiness = false;
     let statusObserved = false;

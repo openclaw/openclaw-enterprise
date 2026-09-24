@@ -2,8 +2,9 @@
 
 ## Overview
 
-`PluginDriver` supplies a curated catalog for an Agent Harness. OpenClaw Control
-Plane (OCC) owns Agent selections, authorization, and immutable revisions.
+`PluginDriver` supplies a curated catalog, policy capabilities, and policy
+validation for an Agent Harness. OpenClaw Control Plane (OCC) owns Agent
+selections, authorization, and immutable revisions.
 Compute owns native installation, runtime connections, readiness, activation,
 and retirement. Bundled startup code also translates selected policy into native
 configuration; those helpers are not methods on the exported Driver interface.
@@ -17,19 +18,31 @@ are not selectable. See [Driver selection](selection.md) and the
 
 ### Selection and catalogs
 
-The [shared interface](../../../packages/contracts/src/index.ts) requires only
-`listCatalog(context)`. It receives the read-only Namespace, Agent, Harness
-identity and mode, native Configuration, and an abort signal. It returns entries
-with `id`, `name`, and `tools`; `tools` is either a list of tool metadata or
-`null` when that metadata is unavailable. A tool entry has `id`, `name`,
-`destructive`, and `writes`. Catalog entries do not grant access, select a plugin,
-or prove the requested policy can run.
+The [shared interface](../../../packages/contracts/src/index.ts) exposes:
+
+- `policyCapabilities`: supported default/tool enablement, approval modes, and
+  reviewer arrays per scope, plus the JSON Schema for `driverPolicy` fields.
+  An empty reviewer array means explicit selection is unsupported at that scope.
+- `validatePolicies(selections)`: validate requested policy without installation
+  or authenticated discovery. OCC calls this before save and deployment admission.
+- `listCatalog(context)`: read the catalog for a Namespace, Agent, Harness,
+  native Configuration, and abort signal.
+
+Catalog entries contain `id`, `name`, and `tools`. `tools:null` means unknown;
+`tools:[]` means the observed inventory was empty for that read. Each tool has
+an opaque `id`, `name`,
+and `ownerId`; `destructive` and `writes` annotations are optional. An entry
+does not grant access, select a plugin, or prove the policy can run.
+
+Authorized `GET /installation` exposes the selected Driver's identity and policy
+capabilities. See the [capability response](../agent-plugins.md#discover-policy-controls).
 
 There is no exported install, enable, policy-translation, or preparation method.
 The optional _backend reader_ in bundled Codex is different from the required
 `listCatalog` method: without that reader, an explicit catalog call fails, but
 saving Agent selections and deploying supported selections can still use the
-Agent runtime's discovery path. There is no public HTTP plugin inventory endpoint.
+Agent runtime's discovery path. This interface does not provide an HTTP catalog
+discovery endpoint.
 See [bundled selection and catalog setup](plugin-bundled.md#selection-and-catalogs).
 
 ## IAM
@@ -49,8 +62,8 @@ See [Agent plugin permissions](../agent-plugins.md) and [authorization](../autho
 
 Trusted startup creates the selected bundled Driver and validates its configuration.
 The shared interface has no startup, shutdown, or uninstall operation. Saving an
-Agent's requested plugin map does not validate catalog membership; saved entries
-remain readable even if the original Driver is unavailable. A revision with
+Agent's requested plugin map validates supported policy, but does not perform
+authenticated catalog discovery; saved entries remain readable even if the original Driver is unavailable. A revision with
 nonempty selections records the selected Driver's ID and implementation and the
 requested IDs and policies, not credential values or native release metadata.
 
@@ -78,10 +91,11 @@ and [Compute startup warnings](compute.md#plugin-startup-warnings).
   [native support table](plugin-bundled.md#native-mappings-and-limits).
 - Callers cannot choose arbitrary sources or versions. SSH Compute rejects every
   nonempty plugin map; an empty selection remains supported for its embedded Harness.
-- Agent enablement does not manage account-wide installation. A disabled or
-  `never` selection can remain installed while its execution is blocked locally.
+- Agent enablement does not manage account-wide installation. A disabled
+  selection can remain installed while its execution is blocked locally.
 - A catalog response, rendered configuration, or direct MCP call does not prove
-  native Agent execution. Compare current support in the [feature matrix](plugin-matrix.md).
+  native Agent execution. See [current mappings](plugin-bundled.md#native-mappings-and-limits); the
+  [feature matrix](plugin-matrix.md) preserves an older review snapshot.
 
 ## Troubleshooting
 
@@ -96,8 +110,8 @@ and [Compute startup warnings](compute.md#plugin-startup-warnings).
 
 - [Bundled OpenClaw and Codex Drivers](plugin-bundled.md): `occ-plugin` serves
   embedded OpenClaw; `codex-plugin` serves dedicated Codex.
-- [PluginDriver feature matrix](plugin-matrix.md): capability and verification
-  differences between the two bundled implementations.
+- [PluginDriver feature matrix](plugin-matrix.md): historical capability review
+  with pinned source evidence.
 
 ## Related
 

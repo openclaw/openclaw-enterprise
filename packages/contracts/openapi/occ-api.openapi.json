@@ -30,15 +30,20 @@
         "additionalProperties": false,
         "minProperties": 1,
         "properties": {
-          "approvalMode": {
+          "approval": {
             "anyOf": [
-              { "const": "always", "type": "string" },
-              { "const": "never", "type": "string" },
+              { "const": "native", "type": "string" },
               { "const": "prompt", "type": "string" },
-              { "const": "auto", "type": "string" }
+              { "const": "approve", "type": "string" }
             ]
           },
-          "enabled": { "type": "boolean" }
+          "enabled": { "type": "boolean" },
+          "reviewer": {
+            "anyOf": [
+              { "const": "human", "type": "string" },
+              { "const": "auto", "type": "string" }
+            ]
+          }
         },
         "title": "PluginToolPolicy",
         "type": "object"
@@ -46,45 +51,17 @@
       "def-3": {
         "additionalProperties": false,
         "properties": {
-          "approvalMode": {
-            "anyOf": [
-              { "const": "always", "type": "string" },
-              { "const": "never", "type": "string" },
-              { "const": "prompt", "type": "string" },
-              { "const": "auto", "type": "string" }
-            ]
-          },
-          "approvalsReviewer": {
-            "anyOf": [
-              { "const": "user", "type": "string" },
-              { "const": "auto_review", "type": "string" }
-            ]
-          },
-          "destructiveActions": {
-            "anyOf": [
-              { "const": "always", "type": "string" },
-              { "const": "never", "type": "string" },
-              { "const": "prompt", "type": "string" },
-              { "const": "auto", "type": "string" }
-            ]
-          },
+          "driverPolicy": { "additionalProperties": {}, "type": "object" },
           "enabled": { "type": "boolean" },
+          "toolDefaults": { "$ref": "#/components/schemas/def-2" },
           "tools": {
             "additionalProperties": { "$ref": "#/components/schemas/def-2" },
-            "description": "Plugin tool policy map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$.",
-            "propertyNames": { "pattern": "^[A-Za-z0-9._~:@-]{1,253}$" },
+            "description": "Tool overrides keyed by exact opaque tool IDs from the selected Plugin Driver catalog.",
+            "propertyNames": { "pattern": "^[^\\u0000-\\u0020\\u007f]{1,1024}$" },
             "type": "object"
-          },
-          "writes": {
-            "anyOf": [
-              { "const": "always", "type": "string" },
-              { "const": "never", "type": "string" },
-              { "const": "prompt", "type": "string" },
-              { "const": "auto", "type": "string" }
-            ]
           }
         },
-        "required": ["enabled", "approvalMode"],
+        "required": ["enabled"],
         "title": "PluginDesiredSelection",
         "type": "object"
       },
@@ -1391,6 +1368,72 @@
                               },
                               "required": ["executionModes"],
                               "type": "object"
+                            },
+                            "pluginPolicies": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "driver": { "$ref": "#/components/schemas/def-1" },
+                                "driverPolicySchema": {
+                                  "additionalProperties": {},
+                                  "type": "object"
+                                },
+                                "toolDefaults": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "approval": {
+                                      "items": {
+                                        "anyOf": [
+                                          { "const": "native", "type": "string" },
+                                          { "const": "prompt", "type": "string" },
+                                          { "const": "approve", "type": "string" }
+                                        ]
+                                      },
+                                      "type": "array"
+                                    },
+                                    "enabled": { "type": "boolean" },
+                                    "reviewer": {
+                                      "items": {
+                                        "anyOf": [
+                                          { "const": "human", "type": "string" },
+                                          { "const": "auto", "type": "string" }
+                                        ]
+                                      },
+                                      "type": "array"
+                                    }
+                                  },
+                                  "required": ["enabled", "approval", "reviewer"],
+                                  "type": "object"
+                                },
+                                "tools": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "approval": {
+                                      "items": {
+                                        "anyOf": [
+                                          { "const": "native", "type": "string" },
+                                          { "const": "prompt", "type": "string" },
+                                          { "const": "approve", "type": "string" }
+                                        ]
+                                      },
+                                      "type": "array"
+                                    },
+                                    "enabled": { "type": "boolean" },
+                                    "reviewer": {
+                                      "items": {
+                                        "anyOf": [
+                                          { "const": "human", "type": "string" },
+                                          { "const": "auto", "type": "string" }
+                                        ]
+                                      },
+                                      "type": "array"
+                                    }
+                                  },
+                                  "required": ["enabled", "approval", "reviewer"],
+                                  "type": "object"
+                                }
+                              },
+                              "required": ["driver", "toolDefaults", "tools", "driverPolicySchema"],
+                              "type": "object"
                             }
                           },
                           "type": "object"
@@ -1530,6 +1573,72 @@
                                 }
                               },
                               "required": ["executionModes"],
+                              "type": "object"
+                            },
+                            "pluginPolicies": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "driver": { "$ref": "#/components/schemas/def-1" },
+                                "driverPolicySchema": {
+                                  "additionalProperties": {},
+                                  "type": "object"
+                                },
+                                "toolDefaults": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "approval": {
+                                      "items": {
+                                        "anyOf": [
+                                          { "const": "native", "type": "string" },
+                                          { "const": "prompt", "type": "string" },
+                                          { "const": "approve", "type": "string" }
+                                        ]
+                                      },
+                                      "type": "array"
+                                    },
+                                    "enabled": { "type": "boolean" },
+                                    "reviewer": {
+                                      "items": {
+                                        "anyOf": [
+                                          { "const": "human", "type": "string" },
+                                          { "const": "auto", "type": "string" }
+                                        ]
+                                      },
+                                      "type": "array"
+                                    }
+                                  },
+                                  "required": ["enabled", "approval", "reviewer"],
+                                  "type": "object"
+                                },
+                                "tools": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "approval": {
+                                      "items": {
+                                        "anyOf": [
+                                          { "const": "native", "type": "string" },
+                                          { "const": "prompt", "type": "string" },
+                                          { "const": "approve", "type": "string" }
+                                        ]
+                                      },
+                                      "type": "array"
+                                    },
+                                    "enabled": { "type": "boolean" },
+                                    "reviewer": {
+                                      "items": {
+                                        "anyOf": [
+                                          { "const": "human", "type": "string" },
+                                          { "const": "auto", "type": "string" }
+                                        ]
+                                      },
+                                      "type": "array"
+                                    }
+                                  },
+                                  "required": ["enabled", "approval", "reviewer"],
+                                  "type": "object"
+                                }
+                              },
+                              "required": ["driver", "toolDefaults", "tools", "driverPolicySchema"],
                               "type": "object"
                             }
                           },

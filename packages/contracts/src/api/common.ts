@@ -444,16 +444,12 @@ export const UpdateWorkspaceFileBody = Type.Object(
   { additionalProperties: false },
 );
 
-export const PluginApprovalModeSchema = Type.Union([
-  Type.Literal("always"),
-  Type.Literal("never"),
-  Type.Literal("prompt"),
-  Type.Literal("auto"),
-]);
+export const PluginReviewerSchema = Type.Union([Type.Literal("human"), Type.Literal("auto")]);
 
-export const PluginApprovalsReviewerSchema = Type.Union([
-  Type.Literal("user"),
-  Type.Literal("auto_review"),
+export const PluginApprovalModeSchema = Type.Union([
+  Type.Literal("native"),
+  Type.Literal("prompt"),
+  Type.Literal("approve"),
 ]);
 
 export const ERROR_DETAIL_CODES = Object.freeze([

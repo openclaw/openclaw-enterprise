@@ -1,41 +1,18 @@
 # PluginDriver feature matrix
 
-Compare `occ-plugin` (`occ/openclaw-plugin`, embedded OpenClaw) with
-`codex-plugin` (`occ/codex-plugin`, dedicated Codex) before selecting plugin
-policy. This is a source snapshot of OpenClaw Enterprise (OCE), with the commit
-and review date below. The [PluginDriver reference](plugin.md) owns Driver
-selection and native limits; [Agent plugins](../agent-plugins.md) owns API semantics.
+This page preserves the **2026-09-17 historical source snapshot** below. Its
+`always`/`never`/`auto` vocabulary and unsupported-policy statuses do not describe
+the current API. For current authoring controls, read
+[Agent plugin policy](../agent-plugins.md#approval-policy),
+[bundled Driver mappings](plugin-bundled.md#native-mappings-and-limits), or the
+selected Driver's `GET /installation` capabilities.
 
-For harness capabilities beyond current translation and the proposed iteration
-order, see the [policy translation plan](../../../apps/controller/src/drivers/plugin/policy-support.md)
-beside the translator.
-
-The [local docs preview](../../local-preview.md) adds search, category/status
-filters, and expandable evidence. A status filter matches either Driver's cell.
-GitHub shows the generated table with caveats and pinned source/test links.
-Both views use the [same matrix data](../../assets/plugin-driver-matrix.json).
-The eight rows focus on plugin discovery and approval policy.
-Each **Scope** cell explains what the capability means. Open a Driver status
-to see its behavior, caveats, and evidence. Search includes the explanations.
-
-- **Supported**: source provides the scoped behavior.
-- **Partial**: a material constraint appears in the cell.
-- **Unsupported**: rejected or unavailable through this implementation.
-- **Not applicable**: the surface belongs to a different Harness or owner.
-- **Unknown**: available evidence cannot establish support.
-
-`prompt_human` and `prompt_auto_review` are display labels for
-`approvalMode: prompt` with `approvalsReviewer: user` or `auto_review`,
-respectively. The API accepts `always`, `auto`, `never`, and `prompt` as modes;
-it does not accept either display label as an `approvalMode` value. Both bundled
-Drivers currently reject `prompt` at startup, regardless of reviewer.
-
-Saving valid policy does not prove native enforcement. Support describes the
-scoped implementation, not production certification or a successful model turn.
-Test links identify coverage; no live runtime was exercised for this review.
-The [plugin testing guide](../../testing/plugins.md#current-proof-notes) records
-older runtime results and the latest recorded Codex authentication blocker.
-Upstream Codex capabilities do not automatically establish OCE support.
+The [local docs preview](../../local-preview.md) adds filters and expandable
+evidence to this historical table. GitHub shows the generated table with pinned
+source/test links. Both use the [same snapshot data](../../assets/plugin-driver-matrix.json).
+No live runtime was exercised for that review. The
+[testing guide](../../testing/plugins.md#current-proof-notes) distinguishes older
+runtime results from the current verification gap.
 
 <!-- plugin-matrix:start -->
 

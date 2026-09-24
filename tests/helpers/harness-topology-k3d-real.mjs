@@ -2760,7 +2760,7 @@ async function deleteRevisionPods(topology, revisionId) {
 
 async function assertStartupFailureDeploymentStatusDurable(context, topology, options = {}) {
   const plugins = options.pluginsEnabled
-    ? { [startupFailurePluginId]: { enabled: true, approvalMode: "auto" } }
+    ? { [startupFailurePluginId]: { enabled: true, toolDefaults: { approval: "native" } } }
     : {};
   const failure = await assertInvalidHarnessAuthStaysUnready(context, topology, {
     plugins,

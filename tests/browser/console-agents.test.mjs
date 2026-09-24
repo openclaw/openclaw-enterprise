@@ -17,6 +17,7 @@ import {
 import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
+import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
@@ -2476,6 +2477,9 @@ test("Agent creation reports unavailable Secret storage before creating Configur
 test("Agent creation reuses its saved Secret and Configuration after an Agent creation conflict", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
+  const pluginDriver = new CodexPluginDriver();
+  fixture.controller.registerDriver(pluginDriver);
+  fixture.controller.selectDriver("plugin", pluginDriver.id);
   const namespace = await fixture.createNamespace("Partial save retry", { ready: true });
   await fixture.createAgent(namespace.id, "Retry Agent");
   const values = nativeValues("partial-save", { harnessId: "codex", providerModel: "gpt-5.1" });
@@ -2589,7 +2593,10 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   await openAdvancedSettings(page);
   await page.getByLabel("Plugin selections JSON").fill(
     JSON.stringify({
-      "occ-plugin:diffs": { enabled: true, approvalMode: "always" },
+      "codex-plugin:linear@openai-curated-remote": {
+        enabled: true,
+        toolDefaults: { approval: "approve" },
+      },
     }),
   );
   await page.getByLabel("Agent name").fill("Retry Agent Corrected");
@@ -2620,7 +2627,10 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   assert.equal(attempts[0].body.initialWorkspaceFiles["SOUL.md"], "# Keep this draft\n");
   assert.equal(attempts[1].body.initialWorkspaceFiles["SOUL.md"], "# Corrected draft\n");
   assert.deepEqual(retried.data.plugins, {
-    "occ-plugin:diffs": { enabled: true, approvalMode: "always" },
+    "codex-plugin:linear@openai-curated-remote": {
+      enabled: true,
+      toolDefaults: { approval: "approve" },
+    },
   });
   for (const request of attempts) {
     assert.equal(request.body.workspaceDefaultsId, WORKSPACE_DEFAULTS_ID);
@@ -4755,6 +4765,9 @@ test("API-key Presets keep their credential provider fixed while allowing model 
 test("Presets render variables into independent Agent drafts and keep partial-save retries fixed", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
+  const pluginDriver = new CodexPluginDriver();
+  fixture.controller.registerDriver(pluginDriver);
+  fixture.controller.selectDriver("plugin", pluginDriver.id);
   const root = await mkdtemp(join(tmpdir(), "occ-preset-browser-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   // Use production Configuration admission, including native credential restrictions.
@@ -4774,7 +4787,12 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   });
   values.plugins.entries.knowledge.config.enabled = "{{ vars.enabled }}";
   values.plugins.entries.knowledge.config.count = "{{ vars.count }}";
-  const plugins = { "occ-plugin:diffs": { enabled: true, approvalMode: "always" } };
+  const plugins = {
+    "codex-plugin:linear@openai-curated-remote": {
+      enabled: true,
+      toolDefaults: { approval: "approve" },
+    },
+  };
   const secretBindings = { CHANNEL_TOKEN: { source: secret.ref, delivery: { type: "env" } } };
   const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
     body: {
