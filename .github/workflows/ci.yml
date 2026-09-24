@@ -20,6 +20,16 @@ env:
   NODE_VERSION: "24.16.0"
 
 jobs:
+  native-images:
+    name: Native Container Verification
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    uses: ./.github/workflows/container-check.yml
+    with:
+      source_sha: ${{ github.sha }}
+      ci_run_id: ${{ github.run_id }}
+      ci_attempt: ${{ github.run_attempt }}
+      node_base_image: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
+
   audit:
     name: Suite Audit
     runs-on: blacksmith-8vcpu-ubuntu-2404

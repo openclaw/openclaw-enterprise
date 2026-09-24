@@ -67,7 +67,9 @@ Each Buildx builder runs at most two steps concurrently. GitHub Actions build
 caches are scoped by image and architecture, including intermediate stages.
 The main-only publication gate and read-only build jobs remain unchanged.
 Maintainers can also dispatch `container-check.yml` on a branch for native image
-verification; that workflow has no publication job or package-write permission.
+verification; manual `CI` dispatches call the same workflow so branches can be
+verified before the workflow first lands on main. It has no publication job or
+package-write permission.
 The build exports
 an OCI directory without registry publication or credentials.
 
