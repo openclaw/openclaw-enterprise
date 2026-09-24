@@ -108,7 +108,7 @@ export function installFixture(scenario, evidence) {
         : ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"];
     for (const key of keys) {
       config.secretBindings[key] = {
-        source: secretRef(scenario.slackSecretIds?.[key] ?? `sec_demo_${key.toLowerCase()}`),
+        source: secretRef(`sec_demo_${key.toLowerCase()}`),
         delivery: { type: "env" },
       };
     }

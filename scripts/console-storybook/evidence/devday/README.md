@@ -2,7 +2,7 @@
 
 Captured from source commit `19c5184ed827e093dcf2b2cecde8753bc3f8d028` on
 September 24, 2026, after reconciling main at `f23f7f4d`. Later evidence-only
-commits do not change the demonstrated UI.
+commits originally changed evidence only. These captures are historical: the current Console has built-in model choices and retains Secret bindings under Advanced settings. They are not verification of the refreshed source.
 
 Environment: macOS, Node.js 24.15.0, pnpm 11.15.1, Storybook 10.6.0,
 Playwright 1.63.0 with headed Chromium, 1440 × 1000 viewport. Static Storybook
@@ -22,7 +22,7 @@ The recording follows both segments in one fixture: create `devday claw`, wait
 for deployment success, choose **← Agents**, open `oceclaw`, launch its Admin UI,
 and send a new message. Checkpoint stories offer a resettable fallback.
 
-## Visual evidence
+## Historical visual evidence
 
 [Watch the 29-second walkthrough](walkthrough.mp4). The video joins the Console
 capture and the newly opened Admin UI window in chronological order.
@@ -40,11 +40,9 @@ capture and the newly opened Admin UI window in chronological order.
 | [Existing message](06-admin-existing-message.png)   | Seeded `#openclaw-feedback` conversation.                                         |
 | [New reply](07-admin-reply.png)                     | Submitted message and visible simulated response.                                 |
 
-The Create Agent form no longer exposes the raw Secret bindings JSON editor.
-Preset bindings and Slack drawer selections remain in form state and are sent
-with the Configuration. [Updated form](01-create-options.png).
+The historical [form capture](01-create-options.png) predates the current Advanced settings editor. The refresh preserves that editor and its manual-binding safeguards.
 
-## Checks and limits
+## Historical checks and limits
 
 - Storybook build, lint, formatting, workspace boundary, documentation build/link
   checks, and `git diff --check` passed.
@@ -64,6 +62,4 @@ This is simulated UI proof. The Console uses production modules; the Admin UI
 is a schematic chat fixture rather than the bundled OpenClaw Control UI.
 No real model credential, backend persistence, GitHub grant, workload deployment,
 Slack delivery, native gateway, or model response was exercised. All displayed
-Secrets and channel IDs are seeded fake values. The production UI change removes
-the raw bindings editor while preserving existing submission paths; no backend
-contract or runtime deployment implementation changed.
+Secrets and channel IDs are seeded fake values. The refreshed branch changes Storybook fixtures and instructions only; production Console behavior follows main.

@@ -230,6 +230,7 @@ const devdayCreateCheckpoint = [
   { selector: "#repository-profile-git-write", click: true },
   click("Configure Slack"),
   { selector: "#slack-channel-ids", value: "COPENCLAW, COPENCLAWFEEDBACK" },
+  { selector: "#slack-allowed-user-ids", value: "UDEMO123" },
   { selector: "#slack-secret-slack-app-token", value: "sec_devday_slack_app_token" },
   { selector: "#slack-secret-slack-bot-token", value: "sec_devday_slack_bot_token" },
   click("Apply channel settings"),
@@ -1924,11 +1925,10 @@ export const scenarios = {
     agentName: "oceclaw",
     deployed: true,
     slack: true,
-    slackChannels: ["COPENCLAWFEEDBACK"],
+    slackChannels: { COPENCLAWFEEDBACK: { requireMention: true, users: ["UDEMO123"] } },
     nativeAdmin: "available",
     nativeAdminUrl: "/storybook-fixtures/devday-admin.html?agent=oceclaw&channel=openclaw-feedback",
     devdayPreset: true,
-    modelOptions: [{ id: "gpt-6-astra", name: "gpt-6-astra" }],
     repositoryOptions: [
       {
         repositoryRef: "openclaw/openclaw-enterprise",
@@ -1952,9 +1952,9 @@ export const scenarios = {
     steps: [
       "Start on the Agents list with the already deployed oceclaw seed, then click Create Agent.",
       "Select the Codex Preset and enter devday claw as the Preset name variable.",
-      "Enter the fake Codex API key sk-demo-devday-codex-api-key and select gpt-6-astra from simulated model discovery.",
+      "Enter the fake Codex API key sk-demo-devday-codex-api-key and select gpt-6-astra from the built-in model choices.",
       "Select openclaw/openclaw-enterprise with Contributor access.",
-      "Open Configure Slack. Enter COPENCLAW and COPENCLAWFEEDBACK, representing #openclaw and #openclaw-feedback, then bind the pre-existing simulated devday claw Slack Secrets.",
+      "Open Configure Slack. Enter COPENCLAW and COPENCLAWFEEDBACK, representing #openclaw and #openclaw-feedback, allow UDEMO123 to send in those channels, then bind the pre-existing simulated devday claw Slack Secrets.",
       "Create Agent and keep the Console visible while the fixture progresses through provisioning and deployment activation until Workspace files open for the admitted revision.",
       "Use ← Agents and open oceclaw in the same fixture to continue segment 2. The next-segment link starts an independent resettable fixture.",
     ],
@@ -1967,11 +1967,10 @@ export const scenarios = {
     agentName: "oceclaw",
     deployed: true,
     slack: true,
-    slackChannels: ["COPENCLAWFEEDBACK"],
+    slackChannels: { COPENCLAWFEEDBACK: { requireMention: true, users: ["UDEMO123"] } },
     nativeAdmin: "available",
     nativeAdminUrl: "/storybook-fixtures/devday-admin.html?agent=oceclaw&channel=openclaw-feedback",
     devdayPreset: true,
-    modelOptions: [{ id: "gpt-6-astra", name: "gpt-6-astra" }],
     repositoryOptions: [
       {
         repositoryRef: "openclaw/openclaw-enterprise",
@@ -2005,7 +2004,7 @@ export const scenarios = {
     agentName: "oceclaw",
     deployed: true,
     slack: true,
-    slackChannels: ["COPENCLAWFEEDBACK"],
+    slackChannels: { COPENCLAWFEEDBACK: { requireMention: true, users: ["UDEMO123"] } },
     nativeAdmin: "available",
     nativeAdminUrl: "/storybook-fixtures/devday-admin.html?agent=oceclaw&channel=openclaw-feedback",
     description:
@@ -2025,7 +2024,7 @@ export const scenarios = {
     agentName: "oceclaw",
     deployed: true,
     slack: true,
-    slackChannels: ["COPENCLAWFEEDBACK"],
+    slackChannels: { COPENCLAWFEEDBACK: { requireMention: true, users: ["UDEMO123"] } },
     nativeAdmin: "available",
     nativeAdminUrl: "/storybook-fixtures/devday-admin.html?agent=oceclaw&channel=openclaw-feedback",
     actions: devdayAdminCheckpoint,
