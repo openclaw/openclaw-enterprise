@@ -268,6 +268,35 @@ function failureDiagnostic(error) {
   if (!isRecord(diagnostic)) {
     return undefined;
   }
+  if (diagnostic.kind === "development-lifecycle") {
+    if (!["up", "down"].includes(diagnostic.operation)) {
+      return undefined;
+    }
+    return {
+      kind: "development-lifecycle",
+      operation: diagnostic.operation,
+      lastProgress: ["unknown", "compose-services", "k3d-cluster", "controller-worker"].includes(
+        diagnostic.lastProgress,
+      )
+        ? diagnostic.lastProgress
+        : undefined,
+      exitCode:
+        Number.isInteger(diagnostic.exitCode) &&
+        diagnostic.exitCode >= 0 &&
+        diagnostic.exitCode <= 255
+          ? diagnostic.exitCode
+          : undefined,
+      signal: ["SIGTERM", "SIGKILL", "SIGINT"].includes(diagnostic.signal)
+        ? diagnostic.signal
+        : undefined,
+      outcome: ["command-failure", "terminated", "output-limit"].includes(diagnostic.outcome)
+        ? diagnostic.outcome
+        : undefined,
+      uncertainMarker: ["present", "absent", "unknown"].includes(diagnostic.uncertainMarker)
+        ? diagnostic.uncertainMarker
+        : undefined,
+    };
+  }
   if (diagnostic.kind === "network-policy") {
     return [
       "Agent outbound platform traffic",

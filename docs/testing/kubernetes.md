@@ -77,6 +77,11 @@ container network's default-route source would leave ready Pods unreachable
 through the proxy. An absent overlay route fails preparation before it publishes
 the test environment.
 
+## Real development CLI lifecycle
+
+See [Test the Kubernetes development CLI lifecycle](kubernetes-development.md) for
+checkout-local startup, authenticated readiness, owned cleanup, and CI recovery.
+
 ## Kubernetes model turns and Secrets
 
 ### Develop with local containers and k3d
@@ -294,7 +299,7 @@ coverage. Kubernetes API-and-worker coverage rejects the ordinary
 fixture and does not establish a real gateway, authenticated Codex connection,
 or model turn. The [real-runtime suite](#kubernetes-model-turns-and-secrets) provides model-turn proof.
 
-CI keeps the project-pinned k3d 5.8.3 binary and passes `--image +v1.35` when it
+CI keeps the project-pinned k3d 5.9.0 binary and passes `--image +v1.35` when it
 creates ordinary disposable clusters. k3d resolves the K3s `v1.35` release
 channel at cluster creation, so these lanes follow the current Kubernetes
 1.35.z patch rather than one immutable node image. Preparation rejects a server

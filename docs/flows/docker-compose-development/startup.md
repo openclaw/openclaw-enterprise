@@ -157,11 +157,13 @@ does not mount the configuration volume.
 `internal/occdev/command.go:pinEndpoint`,
 `internal/occdev/up.go:Up`.
 
-The Kubernetes lifecycle selects Docker or Podman, resolves the selected local
-Unix socket, and records it with the Compose project and generated `occ-dev-*`
-cluster name in a private state directory. Cleanup validates that state and
-reuses the recorded endpoint. Changing the active Docker context after startup
-does not redirect cleanup to another engine.
+The Kubernetes lifecycle selects Docker or Podman and resolves the selected
+local Unix socket. `internal/occdev/claims.go:claimsFor` derives separate project
+and cluster claims from that endpoint. The private, per-user claim registry is
+shared across state directories and retains each claim until disposal. Startup
+acquires both claims before checking resources. Version-4 state records their
+random owner, endpoint, project, and cluster. Cleanup verifies the claims and
+reuses that endpoint; changing the active Docker context cannot redirect it.
 
 Startup refuses existing cluster or project resources, validates the resolved
 Compose publications through `internal/occdev/compose.go:AnalyzeCompose`, and
@@ -169,7 +171,9 @@ rejects external or unscoped networks and volumes through
 `internal/occdev/up.go:validateResourceOwnership`. It then claims the state directory with an exclusive `0700` creation. It writes the
 rendered Compose snapshot privately before creating resources. Startup and
 cleanup both use that snapshot, so later `.env` edits cannot change the saved
-project configuration.
+project configuration. `internal/occdev/state.go:beginLifecycle` writes
+`subprocess-outcome-uncertain` before the first resource-mutating helper. The
+file survives abrupt CLI death even when the state lock is released.
 
 ### 13. Bootstrap OCC, create k3d, and prepare runtime configuration
 
@@ -180,7 +184,13 @@ project configuration.
 
 Compose starts PostgreSQL, migration, and bootstrap. The lifecycle waits for
 successful migration and bootstrap exits before creating the dedicated k3d
-cluster on the Compose network. k3d resolves the latest K3s patch in the 1.35
+cluster on the Compose network. Before creation, state records the attempt.
+The helper creates k3d's image volume with the recorded native owner label
+and verifies that ownership before invoking k3d. k3d receives the same owner
+label for all configured nodes, including its load balancer. Its automatic
+rollback is disabled so only OCC's ownership-checked cleanup can remove
+resources after a failed create.
+k3d resolves the latest K3s patch in the 1.35
 family, which matches the supported Kubernetes minimum. The cluster API binds
 host loopback; creation leaves the default kubeconfig and current context
 unchanged.
@@ -208,13 +218,36 @@ response before the final key file is written exclusively and readiness is
 reported. This hands an initialized profile to the operator; it does not prove
 Agent deployment or a model turn.
 
-On failure, startup attempts resource cleanup. Explicit Kubernetes shutdown
-validates the marker, state, and Compose snapshot before using the recorded
-engine endpoint. Cleanup stops the API and worker before deleting the named
-k3d cluster and Compose project volumes. It continues cleanup after individual
-errors and retains state when any cleanup step fails. Complete cleanup removes
-the state directory and its helper-owned key; an external `--key-output` file
-remains operator-owned.
+On a settled failure, startup attempts resource cleanup. Explicit Kubernetes
+shutdown validates the state, snapshot, and resource claims, refuses an existing
+lifecycle marker, and writes its own marker before cleanup. Cleanup stops reconcilers,
+then checks the engine's cluster containers, cluster-labelled volumes, and
+conventional image-volume name. Configured nodes and volumes must carry the
+recorded native owner label.
+k3d's unlabeled tools node additionally requires a live owned server, its native
+cluster membership and role, the owned image-volume mount, and the recorded
+Compose network. Cleanup removes auxiliary containers by immutable ID first,
+stopping on any failure before deleting the server that supplies that ownership
+witness. It checks the remaining scope again before letting k3d delete the last
+server. If the last node has disappeared, cleanup verifies and removes the surviving volumes directly because k3d cannot
+discover a cluster without nodes. Each retry checks current resources again;
+a prior deletion attempt cannot authorize a same-name replacement or foreign
+sibling. Cleanup continues after settled errors and retains state and claims
+until resources are gone.
+
+`internal/occdev/command.go:capturedOutput` observes captured-output EOF separately
+from the process exit, with a bounded wait. `recordCommandOutcome` requires a
+successful mutating command; a failed started mutation remains uncertain even
+when it exits normally. Read-only probes may exit nonzero if they exit normally
+and their output has drained. Preflight failures do not affect a later lifecycle.
+Signals, cancellation, and unsettled output trigger cancellation of the owned
+Unix process group. An escaped descendant or engine-side operation can remain
+active; the lifecycle stops further cleanup and keeps its marker. A later
+invocation requires the operator to settle surviving helpers and explicitly
+remove the marker before retrying. A successful startup or a settled cleanup
+attempt clears the marker. Complete cleanup removes
+private state, its helper-owned key, and the resource claims. An external
+`--key-output` file remains operator-owned.
 
 ## Related
 

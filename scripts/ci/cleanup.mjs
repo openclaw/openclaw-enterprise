@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { cleanupLogging, ciOtelBackendResourceKind } from "./logging.mjs";
+import { removeDevelopmentProfileDirectory } from "./development-profile.mjs";
 import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { access, chmod, readFile, rename, rm, writeFile } from "node:fs/promises";
@@ -236,6 +237,17 @@ async function cleanupK3dImage(resource, state) {
 
 async function cleanupResource(resource, state) {
   switch (resource.kind) {
+    case "development-profile":
+      assertResourceOwner(resource, state);
+      assertString(resource.directory, "development profile directory");
+      if (
+        !isAbsolute(resource.directory) ||
+        !basename(resource.directory).startsWith(`${state.prefix}-dev-`)
+      ) {
+        throw new Error("Refusing to clean an unowned development profile directory.");
+      }
+      await removeDevelopmentProfileDirectory(resource, repositoryRoot);
+      break;
     case ciOtelBackendResourceKind:
       assertResourceOwner(resource, state);
       await cleanupLogging(resource, { execFile });
@@ -287,6 +299,11 @@ async function cleanupResourceIds(statePath, resourceIds) {
       await writeState(path, state);
     } catch (error) {
       failures.push(`${resource.kind}:${resource.name ?? resource.id}:${error.message}`);
+      // A surviving CLI or uncertain lifecycle can still need the registered
+      // images and baseline. Keep the remaining obligations for recovery.
+      if (resource.kind === "development-profile") {
+        break;
+      }
     }
   }
 

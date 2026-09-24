@@ -282,3 +282,64 @@ test("cleanup rejects ownerless resources before invoking cleanup commands", asy
   await assert.rejects(() => stat(k3dLog), { code: "ENOENT" });
   assert.equal((await stat(clusterDirectory)).isDirectory(), true);
 });
+
+test("cleanup retains an uncertain development profile and its image obligations", async (t) => {
+  const root = await fixture(t);
+  const prefix = "openclaw-ci-development-cleanup";
+  const directory = join(root, `${prefix}-dev-profile`);
+  await mkdir(join(directory, "state"), { recursive: true });
+  const marker = join(directory, "state/subprocess-outcome-uncertain");
+  await writeFile(marker, "uncertain\n", { mode: 0o600 });
+  await writeExecutable(
+    join(directory, "occ"),
+    `#!${process.execPath}\nprocess.stderr.write("subprocess outcome is uncertain\\n"); process.exit(1);\n`,
+  );
+  const statePath = join(root, "state.json");
+  const resources = [
+    {
+      id: "image",
+      kind: "image-tag",
+      owner: prefix,
+      name: "localhost/openclaw-ci-image-cleanup/runtime:local",
+    },
+    { id: "profile", kind: "development-profile", owner: prefix, directory },
+  ];
+  await writeState(statePath, {
+    version: 1,
+    repositoryRoot,
+    lane: "k3d-fixture-configuration",
+    prefix,
+    resources,
+  });
+  const result = runCleanup(statePath);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /subprocess outcome is uncertain/);
+  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")).resources, resources);
+  assert.equal(await readFile(marker, "utf8"), "uncertain\n");
+});
+
+test("cleanup preserves a dispatched development profile when CLI state is absent", async (t) => {
+  const root = await fixture(t);
+  const prefix = "openclaw-ci-dispatched-profile";
+  const directory = join(root, `${prefix}-dev-profile`);
+  await mkdir(directory);
+  const statePath = join(root, "state.json");
+  const resource = {
+    id: "profile",
+    kind: "development-profile",
+    owner: prefix,
+    directory,
+    status: "ready",
+  };
+  await writeState(statePath, {
+    version: 1,
+    repositoryRoot,
+    lane: "k3d-fixture-configuration",
+    prefix,
+    resources: [resource],
+  });
+  const result = runCleanup(statePath);
+  assert.equal(result.status, 1);
+  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")).resources, [resource]);
+  assert.ok((await stat(directory)).isDirectory());
+});

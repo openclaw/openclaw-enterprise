@@ -29,8 +29,8 @@ worker require initialized state and do not read those credentials or output.
 | `OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR`               | CIDR block.                                                                                             | Explicit Compose bridge range admitted as local development traffic while keeping forwarded headers rejected.                                                                                                     |
 | `OCC_DEVELOPMENT_TRUSTED_FORWARDER_CIDR`            | Private IPv4 `/32`.                                                                                     | Set automatically by `scripts/dev-up` for a rootful macOS Podman connection; rootless forwarding uses the Compose bridge CIDR.                                                                                    |
 | `OCC_DEVELOPMENT_STATE_DIRECTORY`                   | Private absolute path; defaults to `/tmp/openclaw-development`.                                         | Kubernetes profile only. Holds cleanup state, generated kubeconfigs, Installation YAML, and the copied bootstrap key; use the same value for `occ dev down`.                                                      |
-| `OCC_DEVELOPMENT_COMPOSE_PROJECT`                   | Compose project name; defaults to `openclaw-enterprise-development-kubernetes`.                         | Kubernetes profile only. Startup refuses a project with existing containers, networks, or volumes.                                                                                                                |
-| `OCC_DEVELOPMENT_KUBERNETES_CLUSTER`                | Name beginning with `occ-dev-`.                                                                         | Kubernetes profile only. Defaults to a generated name and refuses an existing k3d cluster.                                                                                                                        |
+| `OCC_DEVELOPMENT_COMPOSE_PROJECT`                   | Compose project name; defaults to `openclaw-enterprise-development-kubernetes`.                         | Kubernetes profile only. Startup exclusively claims the engine/project across state directories and refuses existing resources. Cleanup releases the claim after disposal.                                        |
+| `OCC_DEVELOPMENT_KUBERNETES_CLUSTER`                | Name beginning with `occ-dev-`.                                                                         | Kubernetes profile only. Defaults to a generated name, exclusively claims it on the selected engine, and refuses existing clusters. Cleanup requires its recorded ownership label.                                |
 | `OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS`           | Integer from `1` through `86400`; defaults to `300`.                                                    | Kubernetes profile only. Bounds each migration, bootstrap, and API/worker readiness wait.                                                                                                                         |
 | `OCC_DEVELOPMENT_KUBERNETES_API_PORT`               | TCP port; defaults to `6443`.                                                                           | Kubernetes profile only. Publishes the disposable k3d API on host loopback.                                                                                                                                       |
 | `OCC_DEVELOPMENT_KUBERNETES_DISK_THRESHOLD_PERCENT` | Integer from `1` through `20`; defaults to `5`.                                                         | Kubernetes profile only. Sets the disposable k3d kubelet disk-pressure threshold; production is unaffected.                                                                                                       |
@@ -50,6 +50,12 @@ credentials, and non-loopback clients are rejected. The Compose bridge CIDR is
 trusted only for the development stack's internal controller and worker path;
 workload containers do not receive the container-engine socket, controller
 credentials, the configuration volume, or sibling Namespace network access.
+
+The Kubernetes development lifecycle records an in-progress marker in
+`OCC_DEVELOPMENT_STATE_DIRECTORY` before changing engine resources. If the CLI
+dies abruptly, a started mutating helper fails, or captured output cannot settle, subsequent cleanup
+preserves state and resource claims until the operator acknowledges settlement.
+Follow the [Kubernetes recovery procedure](../../guides/deploy/local-kubernetes-development.md#stop-and-clean-up).
 
 ## Optional controller environment
 

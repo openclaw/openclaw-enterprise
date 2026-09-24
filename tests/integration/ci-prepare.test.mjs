@@ -139,6 +139,7 @@ if (command === "docker" || command === "podman") {
   }
   if (equals(args, ["image", "rm", "-f", state.tag])) finish();
   if (state.runtime && equals(args, ["image", "rm", "-f", state.runtime])) finish();
+  if (equals(args.slice(0, 3), ["image", "rm", "-f"]) && /^localhost\/openclaw-ci-image-[a-z0-9-]+\/development:local$/.test(args[3])) finish();
   if (args[0] === "exec" && ["server-0", "agent-0"].some((suffix) =>
       args[1] === "k3d-" + state.cluster + "-" + suffix)) {
     const node = args[1];
@@ -187,7 +188,7 @@ if (command === "corepack" && equals(args, ["pnpm", "db:migrate"])) {
   finish();
 }
 if (command === "k3d") {
-  if (equals(args, ["version"])) finish("k3d version v5.8.3\n");
+  if (equals(args, ["version"])) finish("k3d version v5.9.0\n");
   if (equals(args.slice(0, 2), ["cluster", "create"]) && [13, 15].includes(args.length)) {
     assert.match(args[2], /^openclaw-k8s-/);
     assert.deepEqual(args.slice(3, 5), ["--image", process.env.OPENCLAW_CI_K3S_IMAGE || "+v1.35"]);
@@ -1199,4 +1200,36 @@ test("prepareLane rejects mutable Kubernetes image inputs before creating state"
     assert.match(result.stderr, new RegExp(`${testCase.envName} must be an immutable`));
     await assert.rejects(() => stat(statePath), { code: "ENOENT" });
   }
+});
+
+test("real development CLI preparation registers recovery without a per-file database", async (t) => {
+  const commands = await fixtureImageCommands(t, "success");
+  const prepared = commands.prepare();
+  assert.equal(prepared.status, 0, prepared.stderr);
+  const root = resolve(commands.statePath, "..");
+  await writeFile(join(root, "bin/go"), `#!${process.execPath}\nprocess.exit(0);\n`, {
+    mode: 0o700,
+  });
+  const before = JSON.parse(await readFile(commands.statePath, "utf8"));
+  const result = commands.prepareFile("tests/integration/dev-kubernetes-real.test.mjs");
+  assert.equal(result.status, 0, result.stderr);
+  const after = JSON.parse(await readFile(commands.statePath, "utf8"));
+  assert.equal(after.resources.filter(({ kind }) => kind === "postgres-database").length, 0);
+  const added = after.resources.filter(
+    ({ id }) => !before.resources.some((resource) => resource.id === id),
+  );
+  assert.deepEqual(
+    added.map(({ kind }) => kind),
+    ["image-tag", "image-tag", "development-profile"],
+  );
+  assert.equal(after.resources.at(-1).kind, "development-profile");
+  const selected = JSON.parse(result.stdout).envNames;
+  assert.ok(selected.includes("OCC_TEST_DEV_DIRECTORY"));
+  assert.ok(selected.includes("OCC_TEST_DEV_RUNTIME_IMAGE"));
+  assert.equal(selected.includes("OCC_TEST_DATABASE_URL"), false);
+  // This fixture exercises registry disposal after a settled test callback.
+  await writeFile(join(after.resources.at(-1).directory, "cleanup-complete"), "settled fixture\n");
+  const cleaned = commands.cleanup();
+  assert.equal(cleaned.status, 0, cleaned.stderr);
+  await assert.rejects(stat(commands.statePath), { code: "ENOENT" });
 });

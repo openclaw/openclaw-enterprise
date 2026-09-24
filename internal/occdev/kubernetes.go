@@ -39,8 +39,17 @@ func (r *runner) writeKubeconfigs(ctx context.Context, s *developmentState) erro
 		return err
 	}
 	contextName := "k3d-" + s.Cluster
-	if _, err := r.output(ctx, "kubectl", "--kubeconfig", host, "--context", contextName, "get", "--raw=/version"); err != nil {
+	versionData, err := r.output(ctx, "kubectl", "--kubeconfig", host, "--context", contextName, "get", "--raw=/version")
+	if err != nil {
 		return err
+	}
+	var version struct {
+		GitVersion string `json:"gitVersion"`
+	}
+	// The disposable profile follows the tested 1.35 series. The Compute Driver
+	// separately owns its minimum-version warning for operator-managed clusters.
+	if err := json.Unmarshal(versionData, &version); err != nil || !kubernetesDevelopmentVersion.MatchString(version.GitVersion) {
+		return fmt.Errorf("the Kubernetes development profile requires a running Kubernetes v1.35.x server")
 	}
 	var config map[string]any
 	if err := yaml.Unmarshal(data, &config); err != nil {
@@ -84,6 +93,14 @@ func (r *runner) writeKubeconfigs(ctx context.Context, s *developmentState) erro
 }
 
 var imageDigest = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
+
+// Follow distribution/reference's repository and registry grammar, with a required SHA-256 digest.
+const imagePathComponent = `[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*`
+const imageDomainComponent = `(?:[A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9-]*[A-Za-z0-9])`
+const imageRegistry = `(?:` + imageDomainComponent + `(?:\.` + imageDomainComponent + `)*|\[[A-Fa-f0-9:]+\])(?::[0-9]+)?`
+
+var kubernetesImageReference = regexp.MustCompile(`^(?:` + imageRegistry + `/)?` + imagePathComponent + `(?:/` + imagePathComponent + `)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[a-f0-9]{64}$`)
+var kubernetesDevelopmentVersion = regexp.MustCompile(`^v1\.35\.[0-9]+(?:\+k3s[0-9]+)?$`)
 
 func (r *runner) importRuntime(ctx context.Context, s *developmentState) (string, error) {
 	image := r.setting("OCC_KUBERNETES_RUNTIME_IMAGE", "openclaw-enterprise-runtime:kubernetes-quickstart")

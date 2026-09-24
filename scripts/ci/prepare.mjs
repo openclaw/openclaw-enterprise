@@ -1741,6 +1741,43 @@ async function prepareFile({ lane, file, statePath }) {
   const env = baseEnv(resolvedStatePath, effectiveState);
   const resourceIds = [];
 
+  if (relativeFile === "tests/integration/dev-kubernetes-real.test.mjs") {
+    if (name !== "k3d-fixture-configuration" || state?.lane !== name) {
+      throw new Error(
+        "The real development profile requires its prepared Kubernetes fixture lane.",
+      );
+    }
+    const directory = await mkdtemp(join(tmpdir(), `${state.prefix}-dev-`));
+    const profile = addResource(state, "development-profile", { directory });
+    await writeState(resolvedStatePath, state);
+    await execFile("go", ["build", "-trimpath", "-o", join(directory, "occ"), "./cmd/occ"]);
+    const images = await buildRuntimeImages(resolvedStatePath, state, {
+      runtime: true,
+      localStore: true,
+    });
+    const appImage = `localhost/openclaw-ci-image-${state.prefix}/development:local`;
+    const image = addResource(state, "image-tag", { name: appImage });
+    // Register the profile last so parent cleanup settles the CLI before images.
+    state.resources = state.resources.filter((resource) => resource.id !== profile.id);
+    state.resources.push(profile);
+    await markResourceReady(resolvedStatePath, state, profile);
+    return {
+      env: {
+        ...env,
+        OCC_TEST_DEV_KUBERNETES_REAL: "1",
+        OCC_TEST_DEV_DIRECTORY: directory,
+        OCC_TEST_DEV_RUNTIME_IMAGE: images.env.OCC_TEST_RUNTIME_IMAGE,
+        OCC_TEST_DEV_APP_IMAGE: appImage,
+        NODE_BASE_IMAGE:
+          process.env.NODE_BASE_IMAGE ??
+          "docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584",
+        OCC_DEVELOPMENT_KUBERNETES_IMAGE: process.env.OPENCLAW_CI_K3S_IMAGE ?? "",
+      },
+      cleanup: () =>
+        cleanupResourceIds(resolvedStatePath, [profile.id, image.id, ...images.resourceIds]),
+    };
+  }
+
   if (name === "repository-credentials-container") {
     if (state?.lane !== name) {
       throw new Error("Repository credential images require their own lane state.");

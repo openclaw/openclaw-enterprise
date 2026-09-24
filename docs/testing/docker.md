@@ -23,6 +23,14 @@ node --test tests/integration/dev-up.test.mjs
 On macOS, follow the Podman prerequisite in the
 [startup flow](../flows/docker-compose-development/startup.md).
 
+The development-helper suite builds the real CLI and renders real Compose
+configuration, while container and k3d mutations use inert commands. It covers
+resource claims, ownership-mismatch recovery, bounded subprocess waits, and
+SIGKILL during startup and cleanup while a mutating helper remains alive. It also
+covers helpers killed by a signal and nonzero exits with retained output pipes,
+including refusal of further cleanup until settlement is acknowledged.
+These results do not establish live-engine or installed Kubernetes behavior.
+
 This verification does not prove an Agent model turn. Follow the exact cleanup
 command printed by `dev-up` to preserve the development database and credentials.
 

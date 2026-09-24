@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   chmod,
   copyFile,
@@ -137,7 +138,7 @@ function exit(code, message = "") {
   process.exit(code);
 }
 function composeCommandIndex() {
-  return args.findIndex((arg, index) => index > 0 && ["config", "build", "up", "ps", "cp", "exec"].includes(arg));
+  return args.findIndex((arg, index) => index > 0 && ["config", "build", "up", "down", "ps", "cp", "exec"].includes(arg));
 }
 function delegateComposeConfig() {
   const command = process.env.DEV_UP_REAL_COMPOSE_COMMAND;
@@ -181,7 +182,7 @@ if (args[0] === "--version") exit(0, engine === "podman" ? "podman version 6.1.0
 if (args[0] === "version") {
   const platform = ${JSON.stringify(options.dockerPlatformName ?? "Docker Engine - Community")};
   const server = engine === "docker"
-    ? { Platform: { Name: platform }, Components: [{ Name: "Engine" }] }
+    ? { Platform: { Name: platform }, Components: ${JSON.stringify(options.dockerComponents ?? [{ Name: "Engine" }])} }
     : { Platform: { Name: "Podman Engine" }, Components: [{ Name: "Podman Engine" }] };
   if (args.includes("{{json .Server}}") && (engine === "docker" || podmanDockerApi)) {
     process.stdout.write(JSON.stringify(server) + "\\n");
@@ -260,6 +261,7 @@ if (command === "config") {
 }
 if (command === "build") exit(0);
 if (command === "up") exit(0);
+if (command === "down") exit(0);
 if (command === "ps") {
   const serviceNames = ["migrate", "bootstrap", "controller", "worker"];
   const requested = serviceNames.includes(args[args.length - 1]) ? [args[args.length - 1]] : serviceNames;
@@ -436,24 +438,37 @@ async function prepareLifecycleCommands(fixture, scenario = "success") {
   fixture.env.OCC_DEVELOPMENT_COMPOSE_PROJECT = "owned-kubernetes";
   fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY = join(fixture.directory, "kubernetes state");
   fixture.env.OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS = "1";
-  fixture.env.DOCKER_HOST = "unix:///fixture/owned-docker.sock";
+  fixture.engineEndpoint = `unix://${join(fixture.directory, "engine.sock")}`;
+  fixture.env.DOCKER_HOST = fixture.engineEndpoint;
   delete fixture.env.DOCKER_CONTEXT;
   await writeFile(
     fixture.env.DEV_UP_RESOURCE_STATE,
     JSON.stringify({ clusters: ["occ-dev-unrelated"], compose: false }),
   );
+  await writeFile(fixture.env.DEV_UP_RESOURCE_STATE + ".owners", "{}");
+  await writeFile(fixture.env.DEV_UP_RESOURCE_STATE + ".nodes", "{}");
+  await writeFile(fixture.env.DEV_UP_RESOURCE_STATE + ".volumes", "{}");
   for (const command of ["docker", "k3d", "kubectl"]) {
     await writeExecutable(
       join(bin, command),
       `#!${nodeExecutable}
 const fs = require("node:fs");
-const { spawnSync } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const args = process.argv.slice(2);
 const command = ${JSON.stringify(command)};
 const scenario = process.env.DEV_UP_LIFECYCLE_SCENARIO;
 const statePath = process.env.DEV_UP_RESOURCE_STATE;
 const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+const ownersPath = statePath + ".owners";
+const owners = JSON.parse(fs.readFileSync(ownersPath, "utf8"));
+const nodesPath = statePath + ".nodes";
+const nodes = JSON.parse(fs.readFileSync(nodesPath, "utf8"));
+const volumesPath = statePath + ".volumes";
+const volumes = JSON.parse(fs.readFileSync(volumesPath, "utf8"));
+function saveNodes() { fs.writeFileSync(nodesPath, JSON.stringify(nodes)); }
+function saveVolumes() { fs.writeFileSync(volumesPath, JSON.stringify(volumes)); }
 function save() { fs.writeFileSync(statePath, JSON.stringify(state)); }
+function saveOwners() { fs.writeFileSync(ownersPath, JSON.stringify(owners)); }
 function output(value) { process.stdout.write(value + "\\n"); }
 function fail(message) { process.stderr.write(message + "\\n"); process.exit(77); }
 fs.appendFileSync(process.env.SAFETY_LOG, JSON.stringify({ command, args, dockerHost: process.env.DOCKER_HOST || "", dockerContext: process.env.DOCKER_CONTEXT || "" }) + "\\n");
@@ -463,13 +478,58 @@ if (command === "docker") {
     process.exit(result.status ?? 1);
   }
   if (args[0] === "context" && args[1] === "show") output("fixture-context");
-  else if (args[0] === "context" && args[1] === "inspect") output(JSON.stringify([{ Endpoints: { docker: { Host: "unix:///fixture/owned-docker.sock" } } }]));
+  else if (args[0] === "context" && args[1] === "inspect") output(JSON.stringify([{ Endpoints: { docker: { Host: ${JSON.stringify(fixture.engineEndpoint)} } } }]));
   else if (args[0] === "info") output("/var/lib/docker");
-  else if (["volume", "network", "image"].includes(args[0]) && args[1] === "inspect") process.exit(1);
-  else if (args[0] === "ps" || (["volume", "network"].includes(args[0]) && args[1] === "ls") || args[0] === "build") {}
+  else if (args[0] === "volume" && args[1] === "create") {
+    const name = args.at(-1);
+    // Docker VolumeCreate preserves an existing volume's labels.
+    if (!volumes[name]) {
+      volumes[name] = Object.fromEntries(args.flatMap((arg, i) => arg === "--label" ? [args[i + 1].split("=")] : []));
+      saveVolumes();
+    }
+    output(name);
+  } else if (args[0] === "volume" && args[1] === "inspect") {
+    if (!volumes[args.at(-1)]) process.exit(1);
+    output(volumes[args.at(-1)]["io.openclaw.development.owner"] || "");
+  } else if (args[0] === "volume" && args[1] === "ls") {
+    const filter = args[args.indexOf("--filter") + 1] || "";
+    for (const [name, labels] of Object.entries(volumes)) {
+      if (filter.startsWith("name=") ? name.includes(filter.slice(5)) : labels["k3d.cluster"] === filter.slice("label=k3d.cluster=".length)) output(name);
+    }
+  } else if (args[0] === "volume" && args[1] === "rm") {
+    delete volumes[args.at(-1)]; saveVolumes();
+  } else if (["network", "image"].includes(args[0]) && args[1] === "inspect") process.exit(1);
+  else if (args[0] === "container" && args[1] === "inspect") {
+    const node = Object.values(nodes).flat().find(node => node.Id === args.at(-1) || node.Name === "/" + args.at(-1));
+    if (!node || !state.clusters.includes(node.Config.Labels["k3d.cluster"])) process.exit(1);
+    const cluster = node.Config.Labels["k3d.cluster"];
+    const name = node.Name.slice(1);
+    const owner = owners[name] ?? (node.Config.Labels["k3d.role"] === "noRole" ? "" : owners[cluster]) ?? "";
+    node.Config.Labels["io.openclaw.development.owner"] = owner;
+    output(args.includes("{{json .}}") ? JSON.stringify(node) : owner);
+  } else if (args[0] === "container" && args[1] === "rm") {
+    const node = Object.values(nodes).flat().find(node => node.Id === args.at(-1));
+    if (!node) process.exit(1);
+    if (scenario === "cluster-delete-partial-node" && node.Name.endsWith("-serverlb")) fail("auxiliary deletion unavailable");
+    const cluster = node.Config.Labels["k3d.cluster"];
+    nodes[cluster] = nodes[cluster].filter(item => item.Id !== node.Id); saveNodes();
+    if (nodes[cluster].length === 0) { state.clusters = state.clusters.filter(name => name !== cluster); save(); }
+  }
+  else if (args[0] === "ps") {
+    const clusterFilter = args.find(arg => arg.startsWith("label=k3d.cluster="));
+    if (clusterFilter) {
+      const cluster = clusterFilter.slice("label=k3d.cluster=".length);
+      if (state.clusters.includes(cluster)) for (const node of nodes[cluster] || []) output(node.Id);
+    }
+  } else if ((["volume", "network"].includes(args[0]) && args[1] === "ls") || args[0] === "build") {}
   else if (args[0] === "inspect") {
     if (args.includes("{{.State.Status}}")) output("exited");
     else if (args.includes("{{.State.ExitCode}}")) output("0");
+    else if (args.some(arg => arg.includes("io.openclaw.development.owner"))) {
+      const node = Object.values(nodes).flat().find(node => node.Name === "/" + args.at(-1));
+      if (!node || !state.clusters.includes(node.Config.Labels["k3d.cluster"])) process.exit(1);
+      output(owners[node.Name.slice(1)] ?? owners[node.Config.Labels["k3d.cluster"]] ?? "");
+    }
     else fail("unexpected inspect: " + args.join(" "));
   } else if (args[0] === "exec" && args.includes("images")) {
     if (args.includes("list")) output("docker.io/library/openclaw-enterprise-runtime:kubernetes-quickstart application/vnd.oci.image.manifest.v1+json sha256:" + "a".repeat(64));
@@ -482,30 +542,201 @@ if (command === "docker") {
     } else if (args.includes("down")) {
       if (scenario === "compose-down-failed") fail("compose cleanup unavailable");
       state.compose = false; save();
-    } else if (args.includes("ps")) output(args.at(-1) + "-container-id");
+    } else if (args.includes("ps")) {
+      if (scenario === "migration-pipe-held" && args.at(-1) === "migrate") {
+        const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 8000)"], { detached: true, stdio: ["ignore", process.stdout, "ignore"] });
+        fs.writeFileSync(statePath + ".child", String(child.pid));
+        child.unref();
+      }
+      output(args.at(-1) + "-container-id");
+    }
     else if (!args.includes("exec") && !args.includes("logs") && !args.includes("stop")) fail("unexpected compose: " + args.join(" "));
   } else fail("unexpected docker: " + args.join(" "));
 } else if (command === "k3d") {
-  if (args[0] === "cluster" && args[1] === "list") output(JSON.stringify(state.clusters.map(name => ({ name }))));
+  if (args[0] === "cluster" && args[1] === "list") output(JSON.stringify(state.clusters.filter(name => scenario !== "cluster-create-hidden" || name !== "occ-dev-owned").map(name => ({ name }))));
   else if (args[0] === "cluster" && args[1] === "create") {
+    const imageVolume = "k3d-" + args[2] + "-images";
+    volumes[imageVolume] ??= { "k3d.cluster": args[2], app: "k3d" }; saveVolumes();
+    if (scenario === "cluster-create-before-tools") fail("creation failed before cluster preparation");
     state.clusters.push(args[2]); save();
-    if (scenario === "cluster-create-failed") fail("partial cluster creation");
+    const label = args[args.indexOf("--runtime-label") + 1] || "";
+    const owner = label.split("=")[1]?.split("@")[0] || "";
+    const { createHash } = require("node:crypto");
+    function node(suffix, role) {
+      const name = "k3d-" + args[2] + "-" + suffix;
+      return {
+        Id: createHash("sha256").update(name + owner).digest("hex"), Name: "/" + name,
+        Config: { Labels: { app: "k3d", "k3d.cluster": args[2], "k3d.role": role } },
+        Mounts: [{ Name: imageVolume, Destination: "/k3d/images" }],
+        NetworkSettings: { Networks: { [process.env.OCC_DEVELOPMENT_COMPOSE_PROJECT + "_development"]: {} } },
+      };
+    }
+    // The native tools node exists independently of configured nodes and never
+    // inherits --runtime-label, including with @all.
+    nodes[args[2]] = [node("tools", "noRole")]; saveNodes();
+    if (scenario === "cluster-create-before-server") fail("creation failed before first server");
+    nodes[args[2]].push(node("server-0", "server"), node("serverlb", "loadbalancer")); saveNodes();
+    if (scenario === "cluster-create-collision") {
+      owners[args[2]] = "another-invocation"; saveOwners();
+      fail("cluster name already occupied");
+    }
+    owners[args[2]] = label.split("=")[1]?.split("@")[0] || "";
+    // v5.9.0 @server:0 excludes the proxy; @all includes both prepared nodes.
+    if (!label.endsWith("@all")) owners["k3d-" + args[2] + "-serverlb"] = "";
+    saveOwners();
+    if (scenario === "cluster-create-failed" || scenario === "cluster-create-hidden") fail("partial cluster creation");
   } else if (args[0] === "cluster" && args[1] === "delete") {
     if (scenario === "cluster-delete-failed") fail("cluster cleanup unavailable");
+    if (scenario === "cluster-delete-partial-node" || scenario === "cluster-delete-partial-volume") {
+      nodes[args[2]] = scenario === "cluster-delete-partial-node" ? nodes[args[2]].filter(node => node.Name.endsWith("-serverlb")) : [];
+      saveNodes();
+      if (nodes[args[2]].length === 0) { state.clusters = state.clusters.filter(name => name !== args[2]); save(); }
+      fail("partial cluster deletion");
+    }
+    for (const [name, labels] of Object.entries(volumes)) {
+      if (labels["k3d.cluster"] === args[2] && labels.app === "k3d") delete volumes[name];
+    }
+    saveVolumes();
     state.clusters = state.clusters.filter(name => name !== args[2]); save();
+    delete owners[args[2]]; saveOwners();
   } else if (args[0] === "kubeconfig" && args[1] === "get") output(JSON.stringify({
     apiVersion: "v1", kind: "Config", "current-context": "k3d-occ-dev-owned",
     contexts: [{ name: "k3d-occ-dev-owned", context: { cluster: "k3d-occ-dev-owned", user: "admin" } }],
     clusters: [{ name: "k3d-occ-dev-owned", cluster: { server: "https://127.0.0.1:6443", "certificate-authority-data": "fixture-ca" } }],
     users: [{ name: "admin", user: { token: "fixture-kubernetes-token" } }]
   }));
-  else if (args[0] !== "image") fail("unexpected k3d: " + args.join(" "));
-} else if (command === "kubectl" && !args.includes("get")) {
-  fail("unexpected kubectl: " + args.join(" "));
+  else if (args[0] === "image") {
+    if (scenario !== "cluster-delete-tools") {
+      const cluster = args[args.indexOf("-c") + 1];
+      nodes[cluster] = nodes[cluster].filter(node => node.Config.Labels["k3d.role"] !== "noRole"); saveNodes();
+    }
+  } else fail("unexpected k3d: " + args.join(" "));
+} else if (command === "kubectl") {
+  if (!args.includes("get")) fail("unexpected kubectl: " + args.join(" "));
+  output(JSON.stringify({ gitVersion: scenario === "unsupported-kubernetes-version" ? "v1.34.9+k3s1" : "v1.35.8+k3s1" }));
 }
 `,
     );
   }
+}
+
+// Pause one inert mutation while the real CLI and its filesystem remain live.
+async function pauseLifecycleCommand(fixture, command, operation, afterCommand = false) {
+  const executable = join(fixture.directory, "bin", command);
+  const original = executable + "-unpaused";
+  const ready = join(fixture.directory, "mutation-ready");
+  const gate = join(fixture.directory, "mutation-release");
+  const done = join(fixture.directory, "mutation-done");
+  await rename(executable, original);
+  await writeExecutable(
+    executable,
+    `#!${nodeExecutable}
+const fs = require("node:fs");
+const { spawnSync } = require("node:child_process");
+const args = process.argv.slice(2);
+const operation = ${JSON.stringify(operation)};
+const matches = args[0] === operation[0] && args.includes(operation[1]);
+function run() {
+  return spawnSync(${JSON.stringify(original)}, args, { stdio: "inherit", env: process.env }).status ?? 1;
+}
+
+if (!matches || fs.existsSync(${JSON.stringify(ready)})) process.exit(run());
+const status = ${JSON.stringify(afterCommand)} ? run() : null;
+fs.writeFileSync(${JSON.stringify(ready)}, String(process.pid));
+const timer = setInterval(() => {
+  if (!fs.existsSync(${JSON.stringify(gate)})) return;
+  clearInterval(timer);
+  const result = status ?? run();
+  fs.writeFileSync(${JSON.stringify(done)}, String(result));
+  process.exit(result);
+}, 10);
+`,
+  );
+  async function waitForFile(path) {
+    const deadline = Date.now() + 20_000;
+    while (true) {
+      try {
+        return await readFile(path, "utf8");
+      } catch (error) {
+        if (error.code !== "ENOENT") {
+          throw error;
+        }
+      }
+      assert.ok(Date.now() < deadline, `timed out waiting for ${path}`);
+      await delay(20);
+    }
+  }
+  return {
+    waitUntilPaused: async () => Number(await waitForFile(ready)),
+    release: async () => {
+      await writeFile(gate, "settle");
+      assert.equal(await waitForFile(done), "0");
+    },
+  };
+}
+
+// Leave an independent child alive after its direct helper fails. The child can
+// still finish the inert operation, including while holding a captured pipe.
+async function failLifecycleCommand(fixture, command, operation, mode) {
+  const executable = join(fixture.directory, "bin", command);
+  const original = executable + "-settled";
+  const ready = join(fixture.directory, "failure-ready");
+  const gate = join(fixture.directory, "failure-release");
+  const done = join(fixture.directory, "failure-done");
+  await rename(executable, original);
+  const descendant = `
+const fs = require("node:fs");
+const { spawnSync } = require("node:child_process");
+const args = JSON.parse(process.argv[1]);
+const timer = setInterval(() => {
+  if (!fs.existsSync(${JSON.stringify(gate)})) return;
+  clearInterval(timer);
+  const result = spawnSync(${JSON.stringify(original)}, args, { stdio: "ignore", env: process.env });
+  fs.writeFileSync(${JSON.stringify(done)}, String(result.status));
+  process.exit(result.status ?? 1);
+}, 10);`;
+  await writeExecutable(
+    executable,
+    `#!${nodeExecutable}
+const fs = require("node:fs");
+const { spawn, spawnSync } = require("node:child_process");
+const args = process.argv.slice(2);
+const operation = ${JSON.stringify(operation)};
+const matches = args[0] === operation[0] && args.includes(operation[1]);
+if (!matches || fs.existsSync(${JSON.stringify(ready)})) {
+  process.exit(spawnSync(${JSON.stringify(original)}, args, { stdio: "inherit", env: process.env }).status ?? 1);
+}
+const child = spawn(process.execPath, ["-e", ${JSON.stringify(descendant)}, JSON.stringify(args)], {
+  detached: true,
+  stdio: ["ignore", ${mode === "nonzero-pipe" ? "process.stdout" : '"ignore"'}, "ignore"],
+  env: process.env,
+});
+child.unref();
+fs.writeFileSync(${JSON.stringify(ready)}, JSON.stringify({ helper: process.pid, descendant: child.pid }));
+${mode === "nonzero-pipe" ? "process.exit(77);" : "setInterval(() => {}, 1000);"}
+`,
+  );
+  async function waitForFile(path) {
+    const deadline = Date.now() + 20_000;
+    while (true) {
+      try {
+        return await readFile(path, "utf8");
+      } catch (error) {
+        if (error.code !== "ENOENT") {
+          throw error;
+        }
+      }
+      assert.ok(Date.now() < deadline, `timed out waiting for ${path}`);
+      await delay(20);
+    }
+  }
+  return {
+    waitUntilStarted: async () => JSON.parse(await waitForFile(ready)),
+    release: async () => {
+      await writeFile(gate, "settle");
+      assert.equal(await waitForFile(done), "0");
+    },
+  };
 }
 
 async function writeOverride(fixture, name, lines) {
@@ -599,9 +830,11 @@ export {
   createFixture,
   customRuntimeOverride,
   defaultRuntimeImage,
+  failLifecycleCommand,
   matchingInstallationId,
   mismatchedInstallationId,
   perImageOverride,
+  pauseLifecycleCommand,
   prepareLifecycleCommands,
   publicControllerOverride,
   readJsonLines,

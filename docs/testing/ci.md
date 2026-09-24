@@ -78,6 +78,13 @@ container isolation and authorized live proof. CI preparation and suite ownershi
 alone establish no result: inspect executed cases and skips at the exact tested
 commit, including whether a pull-request run tested a merge commit.
 
+The `k3d-fixture-configuration` lane also runs the compiled `occ dev up/down` lifecycle
+in a second disposable profile, with its own database and cluster. The case
+checks authenticated Installation access, node and worker readiness, imported
+runtime identity, cleanup and preservation of the lane baseline. Preparation
+registers CLI cleanup before dispatch; an uncertain lifecycle retains its state,
+claims and cleanup obligation for recovery. See [the real CLI case](kubernetes.md#real-development-cli-lifecycle).
+
 The Kubernetes fixture lanes load the runner kernel's bridge netfilter module and enable
 IPv4 bridge packet filtering before cluster creation. This is required for
 K3s to enforce NetworkPolicies on bridged Pod traffic. Failure to enable it

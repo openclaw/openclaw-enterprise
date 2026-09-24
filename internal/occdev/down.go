@@ -2,11 +2,13 @@ package occdev
 
 import (
 	"context"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -62,6 +64,16 @@ func Down(ctx context.Context, opts Options) error {
 		if err != nil {
 			return err
 		}
+		claims, err := claimsFor(state)
+		if err != nil {
+			return err
+		}
+		if err := claims.verify(); err != nil {
+			return err
+		}
+		if _, err := os.Lstat(filepath.Join(directory, uncertainCommandMarker)); !os.IsNotExist(err) {
+			return fmt.Errorf("subprocess outcome is uncertain; stop and verify surviving helpers, then remove %s and retry", filepath.Join(directory, uncertainCommandMarker))
+		}
 		r.env["KUBECONFIG"] = filepath.Join(directory, "kubeconfig")
 		r.engine = state.ContainerEngine
 		if r.engine == "podman" {
@@ -72,10 +84,23 @@ func Down(ctx context.Context, opts Options) error {
 			r.env["PODMAN_COMPOSE_PROVIDER"] = provider
 		}
 		r.useEndpoint(state.DockerHost)
-		if err := r.cleanup(ctx, state, true); err != nil {
-			return fmt.Errorf("cleanup incomplete; preserving %s for recovery: %w", directory, err)
+		if err := state.beginLifecycle(); err != nil {
+			return err
+		}
+		r.lifecycle = true
+		cleanupErr := r.cleanup(ctx, state)
+		if r.unsettled {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("subprocess outcome is uncertain"))
+		} else {
+			cleanupErr = errors.Join(cleanupErr, state.completeLifecycle())
+		}
+		if cleanupErr != nil {
+			return fmt.Errorf("cleanup incomplete; preserving %s for recovery: %w", directory, cleanupErr)
 		}
 		if err := os.RemoveAll(directory); err != nil {
+			return err
+		}
+		if err := claims.release(); err != nil {
 			return err
 		}
 		fmt.Fprintf(r.opts.Out, "Stopped Kubernetes development stack %s.\n", state.Cluster)
@@ -84,26 +109,214 @@ func Down(ctx context.Context, opts Options) error {
 		return fmt.Errorf("OCC_DEVELOPMENT_COMPUTE_DRIVER must be docker or kubernetes")
 	}
 }
-func (r *runner) cleanup(ctx context.Context, s *developmentState, clusterAttempted bool) error {
+func (r *runner) cleanup(ctx context.Context, s *developmentState) error {
 	var failures []error
-	// Stop reconcilers before removing their cluster and database. Continue after failures to reclaim what we can.
+	// Stop reconcilers before removing their cluster and database. Continue after
+	// settled failures, but never overlap an uncertain helper.
 	if err := r.compose(ctx, s, "stop", "controller", "worker-kubernetes"); err != nil {
 		failures = append(failures, err)
 	}
-	if clusterAttempted {
-		exists, err := r.clusterExists(ctx, s.Cluster)
-		if err != nil {
+	if r.unsettled {
+		return errors.Join(failures...)
+	}
+	if s.ClusterAttempted {
+		if err := r.deleteOwnedCluster(ctx, s); err != nil {
 			failures = append(failures, err)
-		} else if exists {
-			if err := r.run(ctx, "k3d", "cluster", "delete", s.Cluster); err != nil {
-				failures = append(failures, err)
-			}
 		}
+	}
+	if r.unsettled {
+		return errors.Join(failures...)
 	}
 	if err := r.compose(ctx, s, "down", "--volumes"); err != nil {
 		failures = append(failures, err)
 	}
 	return errors.Join(failures...)
+}
+
+func (r *runner) deleteOwnedCluster(ctx context.Context, s *developmentState) error {
+	containers, witness, err := r.inspectOwnedCluster(ctx, s)
+	if err != nil {
+		return err
+	}
+	for _, container := range containers {
+		if container.ID == witness {
+			continue
+		}
+		if witness != "" {
+			if err := r.verifyResourceOwner(ctx, s, "container", witness); err != nil {
+				return err
+			}
+		}
+		// Never let k3d remove the ownership witness while an auxiliary remains.
+		// Immutable IDs prevent a same-name replacement from being targeted.
+		if err := r.run(ctx, r.engine, "container", "rm", "--force", "--volumes", container.ID); err != nil {
+			return err
+		}
+	}
+	remainingNodes, remainingVolumes, err := r.clusterResources(ctx, s.Cluster)
+	if err != nil {
+		return err
+	}
+	if (witness == "" && len(remainingNodes) != 0) || (witness != "" && (len(remainingNodes) != 1 || remainingNodes[0] != witness)) {
+		return fmt.Errorf("cluster resources changed during cleanup; preserving ownership witness")
+	}
+	for _, volume := range remainingVolumes {
+		if err := r.verifyResourceOwner(ctx, s, "volume", volume); err != nil {
+			return err
+		}
+	}
+	if witness != "" {
+		if err := r.verifyResourceOwner(ctx, s, "container", witness); err != nil {
+			return err
+		}
+		if err := r.run(ctx, "k3d", "cluster", "delete", s.Cluster); err != nil {
+			return err
+		}
+	} else {
+		// Without nodes k3d cannot discover the cluster's remaining volumes.
+		for _, volume := range remainingVolumes {
+			if err := r.run(ctx, r.engine, "volume", "rm", volume); err != nil {
+				return err
+			}
+		}
+	}
+	remains, err := r.clusterResourcesExist(ctx, s.Cluster)
+	if err != nil {
+		return err
+	}
+	if remains {
+		return fmt.Errorf("cluster %s still has resources after deletion", s.Cluster)
+	}
+	return nil
+}
+
+// Check the whole scope before removing anything. In particular, an owned
+// server cannot authorize deletion of an explicitly foreign sibling.
+func (r *runner) inspectOwnedCluster(ctx context.Context, s *developmentState) ([]clusterContainer, string, error) {
+	nodes, volumes, err := r.clusterResources(ctx, s.Cluster)
+	if err != nil {
+		return nil, "", err
+	}
+	for _, volume := range volumes {
+		if err := r.verifyResourceOwner(ctx, s, "volume", volume); err != nil {
+			return nil, "", err
+		}
+	}
+	containers := make([]clusterContainer, 0, len(nodes))
+	witness := ""
+	for _, id := range nodes {
+		data, err := r.output(ctx, r.engine, "container", "inspect", "--format", "{{json .}}", id)
+		if err != nil {
+			return nil, "", err
+		}
+		var container clusterContainer
+		if err := json.Unmarshal(data, &container); err != nil {
+			return nil, "", fmt.Errorf("invalid cluster container inspection: %w", err)
+		}
+		if container.ID != id || container.Config.Labels["k3d.cluster"] != s.Cluster {
+			return nil, "", fmt.Errorf("cluster container identity changed during cleanup")
+		}
+		if strings.TrimPrefix(container.Name, "/") == "k3d-"+s.Cluster+"-server-0" && container.Config.Labels[ownershipLabel] == s.Owner {
+			witness = id
+		}
+		containers = append(containers, container)
+	}
+	for _, container := range containers {
+		owner := container.Config.Labels[ownershipLabel]
+		if owner == s.Owner {
+			continue
+		}
+		// k3d v5.9 does not pass runtime labels to its tools node. Its native
+		// membership is usable only while our owned server remains present.
+		if owner != "" || witness == "" || !container.isClusterTools(s, volumes) {
+			return nil, "", fmt.Errorf("refusing to delete container %s: ownership label does not match recorded state", container.ID)
+		}
+	}
+	return containers, witness, nil
+}
+
+// Only the native fields needed to recognize k3d's unlabeled tools node.
+type clusterContainer struct {
+	ID     string `json:"Id"`
+	Name   string `json:"Name"`
+	Config struct {
+		Labels map[string]string `json:"Labels"`
+	} `json:"Config"`
+	Mounts []struct {
+		Name        string `json:"Name"`
+		Destination string `json:"Destination"`
+	} `json:"Mounts"`
+	NetworkSettings struct {
+		Networks map[string]any `json:"Networks"`
+	} `json:"NetworkSettings"`
+}
+
+func (c clusterContainer) isClusterTools(s *developmentState, volumes []string) bool {
+	if strings.TrimPrefix(c.Name, "/") != "k3d-"+s.Cluster+"-tools" || c.Config.Labels["app"] != "k3d" || c.Config.Labels["k3d.role"] != "noRole" {
+		return false
+	}
+	if _, ok := c.NetworkSettings.Networks[s.ComposeProject+"_development"]; !ok {
+		return false
+	}
+	imageVolume := "k3d-" + s.Cluster + "-images"
+	if !slices.Contains(volumes, imageVolume) {
+		return false
+	}
+	for _, mount := range c.Mounts {
+		if mount.Name == imageVolume && mount.Destination == "/k3d/images" {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *runner) clusterResourcesExist(ctx context.Context, cluster string) (bool, error) {
+	exists, err := r.clusterExists(ctx, cluster)
+	if err != nil {
+		return false, err
+	}
+	nodes, volumes, err := r.clusterResources(ctx, cluster)
+	return exists || len(nodes) > 0 || len(volumes) > 0, err
+}
+
+func (r *runner) clusterResources(ctx context.Context, cluster string) ([]string, []string, error) {
+	nodes, err := r.output(ctx, r.engine, "ps", "--all", "--quiet", "--no-trunc", "--filter", "label=k3d.cluster="+cluster)
+	if err != nil {
+		return nil, nil, err
+	}
+	// Include every volume k3d can select, plus its conventional image volume
+	// even if another owner replaced it without k3d labels.
+	volumes, err := r.output(ctx, r.engine, "volume", "ls", "--quiet", "--filter", "label=k3d.cluster="+cluster)
+	if err != nil {
+		return nil, nil, err
+	}
+	imageVolume := "k3d-" + cluster + "-images"
+	named, err := r.output(ctx, r.engine, "volume", "ls", "--quiet", "--filter", "name="+imageVolume)
+	if err != nil {
+		return nil, nil, err
+	}
+	result := strings.Fields(string(volumes))
+	for _, volume := range strings.Fields(string(named)) {
+		if volume == imageVolume && !slices.Contains(result, volume) {
+			result = append(result, volume)
+		}
+	}
+	return strings.Fields(string(nodes)), result, nil
+}
+
+func (r *runner) verifyResourceOwner(ctx context.Context, s *developmentState, kind, resource string) error {
+	labels := ".Config.Labels"
+	if kind == "volume" {
+		labels = ".Labels"
+	}
+	label, err := r.output(ctx, r.engine, kind, "inspect", "--format", `{{index `+labels+` "`+ownershipLabel+`"}}`, resource)
+	if err != nil {
+		return fmt.Errorf("cannot establish ownership of %s %s: %w", kind, resource, err)
+	}
+	if string(label) != s.Owner {
+		return fmt.Errorf("refusing to delete %s %s: ownership label does not match recorded state", kind, resource)
+	}
+	return nil
 }
 
 func podmanComposeArgs(args []string, files, separator string) []string {

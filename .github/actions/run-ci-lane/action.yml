@@ -57,7 +57,7 @@ runs:
       shell: bash
       run: bash scripts/ci/setup-tools.sh browser
     - name: Set up Go toolchain
-      if: inputs.lane == 'checks-baseline' || inputs.lane == 'docker-model' || inputs.lane == 'production-tui'
+      if: inputs.lane == 'checks-baseline' || inputs.lane == 'docker-model' || inputs.lane == 'production-tui' || inputs.lane == 'k3d-fixture-configuration'
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: go.mod

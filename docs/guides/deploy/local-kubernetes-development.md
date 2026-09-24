@@ -9,7 +9,7 @@ quickstart](../quickstart.md).
 ## Start the profile
 
 You need Docker Engine with Docker Compose, or Podman with `podman-compose`,
-plus k3d and kubectl. Build the checkout-local [OCC CLI](../cli.md) with the
+plus k3d 5.9.0 or newer with `--runtime-label` support and kubectl. Build the checkout-local [OCC CLI](../cli.md) with the
 Go version in `go.mod`, Node.js 24 or newer, and the repository-pinned pnpm.
 Compose runs PostgreSQL, migration, bootstrap, controller, and worker processes.
 
@@ -46,6 +46,9 @@ used to host the Compose services and to import the runtime image into k3d.
 The selected engine must expose a local Unix socket. Startup records that
 endpoint so cleanup addresses the same engine even if your active Docker
 context changes.
+The helper claims the selected project and cluster across all state directories
+for your user. Separate stacks need distinct project and cluster names. Keep the
+state directory until cleanup succeeds; do not manually reuse claimed names.
 
 The k3d API is published on `127.0.0.1:6443` by default. Override conflicts
 with `OCC_DEVELOPMENT_KUBERNETES_API_PORT`. The disposable cluster lowers
@@ -53,6 +56,13 @@ kubelet's local disk-pressure threshold to 5% so imported development images
 remain schedulable on constrained workstations. Set
 `OCC_DEVELOPMENT_KUBERNETES_DISK_THRESHOLD_PERCENT` to an integer from 1
 through 20 to override it; production Kubernetes settings are unaffected.
+
+By default k3d resolves the `+v1.35` K3s channel online. Set
+`OCC_DEVELOPMENT_KUBERNETES_IMAGE` to an approved immutable
+`image@sha256:<64 lowercase hexadecimal digits>` reference to select a node image
+without channel lookup. Mutable tags and malformed references fail before resource
+creation. Startup checks that the running server is Kubernetes 1.35.x, including
+when you select an explicit image. Image availability is still required.
 
 The default runtime image is built from `deploy/runtime/Dockerfile`. Set
 `OCC_KUBERNETES_RUNTIME_IMAGE` to an existing local image reference to use it
@@ -72,7 +82,7 @@ remain inaccessible to other host users through that private directory. The
 helper does not modify the default kubeconfig or current kubectl context.
 
 For separate stacks, select distinct state directories, Compose projects,
-cluster names, and published API ports. Set an unused, non-overlapping
+cluster names (an `occ-dev-` prefix and at most 32 characters), and published API ports. Set an unused, non-overlapping
 `OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR` and a distinct `OCC_POSTGRES_PORT` for each
 stack. Keep each stack's resources under the helper's lifecycle until cleanup;
 do not reuse its names for unrelated resources.
@@ -270,13 +280,36 @@ OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes ./bin/occ dev down
 ```
 
 `./bin/occ dev down` defaults to Docker Compute even when Kubernetes state exists.
-For explicitly selected Kubernetes mode, it reads the private recorded state
-and removes only the named `occ-dev-*` cluster and its Compose project, deletes
-profile volumes, then removes the state directory. This permanently deletes the
+For explicitly selected Kubernetes mode, it verifies the recorded resource claims
+and native cluster ownership evidence, removes the owned cluster and Compose
+project, deletes profile volumes, then removes the state directory. This permanently deletes the
 development Installation, service keys, Namespaces, Agents, audit history, and
 queued work stored by this profile. Incomplete cleanup preserves the state for
 recovery; restore access to the recorded engine and rerun the same command.
-A failed startup attempts the same cleanup and preserves state if it fails.
+A failed startup attempts the same cleanup when its helpers have settled and
+preserves state if cleanup fails. Cleanup can recover when only the load
+balancer or image volume remains; those survivors must still carry their recorded
+owner label. Cleanup preserves the owned server until auxiliary containers are
+removed. If creation fails before a server exists and leaves an unlabeled k3d
+tools container, automatic cleanup cannot establish ownership. Inspect that
+container and dispose it manually only after verifying its owner, then retry.
+An ownership mismatch leaves the other cluster untouched. Let its owner dispose
+of it, then retry. State older than version 4 is rejected because it does not
+establish ownership of each surviving resource. Inspect and dispose its recorded resources manually
+before starting a new profile.
+Startup and cleanup write `subprocess-outcome-uncertain` before changing engine
+resources. The marker also remains when a started resource-changing helper exits
+unsuccessfully, is killed by a signal, or leaves captured output unsettled.
+If either command dies abruptly, or cleanup reports that marker, stop and verify
+any surviving Compose, engine, or k3d helpers and their engine-side
+operations first. An absent cluster is insufficient while a previous helper can
+still finish. Remove that named file from the recorded state directory only
+after those operations have settled, then retry cleanup. Keep the state and
+resource claims until cleanup completes.
+An interrupted initial setup can leave a claim in
+`~/.openclaw-development-claims` before state is complete. The claim records its
+endpoint, project, cluster, and state path. Remove only that stack's claim files,
+after verifying that its helpers and resources have been disposed.
 A key written outside the state directory with `--key-output` remains
 operator-owned; remove that local copy separately.
 

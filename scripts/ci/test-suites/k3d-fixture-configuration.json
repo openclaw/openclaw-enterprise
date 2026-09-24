@@ -22,6 +22,12 @@
         "provisioning API and worker hand off a dedicated Agent with real Kubernetes fixture storage",
         "authenticated PostgreSQL OCC API and worker deploy real Agent-owned gateways, Secret bindings, and revisions"
       ]
+    },
+    {
+      "path": "tests/integration/dev-kubernetes-real.test.mjs",
+      "expectedTests": [
+        "real OCC development CLI starts an authenticated Kubernetes profile and disposes only its owned resources"
+      ]
     }
   ]
 }

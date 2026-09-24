@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-09-17
-last_updated_session: authoring-run/b044b43c-e713-4006-93a0-c129cdf5578e
+updated: 2026-09-23
+last_updated_session: authoring-run/9a6190e4-c1e1-4558-9d33-f1f607e97ed9
 ---
 
 # Compose development flow
@@ -47,18 +47,24 @@ owns the operator procedure and destructive cleanup boundary.
 graph TD
   A["./bin/occ dev up"] --> Profile{"Compute profile"}
   Profile -->|Docker| B["Preflight host tools, resolve Podman machine connection,<br/>and inspect Compose config"]
-  Profile -->|Kubernetes| KPre["Pin local engine endpoint<br/>and reject existing resources"]
+  Profile -->|Kubernetes| KPre["Pin local engine endpoint, claim project and cluster,<br/>and reject existing resources"]
   KPre --> KConfig["Validate Compose and claim<br/>private state with snapshot"]
-  KConfig --> KStart["Bootstrap OCC and create<br/>the owned k3d cluster"]
+  KConfig --> KMark["Persist lifecycle marker"]
+  KMark --> KStart["Bootstrap OCC and create<br/>the owned k3d cluster"]
   KStart --> KReady["Import runtime and start<br/>API and Kubernetes worker"]
   KReady --> KProof["Prove authenticated<br/>Installation access"]
-  KProof --> KDown["./bin/occ dev down reuses<br/>recorded endpoint and project"]
-  KStart -->|failure| KRollback["Roll back owned resources<br/>retain state if cleanup fails"]
-  KReady -->|failure| KRollback
-  KProof -->|failure| KRollback
-  KDown --> KRemove["Stop reconcilers and delete<br/>owned cluster and volumes"]
-  KRemove -->|success| KDone["Remove private state"]
-  KRemove -->|failure| KRetain["Keep state for recovery"]
+  KProof --> KSettled["Clear startup marker"]
+  KSettled --> KDown["./bin/occ dev down reuses<br/>recorded endpoint and project"]
+  KStart -->|settled failure| KRollback["Roll back owned resources<br/>retain state if cleanup fails"]
+  KReady -->|settled failure| KRollback
+  KProof -->|settled failure| KRollback
+  KDown --> KCheck{"Previous lifecycle marker?"}
+  KCheck -->|yes| KRetain["Keep state and claims;<br/>require settlement acknowledgement"]
+  KCheck -->|no| KRemove["Persist marker; verify cluster label;<br/>stop reconcilers and delete owned resources"]
+  KRemove -->|success| KDone["Remove private state and release claims"]
+  KRemove -->|settled failure| KRecover["Clear marker; keep state<br/>and claims for retry"]
+  KRemove -->|uncertain subprocess| KRetain
+  KStart -->|abrupt exit| KRetain
   B --> C["Select quickstart runtime image or validate custom images"]
   C --> D["Selected Compose starts PostgreSQL, migrate, bootstrap, API, and worker"]
   D --> E["Copy bootstrap service-key response to private local file"]
@@ -103,6 +109,8 @@ options, including after partial startup. Podman retains the caller's selected
 connection. Its reported API socket supplies `OCC_CONTAINER_ENGINE_SOCKET` only
 to resolve the worker mount; a socket inside a macOS VM is not substituted for
 the host connection. An unavailable engine or invalid socket fails cleanup.
+Docker selection checks the required engine and Compose capabilities; missing
+optional version metadata does not prevent the printed cleanup command from working.
 
 Compose removes its project containers and network. Named database,
 Configuration, and bootstrap volumes remain unless `--volumes` is explicit.
@@ -116,6 +124,11 @@ their platform deletion workflows; follow [safe development shutdown](../guides/
 [The Kubernetes startup and cleanup trace](docker-compose-development/startup.md#12-select-kubernetes-development-and-preserve-cleanup-ownership)
 follows profile selection, the private Compose snapshot, k3d creation, runtime
 import, authenticated readiness, and cleanup through the recorded engine.
+`internal/occdev/up.go:Up` validates an explicit immutable K3s image and the 32-character cluster-name
+limit before acquiring claims or mutating resources; otherwise k3d resolves `+v1.35`.
+`internal/occdev/kubernetes.go:writeKubeconfigs` checks the actual server belongs
+to the tested 1.35 series before runtime import or controller startup. A version
+failure follows the existing owned-resource rollback.
 
 ## Debugging and Verification
 
@@ -158,6 +171,14 @@ import, authenticated readiness, and cleanup through the recorded engine.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 06:45: Add immutable node-image selection and running-server validation to the Kubernetes development lifecycle. (authoring-run/9a6190e4-c1e1-4558-9d33-f1f607e97ed9 - 9fd571c903db203a231823c9d49597d0d0702f85)
+
+- 2026-09-22 23:45: Require successful mutating helpers and independently drained captured output before clearing lifecycle protection. (843154d6710e1e572263be15637e18f8ca5d51f1)
+
+- 2026-09-22 23:14: Persist lifecycle markers before Kubernetes resource mutations and require settlement after abrupt CLI death. (authoring-run/fb7eab38-3647-49c9-af80-7d3a90173b7f - a44c467b2807e1c9b7b6e1aad26cc38b9ab26108)
+
+- 2026-09-22 22:42: Bind Kubernetes cleanup to durable resource claims and native cluster ownership, preserve uncertain subprocess recovery, and align Docker capability selection. (authoring-run/6e5d1288-491b-499b-8597-47a5787fba27 - f0147ea18a4d46f69580ffc83b8b296ca835775b)
 
 - 2026-09-17 17:42: Pin Kubernetes development to the supported 1.35 family and emit only runtime settings accepted by the current Kubernetes Compute Driver schema. (authoring-run/b044b43c-e713-4006-93a0-c129cdf5578e - 9310d5b025e84f885e4f7facae2e2906b50d58f8)
 

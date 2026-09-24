@@ -129,7 +129,7 @@ install_kubectl() {
 }
 
 install_k3d() {
-  local version="5.8.3"
+  local version="5.9.0"
   if k3d_version_matches "${version}"; then
     k3d version
     return
@@ -139,7 +139,7 @@ install_k3d() {
   download_file \
     "https://github.com/k3d-io/k3d/releases/download/v${version}/k3d-linux-amd64" \
     "${binary}" \
-    "dbaa79a76ace7f4ca230a1ff41dc7d8a5036a8ad0309e9c54f9bf3836dbe853e"
+    "06d8f25bc3a971c4eb29e0ff08429b180402db0f4dec838c9eac427e296800a0"
   chmod 0755 "${binary}"
   k3d version
 }

@@ -816,6 +816,30 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
       "    throw error;",
       "  }",
       "});",
+      'test("original lifecycle failure survives cleanup failure", (t) => {',
+      `  t.after(() => { throw new Error("${secret}-cleanup"); });`,
+      `  const error = new Error("${secret}-original");`,
+      "  error.openclawCiDiagnostic = {",
+      '    kind: "development-lifecycle", operation: "up", lastProgress: "compose-services",',
+      '    exitCode: 1, signal: "SIGTERM", outcome: "terminated", uncertainMarker: "present",',
+      `    stdout: "${secret}-stdout", stderr: "${secret}-stderr", args: ["${secret}-argument"],`,
+      "  };",
+      "  throw error;",
+      "});",
+      'test("unsafe lifecycle fields are omitted", () => {',
+      `  const error = new Error("${secret}-original");`,
+      "  error.openclawCiDiagnostic = {",
+      '    kind: "development-lifecycle", operation: "down",',
+      `    lastProgress: "${secret}", exitCode: 256, signal: "${secret}",`,
+      `    outcome: "${secret}", uncertainMarker: "${secret}",`,
+      "  };",
+      "  throw error;",
+      "});",
+      'test("unsafe lifecycle operation is rejected", () => {',
+      `  const error = new Error("${secret}-original");`,
+      `  error.openclawCiDiagnostic = { kind: "development-lifecycle", operation: "${secret}" };`,
+      "  throw error;",
+      "});",
       'for (const stage of ["ready-status", "warning-status", "initial-rollout", "warning-rollout", "secretauthvalue-stage"]) {',
       '  test(stage === "secretauthvalue-stage" ? "unsafe plugin stage" : stage, () => {',
       '    const error = new Error("secretauthvalue-message");',
@@ -952,6 +976,29 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     (entry) => entry.name === "rejects unsafe controller HTTP diagnostic",
   );
   assert.equal(unsafeFailure.error.diagnostic, undefined);
+  const lifecycleFailure = summary.files[0].tests.find(
+    (entry) => entry.name === "original lifecycle failure survives cleanup failure",
+  );
+  assert.deepEqual(lifecycleFailure.error.diagnostic, {
+    kind: "development-lifecycle",
+    operation: "up",
+    lastProgress: "compose-services",
+    exitCode: 1,
+    signal: "SIGTERM",
+    outcome: "terminated",
+    uncertainMarker: "present",
+  });
+  const unsafeLifecycle = summary.files[0].tests.find(
+    (entry) => entry.name === "unsafe lifecycle fields are omitted",
+  );
+  assert.deepEqual(unsafeLifecycle.error.diagnostic, {
+    kind: "development-lifecycle",
+    operation: "down",
+  });
+  const unsafeOperation = summary.files[0].tests.find(
+    (entry) => entry.name === "unsafe lifecycle operation is rejected",
+  );
+  assert.equal(unsafeOperation.error.diagnostic, undefined);
   // Keep the failed wait identifiable without exposing arbitrary runtime output.
   for (const stage of ["ready-status", "warning-status", "initial-rollout"]) {
     const failure = summary.files[0].tests.find((entry) => entry.name === stage);

@@ -92,9 +92,10 @@ for supported engines, images, and security restrictions.
 - `OCC_DOCKER_AGENT_IMAGE` — Docker Codex Agent image when a shared image is not used.
 - `OCC_KUBERNETES_RUNTIME_IMAGE` — Existing local Kubernetes runtime image; otherwise the helper builds its default image.
 - `OCC_DEVELOPMENT_STATE_DIRECTORY` — Private Kubernetes profile state; default: `/tmp/openclaw-development`. Use the same value for cleanup.
-- `OCC_DEVELOPMENT_COMPOSE_PROJECT` — Kubernetes profile's Compose project; default: `openclaw-enterprise-development-kubernetes`.
+- `OCC_DEVELOPMENT_COMPOSE_PROJECT` — Kubernetes profile's Compose project, exclusively claimed on the selected engine; default: `openclaw-enterprise-development-kubernetes`.
 - `OCC_DEVELOPMENT_KUBERNETES_CLUSTER` — Disposable k3d cluster; default: a generated name beginning with `occ-dev-`.
 - `OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` — Kubernetes profile startup timeout; default: `300` seconds per wait.
+- `OCC_DEVELOPMENT_KUBERNETES_IMAGE` — Optional immutable K3s node image; defaults to online `+v1.35` channel selection. The running server must be 1.35.x.
 - `OCC_DEVELOPMENT_KUBERNETES_API_PORT` — Local Kubernetes API port; default: `6443`.
 - `OCC_DEVELOPMENT_KUBERNETES_DISK_THRESHOLD_PERCENT` — Disposable cluster disk-pressure threshold; default: `5`.
 - `OCC_CONTAINER_ENGINE_SOCKET` — Podman API socket; the development helper supplies it automatically.

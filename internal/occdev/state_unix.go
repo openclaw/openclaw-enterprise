@@ -24,11 +24,19 @@ func privateOwned(path string, directory bool) error {
 
 // Keep a start and stop from operating on the same owned state concurrently.
 func lockState(directory string) (*os.File, error) {
+	return lockDirectory(directory, syscall.LOCK_EX|syscall.LOCK_NB)
+}
+
+func lockClaims(directory string) (*os.File, error) {
+	return lockDirectory(directory, syscall.LOCK_EX)
+}
+
+func lockDirectory(directory string, how int) (*os.File, error) {
 	file, err := os.Open(directory)
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := syscall.Flock(int(file.Fd()), how); err != nil {
 		file.Close()
 		return nil, fmt.Errorf("development lifecycle is already using %s", directory)
 	}

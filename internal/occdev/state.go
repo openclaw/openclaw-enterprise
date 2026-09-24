@@ -9,22 +9,57 @@ import (
 	"strings"
 )
 
-const stateMarker = "openclaw-enterprise-development-v2\n"
+const stateMarker = "openclaw-enterprise-development-v4\n"
+const uncertainCommandMarker = "subprocess-outcome-uncertain"
 
 var clusterName = regexp.MustCompile(`^occ-dev-[a-z0-9][a-z0-9-]*$`)
 var projectName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+var ownerID = regexp.MustCompile(`^[a-z2-7]{26}$`)
 
 type developmentState struct {
-	Version         int    `json:"version"`
-	Repository      string `json:"repository"`
-	ComputeDriver   string `json:"computeDriver"`
-	ContainerEngine string `json:"containerEngine"`
-	ComposeProject  string `json:"composeProject"`
-	Cluster         string `json:"cluster"`
-	DockerHost      string `json:"dockerHost"`
-	KeyPath         string `json:"keyPath"`
-	KeyOwned        bool   `json:"keyOwned"`
-	directory       string
+	Version          int    `json:"version"`
+	Repository       string `json:"repository"`
+	ComputeDriver    string `json:"computeDriver"`
+	ContainerEngine  string `json:"containerEngine"`
+	ComposeProject   string `json:"composeProject"`
+	Cluster          string `json:"cluster"`
+	DockerHost       string `json:"dockerHost"`
+	KeyPath          string `json:"keyPath"`
+	KeyOwned         bool   `json:"keyOwned"`
+	Owner            string `json:"owner"`
+	ClusterAttempted bool   `json:"clusterAttempted"`
+	directory        string
+}
+
+func (s *developmentState) save() error {
+	data, err := json.Marshal(s)
+	if err != nil {
+		return err
+	}
+	file, err := os.CreateTemp(s.directory, ".state-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	_, writeErr := file.Write(data)
+	closeErr := file.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	return os.Rename(file.Name(), filepath.Join(s.directory, "state.json"))
+}
+
+func (s *developmentState) beginLifecycle() error {
+	// Persist this before launching helpers: process death skips Go defers and
+	// releases the state lock while a subprocess can still mutate the engine.
+	return exclusiveWrite(filepath.Join(s.directory, uncertainCommandMarker), []byte("Stop and verify any surviving container-engine, Compose, or k3d helpers before removing this file and retrying occ dev down.\n"), 0600)
+}
+
+func (s *developmentState) completeLifecycle() error {
+	return os.Remove(filepath.Join(s.directory, uncertainCommandMarker))
 }
 
 func (s *developmentState) composeCommand() []string {
@@ -116,7 +151,7 @@ func readState(directory string) (*developmentState, error) {
 	if err := json.Unmarshal(data, &state, json.RejectUnknownMembers(true)); err != nil {
 		return nil, fmt.Errorf("invalid development state: %w", err)
 	}
-	if !filepath.IsAbs(state.Repository) || state.Version != 2 || state.ComputeDriver != "kubernetes" || (state.ContainerEngine != "docker" && state.ContainerEngine != "podman") || !projectName.MatchString(state.ComposeProject) || !clusterName.MatchString(state.Cluster) || !strings.HasPrefix(state.DockerHost, "unix:///") || !filepath.IsAbs(state.KeyPath) {
+	if !filepath.IsAbs(state.Repository) || state.Version != 4 || state.ComputeDriver != "kubernetes" || (state.ContainerEngine != "docker" && state.ContainerEngine != "podman") || !projectName.MatchString(state.ComposeProject) || !clusterName.MatchString(state.Cluster) || !strings.HasPrefix(state.DockerHost, "unix:///") || !filepath.IsAbs(state.KeyPath) || !ownerID.MatchString(state.Owner) {
 		return nil, fmt.Errorf("unsupported development state")
 	}
 	if state.KeyOwned && state.KeyPath != filepath.Join(directory, "initial-admin-service-key.json") {
