@@ -98,6 +98,12 @@ OpenClaw and unsupported-runtime stories retain the draft workflow: provision
 credentials and deploy from Agent detail. These transitions demonstrate
 presentation only; they do not prove a worker ran.
 
+The DevDay create segment rehearses the same create-and-deploy path with a
+Codex Preset, fake API key, `gpt-6-astra`, `openclaw/openclaw-enterprise`,
+simulated OpenClaw Slack channel IDs, and pre-existing simulated Slack Secrets.
+Use the [DevDay storyboard](../../scripts/console-storybook/devday-storyboard.md)
+for the presenter actions, expected visible states, and fallbacks.
+
 **Choose provider and harness** walks through the OpenAI Codex default, OpenClaw
 selection, Anthropic's OpenClaw-only choice, and switching from an unsaved service account
 token to API-key authentication. Model choices are hardcoded in the Console and
@@ -163,6 +169,11 @@ execution-mode fields. The Slack drawer preserves existing access policies; it
 does not provide a policy selector. Its channel sender controls edit per-channel
 `users` lists, including `users: ["*"]` for everyone, while direct-message
 `allowFrom` stays unchanged. See [Agent revisions](../guides/topics/agent-revisions.md).
+
+The DevDay Admin UI segment starts from a deployed `oceclaw` Agent whose Slack
+fixture represents `#openclaw-feedback`. Its native Admin UI target is a
+simulated page with a chat-shaped transcript and visible reply. It does not
+connect to a gateway, Slack, credentials, or a model.
 
 ### Stop
 

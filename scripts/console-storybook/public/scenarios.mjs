@@ -186,6 +186,7 @@ const pluginDiscoveryGap =
 const repositoryOptionsPath =
   "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/repository-options";
 const account = [{ selector: ".account-toggle", click: true }];
+const devdayRepositorySelector = 'input[value="openclaw/openclaw-enterprise"]';
 const createSlackBotSecret = [
   { selector: "#slack-secret-slack-bot-token", value: "__openclaw_create_secret__" },
   { selector: "#create-slack-bot-token-value", value: "simulated-bot-token" },
@@ -217,6 +218,27 @@ const createProvisioningSecrets = [
   { selector: "#slack-channel-ids", value: "CDEMO123" },
   ...allowEveryoneInSlackChannels,
   click("Apply channel settings"),
+];
+const devdayCreateCheckpoint = [
+  click("Create Agent"),
+  { selector: "#agent-preset", value: "pre_devday_codex" },
+  { selector: "#preset-variable-name", value: "devday claw" },
+  click("Use Preset"),
+  { selector: "#provider-api-key", value: "sk-demo-devday-codex-api-key" },
+  { selector: "#agent-model", value: "gpt-6-astra" },
+  { selector: devdayRepositorySelector, click: true },
+  { selector: "#repository-profile-git-write", click: true },
+  click("Configure Slack"),
+  { selector: "#slack-channel-ids", value: "COPENCLAW, COPENCLAWFEEDBACK" },
+  { selector: "#slack-secret-slack-app-token", value: "sec_devday_slack_app_token" },
+  { selector: "#slack-secret-slack-bot-token", value: "sec_devday_slack_bot_token" },
+  click("Apply channel settings"),
+  click("Create Agent"),
+  { selector: '[id="workspace-AGENTS.md"]' },
+];
+const devdayAdminCheckpoint = [
+  { selector: 'a[href*="agt_00000000-0000-4000-8000-000000000001"]', click: true },
+  { selector: ".native-admin-access a.primary" },
 ];
 
 // Page failures use the HTTP boundary; isolated component previews receive their input state.
@@ -1894,6 +1916,125 @@ export const scenarios = {
       "Create the Agent to persist the Configuration and let the controller grant the Agent access to the staged Slack Secrets.",
     ],
     gap: "The fixture proves the Console request workflow with simulated Secret metadata. Use a live Namespace and Slack app to prove real Secret propagation and Slack replies.",
+  },
+  devdayCreateFlow: {
+    group: "Flows",
+    name: "DevDay segment 1: create devday claw",
+    path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
+    agentName: "oceclaw",
+    deployed: true,
+    slack: true,
+    slackChannels: ["COPENCLAWFEEDBACK"],
+    nativeAdmin: "available",
+    nativeAdminUrl: "/storybook-fixtures/devday-admin.html?agent=oceclaw&channel=openclaw-feedback",
+    devdayPreset: true,
+    modelOptions: [{ id: "gpt-6-astra", name: "gpt-6-astra" }],
+    repositoryOptions: [
+      {
+        repositoryRef: "openclaw/openclaw-enterprise",
+        displayName: "openclaw/openclaw-enterprise",
+        allowedProfiles: ["git-read", "git-write"],
+      },
+    ],
+    extraSecrets: [
+      {
+        id: "sec_devday_slack_app_token",
+        name: "devday claw Slack app token (simulated)",
+      },
+      {
+        id: "sec_devday_slack_bot_token",
+        name: "devday claw Slack bot token (simulated)",
+      },
+    ],
+    nextStory: "devdayAdminFlow",
+    description:
+      "DevDay create-flow rehearsal using real Console controls with fake API-key and Slack Secret data. Provisioning and deployment progress are simulated in the Storybook fixture.",
+    steps: [
+      "Start on the Agents list with the already deployed oceclaw seed, then click Create Agent.",
+      "Select the Codex Preset and enter devday claw as the Preset name variable.",
+      "Enter the fake Codex API key sk-demo-devday-codex-api-key and select gpt-6-astra from simulated model discovery.",
+      "Select openclaw/openclaw-enterprise with Contributor access.",
+      "Open Configure Slack. Enter COPENCLAW and COPENCLAWFEEDBACK, representing #openclaw and #openclaw-feedback, then bind the pre-existing simulated devday claw Slack Secrets.",
+      "Create Agent and keep the Console visible while the fixture progresses through provisioning and deployment activation until Workspace files open for the admitted revision.",
+      "Use ← Agents and open oceclaw in the same fixture to continue segment 2. The next-segment link starts an independent resettable fixture.",
+    ],
+    gap: "This Storybook flow proves only the UI sequence and fixture state. It does not store a real credential, deploy a workload, prove GitHub authorization, or prove Slack delivery.",
+  },
+  devdayCreateCheckpoint: {
+    group: "Flows",
+    name: "DevDay segment 1 checkpoint: deployed devday claw",
+    path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
+    agentName: "oceclaw",
+    deployed: true,
+    slack: true,
+    slackChannels: ["COPENCLAWFEEDBACK"],
+    nativeAdmin: "available",
+    nativeAdminUrl: "/storybook-fixtures/devday-admin.html?agent=oceclaw&channel=openclaw-feedback",
+    devdayPreset: true,
+    modelOptions: [{ id: "gpt-6-astra", name: "gpt-6-astra" }],
+    repositoryOptions: [
+      {
+        repositoryRef: "openclaw/openclaw-enterprise",
+        displayName: "openclaw/openclaw-enterprise",
+        allowedProfiles: ["git-read", "git-write"],
+      },
+    ],
+    extraSecrets: [
+      {
+        id: "sec_devday_slack_app_token",
+        name: "devday claw Slack app token (simulated)",
+      },
+      {
+        id: "sec_devday_slack_bot_token",
+        name: "devday claw Slack bot token (simulated)",
+      },
+    ],
+    actions: devdayCreateCheckpoint,
+    description:
+      "Auto-run checkpoint for reviewers who want the deployed end state of the DevDay create segment without replaying every presenter click.",
+    steps: [
+      "Use the primary DevDay segment 1 story for recording the manual presenter flow.",
+      "This checkpoint clicks through the same controls and waits until Workspace files open for the admitted revision.",
+    ],
+    gap: "Checkpoint automation is a setup aid. Use the manual story for the demo video.",
+  },
+  devdayAdminFlow: {
+    group: "Flows",
+    name: "DevDay segment 2: oceclaw Admin UI",
+    path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
+    agentName: "oceclaw",
+    deployed: true,
+    slack: true,
+    slackChannels: ["COPENCLAWFEEDBACK"],
+    nativeAdmin: "available",
+    nativeAdminUrl: "/storybook-fixtures/devday-admin.html?agent=oceclaw&channel=openclaw-feedback",
+    description:
+      "DevDay handoff from a deployed Console Agent to the simulated native Admin UI. The Agent is named oceclaw and its Slack fixture represents #openclaw-feedback.",
+    steps: [
+      "Start on the Agents list and open oceclaw.",
+      "Confirm the Console shows a selected deployed revision, simulated deployment status, and available native admin access.",
+      "Click Open native admin UI. The target fixture opens with an existing #openclaw-feedback message.",
+      "Enter a new message, click Send in the simulated Admin UI, and confirm the visible assistant reply.",
+    ],
+    gap: "The Admin UI target is a fixture page. It demonstrates the link target and chat-shaped result only; it does not connect to a gateway, Slack, credentials, or a model.",
+  },
+  devdayAdminCheckpoint: {
+    group: "Flows",
+    name: "DevDay segment 2 checkpoint: oceclaw detail",
+    path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
+    agentName: "oceclaw",
+    deployed: true,
+    slack: true,
+    slackChannels: ["COPENCLAWFEEDBACK"],
+    nativeAdmin: "available",
+    nativeAdminUrl: "/storybook-fixtures/devday-admin.html?agent=oceclaw&channel=openclaw-feedback",
+    actions: devdayAdminCheckpoint,
+    description: "Auto-run checkpoint that opens oceclaw and waits for the native Admin UI link.",
+    steps: [
+      "Use the primary DevDay segment 2 story for recording the manual presenter flow.",
+      "This checkpoint opens oceclaw and stops at the available native Admin UI link.",
+    ],
+    gap: "Checkpoint automation is a setup aid. The Admin UI remains a simulated fixture.",
   },
   updateFlow: {
     group: "Flows",

@@ -79,6 +79,7 @@ export function installFixture(scenario, evidence) {
     secretMetadata("sec_demo_slack_app_token", "Slack app token (simulated)"),
     secretMetadata("sec_demo_slack_bot_token", "Slack bot token (simulated)"),
     secretMetadata("sec_demo_slack_backup_token", "Slack backup token (simulated)"),
+    ...(scenario.extraSecrets ?? []).map((secret) => secretMetadata(secret.id, secret.name)),
   ]) {
     secrets.set(secret.id, secret);
   }
@@ -107,7 +108,7 @@ export function installFixture(scenario, evidence) {
         : ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"];
     for (const key of keys) {
       config.secretBindings[key] = {
-        source: secretRef(`sec_demo_${key.toLowerCase()}`),
+        source: secretRef(scenario.slackSecretIds?.[key] ?? `sec_demo_${key.toLowerCase()}`),
         delivery: { type: "env" },
       };
     }
@@ -124,7 +125,7 @@ export function installFixture(scenario, evidence) {
   const agent = {
     id: "agt_00000000-0000-4000-8000-000000000001",
     namespaceId,
-    name: "Research assistant",
+    name: scenario.agentName ?? "Research assistant",
     status: scenario.deleting ? "deleting" : "active",
     desiredRuntimeState: scenario.stopped ? "stopped" : scenario.deployed ? "running" : "stopped",
     configurationId: config.id,
@@ -212,31 +213,51 @@ export function installFixture(scenario, evidence) {
     });
   }
   const preset = {
-    id: "pre_00000000-0000-4000-8000-000000000001",
+    id: scenario.devdayPreset ? "pre_devday_codex" : "pre_00000000-0000-4000-8000-000000000001",
     namespaceId,
-    name: "Research assistant",
+    name: scenario.devdayPreset ? "Codex" : "Research assistant",
     template: {
       variables: {
         name: { type: "string", description: "Name for this Agent." },
-        model: {
-          type: "string",
-          default: "codex/gpt-6-astra",
-          description: "Model reference copied into the draft.",
-        },
+        ...(scenario.devdayPreset
+          ? {}
+          : {
+              model: {
+                type: "string",
+                default: "codex/gpt-6-astra",
+                description: "Model reference copied into the draft.",
+              },
+            }),
       },
       agent: {
         name: "{{ vars.name }}",
         executionMode: "dedicated",
-        harnessAuth: { ...auth, method: scenario.presetAuth ?? auth.method },
+        ...(scenario.devdayPreset
+          ? {}
+          : { harnessAuth: { ...auth, method: scenario.presetAuth ?? auth.method } }),
       },
       configuration: {
-        values: { ...configurationValues({}), agents: { defaults: { model: "{{ vars.model }}" } } },
+        values: scenario.devdayPreset
+          ? {
+              gateway: {
+                mode: "local",
+                bind: "lan",
+                controlUi: {
+                  enabled: true,
+                  allowedOrigins: ["http://127.0.0.1:18789", "http://localhost:18789"],
+                },
+                http: { endpoints: { chatCompletions: { enabled: true } } },
+              },
+              channels: {},
+            }
+          : { ...configurationValues({}), agents: { defaults: { model: "{{ vars.model }}" } } },
       },
     },
   };
   if (scenario.standardCodexPreset) {
     Object.assign(preset, structuredClone(standardCodexPreset));
   }
+  const presets = [preset];
   const response = (data, status = 200, errorCode) =>
     new Response(
       JSON.stringify({
@@ -334,10 +355,11 @@ export function installFixture(scenario, evidence) {
         );
       }
       if (resource === "presets" && method === "GET") {
-        return response(scenario.emptyPresets ? [] : [preset]);
+        return response(scenario.emptyPresets ? [] : presets);
       }
-      if (resource === "presets/pre_00000000-0000-4000-8000-000000000001" && method === "GET") {
-        return response(preset);
+      if (resource.startsWith("presets/") && method === "GET") {
+        const selectedPreset = presets.find((item) => item.id === resource.split("/")[1]);
+        return selectedPreset ? response(selectedPreset) : error(404);
       }
       if (resource === "agents/plugins" && method === "POST" && scenario.pluginDiscovery) {
         const page = scenario.pluginDiscovery.pages[body.cursor ?? "initial"];
@@ -553,7 +575,9 @@ export function installFixture(scenario, evidence) {
         if (suffix === "/native-admin" && method === "GET") {
           return response({
             status: scenario.nativeAdmin ?? "disabled",
-            url: "/storybook-fixtures/native-admin.html",
+            url:
+              (id === agent.id ? scenario.nativeAdminUrl : undefined) ??
+              "/storybook-fixtures/native-admin.html",
           });
         }
         if (suffix === "/runtime-images" && method === "GET") {

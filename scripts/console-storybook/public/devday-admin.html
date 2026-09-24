@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; form-action 'none'"
+    />
+    <title>Simulated native Admin UI</title>
+    <style>
+      body {
+        margin: 0;
+        background: #f5f8f7;
+        color: #183b33;
+        font:
+          15px/1.5 system-ui,
+          sans-serif;
+      }
+
+      main {
+        max-width: 920px;
+        margin: 0 auto;
+        padding: 32px 20px;
+      }
+
+      .notice,
+      .composer,
+      .message {
+        background: #ffffff;
+        border: 1px solid #ccd9d4;
+        border-radius: 8px;
+        padding: 16px;
+      }
+
+      .notice {
+        border-color: #bd7f23;
+        background: #fff3d6;
+        font-weight: 600;
+      }
+
+      .transcript {
+        display: grid;
+        gap: 12px;
+        margin: 24px 0;
+      }
+
+      .message strong {
+        display: block;
+        margin-bottom: 4px;
+      }
+
+      label {
+        display: block;
+        font-weight: 700;
+        margin-bottom: 8px;
+      }
+
+      textarea {
+        box-sizing: border-box;
+        width: 100%;
+        min-height: 96px;
+        resize: vertical;
+      }
+
+      button {
+        margin-top: 12px;
+        padding: 8px 14px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Simulated Admin UI for <span id="agent">this Agent</span></h1>
+      <p class="notice">
+        Storybook fixture only. No gateway, Slack workspace, credential, model, or native command is
+        contacted.
+      </p>
+      <section aria-labelledby="conversation-title">
+        <h2 id="conversation-title">
+          Conversation in #<span id="channel">openclaw-feedback</span>
+        </h2>
+        <div class="transcript" id="transcript" role="log" aria-live="polite">
+          <article class="message">
+            <strong>Existing message</strong>
+            Can oceclaw summarize the launch-console feedback before the demo?
+          </article>
+        </div>
+      </section>
+      <form class="composer" id="composer">
+        <label for="message">Message oceclaw</label>
+        <textarea id="message" required placeholder="Message oceclaw">
+Please confirm the DevDay Console flow is ready.</textarea>
+        <button type="submit">Send</button>
+      </form>
+    </main>
+    <script>
+      const params = new URL(location.href).searchParams;
+      const agent = params.get("agent") || "demo Agent";
+      const channel = params.get("channel") || "openclaw-feedback";
+      document.querySelector("#agent").textContent = agent;
+      document.querySelector("#channel").textContent = channel;
+      document.querySelector("#composer").addEventListener("submit", (event) => {
+        event.preventDefault();
+        const input = document.querySelector("#message");
+        const text = input.value.trim();
+        if (!text) {
+          return;
+        }
+        const transcript = document.querySelector("#transcript");
+        const user = document.createElement("article");
+        user.className = "message";
+        const userLabel = document.createElement("strong");
+        userLabel.textContent = "New message";
+        user.append(userLabel, text);
+        const reply = document.createElement("article");
+        reply.className = "message";
+        const replyLabel = document.createElement("strong");
+        replyLabel.textContent = "oceclaw · simulated response";
+        reply.append(
+          replyLabel,
+          `oceclaw received the simulated message and drafted a launch-console follow-up for #${channel}.`,
+        );
+        transcript.append(user, reply);
+        input.value = "";
+        reply.scrollIntoView({ block: "nearest" });
+      });
+    </script>
+  </body>
+</html>
