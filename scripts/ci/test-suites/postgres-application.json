@@ -126,6 +126,8 @@
         "worker revalidates admitted repository selections through the concrete GitHub Driver and Unix control",
         "Agent stop clears only the exact active pointer after Compute shutdown and retries safely",
         "Agent stop cleans a terminal candidate without an active revision",
+        "Agent stop reauthorizes the recorded actor before Compute mutation",
+        "Agent delete reauthorizes the recorded actor before Compute mutation",
         "a deployment during active cleanup supersedes the remaining Agent stop effects",
         "a deployment during candidate cleanup supersedes the remaining Agent stop effects",
         "maintenance retains its real lease across consecutive short predecessor retirements",
