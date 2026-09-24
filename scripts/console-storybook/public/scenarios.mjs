@@ -1514,14 +1514,14 @@ export const scenarios = {
     path: "/console/agents?debug=true",
     buildRevision: "abcdef1234567890abcdef1234567890abcdef12",
     description:
-      "OCE branding with an adjacent eight-character OCC commit. Hover the version for the full hash. This revision is simulated.",
+      "Approved OpenClaw mech mascot beside OCE and an eight-character OCC commit. Check the mascot at desktop and mobile widths, then hover the version for the full hash. This revision is simulated.",
   },
   developmentBuild: {
     group: "Components/Navigation",
     name: "OCC development build",
     path: "/console/agents?debug=true",
     description:
-      "OCE branding with an adjacent dev label when OCC build metadata is unavailable. No checkout or gateway revision is inferred.",
+      "Approved OpenClaw mech mascot beside OCE with an adjacent dev label when OCC build metadata is unavailable. No checkout or gateway revision is inferred.",
   },
   menu: {
     group: "Components/Navigation",

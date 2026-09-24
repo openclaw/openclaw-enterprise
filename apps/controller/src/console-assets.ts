@@ -10,6 +10,26 @@ const CONSOLE_ROOT = new URL("./console/", import.meta.url);
 const CONSOLE_SHELL = new URL("index.html", CONSOLE_ROOT);
 const CONSOLE_ASSETS = new Map(
   Object.entries({
+    "/console/oce-mascot.png": {
+      path: new URL("oce-mascot.png", CONSOLE_ROOT),
+      contentType: "image/png",
+    },
+    "/console/favicon.ico": {
+      path: new URL("favicon.ico", CONSOLE_ROOT),
+      contentType: "image/vnd.microsoft.icon",
+    },
+    "/console/favicon-16.png": {
+      path: new URL("favicon-16.png", CONSOLE_ROOT),
+      contentType: "image/png",
+    },
+    "/console/favicon-32.png": {
+      path: new URL("favicon-32.png", CONSOLE_ROOT),
+      contentType: "image/png",
+    },
+    "/console/apple-touch-icon.png": {
+      path: new URL("apple-touch-icon.png", CONSOLE_ROOT),
+      contentType: "image/png",
+    },
     "/console/api-client.mjs": {
       path: new URL("api-client.mjs", CONSOLE_ROOT),
       contentType: "text/javascript; charset=utf-8",

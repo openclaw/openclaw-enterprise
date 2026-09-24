@@ -1,6 +1,6 @@
 # OpenClaw Enterprise
 
-<img src="docs/assets/lobster-mech-transparent.png" alt="Comic-style lobster in a mech suit" width="200" />
+<img src="docs/assets/oce-mascot.png" alt="OpenClaw in a mech suit, the OpenClaw Enterprise mascot" width="200" />
 
 OpenClaw Enterprise (OCE) includes the [OpenClaw Control Plane (OCC)](docs/guides/concepts.md#control-plane)
 for deploying and managing [Agents](docs/guides/concepts.md#agents-and-revisions).

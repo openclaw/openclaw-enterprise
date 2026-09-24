@@ -69,3 +69,30 @@ for documentation changes, including docs-site presentation.
 The [HTTP API reference](../reference/api.md) and [API cheat sheet](../reference/cheatsheets/api.md)
 are generated. Edit the owning routes, schemas, or generator; then run
 `pnpm openapi:generate` and `pnpm openapi:check`. Do not edit either page by hand.
+
+## Brand artwork
+
+The approved OCE mascot source is [`lobster-mech-transparent.png`](../assets/lobster-mech-transparent.png)
+(SHA256 `207a83faca81a49521b31e73800af235bd912470ce8f9c09bc37d8075c22330c`).
+Preserve this original PNG and its transparency. The README and docs header use
+`docs/assets/oce-mascot.png` at 400 × 400; the console uses its own
+`apps/controller/src/console/oce-mascot.png` at 96 × 96.
+
+Both asset directories contain transparent 16- and 32-pixel PNG favicons, a
+16/32/48-pixel ICO, and a 180-pixel touch icon derived from that source. Resize
+the full square canvas with Pillow's `Image.Resampling.LANCZOS`; do not redraw
+or replace the character. When updating these assets, check the README's relative
+image path, both sites' icon links, and the console asset allowlist. Inspect
+16- and 32-pixel icons on light and dark backgrounds and the Storybook
+**Components / Navigation / OCC build revision**, **Mobile drawer**, and
+**Pages / Sign in** previews. Storybook supplies simulated API state.
+
+Visual references: [README](../assets/oce-mech-branding/readme.png),
+[docs header](../assets/oce-mech-branding/docs-dark.png),
+[Storybook shell](../assets/oce-mech-branding/storybook.png),
+[mobile navigation](../assets/oce-mech-branding/mobile.png),
+[sign-in](../assets/oce-mech-branding/sign-in.png),
+[browser tab](../assets/oce-mech-branding/browser-favicon.png),
+[favicon sizes](../assets/oce-mech-branding/favicon-sizes.png), and
+[walkthrough](../assets/oce-mech-branding/walkthrough.mp4). These captures show
+local documentation and simulated console presentation, not live backend proof.

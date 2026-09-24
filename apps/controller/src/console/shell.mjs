@@ -82,7 +82,12 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       element(
         "main",
         { className: "auth" },
-        element("p", { className: "brand" }, "OpenClaw Enterprise"),
+        element(
+          "p",
+          { className: "brand" },
+          element("img", { src: "/console/oce-mascot.png", alt: "", width: "40", height: "40" }),
+          "OpenClaw Enterprise",
+        ),
         element("h1", {}, title),
         element("p", { role: "status", className: "muted" }, description),
         action ? button(actionLabel, action) : null,
@@ -261,6 +266,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       element(
         "p",
         { className: "brand" },
+        element("img", { src: "/console/oce-mascot.png", alt: "", width: "40", height: "40" }),
         "OCE",
         debug
           ? element(

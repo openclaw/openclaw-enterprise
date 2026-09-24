@@ -153,11 +153,18 @@ p {
   padding: 28px;
 }
 .brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 13px;
   text-transform: uppercase;
   letter-spacing: 1.5px;
   color: var(--accent);
   margin-bottom: 38px;
+}
+.brand img {
+  flex: none;
+  object-fit: contain;
 }
 .auth label {
   display: block;
@@ -213,7 +220,7 @@ p {
 }
 .sidebar .brand {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   padding: 10px 12px 0;
   margin-bottom: 28px;
