@@ -15,16 +15,16 @@ Codex and Slack come from that same source. The selected commit contains
 the restricted workspace-node commands and saved-token-first pairing required by
 split storage; published `2026.9.5` packages do not contain that complete contract.
 
-This candidate also includes the remote Skills shutdown fix from
-[OpenClaw #157592](https://github.com/openclaw/openclaw/pull/157592). Its exact
-source commit and archive checksum below make the build reproducible while that
-upstream change is under review; this is not a published OpenClaw release.
+The source pin is the merged commit of
+[OpenClaw #157592](https://github.com/openclaw/openclaw/pull/157592), which releases
+remote Skills subscriptions during shutdown. The commit and verified archive
+checksum below identify this source build; it is not a published OpenClaw release.
 
 | Input                                        | Selection                                                                                                    |
 | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | Build base                                   | `docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584` |
-| OpenClaw source commit                       | `6d6a02223b2067f9454492793726dd1e1c750df7`                                                                   |
-| Source archive SHA-256                       | `6a918a4ca383e7ff90f47834d641b73f63b5fd8b017f42e6d6f0f22079480170`                                           |
+| OpenClaw source commit                       | `abc1b44118af833a24fa00763db10bde8a0a9a91`                                                                   |
+| Source archive SHA-256                       | `18a6b66d16c422ad9f643e27decf81eb0decb7f8fc3ce712ac2a5b6aa8d113b3`                                           |
 | Dedicated Codex CLI (`OPENAI_CODEX_VERSION`) | `0.156.0`                                                                                                    |
 
 The source's package version is `2026.9.6`; it does not identify this custom
@@ -58,9 +58,9 @@ OpenClaw gateways and dedicated Codex app-server containers.
 
 The image preserves the assembled OpenClaw runtime under
 `/app/node_modules/openclaw` and exposes `/app/openclaw.mjs` and `/app/dist` as
-symlinks into that package. `/app/skills` is copied into a real directory so the
-Kubernetes gateway entrypoint can publish it into the shared runtime-assets
-volume for dedicated Codex Pods. Do not flatten `/app/dist`; OpenClaw resolves
+symlinks into that package. `/app/skills` is copied into a real directory so each
+Kubernetes runtime can initialize its own bundled Skill assets. Gateway and
+Harness do not share a runtime-assets volume. Do not flatten `/app/dist`; OpenClaw resolves
 package-local runtime dependencies from its installed package root.
 
 Codex and Slack are packaged under `/app/dist/extensions/` with their runtime
@@ -69,7 +69,7 @@ installing packages at gateway startup. Slack credentials remain operator-owned
 runtime Secrets; do not put them in the image.
 
 Keep the source commit and archive checksum together when updating OpenClaw.
-Follow the [pinned upstream Docker assembly](https://github.com/openclaw/openclaw/blob/6d6a02223b2067f9454492793726dd1e1c750df7/Dockerfile)
+Follow the [pinned upstream Docker assembly](https://github.com/openclaw/openclaw/blob/abc1b44118af833a24fa00763db10bde8a0a9a91/Dockerfile)
 to keep plugin dependencies and runtime assets consistent. Its plugin-local
 dependency layout preserves dependencies that differ from core versions.
 Plugin chunks emitted directly under `dist` also need package-root resolution.

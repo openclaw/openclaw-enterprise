@@ -31,6 +31,7 @@ const runtimePaths = [
   "gateway-run-argv.mjs",
   "gateway-shutdown-budget.mjs",
   "node-host-launcher.mjs",
+  "node-compile-cache.mjs",
   "openclaw.mjs",
   "extensions",
   "skills",
@@ -207,7 +208,7 @@ if (command === "inputs") {
       {
         source: "https://github.com/openclaw/openclaw",
         commit: process.env.GIT_COMMIT,
-        sourceArchiveSha256: "6a918a4ca383e7ff90f47834d641b73f63b5fd8b017f42e6d6f0f22079480170",
+        sourceArchiveSha256: "18a6b66d16c422ad9f643e27decf81eb0decb7f8fc3ce712ac2a5b6aa8d113b3",
         artifactKind: "assembled-runtime-root",
         runtimeContentsSha256: hash(contents),
         lockfileSha256: hash(await readFile(join(root, "pnpm-lock.yaml"))),
