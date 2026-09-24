@@ -2219,15 +2219,32 @@ test("Agent creation offers mainline Anthropic models before credentials and sav
   const choice = page.getByLabel("Model", { exact: true });
   assert.deepEqual(
     (await optionValues(choice)).map(({ value }) => value),
-    ["", "claude-opus-5-5", "claude-sonnet-5", "claude-haiku-4-5"],
+    [
+      "",
+      "claude-opus-5-5",
+      "claude-fable-5-1",
+      "claude-mythos-5-1",
+      "claude-opus-5",
+      "claude-fable-5",
+      "claude-mythos-5",
+      "claude-sonnet-5",
+      "claude-haiku-4-5",
+      "claude-opus-4-8",
+      "claude-opus-4-7",
+      "claude-opus-4-6",
+      "claude-opus-4-5-20251101",
+      "claude-sonnet-4-6",
+      "claude-sonnet-4-5-20250929",
+      "claude-mythos-preview",
+    ],
   );
   assert.equal(await choice.inputValue(), "");
-  await choice.selectOption("claude-sonnet-5");
+  await choice.selectOption("claude-fable-5-1");
   const selectedConfiguration = await page.getByLabel("Configuration JSON").inputValue();
   await page.getByLabel("Agent name").fill("Anthropic Agent");
   await page.getByLabel("API key", { exact: true }).fill("test-anthropic-api-key");
   await page.getByLabel("API key", { exact: true }).press("Tab");
-  assert.equal(await choice.inputValue(), "claude-sonnet-5");
+  assert.equal(await choice.inputValue(), "claude-fable-5-1");
   assert.equal(await page.getByLabel("Configuration JSON").inputValue(), selectedConfiguration);
   assert.deepEqual(nonAuthWriteRequests(requests), []);
   assert.equal(secretDriver.calls.length, 0);
@@ -2253,14 +2270,14 @@ test("Agent creation offers mainline Anthropic models before credentials and sav
     "GET",
     `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
   );
-  assert.equal(configuration.data.values.agents.defaults.model, "anthropic/claude-sonnet-5");
+  assert.equal(configuration.data.values.agents.defaults.model, "anthropic/claude-fable-5-1");
   assert.deepEqual(configuration.data.values.models.providers.anthropic, {
     baseUrl: "https://api.anthropic.com",
     api: "anthropic-messages",
-    models: [{ id: "claude-sonnet-5", name: "claude-sonnet-5" }],
+    models: [{ id: "claude-fable-5-1", name: "claude-fable-5-1" }],
   });
   assert.equal(
-    configuration.data.values.agents.defaults.models["anthropic/claude-sonnet-5"].agentRuntime.id,
+    configuration.data.values.agents.defaults.models["anthropic/claude-fable-5-1"].agentRuntime.id,
     "openclaw",
   );
   assert.equal(pathRequests(requests, "GET", "/providers").length, 0);
@@ -2287,33 +2304,33 @@ test("Static model selection survives credential edits and resets for provider o
   assert.equal(await choice.isEnabled(), true);
   assert.deepEqual(
     (await optionValues(choice)).map(({ value }) => value),
-    ["", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+    ["", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
   );
   assert.equal(await choice.locator('option[value=""]').textContent(), "Choose a model");
   assert.equal(await choice.inputValue(), "");
   assert.equal(JSON.parse(await configuration.inputValue()).agents?.defaults?.model, undefined);
-  await choice.selectOption("gpt-5.6-sol");
+  await choice.selectOption("gpt-6-astra");
   const selectedConfiguration = await configuration.inputValue();
-  assert.equal(JSON.parse(selectedConfiguration).agents.defaults.model, "codex/gpt-5.6-sol");
+  assert.equal(JSON.parse(selectedConfiguration).agents.defaults.model, "codex/gpt-6-astra");
   for (const credential of ["first-openai-key", "replacement-openai-key", ""]) {
     await key.fill(credential);
     await key.press("Tab");
-    assert.equal(await choice.inputValue(), "gpt-5.6-sol");
+    assert.equal(await choice.inputValue(), "gpt-6-astra");
     assert.equal(await configuration.inputValue(), selectedConfiguration);
   }
 
   // Switching compatible harnesses changes the native transport without clearing the model.
   await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
-  assert.equal(await choice.inputValue(), "gpt-5.6-sol");
+  assert.equal(await choice.inputValue(), "gpt-6-astra");
   assert.equal(
     JSON.parse(await configuration.inputValue()).agents.defaults.model,
-    "openai/gpt-5.6-sol",
+    "openai/gpt-6-astra",
   );
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
-  assert.equal(await choice.inputValue(), "gpt-5.6-sol");
+  assert.equal(await choice.inputValue(), "gpt-6-astra");
   assert.equal(
     JSON.parse(await configuration.inputValue()).agents.defaults.model,
-    "codex/gpt-5.6-sol",
+    "codex/gpt-6-astra",
   );
 
   await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
@@ -2915,7 +2932,7 @@ test("Agent creation saves explicitly selected models for both harnesses", async
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
 
   for (const [mode, provider, harness, selectedModel] of [
-    ["dedicated", "codex", "codex", "gpt-5.6-sol"],
+    ["dedicated", "codex", "codex", "gpt-6-astra"],
     ["embedded", "openai", "openclaw", "gpt-5.6-luna"],
   ]) {
     await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);

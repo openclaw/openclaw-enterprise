@@ -10,8 +10,33 @@ import { link, message, namespacePath } from "./list.mjs";
 // TODO: This starter list is intentionally hardcoded for the initial Console release.
 // Revisit catalog refresh and credential-aware discovery after the basic creation flow ships.
 const MODEL_CHOICES = {
-  openai: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
-  anthropic: ["claude-opus-5-5", "claude-sonnet-5", "claude-haiku-4-5"],
+  openai: [
+    "gpt-6-astra",
+    "gpt-6-sol",
+    "gpt-6-luna",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+  ],
+  // Non-retired models as of 2026-09-24, including earlier and access-restricted releases.
+  // Source: https://platform.claude.com/docs/en/about-claude/model-deprecations
+  anthropic: [
+    "claude-opus-5-5",
+    "claude-fable-5-1",
+    "claude-mythos-5-1",
+    "claude-opus-5",
+    "claude-fable-5",
+    "claude-mythos-5",
+    "claude-sonnet-5",
+    "claude-haiku-4-5",
+    "claude-opus-4-8",
+    "claude-opus-4-7",
+    "claude-opus-4-6",
+    "claude-opus-4-5-20251101",
+    "claude-sonnet-4-6",
+    "claude-sonnet-4-5-20250929",
+    "claude-mythos-preview",
+  ],
 };
 
 function field(label, input, hint) {
