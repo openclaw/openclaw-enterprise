@@ -16,8 +16,8 @@ split storage; published `2026.9.5` packages do not contain that complete contra
 | Input                                        | Selection                                                                                                    |
 | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | Node base                                    | `docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584` |
-| OpenClaw source commit                       | `636e56110695278f07b5ec2337c4e49f8b2bffe9`                                                                   |
-| Source archive SHA-256                       | `2e62eb72d609cd3eb3383cd89243a73433f0d5fb7df8e155c24d7b2bcae80e89`                                           |
+| OpenClaw source commit                       | `2765f7a3341b8be4835afacbff3d04c6e3c3c79b`                                                                   |
+| Source archive SHA-256                       | `42a420286dcad558b9710b7b583dd9e489bb07b3a835e3e19b69184b22fd416b`                                           |
 | Dedicated Codex CLI (`OPENAI_CODEX_VERSION`) | `0.156.0`                                                                                                    |
 
 The source's package version remains `2026.9.5`; it does not identify this custom
@@ -54,7 +54,7 @@ installing packages at gateway startup. Slack credentials remain operator-owned
 runtime Secrets; do not put them in the image.
 
 Keep the source commit and archive checksum together when updating OpenClaw.
-Follow the [pinned upstream Docker assembly](https://github.com/openclaw/openclaw/blob/636e56110695278f07b5ec2337c4e49f8b2bffe9/Dockerfile)
+Follow the [pinned upstream Docker assembly](https://github.com/openclaw/openclaw/blob/2765f7a3341b8be4835afacbff3d04c6e3c3c79b/Dockerfile)
 to keep plugin dependencies and runtime assets consistent. Its plugin-local
 dependency layout preserves Slack’s `undici@7.29.1` alongside core’s `undici@8.10.2`.
 Plugin chunks emitted directly under `dist` also need package-root resolution.
