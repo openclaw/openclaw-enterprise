@@ -55,6 +55,7 @@ import {
   NamespaceListResponse,
   NamespaceResponse,
   ProviderListResponse,
+  RepositoryOptionListResponse,
   SecretListResponse,
   ServiceAccountListResponse,
   ServiceAccountResponse,
@@ -703,6 +704,30 @@ export const occApiRoutes = [
       params: NamespaceParams,
       body: ProvisionAgentBody,
       response: { 202: AgentProvisioningResponse, ...createErrors },
+    },
+  },
+  {
+    operationId: "listRepositoryOptions",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/repository-options",
+    action: "openclaw.agents.repository_options.list",
+    iamAction: "create",
+    resourceKind: "agent",
+    authorizationTarget: "namespace_collection",
+    summary: "List approved repository choices for Agent creation in one Namespace",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: NamespaceParams,
+      response: {
+        200: RepositoryOptionListResponse,
+        ...readErrors,
+        409: ErrorResponseRef,
+        503: Type.Ref("ErrorResponse", {
+          description:
+            "Check `error.code`: `REPOSITORY_OPTIONS_UNAVAILABLE` means optional repository discovery is unavailable after Namespace lifecycle and Agent create authorization checks. Creation without repository bindings remains available subject to fresh authorization. `DEPENDENCY_UNAVAILABLE` includes IAM and other required dependency failures and does not permit proceeding. Successful discovery returns a data array, including an empty array when no repositories are approved.",
+        }),
+      },
     },
   },
   {

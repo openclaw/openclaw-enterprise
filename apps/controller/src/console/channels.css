@@ -117,6 +117,16 @@
   width: auto;
 }
 
+.channel-field:has(input:disabled),
+.channel-check:has(input:disabled) {
+  opacity: 0.55;
+}
+
+.channel-field input:disabled,
+.channel-check input:disabled {
+  cursor: not-allowed;
+}
+
 @media (max-width: 760px) {
   .channel-heading,
   .channel-card-row,

@@ -1,17 +1,20 @@
 # Repository credentials
 
-Repository bindings give an Agent bounded Git HTTPS and selected GitHub API
-access. OCC freezes authorized grants into its revision; the worker prepares
-runtime material. The separate credential service retains App signing keys,
-JWTs and installation tokens. The Agent receives gateway bearers, client
-configuration and public CA trust. Start with the
+Repository bindings grant bounded Git HTTPS and GitHub API access. OCC freezes
+grants into a revision; the worker prepares material. The credential service
+retains App keys, JWTs and installation tokens. Agents receive gateway bearers,
+client configuration and CA trust. Start with the
 [operator guide](../guides/repository-credentials.md).
 
-The bundled platform path supports Kubernetes Compute-owned embedded OpenClaw
-with `api_key` Harness authentication and no Sandbox Driver. It requires one
-worker/credential-service owner; Helm uses `Recreate` to avoid overlapping
-owners. Dedicated Harnesses and other Compute topologies reject repository-bearing
-revisions. Agents without bindings retain their existing lifecycle.
+Kubernetes supports embedded OpenClaw (`api_key`) or dedicated Codex (API key or
+ChatGPT service account), without a Sandbox Driver. Other combinations reject
+repository-bearing revisions. Helm's `Recreate` strategy prevents overlapping
+worker/credential-service owners.
+
+Only the repository consumer receives repository and model credentials. Dedicated
+Slack tokens stay in the gateway. Repository profiles and model authentication
+are independent. [Kubernetes policies](drivers/kubernetes-compute/networking-and-isolation.md#networking)
+allow consumer access to the credential sidecar.
 
 Trusted startup loads protected configuration into the separate service process;
 backend construction and sender callbacks remain private. Session controls are
@@ -24,8 +27,10 @@ bounded cleanup and disposal.
 The optional `repo` capability uses `RepoDriver extends Driver`, with the bundled
 `GitHubRepoDriver`. Trusted Installation `drivers.repo` and GitHub Provider
 `drivers.repo` select the same configured Driver ID. The
-[shared contract](../../packages/contracts/src/repo.ts) exposes four operations:
+[shared contract](../../packages/contracts/src/repo.ts) exposes five operations:
 
+- `listOptions` returns Namespace-approved opaque references, display names and
+  profiles.
 - `resolve` checks Namespace policy and returns admitted bindings and duration.
 - `open` returns `created` with private runtime files, `recovered` with status
   only, or `missing`. `recoverOnly` cannot create authority.
@@ -114,6 +119,15 @@ The selected Driver configuration supplies `controlSocket`,
 `sessionDurationSeconds` and `publicCaPath`; it contains no App key. See
 [Provider configuration](providers.md) and the
 [installation procedure](../guides/deploy/production-installation.md) for wiring.
+
+### Agent-create repository options
+
+`GET /namespaces/:namespaceId/agents/repository-options` requires Agent `create`
+and returns only `repositoryRef`, `displayName` and `allowedProfiles`. Authorized
+optional discovery failure yields `503 REPOSITORY_OPTIONS_UNAVAILABLE`; no approvals
+yields `[]`; a closed Namespace yields 409. Only successful discovery or that
+explicit outage permits a fresh ordinary draft. Other failures block creation.
+Writes reauthorize and re-resolve choices.
 
 ### Profiles
 
@@ -272,13 +286,13 @@ The client does not parse Git arguments or create a temporary HOME. The operator
 single-session launcher remains available and adds the same scoped defaults to
 stock Git.
 
-For a delivered generation, the native preparer reads the staged public manifest
-and session metadata, validates identities, final paths and private file metadata,
-and writes a private aggregate `gitconfig`. It does not read bearer contents or
-admit sessions. The supported automatic routing profile maps each canonical
-HTTPS host to one gateway origin. Distinct origins for one canonical host fail
-preparation; an environment pin cannot change the connection origin after Git
-has chosen it. Same-origin public CA inputs must agree.
+For each generation, native preparation validates public manifest/session metadata,
+identities, paths and file custody, then writes private aggregate `gitconfig`.
+Kubernetes invokes it through the private subPath after material copying; both
+init steps gate startup. It neither reads bearers nor admits sessions. Each
+canonical HTTPS host maps to one gateway origin; conflicting origins fail
+preparation. Pins cannot change an already-chosen connection origin. Same-origin
+public CA inputs must agree.
 
 A host-prefix rewrite preserves owner/repository casing and an optional terminal
 `.git`. It also routes unadmitted repositories on that host to the gateway, where

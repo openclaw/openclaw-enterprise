@@ -637,7 +637,9 @@ async function runLane(root, manifest, laneName, statePath, resultsPath) {
   if (lane && issues.length === 0) {
     await mkdir(dirname(statePath), { recursive: true });
     for (const file of lane.files) {
+      const fileStarted = performance.now();
       const result = await runFile(root, lane, file, statePath, prepareFile);
+      result.wallDurationMs = Math.round(performance.now() - fileStarted);
       files.push(result);
       if (preservedNodeExitCode === 0 && result.nodeExitCode && result.nodeExitCode !== 0) {
         preservedNodeExitCode = result.nodeExitCode;

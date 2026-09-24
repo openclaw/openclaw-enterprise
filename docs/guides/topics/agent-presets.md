@@ -4,6 +4,9 @@ Use a Preset to reuse Agent settings across a Namespace. An operator creates the
 Preset through the HTTP API; users select it in the console and fill its
 variables. Each saved Agent gets its own Configuration and identity.
 
+For a dedicated Codex starting point with an empty tool-network allowlist and
+cached search, [install the standard Codex Preset](standard-codex-preset.md).
+
 ## Create a Preset
 
 You need a ready Namespace and `preset:create` on its Preset collection. The
@@ -55,7 +58,8 @@ To reuse more settings, add fields from the [Preset contract](../../reference/pr
    the rendered copy. To use standard defaults, select **Start without Preset**.
 3. Review the model, execution mode, native Configuration JSON, authentication,
    plugin selections, and Secret bindings. Edit any copied setting and fill
-   missing values. Never paste credential values into variables or native JSON.
+   missing values. Enter credentials only in password variables or credential
+   fields; never in ordinary variables or native JSON.
 4. Select **Create Agent**. Then follow [credentials and deployment](../../reference/console/create-and-deploy.md#initial-runtime-credentials)
    for that saved Agent. Creating the draft does not start a workload.
 

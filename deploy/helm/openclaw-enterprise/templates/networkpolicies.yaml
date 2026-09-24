@@ -123,6 +123,19 @@ spec:
             matchExpressions:
               - key: openclaw.dev/agent
                 operator: Exists
+        - namespaceSelector:
+            matchExpressions:
+              - key: openclaw.dev/namespace
+                operator: Exists
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/managed-by: openclaw-enterprise
+              openclaw.dev/workload-role: agent
+            matchExpressions:
+              - key: openclaw.dev/agent
+                operator: Exists
+              - key: openclaw.dev/revision
+                operator: Exists
       ports:
         - protocol: TCP
           port: 8443

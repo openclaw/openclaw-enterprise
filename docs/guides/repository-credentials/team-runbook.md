@@ -12,7 +12,7 @@ does not exempt a platform upgrade from its shared database prerequisites; follo
 the [upgrade operations guidance](../../reference/settings/operations.md).
 
 This path uses the App installation's authority. Personal GitHub user delegation
-is not implemented. The supported Agent uses Kubernetes Compute, embedded
+is not implemented. This procedure uses Kubernetes Compute, embedded
 OpenClaw, `api_key` Harness authentication, and no Sandbox Driver. The separate
 credential service holds the App key and GitHub tokens; OCC delivers bounded
 gateway session material to the Agent. Do not put keys, tokens, or gateway bearers

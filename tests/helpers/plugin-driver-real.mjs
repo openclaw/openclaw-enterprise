@@ -1,3 +1,4 @@
+import { kubernetesGatewayNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -1253,6 +1254,8 @@ export async function createPluginDriverRealFixture(
   const forwarders = [];
   const gatewayPasswords = new Map();
   let tenantNamespace;
+  let gatewayRuntimeNamespace;
+  let gatewayPlacement;
 
   function isKubernetesNotFound(error) {
     return /NotFound|not found/i.test(`${error?.stderr ?? ""}\n${error?.message ?? ""}`);
@@ -1292,6 +1295,17 @@ export async function createPluginDriverRealFixture(
     }
     if (pool !== undefined) {
       await cleanup(() => pool.end());
+    }
+    if (gatewayRuntimeNamespace !== undefined) {
+      await cleanup(() =>
+        kubectl(
+          "delete",
+          "namespace",
+          gatewayRuntimeNamespace,
+          "--ignore-not-found=true",
+          "--wait=true",
+        ),
+      );
     }
     if (tenantNamespace !== undefined) {
       await cleanup(() =>
@@ -1525,6 +1539,8 @@ export async function createPluginDriverRealFixture(
   });
   assert.equal(createdNamespace.status, 201, JSON.stringify(createdNamespace.error));
   tenantNamespace = kubernetesNamespaceName(createdNamespace.data.id);
+  gatewayRuntimeNamespace = kubernetesGatewayNamespaceName(createdNamespace.data.id);
+  gatewayPlacement = pluginDriverId === "codex-plugin" ? gatewayRuntimeNamespace : tenantNamespace;
   await waitFor(`the worker to create ${tenantNamespace}`, async () => {
     try {
       return await resource("namespace", tenantNamespace);
@@ -1573,6 +1589,44 @@ export async function createPluginDriverRealFixture(
     `--clusterrole=${proofPrefix}-secrets-${suffix}`,
     `--serviceaccount=${platformNamespace}:${api.account}`,
   );
+  await waitFor(`Gateway runtime namespace ${gatewayRuntimeNamespace}`, async () => {
+    try {
+      return await resource("namespace", gatewayRuntimeNamespace);
+    } catch (error) {
+      if (isKubernetesNotFound(error)) {
+        return undefined;
+      }
+      throw error;
+    }
+  });
+  for (const role of [`${proofPrefix}-tenant-${suffix}`, `${proofPrefix}-secrets-${suffix}`]) {
+    await kubectl(
+      "create",
+      "rolebinding",
+      `${role}-api`,
+      "--namespace",
+      gatewayRuntimeNamespace,
+      `--clusterrole=${role}`,
+      `--serviceaccount=${platformNamespace}:${api.account}`,
+    );
+  }
+  for (const [role, target] of [
+    [`${proofPrefix}-tenant-${suffix}`, gatewayRuntimeNamespace],
+    [`${proofPrefix}-tenant-pods-${suffix}`, gatewayRuntimeNamespace],
+    [`${proofPrefix}-tenant-pods-proxy-${suffix}`, gatewayRuntimeNamespace],
+    [`${proofPrefix}-secrets-${suffix}`, gatewayRuntimeNamespace],
+    [`${proofPrefix}-secrets-${suffix}`, tenantNamespace],
+  ]) {
+    await kubectl(
+      "create",
+      "rolebinding",
+      `${role}-worker`,
+      "--namespace",
+      target,
+      `--clusterrole=${role}`,
+      `--serviceaccount=${platformNamespace}:${workerIdentity.account}`,
+    );
+  }
   await waitFor(`namespace ${createdNamespace.data.id} to become API-ready`, async () => {
     const observed = await request("GET", `/namespaces/${createdNamespace.data.id}`);
     assert.equal(observed.status, 200, JSON.stringify(observed.error));
@@ -1626,7 +1680,9 @@ export async function createPluginDriverRealFixture(
   async function deployAndWait(agent) {
     let gatewayPassword = gatewayPasswords.get(agent.id);
     if (gatewayPassword === undefined) {
-      gatewayPassword = await provisionAgentTransportSecret(directory, tenantNamespace, agent.id);
+      gatewayPassword = await provisionAgentTransportSecret(directory, tenantNamespace, agent.id, {
+        executionMode: agent.executionMode,
+      });
       gatewayPasswords.set(agent.id, gatewayPassword);
     }
     const deployed = await request(
@@ -1744,7 +1800,7 @@ export async function createPluginDriverRealFixture(
 
   async function gatewayPods(agent) {
     const prefix = gatewayPodPrefix(agent);
-    return (await resources("pods", tenantNamespace)).filter(
+    return (await resources("pods", gatewayPlacement)).filter(
       (pod) =>
         pod.metadata.labels?.["openclaw.dev/agent"] === agent.id &&
         pod.metadata.deletionTimestamp === undefined &&
@@ -1886,7 +1942,7 @@ export async function createPluginDriverRealFixture(
       };
     },
     gatewayUrl: async (agent) => {
-      const forwarding = await startPortForward(tenantNamespace, `gateway-${hash(agent.id)}`);
+      const forwarding = await startPortForward(gatewayPlacement, `gateway-${hash(agent.id)}`);
       forwarders.push(forwarding);
       return { url: forwarding.url };
     },
@@ -1898,7 +1954,7 @@ export async function createPluginDriverRealFixture(
           "exec",
           pod.metadata.name,
           "--namespace",
-          tenantNamespace,
+          pod.metadata.namespace,
           "--",
           ...argv,
         ),

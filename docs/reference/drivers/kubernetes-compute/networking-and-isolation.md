@@ -64,6 +64,16 @@ proxy: retain the exact Envoy NetworkPolicy peer, TLS verification, service-key
 authentication, and identity/header sanitization. Direct embedded access still
 requires a trusted proxy or the optional operator loopback password.
 
+For repository-bearing revisions, Compute grants credential-service egress to
+the embedded gateway/Harness or dedicated Codex Pod. The separate dedicated
+gateway receives no repository egress rule. With `repositoryCredentials.enabled`,
+Helm admits TCP/8443 ingress to the worker's credential sidecar from managed
+gateway Pods carrying an Agent label, and managed dedicated Agent Pods carrying
+both Agent and revision labels. Each peer also requires the tenant namespace
+label. These selectors permit transport; the credential service still validates
+the session and repository grant. Verify the effective policies in the installed
+cluster; rendered rules alone do not prove traffic enforcement.
+
 Production currently permits public TCP/443 egress for model access; a
 restricted model proxy is not yet available. Channels require an approved
 literal-IP HTTP(S) proxy configured through `runtime.channels`; direct public
@@ -110,7 +120,8 @@ native Configuration or an AgentRevision.
 `getGatewayEndpoint` derives
 `wss://<hostname>/namespaces/<namespaceId>/agents/<agentId>` without Kubernetes
 API access. During preparation and activation, Compute reconciles an owned
-`HTTPRoute` in the tenant namespace, attached to the configured Gateway's
+`HTTPRoute` in the Gateway's physical namespace (control plane for dedicated,
+data plane for embedded), attached to the configured Gateway's
 `https` listener. Both rules match the configured private hostname and target
 the existing same-namespace gateway Service:
 
@@ -142,10 +153,27 @@ is not a working native attribution path.
 
 ## Namespaces and isolation
 
-Each OpenClaw Namespace maps to one Kubernetes namespace. The driver applies
-tenant resource quotas, container defaults, and network isolation before
-starting Agent workloads. Each Agent receives its own gateway; dedicated Agents
-also receive a separate Harness and workload identity.
+Each OpenClaw Namespace has a data-plane Kubernetes namespace and a managed
+Gateway runtime namespace, `oce-gateways-<hash>`, where `hash` is the first 24
+hexadecimal characters of `sha256(namespaceId)`. The latter is discovered by
+`openclaw.dev/gateway-namespace=<namespaceId>`; it deliberately omits the
+data-plane discovery label `openclaw.dev/namespace`. Existing data-plane
+namespace adoption does not adopt or reuse OCC's own namespace for Gateways.
+
+Compute prepares restricted Pod security, quotas, defaults, default-deny and DNS
+policies in both targets. Dedicated Gateway resources, private PVCs, configuration,
+Services and HTTPRoutes live only in the Gateway target; Harness resources and
+model credentials remain in the data target. Explicit namespace **and** Pod
+selectors allow only the same Agent's selected Harness revision on app-server
+and private plugin-status ports. DNS uses `agent-<hash>.<harness-namespace>.svc`.
+Current app-server transport is capability-token `ws://`, not mTLS; this change
+does not implement cross-cluster transport or runtime attestation.
+
+Stop and revision retirement inspect both targets and retain durable claims.
+Agent deletion removes its owned claims; Namespace deletion deletes only the
+exact managed Gateway namespace and preserves an adopted data namespace.
+Neither operation may remove shared OCC infrastructure. A missing or foreign
+Gateway target fails preparation rather than falling back to data-plane placement.
 
 Identity labels under `openclaw.dev/` contain the full platform Namespace,
 Agent, revision, ServiceAccount, ServicePrincipal, or Configuration ID, not a

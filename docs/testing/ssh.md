@@ -39,8 +39,9 @@ node --test tests/integration/ssh-compute-real.test.mjs
 
 The fixture image builds on the runtime image's `docker.io/library/node:24-bookworm` base and
 adds systemd as PID 1, sshd, an `openclaw` system user, and the pinned
-OpenClaw/Codex packages from
-[`deploy/runtime/Dockerfile`](../../deploy/runtime/Dockerfile); it builds on amd64
+OpenClaw/Codex assembly from
+[`deploy/runtime/Dockerfile`](../../deploy/runtime/Dockerfile), including the same
+workspace templates as the Console. Build that runtime image first; it builds on amd64
 and arm64. Start it on a Docker Engine with privileged systemd/cgroup support
 (Docker Desktop on Apple silicon works). This privileged container is a
 disposable test rig, not production packaging. If the Engine cannot run
@@ -51,7 +52,9 @@ substitute the conformance fixture and call it host proof.
 SSH_RIG=$(mktemp -d)
 chmod 700 "$SSH_RIG"
 ssh-keygen -q -t ed25519 -N '' -f "$SSH_RIG/id_ed25519"
-docker build -t oce-ssh-host:local tests/fixtures/ssh-compute/host
+docker build -f deploy/runtime/Dockerfile -t localhost/openclaw-runtime:local .
+docker build --build-arg RUNTIME_IMAGE=localhost/openclaw-runtime:local \
+  -t oce-ssh-host:local tests/fixtures/ssh-compute/host
 docker run -d --name oce-ssh-host --privileged --cgroupns=host \
   --tmpfs /run --tmpfs /run/lock \
   -v /sys/fs/cgroup:/sys/fs/cgroup:rw \

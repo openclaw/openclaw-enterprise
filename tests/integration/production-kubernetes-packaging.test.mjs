@@ -109,6 +109,52 @@ async function resources(manifests) {
   return parsed.trim().split("\n").map(JSON.parse);
 }
 
+// Evaluate the selector-only, numeric-port ingress rules rendered by this chart.
+// This checks additive policy semantics, not live CNI enforcement.
+function matchesPolicySelector(selector = {}, labels = {}) {
+  const expressions = (selector.matchExpressions ?? []).map(({ key, operator }) => {
+    assert.equal(operator, "Exists", "Extend the evaluator for new selector operators");
+    return Object.hasOwn(labels, key);
+  });
+  return (
+    Object.entries(selector.matchLabels ?? {}).every(([key, value]) => labels[key] === value) &&
+    expressions.every(Boolean)
+  );
+}
+
+function chartAllowsIngress(objects, destination, source, port, protocol = "TCP") {
+  const policies = objects.filter(
+    (object) =>
+      object.kind === "NetworkPolicy" &&
+      object.spec.policyTypes.includes("Ingress") &&
+      (object.metadata.namespace ?? "openclaw-system") === destination.namespace &&
+      matchesPolicySelector(object.spec.podSelector, destination.labels),
+  );
+  return (
+    policies.length === 0 ||
+    policies.some((policy) =>
+      (policy.spec.ingress ?? []).some(
+        (rule) =>
+          (!rule.ports?.length ||
+            rule.ports.some(
+              (entry) =>
+                (entry.port === undefined || entry.port === port) &&
+                (entry.protocol ?? "TCP") === protocol,
+            )) &&
+          (!rule.from?.length ||
+            rule.from.some((peer) => {
+              assert.equal(peer.ipBlock, undefined, "Only selector peers are supported");
+              const namespaceMatches =
+                peer.namespaceSelector === undefined
+                  ? peer.podSelector === undefined || source.namespace === destination.namespace
+                  : matchesPolicySelector(peer.namespaceSelector, source.namespaceLabels);
+              return namespaceMatches && matchesPolicySelector(peer.podSelector, source.labels);
+            })),
+      ),
+    )
+  );
+}
+
 test(
   "metrics chart requires exact scraper selectors and isolates the extra Pod ports",
   tooling,
@@ -499,25 +545,6 @@ test(
     ]);
     const ingress = named("NetworkPolicy", "openclaw-enterprise-repository-credentials-ingress");
     assert.deepEqual(ingress.spec.podSelector.matchLabels, endpoint.spec.selector);
-    assert.deepEqual(ingress.spec.ingress, [
-      {
-        from: [
-          {
-            namespaceSelector: {
-              matchExpressions: [{ key: "openclaw.dev/namespace", operator: "Exists" }],
-            },
-            podSelector: {
-              matchLabels: {
-                "app.kubernetes.io/managed-by": "openclaw-enterprise",
-                "openclaw.dev/workload-role": "gateway",
-              },
-              matchExpressions: [{ key: "openclaw.dev/agent", operator: "Exists" }],
-            },
-          },
-        ],
-        ports: [{ protocol: "TCP", port: 8443 }],
-      },
-    ]);
     const egress = named("NetworkPolicy", "openclaw-enterprise-repository-provider-egress");
     assert.deepEqual(egress.spec.podSelector.matchLabels, endpoint.spec.selector);
     assert.deepEqual(egress.spec.egress, [
@@ -526,7 +553,10 @@ test(
     const tenantWorker = named("ClusterRole", "oce-openclaw-tenant-worker");
     assert.deepEqual(
       tenantWorker.rules.filter(({ resources }) => resources.includes("secrets")),
-      [{ apiGroups: [""], resources: ["secrets"], verbs: ["get", "list", "create", "delete"] }],
+      [
+        { apiGroups: [""], resources: ["secrets"], verbs: ["get", "create", "update", "delete"] },
+        { apiGroups: [""], resources: ["secrets"], verbs: ["get", "list", "create", "delete"] },
+      ],
     );
     // Tenant role binding remains an operator action; no Agent identity receives Secret access here.
     assert.ok(
@@ -535,6 +565,74 @@ test(
           ["RoleBinding", "ClusterRoleBinding"].includes(kind) &&
           roleRef.name === tenantWorker.metadata.name,
       ),
+    );
+  },
+);
+
+test(
+  "repository credential ingress admits embedded and dedicated execution Pods only",
+  tooling,
+  async () => {
+    const objects = await resources((await render(repositoryCredentialValues)).stdout);
+    const worker = objects.find(
+      ({ kind, metadata }) =>
+        kind === "Deployment" && metadata.name === "openclaw-enterprise-worker",
+    );
+    const destination = {
+      namespace: "openclaw-system",
+      labels: worker.spec.template.metadata.labels,
+    };
+    const source = {
+      namespace: "oce-tenant",
+      namespaceLabels: { "openclaw.dev/namespace": "tenant" },
+      labels: {
+        "app.kubernetes.io/managed-by": "openclaw-enterprise",
+        "openclaw.dev/workload-role": "agent",
+        "openclaw.dev/agent": "agent-one",
+        "openclaw.dev/revision": "revision-one",
+      },
+    };
+    const allowed = (peer = source, port = 8443, protocol = "TCP", chart = objects) =>
+      chartAllowsIngress(chart, destination, peer, port, protocol);
+
+    // Current Compute emits these ownership labels without a network-profile label.
+    assert.equal(allowed(), true, "dedicated execution reaches the credential endpoint");
+    const embedded = {
+      ...source,
+      labels: { ...source.labels, "openclaw.dev/workload-role": "gateway" },
+    };
+    delete embedded.labels["openclaw.dev/revision"];
+    assert.equal(allowed(embedded), true, "embedded gateway access remains available");
+
+    // Namespace and Pod selectors must match together; either alone is insufficient.
+    for (const peer of [source, embedded]) {
+      assert.equal(allowed({ ...peer, namespaceLabels: {} }), false, "unmanaged namespace");
+      for (const key of ["app.kubernetes.io/managed-by", "openclaw.dev/agent"]) {
+        const labels = { ...peer.labels };
+        delete labels[key];
+        assert.equal(allowed({ ...peer, labels }), false, `missing ${key}`);
+      }
+      assert.equal(
+        allowed({ ...peer, labels: { ...peer.labels, "app.kubernetes.io/managed-by": "other" } }),
+        false,
+        "foreign workload manager",
+      );
+      assert.equal(allowed(peer, 443), false, "Service port is not the endpoint port");
+      assert.equal(allowed(peer, 8444), false, "unrelated endpoint port");
+      assert.equal(allowed(peer, 8443, "UDP"), false, "TCP only");
+    }
+    const noRevision = { ...source.labels };
+    delete noRevision["openclaw.dev/revision"];
+    assert.equal(allowed({ ...source, labels: noRevision }), false, "dedicated revision required");
+    for (const role of [undefined, "worker", "api", "other"]) {
+      const labels = { ...source.labels, "openclaw.dev/workload-role": role };
+      assert.equal(allowed({ ...source, labels }), false, `unintended workload role ${role}`);
+    }
+    const disabled = await resources((await render()).stdout);
+    assert.equal(
+      allowed(source, 8443, "TCP", disabled),
+      false,
+      "disabled service grants no ingress",
     );
   },
 );
@@ -586,7 +684,25 @@ test(
       ({ kind, metadata }) =>
         kind === "ClusterRole" && metadata.name === "oce-openclaw-tenant-worker",
     );
-    assert.ok(!tenantWorker.rules.some(({ resources }) => resources.includes("secrets")));
+    assert.deepEqual(
+      tenantWorker.rules.filter(({ resources }) => resources.includes("secrets")),
+      [{ apiGroups: [""], resources: ["secrets"], verbs: ["get", "create", "update", "delete"] }],
+    );
+    const gatewayObserver = objects.find(
+      ({ kind, metadata }) =>
+        kind === "ClusterRole" && metadata.name === "oce-openclaw-gateway-observer",
+    );
+    assert.deepEqual(gatewayObserver.rules, [
+      { apiGroups: ["apps"], resources: ["deployments"], verbs: ["list"] },
+    ]);
+    assert.equal(
+      objects.some(
+        ({ kind, roleRef }) =>
+          ["RoleBinding", "ClusterRoleBinding"].includes(kind) &&
+          roleRef?.name === gatewayObserver.metadata.name,
+      ),
+      false,
+    );
 
     assert.ok(!objects.some(({ kind }) => ["Ingress", "Gateway"].includes(kind)));
 
@@ -677,7 +793,7 @@ test(
     assert.equal(isolation.spec.ingress, undefined);
     assert.equal(isolation.spec.egress.length, 2);
 
-    // Worker tenant authority excludes Secret access and remains unbound until operators authorize each tenant.
+    // Worker runtime authority includes scoped Secret delivery and remains unbound until operators authorize each tenant.
     const roles = objects.filter(({ kind }) => kind === "ClusterRole");
     const bindings = new Set(
       objects
@@ -736,7 +852,9 @@ test(
       );
     }
     for (const role of roles.filter(
-      ({ metadata }) => metadata.name !== tenantApiRole.metadata.name,
+      ({ metadata }) =>
+        metadata.name !== tenantApiRole.metadata.name &&
+        !metadata.name.endsWith("-openclaw-tenant-worker"),
     )) {
       for (const rule of role.rules) {
         assert.ok(rule.resources?.includes("secrets") !== true);
@@ -919,7 +1037,9 @@ test(
       ),
     );
     for (const role of roles.filter(
-      ({ metadata }) => metadata.name !== tenantApiRole.metadata.name,
+      ({ metadata }) =>
+        metadata.name !== tenantApiRole.metadata.name &&
+        !metadata.name.endsWith("-openclaw-tenant-worker"),
     )) {
       for (const rule of role.rules) {
         assert.ok(rule.resources?.includes("secrets") !== true);

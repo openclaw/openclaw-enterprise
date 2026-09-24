@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
 updated: 2026-09-23
-last_updated_session: codex/01a0cf27-71c6-7042-8357-74d1811a2ef8
+last_updated_session: codex/01a0cf72-6985-7712-ba92-d8cc32470f24
 ---
 
 # Harness Authentication Binding Flow
@@ -114,12 +114,13 @@ For `runtime`, worker Agent/Configuration authorization still runs but credentia
 source authorization and lookup do not. The dispatch context carries only the
 method; SSH does not read the operator credential file or issue a model probe.
 
-For an API key or service account token it resolves authoritative backend ownership from OCC state and
-passes an ephemeral `ComputeRevisionContext`. It does not call the Secret Driver,
-read the Kubernetes Secret, or rewrite the revision. Physical backend identity
-is checked at API admission. A missing physical Secret/key later prevents workload
-startup; replacement of a physical Secret by a Kubernetes administrator is outside
-the dispatch metadata check. ChatGPT retains the exact account token/workspace source.
+For an API key or directly supplied service account token, the worker resolves
+backend ownership from OCC state and passes an ephemeral `ComputeRevisionContext`.
+It does not read credential bytes or rewrite the revision. Compute subsequently
+reads the canonical CP source, verifies the admitted Secret UID or managed-account
+ownership, and delivers only selected fields into the DP revision Secret. Missing
+or replaced sources fail preparation. ChatGPT retains the exact account
+token/workspace source.
 Inactive revision history keeps references without indefinitely retaining their
 sources; drafts, active revisions, and pending deployments block source deletion.
 
@@ -132,8 +133,11 @@ One internal workload-rendering step converts validated references to supported
 Secret projections and a closed login mode. Embedded OpenClaw receives the key
 in its combined workload as `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, derived
 from the immutable native model Configuration. Admission requires all selected
-models and fallbacks to use the same supported provider. Dedicated Codex receives the key or the directly
-projected account token/workspace. A directly supplied service account token projects only `CODEX_ACCESS_TOKEN`; its separate gateway receives no model credential.
+models and fallbacks to use the same supported provider. Dedicated Codex receives
+the key or account token/workspace through a revision-owned DP projection. A
+directly supplied service account token delivers only `CODEX_ACCESS_TOKEN` as the
+model credential; its separate Gateway receives no model credential. Canonical
+sources remain in CP.
 Configuration secret bindings remain gateway-only and cannot choose model auth.
 
 The selected Sandbox consumes these already-rendered
@@ -174,7 +178,8 @@ primary model. See [probe limitations](../reference/harness-execution.md#harness
 The [existing activation and recovery flow](harness-execution-topology.md#3-publish-safely-and-complete-activation-once)
 completes activation after readiness. Auth selection and successful storage do
 not establish provider acceptance.
-Updating a Secret leaves existing process environments unchanged: deploy each
+Updating a Secret leaves existing process environments and DP runtime copies
+unchanged until preparation: deploy each
 consumer, verify a real turn, then revoke the previous key upstream. Revision
 history cannot restore historical Secret values.
 
@@ -208,6 +213,8 @@ history cannot restore historical Secret values.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 12:22: Move canonical credential sources to CP and describe revision-scoped Harness delivery in the accompanying change. (codex/01a0cf72-6985-7712-ba92-d8cc32470f24 - 623d56dec26a8ef0f72b562254687cabecdbbf82)
 
 - 2026-09-23 20:27: Filter OpenAI API-key discovery by provider-reported shutdown dates in UTC. (01a0cf27-71c6-7042-8357-74d1811a2ef8 - 9e0095c7)
 

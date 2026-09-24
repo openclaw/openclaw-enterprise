@@ -11,6 +11,7 @@ import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs"
 import { GATEWAY_RUNTIME_ENTRYPOINT as DOCKER_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/docker/index.ts";
 import {
   AGENT_WITH_NODE_ENTRYPOINT,
+  AGENT_RUNTIME_ENTRYPOINT,
   GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
@@ -346,7 +347,7 @@ function assertBundledCodexPluginLoaded(pluginList) {
   const codexPlugin = assertBundledPluginLoaded(pluginList, "codex");
   assert.match(
     codexPlugin.source,
-    /\/app\/node_modules\/openclaw\/dist\/extensions\/codex\/dist\/index\.js$/,
+    /\/app\/node_modules\/openclaw\/dist\/extensions\/codex\/index\.js$/,
   );
   assert.equal(codexPlugin.dependencyStatus?.requiredInstalled, true);
   assert.deepEqual(codexPlugin.dependencyStatus?.missing, []);
@@ -356,7 +357,7 @@ function assertBundledSlackPluginLoaded(pluginList) {
   const slackPlugin = assertBundledPluginLoaded(pluginList, "slack");
   assert.match(
     slackPlugin.source,
-    /\/app\/node_modules\/openclaw\/dist\/extensions\/slack\/dist\/index\.js$/,
+    /\/app\/node_modules\/openclaw\/dist\/extensions\/slack\/index\.js$/,
   );
   assert.equal(slackPlugin.dependencyStatus?.requiredInstalled, true);
   assert.deepEqual(slackPlugin.dependencyStatus?.missing, []);
@@ -387,32 +388,34 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const pluginDist = "/app/node_modules/openclaw/dist/extensions/codex/dist";
+const pluginDist = "/app/node_modules/openclaw/dist";
 const sharedClientChunk = readdirSync(pluginDist).find((name) =>
-  /^shared-client-.*\\.js$/.test(name)
+  /^shared-client-.*\\.mjs$/.test(name)
 );
 if (sharedClientChunk === undefined) {
   throw new Error("Bundled Codex shared-client chunk was not found under " + pluginDist);
 }
 
 const sharedClientExports = await import(pathToFileURL(join(pluginDist, sharedClientChunk)));
-const { createIsolatedCodexAppServerClient } = Object.values(sharedClientExports).find(
-  (value) => typeof value?.createIsolatedCodexAppServerClient === "function"
-) ?? {};
+const createIsolatedCodexAppServerClient = Object.values(sharedClientExports).find(
+  (value) => typeof value === "function" && value.name === "createIsolatedCodexAppServerClient"
+);
 if (createIsolatedCodexAppServerClient === undefined) {
   throw new Error("Bundled Codex shared-client export did not expose createIsolatedCodexAppServerClient.");
 }
-const configChunk = readdirSync(pluginDist).find((name) => /^config-.*\\.js$/.test(name));
+const configChunk = readdirSync(pluginDist).find((name) => /^config-options-.*\\.mjs$/.test(name));
 if (configChunk === undefined) {
   throw new Error("Bundled Codex config chunk was not found under " + pluginDist);
 }
 const configExports = await import(pathToFileURL(join(pluginDist, configChunk)));
-const resolveCodexAppServerRuntimeOptions = Object.values(configExports).find(
-  (value) => typeof value === "function" && value.name === "resolveCodexAppServerRuntimeOptions"
+const createCodexAppServerConfig = Object.values(configExports).find(
+  (value) => typeof value === "function" && value.name === "createCodexAppServerConfig"
 );
-if (resolveCodexAppServerRuntimeOptions === undefined) {
-  throw new Error("Bundled Codex config export did not expose resolveCodexAppServerRuntimeOptions.");
+if (createCodexAppServerConfig === undefined) {
+  throw new Error("Bundled Codex config export did not expose createCodexAppServerConfig.");
 }
+const { resolveProviderIdForAuth } = await import("openclaw/plugin-sdk/provider-auth-aliases");
+const { resolveCodexAppServerRuntimeOptions } = createCodexAppServerConfig({ resolveProviderIdForAuth });
 const versionOutput = execFileSync("codex", ["--version"], { encoding: "utf8" });
 const installedVersion = versionOutput.match(/\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?/)?.[0];
 if (installedVersion === undefined) {
@@ -563,6 +566,124 @@ const plugin = lstatSync("/home/node/openclaw-runtime-assets/plugin-skills");
 
   assert.ok(JSON.parse(stdout).bundledCount > 0);
 }
+
+test(
+  "runtime image applies Dedicated repository policy to native Codex command execution",
+  imageTestOptions,
+  async () => {
+    // Substitute only authentication results and the app-server transport. The emitted
+    // startup computes native settings; the image's actual Codex executes the shell.
+    // Docker supplies isolation; this offline check proves no model turn or provider access.
+    const probe = `
+const assert = require("node:assert/strict");
+const cp = require("node:child_process");
+const vm = require("node:vm");
+const fs = require("node:fs");
+const { createInterface } = require("node:readline");
+const environment = {
+  PATH: "/opt/oce/repository-credentials/bin:" + process.env.PATH,
+  HOME: "/home/node", CODEX_HOME: "/home/node/.codex",
+  CODEX_LOGIN_MODE: "api_key", OPENAI_API_KEY: "synthetic-offline-key",
+  OPENCLAW_HARNESS_MODEL: "codex/gpt-5",
+  APP_SERVER_TOKEN: "synthetic-transport-token", APP_SERVER_PORT: "4500",
+};
+let native;
+vm.runInNewContext(${JSON.stringify(AGENT_RUNTIME_ENTRYPOINT)}, {
+  URL, console, setTimeout, setInterval,
+  process: { env: environment, on() {}, exit() {} },
+  require(name) {
+    if (name !== "node:child_process") return require(name);
+    return {
+      spawnSync(_command, args) {
+        return args.includes("login") ? { status: 0 } : {
+          status: 0,
+          stdout: [
+            { type: "turn.started" },
+            { type: "item.completed", item: { type: "agent_message", text: "READY" } },
+            { type: "turn.completed" },
+          ].map(JSON.stringify).join("\\n"),
+        };
+      },
+      spawn(command, args, options) {
+        const appServer = args.indexOf("app-server");
+        assert.ok(appServer > 0);
+        native = cp.spawn(command, [...args.slice(0, appServer + 1), "--listen", "stdio://"], {
+          ...options, env: environment, stdio: ["pipe", "pipe", "pipe"],
+        });
+        return native;
+      },
+    };
+  },
+});
+assert.ok(native);
+const pending = new Map();
+let nextId = 1;
+const lines = createInterface({ input: native.stdout });
+lines.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (pending.has(message.id)) {
+    const { resolve, reject } = pending.get(message.id);
+    pending.delete(message.id);
+    message.error ? reject(new Error(JSON.stringify(message.error))) : resolve(message.result);
+  }
+});
+native.stderr.resume();
+const rpc = (method, params) => new Promise((resolve, reject) => {
+  const id = nextId++;
+  pending.set(id, { resolve, reject });
+  native.stdin.write(JSON.stringify({ id, method, params }) + "\\n");
+});
+const timeout = setTimeout(() => { native.kill("SIGKILL"); process.exitCode = 1; }, 20000);
+(async () => {
+  try {
+    await rpc("initialize", { clientInfo: { name: "repository-runtime-smoke", version: "1.0.0" }, capabilities: { experimentalApi: true } });
+    native.stdin.write(JSON.stringify({ method: "initialized" }) + "\\n");
+    const { config } = await rpc("config/read", {});
+    assert.equal(config.allow_login_shell, false);
+    assert.equal(config.shell_environment_policy.set.PATH, environment.PATH);
+    const result = await rpc("command/exec", {
+      command: ["/bin/bash", "-c", "command -v gh; command -v git; git config --system --get-all include.path"],
+      sandboxPolicy: { type: "externalSandbox", networkAccess: "restricted" },
+      timeoutMs: 5000,
+    });
+    assert.equal(result.exitCode, 0);
+    assert.deepEqual(result.stdout.trim().split("\\n"), [
+      "/opt/oce/repository-credentials/bin/gh", "/usr/bin/git", "/run/oce/repository-credentials/gitconfig",
+    ]);
+    fs.accessSync("/opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/router.js");
+    process.stdout.write("native-repository-shell-ready\\n");
+  } finally {
+    clearTimeout(timeout);
+    lines.close();
+    native.kill("SIGTERM");
+  }
+})().catch((error) => { console.error(error); process.exitCode = 1; });
+`;
+    const { stdout } = await runDocker([
+      "run",
+      "--rm",
+      "--network",
+      "none",
+      "--read-only",
+      "--user",
+      "1000:1000",
+      "--cap-drop",
+      "ALL",
+      "--security-opt",
+      "no-new-privileges",
+      "--tmpfs",
+      "/home/node:size=128m,uid=1000,gid=1000,mode=700",
+      "--tmpfs",
+      "/tmp:size=64m,uid=1000,gid=1000,mode=1777",
+      "--entrypoint",
+      "node",
+      image,
+      "-e",
+      probe,
+    ]);
+    assert.match(stdout, /native-repository-shell-ready/);
+  },
+);
 
 test(
   "runtime image gateway ignores inherited OPENCLAW_LOG_LEVEL in favor of native configuration",
@@ -739,5 +860,31 @@ test(
     assertGatewayModelLog(entries, `codex/${runtimeImageModel}`);
     await assertDedicatedRuntimeAssets(containerName);
     assertNoPackagingFailure(logs);
+  },
+);
+
+test(
+  "runtime image enrolls the restricted workspace node and reconnects with saved credentials",
+  imageTestOptions,
+  async (t) => {
+    // The Kubernetes entrypoint admits the workspace command grant before pairing.
+    const configurationPath = await temporaryGatewayConfiguration(t, "codex");
+    const { containerName } = await runGatewaySmoke(t, "codex", {
+      configurationPath: "/etc/openclaw/openclaw.json",
+      entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+      volumes: [`${configurationPath}:/etc/openclaw/openclaw.json:ro`],
+    });
+    const source = await readFile(
+      new URL("../fixtures/runtime-workspace-node.mjs", import.meta.url),
+      "utf8",
+    );
+    const { stdout } = await runDocker(
+      ["exec", containerName, "node", "--input-type=module", "-e", source],
+      { timeout: 240_000 * imageSmokeTimeoutMultiplier },
+    );
+    const result = JSON.parse(stdout);
+    assert.equal(result.sameIdentityAfterRestart, true);
+    assert.equal(result.singleBootstrapCompletion, true);
+    assert.equal(result.commands.length, 7);
   },
 );

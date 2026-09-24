@@ -28,6 +28,7 @@ export type {
   OpenRepositorySessionResult,
   RepositoryBindingRequest,
   RepositoryBindingSelection,
+  RepositoryOption,
   RepoDriver,
   RepositoryCredentialGrantIdentity,
   RepositoryCredentialMaterialRef,
@@ -892,6 +893,8 @@ export interface ComputeDriver extends Driver {
     configuration: OpenClawConfigurationDocument,
     secretBindings?: SecretBindings,
   ): void;
+  /** Discovery availability; deployment must still validate its exact Harness. */
+  validateRepositoryCredentialSupport?(sandboxDriverId?: string): void;
   validateRepositoryCredentials?(
     harness: RevisionHarnessDescriptor,
     sandboxDriverId?: string,

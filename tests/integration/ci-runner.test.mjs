@@ -133,6 +133,11 @@ test("run uses prepareFile env per file and records real named pass accounting",
   assert.equal(summary.counts.passed, 2);
   assert.equal(summary.counts.skipped, 0);
   assert.equal(summary.files[0].cleanup.status, "passed");
+  assert.ok(
+    summary.files.every(
+      (file) => Number.isInteger(file.wallDurationMs) && file.wallDurationMs >= 0,
+    ),
+  );
   assert.match(await readFile(statePath, "utf8"), /first\.test\.mjs/);
 });
 

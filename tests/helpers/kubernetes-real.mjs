@@ -214,6 +214,10 @@ export function createKubernetesInstallationConfiguration({
   compute.authentication = structuredClone(authentication);
   compute.images.gateway = gatewayImage;
   compute.images.agent = codexImage;
+  // Disposable fixture clusters may use one node; production node isolation is separate proof.
+  compute.runtime.gatewayNodeSelector = JSON.parse(
+    process.env.OCC_TEST_KUBERNETES_GATEWAY_NODE_SELECTOR ?? '{"kubernetes.io/os":"linux"}',
+  );
   if (codexSeccompProfile !== undefined) {
     compute.runtime.codexSeccompProfile = codexSeccompProfile;
   }
@@ -379,7 +383,7 @@ export function createRealKubernetesFixture({
     directory,
     namespace,
     agentId,
-    { gatewayPassword } = {},
+    { gatewayPassword, executionMode = "dedicated" } = {},
   ) {
     const suffix = kubernetesHash(agentId);
     const tokenDirectory = join(directory, `tokens-${suffix}`);
@@ -393,16 +397,50 @@ export function createRealKubernetesFixture({
           mode: 0o600,
         }),
       ]);
-      await kubectl(
-        "create",
-        "secret",
-        "generic",
-        `openclaw-agent-transport-${suffix}`,
-        "--namespace",
-        namespace,
-        `--from-file=app-server-token=${join(tokenDirectory, "app-server-token")}`,
-        `--from-file=gateway-password=${join(tokenDirectory, "gateway-password")}`,
-      );
+      const owner = await kubernetes.resource("namespace", namespace);
+      const namespaceId = owner.metadata.labels["openclaw.dev/namespace"];
+      assert.ok(namespaceId, "transport source must belong to the resolved data-plane Namespace");
+      const { kubernetesGatewayNamespaceName } =
+        await import("../../apps/controller/src/drivers/compute/kubernetes/index.ts");
+      const target =
+        executionMode === "embedded" ? namespace : kubernetesGatewayNamespaceName(namespaceId);
+      const bundles =
+        executionMode === "embedded"
+          ? [[`openclaw-agent-transport-${suffix}`, ["app-server-token", "gateway-password"]]]
+          : [
+              [`openclaw-agent-transport-${suffix}`, ["app-server-token"]],
+              [`gateway-password-${suffix}`, ["gateway-password"]],
+            ];
+      for (const [name, keys] of bundles) {
+        await kubectl(
+          "create",
+          "secret",
+          "generic",
+          name,
+          "--namespace",
+          target,
+          ...keys.map((key) => `--from-file=${key}=${join(tokenDirectory, key)}`),
+        );
+        await kubectl(
+          "label",
+          "secret",
+          name,
+          "--namespace",
+          target,
+          "app.kubernetes.io/managed-by=openclaw-enterprise",
+          `openclaw.dev/namespace=${namespaceId}`,
+          `openclaw.dev/agent=${agentId}`,
+        );
+        await kubectl(
+          "annotate",
+          "secret",
+          name,
+          "--namespace",
+          target,
+          `openclaw.dev/namespace-id=${namespaceId}`,
+          `openclaw.dev/agent-id=${agentId}`,
+        );
+      }
     } finally {
       await rm(tokenDirectory, { recursive: true, force: true });
     }

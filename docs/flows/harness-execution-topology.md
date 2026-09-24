@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
 updated: 2026-09-23
-last_updated_session: codex/01a0cc43-d13b-7cb2-ae15-1fd56e61bbf4
+last_updated_session: 01a0cf72-6985-7712-ba92-d8cc32470f24
 ---
 
 # Harness Execution Topology Flow
@@ -32,7 +32,7 @@ graph TD
   C --> D["Claim and reauthorize revision work"]
   D --> E{"Approved topology"}
   E -->|embedded OpenClaw| F["Create gateway or stage replacement"]
-  E -->|dedicated Codex| G["Start gateway and authenticated Codex workload"]
+  E -->|dedicated Codex| G["Start control-plane Gateway and data-plane Codex in separate namespaces"]
   E -->|unsupported or mismatched| H["Reject before workload creation"]
   F --> I["Activate shared gateway; Recreate on replacement"]
   I --> K{"Gateway ready after startup authentication?"}
@@ -92,17 +92,32 @@ validation. See the [SSH flow](pr-24-ssh-compute.md).
 
 Kubernetes workload rendering calls `prepareHarnessAuth` once for the resolved
 source. It projects the OCC Secret key only into embedded OpenClaw or dedicated
-Codex. For ChatGPT it projects the account's token and workspace directly into
-Codex with no credential copy. Dedicated gateways receive neither source.
+Codex. Canonical sources live in CP; Compute delivers selected fields into an
+exact revision-owned DP Secret, including the account token/workspace for ChatGPT.
+Dedicated gateways receive neither model source. This namespace-local delivery
+also applies to fixture images without native runtime configuration; only the
+native dedicated transport token depends on that configuration.
 See the [harness authentication flow](native-service-account-credential-delivery.md)
 for admission, immutable source snapshots, and worker reauthorization.
+
+Kubernetes `ensureNamespace` prepares the data-plane namespace and a distinct
+managed Gateway runtime namespace. `requireGatewayNamespace` verifies the latter's
+exact logical owner. `prepareRevision` and `activateRevision` place dedicated
+Gateway Deployments, private PVCs, Services, native configuration and routes there;
+Harness resources stay in the data-plane namespace. `deliverGatewaySecrets`
+validates direct references to canonical CP sources for dedicated Gateways;
+`deliverHarnessAuth` creates the selected DP runtime projection. Dedicated app-server
+DNS includes the Harness namespace, and NetworkPolicy peers combine namespace
+and exact Agent/revision selectors. `runtime.gatewayNodeSelector` independently
+places the Gateway Pod and private-state initializer on trusted nodes.
 
 Production dedicated workloads keep separate Agent-owned gateway/Codex
 ServiceAccounts, authenticated same-Agent transport, and default-deny network
 policies with auth-method-specific provider login egress. Embedded OpenClaw uses
 one combined workload with its exact Agent identity and model key. The worker
-has no direct Secret API permissions, although its trusted workload-writing
-authority can indirectly project tenant Secrets.
+has scoped Secret permissions for admitted delivery and node enrollment. Its
+trusted workload-writing authority also projects tenant Secrets. Gateway Pods
+receive no controller or Harness Kubernetes credentials.
 
 The selected Sandbox consumes the same rendered projections and explicit login
 mode in `HarnessWorkloadRequirements`. Unsupported upstream projection fails
@@ -163,10 +178,13 @@ required cleanup after stopping a Compute-owned ordinary Harness, or delegates
 provider-owned Harness removal to that cleanup. An absent ordinary Deployment
 does not skip cleanup, so a cleanup failure remains retryable.
 Revision retirement retains both owned claims even after stop removed the
-gateway. `apps/controller/src/worker.ts:ControllerWorker.processAgentDeletion`
+gateway. When another revision's Gateway or route survives in the other physical
+namespace, retirement removes only the old Gateway's resources and preserves the
+shared data-plane Agent identity, Service and policies. `apps/controller/src/worker.ts:ControllerWorker.processAgentDeletion`
 retires every revision before calling
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.deleteAgentRuntimeCredentials`
-to delete exact-owned private and shared claims by UID. Cleanup failures retry
+to delete exact-owned private and shared claims by UID. Final deletion checks
+both physical targets, independently of the Agent draft's current execution mode. Cleanup failures retry
 before the worker removes the Agent's database identity. The [storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
 owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 
@@ -209,6 +227,14 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 13:13: Keep fixture credential delivery namespace-local, matching native runtime placement. (codex/01a0cf72-6985-7712-ba92-d8cc32470f24 - df4ca4474d90de2d4ab0dd6f6d03a64ebb92526a)
+
+- 2026-09-23 12:38: Guard cross-mode retirement and inspect both targets during final Agent cleanup. (codex/01a0cf72-6985-7712-ba92-d8cc32470f24 - 25a520de9d0259c3ae6b7ef6d7c0e7e6ccce0349)
+
+- 2026-09-23 12:26: Describe canonical CP sources and the selected DP runtime projection. (codex/01a0cf72-6985-7712-ba92-d8cc32470f24 - 429f46735be45247c3b8a406e1c9f57c2ef0327f)
+
+- 2026-09-23 11:31: Trace dedicated control-plane Gateway placement, scoped credential delivery and cross-namespace lifecycle. (01a0cf72-6985-7712-ba92-d8cc32470f24 - b141ba1157c2f28276717d35c8c63028f209a479)
 
 - 2026-09-23 03:24: Move durable claim cleanup from revision retirement to Agent deletion. (01a0cc43-d13b-7cb2-ae15-1fd56e61bbf4 - 43776d25c5007e017f7d0ffdca6b06f063afcd37)
 

@@ -194,6 +194,37 @@ test(
       }),
     );
     assert.equal(existsSync(f.workspace), false);
+    // Reject a changed runtime before even raw API setup can create workspace files.
+    const changedRuntime = join(f.root, "changed-runtime");
+    const copied = f.execute(
+      `const fs = require("node:fs");
+       const path = require("node:path");
+       let root = path.dirname(fs.realpathSync(process.env.OPENCLAW_EXECUTABLE));
+       while (JSON.parse(fs.readFileSync(path.join(root, "package.json"))).name !== "openclaw") {
+         root = path.dirname(root);
+       }
+       const target = ${JSON.stringify(changedRuntime)};
+       fs.mkdirSync(target);
+       fs.copyFileSync(path.join(root, "package.json"), path.join(target, "package.json"));
+       fs.cpSync(path.join(root, "docs"), path.join(target, "docs"), { recursive: true });
+       fs.writeFileSync(path.join(target, "openclaw.mjs"), "throw new Error('must not execute');");`,
+      "",
+    );
+    assert.equal(copied.status, 0, copied.stderr);
+    const manifestPath = join(changedRuntime, "package.json");
+    const manifest = readFileSync(manifestPath, "utf8");
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({ ...JSON.parse(manifest), version: "unsupported-runtime" }),
+    );
+    const changedEnv = { OPENCLAW_EXECUTABLE: join(changedRuntime, "openclaw.mjs") };
+    const rawSetup = { ...identity, completed: false, files: { "USER.md": "private" } };
+    failed(f.run(rawSetup, changedEnv));
+    assert.equal(existsSync(f.workspace), false);
+    writeFileSync(manifestPath, manifest);
+    writeFileSync(join(changedRuntime, "docs", "reference", "templates", "USER.md"), "changed");
+    failed(f.run(rawSetup, changedEnv));
+    assert.equal(existsSync(f.workspace), false);
     mkdirSync(f.workspace);
     const external = join(f.root, "outside.txt");
     writeFileSync(external, WORKSPACE_DEFAULTS["USER.md"]);

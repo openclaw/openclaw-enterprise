@@ -4,7 +4,10 @@ import { join } from "node:path";
 import test from "node:test";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { kubernetesHash, validateExplicitK3dLoopbackContext } from "../helpers/kubernetes-real.mjs";
-import { sessionEvidenceScript } from "../helpers/normal-agent-tools.mjs";
+import {
+  codexRepositoryEvidenceScript,
+  sessionEvidenceScript,
+} from "../helpers/normal-agent-tools.mjs";
 import {
   createInstalledRepositoryFixture,
   createRepositoryObserver,
@@ -19,7 +22,91 @@ const selection = {
   kubernetesContext: process.env.OCC_TEST_KUBERNETES_CONTEXT,
 };
 const sqlLiteral = (value) => `'${String(value).replaceAll("'", "''")}'`;
-const workspace = "/home/node/.openclaw/workspace";
+
+// Preserve the startup stage before owned cleanup without exporting Pod logs,
+// environment values, authentication files, or model responses.
+const runtimeStartupSummaryScript = String.raw`
+  const { existsSync } = require("node:fs");
+  (async () => {
+    const summary = {
+      markerConfigured: process.env.OPENCLAW_PLUGIN_READY_MARKER !== undefined,
+      markerPresent: process.env.OPENCLAW_PLUGIN_READY_MARKER !== undefined &&
+        existsSync(process.env.OPENCLAW_PLUGIN_READY_MARKER),
+      status: "unavailable",
+    };
+    const port = Number(process.env.OPENCLAW_RUNTIME_STATUS_PORT);
+    if (Number.isInteger(port) && port > 0 && port <= 65535) {
+      try {
+        const response = await fetch("http://127.0.0.1:" + port + "/openclaw/runtime/status", {
+          signal: AbortSignal.timeout(2000),
+        });
+        const text = await response.text();
+        if (response.ok && text.length <= 16384) {
+          const report = JSON.parse(text);
+          const failure = report.runtimeFailure;
+          summary.status = failure === undefined ? "no-reported-failure" : "reported-failure";
+          if (failure !== undefined) {
+            summary.check = ["login", "model-probe"].includes(failure.check) ? failure.check : "other";
+            summary.code = ["LOGIN_FAILED", "MODEL_PROBE_FAILED", "MODEL_PROBE_TIMEOUT", "UNAVAILABLE"]
+              .includes(failure.code) ? failure.code : "other";
+          }
+        }
+      } catch {}
+    }
+    process.stdout.write(JSON.stringify(summary));
+  })().catch(() => process.exitCode = 1);
+`;
+
+async function recordRuntimeStartupFailure(f, agent) {
+  try {
+    const pods = await f.kubernetes.resources(
+      "pods",
+      f.tenant,
+      "-l",
+      `openclaw.dev/agent=${agent.id}`,
+    );
+    const summaries = [];
+    for (const pod of pods.slice(0, 4)) {
+      for (const container of pod.spec.containers.filter((c) =>
+        ["agent", "gateway"].includes(c.name),
+      )) {
+        const status = pod.status.containerStatuses?.find((c) => c.name === container.name);
+        const summary = {
+          container: container.name,
+          ready: status?.ready === true,
+          restartCount: status?.restartCount ?? 0,
+          running: status?.state?.running !== undefined,
+          startup: { status: "unavailable" },
+        };
+        if (summary.running) {
+          try {
+            summary.startup = JSON.parse(
+              await f.kubectl(
+                "--request-timeout=10s",
+                "-n",
+                f.tenant,
+                "exec",
+                pod.metadata.name,
+                "-c",
+                container.name,
+                "--",
+                "node",
+                "-e",
+                runtimeStartupSummaryScript,
+              ),
+            );
+          } catch {
+            // A terminating container may no longer accept exec; retain unavailable.
+          }
+        }
+        summaries.push(summary);
+      }
+    }
+    await f.record("Bounded runtime startup failure diagnostics", { containers: summaries });
+  } catch {
+    await f.record("Bounded runtime startup failure diagnostics", { status: "unavailable" });
+  }
+}
 
 // Diagnostic hints only: raw transcript text stays inside the Agent Pod. These
 // bounded, fixed categories never substitute for tool/provider acceptance.
@@ -80,15 +167,25 @@ const repositoryFailureSummaryScript = String.raw`
 
 // This case proves the installed caller path that host-driven Git/gh smoke tests
 // cannot: the model acts using material opened by the production worker.
-test(
-  "installed embedded Agent clones, edits, commits, pushes and creates a native repository PR",
-  {
-    skip: selected
-      ? false
-      : "Set OCC_TEST_REPOSITORY_CREDENTIALS_REAL=1 with explicit authorized repository, protected App inputs, model key and immutable images.",
-    timeout: 1800000,
-  },
-  async (context) => {
+for (const mode of ["embedded", "dedicated"]) {
+  test(
+    `installed ${mode} Agent clones, edits, commits, pushes and creates a native repository PR`,
+    {
+      skip: selected
+        ? false
+        : "Set OCC_TEST_REPOSITORY_CREDENTIALS_REAL=1 with explicit authorized repository, protected App inputs, model key and immutable images.",
+      timeout: 1800000,
+    },
+    installedRepositoryJourney(mode),
+  );
+}
+
+function installedRepositoryJourney(mode) {
+  return async (context) => {
+    const dedicated = mode === "dedicated";
+    const workspace = dedicated ? "/home/node/workspace" : "/home/node/.openclaw/workspace";
+    const commandTool = dedicated ? "bash" : "exec";
+    const toolNames = dedicated ? ["bash"] : ["exec", "process"];
     assert.equal(
       process.env.OCC_TEST_REPOSITORY_CREDENTIALS_AUTHORIZED,
       "1",
@@ -154,7 +251,12 @@ test(
       process.env.OCC_TEST_REPOSITORY_CREDENTIALS_APP_KEY_FILE,
       "App key input",
     );
-    const f = await createInstalledRepositoryFixture(context, { selection, images, modelKey });
+    const f = await createInstalledRepositoryFixture(context, {
+      selection,
+      images,
+      modelKey,
+      executionMode: mode,
+    });
     f.secrets.push(appKey);
     const observe = createRepositoryObserver({
       run: f.run,
@@ -485,11 +587,24 @@ test(
         assert.equal(result.cause, "none", `${result.target} public upstream preflight failed`);
         assert.ok(Number.isInteger(result.status) && result.status >= 200 && result.status < 500);
       }
-      const native = createHarnessConfiguration("openclaw", model);
+      const native = createHarnessConfiguration(dedicated ? "codex" : "openclaw", model);
       native.agents.defaults.skipBootstrap = true;
       native.agents.defaults.workspace = workspace;
       native.agents.defaults.sandbox = { mode: "off" };
-      native.tools = { allow: ["exec", "process"], exec: { host: "gateway", mode: "full" } };
+      if (dedicated) {
+        Object.assign(native.gateway, f.gatewayConfiguration);
+        // Native commands run in the isolated Codex container. Kubernetes owns
+        // filesystem and network isolation for this authorized unattended task.
+        Object.assign(native.plugins.entries.codex.config.appServer, {
+          mode: "yolo",
+          approvalPolicy: "never",
+          sandbox: "danger-full-access",
+          remoteWorkspaceRoot: workspace,
+        });
+        native.tools = { allow: ["*"], exec: { mode: "full" }, fs: { workspaceOnly: true } };
+      } else {
+        native.tools = { allow: ["exec", "process"], exec: { host: "gateway", mode: "full" } };
+      }
       const secret = await f.api(
         "POST",
         `/namespaces/${f.namespace.id}/secrets`,
@@ -508,7 +623,7 @@ test(
         {
           name: `repository-${f.suffix}`,
           configurationId: configuration.id,
-          executionMode: "embedded",
+          executionMode: mode,
           harnessAuth: { method: "api_key", source: secret.ref },
           repositoryBindings: [{ repositoryRef, profile: "git-full" }],
         },
@@ -523,6 +638,8 @@ test(
       assert.equal(grant, "1");
       await f.api("POST", `${agentPath}/runtime-credentials`, {}, 200);
       revision = await f.api("POST", `${agentPath}/deploy`, undefined, 202);
+      assert.equal(revision.harness.mode, mode);
+      assert.equal(revision.harness.id, dedicated ? "codex" : "openclaw");
       assert.deepEqual(revision.repositoryCredentials.bindings, [
         { repositoryRef, profile: "git-full" },
       ]);
@@ -550,40 +667,67 @@ test(
         return candidates[0] ?? false;
       });
       const gatewayContainer = gateway.spec.containers.find((c) => c.name === "gateway");
+      const consumer = dedicated
+        ? await f.waitFor("one Ready Codex Pod for the admitted revision", async () => {
+            const candidates = (
+              await f.kubernetes.resources(
+                "pods",
+                f.tenant,
+                "-l",
+                `openclaw.dev/agent=${agent.id},openclaw.dev/revision=${revision.id},openclaw.dev/workload-role=agent`,
+              )
+            ).filter(
+              (pod) =>
+                !pod.metadata.deletionTimestamp &&
+                pod.status.conditions?.some(
+                  (condition) => condition.type === "Ready" && condition.status === "True",
+                ),
+            );
+            assert.ok(candidates.length <= 1);
+            return candidates[0] ?? false;
+          })
+        : gateway;
+      const consumerName = dedicated ? "agent" : "gateway";
+      const consumerContainer = consumer.spec.containers.find((c) => c.name === consumerName);
       assert.equal(gatewayContainer?.image, images.runtime);
+      assert.equal(consumerContainer?.image, images.runtime);
       assert.ok(
-        gatewayContainer.env
+        consumerContainer.env
           .find((value) => value.name === "PATH")
           ?.value.startsWith("/opt/oce/repository-credentials/bin:"),
         "regular Git/gh commands must use the delivered client",
       );
       assert.ok(
-        !gatewayContainer.env.some((value) =>
-          ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"].includes(
-            value.name,
+        ![gatewayContainer, consumerContainer].some((container) =>
+          container.env.some((value) =>
+            ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"].includes(
+              value.name,
+            ),
           ),
         ),
         "no alternate GitHub credential may enter the Agent",
       );
       assert.ok(
-        !gateway.spec.volumes.some((v) =>
-          ["repository-app-key", "repository-tls", "repository-service-config"].includes(
-            v.secret?.secretName,
+        ![gateway, consumer].some((pod) =>
+          pod.spec.volumes.some((v) =>
+            ["repository-app-key", "repository-tls", "repository-service-config"].includes(
+              v.secret?.secretName,
+            ),
           ),
         ),
       );
-      const exec = (script, args = [], input, timeout = 30000) =>
+      const execIn = (pod, container, script, args = [], input, timeout = 30000) =>
         f.run(
           "kubectl",
           [
             ...f.kubernetes.kubectlArguments([]),
             "-n",
-            f.tenant,
+            pod.metadata.namespace,
             "exec",
             "-i",
-            gateway.metadata.name,
+            pod.metadata.name,
             "-c",
-            "gateway",
+            container,
             "--",
             "env",
             "-u",
@@ -595,15 +739,61 @@ test(
           ],
           { input, timeout },
         );
+      const exec = (...args) => execIn(gateway, "gateway", ...args);
+      const consumerExec = (...args) => execIn(consumer, consumerName, ...args);
+      if (dedicated) {
+        assert.notEqual(consumer.metadata.uid, gateway.metadata.uid);
+        assert.notEqual(consumer.spec.serviceAccountName, gateway.spec.serviceAccountName);
+        assert.equal(consumer.spec.securityContext.runAsNonRoot, true);
+        assert.equal(consumerContainer.securityContext.readOnlyRootFilesystem, true);
+        assert.equal(consumerContainer.securityContext.allowPrivilegeEscalation, false);
+        assert.equal(
+          consumerContainer.volumeMounts.find(
+            ({ mountPath }) => mountPath === "/run/oce/repository-credentials",
+          )?.readOnly,
+          true,
+        );
+        assert.ok(
+          consumerContainer.env.some(
+            ({ name, valueFrom }) => name === "OPENAI_API_KEY" && valueFrom?.secretKeyRef,
+          ),
+        );
+        assert.ok(!gatewayContainer.env.some(({ name }) => name === "OPENAI_API_KEY"));
+        assert.ok(!gateway.spec.volumes.some(({ name }) => name.startsWith("repository-")));
+        assert.equal(
+          (
+            await exec(
+              "process.stdout.write(String(require('node:fs').existsSync('/run/oce/repository-credentials/manifest.json')))",
+            )
+          ).trim(),
+          "false",
+        );
+      }
       const versions = JSON.parse(
         await exec(
           `const fs=require('node:fs'); console.log(JSON.stringify({node:process.version,openclaw:JSON.parse(fs.readFileSync('/app/node_modules/openclaw/package.json','utf8')).version,repositoryClient:JSON.parse(fs.readFileSync('/opt/oce/repository-credentials/package.json','utf8')).version}));`,
         ),
       );
       assert.match(versions.openclaw, /^\d+\.\d+\.\d+/);
+      if (dedicated) {
+        versions.codex = (
+          await consumerExec(
+            "const result=require('node:child_process').spawnSync('codex',['--version'],{encoding:'utf8'}); if(result.status!==0) process.exit(1); process.stdout.write(result.stdout);",
+          )
+        ).trim();
+        assert.match(versions.codex, /^codex-cli \d+\.\d+\.\d+/);
+      }
       const service = await f.get("service", "openclaw-enterprise-repository-credentials");
       const probe = `const net=require('node:net'); const socket=net.createConnection({host:process.argv[1],port:443}); let done=false; function finish(result){if(done)return;done=true;console.log(result);socket.destroy()}socket.setTimeout(3000);socket.on('connect',()=>finish('connected'));socket.on('timeout',()=>finish('timeout'));socket.on('error',error=>finish(error.code));`;
-      assert.equal((await exec(probe, [service.spec.clusterIP])).trim(), "connected");
+      assert.equal((await consumerExec(probe, [service.spec.clusterIP])).trim(), "connected");
+      if (dedicated) {
+        assert.ok(
+          ["timeout", "EHOSTUNREACH", "ECONNREFUSED"].includes(
+            (await exec(probe, [service.spec.clusterIP])).trim(),
+          ),
+          "the separate Gateway must not reach the repository credential service",
+        );
+      }
       const denied = (
         await f.run(
           "kubectl",
@@ -645,13 +835,17 @@ test(
       assert.equal(openedSession.sessionId, attempt.sessionId);
       assert.equal(openedSession.state, "OPEN");
       const material = JSON.parse(
-        await exec(
+        await consumerExec(
           `const fs=require('node:fs'); const p='/run/oce/repository-credentials/manifest.json'; const m=JSON.parse(fs.readFileSync(p,'utf8')); const st=fs.statSync(p); console.log(JSON.stringify({uid:st.uid,mode:st.mode&0o777,generation:m.generation,bindings:m.bindings.map(b=>({repositoryRef:b.repositoryRef,sessionId:b.sessionId}))}));`,
         ),
       );
       assert.equal(material.uid, 1000);
       assert.equal(material.mode, 0o600);
       assert.deepEqual(material.bindings, [{ repositoryRef, sessionId: attempt.sessionId }]);
+      assert.equal(
+        consumer.metadata.annotations["openclaw.dev/repository-material-generation"],
+        material.generation,
+      );
       await f.run("kubectl", [
         ...f.kubernetes.kubectlArguments([]),
         "-n",
@@ -673,6 +867,11 @@ test(
         revisionId: revision.id,
         pod: gateway.metadata.name,
         podUid: gateway.metadata.uid,
+        executionMode: mode,
+        consumerPodUid: consumer.metadata.uid,
+        consumerImageId: consumer.status.containerStatuses.find(
+          (status) => status.name === consumerName,
+        )?.imageID,
         sessionId: attempt.sessionId,
         generation: material.generation,
         model,
@@ -693,8 +892,16 @@ test(
           argv: ["git", "clone", `https://github.com/${repository}.git`],
         },
         { operation: "fetch", workdir: checkout, argv: ["git", "fetch", "origin"] },
-        { operation: "readBase", workdir: checkout, argv: ["git", "rev-parse", `origin/${base}`] },
-        { operation: "branch", workdir: checkout, argv: ["git", "switch", "-c", branch, baseSha] },
+        {
+          operation: "readBase",
+          workdir: checkout,
+          argv: ["git", "rev-parse", `origin/${base}`],
+        },
+        {
+          operation: "branch",
+          workdir: checkout,
+          argv: ["git", "switch", "-c", branch, baseSha],
+        },
         { operation: "add", workdir: checkout, argv: ["git", "add", "--", file] },
         {
           operation: "commit",
@@ -714,6 +921,7 @@ test(
             "gh",
             "pr",
             "create",
+            ...(dedicated ? ["--draft"] : []),
             "--base",
             base,
             "--head",
@@ -732,24 +940,40 @@ test(
             `${operation}: exec.workdir=${JSON.stringify(workdir)}, exec.command=${JSON.stringify(argv.map(quoteArgument).join(" "))}`,
         )
         .join("\n");
-      const prompt = `Complete this authorized disposable repository task once with your exec tool and normal image-installed git/gh commands. Each Git/gh operation below must be its own standalone exec.command, with the specified exec.workdir. Execute the exact arguments in the listed order. Do not use shell cd, chaining, pipelines, redirection, comments, substitutions or wrappers in those Git/gh commands. Run foreground commands and stop on any failure. If exec nevertheless reports a running process, use process.poll on that exact session until completion before continuing. Do not install tools, read credentials, use alternate tokens, force push, call a provider HTTP API to create the PR, or delegate.
+      const embeddedPrompt = `Complete this authorized disposable repository task once with your exec tool and normal image-installed git/gh commands. Each Git/gh operation below must be its own standalone exec.command, with the specified exec.workdir. Execute the exact arguments in the listed order. Do not use shell cd, chaining, pipelines, redirection, comments, substitutions or wrappers in those Git/gh commands. Run foreground commands and stop on any failure. If exec nevertheless reports a running process, use process.poll on that exact session until completion before continuing. Do not install tools, read credentials, use alternate tokens, force push, call a provider HTTP API to create the PR, or delegate.
 After clone, its natural destination is ${checkout}. The readBase output must equal ${baseSha}; stop if it differs. Between branch and add, use exec.workdir=${JSON.stringify(checkout)} for every configuration and file-writing exec call. Configure local disposable Git identity Repository proof <repository-proof@example.invalid>, then use a separate exec call of your own to write exactly the following JSON-encoded bytes to the new file at absolute path ${JSON.stringify(`${checkout}/${file}`)}: ${JSON.stringify(content)}. Author that file yourself; do not change any other file. Make exactly one commit and exactly one same-repository PR. readCommit prints the full commit SHA and nativePr prints the PR URL; do not substitute echo commands for either operation. Do not close the PR or delete its branch. Finish with ${marker}.
 ${commands}`;
+      const dedicatedPrompt = `Complete this authorized disposable repository task once using native Codex shell commands in your workspace. Execute every listed Git/gh operation once, in order, as a separate foreground command with its specified working directory. Use the exact arguments; do not add shell cd, chaining, pipelines, redirection, comments, substitutions or wrappers to Git/gh commands. Use non-login shells. Stop on any failure. Do not install tools, read credentials, use alternate tokens, force push, call a provider HTTP API to create the PR, or delegate.
+After clone, its natural destination is ${checkout}. readBase must equal ${baseSha}; stop if it differs. Between branch and add, configure local Git identity Repository proof <repository-proof@example.invalid> and author exactly these JSON-encoded bytes in the new file ${JSON.stringify(`${checkout}/${file}`)}: ${JSON.stringify(content)}. Do not change any other file. Make one commit and one same-repository draft PR. readCommit must print the actual commit SHA and nativePr the actual PR URL. Do not close the PR or delete the branch. Finish with ${marker}.
+${commandSpecs.map(({ operation, workdir, argv }) => `${operation}: working directory=${JSON.stringify(workdir)}, command=${JSON.stringify(argv.map(quoteArgument).join(" "))}`).join("\n")}`;
+      const prompt = dedicated ? dedicatedPrompt : embeddedPrompt;
       taskStarted = true;
       let taskFailure;
       let taskTransport = { outcome: "unresolved" };
       try {
+        // The installed worker already holds the scoped Gateway key and CA for
+        // node enrollment; neither credential is copied to the test runner.
+        const submit = dedicated ? (...args) => execIn(workerPod, "worker", ...args) : exec;
         const response = JSON.parse(
-          await exec(
+          await submit(
             submitRepositoryTaskScript,
             [],
-            JSON.stringify({ sessionKey, prompt }),
+            JSON.stringify({
+              sessionKey,
+              prompt,
+              ...(dedicated
+                ? {
+                    gatewayUrl: `https://${f.gatewayHostname}/namespaces/${f.namespace.id}/agents/${agent.id}`,
+                  }
+                : {}),
+            }),
             610000,
           ),
         );
         taskTransport = {
           outcome: response.status === 200 ? "http-completed" : "http-failed",
           httpStatus: Number.isSafeInteger(response.status) ? response.status : null,
+          ...(response.failure === undefined ? {} : { failure: response.failure }),
         };
         assert.equal(response.status, 200);
       } catch (error) {
@@ -775,14 +999,31 @@ ${commands}`;
         await exec(sessionEvidenceScript, [
           sessionKey,
           marker,
-          "exec",
+          commandTool,
           marker,
           JSON.stringify({
-            toolNames: ["exec", "process"],
+            toolNames,
             commands: commandSpecs,
           }),
         ]),
       );
+      const nativeTrace = dedicated
+        ? JSON.parse(
+            await exec(codexRepositoryEvidenceScript, [marker, JSON.stringify(commandSpecs)]),
+          )
+        : undefined;
+      if (nativeTrace) {
+        await f.record("Captured native Codex command diagnostics; repository acceptance pending", {
+          evidenceKind: "diagnostic-only",
+          threadId: nativeTrace.threadId,
+          turnId: nativeTrace.turnId,
+          commands: nativeTrace.commands.map(({ operations, status, exitCode }) => ({
+            operations,
+            status,
+            exitCode,
+          })),
+        });
+      }
       // Preserve the normalized call/result evidence before any remote-state
       // assertion can fail and ordinary cleanup removes the Agent transcript.
       // Store only fixed labels and numeric associations, not transcript IDs,
@@ -809,7 +1050,7 @@ ${commands}`;
         captureLimit: 256,
         calls: traceCalls.slice(-256).map((call) => ({
           seq: diagnosticNumber(call.seq),
-          tool: ["exec", "process"].includes(call.name) ? call.name : "other",
+          tool: toolNames.includes(call.name) ? call.name : "other",
           processPoll: call.name === "process" && call.processAction === "poll",
           operations: (call.operations ?? []).filter((operation) =>
             expectedOperations.has(operation),
@@ -866,6 +1107,11 @@ ${commands}`;
         gateway.metadata.uid,
         "the task must remain bound to the observed Agent Pod",
       );
+      assert.equal(
+        (await f.get("pod", consumer.metadata.name, f.tenant)).metadata.uid,
+        consumer.metadata.uid,
+        "the task must remain bound to the observed repository consumer",
+      );
       assert.equal((await f.api("GET", agentPath)).activeRevisionId, revision.id);
       assert.equal(
         (await readInstalledCredentialSession(f, workerPod, attempt.sessionId)).state,
@@ -898,10 +1144,15 @@ ${commands}`;
       assert.equal(pull.base.ref, base);
       assert.equal(pull.body, marker);
       assert.equal(pull.state, "open");
+      if (dedicated) {
+        assert.equal(pull.draft, true);
+      }
       remoteEvidence = { commitSha, pullNumber: pull.number };
       assert.equal(trace.exists, true);
-      assert.equal(trace.promptReportSource, "run");
-      assert.ok(trace.promptToolNames.includes("exec"));
+      if (!dedicated) {
+        assert.equal(trace.promptReportSource, "run");
+        assert.ok(trace.promptToolNames.includes("exec"));
+      }
       assert.equal(trace.userMarkerSeen, true);
       assert.equal(trace.assistantMarkerSeen, true);
       assert.equal(trace.terminalAssistantMarkerSeen, true);
@@ -945,10 +1196,44 @@ ${commands}`;
         }
         return undefined;
       };
-      const paired = trace.calls
+      let paired = trace.calls
         .filter((call) => call.name === "exec")
         .map((call) => ({ ...call, completion: completionFor(call) }))
         .filter((call) => call.completion);
+      if (dedicated) {
+        assert.equal(nativeTrace.status, "completed");
+        const mirroredTurn = trace.codexTurns.find(
+          ({ turnPrefix }) => turnPrefix === nativeTrace.turnId,
+        );
+        assert.ok(
+          mirroredTurn?.promptSeen &&
+            mirroredTurn.terminalAssistantSeen &&
+            mirroredTurn.toolCallMirrorSeen &&
+            mirroredTurn.toolResultMirrorSeen,
+          "native repository commands must belong to the Gateway's mirrored task turn",
+        );
+        paired = nativeTrace.commands
+          .filter((command) => command.status === "completed" && command.exitCode === 0)
+          .map((command) => {
+            const call = trace.calls.find(
+              (call) =>
+                call.id === command.id &&
+                call.name === "bash" &&
+                call.mirrorIdentity === `${nativeTrace.turnId}:tool:${command.id}:call`,
+            );
+            const result = trace.results.find(
+              (result) =>
+                result.toolCallId === command.id &&
+                !result.isError &&
+                result.mirrorIdentity === `${nativeTrace.turnId}:tool:${command.id}:result`,
+            );
+            assert.ok(
+              call && result && result.seq > call.seq,
+              "native completion must have the same mirrored command call and result",
+            );
+            return { id: command.id, operations: command.operations, completion: command };
+          });
+      }
       for (const { operation } of commandSpecs) {
         assert.ok(
           paired.some((call) => call.operations.includes(operation)),
@@ -1001,6 +1286,11 @@ ${commands}`;
       });
     } catch (error) {
       workFailure = { error };
+      if (agent) {
+        await recordRuntimeStartupFailure(f, agent).catch(() => {
+          // Diagnostics must not replace the original failure or prevent cleanup.
+        });
+      }
     } finally {
       if (agent) {
         try {
@@ -1129,5 +1419,5 @@ ${commands}`;
     if (workFailure) {
       throw workFailure.error;
     }
-  },
-);
+  };
+}

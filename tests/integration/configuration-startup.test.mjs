@@ -11,7 +11,10 @@ import {
   DEVELOPMENT_HARNESS_DESCRIPTOR,
   PRODUCTION_HARNESS_DESCRIPTOR,
 } from "../../apps/controller/src/composition/production-harness.ts";
-import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import {
+  kubernetesNamespaceName,
+  kubernetesGatewayNamespaceName,
+} from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -461,7 +464,7 @@ test("production embedded and dedicated replacements preserve their active Servi
       harnessAuth: {
         ...candidate.harnessAuth,
         backendRef: {
-          namespaceName: kubernetesNamespaceName(namespaceId),
+          namespaceName: kubernetesGatewayNamespaceName(namespaceId),
           name: "model-key",
           key: "value",
           uid: "model-key-uid",
@@ -592,7 +595,7 @@ test("production embedded and dedicated replacements preserve their active Servi
         computeDriver.harnessAuthForRevision(
           candidate,
           authContext,
-          kubernetesNamespaceName(namespaceId),
+          kubernetesGatewayNamespaceName(namespaceId),
         ),
       );
       const originalGet = computeDriver.get;
@@ -844,6 +847,36 @@ test("startup rejects plaintext secrets, caller-authored identities, and unsuppo
         environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
       }),
       expected,
+    );
+  }
+});
+
+test("Installation default Presets are opt-in and reject ambiguous YAML settings", async (t) => {
+  for (const presets of [undefined, {}, { includeDefaults: false }]) {
+    const configuration = installation();
+    if (presets !== undefined) {
+      configuration.presets = presets;
+    }
+    const loaded = await loadInstallationConfiguration({
+      mode: "production",
+      environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
+    });
+    assert.deepEqual(loaded.defaultPresets, []);
+  }
+  for (const presets of [
+    { includeDefaults: "true" },
+    { includeDefaults: 1 },
+    { includeDefault: true },
+    null,
+  ]) {
+    const configuration = installation();
+    configuration.presets = presets;
+    await assert.rejects(
+      loadInstallationConfiguration({
+        mode: "production",
+        environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
+      }),
+      /presets/,
     );
   }
 });

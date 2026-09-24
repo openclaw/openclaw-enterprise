@@ -51,11 +51,10 @@ kind: ClusterRole
 metadata:
   name: {{ .Release.Name }}-openclaw-tenant-worker
 rules:
-  {{- if .Values.gatewayRouting.enabled }}
+  # Read canonical control-plane sources and manage revision-owned runtime material.
   - apiGroups: [""]
     resources: [secrets]
     verbs: [get, create, update, delete]
-  {{- end }}
   {{- if .Values.repositoryCredentials.enabled }}
   - apiGroups: [""]
     resources: [secrets]
@@ -109,3 +108,12 @@ rules:
   - apiGroups: [""]
     resources: [configmaps]
     verbs: [get, list, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Name }}-openclaw-gateway-observer
+rules:
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [list]

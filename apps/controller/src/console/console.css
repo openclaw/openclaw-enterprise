@@ -454,6 +454,69 @@ select {
   flex-wrap: wrap;
   margin-top: 20px;
 }
+.repository-selection {
+  margin: 24px 0;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f9faf9;
+}
+.repository-selection h2 {
+  margin-bottom: 8px;
+}
+.repository-options,
+.repository-profiles {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+.repository-options {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.repository-option,
+.repository-profile {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 13px;
+  border: 1px solid #bbc7c0;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+}
+.repository-option input,
+.repository-profile input {
+  flex: 0 0 auto;
+  width: auto;
+  margin: 3px 0 0;
+}
+.repository-option:has(input:checked),
+.repository-profile:has(input:checked) {
+  border-color: var(--accent);
+  background: #f0f7f3;
+}
+.repository-option .hint,
+.repository-profile .hint {
+  margin-top: 4px;
+}
+.repository-profile-group {
+  margin: 22px 0 0;
+  padding: 0;
+  border: 0;
+}
+.repository-profile-group legend {
+  font-weight: 550;
+}
+.repository-access-details {
+  margin-top: 18px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+.repository-access-details summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 550;
+}
 .table-scroll {
   overflow-x: auto;
 }
@@ -572,6 +635,9 @@ summary:focus-visible {
 @media (max-width: 760px) {
   .agent-card {
     padding: 18px;
+  }
+  .repository-options {
+    grid-template-columns: 1fr;
   }
   .configuration-summary {
     grid-template-columns: 1fr;

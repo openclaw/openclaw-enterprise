@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,19 +10,22 @@ import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 
-async function createFixture(t) {
+async function createFixture(t, options = {}) {
   const root = await mkdtemp(join(tmpdir(), "occ-presets-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const audit = new InMemoryAuditSink();
   const state = new InMemoryPlatformState({ auditSink: audit });
-  const fixture = await createConsoleAppFixture(t, { state, providers: [] });
-  await fixture.bootstrap();
-  // The real filesystem Driver enforces native credential rules on copied configurations.
+  // The real filesystem Driver enforces native credential rules, including bootstrap defaults.
   const configurationDriver = new FilesystemConfigurationDriver(root);
-  fixture.controller.registerDriver(configurationDriver);
-  fixture.controller.selectDriver("configuration", configurationDriver.id);
+  const fixture = await createConsoleAppFixture(t, {
+    state,
+    providers: [],
+    configurationDriver,
+    ...options,
+  });
+  await fixture.bootstrap();
   const session = await fixture.signIn();
-  return { ...fixture, audit, session };
+  return { ...fixture, audit, session, state };
 }
 
 const collection = (namespaceId) => `/namespaces/${namespaceId}/presets`;
@@ -237,6 +240,7 @@ test("Preset admission rejects malformed templates and credential leaks while pr
   const unsafeTemplates = [
     { configuration: { secretBindings: { OPENAI_API_KEY: { source: secret.ref } } } },
     { agent: { namespaceId: beta.id } },
+    { agent: { harnessAuth: { method: "api_key", source: wrongSecret.ref } } },
     { agent: { name: "{{ vars.undeclared }}" } },
     { configuration: { secretBindings: { SLACK_BOT_TOKEN: { source: wrongSecret.ref } } } },
     { configuration: { values: { models: { providers: { openai: { apiKey: sentinel } } } } } },
@@ -263,7 +267,7 @@ test("Preset admission rejects malformed templates and credential leaks while pr
       values: {},
       secretBindings: {
         SLACK_BOT_TOKEN: {
-          source: { kind: "secret", namespaceId: alpha.id, id: "{{ vars.secretId }}" },
+          source: { kind: "secret", id: "{{ vars.secretId }}" },
         },
       },
     },
@@ -377,4 +381,280 @@ test("Presets block Namespace deletion and deleting one removes only its managed
     `/namespaces/${namespace.id}/agents/${agent.id}`,
   );
   assert.equal(retainedAgent.status, 200);
+});
+
+test("standard Codex Preset installs and creates a dedicated Agent with restricted native configuration", async (t) => {
+  const { renderPresetTemplate } = await import("../../packages/contracts/src/index.ts");
+  const fixture = await createFixture(t);
+  const namespace = await fixture.createNamespace("Standard Codex", { ready: true });
+  const secret = await fixture.createSecret(namespace.id, "Model key", "synthetic-model-key");
+  const artifact = JSON.parse(
+    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+  );
+  // Install the shipped request through the operator API, then render the
+  // persisted template as the existing console chooser does.
+  const installed = await fixture.request("POST", collection(namespace.id), { body: artifact });
+  assert.equal(installed.status, 201, JSON.stringify(installed.body));
+  const catalog = await fixture.request("GET", collection(namespace.id));
+  assert.equal(catalog.status, 200);
+  const preset = catalog.data.find(({ id }) => id === installed.data.id);
+  assert.equal(preset.name, "standard-codex");
+  // PATCH accepts the same portable request and binds it to the route Namespace.
+  const updated = await fixture.request("PATCH", `${collection(namespace.id)}/${preset.id}`, {
+    body: { template: artifact.template },
+  });
+  assert.equal(updated.status, 200, JSON.stringify(updated.body));
+  assert.deepEqual(updated.data.template, artifact.template);
+  const rendered = renderPresetTemplate(preset.template, {
+    name: "Restricted assistant",
+    model: "gpt-5.1",
+    modelSecret: "synthetic-model-key",
+  });
+  const configuration = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/configurations`,
+    {
+      body: { kind: "agent", ...rendered.configuration },
+    },
+  );
+  assert.equal(configuration.status, 201, JSON.stringify(configuration.body));
+  const agent = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      ...rendered.agent,
+      harnessAuth: { method: rendered.agent.harnessAuth.method, source: secret.ref },
+      configurationId: configuration.data.id,
+    },
+  });
+  assert.equal(agent.status, 201, JSON.stringify(agent.body));
+  assert.equal(agent.data.executionMode, "dedicated");
+  assert.deepEqual(agent.data.harnessAuth, { method: "api_key", source: secret.ref });
+  assert.deepEqual(agent.data.plugins, {});
+
+  // These are persisted launch contracts, not proof of a running Codex sandbox.
+  const values = configuration.data.values;
+  assert.equal(values.agents.defaults.model, "codex/gpt-5.1");
+  assert.equal(values.agents.defaults.models["codex/gpt-5.1"].agentRuntime.id, "codex");
+  assert.equal(values.models.providers.codex.baseUrl, "http://127.0.0.1:9");
+  assert.equal(Object.hasOwn(values.models.providers.codex, "apiKey"), false);
+  assert.equal(configuration.data.secretBindings, undefined);
+  const appServer = values.plugins.entries.codex.config.appServer;
+  assert.equal(appServer.transport, "websocket");
+  assert.equal(appServer.url, "${APP_SERVER_URL}");
+  assert.equal(appServer.authToken, "${APP_SERVER_TOKEN}");
+  assert.equal(appServer.sandbox, "workspace-write");
+  assert.equal(appServer.approvalPolicy, "never");
+  assert.deepEqual(appServer.networkProxy, {
+    enabled: true,
+    baseProfile: "workspace",
+    mode: "limited",
+    domains: {
+      "codeload.github.com": "allow",
+      "dl.google.com": "allow",
+      "github.com": "allow",
+      "go.dev": "allow",
+      "nodejs.org": "allow",
+      "proxy.golang.org": "allow",
+      "registry.npmjs.org": "allow",
+      "storage.googleapis.com": "allow",
+      "sum.golang.org": "allow",
+    },
+    unixSockets: {},
+    enableSocks5: false,
+    enableSocks5Udp: false,
+    allowUpstreamProxy: false,
+    allowLocalBinding: false,
+    dangerouslyAllowNonLoopbackProxy: false,
+    dangerouslyAllowAllUnixSockets: false,
+  });
+  assert.deepEqual(values.tools.web.search, {
+    enabled: true,
+    openaiCodex: { enabled: true, mode: "cached" },
+  });
+  assert.equal(values.tools.web.fetch.enabled, false);
+  assert.equal(values.browser.enabled, false);
+  assert.equal(values.tools.elevated.enabled, false);
+
+  // Variable substitution cannot grant access to another Namespace's model key.
+  const other = await fixture.createNamespace("Other owner", { ready: true });
+  // The identical artifact installs independently in another Namespace without inputs for scope.
+  const otherInstalled = await fixture.request("POST", collection(other.id), { body: artifact });
+  assert.equal(otherInstalled.status, 201, JSON.stringify(otherInstalled.body));
+  assert.deepEqual(otherInstalled.data.template, artifact.template);
+  const boundTemplate = structuredClone(preset.template);
+  boundTemplate.agent.harnessAuth = { method: "api_key", source: secret.ref };
+  const crossNamespaceUpdate = await fixture.request(
+    "PATCH",
+    `${collection(other.id)}/${otherInstalled.data.id}`,
+    { body: { template: boundTemplate } },
+  );
+  assert.equal(crossNamespaceUpdate.status, 400, JSON.stringify(crossNamespaceUpdate.body));
+  const otherConfiguration = await fixture.request(
+    "POST",
+    `/namespaces/${other.id}/configurations`,
+    {
+      body: { kind: "agent", ...rendered.configuration },
+    },
+  );
+  assert.equal(otherConfiguration.status, 201, JSON.stringify(otherConfiguration.body));
+  const rejected = await fixture.request("POST", `/namespaces/${other.id}/agents`, {
+    body: {
+      ...rendered.agent,
+      harnessAuth: { method: "api_key", source: secret.ref },
+      configurationId: otherConfiguration.data.id,
+    },
+  });
+  assert.equal(rejected.status, 404, JSON.stringify(rejected.body));
+  assert.equal(JSON.stringify(installed.body).includes("synthetic-model-key"), false);
+});
+
+test("password Presets reject stored credentials and password substitution outside credential inputs", async (t) => {
+  const fixture = await createFixture(t);
+  const namespace = await fixture.createNamespace("Password admission", { ready: true });
+  const template = {
+    variables: { key: { type: "password" } },
+    agent: { harnessAuth: { method: "api_key", secret: "{{ vars.key }}" } },
+  };
+  const preset = await createPreset(fixture, namespace.id, "Password", template);
+  const unsafe = [
+    { ...template, variables: { key: { type: "password", default: "sentinel-credential" } } },
+    { ...template, agent: { harnessAuth: { method: "api_key", secret: "sentinel-credential" } } },
+    { ...template, variables: { key: { type: "string", default: "sentinel-credential" } } },
+    { ...template, agent: { name: "{{ vars.key }}" } },
+    { ...template, configuration: { values: { env: { MODEL_KEY: "{{ vars.key }}" } } } },
+    { ...template, agent: { harnessAuth: { method: "api_key", secret: "prefix-{{ vars.key }}" } } },
+  ];
+  for (const candidate of unsafe) {
+    for (const method of ["POST", "PATCH"]) {
+      const response = await fixture.request(
+        method,
+        `${collection(namespace.id)}${method === "PATCH" ? `/${preset.id}` : ""}`,
+        {
+          body: { name: "Unsafe", template: candidate },
+        },
+      );
+      assert.equal(response.status, 400, JSON.stringify(response.body));
+      assert.equal(JSON.stringify(response.body).includes("sentinel-credential"), false);
+    }
+  }
+  const retained = await fixture.request("GET", `${collection(namespace.id)}/${preset.id}`);
+  assert.deepEqual(retained.data.template, template);
+  assert.equal(JSON.stringify(fixture.audit.events).includes("sentinel-credential"), false);
+});
+
+test("Installation YAML seeds authorized default Presets for new and existing Namespaces without replacing copies", async (t) => {
+  const { loadInstallationConfiguration, initializeInstallationPresets } =
+    await import("../../apps/controller/src/composition/installation-config.ts");
+  const { createInstallationDriverConfiguration } =
+    await import("../helpers/installation-driver-configuration.mjs");
+  const { OpenClawController } = await import("../../packages/occ/src/index.ts");
+  const directory = await mkdtemp(join(tmpdir(), "occ-default-presets-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const path = join(directory, "installation.yaml");
+  const configuration = createInstallationDriverConfiguration();
+  configuration.presets = { includeDefaults: true };
+  await writeFile(path, JSON.stringify(configuration));
+  const runtime = await loadInstallationConfiguration({
+    mode: "production",
+    environment: { OCC_CONFIG_PATH: path },
+  });
+  const fixture = await createFixture(t, { defaultPresets: runtime.defaultPresets });
+  const namespace = await fixture.createNamespace("Default catalog", { ready: true });
+  const list = await fixture.request("GET", collection(namespace.id));
+  assert.equal(list.status, 200);
+  assert.deepEqual(
+    list.data.map((preset) => preset.name),
+    ["standard-codex"],
+  );
+  assert.equal(list.data[0].template.variables.modelSecret.type, "password");
+  const principal = fixture.policy.identities.find((identity) => identity.kind === "principal");
+  const renamedTemplate = { agent: { name: "Operator customization" } };
+  const custom = await fixture.request("PATCH", `${collection(namespace.id)}/${list.data[0].id}`, {
+    body: { template: renamedTemplate },
+  });
+  assert.equal(custom.status, 200);
+  // Simulate a Namespace persisted before the setting was enabled, then run the
+  // same initialization invoked by production and development API composition.
+  const existing = await fixture.controller.transact((state) =>
+    state.namespaces.createNamespace({
+      id: `ns_${crypto.randomUUID()}`,
+      name: "Existing namespace",
+      status: "ready",
+      createdAt: new Date().toISOString(),
+    }),
+  );
+  await Promise.all([
+    fixture.controller.initializeDefaultPresets(principal.id),
+    fixture.controller.initializeDefaultPresets(principal.id),
+  ]);
+  const retained = await fixture.request("GET", `${collection(namespace.id)}/${list.data[0].id}`);
+  assert.deepEqual(retained.data.template, renamedTemplate);
+  const seeded = await fixture.request("GET", collection(existing.id));
+  assert.equal(seeded.data.length, 1);
+  assert.equal(seeded.data[0].name, "standard-codex");
+  const audit = fixture.audit.events.filter(
+    (event) => event.details?.source === "installation-defaults",
+  );
+  assert.ok(
+    audit.some(
+      (event) => event.resource.id === seeded.data[0].id && event.actorId === principal.id,
+    ),
+  );
+  assert.equal(audit.filter((event) => event.resource.id === seeded.data[0].id).length, 1);
+
+  // Namespace creation must roll back if its caller cannot create the defaults.
+  const limited = await fixture.createAccountWithPolicy("namespace-only", (identity) => {
+    fixture.policy.roles.push({
+      id: "namespace-only",
+      permissions: [{ action: "create", resourceKind: "namespace" }],
+    });
+    fixture.policy.bindings.push({
+      id: "namespace-only",
+      subjectKind: "identity",
+      subjectId: identity.id,
+      roleId: "namespace-only",
+    });
+  });
+  const session = await fixture.signIn(limited.credentials);
+  const denied = await fixture.request("POST", "/namespaces", {
+    session,
+    body: { name: "Denied defaults" },
+  });
+  assert.equal(denied.status, 403);
+  const afterDenied = await fixture.request("GET", "/namespaces");
+  assert.equal(
+    afterDenied.data.some((item) => item.name === "Denied defaults"),
+    false,
+  );
+  fixture.policy.roles
+    .find((role) => role.id === "namespace-only")
+    .permissions.push({ action: "create", resourceKind: "preset" });
+  const permitted = await fixture.request("POST", "/namespaces", {
+    session,
+    body: { name: "Denied defaults" },
+  });
+  assert.equal(permitted.status, 201);
+  assert.equal(
+    (await fixture.request("GET", collection(permitted.data.id))).data[0].name,
+    "standard-codex",
+  );
+  // Startup must skip a persisted non-administrator even when it is returned first.
+  await initializeInstallationPresets(
+    fixture.controller,
+    fixture.controller.selectDriver("iam", "console-native-iam"),
+    [limited.principal, principal],
+    runtime.defaultPresets,
+  );
+  // Disabling startup defaults never removes a saved Preset.
+  configuration.presets.includeDefaults = false;
+  await writeFile(path, JSON.stringify(configuration));
+  const disabledRuntime = await loadInstallationConfiguration({
+    mode: "production",
+    environment: { OCC_CONFIG_PATH: path },
+  });
+  const disabled = new OpenClawController(fixture.controller.installation, {
+    state: fixture.state,
+    defaultPresets: disabledRuntime.defaultPresets,
+  });
+  await disabled.initializeDefaultPresets(principal.id);
+  assert.equal((await fixture.request("GET", collection(existing.id))).data.length, 1);
 });

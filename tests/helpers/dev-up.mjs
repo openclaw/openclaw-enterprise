@@ -162,18 +162,19 @@ function delegateComposeConfig() {
     },
     encoding: "utf8",
   });
-  if (delegated.stderr) process.stderr.write(delegated.stderr);
+  if (delegated.stderr) fs.writeFileSync(2, delegated.stderr);
   if (delegated.status !== 0) process.exit(delegated.status ?? 1);
   if (format === "json") {
-    process.stdout.write(delegated.stdout);
+    // Flush the complete configuration before exiting, even when stdout is a pipe.
+    fs.writeFileSync(1, delegated.stdout);
     process.exit(0);
   }
   const converted = spawnSync(process.env.DEV_UP_REAL_YQ, ["-o=json"], {
     input: delegated.stdout,
     encoding: "utf8",
   });
-  if (converted.stdout) process.stdout.write(converted.stdout);
-  if (converted.stderr) process.stderr.write(converted.stderr);
+  if (converted.stdout) fs.writeFileSync(1, converted.stdout);
+  if (converted.stderr) fs.writeFileSync(2, converted.stderr);
   process.exit(converted.status ?? 1);
 }
 if (args[0] === "--version") exit(0, engine === "podman" ? "podman version 6.1.0" : "Docker version 29.4.0");

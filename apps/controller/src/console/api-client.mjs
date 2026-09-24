@@ -1,5 +1,8 @@
 export function createApiClient({ lifetime, hasSession, onExpired }) {
-  async function request(path, { method = "GET", body, signal = lifetime.signal } = {}) {
+  async function request(
+    path,
+    { method = "GET", body, signal = lifetime.signal, expectedStatus } = {},
+  ) {
     const active = lifetime.capture();
     const response = await fetch(path, {
       method,
@@ -20,7 +23,12 @@ export function createApiClient({ lifetime, hasSession, onExpired }) {
     } catch {
       payload = null;
     }
-    if (!response.ok || payload === null || !Object.hasOwn(payload, "data")) {
+    if (
+      !response.ok ||
+      (expectedStatus !== undefined && response.status !== expectedStatus) ||
+      payload === null ||
+      !Object.hasOwn(payload, "data")
+    ) {
       const error = new Error("The request could not be completed.");
       error.status = response.status;
       const code = payload?.error?.code;

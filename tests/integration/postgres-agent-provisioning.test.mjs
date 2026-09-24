@@ -10,6 +10,9 @@ import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { composePostgresDevelopment } from "../../apps/controller/src/composition/development-postgres.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
+import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
+import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/providers/repository-credentials/control-client.ts";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -196,12 +199,22 @@ async function ensureProvisioningBootstrap(context, state) {
   await bootstrapPromise;
 }
 
-function installationDrivers({ computeDriver, configurationDriver, secretDriver }) {
+function installationDrivers({ computeDriver, configurationDriver, secretDriver, repoDriver }) {
   return {
     installation: {
       occ: { cluster: "postgres-agent-provisioning" },
       logging: {},
-      provider: [],
+      provider:
+        repoDriver === undefined
+          ? []
+          : [
+              {
+                id: "provisioning-repositories",
+                type: "github",
+                configuration: { registryPath: "/unused/provisioning/registry.json" },
+                drivers: { repo: repoDriver.id },
+              },
+            ],
       drivers: {
         iam: { id: "native-iam", implementation: "native", configuration: {} },
         compute: {
@@ -224,6 +237,7 @@ function installationDrivers({ computeDriver, configurationDriver, secretDriver 
     computeDriver,
     configurationDriver,
     secretDriver,
+    ...(repoDriver === undefined ? {} : { repoDriver }),
     createIAMDriver: (state) =>
       new NativeIAMDriver(state, { id: "native-iam", implementation: "native" }),
   };
@@ -242,9 +256,15 @@ async function createFixture(context, options = {}) {
     options.secretDriver ?? createTestSecretDriver({ id: "secret-provisioning" });
   let worker;
   let workerPool;
+  let workerCompletion;
   const revokedBindings = [];
   const teardownCancellations = [];
-  const drivers = installationDrivers({ computeDriver, configurationDriver, secretDriver });
+  const drivers = installationDrivers({
+    computeDriver,
+    configurationDriver,
+    secretDriver,
+    repoDriver: options.repoDriver,
+  });
   const app = await composePostgresDevelopment(
     {
       mode: "development",
@@ -337,7 +357,12 @@ async function createFixture(context, options = {}) {
       pollIntervalMs: 15,
       leaseDurationMs: 30_000,
       maxAttempts: 3,
-      emit: () => {},
+      emit: (event) => {
+        // This persistence case ends at durable handoff, before credential service dispatch.
+        if (options.stopAfterProvisioning && event.code === "PROVISIONING_HANDED_OFF") {
+          workerCompletion = worker.stop();
+        }
+      },
     });
     await worker.start();
   }
@@ -349,7 +374,8 @@ async function createFixture(context, options = {}) {
     const current = worker;
     worker = undefined;
     workerPool = undefined;
-    await current.stop();
+    await (workerCompletion ?? current.stop());
+    workerCompletion = undefined;
   }
 
   async function revokeCurrentPrincipal() {
@@ -507,6 +533,180 @@ test(
       }),
     );
     assert.equal(cancelled.status, "cancelled");
+  },
+);
+
+test(
+  "provisioning worker creates Configuration and Agent from existing Secrets, then hands off one revision",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const initial = await createFixture(context);
+    const namespace = await initial.bootstrapNamespace();
+    const repositoryBindings = [{ repositoryRef: "project", profile: "git-read" }];
+    const repoDriver = new GitHubRepoDriver(
+      {
+        id: "provisioning-repositories",
+        client: new UnixRepositoryCredentialControlClient({
+          controlSocket: "/unused/provisioning/control.sock",
+        }),
+        drivers: { repo: "provisioning-repo" },
+      },
+      {
+        version: 1,
+        providerId: "provisioning-repositories",
+        providerInstanceId: "provisioning-github",
+        appId: "123",
+        githubInstallationId: "456",
+        maximumDurationSeconds: 3600,
+        repositories: [
+          {
+            repositoryRef: "project",
+            repositoryId: "789",
+            repository: "example/project",
+            namespaces: [{ namespaceId: namespace.id, profiles: ["git-read", "git-write"] }],
+          },
+        ],
+      },
+      { sessionDurationSeconds: 600 },
+    );
+    // Reuse the established runtime fixture, but exercise real repository policy and
+    // Kubernetes topology admission without contacting either external system.
+    const topology = createTestKubernetesComputeDriver("provisioning-topology", {
+      repositoryCredentials: true,
+    });
+    const computeDriver = initial.computeDriver;
+    computeDriver.validateRepositoryCredentials =
+      topology.validateRepositoryCredentials.bind(topology);
+    const fixture = await createFixture(context, {
+      computeDriver,
+      configurationDriver: initial.configurationDriver,
+      secretDriver: initial.secretDriver,
+      repoDriver,
+      stopAfterProvisioning: true,
+    });
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const secretCreateCallCount = fixture.secretDriver.calls.filter(
+      ({ operation }) => operation === "create",
+    ).length;
+    const body = provisioningBody(namespace.id, secrets, { repositoryBindings });
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body,
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+
+    const queued = await provisioningRow(fixture.pool, namespace.id, body.requestId);
+    assert.deepEqual(queued.plan.repositoryBindings, repositoryBindings);
+    assert.equal(queued.agent_id, null);
+    const replay = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body,
+    });
+    assert.equal(replay.status, 202, JSON.stringify(replay.body));
+    assert.equal(replay.data.provisioning.workId, admitted.data.provisioning.workId);
+    const changed = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body: { ...body, repositoryBindings: [{ repositoryRef: "project", profile: "git-write" }] },
+    });
+    assert.equal(changed.status, 409, JSON.stringify(changed.body));
+
+    await fixture.startWorker();
+    const status = await waitFor("Agent provisioning to succeed", async () => {
+      const observed = await fixture.request("GET", admitted.data.provisioning.url);
+      assert.equal(observed.status, 200, JSON.stringify(observed.body));
+      return observed.data.status === "succeeded" ? observed.data : undefined;
+    });
+    await fixture.stopWorker();
+    assert.equal(status.status, "succeeded");
+    assert.match(status.agentId, identifier("agt"));
+    assert.match(status.configurationId, identifier("cfg"));
+
+    assert.equal(
+      fixture.secretDriver.calls.filter(({ operation }) => operation === "create").length,
+      secretCreateCallCount,
+      "provisioning must reuse Console-created Secrets instead of creating new Secret values",
+    );
+
+    const persistedSecrets = await fixture.pool.query(
+      "SELECT id, name FROM occ.secrets WHERE namespace_id = $1 ORDER BY name",
+      [namespace.id],
+    );
+    assert.deepEqual(
+      persistedSecrets.rows.map(({ name }) => name),
+      ["external-service-token", "model-api-key", "slack-bot-token", "slack-signing-secret"],
+    );
+    const grantRoleId = `role_${namespace.id}_agent_secret_operate`;
+    const grantRole = await fixture.pool.query(
+      "SELECT permissions FROM occ.iam_roles WHERE namespace_id = $1 AND id = $2",
+      [namespace.id, grantRoleId],
+    );
+    assert.equal(grantRole.rowCount, 1);
+    assert.deepEqual(grantRole.rows[0].permissions, [
+      { action: "operate", resourceKind: "secret" },
+    ]);
+    const grants = await fixture.pool.query(
+      `SELECT binding.resource_id
+       FROM occ.iam_access_bindings AS binding
+       JOIN occ.agents AS agent
+         ON agent.namespace_id = binding.namespace_id
+        AND agent.service_principal_id = binding.identity_subject_id
+       WHERE binding.namespace_id = $1
+         AND agent.id = $2
+         AND binding.role_id = $3
+         AND binding.resource_kind = 'secret'
+       ORDER BY binding.resource_id`,
+      [namespace.id, status.agentId, grantRoleId],
+    );
+    assert.deepEqual(
+      grants.rows.map(({ resource_id: resourceId }) => resourceId),
+      persistedSecrets.rows.map(({ id }) => id).sort(),
+      "provisioning must grant the Agent service principal exact operate access to each referenced Secret",
+    );
+    const configuration = await fixture.pool.query(
+      "SELECT generation, secret_bindings FROM occ.configurations WHERE namespace_id = $1 AND id = $2",
+      [namespace.id, status.configurationId],
+    );
+    assert.equal(configuration.rowCount, 1);
+    assert.equal(Number(configuration.rows[0].generation), 1);
+    assert.deepEqual(Object.keys(configuration.rows[0].secret_bindings).sort(), [
+      "EXTERNAL_SERVICE_TOKEN",
+      "SLACK_BOT_TOKEN",
+      "SLACK_SIGNING_SECRET",
+    ]);
+    const revisions = await fixture.state.read((view) =>
+      view.revisions.listRevisions(namespace.id, status.agentId),
+    );
+    assert.equal(revisions.length, 1);
+    assert.equal(revisions[0].id, status.revisionId);
+    assert.equal(revisions[0].configurationGeneration, 1);
+    const agentPath = `/namespaces/${namespace.id}/agents/${status.agentId}`;
+    const agent = await fixture.request("GET", agentPath);
+    assert.equal(agent.status, 200, JSON.stringify(agent.body));
+    assert.deepEqual(agent.data.repositoryBindings, repositoryBindings);
+    const revisionPath = `${agentPath}/revisions/${status.revisionId}`;
+    const revision = await fixture.request("GET", revisionPath);
+    assert.equal(revision.status, 200, JSON.stringify(revision.body));
+    assert.deepEqual(revision.data.repositoryCredentials.bindings, repositoryBindings);
+    assert.equal(revisions[0].repositoryCredentials.bindings[0].grant.repositoryId, "789");
+    const cleared = await fixture.request("PATCH", agentPath, {
+      body: { configurationId: status.configurationId, repositoryBindings: [] },
+    });
+    assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
+    assert.equal(Object.hasOwn(cleared.data, "repositoryBindings"), false);
+    const historical = await fixture.request("GET", revisionPath);
+    assert.equal(historical.status, 200, JSON.stringify(historical.body));
+    assert.deepEqual(historical.data.repositoryCredentials, revision.data.repositoryCredentials);
+    assert.equal(revisions[0].harnessAuth.method, "api_key");
+    assert.deepEqual(
+      fixture.computeDriver.calls
+        .filter(({ operation }) => operation === "provisionAgentRuntimeCredentials")
+        .map(({ agentId }) => agentId),
+      [status.agentId],
+    );
+
+    const work = await fixture.pool.query(
+      "SELECT state FROM occ.controller_work WHERE work_kind = 'provisioning' AND namespace_id = $1 AND idempotency_key = $2",
+      [namespace.id, admitted.data.provisioning.workId],
+    );
+    assert.equal(work.rowCount, 1);
+    assert.equal(work.rows[0].state, "succeeded");
   },
 );
 

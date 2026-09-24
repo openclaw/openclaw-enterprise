@@ -26,8 +26,10 @@ complete dedicated Harness provisioning until it meets the upstream
 requirements. The Kubernetes Compute Driver remains the orchestration owner:
 
 - It creates or adopts the OpenClaw Namespace and applies baseline isolation.
-- It creates the per-Agent gateway, ServiceAccount, shared workspace PVC,
-  Services, NetworkPolicies, revision records, and activation state.
+- It creates the per-Agent OpenClaw Gateway and private state in the control-plane
+  target, with Harness workspace storage in the data-plane target. Compute owns
+  their ServiceAccounts, Services, NetworkPolicies, revision records and activation
+  state. This does not move the separate OpenShell gateway.
 - It calls `SandboxDriver.ensureNamespace`, when implemented, after namespace
   isolation exists.
 - It delegates dedicated Harness creation to `SandboxDriver.provisionHarness`,

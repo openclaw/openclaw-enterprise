@@ -110,7 +110,7 @@ For runtime proof, see the [production TUI flow](../flows/production-tui.md).
 Use Helm values, Kubernetes manifests, Installation startup YAML, and Collector
 Secrets for production. Use
 [`deploy/runtime`](../../deploy/runtime/README.md) for runtime image recipe and
-package-version overrides. The [settings reference](../reference/settings.md)
+pinned source identity. The [settings reference](../reference/settings.md)
 and Driver references own field defaults, precedence, and limits.
 
 Trusted Installation YAML can also select the

@@ -30,7 +30,8 @@ runs:
       if: >-
         (inputs.profile == 'full' || inputs.profile == 'images' || inputs.profile == 'k3d') &&
         inputs.lane != 'docker-model' && inputs.lane != 'logging-collector' &&
-        inputs.lane != 'repository-credentials-platform'
+        inputs.lane != 'repository-credentials-platform' &&
+        !startsWith(inputs.lane, 'k3d-fixture-')
     - name: Set up CI tools
       shell: bash
       run: bash scripts/ci/setup-tools.sh "${{ inputs.profile }}"

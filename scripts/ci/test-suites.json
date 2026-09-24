@@ -181,6 +181,9 @@
           "path": "tests/browser/console-agents.test.mjs"
         },
         {
+          "path": "tests/browser/console-repository-dedicated.test.mjs"
+        },
+        {
           "path": "tests/browser/console-runtime-credentials.test.mjs"
         },
         {
@@ -502,6 +505,7 @@
           "path": "tests/integration/postgres-agent-provisioning.test.mjs",
           "expectedTests": [
             "provisioning API queues one job with existing Secret references and replays only the exact same request",
+            "provisioning worker creates Configuration and Agent from existing Secrets, then hands off one revision",
             "api_key provisioning grants existing Secret access and hands off one revision",
             "codex_pat provisioning grants existing Secret access and hands off one revision",
             "queued provisioning leaves existing Secrets but creates no Agent or Configuration before a worker runs",
@@ -607,6 +611,12 @@
             "runtime image discovers the bundled Codex plugin from a fresh gateway home",
             "runtime image keeps Codex auth writable with a nested generated images mount",
             "runtime image publishes dedicated assets with the Kubernetes gateway entrypoint"
+          ]
+        },
+        {
+          "path": "tests/integration/repository-runtime-volume.test.mjs",
+          "expectedTests": [
+            "repository init uses a private subPath of a root-owned fsGroup memory volume"
           ]
         },
         {
@@ -1251,6 +1261,9 @@
         "OCC_TEST_REPOSITORY_CREDENTIALS_REAL": "1"
       },
       "requiredEnv": [
+        "OCC_TEST_GATEWAY_ROUTING_REAL",
+        "OCC_TEST_ENVOY_GATEWAY_NAMESPACE",
+        "OCC_TEST_CERT_MANAGER_NAMESPACE",
         "OPENAI_API_KEY",
         "OCC_TEST_OPENAI_MODEL",
         "OCC_TEST_REPOSITORY_CREDENTIALS_AUTHORIZED",
@@ -1293,7 +1306,8 @@
         {
           "path": "tests/integration/repository-credentials-k3d-real.test.mjs",
           "expectedTests": [
-            "installed embedded Agent clones, edits, commits, pushes and creates a native repository PR"
+            "installed embedded Agent clones, edits, commits, pushes and creates a native repository PR",
+            "installed dedicated Agent clones, edits, commits, pushes and creates a native repository PR"
           ]
         }
       ]

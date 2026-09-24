@@ -119,6 +119,11 @@
                   { "const": "NOT_IMPLEMENTED", "type": "string" },
                   { "const": "INTERNAL_ERROR", "type": "string" },
                   { "const": "DEPENDENCY_UNAVAILABLE", "type": "string" },
+                  {
+                    "const": "REPOSITORY_OPTIONS_UNAVAILABLE",
+                    "description": "Only repository-option discovery is unavailable after Agent create authorization. An Agent without repository bindings may be submitted and is authorized again. Other dependency failures do not carry this meaning.",
+                    "type": "string"
+                  },
                   { "const": "MODEL_DISCOVERY_CREDENTIALS_REJECTED", "type": "string" },
                   { "const": "MODEL_DISCOVERY_RATE_LIMITED", "type": "string" },
                   { "const": "MODEL_DISCOVERY_UNAVAILABLE", "type": "string" },
@@ -3662,6 +3667,132 @@
             "resourceKind": "agent",
             "scope": "requested"
           }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/agents/repository-options": {
+      "get": {
+        "description": "Requires create permission for Agent resources in the requested Namespace.",
+        "operationId": "listRepositoryOptions",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "allowedProfiles": {
+                            "items": {
+                              "maxLength": 128,
+                              "minLength": 1,
+                              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                              "type": "string"
+                            },
+                            "maxItems": 16,
+                            "minItems": 1,
+                            "type": "array",
+                            "uniqueItems": true
+                          },
+                          "displayName": {
+                            "maxLength": 200,
+                            "minLength": 1,
+                            "pattern": "^(?!\\s)(?!.*\\s$)(?!.*[\\u0000-\\u001f\\u007f]).+$",
+                            "type": "string"
+                          },
+                          "repositoryRef": {
+                            "maxLength": 128,
+                            "minLength": 1,
+                            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                            "type": "string"
+                          }
+                        },
+                        "required": ["repositoryRef", "displayName", "allowedProfiles"],
+                        "type": "object"
+                      },
+                      "maxItems": 128,
+                      "type": "array"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Check `error.code`: `REPOSITORY_OPTIONS_UNAVAILABLE` means optional repository discovery is unavailable after Namespace lifecycle and Agent create authorization checks. Creation without repository bindings remains available subject to fresh authorization. `DEPENDENCY_UNAVAILABLE` includes IAM and other required dependency failures and does not permit proceeding. Successful discovery returns a data array, including an empty array when no repositories are approved."
+          }
+        },
+        "summary": "List approved repository choices for Agent creation in one Namespace",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          { "action": "create", "resourceKind": "agent", "scope": "namespace" }
         ]
       }
     },
@@ -8836,6 +8967,15 @@
                                     {
                                       "additionalProperties": false,
                                       "properties": {
+                                        "description": { "type": "string" },
+                                        "type": { "const": "password", "type": "string" }
+                                      },
+                                      "required": ["type"],
+                                      "type": "object"
+                                    },
+                                    {
+                                      "additionalProperties": false,
+                                      "properties": {
                                         "default": { "type": "string" },
                                         "description": { "type": "string" },
                                         "type": { "const": "string", "type": "string" }
@@ -9003,6 +9143,15 @@
                             {
                               "additionalProperties": false,
                               "properties": {
+                                "description": { "type": "string" },
+                                "type": { "const": "password", "type": "string" }
+                              },
+                              "required": ["type"],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
                                 "default": { "type": "string" },
                                 "description": { "type": "string" },
                                 "type": { "const": "string", "type": "string" }
@@ -9110,6 +9259,15 @@
                             "variables": {
                               "additionalProperties": {
                                 "anyOf": [
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "description": { "type": "string" },
+                                      "type": { "const": "password", "type": "string" }
+                                    },
+                                    "required": ["type"],
+                                    "type": "object"
+                                  },
                                   {
                                     "additionalProperties": false,
                                     "properties": {
@@ -9398,6 +9556,15 @@
                                   {
                                     "additionalProperties": false,
                                     "properties": {
+                                      "description": { "type": "string" },
+                                      "type": { "const": "password", "type": "string" }
+                                    },
+                                    "required": ["type"],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
                                       "default": { "type": "string" },
                                       "description": { "type": "string" },
                                       "type": { "const": "string", "type": "string" }
@@ -9573,6 +9740,15 @@
                             {
                               "additionalProperties": false,
                               "properties": {
+                                "description": { "type": "string" },
+                                "type": { "const": "password", "type": "string" }
+                              },
+                              "required": ["type"],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
                                 "default": { "type": "string" },
                                 "description": { "type": "string" },
                                 "type": { "const": "string", "type": "string" }
@@ -9679,6 +9855,15 @@
                             "variables": {
                               "additionalProperties": {
                                 "anyOf": [
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "description": { "type": "string" },
+                                      "type": { "const": "password", "type": "string" }
+                                    },
+                                    "required": ["type"],
+                                    "type": "object"
+                                  },
                                   {
                                     "additionalProperties": false,
                                     "properties": {

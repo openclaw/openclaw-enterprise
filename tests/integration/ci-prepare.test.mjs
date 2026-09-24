@@ -572,6 +572,22 @@ test("repository platform preparation binds runtime clients, an owned gateway an
   const commands = await fixtureImageCommands(t, "success", "repository-credentials-platform");
   const prepared = commands.prepare();
   assert.equal(prepared.status, 0, prepared.stderr);
+  for (const phase of [
+    "postgres-start",
+    "k3d-create",
+    "runtime-image-build",
+    "platform-fixture-build",
+    "image-archive-save",
+    "image-archive-import",
+    "platform-image-import",
+  ]) {
+    assert.match(
+      prepared.stderr,
+      new RegExp(
+        `\\[ci-timing\\] lane=repository-credentials-platform phase=${phase} duration_ms=\\d+`,
+      ),
+    );
+  }
   const state = JSON.parse(await readFile(commands.statePath, "utf8"));
   const cluster = state.resources.find(({ kind }) => kind === "k3d-cluster");
   assert.equal(state.env.OCC_TEST_REPOSITORY_CREDENTIALS_PLATFORM, "1");

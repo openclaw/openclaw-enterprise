@@ -1,0 +1,136 @@
+{
+  "name": "standard-codex",
+  "template": {
+    "variables": {
+      "name": {
+        "type": "string",
+        "description": "Name for the new Agent"
+      },
+      "model": {
+        "type": "string",
+        "description": "Codex model ID without the codex/ prefix"
+      },
+      "modelSecret": {
+        "type": "password",
+        "description": "Model API key; stored as a Secret when you create the Agent"
+      }
+    },
+    "agent": {
+      "name": "{{ vars.name }}",
+      "executionMode": "dedicated",
+      "providerId": null,
+      "harnessAuth": {
+        "method": "api_key",
+        "secret": "{{ vars.modelSecret }}"
+      },
+      "plugins": {}
+    },
+    "configuration": {
+      "values": {
+        "gateway": {
+          "mode": "local",
+          "bind": "lan",
+          "controlUi": {
+            "enabled": false
+          },
+          "auth": {
+            "password": {
+              "source": "env",
+              "provider": "default",
+              "id": "OPENCLAW_GATEWAY_PASSWORD"
+            }
+          }
+        },
+        "agents": {
+          "defaults": {
+            "model": "codex/{{ vars.model }}",
+            "models": {
+              "codex/{{ vars.model }}": {
+                "agentRuntime": {
+                  "id": "codex"
+                }
+              }
+            }
+          }
+        },
+        "models": {
+          "providers": {
+            "codex": {
+              "baseUrl": "http://127.0.0.1:9",
+              "api": "openai-responses",
+              "models": [
+                {
+                  "id": "{{ vars.model }}",
+                  "name": "{{ vars.model }}"
+                }
+              ]
+            }
+          }
+        },
+        "browser": {
+          "enabled": false
+        },
+        "tools": {
+          "elevated": {
+            "enabled": false
+          },
+          "web": {
+            "search": {
+              "enabled": true,
+              "openaiCodex": {
+                "enabled": true,
+                "mode": "cached"
+              }
+            },
+            "fetch": {
+              "enabled": false
+            }
+          }
+        },
+        "plugins": {
+          "allow": ["codex"],
+          "entries": {
+            "codex": {
+              "enabled": true,
+              "config": {
+                "appServer": {
+                  "mode": "guardian",
+                  "transport": "websocket",
+                  "url": "${APP_SERVER_URL}",
+                  "authToken": "${APP_SERVER_TOKEN}",
+                  "approvalPolicy": "never",
+                  "sandbox": "workspace-write",
+                  "networkProxy": {
+                    "enabled": true,
+                    "baseProfile": "workspace",
+                    "mode": "limited",
+                    "domains": {
+                      "codeload.github.com": "allow",
+                      "dl.google.com": "allow",
+                      "github.com": "allow",
+                      "go.dev": "allow",
+                      "nodejs.org": "allow",
+                      "proxy.golang.org": "allow",
+                      "registry.npmjs.org": "allow",
+                      "storage.googleapis.com": "allow",
+                      "sum.golang.org": "allow"
+                    },
+                    "unixSockets": {},
+                    "enableSocks5": false,
+                    "enableSocks5Udp": false,
+                    "allowUpstreamProxy": false,
+                    "allowLocalBinding": false,
+                    "dangerouslyAllowNonLoopbackProxy": false,
+                    "dangerouslyAllowAllUnixSockets": false
+                  },
+                  "approvalsReviewer": "user"
+                }
+              }
+            }
+          }
+        }
+      },
+      "secretBindings": {}
+    }
+  }
+}

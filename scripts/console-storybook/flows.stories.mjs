@@ -8,6 +8,10 @@ export const CreateHarnessFlow = {
   name: "Choose provider and harness",
 };
 export const UpdateFlow = { ...story("updateFlow"), name: "Update an Agent" };
+export const SlackChannelAccessFlow = {
+  ...story("slackChannelAccessFlow"),
+  name: "Change Slack channel senders",
+};
 export const StopFlow = { ...story("stopFlow"), name: "Stop an Agent" };
 export const CreateWorkspaceFilesFlow = {
   ...story("createWorkspaceFlow"),
