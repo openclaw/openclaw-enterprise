@@ -1739,7 +1739,18 @@ test("Dedicated Agent creation provisions inline Configuration and masked new Se
   await botSecretDialog.getByLabel("Secret value").fill("slack-bot-secret");
   await botSecretDialog.getByRole("button", { name: "Create Secret" }).click();
   await botSecretDialog.waitFor({ state: "hidden" });
+  await channelDialog.getByLabel("Allow everyone in these channels to mention the agent").check();
+  await channelDialog.getByRole("button", { name: "Apply channel settings" }).click();
+  await channelDialog
+    .getByText("Enter at least one Slack channel ID for these access settings.")
+    .waitFor();
   await channelDialog.getByLabel("Slack channel IDs").fill("C0123456789");
+  await channelDialog.getByLabel("Allow everyone in these channels to mention the agent").uncheck();
+  await channelDialog.getByRole("button", { name: "Apply channel settings" }).click();
+  await channelDialog
+    .getByText("Enter allowed channel user IDs or allow everyone in these channels.")
+    .waitFor();
+  await channelDialog.getByLabel("Allow everyone in these channels to mention the agent").check();
   await channelDialog.getByRole("button", { name: "Apply channel settings" }).click();
 
   const provisionResponse = page.waitForResponse(
@@ -1772,8 +1783,7 @@ test("Dedicated Agent creation provisions inline Configuration and masked new Se
     mode: "socket",
     appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
     botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-    allowFrom: [],
-    channels: { C0123456789: { requireMention: true } },
+    channels: { C0123456789: { requireMention: true, users: ["*"] } },
     dmPolicy: "allowlist",
     groupPolicy: "allowlist",
   });
@@ -1840,6 +1850,7 @@ test("Dedicated Agent creation uses regular create when provisioning is unsuppor
   const channelDialog = page.getByRole("dialog", { name: "Configure Slack" });
   await channelDialog.getByLabel("Slack app token").selectOption(staleSlackSecret.id);
   await channelDialog.getByLabel("Slack channel IDs").fill("CUNSUPPORTED123");
+  await channelDialog.getByLabel("Allow everyone in these channels to mention the agent").check();
   await channelDialog.getByRole("button", { name: "Apply channel settings" }).click();
   await page.getByLabel("Secret bindings JSON").fill("{}");
   const createdResponse = page.waitForResponse(
@@ -1856,7 +1867,7 @@ test("Dedicated Agent creation uses regular create when provisioning is unsuppor
   const configurationWrites = configurationPostRequests(requests, namespace.id);
   assert.equal(configurationWrites.length, 1);
   assert.deepEqual(configurationWrites[0].body.values.channels.slack.channels, {
-    CUNSUPPORTED123: { requireMention: true },
+    CUNSUPPORTED123: { requireMention: true, users: ["*"] },
   });
   assert.equal(Object.hasOwn(configurationWrites[0].body, "secretBindings"), false);
   assert.equal(accessBindingPostRequests(requests, namespace.id).length, 1);
@@ -1880,6 +1891,44 @@ test("Dedicated Agent creation uses regular create when provisioning is unsuppor
       },
     ],
   );
+  // Read the created draft through the real API, then verify both access choices
+  // survive a new page load rather than only remaining in the create form.
+  const createdAgent = (await (await createdResponse).json()).data;
+  await page.goto(detailUrl(fixture, namespace.id, createdAgent.id, "draft", "channels").href);
+  await page.getByRole("button", { name: "Edit Slack", exact: true }).click();
+  let savedDialog = page.getByRole("dialog", { name: "Edit Slack" });
+  const everyone = savedDialog.getByLabel("Allow everyone in these channels to mention the agent");
+  assert.equal(await everyone.isChecked(), true);
+  assert.equal(await savedDialog.getByLabel("Allowed channel user IDs").isDisabled(), true);
+  await everyone.uncheck();
+  await savedDialog.getByLabel("Allowed channel user IDs").fill("USENDER123");
+  const saved = page.waitForResponse(
+    (response) =>
+      response.request().method() === "PATCH" &&
+      response.url().endsWith(`/configurations/${createdAgent.configurationId}`),
+  );
+  await savedDialog.getByRole("button", { name: "Save configuration", exact: true }).click();
+  assert.equal((await saved).status(), 200);
+  await page.reload();
+  await page.getByRole("button", { name: "Edit Slack", exact: true }).click();
+  savedDialog = page.getByRole("dialog", { name: "Edit Slack" });
+  assert.equal(await savedDialog.getByLabel("Allowed channel user IDs").inputValue(), "USENDER123");
+  assert.equal(
+    await savedDialog
+      .getByLabel("Allow everyone in these channels to mention the agent")
+      .isDisabled(),
+    true,
+  );
+  const savedConfiguration = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/configurations/${createdAgent.configurationId}`,
+  );
+  assert.deepEqual(savedConfiguration.data.values.channels.slack.channels, {
+    CUNSUPPORTED123: { requireMention: true, users: ["USENDER123"] },
+  });
+  assert.equal(savedConfiguration.data.values.channels.slack.groupPolicy, "allowlist");
+  assert.equal(savedConfiguration.data.values.channels.slack.dmPolicy, "allowlist");
+  assert.equal(Object.hasOwn(savedConfiguration.data.values.channels.slack, "allowFrom"), false);
 });
 
 test("Dedicated Agent creation reuses separately saved Secret references after provisioning failure", async (t) => {
@@ -2054,6 +2103,7 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
   await botSecretDialog.getByRole("button", { name: "Create Secret" }).click();
   await botSecretDialog.waitFor({ state: "hidden" });
   await channelDialog.getByLabel("Slack channel IDs").fill("CRETRY123");
+  await channelDialog.getByLabel("Allow everyone in these channels to mention the agent").check();
   await channelDialog.getByRole("button", { name: "Apply channel settings" }).click();
   const firstProvisionResponse = page.waitForResponse(
     (response) =>
@@ -2084,7 +2134,7 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
   assert.equal(bodies[0].requestId, bodies[1].requestId);
   assert.equal(bodies[0].name, agent.name);
   assert.deepEqual(bodies[0].configuration.values.channels.slack.channels, {
-    CRETRY123: { requireMention: true },
+    CRETRY123: { requireMention: true, users: ["*"] },
   });
   assert.deepEqual(bodies[0].harnessAuth, agent.harnessAuth);
   assert.equal(Object.hasOwn(bodies[0], "secrets"), false);
@@ -4072,9 +4122,22 @@ test("Channel drawer saves channel edits without exposing Secret values or dropp
   await dialog.getByText("Secret menu changes are saved with these channel settings.").waitFor();
 
   const channelIds = page.getByLabel("Slack channel IDs");
-  const allowedUsers = page.getByLabel("Allowed user IDs");
+  const allowedUsers = page.getByLabel("Allowed channel user IDs");
+  const allowEveryone = page.getByLabel("Allow everyone in these channels to mention the agent");
+  assert.equal(await allowedUsers.inputValue(), "UOLD123");
+  assert.equal(await allowedUsers.isDisabled(), false);
+  assert.equal(await allowEveryone.isDisabled(), true);
   await channelIds.fill("COLD123, CNEW123");
   await allowedUsers.fill("UNEW123");
+  assert.equal(await allowEveryone.isDisabled(), true);
+  await allowedUsers.fill("");
+  assert.equal(await allowEveryone.isEnabled(), true);
+  await allowEveryone.check();
+  assert.equal(await allowedUsers.isDisabled(), true);
+  await allowEveryone.uncheck();
+  assert.equal(await allowedUsers.isEnabled(), true);
+  await allowedUsers.fill("UNEW123");
+  assert.equal(await allowEveryone.isDisabled(), true);
   await dialog
     .getByRole("link", { name: "Open Agent Credentials (opens in new tab)" })
     .scrollIntoViewIfNeeded();
@@ -4131,11 +4194,11 @@ test("Channel drawer saves channel edits without exposing Secret values or dropp
     id: "SLACK_BOT_TOKEN",
   });
   assert.deepEqual(configuration.data.values.channels.slack.channels, {
-    COLD123: { requireMention: true, users: ["UOLD123"] },
-    CNEW123: { requireMention: true },
+    COLD123: { requireMention: true, users: ["UNEW123"] },
+    CNEW123: { requireMention: true, users: ["UNEW123"] },
   });
   assert.equal(configuration.data.values.channels.slack.dmPolicy, "allowlist");
-  assert.deepEqual(configuration.data.values.channels.slack.allowFrom, ["UNEW123"]);
+  assert.deepEqual(configuration.data.values.channels.slack.allowFrom, ["UOLD123"]);
   assert.equal(
     configuration.data.values.channels.msteams.appId,
     "00000000-0000-4000-8000-000000000000",
@@ -4158,6 +4221,63 @@ test("Channel drawer saves channel edits without exposing Secret values or dropp
 
   await page.screenshot({ path: join(artifacts, "agent-channels.png"), fullPage: true });
 });
+
+for (const [name, channels, reason] of [
+  [
+    "wildcard channel map",
+    { "*": { requireMention: true, users: ["*"] } },
+    "Slack wildcard channels must be edited in native Configuration JSON.",
+  ],
+  [
+    "mixed channel sender lists",
+    {
+      CMIXED123: { requireMention: true, users: ["UONE123"] },
+      CMIXED456: { requireMention: true, users: ["UTWO456"] },
+    },
+    "Existing Slack channels use different allowed channel users. Edit native Configuration JSON to preserve those restrictions.",
+  ],
+  [
+    "comma channel sender ID",
+    { CCOMMA123: { requireMention: true, users: ["UONE123,UTWO456"] } },
+    "Slack channel users or Require mention values use an unsupported native shape.",
+  ],
+  [
+    "newline channel sender ID",
+    { CNEWLINE123: { requireMention: true, users: ["UONE123\nUTWO456"] } },
+    "Slack channel users or Require mention values use an unsupported native shape.",
+  ],
+]) {
+  test(`Channel drawer keeps Slack ${name} in native JSON`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Unsupported Slack native", { ready: true });
+    const slack = {
+      enabled: true,
+      mode: "socket",
+      appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+      botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+      channels,
+    };
+    const agent = await fixture.createAgent(
+      namespace.id,
+      `Unsupported Slack ${name}`,
+      nativeValues(`unsupported-slack-${name}`, { harnessId: "codex", channels: { slack } }),
+      { executionMode: "dedicated" },
+    );
+    const { page } = await newPage(t, fixture);
+    const requests = apiRequests(page, fixture.origin);
+    const url = detailUrl(fixture, namespace.id, agent.id, "draft", "channels");
+
+    await login(page, fixture, url.pathname + url.search);
+    await page.getByRole("heading", { name: `Unsupported Slack ${name}` }).waitFor();
+    await page.getByText(reason).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Edit Slack" }).isDisabled(), true);
+    await revealNativeConfiguration(page, "Slack native configuration");
+    const nativeJson = JSON.parse(await page.locator(".channel-native pre").textContent());
+    assert.deepEqual(nativeJson, slack);
+    assert.deepEqual(nonAuthWriteRequests(requests), []);
+  });
+}
 
 test("Channel drawer binds existing Slack Secrets without dropping unsaved channel edits", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -4223,8 +4343,8 @@ test("Channel drawer binds existing Slack Secrets without dropping unsaved chann
     SLACK_BOT_TOKEN: { source: slackBotSecret.ref, delivery: { type: "env" } },
   });
   assert.deepEqual(configuration.data.values.channels.slack.channels, {
-    CUNBOUND123: { requireMention: true },
-    CBOUND456: { requireMention: true },
+    CUNBOUND123: { requireMention: true, users: ["*"] },
+    CBOUND456: { requireMention: true, users: ["*"] },
   });
   const pageText = await page.locator("body").textContent();
   assert.equal(pageText.includes(slackAppSecretValue), false);
@@ -4376,14 +4496,84 @@ test("Channel drawer does not grant Slack Secret access when Configuration save 
   requests.length = 0;
   await page.getByRole("button", { name: "Edit Slack" }).click();
   const dialog = page.getByRole("dialog", { name: "Edit Slack" });
+  const allowedUsers = dialog.getByLabel("Allowed channel user IDs");
+  const allowEveryone = dialog.getByLabel("Allow everyone in these channels to mention the agent");
+  assert.equal(await allowEveryone.isChecked(), true);
+  assert.equal(await allowedUsers.isDisabled(), true);
   await dialog.getByLabel("Slack app token").selectOption(slackAppSecret.id);
   await page.getByRole("button", { name: "Save configuration" }).click();
   await dialog.getByText(/Access denied|permission/i).waitFor();
+  assert.equal(await allowEveryone.isChecked(), true);
+  assert.equal(await allowEveryone.isEnabled(), true);
+  assert.equal(await allowedUsers.isDisabled(), true);
 
   const configuration = await fixture.request("GET", configurationPath);
   assert.equal(configuration.status, 200);
   assert.deepEqual(configuration.data.secretBindings ?? {}, {});
   assert.deepEqual(accessBindingPostRequests(requests, namespace.id), []);
+});
+
+test("Channel drawer round trips existing Slack everyone channel access", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Slack everyone access", { ready: true });
+  const slack = {
+    enabled: true,
+    mode: "socket",
+    appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+    botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+    dmPolicy: "allowlist",
+    groupPolicy: "allowlist",
+    allowFrom: ["UDM123"],
+    channels: { CEVERY123: { requireMention: true, users: ["*"], allowBots: "mentions" } },
+  };
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Slack Everyone Agent",
+    nativeValues("slack-everyone", { harnessId: "codex", channels: { slack } }),
+    { executionMode: "dedicated" },
+  );
+  const { page } = await newPage(t, fixture);
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "channels");
+
+  await login(page, fixture, url.pathname + url.search);
+  await page.getByRole("heading", { name: "Slack Everyone Agent" }).waitFor();
+  await page.getByRole("button", { name: "Edit Slack" }).click();
+  let dialog = page.getByRole("dialog", { name: "Edit Slack" });
+  await dialog.getByLabel("Slack channel IDs").fill("CEVERY123, CSECOND123");
+  const allowedUsers = dialog.getByLabel("Allowed channel user IDs");
+  const allowEveryone = dialog.getByLabel("Allow everyone in these channels to mention the agent");
+  assert.equal(await allowEveryone.isChecked(), true);
+  assert.equal(await allowedUsers.isDisabled(), true);
+  await dialog.getByLabel("Require a mention", { exact: true }).uncheck();
+  const saved = page.waitForResponse(
+    (response) =>
+      response.request().method() === "PATCH" &&
+      response.url().endsWith(`/configurations/${agent.configurationId}`),
+  );
+  await page.getByRole("button", { name: "Save configuration", exact: true }).click();
+  assert.equal((await saved).status(), 200);
+
+  const configuration = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+  );
+  assert.deepEqual(configuration.data.values.channels.slack, {
+    ...slack,
+    channels: {
+      CEVERY123: { requireMention: false, users: ["*"], allowBots: "mentions" },
+      CSECOND123: { requireMention: false, users: ["*"] },
+    },
+  });
+
+  await page.getByRole("button", { name: "Edit Slack" }).click();
+  dialog = page.getByRole("dialog", { name: "Edit Slack" });
+  assert.equal(
+    await dialog.getByLabel("Allow everyone in these channels to mention the agent").isChecked(),
+    true,
+  );
+  assert.equal(await dialog.getByLabel("Allowed channel user IDs").isDisabled(), true);
+  assert.equal(await dialog.getByLabel("Require a mention", { exact: true }).isChecked(), false);
 });
 
 test("Channel drawer reports partial save when post-PATCH Secret grant is rejected", async (t) => {
@@ -4875,8 +5065,15 @@ for (const [dmPolicy, groupPolicy] of [
     await edit.waitFor();
     assert.equal(await edit.isEnabled(), true);
     await edit.click();
-    await page.getByLabel("Slack channel IDs").fill("CKEEP123, CNEW123");
-    await page.getByLabel("Require a mention", { exact: true }).uncheck();
+    const dialog = page.getByRole("dialog", { name: "Edit Slack" });
+    const allowedUsers = dialog.getByLabel("Allowed channel user IDs");
+    const allowEveryone = dialog.getByLabel(
+      "Allow everyone in these channels to mention the agent",
+    );
+    assert.equal(await allowedUsers.inputValue(), "UKEEP123");
+    assert.equal(await allowEveryone.isDisabled(), true);
+    await dialog.getByLabel("Slack channel IDs").fill("CKEEP123, CNEW123");
+    await dialog.getByLabel("Require a mention", { exact: true }).uncheck();
     const saved = page.waitForResponse(
       (response) =>
         response.request().method() === "PATCH" &&
@@ -4893,7 +5090,7 @@ for (const [dmPolicy, groupPolicy] of [
       ...slack,
       channels: {
         CKEEP123: { requireMention: false, users: ["UKEEP123"] },
-        CNEW123: { requireMention: false },
+        CNEW123: { requireMention: false, users: ["UKEEP123"] },
       },
     });
     assert.equal(

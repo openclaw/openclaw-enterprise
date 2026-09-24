@@ -16,6 +16,14 @@ export const CreateSlackSecretStaged = {
   ...story("createSlackSecretStaged"),
   name: "Slack Secret bindings staged",
 };
+export const CreateSlackChannelAccessRequired = {
+  ...story("createSlackChannelAccessRequired"),
+  name: "Slack channel sender required",
+};
+export const CreateSlackAllowEveryone = {
+  ...story("createSlackAllowEveryone"),
+  name: "Slack allow everyone",
+};
 export const CreateProvisioningSecrets = {
   ...story("createProvisioningSecrets"),
   name: "Provisioning with saved Secrets",

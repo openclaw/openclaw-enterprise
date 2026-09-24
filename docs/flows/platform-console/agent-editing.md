@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
 updated: 2026-09-23
-last_updated_session: 01a0cd92-fd3f-7d83-a51e-f6264ef6be09
+last_updated_session: 01a0d150-104a-71a3-9e56-6c5e3ee510ea
 ---
 
 # Console Agent editing and runtime requests
@@ -85,7 +85,20 @@ deployment guard still refuses Teams-enabled drafts because Console credential
 readiness cannot be established for them. The Slack editor requires
 dedicated execution for enabled channels and may refuse native documents that it
 cannot round-trip, including non-Socket Slack settings, non-standard credential
-references, mixed Slack mention settings, and unsupported plugin shapes.
+references, wildcard channel maps, mixed Slack mention settings, mixed channel
+sender lists, sender IDs that cannot be represented in a comma-separated field,
+and unsupported plugin shapes.
+
+`apps/controller/src/console/channels/slack.mjs:appendFields` renders channel
+sender access separately from direct-message access. Existing `users: ["*"]`,
+empty `users`, or omitted `users` on supported channel entries check **Allow
+everyone in these channels to mention the agent**; explicit Slack user IDs fill
+the **Allowed channel user IDs** input. The input disables the everyone checkbox
+while it contains IDs, and the checkbox disables the input while selected.
+**Require a mention** reads `requireMention` and stays independent.
+`updatedSlack` writes `users: ["*"]` or the explicit user ID list onto each
+selected channel entry while copying unrelated per-channel properties, `dmPolicy`,
+`groupPolicy`, `allowFrom`, token references, and unrelated Secret bindings.
 
 `apps/controller/src/console/agents/detail.mjs:renderAgentDetail` passes the
 selected Namespace, saved Secret bindings, and draft Credentials URL to the
@@ -261,6 +274,8 @@ subsequent worker cleanup and the Namespace-owned resources it preserves.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-23 19:52: Record unsupported mixed Slack sender lists, unrepresentable sender IDs, and channel wildcard maps in the simple drawer. (01a0d150-104a-71a3-9e56-6c5e3ee510ea - 77aedc620f443056f9ee859050b8dc657a9c3133)
 
 - 2026-09-23 08:30: Trace Slack Secret menus, immediate creation, staged bindings, and explicit IAM grants before Configuration save. (01a0cd92-fd3f-7d83-a51e-f6264ef6be09 - 941edc9f6971a24ae29a74a6ca749b6375e6ec01)
 

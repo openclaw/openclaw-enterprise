@@ -3,6 +3,18 @@ const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
 const secretRef = (id) => ({ kind: "secret", namespaceId, id });
 const auth = { method: "api_key", source: secretRef("sec_demo_model") };
 
+function slackChannels(scenario) {
+  if (scenario.slackChannels !== undefined) {
+    return structuredClone(scenario.slackChannels);
+  }
+  return {
+    CDEMO123: {
+      requireMention: true,
+      users: scenario.slackAllowEveryone ? ["*"] : ["UDEMO123"],
+    },
+  };
+}
+
 function configurationValues(scenario) {
   const values = {
     gateway: { mode: "local" },
@@ -18,7 +30,7 @@ function configurationValues(scenario) {
       appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
       botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
       allowFrom: scenario.slackPolicy === "open" ? ["*"] : ["UDEMO123"],
-      channels: { CDEMO123: { requireMention: true, users: ["UDEMO123"] } },
+      channels: slackChannels(scenario),
     };
   }
   return values;
