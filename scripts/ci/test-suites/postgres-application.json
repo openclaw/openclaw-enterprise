@@ -59,10 +59,10 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-provider-ownership.test.mjs",
+      "path": "tests/integration/postgres-backend-ownership.test.mjs",
       "expectedTests": [
-        "development API starts with stale Provider references and permits repair through Agent update",
-        "PostgreSQL Provider ownership persists exact Agent associations and admits only matching managed bindings"
+        "development API starts with stale Backend references and permits repair through Agent update",
+        "PostgreSQL Backend ownership persists exact Agent associations and admits only matching managed bindings"
       ]
     },
     {
@@ -134,7 +134,7 @@
         "the revision worker activates admitted candidates, retires predecessors, and rejects revoked, malformed, and wrong-owner effects",
         "the revision worker rejects associated-account access revoked after admission before invoking Compute",
         "the revision worker rejects managed ServiceAccount issuance revoked after admission before Compute",
-        "the revision worker retries transient Provider binding read failures without activating",
+        "the revision worker retries transient Backend binding read failures without activating",
         "an older revision retry is superseded without preparing or retiring a newer active revision",
         "real PostgreSQL preserves the failure budget while an Agent runtime converges",
         "an overdue Agent runtime fails closed without activating its incomplete revision",
@@ -143,7 +143,7 @@
         "api_key revision dispatch rechecks Configuration and exact harness Secret grants without backend Secret reads",
         "codex_pat revision dispatch rechecks Configuration and exact harness Secret grants without backend Secret reads",
         "revision dispatch refuses a different selected Secret Driver before binding or activating the Agent",
-        "revision dispatch never substitutes a later ChatGPT credential or reconfigured Provider for its admitted snapshot"
+        "revision dispatch never substitutes a later ChatGPT credential or reconfigured Backend for its admitted snapshot"
       ]
     },
     {

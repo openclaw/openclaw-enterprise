@@ -419,7 +419,7 @@ async function fixture(mode = "embedded", nodeEnrollment) {
             namespaceId: revision.namespaceId,
             name: "Repository material Agent",
             configurationId: revision.configurationId,
-            providerId: revision.providerId,
+            backendId: revision.backendId,
             executionMode: mode,
             servicePrincipalId: revision.servicePrincipalId,
             createdAt: revision.createdAt,

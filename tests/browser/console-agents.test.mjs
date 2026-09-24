@@ -16,7 +16,7 @@ import {
 } from "../../packages/contracts/src/workspace-defaults.mjs";
 import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
-import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/providers/repository-credentials/control-client.ts";
+import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
@@ -330,7 +330,7 @@ async function createRepositoryLaunchFixture(
   { reloadablePolicy = false } = {},
 ) {
   const fixture = await createConsoleAppFixture(t, {
-    providers: [...providerFixtures, repositoryProviderFixture],
+    backends: [...backendFixtures, repositoryProviderFixture],
     repositoryCredentials: true,
   });
   await fixture.bootstrap();
@@ -368,7 +368,7 @@ function repositoryPolicyDriver(repositories) {
   const registry = validateGitHubRepositoryRegistry(
     {
       version: 1,
-      providerId: provider.id,
+      backendId: provider.id,
       providerInstanceId: "console-repository-provider",
       appId: "123",
       githubInstallationId: "456",

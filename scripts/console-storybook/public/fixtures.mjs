@@ -163,7 +163,7 @@ export function installFixture(scenario, evidence) {
               deadlineWallMs: Date.parse(createdAt) + 3600000,
               bindings: owner.repositoryBindings.map((binding) => ({
                 ...binding,
-                providerId: "github-demo",
+                backendId: "github-demo",
                 grant: {
                   providerInstanceId: "github-demo",
                   repositoryId: `demo-${binding.repositoryRef}`,
