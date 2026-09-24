@@ -95,7 +95,7 @@ runs:
       shell: bash
       run: pnpm cli:build
     - name: Prepare hosted platform disk capacity
-      if: inputs.lane == 'repository-credentials-platform' && runner.environment == 'github-hosted'
+      if: (inputs.lane == 'repository-credentials-platform' || inputs.lane == 'k3d-observability') && runner.environment == 'github-hosted'
       shell: bash
       env:
         OPENCLAW_CI_HEADROOM_LANE: ${{ inputs.lane }}

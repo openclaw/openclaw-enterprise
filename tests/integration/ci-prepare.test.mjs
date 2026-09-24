@@ -238,7 +238,7 @@ if (command === "k3d") {
   }
   if (equals(args, ["kubeconfig", "get", state.cluster])) finish("apiVersion: v1\n");
   if (equals(args, ["cluster", "delete", state.cluster])) finish();
-  if (equals(args.slice(0, 4), ["image", "import", "--mode", "tools-node"]) &&
+  if (equals(args.slice(0, 4), ["image", "import", "--mode", "direct"]) &&
       equals(args.slice(5), ["-c", state.cluster])) {
     assert.equal(args[4], state.archive);
     assert.ok(existsSync(state.archive));

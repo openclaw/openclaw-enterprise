@@ -19,6 +19,9 @@ const runtimeOnlyRoots = [
   "/usr/share/swift",
 ];
 const minimumRuntimeAvailableBytes = 36 * 1024 ** 3;
+const largeImageLane = ["container-runtime-build", "k3d-observability"].includes(
+  process.env.OPENCLAW_CI_HEADROOM_LANE,
+);
 const receipt = {
   kind: "repository-platform-capacity",
   lane: process.env.OPENCLAW_CI_HEADROOM_LANE,
@@ -140,7 +143,9 @@ async function main() {
   assert(
     process.platform === "linux" &&
       process.env.RUNNER_OS === "Linux" &&
-      process.env.ImageOS === "ubuntu24",
+      (process.env.ImageOS === "ubuntu24" ||
+        (process.env.OPENCLAW_CI_HEADROOM_LANE === "k3d-observability" &&
+          process.env.ImageOS === "ubuntu22")),
   );
   assert(
     receipt.sourceSha &&
@@ -148,12 +153,13 @@ async function main() {
       /^\d+$/.test(process.env.GITHUB_RUN_ATTEMPT ?? ""),
   );
   assert(
-    ["repository-credentials-platform", "container-runtime-build"].includes(
+    ["repository-credentials-platform", "container-runtime-build", "k3d-observability"].includes(
       process.env.OPENCLAW_CI_HEADROOM_LANE,
     ) && process.argv.length === 2,
   );
   const os = await readFile("/etc/os-release", "utf8");
-  assert(/^ID=ubuntu$/m.test(os) && /^VERSION_ID="24\.04"$/m.test(os));
+  const expectedVersion = process.env.ImageOS === "ubuntu22" ? "22.04" : "24.04";
+  assert(/^ID=ubuntu$/m.test(os) && os.split("\n").includes(`VERSION_ID="${expectedVersion}"`));
   receipt.before = await capacity();
   receipt.stage = "sdk-guard";
   assert(
@@ -164,7 +170,7 @@ async function main() {
   const mounts = await readFile("/proc/self/mountinfo", "utf8");
   const removalRoots = [androidRoot];
   assert(await guardRemovalRoot(androidRoot, rootInfo, mounts, true));
-  if (receipt.lane === "container-runtime-build") {
+  if (largeImageLane) {
     for (const root of runtimeOnlyRoots) {
       if (await guardRemovalRoot(root, rootInfo, mounts, false)) {
         removalRoots.push(root);
@@ -204,7 +210,7 @@ async function main() {
   }
   receipt.sdkRemoved = true;
   receipt.rootsRemoved = removalRoots;
-  if (receipt.lane === "container-runtime-build") {
+  if (largeImageLane) {
     receipt.minimumAvailableBytes = minimumRuntimeAvailableBytes;
     receipt.stage = "capacity-guard";
     assert((await capacity()).availableBytes >= minimumRuntimeAvailableBytes);
