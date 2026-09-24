@@ -447,12 +447,14 @@ source after ending the session; initialization does not reissue a lost key.
 The [operator cleanup](production-agents.md#end-the-operator-session) removes
 only the disposable copy created above.
 
-After the production API authenticates, continue with Namespace preparation,
-Agent deployment, and a [real model-response check](production-agents.md#verify-production-workloads)
-that matches the Agent's native gateway authentication mode.
+After authentication, follow [Namespace and Agent deployment](production-agents.md),
+including its [model-response check](production-agents.md#verify-production-workloads).
 
 ## Related
 
 Continue with [production Agent deployment](production-agents.md). For failed
 initialization, preserve state and follow [bootstrap recovery](../../reference/authentication/service-api-keys.md#recover-an-incomplete-bootstrap)
 and the [production startup flow](../../flows/production-startup.md).
+
+[Connect default metrics and logs](../observability.md) to your collectors. The
+[optional demo stack](../observability/demo.md) is not recommended for production.

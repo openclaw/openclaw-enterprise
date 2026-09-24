@@ -95,8 +95,8 @@ if (command === "docker" || command === "podman") {
   }
   const sourceImage = process.env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE;
   if (sourceImage && equals(args, ["image", "inspect", "--format", "{{json .RepoDigests}}", sourceImage])) {
-    if (scenario === "inspect-failed" || (scenario === "image-absent" && !state.pulled)) {
-      process.stderr.write(scenario === "inspect-failed" ? "Cannot connect to the Docker daemon\n" : "Error response from daemon: No such image\n");
+    if (scenario === "inspect-failed" || (["image-absent", "podman-image-absent"].includes(scenario) && !state.pulled)) {
+      process.stderr.write(scenario === "inspect-failed" ? "Cannot connect to the Docker daemon\n" : scenario === "podman-image-absent" ? "Error: image not known\n" : "Error response from daemon: No such image\n");
       process.exit(1);
     }
     const matching = scenario === "local-digest" || (state.pulled && scenario !== "pull-mismatch");
@@ -635,6 +635,7 @@ test("k3d preparation reuses only matching local immutable images and verifies f
   for (const scenario of [
     "local-digest",
     "image-absent",
+    "podman-image-absent",
     "local-mismatch",
     "pull-mismatch",
     "inspect-failed",

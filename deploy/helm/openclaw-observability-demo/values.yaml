@@ -1,0 +1,30 @@
+# Convenience and testing only. All data is disposable; no production durability or HA.
+occ:
+  namespace: ""
+  release: ""
+  metricsPort: 9464
+cluster:
+  cidrs: []
+  port: 443
+dns:
+  namespace: kube-system
+  podLabels:
+    k8s-app: kube-dns
+grafana:
+  adminSecretName: ""
+  adminSecretKey: password
+  # Optional private clients. Empty means port-forward access only.
+  clients: []
+images:
+  prometheus: docker.io/prom/prometheus@sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0
+  grafana: docker.io/grafana/grafana@sha256:ac461fb352abc50da10a51c7d02462e9c05488f11f53f14b3ad79a8145f638a0
+  loki: docker.io/grafana/loki:3.6.0@sha256:6a705de65df88aa0d90a44779606b0042722c86637335a73858f65f9fe9f9557
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+storage:
+  sizeLimit: 1Gi

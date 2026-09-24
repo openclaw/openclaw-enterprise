@@ -375,3 +375,11 @@ credential separation; it does not prove production node-pool isolation. Configu
 separate reviewed node pools for that proof. Current tests must still pass with
 the actual supported Gateway/Codex images and authenticated node reconnect;
 fixture readiness is not a substitute for model-backed acceptance.
+
+## Production observability
+
+Use `pnpm test:observability` for credential-free Helm metrics/log validation and
+Prometheus/Loki/Grafana smoke testing on an owned k3d cluster. It also runs in
+ordinary PR CI. See [acceptance scope and prerequisites](metrics.md#kubernetes-observability-acceptance).
+Real model-turn log validation remains a separate explicit command and protected
+CI lane.

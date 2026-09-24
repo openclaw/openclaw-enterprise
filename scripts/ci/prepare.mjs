@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createServer, isIPv4 } from "node:net";
@@ -639,7 +640,9 @@ async function buildRuntimeImages(
     await writeState(statePath, state);
     await execFile(process.env.OCC_DOCKER_BIN ?? "docker", [
       "build",
-      ...(localStore ? ["--builder", "default", "--load"] : []),
+      ...(localStore && basename(process.env.OCC_DOCKER_BIN ?? "docker") !== "podman"
+        ? ["--builder", "default", "--load"]
+        : []),
       "--pull=false",
       "--target",
       "runtime",
@@ -660,7 +663,9 @@ async function buildRuntimeImages(
     await writeState(statePath, state);
     await execFile(process.env.OCC_DOCKER_BIN ?? "docker", [
       "build",
-      ...(localStore ? ["--builder", "default", "--load"] : []),
+      ...(localStore && basename(process.env.OCC_DOCKER_BIN ?? "docker") !== "podman"
+        ? ["--builder", "default", "--load"]
+        : []),
       "--pull=false",
       "-f",
       runtimeDockerfile,
@@ -709,7 +714,7 @@ async function ensureK3dCluster(statePath, state) {
   }
   await commandAvailable(process.env.OPENCLAW_CI_K3D_BIN ?? "k3d", ["version"]);
   const openShell = state.lane === "openshell";
-  const crossNodePluginStatus = fixtureLanes.has(state.lane);
+  const crossNodePluginStatus = fixtureLanes.has(state.lane) || state.lane === "k3d-observability";
   if (!openShell) {
     await commandAvailable(process.env.OCC_KUBECTL_BIN ?? "kubectl", ["version", "--client=true"]);
   }
@@ -1241,7 +1246,7 @@ async function ensureDockerSourceImage(state, image, envName) {
   } catch (error) {
     // A locally built immutable image may have no reachable registry. Reuse
     // only its verified repository digest; other Docker failures stay visible.
-    if (!/No such (?:image|object)/i.test(error.stderr ?? "")) {
+    if (!/No such (?:image|object)|image not known/i.test(error.stderr ?? "")) {
       throw error;
     }
   }
@@ -1654,6 +1659,49 @@ async function prepareLane({ lane, statePath }) {
       env.OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS = cluster.pluginStatusProxyCidrs;
       break;
     }
+    case "k3d-observability": {
+      await commandAvailable(process.env.OCC_HELM_BIN ?? "helm", ["version", "--short"]);
+      const inputs = effectiveLaneEnv(name, env);
+      await ensureDockerSourceImage(state, inputs.NODE_BASE_IMAGE, "NODE_BASE_IMAGE");
+      const cluster = await ensureK3dCluster(resolvedStatePath, state);
+      env.OCC_TEST_KUBERNETES_KUBECONFIG = cluster.kubeconfig;
+      env.OCC_TEST_KUBERNETES_CONTEXT = cluster.context;
+      env.OCC_TEST_KUBERNETES_IMAGE = (
+        await prepareFixtureImage(resolvedStatePath, state, cluster)
+      ).image;
+      await pinFixtureImageInK3d(cluster, env.OCC_TEST_KUBERNETES_IMAGE);
+      const built = await buildRuntimeImages(resolvedStatePath, state, {
+        controller: true,
+        nodeBaseImage: inputs.NODE_BASE_IMAGE,
+        localStore: true,
+      });
+      const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
+      const { loadYaml } = require("@kubernetes/client-node");
+      const demo = loadYaml(
+        await readFile(
+          join(repositoryRoot, "deploy/helm/openclaw-observability-demo/values.yaml"),
+          "utf8",
+        ),
+      );
+      const production = loadYaml(
+        await readFile(join(repositoryRoot, "deploy/helm/openclaw-enterprise/values.yaml"), "utf8"),
+      );
+      for (const [variable, image] of Object.entries({
+        OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: built.env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE,
+        OCC_TEST_PRODUCTION_NODE_IMAGE: inputs.NODE_BASE_IMAGE,
+        OCC_TEST_PRODUCTION_POSTGRES_IMAGE: inputs.OCC_TEST_PRODUCTION_POSTGRES_IMAGE,
+        OCC_TEST_OBSERVABILITY_COLLECTOR_IMAGE: production.logging.collector.image,
+        OCC_TEST_OBSERVABILITY_PROMETHEUS_IMAGE: demo.images.prometheus,
+        OCC_TEST_OBSERVABILITY_GRAFANA_IMAGE: demo.images.grafana,
+        OCC_TEST_OBSERVABILITY_LOKI_IMAGE: demo.images.loki,
+      })) {
+        progress(name, `Importing ${variable}.`);
+        env[variable] = (
+          await registerImageInK3d(resolvedStatePath, state, cluster, image, variable)
+        ).reference;
+      }
+      break;
+    }
     case "repository-credentials-platform": {
       await timedPreparation(name, "postgres-start", () =>
         ensurePostgresServer(resolvedStatePath, state),
@@ -1713,6 +1761,15 @@ async function prepareLane({ lane, statePath }) {
       const routing = await prepareGatewayRouting({ cluster, execFile });
       Object.assign(env, routing.env);
       if (name === "k3d-otel") {
+        const inputs = effectiveLaneEnv(name, env);
+        for (const [variable, image] of Object.entries({
+          OCC_TEST_PRODUCTION_POSTGRES_IMAGE: inputs.OCC_TEST_PRODUCTION_POSTGRES_IMAGE,
+          OCC_TEST_PRODUCTION_NODE_IMAGE: inputs.NODE_BASE_IMAGE,
+        })) {
+          env[variable] = (
+            await registerImageInK3d(resolvedStatePath, state, cluster, image, variable)
+          ).reference;
+        }
         await prepareLaneLogging(resolvedStatePath, state, env, cluster);
       }
       break;

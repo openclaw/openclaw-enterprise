@@ -1,5 +1,10 @@
 # Implementation specifications
 
+[Default production observability](36-production-observability.md) — Implemented locally;
+production telemetry defaults, separate demo stack, and local k3d/CI acceptance.
+See the [implementation plan](36-production-observability-plan.md) and
+[qualification report](reports/36-production-observability-implementation.md).
+
 [First Enterprise container release](32-first-container-release.md) — Implementing;
 protected marker bootstrap and first private SHA-addressed controller/runtime publication.
 

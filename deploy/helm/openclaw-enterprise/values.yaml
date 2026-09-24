@@ -2,7 +2,8 @@ images:
   controller: ""
 
 metrics:
-  enabled: false
+  # Private listeners are available by default; paired selectors admit scrapers.
+  enabled: true
   port: 9464
   scraperNamespaceLabels: {}
   scraperPodLabels: {}
@@ -14,8 +15,14 @@ logging:
     image: docker.io/otel/opentelemetry-collector-contrib:0.159.0@sha256:1f2c54a30e713fac6b3ae77a1ec84010c2007e29ced8ec666214fc2f6739c1cc
     configSecretName: occ-otel-collector-config
     envSecretName: occ-otel-collector-exporter
+    metrics:
+      enabled: true
+      scraperNamespaceLabels: {}
+      scraperPodLabels: {}
     exporter:
       cidr: ""
+      namespaceLabels: {}
+      podLabels: {}
       port: 443
     resources:
       requests:

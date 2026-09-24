@@ -36,7 +36,7 @@ runs:
       shell: bash
       run: bash scripts/ci/setup-tools.sh "${{ inputs.profile }}"
     - name: Enable Kubernetes bridge packet filtering
-      if: startsWith(inputs.lane, 'k3d-fixture-')
+      if: startsWith(inputs.lane, 'k3d-fixture-') || inputs.lane == 'k3d-observability'
       shell: bash
       run: |
         # k3d nodes share the runner kernel; K3s cannot load absent host modules.

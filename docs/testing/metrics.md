@@ -20,7 +20,8 @@ docker compose -f compose.yaml -f compose.metrics.yaml up -d --build
 
 Open Grafana at `http://127.0.0.1:3001`, sign in as `admin` with that password,
 and open **OCC → OCC development**. The datasource and dashboard are provisioned
-from `deploy/metrics/development/`. Prometheus is at `http://127.0.0.1:9090`.
+from `deploy/metrics/development/`; its shared dashboard lives in
+`deploy/helm/openclaw-observability-demo/files/`. Prometheus is at `http://127.0.0.1:9090`.
 Override host ports with `OCC_GRAFANA_PORT` and `OCC_PROMETHEUS_PORT` if occupied.
 
 Each OCC metrics listener stays on container loopback. Two Prometheus agent-mode
@@ -158,3 +159,44 @@ bundled in the pinned image. Background updates can replace the working
 Prometheus backend with a download that cannot execute from the data tmpfs,
 causing datasource health to fail while Grafana's own health stays ready. The
 test explicitly mounts that directory with `noexec` on both Docker and Podman.
+
+## Kubernetes observability acceptance
+
+Run `pnpm test:observability` from the repository root with Node 24+, the pinned
+pnpm, Helm, kubectl, k3d, and Docker or an explicitly selected compatible Podman
+engine. Use an enforcing NetworkPolicy implementation with bridge netfilter.
+The command prepares its own loopback k3d cluster, builds the current controller,
+imports pinned images, runs the same `k3d-observability` lane as PR CI, and cleans
+up its recorded resources. It preserves your default kubeconfig and other clusters.
+It prints a private results directory containing strict case counts and failures.
+
+The default requires no model credential, removes `OPENAI_API_KEY` from child
+environments, and makes no model calls. It uses the installed Helm API/worker,
+PostgreSQL with migrator/application roles, and a deterministic Kubernetes Compute
+fixture. Source checks exercise private listeners, real allow/deny networking,
+request and lifecycle metric changes, Pod replacement, attributed log receipt,
+filtering, one collection owner, exporter outage/recovery, and explicit opt-out.
+Demo smoke checks query both real data sources through Grafana and execute the
+shared dashboard queries. Readiness alone is not acceptance.
+
+Run `pnpm test:observability:models` separately for the protected `k3d-otel` lane.
+Select `OCC_TEST_OPENAI_MODEL` and a digest-pinned `NODE_BASE_IMAGE`, and provide
+the existing authorized `OPENAI_API_KEY`. Preparation builds the reviewed runtime
+sources and imports immutable images; approved image overrides follow
+[Kubernetes model turns](kubernetes.md#kubernetes-model-turns-and-secrets).
+Missing selections or credentials fail before provisioning. This lane is separate from ordinary
+PR/main CI; a passing credential-free run does not prove gateway/Codex model logs.
+
+For macOS Podman, k3d needs a compatible rootful engine with cpuset delegation.
+Use an explicitly selected connection/socket; do not change the default engine.
+Shared bootstrap storage must preserve Linux UID/GID/modes: use a task-owned
+VM-native path via `RUNNER_TEMP` if the host's shared filesystem does not.
+For Podman model builds, first pull the approved `NODE_BASE_IMAGE` and the runtime
+base pinned in [`deploy/runtime/Dockerfile`](../../deploy/runtime/Dockerfile):
+those builds use `--pull=false` and require both bases in the local image store.
+The separate model lane mounts its external receiver files from `RUNNER_TEMP`,
+so that path must instead be visible to both macOS and the VM; its single-node
+bootstrap volume stays inside the k3d container.
+Do not weaken permission checks to accommodate a shared mount. The local baseline
+was verified with rootful Podman and VM-native storage; Docker remains the hosted
+CI path. See [the baseline report](../../specs/reports/36-production-observability-baseline.md).

@@ -1,0 +1,151 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-default-deny
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: openclaw-observability-demo
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-dns
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: openclaw-observability-demo
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.dns.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.dns.podLabels | nindent 14 }}
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-scraping
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "demo.labels" (dict "root" . "component" "prometheus") | nindent 6 }}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        {{- range .Values.cluster.cidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.cluster.port }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.occ.namespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: openclaw-enterprise
+              app.kubernetes.io/instance: {{ .Values.occ.release }}
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values: [api, worker]
+      ports:
+        - protocol: TCP
+          port: {{ .Values.occ.metricsPort }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.occ.namespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: openclaw-enterprise
+              app.kubernetes.io/instance: {{ .Values.occ.release }}
+              app.kubernetes.io/component: collector
+      ports:
+        - { protocol: TCP, port: 8888 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-grafana-egress
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "demo.labels" (dict "root" . "component" "grafana") | nindent 6 }}
+  policyTypes: [Egress]
+  egress:
+    {{- range $component := list "prometheus" "loki" }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "demo.labels" (dict "root" $ "component" $component) | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ if eq $component "prometheus" }}9090{{ else }}3100{{ end }}
+    {{- end }}
+{{- range $component := list "prometheus" "loki" }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $.Release.Name }}-{{ $component }}-ingress
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "demo.labels" (dict "root" $ "component" $component) | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "demo.labels" (dict "root" $ "component" "grafana") | nindent 14 }}
+        {{- if eq $component "loki" }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $.Values.occ.namespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: openclaw-enterprise
+              app.kubernetes.io/instance: {{ $.Values.occ.release }}
+              app.kubernetes.io/component: collector
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ if eq $component "prometheus" }}9090{{ else }}3100{{ end }}
+{{- end }}
+{{- if .Values.grafana.clients }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-grafana-clients
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "demo.labels" (dict "root" . "component" "grafana") | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        {{- range .Values.grafana.clients }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .podLabels | nindent 14 }}
+        {{- end }}
+      ports:
+        - { protocol: TCP, port: 3000 }
+{{- end }}

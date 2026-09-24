@@ -144,10 +144,11 @@ replace, or regenerate output; see [recovery](../../guides/deploy/service-keys.m
 and delivery checks, use
 [Configure platform observability](../../guides/observability.md#kubernetes-and-helm).
 
-When enabled, the chart requires a digest-pinned image, one approved exporter or
-proxy IPv4 `/32`, and nonempty dedicated configuration and environment Secret
-names. Neither Secret may reuse the Installation, database, auth, or ChatGPT
-Backend Secret. The named Secrets must be in the control-plane namespace:
+When enabled, the chart requires a digest-pinned image, an exact exporter
+destination (IPv4 `/32` or paired namespace/Pod selectors), a TCP port, and
+nonempty dedicated configuration and environment Secret names. Neither Secret
+may reuse the Installation, database, auth, or ChatGPT Backend Secret. The named
+Secrets must be in the control-plane namespace:
 
 - `configSecretName` supplies `collector.yaml`, `kubernetes.yaml`, and
   `exporter.yaml` keys.
@@ -174,3 +175,19 @@ See [chart defaults](../../../deploy/helm/openclaw-enterprise/values.yaml) for
 `resources`, `state.sizeLimit`, and `tmp.sizeLimit`. The
 [security reference](../security.md#operational-log-collection-boundary) owns the
 credential, runtime-export, and workload isolation boundaries.
+
+### Private telemetry defaults
+
+`metrics.enabled` defaults to `true`, with API and worker listeners on their Pod
+IP at port `9464`. Both `metrics.scraperNamespaceLabels` and
+`metrics.scraperPodLabels` default to empty: no metrics ingress is granted until
+both are set. Partial selectors and invalid or API-colliding ports fail rendering.
+See [scraping and discovery](../../guides/observability/metrics.md).
+
+For an in-cluster log receiver, set both
+`logging.collector.exporter.namespaceLabels` and `podLabels`, set its `port`,
+and leave `cidr` empty. This alternative cannot be combined with a CIDR.
+Collector metrics use the same paired selector contract under
+`logging.collector.metrics`, on fixed port `8888`; metrics ingress is opt-in.
+The chart grants only the selected peer and port. Other NetworkPolicies remain
+additive, so review them when assessing effective access.
