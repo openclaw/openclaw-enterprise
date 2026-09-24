@@ -2,7 +2,8 @@
 
 ## Current preset flow
 
-Captured on September 24, 2026 from source commit `706e1df35137dafbfd2083048916a3bfe2da7ea4`.
+Captured on September 24, 2026 from source commit `3710048625523716ab7a869b3d45f36d288ba901`.
+Rebased onto main `4373b6e3`, including its updated Console styles.
 The Console uses the shipped `devday` JSON preset, prefilled Slack channel
 `C0C43A2QA11`, and workspace-file overrides. The raw Secret bindings JSON editor
 has been removed. DevDay includes the supplied Ocalot `AGENTS.md` verbatim,
