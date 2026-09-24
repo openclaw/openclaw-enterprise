@@ -95,52 +95,41 @@ graph TD
 
 `apps/controller/src/composition/development-postgres.ts:composePostgresDevelopment`
 
-Startup validates Provider definitions into safe `{id,type}` summaries passed to
-`createFastifyApp`. Requests never scan configuration live, read credentials, or
-contact a Provider. [Provider-managed credential delivery](service-account-driver-credential-delivery.md)
-owns client construction and Driver activation.
+Startup passes safe Provider `{id,type}` summaries to `createFastifyApp`.
+[Provider-managed delivery](service-account-driver-credential-delivery.md) owns
+Driver activation. Requests do not reread configuration or credentials.
 
-`apps/controller/src/console-assets.ts:readConsoleAsset` maps public console
-assets and capability modules to allowlisted files, with recognized page URLs
-using the shared HTML shell. Unknown console paths receive that shell with HTTP
-`404`. The controller sets MIME type and same-origin content security policy;
-other routes keep canonical API JSON errors. The Dockerfile copies these files
-into the controller image.
+`apps/controller/src/console-assets.ts:readConsoleAsset` serves allowlisted assets
+and the shared HTML shell with MIME types and same-origin CSP. Unknown console
+paths return the shell with `404`; API routes retain JSON errors.
 
-`scripts/build-console-metadata.mjs` stamps the console HTML during image build.
-The publisher supplies its checked `source_sha` as `OCC_BUILD_REVISION`, also used
-for the image revision label. Empty metadata stays empty; nonempty metadata must
-be a full lowercase Git SHA. With `debug=true`, `shell.mjs:renderShell` shows
-the short hash beside OCE and the full source commit in the debug sidebar.
-Missing or invalid metadata displays an unavailable commit.
+`scripts/build-console-metadata.mjs` bakes the publisher's checked
+`OCC_BUILD_REVISION` into HTML. With `debug=true`, `shell.mjs:renderShell` displays
+the full commit; invalid or absent metadata remains unknown.
 
-`runtime-images.mjs:renderRuntimeImages` lists readable Agents in the selected
-Namespace and makes at most three concurrent `runtime-images` reads. Each read
-passes exact Agent authorization to
-`packages/occ/src/index.ts:OpenClawController.getAgentRuntimeImages`, which resolves
-the active revision and its selected Compute Driver before external I/O.
-Docker inspects owned containers and their attached immutable images. Kubernetes
-reads revision-owned Pod specs/status and the private runtime image endpoint,
-binding commit provenance to the observed Pod UID and container ID. The runtime
-Dockerfile bakes that commit into `/opt/oce/runtime/build.json`.
+`runtime-images.mjs:renderRuntimeImages` issues at most three concurrent reads for
+readable Agents in the selected Namespace.
+`packages/occ/src/index.ts:OpenClawController.getAgentRuntimeImages` authorizes
+exact Agent read, resolves its active revision, then calls its Compute Driver.
+Docker follows attached immutable images. Kubernetes reads revision-owned Pods
+and binds provenance to Pod/container identity, with a two-second metadata deadline.
+The runtime Dockerfile bakes the commit into `/opt/oce/runtime/build.json`.
 
-The browser labels absent provenance and Driver failures explicitly. Navigation
-preserves the flag and discards responses from earlier view generations; removing
-the flag stops diagnostic reads. The [Compute contract](../reference/drivers/compute.md)
-owns inspection scope and unsupported Driver behavior.
+Navigation preserves the flag and rejects stale responses; removing it stops
+these reads. Missing provenance and failures remain explicit. The
+[Compute contract](../reference/drivers/compute.md) defines inspection scope.
 
 ### 2. Resolve the session before private reads
 
 `apps/controller/src/console/console.mjs:loadPage`
 
-The browser clears the prior view, advances its navigation generation, and
-requests `GET /api/auth/session`. No session opens login; unavailable inspection
-blocks private reads and offers Retry. Login submits exactly email and password.
-`apps/controller/src/auth/index.ts:requireTrustedBrowserOrigin` compares browser
-Origin to the configured controller origin before sign-in or sign-out. Server SDK
-calls bypass Better Auth's request-origin middleware, so this HTTP boundary keeps
-that check while retaining headerless CLI requests. Better Auth owns the session
-cookie and password verification; the browser stores no credentials or tokens.
+The browser clears the prior view, advances its generation, and requests
+`GET /api/auth/session`. Missing sessions open login; failed reads offer Retry.
+Login submits email and password.
+`apps/controller/src/auth/index.ts:requireTrustedBrowserOrigin` checks browser
+Origin before sign-in/out, including SDK calls that bypass Better Auth middleware.
+Headerless CLI requests remain supported. Better Auth owns session cookies and
+password verification; the browser stores no credentials or tokens.
 
 After authentication, the client reads `GET /namespaces`, validates the URL's
 selection against readable Namespaces, or chooses the first ready one followed by
@@ -163,12 +152,10 @@ empty configuration is a successful empty list; absent wiring and dependency
 failure return errors.
 
 `apps/controller/src/console/agents/create.mjs:renderCreateAgent` selects Provider,
-then Harness. OpenAI defaults to Codex (Dedicated) and offers OpenClaw (Embedded);
-Anthropic offers OpenClaw. Codex accepts API keys or **Service Accounts**
-(`codex_pat`); OpenClaw accepts API keys. Provider changes reset harness,
-credential, and model. Switching an unsaved service account token to OpenClaw
-clears token/model and selects API-key auth; API-key harness changes retain both.
-Credential hints link to the token console and show expected prefixes.
+then Harness: OpenAI defaults to Dedicated Codex and offers Embedded OpenClaw;
+Anthropic offers OpenClaw. Provider/Harness changes reset incompatible credentials
+and model choices. The [creation reference](../reference/console/create-and-deploy.md)
+defines authentication combinations and token handling.
 
 Presets fix saved credential providers and reject cross-provider JSON before
 writes. Saved service account tokens lock Codex; operator-managed credentials
