@@ -457,7 +457,7 @@ test("standard Codex Preset installs and creates a dedicated Agent with restrict
   assert.equal(appServer.url, "${APP_SERVER_URL}");
   assert.equal(appServer.authToken, "${APP_SERVER_TOKEN}");
   assert.equal(appServer.sandbox, "workspace-write");
-  assert.equal(appServer.approvalPolicy, "never");
+  assert.equal(appServer.approvalPolicy, "on-request");
   assert.deepEqual(appServer.networkProxy, {
     enabled: true,
     baseProfile: "workspace",

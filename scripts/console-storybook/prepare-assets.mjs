@@ -21,6 +21,7 @@ for (const name of [
   "standard-codex",
   "standard-openclaw",
   "devday",
+  "devday-partners",
   "devday-qa",
   "devday-oncall",
 ]) {

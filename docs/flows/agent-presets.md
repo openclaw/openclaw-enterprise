@@ -76,7 +76,7 @@ authorized persisted administrator through IAM, and initialize defaults after
 selecting Configuration and IAM Drivers. Native template contents
 remain in the application bundle; OCC owns generic Preset lifecycle. The
 [standard Codex artifact](../../deploy/presets/standard-codex.json) requests
-cached hosted search and grants the exact build hosts documented in the
+on-request approvals with the user as reviewer, cached hosted search, and the exact build hosts in the
 [standard Preset guide](../guides/topics/standard-codex-preset.md#build-network-allowlist).
 Seeding and rendering copy that native policy; the deployed Codex plugin owns
 its enforcement. Updating the bundle does not replace already installed copies.

@@ -38,6 +38,8 @@ all retained `gpt-6-astra`, Codex service-account authentication, and the render
 Agent name in `AGENTS.md`. No browser errors or unhandled fixture requests occurred.
 The Installation example still comments out custom presets; Storybook includes
 all three for rehearsal.
+Current source also includes Partners Agent, which copies SWE Agent and starts
+with no Slack channels selected.
 
 - [SWE Agent](presets/11-swe-choice.png)
 - [Q&A Agent](presets/12-qa-choice.png)
@@ -81,7 +83,7 @@ Storybook was rebuilt from this source and served only on loopback.
 
 This earlier connected recording selected SWE Agent with both standard presets
 available. The newer recording above verifies all three custom presets. Custom
-presets remain disabled in the Installation example.
+presets, including Partners Agent, remain disabled in the Installation example.
 
 The connected walkthrough selected SWE Agent, supplied fake credentials, verified
 the channel prefill, selected both `openclaw/openclaw-enterprise` and

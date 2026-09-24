@@ -105,12 +105,13 @@ configuration from the simulated discovery catalog, repository choices
 `openclaw/openclaw-enterprise` and `openclaw/openclaw`, prefilled channel
 `C0C43A2QA11`, and simulated Slack Secrets. The separate Preset workspace story
 demonstrates variable-rendered file contents and an intentionally empty file.
-The DevDay picker includes both bundled standard presets and all three custom
-presets: SWE Agent, Q&A Agent, and Oncall Agent.
+The DevDay picker includes both bundled standard presets and all four custom
+presets: SWE Agent, Partners Agent, Q&A Agent, and Oncall Agent.
 The Standard OpenClaw preset story previews its native harness settings.
 Preset Secret stories cover existing selection, pending metadata, denied reads,
 and an empty catalog; each leaves new-token entry available explicitly.
-Q&A Agent and Oncall Agent remain disabled in the example Installation YAML.
+Partners Agent, Q&A Agent, and Oncall Agent remain disabled in the example
+Installation YAML.
 
 Use the [DevDay storyboard](../../scripts/console-storybook/devday-storyboard.md)
 for the presenter actions, expected visible states, and fallbacks.

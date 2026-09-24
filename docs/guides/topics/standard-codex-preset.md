@@ -127,8 +127,8 @@ host when Go downloads it through its module proxy.
 The native bridge requests a workspace-write permission profile with its managed
 network proxy enabled, `mode: limited`, and the build allowlist above. The
 shipped map has no wildcard grants. Upstream proxies, local binding, SOCKS, and unrestricted
-Unix-socket access are disabled. `approvalPolicy: never` requests denial of
-operations that need approval instead of approving an escape from the sandbox.
+Unix-socket access are disabled. `approvalPolicy: on-request` lets Codex request
+approval when needed; `approvalsReviewer: user` selects the user as reviewer.
 
 These permissions apply to sandboxed Codex tools. Required model calls and
 gateway/app-server control traffic are separate. Hosted cached search uses the
@@ -164,7 +164,7 @@ the checks below. Do not copy a host's general network allowlist.
 On your selected runtime, verify all of these through a fresh gateway session:
 
 1. Read effective app-server thread configuration: the named permission profile
-   contains only the listed build hosts, approvals remain disabled, and search is cached.
+   contains only the listed build hosts, the approval policy is `on-request`, and search is cached.
    Inspect the rendered runtime configuration as well as the saved draft.
 2. Execute a tool request to a listed package host, then to a known reachable,
    operator-controlled hostname outside the allowlist. Confirm success for the
