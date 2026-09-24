@@ -2,9 +2,11 @@
 
 ## Current preset flow
 
-Captured on September 24, 2026; contents match source commit `add58c0a0f49a3425c63cd07759163b1d4302c49`.
+Captured on September 24, 2026; contents match source commit `3515dc6cf327f5a271ad0411af435d57b695e392`.
 Rebased onto main `4373b6e3`, including its updated Console styles.
-The Console uses the shipped `SWE Agent` JSON preset, prefilled Slack channel
+The Console uses the shipped `SWE Agent` JSON preset with editable model default
+`gpt-6-astra`, Codex service-account authentication, existing/new model Secret
+selection, prefilled Slack channel
 `C0C43A2QA11`, and workspace-file overrides. The raw Secret bindings JSON editor
 has been removed. DevDay includes the supplied Ocalot `AGENTS.md` verbatim,
 including its draft-decision section. The walkthrough checks exact content in
@@ -22,6 +24,12 @@ Storybook was rebuilt from this source and served only on loopback.
 - [Admin UI message and simulated reply](presets/05-admin-reply.png)
 - [Rendered workspace overrides, including an empty file](presets/06-workspace-overrides.png)
 - [Standard OpenClaw preset with native harness](presets/08-standard-openclaw.png)
+- [Existing model Secret selection](presets/09-existing-model-secret.png)
+- [Existing service account draft](presets/10-existing-secret-draft.png)
+- [Secret metadata loading](presets/createPresetSecretsLoading.png)
+- [Secret metadata denied](presets/createPresetSecretsDenied.png)
+- [Empty Secret catalog](presets/createPresetSecretsEmpty.png)
+- [Existing Secret and recovery recording](presets/existing-secret-walkthrough.webm)
 - [Connected Console recording](presets/console-walkthrough.webm)
 - [Admin UI message recording](presets/admin-message.webm)
 
@@ -32,9 +40,13 @@ example and are not seeded by this demo.
 The connected walkthrough selected SWE Agent, supplied fake credentials, verified
 the channel prefill, selected repository access and simulated Slack Secrets,
 completed creation, returned to the same Agent list, opened `oceclaw`'s sandboxed
-Admin UI popup, and sent a message. It made 36 intercepted fixture requests with
+Admin UI popup, and sent a message. It made 37 intercepted fixture requests with
 no unhandled requests or browser errors. The preset permits mentions by channel
 members; the recording demonstrates narrowing this to fake sender `UDEMO123`.
+
+The existing-Secret walkthrough completed creation with 23 intercepted requests
+and zero Secret writes. Loading, denied, and empty catalogs kept existing mode
+visible; explicitly switching to new mode opened a masked-token draft.
 
 Both starting stories, both checkpoints, the workspace override story, and the
 standard OpenClaw story reached their intended states. The latter verifies that
@@ -60,6 +72,10 @@ open these story paths:
 - `/?path=/story/flows--devday-admin-checkpoint`: Admin UI launch checkpoint.
 - `/?path=/story/pages-create-agent--create-preset-workspace-files`: workspace override example.
 - `/?path=/story/pages-create-agent--create-standard-openclaw-preset`: native OpenClaw preset.
+- `/?path=/story/pages-create-agent--create-preset-existing-secret`: existing Codex service account Secret.
+- `/?path=/story/pages-create-agent--create-preset-secrets-loading`: pending Secret metadata.
+- `/?path=/story/pages-create-agent--create-preset-secrets-denied`: denied metadata read.
+- `/?path=/story/pages-create-agent--create-preset-secrets-empty`: empty Secret catalog.
 
 ## Historical evidence
 
