@@ -59,9 +59,9 @@ In the Console, choose **devday**, fill its variables, then use **Edit Slack** t
 choose allowed senders and bind Slack app/bot Secrets. The preset allows channel members to mention the agent (`users: ["*"]`)
 in this channel and requires a mention. Narrow the sender list in the drawer if
 needed. No credentials are stored in the file.
-The custom DevDay `AGENTS.md` is pending; no replacement instructions are supplied.
-When available, put its contents in `template.agent.initialWorkspaceFiles.AGENTS.md`
-and update the existing Namespace Preset through the API. Restarting with a changed
+The preset includes the supplied Ocalot instructions in
+`template.agent.initialWorkspaceFiles.AGENTS.md`, including their draft decisions.
+To revise them, update that content and the existing Namespace Preset through the API. Restarting with a changed
 JSON file preserves already-installed same-name copies.
 
 ## Contents
