@@ -33,8 +33,9 @@ to run it; repository writers can dispatch it too. There is no second-person
 approval or approval-comment requirement. Complete these prerequisites first.
 
 - Protect `main`, require the real `CI Required` check, and review workflow changes.
-- Retain repository access to `blacksmith-8vcpu-ubuntu-2404`. Runtime preparation
-  uses the same runner as repository-platform CI for build and export capacity.
+- Provision native AMD64 and ARM64 runners for both images. The defaults are
+  `blacksmith-16vcpu-ubuntu-2404` and `blacksmith-8vcpu-ubuntu-2404-arm`; see
+  [runner overrides and minimum resources](../deploy/runtime/README.md#verify-both-native-architectures).
 - Create a dedicated `container-publish` environment with no required reviewers or
   wait timer, administrator bypass disabled, and one deployment branch policy:
   branch `main`. Do not reuse the integration environments.
