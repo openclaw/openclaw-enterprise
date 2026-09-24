@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
 updated: 2026-09-24
-last_updated_session: codex/01a0cfbd-e4cc-7d62-8542-c1358ab1bc5b
+last_updated_session: codex/01a0d172-2f0a-7ec3-91ff-323d532464c7
 ---
 
 # Agent Presets flow
@@ -16,8 +16,9 @@ continues through [revision admission](configuration-driver/persistence-and-revi
 ## Entry Points
 
 - [Installation loader](../../apps/controller/src/composition/installation-config.ts):
-  `loadInstallationConfiguration` reads `presets.includeDefaults` and the shipped
-  artifact. Production and PostgreSQL development composition pass generic
+  `loadInstallationConfiguration` reads `presets.includeDefaults` and `presets.files`.
+  Bundled defaults are `standard-codex` and `standard-openclaw`; custom DevDay
+  files are loaded only when explicitly listed. Production and PostgreSQL development composition pass generic
   name/template definitions to OCC and call `initializeDefaultPresets`.
 
 - Source: `packages/contracts/src/api/routes.ts:occApiRoutes`.
@@ -64,8 +65,11 @@ administrator Role. Its guarded update preserves customized Roles; the exact
 
 `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
 
-The loader validates the opt-in boolean and loads the bundled JSON only when
-enabled. [Production composition](../../apps/controller/src/composition/production.ts)
+The loader validates the opt-in boolean and file list. It loads bundled JSON
+when enabled, resolves explicit JSON paths beside the startup YAML, validates
+each name/template definition, and rejects missing, malformed, invalid, or
+duplicate-name definitions before composition. API and worker share the startup
+snapshot and its source path; files are not watched. [Production composition](../../apps/controller/src/composition/production.ts)
 and [development composition](../../apps/controller/src/composition/development-postgres.ts)
 pass generic definitions into `ControllerOptions.defaultPresets`, select an
 authorized persisted administrator through IAM, and initialize defaults after
@@ -118,14 +122,20 @@ path records mutations and denials without template or variable contents.
 
 [`createPresetFields`](../../apps/controller/src/console/agents/presets.mjs)
 lists only readable Presets, then reads the selected resource once. The user
-fills typed inputs, including masked password fields, and selects **Use Preset**. The shared
+reviews prefilled scalar defaults and fills typed inputs. The bound password
+variable offers a new masked token or an existing same-Namespace Secret. The
+chooser fetches only Secret metadata, validates the original template, and replaces
+the password token with the selected reference in a temporary copy. Mode changes
+clear discarded tokens; stale catalog responses cannot replace a later selection.
+The user then selects **Use Preset**. The shared
 [`renderPresetTemplate`](../../packages/contracts/src/preset-variables.mjs)
 walks JSON once, rejects missing or mistyped inputs and duplicate rendered native
 keys, and preserves runtime placeholders and unresolved SecretRefs.
 
 Rendering makes no requests and fetches no credentials. On success, the chooser
 is replaced by the ordinary Agent form; the form keeps only the rendered
-settings. Password values move into the ordinary masked credential input; the
+settings and, when selected, ephemeral existing-Secret metadata for access grants.
+Password values move into the ordinary masked credential input; the
 chooser clears its detached password controls. Preset updates or deletion cannot alter them. Before saving,
 **Start over** discards the unsaved draft after confirmation and opens a fresh
 chooser. After a save succeeds or its outcome becomes uncertain, restart is
@@ -137,6 +147,17 @@ disabled so the user follows ordinary creation recovery.
 
 [The creation form](../../apps/controller/src/console/agents/create.mjs) copies
 rendered settings into editable fields and checks their form representation.
+Preset `agent.initialWorkspaceFiles` override matching workspace defaults,
+including explicit empty strings. The shared Preset validator checks supported
+filenames, Unicode, NUL, and byte limits before and after expansion; password
+variables remain confined to the credential field. User-edited workspace bytes
+follow the existing private workspace setup path in both regular and provisioning
+creation. The form keeps Secret bindings internally and exposes channel-specific
+Secret controls rather than a raw bindings editor.
+For an existing selection, Save uses its reference without creating another Secret.
+Ordinary creation grants the new Agent exact access and retains this reference
+through Agent-conflict and grant retries. Provisioning derives the grant from
+`harnessAuth.source`.
 For a password input, Save first creates a same-Namespace Secret, clears the
 credential input, and retains the returned reference. It then creates a
 Configuration and an Agent that refers to the Configuration and Secret, and
@@ -193,6 +214,12 @@ or an immutable admitted revision.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-09-24 12:03: Default SWE Agent to GPT-6-Astra with Codex service-account authentication; allow existing or new model Secrets in the Preset chooser (codex/01a0d172-2f0a-7ec3-91ff-323d532464c7 - a4733ed0759840ff65907be03b49cf8979256ecf)
+
+- 2026-09-24: Seed both standard harness presets and keep named DevDay copies opt-in.
+
+- 2026-09-24 11:03: Load installation-linked JSON Presets and carry rendered workspace contents through Agent creation (codex/01a0d172-2f0a-7ec3-91ff-323d532464c7 - 935f91072adee63fc569e63db5fb2a5e64c77c5b)
 
 - 2026-09-24 03:19: Grant observed clean-build hosts in the standard Codex Preset while retaining cached search and limited native networking (codex/01a0cfbd-e4cc-7d62-8542-c1358ab1bc5b - 63a70947fed440a875b2e6338d0a22500f9a9f5e)
 

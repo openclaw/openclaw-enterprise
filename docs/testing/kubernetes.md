@@ -79,6 +79,11 @@ the test environment.
 
 ## Kubernetes model turns and Secrets
 
+Follow [Codex sandbox setup](../guides/deploy/codex-sandbox.md) for seccomp
+prerequisites. CI checks workspace writes and outside-write denial; the native
+workspace case additionally requires tool-history evidence with `approvalPolicy: never`.
+Credentialed repository access requires separate proof.
+
 ### Develop with local containers and k3d
 
 The repository can prepare a disposable k3d cluster, an isolated PostgreSQL

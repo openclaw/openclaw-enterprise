@@ -399,6 +399,10 @@
                     "label": "Amazon EKS"
                   },
                   {
+                    "page": "guides/deploy/codex-sandbox",
+                    "label": "Codex Sandbox"
+                  },
+                  {
                     "group": "Settings",
                     "pages": [
                       {

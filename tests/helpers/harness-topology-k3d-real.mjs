@@ -943,7 +943,9 @@ function nativeConfiguration(harnessId, slack, options = {}) {
   if (harnessId === "codex" && slack === undefined) {
     // Native Codex file tools require a writable app-server sandbox plus an omitted or wildcard
     // OpenClaw dynamic-tool allowlist; this case explicitly edits AGENTS.md in the workspace.
-    configuration.plugins.entries.codex.config.appServer.sandbox = "workspace-write";
+    const appServer = configuration.plugins.entries.codex.config.appServer;
+    appServer.approvalPolicy = "never";
+    appServer.sandbox = "workspace-write";
     configuration.tools = {
       allow: ["*"],
       fs: { workspaceOnly: true },
@@ -3047,6 +3049,49 @@ function messageText(message) {
     .join("\n");
 }
 
+function assertNativeToolSucceeded(history, marker, expectedText) {
+  const historyJson = JSON.stringify(history);
+  assert.doesNotMatch(
+    historyJson,
+    /require_escalated/,
+    "native Codex execution must not request escalated execution",
+  );
+  assert.equal(
+    history.messages.some(({ role, stopReason }) => role === "assistant" && stopReason === "error"),
+    false,
+    "the native provider turn must not end in an assistant error",
+  );
+
+  const call = history.messages
+    .flatMap((message) => {
+      if (message.role !== "assistant" || !Array.isArray(message.content)) {
+        return [];
+      }
+      return message.content
+        .filter((block) => block?.type === "toolCall" && ["bash", "exec"].includes(block.name))
+        .map((block) => ({ message, block }));
+    })
+    .find(({ block }) => JSON.stringify(block.arguments ?? {}).includes(marker));
+  assert.ok(call, "chat.history must retain the native shell tool call for the probe");
+
+  const result = history.messages.find(
+    (message) =>
+      message.role === "toolResult" &&
+      (call.block.id === undefined || message.toolCallId === call.block.id) &&
+      ["bash", "exec"].includes(message.toolName) &&
+      messageText(message).includes(marker) &&
+      messageText(message).includes(expectedText),
+  );
+  assert.ok(result, "chat.history must retain the successful native shell tool result");
+  assert.notEqual(result.isError, true, "native shell tool result must not be marked as an error");
+  if (result.details?.exitCode !== undefined) {
+    assert.equal(result.details.exitCode, 0);
+  }
+  if (typeof result.details?.status === "string") {
+    assert.match(result.details.status, /completed|success/i);
+  }
+}
+
 async function assertConversation(topology, sessionKey, nonce) {
   return waitFor(`provider transcript ${nonce}`, async () => {
     const history = await gatewayCall(topology, "chat.history", { sessionKey, limit: 30 });
@@ -4705,16 +4750,69 @@ async function assertDedicatedWorkspaceRuntime(context, topology, claim, private
 
   // The expected content is absent from the prompt: a real tool read must supply it.
   await writeFileInPod(topology.placement, harnessPod, workspaceFromHarness, harnessContent);
-  await context.test("model reads the Harness-owned workspace file", async () => {
-    const response = await requestDedicatedAgentTurn(
-      topology,
-      `enterprise-workspace-${randomUUID()}`,
-      `Use your native Harness shell tool to read ${workspaceFromHarness} and return its entire contents. The file is local to your working environment; do not use Gateway network file-transfer tools or supply Gateway connection settings.`,
-    );
-    assert.ok(
-      response.includes(harnessContent),
-      `The model did not return the Harness file contents. Response: ${response.slice(0, 1500)}`,
-    );
+  await context.test("model reads and writes through the native sandbox", async () => {
+    const probeMarker = `SANDBOX-${randomUUID()}`;
+    const workspaceOutput = `/home/node/workspace/sandbox-${nonce}.txt`;
+    const outsideSentinel = `/home/node/codex-sandbox-outside-${nonce}.txt`;
+    const outsideContent = `outside-${randomBytes(24).toString("hex")}\n`;
+    const workspaceOutputContent = `${probeMarker}-workspace-write\n`;
+    await writeFileInPod(topology.placement, harnessPod, outsideSentinel, outsideContent);
+    try {
+      const script = [
+        "const fs=require('node:fs')",
+        `const source=${JSON.stringify(workspaceFromHarness)}`,
+        `const output=${JSON.stringify(workspaceOutput)}`,
+        `const outside=${JSON.stringify(outsideSentinel)}`,
+        `const marker=${JSON.stringify(probeMarker)}`,
+        `const outputContent=${JSON.stringify(workspaceOutputContent)}`,
+        "const content=fs.readFileSync(source,'utf8')",
+        "fs.writeFileSync(output,outputContent)",
+        "let denied='NO_ERROR'",
+        "try{fs.writeFileSync(outside,'escaped\\n')}catch(error){denied=error.code||error.name}",
+        "if(denied==='NO_ERROR'){console.error('outside workspace write unexpectedly succeeded');process.exit(70)}",
+        "process.stdout.write('PROBE '+marker+'\\nREAD:'+content+'\\nWRITE:'+outputContent+'DENIED:'+denied+'\\n')",
+      ].join(";");
+      const scriptArgument = `'${script.replaceAll("'", "'\"'\"'")}'`;
+      const command = `timeout 60s node -e ${scriptArgument}`;
+      const sandboxSession = `enterprise-workspace-sandbox-${randomUUID()}`;
+      const response = await requestDedicatedAgentTurn(
+        topology,
+        sandboxSession,
+        `Use your native Harness shell tool to run exactly this one command from /home/node/workspace, then return the command output without adding another command:\n${command}\nThe source file is local to your working environment. Do not use Gateway network file-transfer tools, do not supply Gateway connection settings, and do not request escalated execution.`,
+      );
+      assert.ok(
+        response.includes(harnessContent),
+        `The model did not return the Harness file contents. Response: ${response.slice(0, 1500)}`,
+      );
+      assert.ok(response.includes(probeMarker));
+      assert.ok(response.includes("DENIED:"));
+      const history = await gatewayCall(topology, "chat.history", {
+        sessionKey: sandboxSession,
+        limit: 100,
+      });
+      assertNativeToolSucceeded(history, probeMarker, harnessContent);
+      assert.equal(
+        await readFileInPod(topology.placement, harnessPod, workspaceOutput),
+        workspaceOutputContent,
+        "native workspace-write execution must create the expected workspace bytes",
+      );
+      assert.equal(
+        await readFileInPod(topology.placement, harnessPod, outsideSentinel),
+        outsideContent,
+        "outside-workspace sentinel must remain unchanged after the sandboxed command",
+      );
+    } finally {
+      await execNode(
+        topology.placement,
+        harnessPod,
+        `
+          const { rmSync } = require("node:fs");
+          for (const file of ${JSON.stringify([workspaceOutput, outsideSentinel])}) {
+            rmSync(file, { force: true });
+          }
+        `,
+      );
+    }
   });
 
   const privateSession = `/home/node/.openclaw/agents/main/sessions/gateway-${nonce}.json`;

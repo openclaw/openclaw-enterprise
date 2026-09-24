@@ -98,6 +98,23 @@ OpenClaw and unsupported-runtime stories retain the draft workflow: provision
 credentials and deploy from Agent detail. These transitions demonstrate
 presentation only; they do not prove a worker ran.
 
+The DevDay create segment rehearses the same create-and-deploy path with a
+shipped SWE Agent Preset copied from standard Codex, a fake service account token,
+a prefilled `gpt-6-astra` default, an existing model Secret option, Calendar plugin
+configuration from the simulated discovery catalog, repository choices
+`openclaw/openclaw-enterprise` and `openclaw/openclaw`, prefilled channel
+`C0C43A2QA11`, and simulated Slack Secrets. The separate Preset workspace story
+demonstrates variable-rendered file contents and an intentionally empty file.
+The DevDay picker includes both bundled standard presets and all three custom
+presets: SWE Agent, Q&A Agent, and Oncall Agent.
+The Standard OpenClaw preset story previews its native harness settings.
+Preset Secret stories cover existing selection, pending metadata, denied reads,
+and an empty catalog; each leaves new-token entry available explicitly.
+Q&A Agent and Oncall Agent remain disabled in the example Installation YAML.
+
+Use the [DevDay storyboard](../../scripts/console-storybook/devday-storyboard.md)
+for the presenter actions, expected visible states, and fallbacks.
+
 **Choose provider and harness** walks through the OpenAI Codex default, OpenClaw
 selection, Anthropic's OpenClaw-only choice, and switching from an unsaved service account
 token to API-key authentication. Model choices are hardcoded in the Console and
@@ -163,6 +180,11 @@ execution-mode fields. The Slack drawer preserves existing access policies; it
 does not provide a policy selector. Its channel sender controls edit per-channel
 `users` lists, including `users: ["*"]` for everyone, while direct-message
 `allowFrom` stays unchanged. See [Agent revisions](../guides/topics/agent-revisions.md).
+
+The DevDay Admin UI segment starts from a deployed `oceclaw` Agent whose Slack
+fixture represents `#openclaw-feedback`. Its native Admin UI target is a
+simulated page with a chat-shaped transcript and visible reply. It does not
+connect to a gateway, Slack, credentials, or a model.
 
 ### Stop
 

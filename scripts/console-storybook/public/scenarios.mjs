@@ -18,6 +18,12 @@ const passwordPresetForm = [
   { selector: "#preset-variable-modelSecret", value: "storybook-model-key" },
   click("Use Preset"),
 ];
+const existingPresetSecret = [
+  { selector: "#agent-preset", value: "pre_devday_codex" },
+  { selector: "#preset-variable-name", value: "SWE assistant" },
+  { selector: "#preset-variable-modelSecret-secret-source", value: "existing" },
+];
+const presetSecretsPath = "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets";
 const repositoryForm = [...readyForm, { selector: "#agent-name", value: "Repository assistant" }];
 const pluginCapabilities = {
   driver: { id: "codex-plugin", implementation: "occ/codex-plugin" },
@@ -186,6 +192,7 @@ const pluginDiscoveryGap =
 const repositoryOptionsPath =
   "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/repository-options";
 const account = [{ selector: ".account-toggle", click: true }];
+const devdayRepositorySelector = 'input[value="openclaw/openclaw-enterprise"]';
 const createSlackBotSecret = [
   { selector: "#slack-secret-slack-bot-token", value: "__openclaw_create_secret__" },
   { selector: "#create-slack-bot-token-value", value: "simulated-bot-token" },
@@ -217,6 +224,38 @@ const createProvisioningSecrets = [
   { selector: "#slack-channel-ids", value: "CDEMO123" },
   ...allowEveryoneInSlackChannels,
   click("Apply channel settings"),
+];
+const devdayCreateCheckpoint = [
+  click("Create Agent"),
+  { selector: "#agent-preset", value: "pre_devday_codex" },
+  { selector: "#preset-variable-name", value: "devday claw" },
+  { selector: "#preset-variable-modelSecret", value: "at-demo-devday-service-account-token" },
+  click("Use Preset"),
+  click("Configure plugins"),
+  click("Load plugins"),
+  { selector: 'button[aria-label="Calendar"]', click: true },
+  click("Add Calendar"),
+  { selector: 'select[aria-label="Calendar default reviewer"]', value: "auto" },
+  {
+    selector: 'details.plugin-tool-row[data-tool="app_calendar/create_event"] > summary',
+    click: true,
+  },
+  { selector: 'select[aria-label="Create event approval"]', value: "prompt" },
+  click("Done"),
+  { selector: devdayRepositorySelector, click: true },
+  { selector: "#repository-profile-git-write", click: true },
+  click("Edit Slack"),
+  { selector: "#slack-allow-everyone", click: true },
+  { selector: "#slack-allowed-user-ids", value: "UDEMO123" },
+  { selector: "#slack-secret-slack-app-token", value: "sec_devday_slack_app_token" },
+  { selector: "#slack-secret-slack-bot-token", value: "sec_devday_slack_bot_token" },
+  click("Apply channel settings"),
+  click("Create Agent"),
+  { selector: '[id="workspace-AGENTS.md"]' },
+];
+const devdayAdminCheckpoint = [
+  { selector: 'a[href*="agt_00000000-0000-4000-8000-000000000001"]', click: true },
+  { selector: ".native-admin-access a.primary" },
 ];
 
 // Page failures use the HTTP boundary; isolated component previews receive their input state.
@@ -898,7 +937,7 @@ export const scenarios = {
       click("Apply channel settings"),
     ],
     description:
-      "Applying channel settings retains staged Slack Secret bindings for creation. The raw Secret bindings JSON editor is hidden; token values stay masked.",
+      "Applying channel settings retains staged Slack Secret bindings for creation. There is no raw Secret bindings JSON editor; token values stay masked.",
   },
   createSlackChannelAccessRequired: {
     group: "Pages/Create Agent",
@@ -928,6 +967,23 @@ export const scenarios = {
     ],
     description:
       'The create drawer stores users: ["*"] on the selected channel while leaving direct-message allowFrom out of the new draft.',
+  },
+  createPresetWorkspaceFiles: {
+    group: "Pages/Create Agent",
+    name: "Preset workspace files",
+    path: create,
+    presetWorkspaceFiles: {
+      "IDENTITY.md": "# Identity\nName: {{ vars.name }}\n",
+      "USER.md": "",
+    },
+    actions: [
+      { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
+      { selector: "#preset-variable-name", value: "Workspace preset example" },
+      click("Use Preset"),
+      { selector: ".launch-advanced summary", click: true },
+    ],
+    description:
+      "The Preset renders IDENTITY.md and explicitly clears USER.md. Omitted files keep the ordinary defaults; these are editable creation-time copies.",
   },
   createWorkspaceFiles: {
     group: "Pages/Create Agent",
@@ -1067,6 +1123,68 @@ export const scenarios = {
       "A reusable template with required and defaulted variables. Use Preset copies values into an editable draft.",
     gap: "Preset CRUD has no console page; the fixture supplies a pre-existing Preset.",
   },
+  createPresetExistingSecret: {
+    group: "Pages/Create Agent",
+    name: "SWE existing service account Secret",
+    path: create,
+    devdayPreset: true,
+    extraSecrets: [
+      { id: "sec_devday_model_token", name: "DevDay Codex service account (simulated)" },
+    ],
+    actions: [
+      ...existingPresetSecret,
+      { selector: "#preset-variable-modelSecret-existing-secret", value: "sec_devday_model_token" },
+    ],
+    description:
+      "SWE defaults to gpt-6-astra and Codex Service Accounts. Use Preset reuses this Namespace Secret without reading its value; Create Agent grants access.",
+    gap: "Secret metadata and API responses are simulated. This does not validate a real service account token.",
+  },
+  createPresetSecretsLoading: {
+    group: "Pages/Create Agent",
+    name: "Preset Secrets loading",
+    path: create,
+    devdayPreset: true,
+    actions: existingPresetSecret,
+    rules: [{ path: presetSecretsPath, hold: true }],
+    description:
+      "Existing Secret selection waits for metadata. Users can explicitly switch to creating a new Secret.",
+  },
+  createPresetSecretsDenied: {
+    group: "Pages/Create Agent",
+    name: "Preset Secret metadata denied",
+    path: create,
+    devdayPreset: true,
+    actions: existingPresetSecret,
+    rules: [{ path: presetSecretsPath, status: 403 }],
+    description:
+      "Denied Secret metadata prevents existing selection. New-token entry remains available through an explicit mode change.",
+  },
+  createPresetSecretsEmpty: {
+    group: "Pages/Create Agent",
+    name: "No existing Preset Secrets",
+    path: create,
+    devdayPreset: true,
+    emptySecrets: true,
+    actions: existingPresetSecret,
+    description:
+      "An empty Namespace Secret catalog requires creating a new Secret or returning after a Secret is available.",
+  },
+  createStandardOpenclawPreset: {
+    group: "Pages/Create Agent",
+    name: "Standard OpenClaw preset",
+    path: create,
+    standardOpenclawPreset: true,
+    actions: [
+      { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
+      { selector: "#preset-variable-name", value: "OpenClaw assistant" },
+      { selector: "#preset-variable-model", value: "gpt-5.1" },
+      { selector: "#preset-variable-modelSecret", value: "storybook-model-key" },
+      click("Use Preset"),
+    ],
+    description:
+      "The shipped standard-openclaw Preset uses the OpenClaw harness with a masked model API key. Review its native configuration before creation.",
+    gap: "All credentials and API responses in this preview are simulated.",
+  },
   createPasswordPreset: {
     group: "Pages/Create Agent",
     name: "Standard Codex password variable",
@@ -1089,7 +1207,7 @@ export const scenarios = {
     standardCodexPreset: true,
     actions: passwordPresetForm,
     description:
-      "The password remains masked in the editable draft; Configuration JSON contains no model key. The raw Secret bindings JSON editor is hidden.",
+      "The password remains masked in the editable draft; Configuration JSON contains no model key. There is no raw Secret bindings JSON editor.",
   },
   createPasswordPresetDenied: {
     group: "Pages/Create Agent",
@@ -1895,6 +2013,146 @@ export const scenarios = {
       "Create the Agent to persist the Configuration and let the controller grant the Agent access to the staged Slack Secrets.",
     ],
     gap: "The fixture proves the Console request workflow with simulated Secret metadata. Use a live Namespace and Slack app to prove real Secret propagation and Slack replies.",
+  },
+  devdayCreateFlow: {
+    group: "Flows",
+    name: "DevDay segment 1: create devday claw",
+    path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
+    agentName: "oceclaw",
+    deployed: true,
+    slack: true,
+    slackChannels: { COPENCLAWFEEDBACK: { requireMention: true, users: ["UDEMO123"] } },
+    nativeAdmin: "available",
+    nativeAdminUrl: "/storybook-fixtures/devday-admin.html?agent=oceclaw&channel=openclaw-feedback",
+    devdayPreset: true,
+    pluginDiscovery,
+    pluginCapabilities,
+    repositoryOptions: [
+      {
+        repositoryRef: "openclaw/openclaw-enterprise",
+        displayName: "openclaw/openclaw-enterprise",
+        allowedProfiles: ["git-read", "git-write"],
+      },
+      {
+        repositoryRef: "openclaw/openclaw",
+        displayName: "openclaw/openclaw",
+        allowedProfiles: ["git-read", "git-write"],
+      },
+    ],
+    extraSecrets: [
+      {
+        id: "sec_devday_model_token",
+        name: "DevDay Codex service account (simulated)",
+      },
+      {
+        id: "sec_devday_slack_app_token",
+        name: "devday claw Slack app token (simulated)",
+      },
+      {
+        id: "sec_devday_slack_bot_token",
+        name: "devday claw Slack bot token (simulated)",
+      },
+    ],
+    nextStory: "devdayAdminFlow",
+    description:
+      "DevDay create-flow rehearsal using real Console controls with fake service-account and Slack Secret data. Provisioning and deployment progress are simulated in the Storybook fixture.",
+    steps: [
+      "Start on the Agents list with the already deployed oceclaw seed, then click Create Agent.",
+      "The picker includes SWE Agent, Q&A Agent, and Oncall Agent. Select SWE Agent and enter devday claw for its name.",
+      "Keep the default gpt-6-astra model and enter fake modelSecret at-demo-devday-service-account-token, then Use Preset. Review AGENTS.md: its opening sentence now says You are devday claw. Workspace defaults remain editable.",
+      "Open Configure plugins, load the simulated catalog with the fake service-account token, add Calendar, set Calendar default reviewer to Automatic review, and set Create event approval to Ask for approval.",
+      "Repository access offers openclaw/openclaw-enterprise and openclaw/openclaw. Select either or both with Contributor access.",
+      "Open Edit Slack. Confirm prefilled channel C0C43A2QA11, allow simulated user UDEMO123, then bind the existing simulated DevDay Slack Secrets and apply settings.",
+      "Create Agent and keep the Console visible while the fixture progresses through provisioning and deployment activation until Workspace files open for the admitted revision.",
+      "Use ← Agents and open oceclaw in the same fixture to continue segment 2. The next-segment link starts an independent resettable fixture.",
+    ],
+    gap: "This Storybook flow proves only the UI sequence and fixture state. It does not store a real credential, deploy a workload, prove GitHub authorization, or prove Slack delivery.",
+  },
+  devdayCreateCheckpoint: {
+    group: "Flows",
+    name: "DevDay segment 1 checkpoint: deployed devday claw",
+    path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
+    agentName: "oceclaw",
+    deployed: true,
+    slack: true,
+    slackChannels: { COPENCLAWFEEDBACK: { requireMention: true, users: ["UDEMO123"] } },
+    nativeAdmin: "available",
+    nativeAdminUrl: "/storybook-fixtures/devday-admin.html?agent=oceclaw&channel=openclaw-feedback",
+    devdayPreset: true,
+    pluginDiscovery,
+    pluginCapabilities,
+    repositoryOptions: [
+      {
+        repositoryRef: "openclaw/openclaw-enterprise",
+        displayName: "openclaw/openclaw-enterprise",
+        allowedProfiles: ["git-read", "git-write"],
+      },
+      {
+        repositoryRef: "openclaw/openclaw",
+        displayName: "openclaw/openclaw",
+        allowedProfiles: ["git-read", "git-write"],
+      },
+    ],
+    extraSecrets: [
+      {
+        id: "sec_devday_model_token",
+        name: "DevDay Codex service account (simulated)",
+      },
+      {
+        id: "sec_devday_slack_app_token",
+        name: "devday claw Slack app token (simulated)",
+      },
+      {
+        id: "sec_devday_slack_bot_token",
+        name: "devday claw Slack bot token (simulated)",
+      },
+    ],
+    actions: devdayCreateCheckpoint,
+    description:
+      "Auto-run checkpoint for reviewers who want the deployed end state of the DevDay create segment without replaying every presenter click.",
+    steps: [
+      "Use the primary DevDay segment 1 story for recording the manual presenter flow.",
+      "This checkpoint clicks through the same controls, including the Calendar plugin policy choices, and waits until Workspace files open for the admitted revision.",
+    ],
+    gap: "Checkpoint automation is a setup aid. Use the manual story for the demo video.",
+  },
+  devdayAdminFlow: {
+    group: "Flows",
+    name: "DevDay segment 2: oceclaw Admin UI",
+    path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
+    agentName: "oceclaw",
+    deployed: true,
+    slack: true,
+    slackChannels: { COPENCLAWFEEDBACK: { requireMention: true, users: ["UDEMO123"] } },
+    nativeAdmin: "available",
+    nativeAdminUrl: "/storybook-fixtures/devday-admin.html?agent=oceclaw&channel=openclaw-feedback",
+    description:
+      "DevDay handoff from a deployed Console Agent to the simulated native Admin UI. The Agent is named oceclaw and its Slack fixture represents #openclaw-feedback.",
+    steps: [
+      "Start on the Agents list and open oceclaw.",
+      "Confirm the Console shows a selected deployed revision, simulated deployment status, and available native admin access.",
+      "Click Open native admin UI. The target fixture opens with an existing #openclaw-feedback message.",
+      "Enter a new message, click Send in the simulated Admin UI, and confirm the visible assistant reply.",
+    ],
+    gap: "The Admin UI target is a fixture page. It demonstrates the link target and chat-shaped result only; it does not connect to a gateway, Slack, credentials, or a model.",
+  },
+  devdayAdminCheckpoint: {
+    group: "Flows",
+    name: "DevDay segment 2 checkpoint: oceclaw detail",
+    path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
+    agentName: "oceclaw",
+    deployed: true,
+    slack: true,
+    slackChannels: { COPENCLAWFEEDBACK: { requireMention: true, users: ["UDEMO123"] } },
+    nativeAdmin: "available",
+    nativeAdminUrl: "/storybook-fixtures/devday-admin.html?agent=oceclaw&channel=openclaw-feedback",
+    actions: devdayAdminCheckpoint,
+    description: "Auto-run checkpoint that opens oceclaw and waits for the native Admin UI link.",
+    steps: [
+      "Use the primary DevDay segment 2 story for recording the manual presenter flow.",
+      "This checkpoint opens oceclaw and stops at the available native Admin UI link.",
+    ],
+    gap: "Checkpoint automation is a setup aid. The Admin UI remains a simulated fixture.",
   },
   updateFlow: {
     group: "Flows",

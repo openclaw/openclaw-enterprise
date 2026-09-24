@@ -20,9 +20,13 @@ export type PresetVariable =
 export type PresetLaunchSettings = Omit<PresetTemplate, "variables">;
 
 // Typed launch fields may contain string tokens until rendering and admission.
+export interface PresetAgentTemplate extends Readonly<Record<string, unknown>> {
+  readonly initialWorkspaceFiles?: Readonly<Record<string, unknown>>;
+}
+
 export interface PresetTemplate {
   readonly variables?: Readonly<Record<string, PresetVariable>>;
-  readonly agent?: Readonly<Record<string, unknown>>;
+  readonly agent?: PresetAgentTemplate;
   readonly configuration?: {
     readonly values?: Readonly<Record<string, unknown>>;
     readonly secretBindings?: Readonly<Record<string, unknown>>;

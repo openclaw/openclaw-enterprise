@@ -1,4 +1,8 @@
 import standardCodexPreset from "/console/standard-codex-preset.mjs";
+import standardOpenclawPreset from "/console/standard-openclaw-preset.mjs";
+import devdayPreset from "/console/devday-preset.mjs";
+import devdayQaPreset from "/console/devday-qa-preset.mjs";
+import devdayOncallPreset from "/console/devday-oncall-preset.mjs";
 
 const createdAt = "2026-09-01T12:00:00.000Z";
 const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
@@ -79,6 +83,7 @@ export function installFixture(scenario, evidence) {
     secretMetadata("sec_demo_slack_app_token", "Slack app token (simulated)"),
     secretMetadata("sec_demo_slack_bot_token", "Slack bot token (simulated)"),
     secretMetadata("sec_demo_slack_backup_token", "Slack backup token (simulated)"),
+    ...(scenario.extraSecrets ?? []).map((secret) => secretMetadata(secret.id, secret.name)),
   ]) {
     secrets.set(secret.id, secret);
   }
@@ -124,7 +129,7 @@ export function installFixture(scenario, evidence) {
   const agent = {
     id: "agt_00000000-0000-4000-8000-000000000001",
     namespaceId,
-    name: "Research assistant",
+    name: scenario.agentName ?? "Research assistant",
     status: scenario.deleting ? "deleting" : "active",
     desiredRuntimeState: scenario.stopped ? "stopped" : scenario.deployed ? "running" : "stopped",
     configurationId: config.id,
@@ -212,7 +217,7 @@ export function installFixture(scenario, evidence) {
     });
   }
   const preset = {
-    id: "pre_00000000-0000-4000-8000-000000000001",
+    id: scenario.devdayPreset ? "pre_devday_codex" : "pre_00000000-0000-4000-8000-000000000001",
     namespaceId,
     name: "Research assistant",
     template: {
@@ -234,8 +239,35 @@ export function installFixture(scenario, evidence) {
       },
     },
   };
-  if (scenario.standardCodexPreset) {
-    Object.assign(preset, structuredClone(standardCodexPreset));
+  if (scenario.standardCodexPreset || scenario.standardOpenclawPreset || scenario.devdayPreset) {
+    Object.assign(
+      preset,
+      structuredClone(
+        scenario.devdayPreset
+          ? devdayPreset
+          : scenario.standardOpenclawPreset
+            ? standardOpenclawPreset
+            : standardCodexPreset,
+      ),
+    );
+  }
+  if (scenario.presetWorkspaceFiles) {
+    preset.template.agent.initialWorkspaceFiles = structuredClone(scenario.presetWorkspaceFiles);
+  }
+  const presets = [preset];
+  if (scenario.devdayPreset) {
+    for (const [name, definition] of [
+      ["standard-codex", standardCodexPreset],
+      ["standard-openclaw", standardOpenclawPreset],
+      ["devday-qa", devdayQaPreset],
+      ["devday-oncall", devdayOncallPreset],
+    ]) {
+      presets.push({
+        ...structuredClone(definition),
+        id: `pre_${name.replaceAll("-", "_")}`,
+        namespaceId,
+      });
+    }
   }
   const response = (data, status = 200, errorCode) =>
     new Response(
@@ -334,10 +366,11 @@ export function installFixture(scenario, evidence) {
         );
       }
       if (resource === "presets" && method === "GET") {
-        return response(scenario.emptyPresets ? [] : [preset]);
+        return response(scenario.emptyPresets ? [] : presets);
       }
-      if (resource === "presets/pre_00000000-0000-4000-8000-000000000001" && method === "GET") {
-        return response(preset);
+      if (resource.startsWith("presets/") && method === "GET") {
+        const selectedPreset = presets.find((item) => item.id === resource.split("/")[1]);
+        return selectedPreset ? response(selectedPreset) : error(404);
       }
       if (resource === "agents/plugins" && method === "POST" && scenario.pluginDiscovery) {
         const page = scenario.pluginDiscovery.pages[body.cursor ?? "initial"];
@@ -553,7 +586,9 @@ export function installFixture(scenario, evidence) {
         if (suffix === "/native-admin" && method === "GET") {
           return response({
             status: scenario.nativeAdmin ?? "disabled",
-            url: "/storybook-fixtures/native-admin.html",
+            url:
+              (id === agent.id ? scenario.nativeAdminUrl : undefined) ??
+              "/storybook-fixtures/native-admin.html",
           });
         }
         if (suffix === "/runtime-images" && method === "GET") {
@@ -650,7 +685,11 @@ export function installFixture(scenario, evidence) {
           return response(undefined, 403, "FORBIDDEN");
         }
         if (method === "GET") {
-          return response([...secrets.values()].map((secret) => structuredClone(secret)));
+          return response(
+            scenario.emptySecrets
+              ? []
+              : [...secrets.values()].map((secret) => structuredClone(secret)),
+          );
         }
         if (method === "POST") {
           const id = nextId("sec");

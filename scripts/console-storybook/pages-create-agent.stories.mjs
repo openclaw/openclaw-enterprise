@@ -50,6 +50,10 @@ export const CreateUnsupportedProvisioning = {
   ...story("createUnsupportedProvisioning"),
   name: "Unsupported provisioning",
 };
+export const CreatePresetWorkspaceFiles = {
+  ...story("createPresetWorkspaceFiles"),
+  name: "Preset workspace files",
+};
 export const CreateWorkspaceFiles = { ...story("createWorkspaceFiles"), name: "Workspace files" };
 export const CreateEmbedded = { ...story("createEmbedded"), name: "OpenAI with OpenClaw harness" };
 export const RepositorySelection = {
@@ -132,4 +136,26 @@ export const CreatePasswordPresetDraft = {
 export const CreatePasswordPresetDenied = {
   ...story("createPasswordPresetDenied"),
   name: "Password Secret creation denied",
+};
+
+export const CreateStandardOpenclawPreset = {
+  ...story("createStandardOpenclawPreset"),
+  name: "Standard OpenClaw preset",
+};
+
+export const CreatePresetExistingSecret = {
+  ...story("createPresetExistingSecret"),
+  name: "SWE existing service account Secret",
+};
+export const CreatePresetSecretsLoading = {
+  ...story("createPresetSecretsLoading"),
+  name: "Preset Secrets loading",
+};
+export const CreatePresetSecretsDenied = {
+  ...story("createPresetSecretsDenied"),
+  name: "Preset Secret metadata denied",
+};
+export const CreatePresetSecretsEmpty = {
+  ...story("createPresetSecretsEmpty"),
+  name: "No existing Preset Secrets",
 };

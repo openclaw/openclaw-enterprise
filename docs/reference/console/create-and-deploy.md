@@ -1,12 +1,12 @@
 # Create and deploy Agents in the console
 
-Use the [platform console](../console.md) to create an Agent and, for supported
-Dedicated runtimes, start first-time provisioning from the same form. On an
-existing Kubernetes Installation,
+Use the [platform console](../console.md) to create an Agent and start first-time
+provisioning for supported Dedicated runtimes. On an existing Kubernetes Installation,
 start with [production Agent prerequisites](../../guides/deploy/production-agents.md#prepare-each-namespace):
-you need a ready Namespace, configured Secret storage, and permission to
-create Secrets. First-time provisioning grants access to accepted Secret references;
-ordinary draft creation also requires permission to grant the Agent access to its key. After deployment, [verify this same
+you need a ready Namespace and configured Secret storage. New tokens require
+Secret creation permission. First-time provisioning grants access to accepted
+Secret references; ordinary draft creation also requires permission to grant
+Agent key access. After deployment, [verify this same
 Agent and revision](../../guides/deploy/production-agents.md#verify-production-workloads).
 If you are using [Local Setup](../../guides/quickstart.md) instead, the
 [local first-Agent walkthrough](../../guides/first-agent.md) creates a separate
@@ -25,7 +25,8 @@ Presets and edited Configuration JSON retain their settings.
 1. Sign in, select the intended Namespace, open **Agents**, and select
    **Create Agent**.
 2. To reuse a [Preset](../presets.md), choose one, fill its variables, and select
-   **Use Preset**. The chooser closes and the form opens with editable settings.
+   **Use Preset**. Review defaults and choose an existing or new model Secret.
+   The form opens with editable settings.
    Select **Start without Preset** to use standard defaults.
 3. Enter a name that is unique within the Namespace. Choose **OpenAI** or
    **Anthropic** under **Provider**, then choose **Harness**. OpenAI defaults to
@@ -51,20 +52,21 @@ Presets and edited Configuration JSON retain their settings.
 5. Optional: under **Repository access**, select up to 16 repositories approved
    for this Namespace. Select one authorization level shared by every chosen
    repository. Kubernetes supports Codex (Dedicated) or OpenClaw (Embedded),
-   without a Sandbox Driver. Use Codex when this Agent also
-   needs Slack. Leave every repository unselected for an ordinary Agent without
+   without a Sandbox Driver. Use Codex when this Agent needs Slack. Leave every
+   repository unselected for an ordinary Agent without
    repository access.
 
-6. If you need Slack, use OpenAI with the **Codex** harness and use its channel card. Each token
-   menu lets you select a readable Namespace Secret or **Create new Secret...**.
-   Creating a Secret stores it immediately, even if you later cancel Agent creation.
+6. If you need Slack, use OpenAI with the **Codex** harness and its channel card.
+   Each token menu lets you select a readable Namespace Secret or **Create new Secret...**.
+   Creating a Secret stores it immediately, even if you cancel Agent creation.
    **Apply channel settings** stages settings and bindings into the form;
    cancelling the drawer discards its selections.
    Channel settings, plugin entries, and selected Secret bindings are saved with
    the Configuration when you select **Create Agent**. You can also supply Slack
    credentials from the Agent's **Credentials** tab after creation.
 7. Optionally configure plugins as described below, or open **Advanced settings**
-   to review Configuration JSON, Secret bindings, and **Workspace files**. Workspace fields contain OpenClaw defaults.
+   to review Configuration JSON and **Workspace files**. Preset workspace
+   overrides prefill their matching fields; omitted files use OpenClaw defaults.
    Edit any of the four files, keep the text to submit that default, or clear a
    field to create an empty file. The browser submits LF newlines. See
    [initial contents](../agents.md#initial-contents-at-creation) for limits.
@@ -81,7 +83,8 @@ For Codex plugins, enter a **Service Accounts** token with **Codex** and open
 **Configure plugins**. **Previous page** and **Next page** fetch
 upstream pages; **Filter this page** filters locally. PAT catalog search is unavailable.
 Select a plugin to load tools, then **Add**. Use toggles for enablement and
-**Tool policy** for overrides. **Configured plugins** includes other pages' selections. **Done** closes the modal; **Create Agent** saves changes.
+**Tool policy** for overrides. **Configured plugins** includes other pages'
+selections. **Done** closes the modal; **Create Agent** saves changes.
 
 [Discovery](../../flows/agent-plugins.md#credential-scoped-discovery) uses the entered
 token transiently, excluding saved Preset credentials. Credential/provider/Harness
@@ -160,9 +163,10 @@ all of them and always submits the chosen level explicitly. The server rechecks
 current Namespace policy when it creates the Agent and again when it admits a
 deployment.
 
-Only `503 REPOSITORY_OPTIONS_UNAVAILABLE` permits a fresh ordinary draft to
-continue without repository bindings: Agent-create authorization succeeded, but
-optional repository discovery is unavailable. Even on a provisioning-capable Dedicated runtime, this exception saves only a draft; retry discovery before provisioning. Other failures, including generic
+Only `503 REPOSITORY_OPTIONS_UNAVAILABLE` permits a fresh ordinary draft without
+repository bindings: Agent-create authorization succeeded, but optional discovery
+is unavailable. Even on a provisioning-capable Dedicated runtime, this exception
+saves only a draft; retry discovery before provisioning. Other failures, including generic
 `503`, throttling and connection errors, block **Create Agent** before either
 write and offer retry. Denial and Namespace lifecycle conflict remain distinct.
 This preflight does not replace authorization on either subsequent write.

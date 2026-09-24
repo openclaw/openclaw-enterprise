@@ -10,7 +10,6 @@ import { chromium } from "playwright";
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { secretIdForBinding } from "../../apps/controller/src/console/agents/credentials.mjs";
 import {
   WORKSPACE_DEFAULTS,
   WORKSPACE_DEFAULTS_ID,
@@ -506,17 +505,6 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
   await openAdvancedSettings(page);
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
-  // Invalid manual bindings must not be replaced by a channel editor's empty snapshot.
-  await page.getByLabel("Secret bindings JSON").fill("[]");
-  await page
-    .getByText("Enter a valid Secret bindings JSON object before configuring channels.")
-    .waitFor();
-  assert.equal(await page.getByRole("button", { name: "Configure Slack" }).count(), 0);
-  // Applying Slack must preserve independent bindings authored in Advanced settings.
-  const manualBinding = { source: replacementSlackAppSecret.ref, delivery: { type: "env" } };
-  await page
-    .getByLabel("Secret bindings JSON")
-    .fill(JSON.stringify({ CUSTOM_CONTEXT: manualBinding }));
   await page.getByRole("button", { name: "Configure Slack" }).click();
   const createChannelDialog = page.getByRole("dialog", { name: /^(Configure|Edit) Slack$/ });
   await createChannelDialog
@@ -552,10 +540,6 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     "password",
   );
   await createSecretDialog.getByRole("button", { name: "Cancel" }).click();
-  assert.equal(
-    JSON.parse(await page.getByLabel("Secret bindings JSON").inputValue()).SLACK_BOT_TOKEN,
-    undefined,
-  );
   await createChannelDialog
     .getByLabel("Slack bot token")
     .selectOption({ label: "Create new Secret..." });
@@ -563,18 +547,23 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     .getByRole("dialog", { name: "Create Slack bot token Secret" })
     .getByLabel("Secret value")
     .fill(createdSlackBotSecretValue);
+  const botSecretResponse = page.waitForResponse((response) => {
+    if (
+      response.url() !== `${fixture.origin}/namespaces/${namespace.id}/secrets` ||
+      response.request().method() !== "POST"
+    ) {
+      return false;
+    }
+    return response.request().postDataJSON()?.name === "Console-created Agent Slack bot token";
+  });
   await page
     .getByRole("dialog", { name: "Create Slack bot token Secret" })
     .getByRole("button", { name: "Create Secret" })
     .click();
+  const createdSlackBotSecret = (await (await botSecretResponse).json()).data;
   await createChannelDialog
     .getByText("Secret binding staged. Apply the channel settings to save it.")
-
     .waitFor();
-  assert.equal(
-    JSON.parse(await page.getByLabel("Secret bindings JSON").inputValue()).SLACK_BOT_TOKEN,
-    undefined,
-  );
   await createChannelDialog.getByRole("button", { name: "Apply channel settings" }).click();
   await createChannelDialog.waitFor({ state: "hidden" });
   await page.getByRole("button", { name: "Edit Slack" }).click();
@@ -583,19 +572,16 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     .getByLabel("Slack app token")
     .selectOption(replacementSlackAppSecret.id);
   await createChannelDialog.getByRole("button", { name: "Apply channel settings" }).click();
-  const stagedSecretBindings = JSON.parse(
-    await page.getByLabel("Secret bindings JSON").inputValue(),
-  );
-  assert.deepEqual(stagedSecretBindings.CUSTOM_CONTEXT, manualBinding);
-  assert.deepEqual(stagedSecretBindings.SLACK_APP_TOKEN, {
-    source: replacementSlackAppSecret.ref,
-    delivery: { type: "env" },
-  });
-  const stagedBotSecretId = secretIdForBinding(stagedSecretBindings.SLACK_BOT_TOKEN);
-  assert.match(
-    stagedBotSecretId,
-    /^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-  );
+  const stagedSecretBindings = {
+    SLACK_APP_TOKEN: {
+      source: replacementSlackAppSecret.ref,
+      delivery: { type: "env" },
+    },
+    SLACK_BOT_TOKEN: {
+      source: createdSlackBotSecret.ref,
+      delivery: { type: "env" },
+    },
+  };
   await openAdvancedSettings(page);
   const stagedValues = JSON.parse(await page.getByLabel("Configuration JSON").inputValue());
   await page.getByLabel("Agent name").fill("A".repeat(200));
@@ -719,14 +705,16 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     access.data
       .map(({ id, ...binding }) => binding)
       .sort((a, b) => a.resourceId.localeCompare(b.resourceId)),
-    [secret.id, replacementSlackAppSecret.id, stagedBotSecretId].sort().map((resourceId) => ({
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: created.data.servicePrincipalId,
-      roleId: roles.data[0].id,
-      resourceKind: "secret",
-      resourceId,
-    })),
+    [secret.id, replacementSlackAppSecret.id, createdSlackBotSecret.id]
+      .sort()
+      .map((resourceId) => ({
+        namespaceId: namespace.id,
+        subjectKind: "identity",
+        subjectId: created.data.servicePrincipalId,
+        roleId: roles.data[0].id,
+        resourceKind: "secret",
+        resourceId,
+      })),
   );
   assert.ok(audit.events.some((event) => event.resource.id === created.data.id));
   assert.equal(JSON.stringify(audit.events).includes(key), false);
@@ -1643,6 +1631,23 @@ test("Dedicated Agent creation provisions inline Configuration and masked new Se
     compute: { id: "kubernetes-test", implementation: "kubernetes" },
     servicePrincipalId: agent.servicePrincipalId,
   };
+  const workspacePreset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: {
+      name: "Provision workspace preset",
+      template: {
+        agent: {
+          name: agent.name,
+          executionMode: "dedicated",
+          initialWorkspaceFiles: {
+            "AGENTS.md": "# Provision preset\n",
+            "USER.md": "Provision user",
+          },
+        },
+      },
+    },
+  });
+  assert.equal(workspacePreset.status, 201, JSON.stringify(workspacePreset.body));
+
   const json = (data, status = 200) => ({
     status,
     contentType: "application/json",
@@ -1749,12 +1754,19 @@ test("Dedicated Agent creation provisions inline Configuration and masked new Se
 
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
-  await page.getByRole("button", { name: "Start without Preset" }).click();
-  await page.getByLabel("Agent name").fill(agent.name);
+  await page.getByLabel("Preset template").selectOption(workspacePreset.data.id);
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  await page.getByLabel("Agent name", { exact: true }).waitFor();
   await page.locator("#repository-application").check();
   await page.locator("#repository-profile-git-write").check();
   await page.getByLabel("API key", { exact: true }).fill("model-secret-value");
   await openAdvancedSettings(page);
+  assert.equal(
+    await page.getByLabel("AGENTS.md", { exact: true }).inputValue(),
+    "# Provision preset\n",
+  );
+  assert.equal(await page.getByLabel("USER.md", { exact: true }).inputValue(), "Provision user");
+  await page.getByLabel("AGENTS.md", { exact: true }).fill("# Provision edited\n");
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
   await page.getByRole("button", { name: "Configure Slack" }).click();
   const channelDialog = page.getByRole("dialog", { name: "Configure Slack" });
@@ -1809,6 +1821,12 @@ test("Dedicated Agent creation provisions inline Configuration and masked new Se
     { repositoryRef: "application", profile: "git-write" },
   ]);
   assert.equal(provisionBody.executionMode, "dedicated");
+  assert.deepEqual(provisionBody.initialWorkspaceFiles, {
+    ...WORKSPACE_DEFAULTS,
+    "AGENTS.md": "# Provision edited\n",
+    "USER.md": "Provision user",
+  });
+  assert.equal(provisionBody.workspaceDefaultsId, WORKSPACE_DEFAULTS_ID);
   assert.deepEqual(provisionBody.harnessAuth, agent.harnessAuth);
   assert.deepEqual(provisionBody.configuration.values.channels.slack, {
     enabled: true,
@@ -5345,6 +5363,11 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
           backendId: backendFixtures[0].id,
           harnessAuth: { method: "codex_pat", source: secret.ref },
           plugins,
+          initialWorkspaceFiles: {
+            "AGENTS.md": "# {{ vars.name }} workspace\n",
+            "IDENTITY.md": "",
+            "USER.md": "marker {{ vars.marker }}",
+          },
         },
         configuration: { values, secretBindings },
       },
@@ -5392,6 +5415,12 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
     false,
   );
   assert.equal(await save.isEnabled(), true);
+  assert.equal(
+    await page.getByLabel("AGENTS.md", { exact: true }).inputValue(),
+    "# Existing Agent workspace\n",
+  );
+  assert.equal(await page.getByLabel("IDENTITY.md", { exact: true }).inputValue(), "");
+  assert.equal(await page.getByLabel("USER.md", { exact: true }).inputValue(), "marker changed");
   const rendered = JSON.parse(
     await page.getByLabel("Configuration JSON", { exact: true }).inputValue(),
   );
@@ -5405,11 +5434,6 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   assert.deepEqual(
     JSON.parse(await page.getByLabel("Plugin selections JSON").inputValue()),
     plugins,
-  );
-  assert.equal(await page.getByLabel("Secret bindings JSON").isVisible(), false);
-  assert.deepEqual(
-    JSON.parse(await page.getByLabel("Secret bindings JSON").inputValue()),
-    secretBindings,
   );
   // Deletion after selection must not invalidate this independent local copy.
   assert.equal(
@@ -5427,6 +5451,7 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   edited.plugins.entries.knowledge.config.thresholds = [5, 6];
   await openAdvancedSettings(page);
   await page.getByLabel("Configuration JSON", { exact: true }).fill(JSON.stringify(edited));
+  await page.getByLabel("AGENTS.md", { exact: true }).fill("# Edited workspace\n");
   // Canceling Start over keeps the ordinary draft and its ability to save.
   page.once("dialog", (dialog) => dialog.dismiss());
   await page.getByRole("button", { name: "Start over" }).click();
@@ -5445,7 +5470,6 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   assert.equal((await conflict).status(), 409);
   await page.getByText(/conflicts with the saved state/).waitFor();
   assert.equal(await page.getByRole("button", { name: "Start over" }).isDisabled(), true);
-  assert.equal(await page.getByLabel("Secret bindings JSON").isDisabled(), true);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
   await page.getByLabel("Agent name", { exact: true }).fill("Preset Agent");
   const createdResponse = page.waitForResponse(
@@ -5460,6 +5484,20 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
     0,
   );
   assert.equal(created.data.name, "Preset Agent");
+  const expectedWorkspaceFiles = {
+    ...WORKSPACE_DEFAULTS,
+    "AGENTS.md": "# Edited workspace\n",
+    "IDENTITY.md": "",
+    "USER.md": "marker changed",
+  };
+  assert.deepEqual(
+    agentPostRequests(requests, namespace.id).map((request) => request.body.initialWorkspaceFiles),
+    [expectedWorkspaceFiles, expectedWorkspaceFiles],
+  );
+  assert.deepEqual(
+    agentPostRequests(requests, namespace.id).map((request) => request.body.workspaceDefaultsId),
+    [WORKSPACE_DEFAULTS_ID, WORKSPACE_DEFAULTS_ID],
+  );
   assert.deepEqual(created.data.plugins, plugins);
   assert.equal(created.data.backendId, backendFixtures[0].id);
   assert.deepEqual(created.data.harnessAuth, { method: "codex_pat", source: secret.ref });
@@ -5821,4 +5859,242 @@ test("standard Codex password Preset creates one scoped Secret and reuses it aft
         binding.resourceId === created.data.harnessAuth.source.id,
     ),
   );
+});
+
+test("password Preset can reuse an existing Secret and retry an uncertain grant without duplicate writes", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const root = await mkdtemp(join(tmpdir(), "occ-existing-secret-preset-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  fixture.controller.registerDriver(configurationDriver);
+  fixture.controller.selectDriver("configuration", configurationDriver.id);
+  const namespace = await fixture.createNamespace("Existing Secret Preset", { ready: true });
+  const modelSecret = await fixture.createSecret(
+    namespace.id,
+    "Existing model token",
+    "hidden-model-token",
+  );
+  const artifact = JSON.parse(
+    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+  );
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: artifact,
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { page } = await newPage(t, fixture);
+  await routeInstallationWithoutProvisioning(page, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const bindingPath = `/namespaces/${namespace.id}/iam/access-bindings`;
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByLabel("Variable: name", { exact: true }).fill("Existing Secret Agent");
+  await page.getByLabel("Variable: model", { exact: true }).fill("gpt-5.1");
+  await page.getByLabel("Secret source for modelSecret", { exact: true }).selectOption("existing");
+  await page
+    .getByLabel("Existing Secret for modelSecret", { exact: true })
+    .selectOption(modelSecret.id);
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  await page
+    .getByText("Preset authentication: API key · Secret configured", { exact: true })
+    .waitFor();
+  assert.equal(await page.getByLabel("API key", { exact: true }).count(), 0);
+
+  await page.route(`**${bindingPath}`, async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    const response = await route.fetch();
+    assert.equal(response.status(), 201);
+    await route.abort("failed");
+  });
+  const createdResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const created = (await (await createdResponse).json()).data;
+  await page
+    .getByRole("alert")
+    .filter({ hasText: /credential access is not confirmed.*interrupted/ })
+    .waitFor();
+  await page.unroute(`**${bindingPath}`);
+  await page.getByRole("button", { name: "Retry credential access" }).click();
+  await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
+
+  assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 0);
+  assert.equal(agentPostRequests(requests, namespace.id).length, 1);
+  assert.deepEqual(agentPostRequests(requests, namespace.id)[0].body.harnessAuth, {
+    method: "api_key",
+    source: modelSecret.ref,
+  });
+  const bindings = await fixture.request("GET", bindingPath);
+  assert.equal(bindings.status, 200);
+  assert.equal(bindings.data.length, 1);
+  assert.equal(bindings.data[0].subjectId, created.servicePrincipalId);
+  assert.equal(bindings.data[0].resourceId, modelSecret.id);
+  const retained = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/presets/${preset.data.id}`,
+  );
+  assert.deepEqual(retained.data.template, artifact.template);
+});
+
+test("codex_pat password Preset creates one Secret and reuses it after an Agent conflict", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const root = await mkdtemp(join(tmpdir(), "occ-codex-pat-preset-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  fixture.controller.registerDriver(configurationDriver);
+  fixture.controller.selectDriver("configuration", configurationDriver.id);
+  const namespace = await fixture.createNamespace("Codex PAT Preset", { ready: true });
+  await fixture.createAgent(namespace.id, "Existing Codex Agent");
+  const artifact = JSON.parse(
+    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+  );
+  artifact.name = "standard-codex-pat";
+  artifact.template.agent.harnessAuth.method = "codex_pat";
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: artifact,
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { page } = await newPage(t, fixture);
+  await routeInstallationWithoutProvisioning(page, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByLabel("Variable: name", { exact: true }).fill("Existing Codex Agent");
+  await page.getByLabel("Variable: model", { exact: true }).fill("gpt-6-astra");
+  await page.getByLabel("Secret source for modelSecret", { exact: true }).selectOption("new");
+  const password = page.getByLabel("Variable: modelSecret", { exact: true });
+  await password.fill("at-codex-pat-preset-token");
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  const token = page.getByLabel("Service account token", { exact: true });
+  assert.equal(await token.inputValue(), "at-codex-pat-preset-token");
+  const save = page.getByRole("button", { name: "Create Agent", exact: true });
+  const conflict = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
+      response.request().method() === "POST",
+  );
+  await save.click();
+  assert.equal((await conflict).status(), 409);
+  await page.getByText(/conflicts with the saved state/).waitFor();
+  assert.equal(await token.inputValue(), "");
+  await page.getByLabel("Agent name", { exact: true }).fill("Codex PAT Agent");
+  const createdResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
+      response.request().method() === "POST",
+  );
+  await save.click();
+  const created = (await (await createdResponse).json()).data;
+  await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
+  const secretWrites = pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`);
+  assert.equal(secretWrites.length, 1);
+  assert.equal(secretWrites[0].body.value, "at-codex-pat-preset-token");
+  assert.equal(agentPostRequests(requests, namespace.id).length, 2);
+  assert.equal(created.harnessAuth.method, "codex_pat");
+});
+
+test("Preset Secret picker preserves existing mode on catalog failure and can switch to new", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const root = await mkdtemp(join(tmpdir(), "occ-catalog-failure-preset-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  fixture.controller.registerDriver(configurationDriver);
+  fixture.controller.selectDriver("configuration", configurationDriver.id);
+  const namespace = await fixture.createNamespace("Preset secret catalog failure", { ready: true });
+  const artifact = JSON.parse(
+    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+  );
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: artifact,
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { page } = await newPage(t, fixture);
+  await routeInstallationWithoutProvisioning(page, fixture);
+  await page.route(`**/namespaces/${namespace.id}/secrets`, async (route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: { code: "DEPENDENCY_UNAVAILABLE", message: "Secret catalog unavailable." },
+          meta: { requestId: "req_secret_catalog_unavailable" },
+        }),
+      });
+      return;
+    }
+    await route.fallback();
+  });
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  const source = page.getByLabel("Secret source for modelSecret", { exact: true });
+  await source.selectOption("existing");
+  await page.getByText(/Choose create-new mode to enter a new token/).waitFor();
+  assert.equal(await source.inputValue(), "existing");
+  await page.getByLabel("Variable: name", { exact: true }).fill("Catalog fallback Agent");
+  await page.getByLabel("Variable: model", { exact: true }).fill("gpt-5.1");
+  await source.selectOption("new");
+  await page
+    .getByLabel("Variable: modelSecret", { exact: true })
+    .fill("new-token-after-catalog-error");
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  await page.getByLabel("Agent name", { exact: true }).waitFor();
+  assert.equal(
+    await page.getByLabel("API key", { exact: true }).inputValue(),
+    "new-token-after-catalog-error",
+  );
+});
+
+test("Preset picker ignores stale Preset responses after switching selection", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Preset picker race", { ready: true });
+  const first = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: {
+      name: "First delayed Preset",
+      template: {
+        variables: { firstName: { type: "string" } },
+        agent: { name: "{{ vars.firstName }}", executionMode: "embedded" },
+      },
+    },
+  });
+  const second = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: {
+      name: "Second current Preset",
+      template: {
+        variables: { secondName: { type: "string" } },
+        agent: { name: "{{ vars.secondName }}", executionMode: "embedded" },
+      },
+    },
+  });
+  assert.equal(first.status, 201, JSON.stringify(first.body));
+  assert.equal(second.status, 201, JSON.stringify(second.body));
+  const { page } = await newPage(t, fixture);
+  await routeInstallationWithoutProvisioning(page, fixture);
+  let releaseFirst;
+  const firstBlocked = new Promise((resolve) => {
+    releaseFirst = resolve;
+  });
+  await page.route(`**/namespaces/${namespace.id}/presets/${first.data.id}`, async (route) => {
+    await firstBlocked;
+    await route.fallback();
+  });
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(first.data.id);
+  await page.getByLabel("Preset template").selectOption(second.data.id);
+  await page.getByLabel("Variable: secondName", { exact: true }).waitFor();
+  releaseFirst();
+  await page.waitForTimeout(50);
+  assert.equal(await page.getByLabel("Variable: firstName", { exact: true }).count(), 0);
+  await page.getByLabel("Variable: secondName", { exact: true }).fill("Current Agent");
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  await page.getByLabel("Agent name", { exact: true }).waitFor();
+  assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "Current Agent");
 });

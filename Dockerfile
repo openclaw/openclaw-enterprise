@@ -31,6 +31,7 @@ COPY --chown=node:node apps/controller apps/controller
 COPY --from=console-build --chown=node:node /app/apps/controller/src/console/index.html apps/controller/src/console/index.html
 COPY --chown=node:node migrations migrations
 COPY --chown=node:node scripts scripts
+COPY --chown=node:node deploy/presets deploy/presets
 RUN mkdir -p /app/.development/configurations /var/lib/openclaw/bootstrap \
     && chown -R node:node /app/.development \
     && chown 1000:1000 /var/lib/openclaw/bootstrap \
