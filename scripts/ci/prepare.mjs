@@ -1693,18 +1693,11 @@ async function prepareLane({ lane, statePath }) {
       env.OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS = cluster.pluginStatusProxyCidrs;
       break;
     }
-    case "k3d-observability":
-    case "k3d-observability-demo": {
+    case "k3d-observability": {
       await commandAvailable(process.env.OCC_HELM_BIN ?? "helm", ["version", "--short"]);
       const inputs = effectiveLaneEnv(name, env);
       const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
       const { loadYaml } = require("@kubernetes/client-node");
-      const demo = loadYaml(
-        await readFile(
-          join(repositoryRoot, "deploy/helm/openclaw-observability-demo/values.yaml"),
-          "utf8",
-        ),
-      );
       const production = loadYaml(
         await readFile(join(repositoryRoot, "deploy/helm/openclaw-enterprise/values.yaml"), "utf8"),
       );
@@ -1712,13 +1705,6 @@ async function prepareLane({ lane, statePath }) {
         OCC_TEST_PRODUCTION_NODE_IMAGE: inputs.NODE_BASE_IMAGE,
         OCC_TEST_PRODUCTION_POSTGRES_IMAGE: inputs.OCC_TEST_PRODUCTION_POSTGRES_IMAGE,
         OCC_TEST_OBSERVABILITY_COLLECTOR_IMAGE: production.logging.collector.image,
-        ...(name === "k3d-observability-demo"
-          ? {
-              OCC_TEST_OBSERVABILITY_PROMETHEUS_IMAGE: demo.images.prometheus,
-              OCC_TEST_OBSERVABILITY_GRAFANA_IMAGE: demo.images.grafana,
-              OCC_TEST_OBSERVABILITY_LOKI_IMAGE: demo.images.loki,
-            }
-          : {}),
       };
       const [cluster, built] = await timedPreparation(name, "cluster-build-pull", () =>
         prepareTogether([
@@ -1768,6 +1754,53 @@ async function prepareLane({ lane, statePath }) {
               ).reference;
             }),
           ],
+          2,
+        ),
+      );
+      break;
+    }
+    case "k3d-observability-demo": {
+      await commandAvailable(process.env.OCC_HELM_BIN ?? "helm", ["version", "--short"]);
+      const inputs = effectiveLaneEnv(name, env);
+      const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
+      const { loadYaml } = require("@kubernetes/client-node");
+      const demo = loadYaml(
+        await readFile(
+          join(repositoryRoot, "deploy/helm/openclaw-observability-demo/values.yaml"),
+          "utf8",
+        ),
+      );
+      const images = {
+        // Start the largest image first so smaller imports can overlap it.
+        OCC_TEST_OBSERVABILITY_GRAFANA_IMAGE: demo.images.grafana,
+        OCC_TEST_OBSERVABILITY_PROMETHEUS_IMAGE: demo.images.prometheus,
+        OCC_TEST_OBSERVABILITY_LOKI_IMAGE: demo.images.loki,
+        OCC_TEST_PRODUCTION_NODE_IMAGE: inputs.NODE_BASE_IMAGE,
+      };
+      const [cluster] = await timedPreparation(name, "cluster-and-pulls", () =>
+        prepareTogether([
+          () => ensureK3dCluster(resolvedStatePath, state),
+          () =>
+            prepareTogether(
+              Object.entries(images).map(
+                ([variable, image]) =>
+                  () =>
+                    ensureDockerSourceImage(state, image, variable),
+              ),
+              2,
+            ),
+        ]),
+      );
+      env.OCC_TEST_KUBERNETES_KUBECONFIG = cluster.kubeconfig;
+      env.OCC_TEST_KUBERNETES_CONTEXT = cluster.context;
+      await timedPreparation(name, "demo-image-imports", () =>
+        prepareTogether(
+          Object.entries(images).map(([variable, image]) => async () => {
+            progress(name, `Importing ${variable}.`);
+            env[variable] = (
+              await registerImageInK3d(resolvedStatePath, state, cluster, image, variable)
+            ).reference;
+          }),
           2,
         ),
       );

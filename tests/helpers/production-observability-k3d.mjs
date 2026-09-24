@@ -24,10 +24,7 @@ export const observabilitySelection = {
 
 // Own only test resources. API calls, lifecycle, telemetry and policy enforcement
 // all use the installed production implementations, with a credential-free runtime fixture.
-export async function installObservabilityControlPlane(
-  t,
-  { modelTurns = false, demoStack = false } = {},
-) {
+export async function installObservabilityControlPlane(t, { modelTurns = false } = {}) {
   if (modelTurns) {
     for (const name of ["OPENAI_API_KEY", "OCC_TEST_OPENAI_MODEL"]) {
       assert.ok(process.env[name], `${name} is required for explicit model-turn validation`);
@@ -54,13 +51,6 @@ export async function installObservabilityControlPlane(
         : [
             ["runtime", "OCC_TEST_KUBERNETES_IMAGE"],
             ["collector", "OCC_TEST_OBSERVABILITY_COLLECTOR_IMAGE"],
-            ...(demoStack
-              ? [
-                  ["prometheus", "OCC_TEST_OBSERVABILITY_PROMETHEUS_IMAGE"],
-                  ["grafana", "OCC_TEST_OBSERVABILITY_GRAFANA_IMAGE"],
-                  ["loki", "OCC_TEST_OBSERVABILITY_LOKI_IMAGE"],
-                ]
-              : []),
           ]),
     ].map(([name, variable]) => {
       assert.match(
@@ -76,7 +66,6 @@ export async function installObservabilityControlPlane(
   const monitoring = `oce-monitor-${suffix}`;
   const foreign = `oce-other-${suffix}`;
   const release = `obs-${suffix}`;
-  const demoRelease = `demo-${suffix}`;
   const directory = await mkdtemp(join(tmpdir(), "oce-observability-"));
   const secrets = modelTurns ? [process.env.OPENAI_API_KEY] : [];
   const secret = () => {
@@ -121,28 +110,23 @@ export async function installObservabilityControlPlane(
   t.after(async () => {
     // Register ownership before creation; cleanup failures must fail acceptance.
     const errors = [];
-    for (const [name, namespace] of [
-      [demoRelease, monitoring],
-      [release, system],
-    ]) {
-      try {
-        await run("helm", [
-          "uninstall",
-          name,
-          "-n",
-          namespace,
-          "--kubeconfig",
-          selection.kubeconfigPath,
-          "--kube-context",
-          selection.kubernetesContext,
-          "--ignore-not-found",
-          "--wait",
-          "--timeout",
-          "120s",
-        ]);
-      } catch (error) {
-        errors.push(error);
-      }
+    try {
+      await run("helm", [
+        "uninstall",
+        release,
+        "-n",
+        system,
+        "--kubeconfig",
+        selection.kubeconfigPath,
+        "--kube-context",
+        selection.kubernetesContext,
+        "--ignore-not-found",
+        "--wait",
+        "--timeout",
+        "120s",
+      ]);
+    } catch (error) {
+      errors.push(error);
     }
     try {
       await kubectl(
@@ -531,87 +515,6 @@ export async function installObservabilityControlPlane(
       "--timeout=180s",
     );
   }
-  async function installDemo() {
-    const password = secret();
-    await createSecret("grafana-admin", { password }, monitoring);
-    const endpoint = (await get("endpoints", "kubernetes", "default")).subsets[0];
-    const demoValues = {
-      images: { prometheus: images.prometheus, grafana: images.grafana, loki: images.loki },
-      occ: { namespace: system, release, metricsPort: 9464 },
-      grafana: {
-        adminSecretName: "grafana-admin",
-        clients: [{ namespace: monitoring, podLabels: { app: "scraper" } }],
-      },
-      cluster: { cidrs: [`${endpoint.addresses[0].ip}/32`], port: endpoint.ports[0].port },
-    };
-    await writeFile(join(directory, "demo-values.json"), JSON.stringify(demoValues), {
-      mode: 0o600,
-    });
-    await run(
-      "helm",
-      [
-        "upgrade",
-        "--install",
-        demoRelease,
-        "deploy/helm/openclaw-observability-demo",
-        "-n",
-        monitoring,
-        "--kubeconfig",
-        selection.kubeconfigPath,
-        "--kube-context",
-        selection.kubernetesContext,
-        "-f",
-        join(directory, "demo-values.json"),
-        "--wait",
-        "--timeout",
-        "300s",
-      ],
-      { timeout: 330_000 },
-    );
-    const demoSelectors = {
-      scraperNamespaceLabels: { "kubernetes.io/metadata.name": monitoring },
-      scraperPodLabels: {
-        "app.kubernetes.io/instance": demoRelease,
-        "app.kubernetes.io/component": "prometheus",
-      },
-    };
-    await configureCollector(
-      {
-        cidr: "",
-        namespaceLabels: { "kubernetes.io/metadata.name": monitoring },
-        podLabels: {
-          "app.kubernetes.io/instance": demoRelease,
-          "app.kubernetes.io/component": "loki",
-        },
-        port: 3100,
-      },
-      `http://${demoRelease}-loki.${monitoring}.svc:3100/otlp/v1/logs`,
-      demoSelectors,
-    );
-    const basic = `Basic ${Buffer.from(`admin:${password}`).toString("base64")}`;
-    secrets.push(basic);
-    const query = async (source, path) => {
-      const r = await scrape(
-        "scraper",
-        monitoring,
-        `http://${demoRelease}-grafana:3000/api/datasources/proxy/uid/occ-${source}${path}`,
-        { authorization: basic },
-      );
-      assert.equal(r.status, 200, redact(r.text));
-      return JSON.parse(r.text);
-    };
-    const prometheus = async (expression) =>
-      (await query("prometheus", `/api/v1/query?query=${encodeURIComponent(expression)}`)).data
-        .result;
-    const logs = async (expression = '{service_name=~"occ-api|occ-worker"}') =>
-      (
-        await query(
-          "loki",
-          `/loki/api/v1/query_range?query=${encodeURIComponent(expression)}&limit=1000&since=15m`,
-        )
-      ).data.result;
-    return { query, prometheus, logs, password };
-  }
   async function installLogReceiver() {
     // Use the already-imported Collector as a real OTLP receiver. Its file
     // exporter exposes decoded records without installing a storage/query stack.
@@ -732,7 +635,6 @@ service:
     monitoring,
     foreign,
     release,
-    demoRelease,
     directory,
     secrets,
     run,
@@ -755,7 +657,6 @@ service:
     createAgent,
     createSecret,
     configureCollector,
-    installDemo,
     installLogReceiver,
     record,
   };

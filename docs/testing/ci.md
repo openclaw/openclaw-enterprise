@@ -132,8 +132,9 @@ and preserves the supplied source image.
 On GitHub-hosted runners, both observability lanes remove unused SDKs and require
 36 GiB free before building and importing images. SDK removals run concurrently
 with a ten-minute deadline and per-directory timing receipts. Local runs do not invoke this
-guarded cleanup. Their single-node clusters prepare controller builds and image
-pulls concurrently, with at most two image imports in flight. State writes remain
+guarded cleanup. Both use single-node clusters and overlap independent preparation, with at most
+two image imports in flight. The demo lane imports only its three services and
+a Node image for protocol fixtures; it does not build OCC. State writes remain
 serialized, and all in-flight operations settle before failure cleanup.
 
 Image imports time out after ten minutes. Preparation verifies each immutable

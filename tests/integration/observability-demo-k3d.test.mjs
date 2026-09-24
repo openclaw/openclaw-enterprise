@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import test from "node:test";
-import { installObservabilityControlPlane } from "../helpers/production-observability-k3d.mjs";
+import { installObservabilityDemo } from "../helpers/observability-demo-k3d.mjs";
 
 test(
-  "demo Helm stack serves real OCC metrics and logs through Grafana",
+  "demo Helm stack ingests fixture metrics and OTLP logs through Grafana",
   {
     skip:
       process.env.OCC_TEST_OBSERVABILITY_DEMO === "1"
@@ -12,30 +13,33 @@ test(
     timeout: 600_000,
   },
   async (t) => {
-    const f = await installObservabilityControlPlane(t, { demoStack: true });
-    const demo = await f.installDemo();
-    const request = await f.request("GET", "/installation");
-    assert.equal(request.status, 200);
-    assert.ok(request.requestId);
-    // Query both provisioned data sources through Grafana. Ready Pods alone do
-    // not prove discovery, scraping, ingestion, or Grafana's backend connections.
-    await f.waitFor(
-      "both OCC scrape targets in Grafana",
-      async () =>
-        (await demo.prometheus('up{job=~"occ-api|occ-worker"}')).filter(
-          ({ value }) => Number(value[1]) === 1,
-        ).length === 2,
-    );
-    await f.waitFor("OCC request metrics in Grafana", async () =>
-      (await demo.prometheus('occ_http_requests_total{route="/installation"}')).some(
-        ({ value }) => Number(value[1]) > 0,
-      ),
-    );
-    await f.waitFor(
-      "request-correlated OCC log in Grafana",
-      async () =>
-        (await demo.logs(`{service_name="occ-api"} | request_id = "${request.requestId}"`)).length >
-        0,
-    );
+    const demo = await installObservabilityDemo(t);
+    const expression = 'demo_smoke_value{job=~"occ-api|occ-worker|collector"}';
+    await demo.waitFor("all fixture metrics through Grafana's Prometheus connection", async () => {
+      const rows = await demo.query(
+        "prometheus",
+        `/api/v1/query?query=${encodeURIComponent(expression)}`,
+      );
+      return (
+        new Set(
+          rows.filter(({ value }) => Number(value[1]) === 1).map(({ metric }) => metric.source),
+        ).size === 3
+      );
+    });
+    const marker = `demo-smoke-${randomUUID()}`;
+    await demo.exportLog(marker);
+    await demo.waitFor("OTLP log through Grafana's Loki connection", async () => {
+      const expression = `{service_name="demo-smoke"} |= "${marker}"`;
+      const rows = await demo.query(
+        "loki",
+        `/loki/api/v1/query_range?query=${encodeURIComponent(expression)}&since=5m`,
+      );
+      return rows.some(({ values }) => values.some(([, line]) => line === marker));
+    });
+    for (const uid of ["occ-development", "occ-logs"]) {
+      const response = await demo.grafana(`/api/dashboards/uid/${uid}`);
+      assert.equal(response.status, 200);
+      assert.ok(JSON.parse(response.text).dashboard.panels.length > 0);
+    }
   },
 );

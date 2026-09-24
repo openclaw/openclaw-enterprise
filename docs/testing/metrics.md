@@ -179,11 +179,14 @@ minimal OTLP receiver; the test reads the decoded records and checks attribution
 and credential exclusion. No Prometheus, Grafana, or Loki is installed.
 
 Run `pnpm test:observability --demo` for the separate demo smoke test. It installs
-the demo chart alongside OCC and queries real OCC metrics and a request-correlated
-log through Grafana's provisioned data sources. It runs in the
+only Prometheus, Grafana, and Loki. Small protocol fixtures publish a known metric
+and OTLP record; queries through Grafana verify discovery, scraping, ingestion,
+and both data-source connections. The test also checks dashboard provisioning.
+It does not build or install OCC, PostgreSQL, or a Collector. It runs in the
 [Observability Demo workflow](../../.github/workflows/observability-demo.yml) for
-relevant chart, logging, metrics, and test-infrastructure changes, on merge groups,
-and on manual dispatch. Readiness alone is not acceptance.
+relevant demo-chart and test-infrastructure changes, on merge groups,
+and on manual dispatch. This proves the demo chart using fixture telemetry;
+the separate production smoke proves real OCC telemetry.
 
 These are installation smoke tests. They do not exercise Agent lifecycle, Pod
 replacement, Collector ownership handoff, metrics opt-out upgrades, or exporter
