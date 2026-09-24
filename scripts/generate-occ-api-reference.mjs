@@ -34,7 +34,7 @@ const cheatSheetEntities = [
     tag: "Service accounts",
     paths: ["/credential", "/credentials"],
   },
-  { title: "Providers" },
+  { title: "Backends" },
 ];
 
 function slugifySegment(value) {

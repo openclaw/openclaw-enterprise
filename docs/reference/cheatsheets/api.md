@@ -107,9 +107,9 @@
 - [`createServiceAccountCredential`](../api.md#post-namespacesnamespaceidserviceaccountsserviceaccountidcredentials): Issue a managed credential for an exact Namespace-owned ServiceAccount.
 - [`updateServiceAccountCredential`](../api.md#patch-namespacesnamespaceidserviceaccountsserviceaccountidcredential): Associate an exact Namespace-local credential reference with a ServiceAccount.
 
-### Providers
+### Backends
 
-- [`listProviders`](../api.md#get-providers): List configured Providers.
+- [`listBackends`](../api.md#get-backends): List configured Backends (experimental).
 
 ### Presets
 

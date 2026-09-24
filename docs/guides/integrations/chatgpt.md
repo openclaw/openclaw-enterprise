@@ -1,32 +1,36 @@
-# Use the ChatGPT Provider
+# Use the ChatGPT Backend (experimental)
 
-The ChatGPT Provider lets an Installation issue ChatGPT service-account
+> **Experimental / work in progress.** This guide covers the current managed
+> service-account workflow. Read the [Backend scope and limits](../../reference/backends.md)
+> before configuring it.
+
+The ChatGPT Backend lets an Installation issue ChatGPT service-account
 credentials for dedicated Codex Agents. It manages accounts and credentials;
 it does not choose the model or route inference. If you already have an OpenAI
 API key, use [Agent model authentication](../../reference/agents.md#harness-authentication)
-instead; you do not need a Provider.
+instead; you do not need a Backend.
 
 ## Before you start
 
 An Installation operator needs Kubernetes Compute, PostgreSQL, the upstream
 workspace ID, and an admin key authorized for that workspace with
 `chatgpt.enterprise.service_account.write`. The key must be available to the OCC
-API as a mounted file. Only one ChatGPT Provider is supported per Installation.
+API as a mounted file. Only one ChatGPT Backend is supported per Installation.
 
 The person creating an account needs permission to create service accounts in
 the Namespace and update the new account to issue its credential. The person
 associating or deploying an Agent needs `read` on that exact account. See
 [service-account permissions](../../reference/service-accounts.md#account-ownership-and-authorization).
 
-## Configure and use the Provider
+## Configure and use the Backend
 
-1. As the Installation operator, add the ChatGPT Provider and matching
+1. As the Installation operator, add the ChatGPT Backend and matching
    `service_account` Driver to the trusted Installation YAML. In production,
    configure the Helm Secret mount and confirm that API Pods can reach
    `api.chatgpt.com:443`. The Helm value only permits a destination; it does not
-   configure a forward proxy. Follow the [Installation settings](../../reference/providers.md#installation-configuration)
-   and [production networking requirements](../../reference/providers.md#production-packaging-and-verification).
-2. Confirm that the Provider appears in `GET /providers`. This requires
+   configure a forward proxy. Follow the [Installation settings](../../reference/backends.md#installation-configuration)
+   and [production networking requirements](../../reference/backends.md#production-packaging-and-verification).
+2. Confirm that the Backend appears in `GET /backends`. This requires
    `administer` on the Installation and checks OCC configuration only; it does
    not call ChatGPT or validate the admin key.
 3. In the Agent's Namespace, create a service account with
@@ -35,15 +39,15 @@ associating or deploying an Agent needs `read` on that exact account. See
    separately with
    `POST /namespaces/:namespaceId/service-accounts/:serviceAccountId/credentials`
    and the body `{}`. Both requests return `201`. Use the
-   [verification example](#verify-provider-access) for the second request. See the
+   [verification example](#verify-backend-access) for the second request. See the
    [service-account lifecycle](../../reference/service-accounts.md#account-and-credential-lifecycle).
-4. On a dedicated Codex Agent, select the configured `providerId` and that
+4. On a dedicated Codex Agent, select the configured `backendId` and that
    account for model authentication. For example, adapt this fragment for the
    Agent create or update request:
 
    ```json
    {
-     "providerId": "openai",
+     "backendId": "openai",
      "harnessAuth": {
        "method": "chatgpt_service_account",
        "serviceAccountId": "<service-account-id>"
@@ -53,10 +57,10 @@ associating or deploying an Agent needs `read` on that exact account. See
 
 5. Deploy the saved Agent and [verify the production Agent](../deploy/production-agents.md#verify-production-workloads).
    For a trusted-proxy gateway, [verify a model response](../operate/model-verification.md).
-   Provider credential issuance does not prove the Agent can use it; only a
+   Backend credential issuance does not prove the Agent can use it; only a
    real model response verifies that path.
 
-## Verify Provider access
+## Verify Backend access
 
 In a shell with Node.js, set `OCC_URL` to the approved HTTPS origin,
 `OCC_SERVICE_KEY_FILE` to an owner-readable [OCC service API key file](../http-api.md#set-up-the-connection),
@@ -112,7 +116,7 @@ issue a credential for a new account.
 - **`404` from OCC:** check that the account exists in the Agent's exact
   Namespace.
 - **`409 RESOURCE_CONFLICT` on deployment:** verify that the account has an
-  issued credential from the selected Provider and Driver. Only dedicated Codex
+  issued credential from the selected Backend and Driver. Only dedicated Codex
   supports this binding.
 - **`503 DEPENDENCY_UNAVAILABLE` when issuing:** confirm that the Installation
   selects the matching ServiceAccount Driver. Have the network operator check
@@ -127,6 +131,6 @@ issue a credential for a new account.
 
 ## Related
 
-- [Providers reference](../../reference/providers.md)
+- [Backends reference](../../reference/backends.md)
 - [Kubernetes Compute](../../reference/drivers/kubernetes-compute.md)
 - [Agent model authentication](../../reference/agents.md#harness-authentication)

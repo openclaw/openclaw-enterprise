@@ -57,11 +57,11 @@ boundaries. OCC rejects conflicting, unknown, or mode-incompatible selections
 before admitting a revision. A selected SandboxDriver currently requires
 `dedicated` Codex execution; it does not support embedded OpenClaw.
 
-An Agent update may include `executionMode`, `harnessAuth`, and `providerId`
+An Agent update may include `executionMode`, `harnessAuth`, and `backendId`
 alongside its required `configurationId`. Omission preserves the current value;
-`harnessAuth: null` clears authentication and `providerId: null` clears the
-Provider. Existing revisions retain their immutable placement, auth binding, and
-Provider association.
+`harnessAuth: null` clears authentication and `backendId: null` clears the
+Backend. Existing revisions retain their immutable placement, auth binding, and
+Backend association.
 See the
 [Harness execution topology flow](../../flows/harness-execution-topology.md) for
 runtime selection, identity boundaries, and activation.
@@ -76,9 +76,9 @@ an earlier revision or make the new revision active immediately.
 The revision records the source `configurationId`, `configurationKind`, and
 `configurationGeneration`, its complete admitted native `configuration`
 document, the approved Harness identity/version/mode, selected Compute identity,
-nullable `providerId`, and `harnessAuth` with its resolved internal source snapshot.
+nullable `backendId`, and `harnessAuth` with its resolved internal source snapshot.
 The auth snapshot contains no credential bytes; public revisions omit private
-backend locators and Provider/workspace metadata. Native Configuration values must use
+backend locators and Backend/workspace metadata. Native Configuration values must use
 unresolved inline SecretRefs because the admitted document is persisted and
 returned through the API; see [secret boundaries](../configuration/secrets.md#secret-boundaries).
 Nested objects and arrays are immutable.

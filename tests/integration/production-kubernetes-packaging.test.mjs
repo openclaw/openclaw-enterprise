@@ -32,13 +32,13 @@ const values = {
   "cluster.cidrs[1]": "10.43.0.2/32",
 };
 const chatgptValues = {
-  "provider.chatgpt.enabled": "true",
-  "provider.chatgpt.providerCidr": "198.51.100.25/32",
+  "backend.chatgpt.enabled": "true",
+  "backend.chatgpt.providerCidr": "198.51.100.25/32",
 };
 const repositoryCredentialValues = {
   "repositoryCredentials.enabled": "true",
   "repositoryCredentials.image": `registry.example.invalid/repository-credentials@sha256:${"b".repeat(64)}`,
-  "repositoryCredentials.providerId": "github-primary",
+  "repositoryCredentials.backendId": "github-primary",
   "repositoryCredentials.registryConfigMapName": "repository-registry-v1",
   "repositoryCredentials.serviceConfigSecretName": "repository-config",
   "repositoryCredentials.appKeySecretName": "repository-app-key",
@@ -238,7 +238,7 @@ test("production native examples satisfy the current Helm, Installation, and PVC
     environment: { OCC_CONFIG_PATH: installationPath },
   });
   assert.equal(drivers.installation.occ.cluster, "production-west");
-  assert.deepEqual(drivers.installation.provider, []);
+  assert.deepEqual(drivers.installation.backend, []);
   assert.equal(drivers.computeDriver.id, "compute-kubernetes");
   const compute = drivers.installation.drivers.compute.configuration;
   assert.equal(compute.network.gatewayClients, undefined);
@@ -260,7 +260,7 @@ test("production native examples satisfy the current Helm, Installation, and PVC
   assert.equal(bootstrapClaim.spec.resources.requests.storage, "1Gi");
 });
 
-test("production Helm values example renders the providerless default chart", tooling, async () => {
+test("production Helm values example renders the backendless default chart", tooling, async () => {
   const { stdout } = await execute(
     helm,
     [
@@ -528,7 +528,7 @@ test(
     assert.deepEqual(service.args, [
       "--public-origin",
       "https://openclaw-enterprise-repository-credentials.openclaw-system.svc",
-      "--provider-id",
+      "--backend-id",
       "github-primary",
     ]);
     assert.deepEqual(service.readinessProbe.exec.command, [
@@ -643,7 +643,7 @@ test(
   async () => {
     for (const [overrides, message] of [
       [{ "repositoryCredentials.image": "repository-credentials:latest" }, /immutable SHA-256/],
-      [{ "repositoryCredentials.providerId": "" }, /providerId is required/],
+      [{ "repositoryCredentials.backendId": "" }, /backendId is required/],
       [{ "repositoryCredentials.registryConfigMapName": "" }, /registryConfigMapName is required/],
       [{ "repositoryCredentials.publicCaSecretName": "repository-tls" }, /dedicated Secret/],
       [{ "repositoryCredentials.appKeySecretName": "occ-auth" }, /dedicated Secret/],
@@ -985,7 +985,7 @@ test(
 );
 
 test(
-  "the optional ChatGPT Provider isolates admin credentials, tenant Secrets, and provider egress to the API",
+  "the optional ChatGPT Backend isolates admin credentials, tenant Secrets, and provider egress to the API",
   tooling,
   async () => {
     const { stdout } = await render(chatgptValues);
@@ -1102,19 +1102,19 @@ test(
       ],
       [
         "unrestricted ChatGPT provider egress",
-        { ...chatgptValues, "provider.chatgpt.providerCidr": "0.0.0.0/0" },
+        { ...chatgptValues, "backend.chatgpt.providerCidr": "0.0.0.0/0" },
       ],
       [
-        "ChatGPT Provider without an approved provider host",
-        { ...chatgptValues, "provider.chatgpt.providerCidr": "" },
+        "ChatGPT Backend without an approved provider host",
+        { ...chatgptValues, "backend.chatgpt.providerCidr": "" },
       ],
       [
         "ChatGPT admin key shared with installation configuration",
-        { ...chatgptValues, "provider.chatgpt.secretName": "occ-installation-startup" },
+        { ...chatgptValues, "backend.chatgpt.secretName": "occ-installation-startup" },
       ],
       [
-        "ChatGPT Provider without an admin Secret key",
-        { ...chatgptValues, "provider.chatgpt.key": "" },
+        "ChatGPT Backend without an admin Secret key",
+        { ...chatgptValues, "backend.chatgpt.key": "" },
       ],
       [
         "Agent native admin enabled without a public DNS suffix",

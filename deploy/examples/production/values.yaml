@@ -56,7 +56,7 @@ gatewayRouting:
 repositoryCredentials:
   enabled: false
   # image: registry.example.invalid/openclaw-enterprise/repository-credentials@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
-  # providerId: github-primary
+  # backendId: github-primary
   # registryConfigMapName: occ-repository-registry-v1
   # serviceConfigSecretName: occ-repository-service-config
   # appKeySecretName: occ-repository-app-key

@@ -47,7 +47,7 @@ and the private listener configuration.
 
 <span id="drivers"></span>
 
-- [Integrations](../guides/integrations/README.md) covers named Drivers and Providers.
+- [Integrations](../guides/integrations/README.md) covers named Drivers and Backends.
 
 <span id="platform-internals"></span>
 

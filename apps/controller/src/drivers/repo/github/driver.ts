@@ -2,7 +2,7 @@ import type {
   JSONSchema,
   OpenRepositorySessionInput,
   OpenRepositorySessionResult,
-  Provider,
+  Backend,
   RepositoryBindingRequest,
   RepoDriver,
   RepositoryCredentialGrantIdentity,
@@ -15,7 +15,7 @@ import { isAbsolute, resolve } from "node:path";
 import {
   RepositoryCredentialControlError,
   type RepositoryCredentialControlClient,
-} from "../../../providers/repository-credentials/control-client.ts";
+} from "../../../backends/repository-credentials/control-client.ts";
 import {
   resolveGitHubRepositoryBinding,
   validateGitHubRepositoryRegistry,
@@ -109,27 +109,27 @@ export class GitHubRepoDriver implements RepoDriver {
   readonly implementation = "github";
   readonly maintenanceIntervalMs = 30_000;
   readonly id: string;
-  readonly #providerId: string;
+  readonly #backendId: string;
   readonly #registry: GitHubRepositoryRegistry;
   readonly #client: RepositoryCredentialControlClient;
   readonly #duration: number;
   readonly #publicCa: Uint8Array | undefined;
 
   constructor(
-    provider: Provider<RepositoryCredentialControlClient>,
+    backend: Backend<RepositoryCredentialControlClient>,
     registry: GitHubRepositoryRegistry,
     options: { readonly sessionDurationSeconds: number; readonly publicCa?: Uint8Array },
   ) {
-    const id = provider.drivers.repo;
+    const id = backend.drivers.repo;
     if (
       typeof id !== "string" ||
       Buffer.byteLength(id) < 1 ||
       Buffer.byteLength(id) > 512 ||
       hasControlCharacters(id)
     ) {
-      throw new Error("The GitHub Provider must declare its repository credential Driver.");
+      throw new Error("The GitHub Backend must declare its repository credential Driver.");
     }
-    this.#registry = validateGitHubRepositoryRegistry(registry, provider.id);
+    this.#registry = validateGitHubRepositoryRegistry(registry, backend.id);
     if (
       !Number.isSafeInteger(options.sessionDurationSeconds) ||
       options.sessionDurationSeconds < 1 ||
@@ -138,8 +138,8 @@ export class GitHubRepoDriver implements RepoDriver {
       throw new Error("Repository credential session duration exceeds the registry policy.");
     }
     this.id = id;
-    this.#providerId = provider.id;
-    this.#client = provider.client;
+    this.#backendId = backend.id;
+    this.#client = backend.client;
     this.#duration = options.sessionDurationSeconds;
     if (options.publicCa !== undefined) {
       if (options.publicCa.byteLength === 0 || options.publicCa.byteLength > 64 * 1024) {
@@ -203,9 +203,9 @@ export class GitHubRepoDriver implements RepoDriver {
     input: OpenRepositorySessionInput,
     signal: AbortSignal,
   ): Promise<OpenRepositorySessionResult> {
-    if (input.recoverOnly !== true && input.binding.providerId !== this.#providerId) {
+    if (input.recoverOnly !== true && input.binding.backendId !== this.#backendId) {
       throw new ScopeViolationError(
-        "The repository binding does not belong to the selected Provider.",
+        "The repository binding does not belong to the selected Backend.",
       );
     }
     // Replay and cleanup must still reach retained correlation after local policy changes.

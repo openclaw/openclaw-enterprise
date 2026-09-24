@@ -19,7 +19,7 @@ RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
         (binding ?& ARRAY['method', 'serviceAccountId'])
         AND (binding - 'method' - 'serviceAccountId'
           - CASE WHEN resolved THEN 'credential' ELSE 'method' END
-          - CASE WHEN resolved THEN 'providerBinding' ELSE 'method' END) = '{}'::jsonb
+          - CASE WHEN resolved THEN 'backendBinding' ELSE 'method' END) = '{}'::jsonb
         AND (binding->>'serviceAccountId') ~ '^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
         AND (NOT resolved OR (
           jsonb_typeof(binding->'credential') = 'object'
@@ -36,16 +36,16 @@ RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
           AND char_length(binding #>> '{credential,secretRef,key}') BETWEEN 1 AND 253
           AND (binding #>> '{credential,secretRef,key}') ~ '^[-._a-zA-Z0-9]+$'
           AND (binding #>> '{credential,secretRef,key}') NOT IN ('.', '..')
-          AND jsonb_typeof(binding->'providerBinding') = 'object'
-          AND ((binding->'providerBinding') ?& ARRAY['providerId', 'driverId', 'workspaceId', 'credentialIssued'])
-          AND ((binding->'providerBinding') - 'providerId' - 'driverId' - 'workspaceId' - 'credentialIssued') = '{}'::jsonb
-          AND jsonb_typeof(binding #> '{providerBinding,providerId}') = 'string'
-          AND btrim(binding #>> '{providerBinding,providerId}') <> ''
-          AND jsonb_typeof(binding #> '{providerBinding,driverId}') = 'string'
-          AND btrim(binding #>> '{providerBinding,driverId}') <> ''
-          AND jsonb_typeof(binding #> '{providerBinding,workspaceId}') = 'string'
-          AND btrim(binding #>> '{providerBinding,workspaceId}') <> ''
-          AND binding #> '{providerBinding,credentialIssued}' = 'true'::jsonb
+          AND jsonb_typeof(binding->'backendBinding') = 'object'
+          AND ((binding->'backendBinding') ?& ARRAY['backendId', 'driverId', 'workspaceId', 'credentialIssued'])
+          AND ((binding->'backendBinding') - 'backendId' - 'driverId' - 'workspaceId' - 'credentialIssued') = '{}'::jsonb
+          AND jsonb_typeof(binding #> '{backendBinding,backendId}') = 'string'
+          AND btrim(binding #>> '{backendBinding,backendId}') <> ''
+          AND jsonb_typeof(binding #> '{backendBinding,driverId}') = 'string'
+          AND btrim(binding #>> '{backendBinding,driverId}') <> ''
+          AND jsonb_typeof(binding #> '{backendBinding,workspaceId}') = 'string'
+          AND btrim(binding #>> '{backendBinding,workspaceId}') <> ''
+          AND binding #> '{backendBinding,credentialIssued}' = 'true'::jsonb
         ))
       ELSE false
     END, false);

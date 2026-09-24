@@ -43,7 +43,7 @@ export async function seedSessionRevision(store, credentials = repositoryCredent
     namespaceId: namespace.id,
     name: `Session owner ${randomUUID()}`,
     configurationId: configuration.id,
-    providerId: null,
+    backendId: null,
     harnessAuth,
     executionMode: "embedded",
     servicePrincipalId: `service-agent-${randomUUID()}`,
@@ -61,7 +61,7 @@ export async function seedSessionRevision(store, credentials = repositoryCredent
     configurationId: configuration.id,
     configurationKind: "agent",
     configurationGeneration: 1,
-    providerId: null,
+    backendId: null,
     harnessAuth: { ...harnessAuth, secretDriverId: secret.driverId },
     configuration: { agents: { defaults: { model: "openai/gpt-fixture" } } },
     harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
@@ -116,10 +116,10 @@ export async function verifyRepositorySessions(t, store) {
     "draft updates preserve or clear selections without changing the admitted snapshot",
     async () => {
       const credentials = repositoryCredentials();
-      // Provider grant identities are opaque UTF-8 strings, not normalized route tokens.
+      // Backend grant identities are opaque UTF-8 strings, not normalized route tokens.
       credentials.driver.id = " driver identity ";
       credentials.driver.implementation = "é".repeat(256);
-      credentials.bindings[0].providerId = "😀".repeat(100);
+      credentials.bindings[0].backendId = "😀".repeat(100);
       credentials.bindings[0].grant.providerInstanceId = "é".repeat(256);
       credentials.bindings[0].grant.repositoryId = " repository/é ";
       const expectedCredentials = structuredClone(credentials);
@@ -259,13 +259,13 @@ export async function verifyRepositorySessions(t, store) {
           driver: { id: `${"é".repeat(256)}x`, implementation: "github" },
         }),
         "provider identity contains surrounding spaces": repositoryCredentials({
-          bindings: [repositoryBinding({ providerId: " provider " })],
+          bindings: [repositoryBinding({ backendId: " provider " })],
         }),
         "provider identity exceeds 200 UTF-16 code units": repositoryCredentials({
-          bindings: [repositoryBinding({ providerId: "😀".repeat(101) })],
+          bindings: [repositoryBinding({ backendId: "😀".repeat(101) })],
         }),
         "provider identity starts with a nonbreaking space": repositoryCredentials({
-          bindings: [repositoryBinding({ providerId: "\u00a0provider" })],
+          bindings: [repositoryBinding({ backendId: "\u00a0provider" })],
         }),
         "grant identity contains DEL": repositoryCredentials({
           bindings: [

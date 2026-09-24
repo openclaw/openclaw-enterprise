@@ -82,7 +82,7 @@ Browser Back and Forward restore the selected tab. Leaving a tab clears entered 
 | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | **Model**                              | Primary model configured for the Agent.                                                                          |
 | **Execution mode**                     | Embedded runs the harness within the gateway; Dedicated runs it separately.                                      |
-| **Provider**                           | Installation-configured Provider associated with this Agent; model credentials come from Harness authentication. |
+| **Backend (experimental)**             | Installation-configured Backend associated with this Agent; model credentials come from Harness authentication.  |
 | **Harness authentication**             | Saved authentication binding, such as a ChatGPT service account ID. It is not a credential value or login check. |
 | **Created**                            | Creation time of the displayed Configuration or revision.                                                        |
 | **Harness**                            | Revision's harness identifier and integration version. This is not the installed Codex CLI version.              |
@@ -105,7 +105,7 @@ Configuration or Agent association before saving. A stale draft requires reload;
 this preflight cannot prevent another write racing with the save. If the outcome
 is unknown, inspect the saved Configuration through a successful reload before
 saving again. Invalid JSON and failed saves retain the text for correction.
-Provider, execution mode, and Harness authentication are Agent fields, not native
+Backend, execution mode, and Harness authentication are Agent fields, not native
 Configuration JSON. See the [Configuration reference](../../reference/configuration.md).
 
 ## Channels tab

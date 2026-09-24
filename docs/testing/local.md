@@ -151,7 +151,7 @@ Fastify, Better Auth memory storage, Native IAM, and in-memory platform storage
 on an ephemeral loopback port. Configuration and Compute helpers are test-only.
 The Agent browser suite seeds active revision pointers only to render admitted
 history; that fixture does not prove runtime dispatch, worker leases, Compute
-Driver effects, PostgreSQL persistence, live Provider health, or deployed Agent
+Driver effects, PostgreSQL persistence, live Backend health, or deployed Agent
 runtime behavior.
 
 Native admin UI coverage in this suite should prove panel visibility, warning

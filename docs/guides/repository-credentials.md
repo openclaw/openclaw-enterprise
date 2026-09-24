@@ -22,7 +22,7 @@ defines repository and Namespace policy. Set `sessionDurationSeconds: 86400` for
 a 24-hour revision; keep it within the registry's maximum.
 
 The chart's `repositoryCredentials.enabled` defaults to `false`. Follow the
-installation guide for Provider/Driver selection, images, registry, Secrets,
+installation guide for Backend/Driver selection, images, registry, Secrets,
 upstream ranges, certificates and tenant RBAC. Use one worker/service owner with
 `Recreate`; replicas cannot share in-memory sessions. Routing does not establish
 network isolation.

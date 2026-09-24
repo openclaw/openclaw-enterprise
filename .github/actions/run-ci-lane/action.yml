@@ -108,6 +108,15 @@ runs:
       if: always()
       shell: bash
       run: node scripts/ci/cleanup.mjs --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json"
+    - name: Upload cluster setup diagnostics
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      if: always() && startsWith(inputs.lane, 'k3d-fixture-')
+      with:
+        name: diagnostics-${{ inputs.artifact-prefix }}-${{ inputs.lane }}
+        path: ${{ runner.temp }}/state/${{ inputs.lane }}.json.diagnostics.json
+        overwrite: true
+        if-no-files-found: ignore
+        retention-days: 7
     - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       if: always()
       with:

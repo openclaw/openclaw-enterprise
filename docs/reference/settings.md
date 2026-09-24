@@ -47,7 +47,7 @@ document containing `occ` and required Configuration, IAM, Compute, and Secret
 Driver selections. Development without this YAML does not select the Secret
 Driver or create Namespace-owned Secret storage. PostgreSQL-backed Installations
 can also configure the optional
-[ChatGPT Provider and its ServiceAccount Driver](providers.md#installation-configuration);
+[ChatGPT Backend and its ServiceAccount Driver](backends.md#installation-configuration);
 only the API reads its admin Secret. See
 [Installation startup configuration](configuration.md#installation-startup-configuration)
 for the complete document shape. OCC resolves its singleton Installation internally.

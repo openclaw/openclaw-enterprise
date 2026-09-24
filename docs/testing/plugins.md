@@ -115,7 +115,7 @@ the controlled status boundary suite above.
 
 The Calendar fixture uses a narrow test-only ServiceAccount import that preserves
 the designated existing account token from a private service-account environment
-file, binds it to the matching Provider, and then runs normal Agent
+file, binds it to the matching Backend, and then runs normal Agent
 create/deploy/API checks. It does not prove native ChatGPT account creation,
 upstream credential issuance, workspace administrator credentials, or creation of
 a new upstream account. Never print credential values or resolved account

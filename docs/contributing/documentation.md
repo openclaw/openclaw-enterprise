@@ -13,7 +13,7 @@ other pages that need it:
 | --------------- | -------------------------------------------------------------------- |
 | Getting Started | Orientation, concepts, local setup, and the first Agent.             |
 | Topics          | Product behavior, configuration, and feature troubleshooting.        |
-| Integrations    | Named Drivers, Providers, and channels; setup and support limits.    |
+| Integrations    | Named Drivers, Backends, and channels; setup and support limits.     |
 | Operate         | Production installation, monitoring, and ongoing administration.     |
 | Reference       | CLI and HTTP API commands, inputs, outputs, and errors.              |
 | Contribute      | Architecture, internals, local development, tests, and writing docs. |

@@ -31,7 +31,7 @@ their separate suites.
 Run `node scripts/verify-repository-credentials-boundary.mjs` after changing the
 service. The same check runs through `pnpm check:workspace` in baseline CI. It
 parses `composition/repository-credentials/`, `drivers/repo/credentials/`,
-`drivers/repo/github/` and `providers/repository-credentials/` beneath
+`drivers/repo/github/` and `backends/repository-credentials/` beneath
 `apps/controller/src/`, plus
 `repository-credentials.ts` and `repository-credentials.mjs`, using the workspace's
 pinned Prettier TypeScript parser. Runtime imports and re-exports must stay within the

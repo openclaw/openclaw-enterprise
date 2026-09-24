@@ -66,7 +66,7 @@ async function login(page, fixture, path) {
   await page.getByLabel("Username").fill(fixture.credentials.email);
   await page.getByLabel("Password").fill(fixture.credentials.password);
   await page.getByRole("button", { name: "Login" }).click();
-  await page.waitForURL(/\/console\/(agents|providers|namespaces|settings)/);
+  await page.waitForURL(/\/console\/(agents|backends|namespaces|settings)/);
 }
 
 function detailUrl(fixture, namespaceId, agentId, tab = "credentials") {

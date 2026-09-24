@@ -186,7 +186,7 @@ Before the first AgentRevision, the [console credential workflow](../../console/
 can create initial per-Agent transport and Gateway password Secrets through
 the selected Driver. It derives their names internally, checks Namespace and
 Agent ownership, and creates missing whole Secrets without replacing existing
-values. Provider-managed credentials and Configuration Secret bindings retain
+values. Backend-managed credentials and Configuration Secret bindings retain
 their separate provisioning paths.
 
 The controller API service account needs `list` permission for Deployments in
@@ -250,7 +250,7 @@ does not relax filesystem or network policy: Codex and bubblewrap still own
 runtime filesystem boundaries, while Kubernetes NetworkPolicies and the
 configured runtime channel proxy own network enforcement.
 
-See [service-account credential delivery](../../service-accounts.md#provider-managed-access-tokens)
+See [service-account credential delivery](../../service-accounts.md#backend-managed-access-tokens)
 for provider-issued credentials and supported execution modes.
 
 ## Related

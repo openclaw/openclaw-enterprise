@@ -145,7 +145,7 @@ func writeInstallation(s *developmentState, reference string) error {
 	auth := map[string]any{"mode": "kubeconfig", "kubeconfigPath": "/run/openclaw-development/kubeconfig", "context": "k3d-" + s.Cluster}
 	resources := map[string]any{"requests": map[string]string{"cpu": "100m", "memory": "256Mi"}, "limits": map[string]string{"cpu": "2", "memory": "1Gi"}}
 	config := map[string]any{
-		"occ": map[string]string{"cluster": s.Cluster}, "provider": []any{},
+		"occ": map[string]string{"cluster": s.Cluster}, "backend": []any{},
 		"drivers": map[string]any{
 			"configuration": map[string]any{"id": "config-kubernetes", "configuration": map[string]any{"authentication": auth}},
 			"iam":           map[string]any{"id": "native-iam", "configuration": map[string]any{}},

@@ -275,7 +275,7 @@ containing the protected OpenAI key first, then set `HARNESS_SECRET_ID` to its
 returned `data.id`. That example uses this shell's `OCC_URL` and protected
 `OCC_SERVICE_KEY_FILE`. The caller needs exact Secret `operate` to bind it.
 For the alternative ChatGPT method, select an already issued same-Namespace
-account and matching Provider as described in [Agent harness authentication](../../reference/agents.md#harness-authentication).
+account and matching Backend as described in [Agent harness authentication](../../reference/agents.md#harness-authentication).
 
 ```bash
 : "${AGENT_EXECUTION_MODE:?choose embedded or dedicated above}"

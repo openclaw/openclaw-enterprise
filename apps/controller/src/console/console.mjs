@@ -229,7 +229,7 @@ async function loadPage({ fromNavigation = false } = {}) {
         shell.view,
         namespaceId === null ? "No readable Namespaces" : "Namespace unavailable",
         namespaceId === null
-          ? "Ask an administrator to provision a Namespace or grant access. Providers and Namespaces remain available in navigation."
+          ? "Ask an administrator to provision a Namespace or grant access. Namespaces remain available in navigation."
           : "This Namespace is missing or you no longer have access. Choose another Namespace.",
         namespaces.length ? "Switch Namespace" : "Refresh",
         () => (namespaces.length ? switchNamespace() : void loadPage()),
@@ -271,8 +271,8 @@ async function loadPage({ fromNavigation = false } = {}) {
       current.feature === "namespaces"
         ? namespaces
         : await request(
-            current.feature === "providers"
-              ? "/providers"
+            current.feature === "backends"
+              ? "/backends"
               : `/namespaces/${encodeURIComponent(namespaceId)}/agents`,
           );
     if (!lifetime.isCurrent(active)) {
@@ -325,8 +325,8 @@ async function loadPage({ fromNavigation = false } = {}) {
             ? "Namespace unavailable"
             : error.name === "TypeError" || error.name === "TimeoutError"
               ? "Request interrupted"
-              : current.feature === "providers"
-                ? "Provider discovery unavailable"
+              : current.feature === "backends"
+                ? "Backend discovery unavailable"
                 : "Request unavailable";
     panel(
       shell.view,

@@ -58,7 +58,7 @@ hosting does not select the Agent model provider.
   for gateway and Agent scheduling.
 - Operator-managed HTTPS access for approved clients; the chart does not create
   TLS or Ingress.
-- Operator-created startup, database, authentication, optional Provider Secrets,
+- Operator-created startup, database, authentication, optional Backend Secrets,
   fresh bootstrap PVC, gateway storage, and exact `/32` egress destinations.
 
 ### Production installation sequence

@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DependencyUnavailableError, ScopeViolationError } from "../../packages/occ/src/index.ts";
 import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
-import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/providers/repository-credentials/control-client.ts";
+import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import {
   defaultRegistryRepositories,
   startRegistryCredentialServiceFixture,
@@ -29,7 +29,7 @@ async function unusedPort() {
 function driverFor(registry, socket, sessionDurationSeconds = 3600, publicCa) {
   return new GitHubRepoDriver(
     {
-      id: registry.providerId,
+      id: registry.backendId,
       client: new UnixRepositoryCredentialControlClient({ controlSocket: socket }),
       drivers: { repo: "repository-credentials" },
     },
@@ -226,9 +226,9 @@ test(
     });
     assert.deepEqual(await driver.open(fenced, signal), { kind: "missing" });
 
-    // A changed local Provider registry must not obstruct restrictive cleanup of the old admission.
+    // A changed local Backend registry must not obstruct restrictive cleanup of the old admission.
     const changedProvider = driverFor(
-      { ...fixture.registry, providerId: "replacement-provider" },
+      { ...fixture.registry, backendId: "replacement-provider" },
       fixture.config.gateway.controlSocket,
     );
     assert.equal(
@@ -263,7 +263,7 @@ test("Unix control rejects malformed status and preserves authoritative absence 
   const driver = driverFor(
     {
       version: 1,
-      providerId: "github-test",
+      backendId: "github-test",
       providerInstanceId: "instance",
       appId: "1",
       githubInstallationId: "2",

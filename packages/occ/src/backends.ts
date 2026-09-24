@@ -1,36 +1,36 @@
 import { isAbsolute } from "node:path";
-import type { Driver, ProviderDefinition, ProviderRef } from "@openclaw-enterprise/contracts";
+import type { Driver, BackendDefinition, BackendRef } from "@openclaw-enterprise/contracts";
 import { asRecord, immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { DriverSelectionError, ResourceConflictError, ScopeViolationError } from "./errors.ts";
 
-const PROVIDER_ID = /^(?!\s)(?!.*\s$)(?!.*[\u0000-\u001f\u007f]).{1,200}$/;
+const BACKEND_ID = /^(?!\s)(?!.*\s$)(?!.*[\u0000-\u001f\u007f]).{1,200}$/;
 const WORKSPACE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_CHATGPT_CREDENTIAL_TTL_SECONDS = 30 * 24 * 60 * 60;
 
-type ProviderMap = ReadonlyMap<string, ProviderDefinition>;
+type BackendMap = ReadonlyMap<string, BackendDefinition>;
 
 function path(value: string, key: string): string {
-  return `provider[${value}].${key}`;
+  return `backend[${value}].${key}`;
 }
 
-function providerId(value: unknown, label = "Provider ID"): string {
-  if (typeof value !== "string" || !PROVIDER_ID.test(value)) {
+function backendId(value: unknown, label = "Backend ID"): string {
+  if (typeof value !== "string" || !BACKEND_ID.test(value)) {
     throw new ScopeViolationError(`${label} must be a nonempty string.`);
   }
   return value;
 }
 
-function validateProviderDefinition(value: unknown, index: number): ProviderDefinition {
+function validateBackendDefinition(value: unknown, index: number): BackendDefinition {
   const candidate = asRecord(value);
   if (candidate === undefined) {
-    throw new ScopeViolationError(`provider[${index}] must be one object.`);
+    throw new ScopeViolationError(`backend[${index}] must be one object.`);
   }
   for (const key of Object.keys(candidate)) {
     if (!["id", "type", "configuration", "drivers"].includes(key)) {
-      throw new ScopeViolationError(`provider[${index}] contains unsupported option ${key}.`);
+      throw new ScopeViolationError(`backend[${index}] contains unsupported option ${key}.`);
     }
   }
-  const id = providerId(candidate.id, `provider[${index}].id`);
+  const id = backendId(candidate.id, `backend[${index}].id`);
   if (candidate.type !== "chatgpt" && candidate.type !== "github") {
     throw new ScopeViolationError(path(id, "type") + " must be chatgpt or github.");
   }
@@ -122,112 +122,112 @@ function validateProviderDefinition(value: unknown, index: number): ProviderDefi
   });
 }
 
-export function validateProviderDefinitions(value: unknown = []): readonly ProviderDefinition[] {
+export function validateBackendDefinitions(value: unknown = []): readonly BackendDefinition[] {
   if (!Array.isArray(value)) {
-    throw new ScopeViolationError("provider must be an array.");
+    throw new ScopeViolationError("backend must be an array.");
   }
-  const providers = value.map((entry, index) => validateProviderDefinition(entry, index));
+  const backends = value.map((entry, index) => validateBackendDefinition(entry, index));
   const ids = new Set<string>();
   const members = new Set<string>();
-  for (const provider of providers) {
-    if (ids.has(provider.id)) {
-      throw new ScopeViolationError("Provider IDs must be unique.");
+  for (const backend of backends) {
+    if (ids.has(backend.id)) {
+      throw new ScopeViolationError("Backend IDs must be unique.");
     }
-    ids.add(provider.id);
+    ids.add(backend.id);
     const member =
-      provider.type === "chatgpt"
-        ? `service_account:${provider.drivers.service_account}`
-        : `repo:${provider.drivers.repo}`;
+      backend.type === "chatgpt"
+        ? `service_account:${backend.drivers.service_account}`
+        : `repo:${backend.drivers.repo}`;
     if (members.has(member)) {
       throw new ScopeViolationError(
-        provider.type === "chatgpt"
-          ? "A ServiceAccount Driver cannot belong to multiple Providers."
-          : "A repository credential Driver cannot belong to multiple Providers.",
+        backend.type === "chatgpt"
+          ? "A ServiceAccount Driver cannot belong to multiple Backends."
+          : "A repository credential Driver cannot belong to multiple Backends.",
       );
     }
     members.add(member);
   }
-  if (providers.filter((provider) => provider.type === "chatgpt").length > 1) {
-    throw new ScopeViolationError("Only one bundled ChatGPT Provider can be configured.");
+  if (backends.filter((backend) => backend.type === "chatgpt").length > 1) {
+    throw new ScopeViolationError("Only one bundled ChatGPT Backend can be configured.");
   }
-  if (providers.filter((provider) => provider.type === "github").length > 1) {
-    throw new ScopeViolationError("Only one bundled GitHub Provider can be configured.");
+  if (backends.filter((backend) => backend.type === "github").length > 1) {
+    throw new ScopeViolationError("Only one bundled GitHub Backend can be configured.");
   }
-  return Object.freeze(providers);
+  return Object.freeze(backends);
 }
 
-export function providerDefinitionMap(providers: readonly ProviderDefinition[]): ProviderMap {
-  return new Map(validateProviderDefinitions(providers).map((provider) => [provider.id, provider]));
+export function backendDefinitionMap(backends: readonly BackendDefinition[]): BackendMap {
+  return new Map(validateBackendDefinitions(backends).map((backend) => [backend.id, backend]));
 }
 
-export function assertConfiguredProvider(
-  providers: ProviderMap,
+export function assertConfiguredBackend(
+  backends: BackendMap,
   value: string | null,
-  label = "Provider",
-): ProviderDefinition | undefined {
+  label = "Backend",
+): BackendDefinition | undefined {
   if (value === null) {
     return undefined;
   }
-  const id = providerId(value, label);
-  const provider = providers.get(id);
-  if (provider === undefined) {
-    throw new ScopeViolationError(`${label} does not match a configured Provider.`);
+  const id = backendId(value, label);
+  const backend = backends.get(id);
+  if (backend === undefined) {
+    throw new ScopeViolationError(`${label} does not match a configured Backend.`);
   }
-  return provider;
+  return backend;
 }
 
-export function validateSelectedProviderDrivers(
-  providers: readonly ProviderDefinition[],
+export function validateSelectedBackendDrivers(
+  backends: readonly BackendDefinition[],
   selectedServiceAccountDriver: Driver | undefined,
   selectedRepoDriver?: Driver,
 ): void {
-  for (const provider of providers) {
-    if (provider.type === "github") {
+  for (const backend of backends) {
+    if (backend.type === "github") {
       if (
         selectedRepoDriver?.capability !== "repo" ||
-        selectedRepoDriver.id !== provider.drivers.repo
+        selectedRepoDriver.id !== backend.drivers.repo
       ) {
         throw new DriverSelectionError(
-          "The configured Provider requires its repository credential Driver.",
+          "The configured Backend requires its repository credential Driver.",
         );
       }
       continue;
     }
     if (
       selectedServiceAccountDriver?.capability !== "service_account" ||
-      selectedServiceAccountDriver.id !== provider.drivers.service_account
+      selectedServiceAccountDriver.id !== backend.drivers.service_account
     ) {
-      throw new DriverSelectionError("The configured Provider requires its ServiceAccount Driver.");
+      throw new DriverSelectionError("The configured Backend requires its ServiceAccount Driver.");
     }
   }
 }
 
-export function validateServiceAccountProviderBinding(
-  providers: ProviderMap,
-  providerIdValue: string | null,
+export function validateServiceAccountBackendBinding(
+  backends: BackendMap,
+  backendIdValue: string | null,
   binding:
     | Readonly<{
-        readonly providerId: string;
+        readonly backendId: string;
         readonly driverId: string;
         readonly workspaceId: string;
         readonly credentialIssued: boolean;
       }>
     | undefined,
 ): void {
-  const provider = assertConfiguredProvider(providers, providerIdValue, "Agent Provider");
-  if (provider === undefined || provider.type !== "chatgpt" || binding === undefined) {
+  const backend = assertConfiguredBackend(backends, backendIdValue, "Agent Backend");
+  if (backend === undefined || backend.type !== "chatgpt" || binding === undefined) {
     throw new ResourceConflictError(
-      "The managed ServiceAccount credential has no Provider binding.",
+      "The managed ServiceAccount credential has no Backend binding.",
     );
   }
   if (
-    binding.providerId !== provider.id ||
-    binding.driverId !== provider.drivers.service_account ||
-    binding.workspaceId !== provider.configuration.workspaceId ||
+    binding.backendId !== backend.id ||
+    binding.driverId !== backend.drivers.service_account ||
+    binding.workspaceId !== backend.configuration.workspaceId ||
     !binding.credentialIssued
   ) {
     throw new ResourceConflictError(
-      "The managed ServiceAccount credential does not match its Provider.",
+      "The managed ServiceAccount credential does not match its Backend.",
     );
   }
 }

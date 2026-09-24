@@ -59,7 +59,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     namespaceId: namespace.id,
     name: `Agent ${randomUUID()}`,
     configurationId: configuration.id,
-    providerId: null,
+    backendId: null,
     harnessAuth: apiKeyBinding,
     executionMode: "embedded",
     servicePrincipalId: identifier("service-agent"),
@@ -74,7 +74,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     namespaceId: namespace.id,
     agentId: agent.id,
     revision: 1,
-    providerId: null,
+    backendId: null,
     configurationId: configuration.id,
     configurationKind: configuration.kind,
     configurationGeneration: configuration.generation,
@@ -168,7 +168,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     "teardown work naming its Namespace instead of its Agent must be refused",
   );
 
-  const providerConfiguration = {
+  const backendConfiguration = {
     id: identifier("cfg"),
     namespaceId: namespace.id,
     kind: "agent",
@@ -178,13 +178,13 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
   const providerAgent = {
     ...agent,
     id: identifier("agt"),
-    name: `Provider owner ${randomUUID()}`,
-    configurationId: providerConfiguration.id,
-    providerId: "provider-a",
+    name: `Backend owner ${randomUUID()}`,
+    configurationId: backendConfiguration.id,
+    backendId: "provider-a",
     servicePrincipalId: identifier("service-agent"),
   };
   await store.transact(async (transaction) => {
-    await transaction.configurations.createConfiguration(providerConfiguration);
+    await transaction.configurations.createConfiguration(backendConfiguration);
     await transaction.agents.createAgent(providerAgent);
   });
   await assert.rejects(
@@ -193,12 +193,12 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
         ...revision,
         id: identifier("rev"),
         agentId: providerAgent.id,
-        configurationId: providerConfiguration.id,
-        providerId: "provider-b",
+        configurationId: backendConfiguration.id,
+        backendId: "provider-b",
         servicePrincipalId: providerAgent.servicePrincipalId,
       }),
     ),
-    "AgentRevision Provider snapshots must match the owning Agent.",
+    "AgentRevision Backend snapshots must match the owning Agent.",
   );
   await store.read(async (state) => {
     assert.deepEqual(await state.revisions.listRevisions(namespace.id, providerAgent.id), []);
@@ -208,12 +208,12 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
       await transaction.agents.updateConfiguration(
         namespace.id,
         providerAgent.id,
-        providerConfiguration.id,
+        backendConfiguration.id,
         providerAgent.executionMode,
         undefined,
         null,
       ),
-      { ...providerAgent, providerId: null },
+      { ...providerAgent, backendId: null },
     );
   });
 
@@ -722,7 +722,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     namespaceId: accountNamespace.id,
     name: "Account agent " + randomUUID(),
     configurationId: accountConfiguration.id,
-    providerId: null,
+    backendId: null,
     executionMode: "dedicated",
     servicePrincipalId: identifier("service-agent"),
     harnessAuth: { method: "chatgpt_service_account", serviceAccountId: account.id },
@@ -749,8 +749,8 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
       method: "chatgpt_service_account",
       serviceAccountId: account.id,
       credential,
-      providerBinding: {
-        providerId: "chatgpt-contract",
+      backendBinding: {
+        backendId: "chatgpt-contract",
         driverId: "service-account-contract",
         workspaceId: "workspace-contract",
         credentialIssued: true,
@@ -838,7 +838,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
       snapshot.harnessAuth,
       snapshot.harnessAuth.credential,
       snapshot.harnessAuth.credential.secretRef,
-      snapshot.harnessAuth.providerBinding,
+      snapshot.harnessAuth.backendBinding,
     ]) {
       assert.ok(Object.isFrozen(value));
     }

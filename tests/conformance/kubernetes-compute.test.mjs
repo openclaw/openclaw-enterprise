@@ -2086,8 +2086,8 @@ test("dedicated Codex projects the account-owned token and workspace without exp
   const account = {
     method: "chatgpt_service_account",
     serviceAccountId,
-    providerBinding: {
-      providerId: "provider-chatgpt",
+    backendBinding: {
+      backendId: "provider-chatgpt",
       driverId: "chatgpt",
       workspaceId: "ws_1",
       credentialIssued: true,
@@ -3814,7 +3814,7 @@ test("provider-owned Harness requirements preserve the exact projected ServicePr
 
   const requirements = driver.harnessRequirementsFromDeployment(workload, "api_key");
   assert.equal(requirements.loginMode, "api_key");
-  // Provider requirements must carry readable identities unchanged into Pod labels and selectors.
+  // Backend requirements must carry readable identities unchanged into Pod labels and selectors.
   for (const [key, value] of Object.entries({
     "openclaw.dev/namespace": ownership.namespaceId,
     "openclaw.dev/agent": ownership.agentId,
@@ -4575,8 +4575,8 @@ test("revision lifecycle rejects another driver or missing identity before clust
   const serviceAccount = {
     method: "chatgpt_service_account",
     serviceAccountId,
-    providerBinding: {
-      providerId: "provider-chatgpt",
+    backendBinding: {
+      backendId: "provider-chatgpt",
       driverId: "chatgpt",
       workspaceId: "ws_1",
       credentialIssued: true,

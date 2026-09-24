@@ -67,7 +67,7 @@ async function createResources(pool, agentCount = 1) {
       );
       await client.query(
         `INSERT INTO occ.agents
-           (id, namespace_id, name, configuration_id, provider_id, execution_mode, service_principal_id,
+           (id, namespace_id, name, configuration_id, backend_id, execution_mode, service_principal_id,
             harness_auth, created_at)
          VALUES ($1, $2, $3, $4, NULL, 'embedded', $5, $6::jsonb, clock_timestamp())`,
         [
@@ -855,7 +855,7 @@ async function createRepositoryRevision(
   const bindings = phases.map((_, index) => ({
     repositoryRef: `repository-${index}`,
     profile: "read",
-    providerId: "queue-provider",
+    backendId: "queue-provider",
     grant: {
       providerInstanceId: "queue-provider-instance",
       repositoryId: `repository-${index}`,

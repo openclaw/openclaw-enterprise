@@ -81,13 +81,13 @@ The operator copies and edits the production example values, Installation YAML,
 and bootstrap PVC manifest outside the checkout. Helm values select the
 controller image, API endpoint, Secret names, bootstrap claim, API-client
 selectors, control-plane node selector, and egress destinations. The
-Installation YAML selects IAM, Configuration, Compute, optional Provider,
+Installation YAML selects IAM, Configuration, Compute, optional Backend,
 gateway/Agent images, projected workload identity, and runtime
 networking/storage.
 
 The operator creates file-backed Kubernetes Secrets for Installation startup,
 database URLs, optional database CA bundles, Better Auth signing material, and
-optional ChatGPT Provider administrator credentials. These are prepared inputs,
+optional ChatGPT Backend administrator credentials. These are prepared inputs,
 not recurring synchronization targets. The chart does not infer gateway/Agent
 images from Helm values or rewrite Driver configuration.
 
@@ -152,7 +152,7 @@ Job; Helm failure does not imply the database hook was rolled back.
 
 After successful initialization, Kubernetes starts separate API and worker
 Deployments. The API validates production listener settings, Better Auth,
-database access, trusted Installation YAML, selected Drivers, Provider
+database access, trusted Installation YAML, selected Drivers, Backend
 membership, and Kubernetes Compute preflight before readiness. It serves private
 controller routes, `/healthz`, and database-backed `/readyz` behind the
 operator-managed endpoint.
@@ -189,8 +189,8 @@ process mounts the bootstrap PVC.
 `apps/controller/src/composition/repository-credentials/platform.ts:composeRepoDriver`
 
 When selected, both processes load the same canonical registry and public CA,
-construct the GitHub Provider with a lazy Unix client, and register
-`GitHubRepoDriver` under the optional `repo` capability. The configured Provider
+construct the GitHub Backend with a lazy Unix client, and register
+`GitHubRepoDriver` under the optional `repo` capability. The configured Backend
 member and `drivers.repo` must select the same Driver ID. API startup performs no control operation and loads no App key or
 session engine. The worker owns subsequent session lifecycle calls through the
 selected Driver; API readiness remains database-backed.
@@ -199,7 +199,7 @@ selected Driver; API readiness remains database-backed.
 
 The optional service runs beside the single worker. Its own process pins a
 projection generation, copies the known config/key/TLS/registry files into owned
-private regular files, validates the selected Provider and exact Service origin,
+private regular files, validates the selected Backend and exact Service origin,
 then uses the protected loader and starts both listeners. App/TLS private
 material stays in that container. Only the worker receives an explicitly
 projected Kubernetes API token. The service's private health probe checks the
@@ -260,7 +260,7 @@ tenant deployment and TUI procedures run.
 - [Deployment guide: production](../guides/deploy.md#production)
 - [Settings reference](../reference/settings.md)
 - [Kubernetes Compute Driver](../reference/drivers/kubernetes-compute.md)
-- [Provider-managed credential delivery](service-account-driver-credential-delivery.md)
+- [Backend-managed credential delivery](service-account-driver-credential-delivery.md)
 - [Repository credential setup](../guides/repository-credentials.md)
 - [Controller worker execution flow](controller-worker.md)
 - [Production TUI flow](production-tui.md)

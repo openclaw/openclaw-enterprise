@@ -149,7 +149,7 @@ export async function startRepositoryPlatformService(context, options = {}) {
     const clock = createPlatformClock();
     const tls = options.tls ?? (await createTlsMaterial(resources));
     const namespaceId = options.namespaceId ?? "namespace-fixture";
-    const providerId = "github-fixture";
+    const backendId = "github-fixture";
     const maximumDurationSeconds = 172800;
     const definitions = defaultRegistryRepositories.map((entry) =>
       entry.repositoryRef === "repo-a"
@@ -159,13 +159,13 @@ export async function startRepositoryPlatformService(context, options = {}) {
     const material = await createRegistryMaterial(resources, {
       definitions,
       namespaceId,
-      providerId,
+      backendId,
       maximumDurationSeconds,
     });
     const [{ validateServiceConfig }, { UnixRepositoryCredentialControlClient }] =
       await Promise.all([
         credentialDriverModule("configuration"),
-        appModule("providers/repository-credentials/control-client"),
+        appModule("backends/repository-credentials/control-client"),
       ]);
     const config = validateServiceConfig(
       serviceConfigurationData({
@@ -210,7 +210,7 @@ export async function startRepositoryPlatformService(context, options = {}) {
             input: {
               registryFile: material.registryFile,
               privateKeyFile: material.privateKeyFile,
-              providerId,
+              backendId,
               config,
               offset,
               keyFile: tls.keyFile,
@@ -241,7 +241,7 @@ export async function startRepositoryPlatformService(context, options = {}) {
     context.after(() => resources.close());
     return {
       namespaceId,
-      providerId,
+      backendId,
       config,
       tls,
       registryFile: material.registryFile,

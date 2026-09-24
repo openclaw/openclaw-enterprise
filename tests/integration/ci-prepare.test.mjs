@@ -36,6 +36,13 @@ function runPrepare(args, env = {}) {
   });
 }
 
+function fixturePreparationMetrics(stderr) {
+  return stderr.split("\n").flatMap((line) => {
+    const match = line.match(/^\[prepare:k3d-fixture-configuration\] (\{.*\})$/);
+    return match ? [JSON.parse(match[1])] : [];
+  });
+}
+
 async function fixtureImageCommands(
   t,
   scenario,
@@ -77,6 +84,19 @@ function finish(stdout = "") {
 
 if (command === "docker" || command === "podman") {
   if (equals(args, ["version", "--format", "{{.Server.Version}}"])) finish("29.4.0\n");
+  if ((scenario.startsWith("nodes-unready") || scenario === "cluster-create-failed") &&
+      ["server-0", "agent-0"].some((suffix) => args.at(-1) === "k3d-" + state.cluster + "-" + suffix)) {
+    if (state.containersAvailable === false) {
+      process.stderr.write("node container was removed by rollback\n");
+      process.exit(1);
+    }
+    if (equals(args.slice(0, 3), ["inspect", "--format", "{{json .State}}"])) {
+      finish(JSON.stringify({ Status: "running", Running: true, OOMKilled: false, ExitCode: 0 }));
+    }
+    if (equals(args.slice(0, 3), ["logs", "--tail=100", "--timestamps"])) {
+      finish("2026-09-23T00:00:00Z network plugin is not ready\nTOKEN=do-not-publish-node-token\n");
+    }
+  }
   const sourceImage = process.env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE;
   if (sourceImage && equals(args, ["image", "inspect", "--format", "{{json .RepoDigests}}", sourceImage])) {
     if (scenario === "inspect-failed" || (scenario === "image-absent" && !state.pulled)) {
@@ -188,23 +208,36 @@ if (command === "corepack" && equals(args, ["pnpm", "db:migrate"])) {
 }
 if (command === "k3d") {
   if (equals(args, ["version"])) finish("k3d version v5.8.3\n");
-  if (equals(args.slice(0, 2), ["cluster", "create"]) && [13, 15].includes(args.length)) {
+  if (equals(args.slice(0, 2), ["cluster", "create"]) && [13, 15, 16].includes(args.length)) {
     assert.match(args[2], /^openclaw-k8s-/);
     assert.deepEqual(args.slice(3, 5), ["--image", process.env.OPENCLAW_CI_K3S_IMAGE || "+v1.35"]);
-    if (args.length === 15) {
+    if (args.length >= 15) {
     assert.deepEqual(args.slice(5, 10), ["--servers", "1", "--agents", "1", "--volume"]);
     const storage = args[10].split(":");
     assert.equal(storage[1], "/var/lib/rancher/k3s/storage@all");
     assert.ok(existsSync(storage[0]), "both nodes must mount an existing shared host directory");
     assert.equal(args[11], "--api-port");
     assert.match(args[12], /^127\.0\.0\.1:\d+$/);
-    assert.deepEqual(args.slice(13), ["--kubeconfig-update-default=false", "--kubeconfig-switch-context=false"]);
+    assert.deepEqual(args.slice(13, 15), ["--kubeconfig-update-default=false", "--kubeconfig-switch-context=false"]);
+    // The creation-failure case models k3d's default rollback so it can prove
+    // that the preparation owner retains containers for diagnosis and cleanup.
+    if (scenario !== "cluster-create-failed") {
+      assert.deepEqual(args.slice(15), ["--no-rollback"]);
+    } else {
+      assert.ok(equals(args.slice(15), []) || equals(args.slice(15), ["--no-rollback"]));
+    }
     } else {
     assert.deepEqual(args.slice(5, 10), ["--servers", "1", "--agents", "0", "--api-port"]);
     assert.match(args[10], /^127\.0\.0\.1:\d+$/);
     assert.deepEqual(args.slice(11), ["--kubeconfig-update-default=false", "--kubeconfig-switch-context=false"]);
     }
     state.cluster = args[2];
+    if (scenario === "cluster-create-failed") {
+      state.containersAvailable = args.includes("--no-rollback");
+      writeFileSync(statePath, JSON.stringify(state));
+      process.stderr.write("synthetic cluster creation failure\n");
+      process.exit(1);
+    }
     finish();
   }
   if (equals(args, ["kubeconfig", "get", state.cluster])) finish("apiVersion: v1\n");
@@ -229,10 +262,20 @@ if (command === "kubectl") {
   if (equals(args, ["version", "--client=true"])) finish("{}\n");
   if (args[0] === "--kubeconfig" && args[2] === "--context" &&
       args[3] === "k3d-" + state.cluster) {
+    if (!existsSync(args[1])) {
+      process.stderr.write("kubeconfig is unavailable\n");
+      process.exit(1);
+    }
     if (equals(args.slice(4), ["config", "view", "--minify", "--flatten", "-o", "json"])) {
       finish(JSON.stringify({ clusters: [{ cluster: { server: "https://127.0.0.1:6443" } }] }));
     }
-    if (equals(args.slice(4), ["wait", "--for=condition=Ready", "nodes", "--all", "--timeout=120s"])) finish();
+    if (equals(args.slice(4), ["wait", "--for=condition=Ready", "nodes", "--all", "--timeout=120s"])) {
+      if (scenario.startsWith("nodes-unready")) {
+        process.stderr.write("synthetic node readiness timeout\n");
+        process.exit(1);
+      }
+      finish();
+    }
     if (equals(args.slice(4), ["version", "-o", "json"])) {
       finish(JSON.stringify({ serverVersion: {
         gitVersion: scenario === "wrong-server-version" ? "v1.34.11+k3s1" : "v1.35.8+k3s1",
@@ -242,11 +285,38 @@ if (command === "kubectl") {
       finish(JSON.stringify({ spec: { podCIDR: "10.42.7.0/24" } }));
     }
     if (equals(args.slice(4), ["get", "nodes", "-o", "json"])) {
+      if (scenario.startsWith("nodes-unready")) {
+        finish(JSON.stringify({ items: [{
+          metadata: { name: "k3d-" + state.cluster + "-agent-0", annotations: { private: "do-not-publish-node-annotation" } },
+          spec: { providerID: "do-not-publish-node-spec" },
+          status: { conditions: [{ type: "Ready", status: "False", reason: "KubeletNotReady", message: "NetworkPluginNotReady" }] },
+        }] }));
+      }
       finish(JSON.stringify({ items: [{ metadata: { name: "worker" },
         spec: { taints: [{ key: "node.kubernetes.io/disk-pressure", effect: "NoSchedule" }] },
         status: { conditions: [{ type: "DiskPressure", status: "True", reason: "KubeletHasDiskPressure" }] } }] }));
     }
     if (equals(args.slice(4, 6), ["--namespace", "kube-system"])) {
+      if (equals(args.slice(6), ["get", "pods", "-o", "json"])) {
+        if (scenario === "nodes-unready-diagnostics-failed") {
+          process.stderr.write("synthetic diagnostic API failure\n");
+          process.exit(1);
+        }
+        finish(JSON.stringify({ items: [{ metadata: { name: "coredns-fixture" },
+          spec: { containers: [{ env: [{ name: "PRIVATE", value: "do-not-publish-pod-spec" }] }] },
+          status: { phase: "Pending", conditions: [{ type: "PodScheduled", status: "False", reason: "Unschedulable" }] },
+        }] }));
+      }
+      if (equals(args.slice(6), ["get", "events", "-o", "json"])) {
+        if (scenario === "nodes-unready-diagnostics-failed") {
+          // Keep this external command alive until the real preparation deadline kills it.
+          setInterval(() => {}, 60_000);
+          await new Promise(() => {});
+        }
+        finish(JSON.stringify({ items: [{ type: "Warning", reason: "FailedScheduling",
+          message: "fixture network is not ready", involvedObject: { kind: "Pod", name: "coredns-fixture" },
+        }] }));
+      }
       if (equals(args.slice(6, 8), ["apply", "-f"]) && args.length === 9) {
         const manifest = JSON.parse(readFileSync(args[8], "utf8"));
         assert.equal(manifest.kind, "DaemonSet");
@@ -359,6 +429,16 @@ for (const { scenario, error } of [
       await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
     } else {
       assert.equal(result.status, 0, result.stderr);
+      if (scenario === "success") {
+        const metrics = fixturePreparationMetrics(result.stderr);
+        const ready = metrics.find(
+          ({ stage, status }) => stage === "k3d-nodes-ready" && status === "passed",
+        );
+        assert.ok(ready, "successful preparation must report node readiness timing");
+        assert.ok(Number.isFinite(ready.elapsedMs) && ready.elapsedMs >= 0);
+        assert.ok(metrics.some(({ stage }) => stage === "k3d-host-before"));
+        assert.ok(metrics.some(({ stage }) => stage === "k3d-host-after"));
+      }
     }
 
     const cluster = state.resources.find((resource) => resource.kind === "k3d-cluster");
@@ -453,6 +533,83 @@ test("fixture preparation rejects an unknown proxy source before publishing its 
   assert.equal(cleanup.status, 0, cleanup.stderr);
   await assert.rejects(() => stat(commands.statePath), { code: "ENOENT" });
 });
+
+for (const { scenario, stage, error } of [
+  {
+    scenario: "nodes-unready",
+    stage: "k3d-nodes-ready",
+    error: /synthetic node readiness timeout$/,
+  },
+  {
+    scenario: "nodes-unready-diagnostics-failed",
+    stage: "k3d-nodes-ready",
+    error: /synthetic node readiness timeout$/,
+  },
+  {
+    scenario: "cluster-create-failed",
+    stage: "k3d-create",
+    error: /synthetic cluster creation failure$/,
+  },
+]) {
+  test(`fixture preparation preserves bootstrap failure with bounded diagnostics: ${scenario}`, async (t) => {
+    const commands = await fixtureImageCommands(t, scenario);
+    const result = commands.prepare();
+    assert.equal(result.error, undefined, "diagnostics must finish within the CLI watchdog");
+    assert.equal(result.status, 1);
+    assert.match(result.stderr.trim().split("\n").at(-1), error);
+
+    const failedTiming = fixturePreparationMetrics(result.stderr).find(
+      (metric) => metric.stage === stage && metric.status === "failed",
+    );
+    assert.ok(failedTiming, "the bootstrap failure must retain its measured stage");
+    assert.ok(Number.isFinite(failedTiming.elapsedMs) && failedTiming.elapsedMs >= 0);
+
+    const artifactPath = `${commands.statePath}.diagnostics.json`;
+    const artifactText = await readFile(artifactPath, "utf8");
+    const evidence = JSON.parse(artifactText);
+    assert.equal(evidence.lane, "k3d-fixture-configuration");
+    assert.equal(evidence.nodeImage, "+v1.35");
+    if (scenario === "cluster-create-failed") {
+      // Container diagnostics remain available before a kubeconfig can be written.
+      for (const field of ["nodes", "pods", "events"]) {
+        assert.equal(evidence[field].status, "unavailable");
+      }
+    } else {
+      assert.equal(evidence.nodes.status, "ok");
+      assert.match(JSON.stringify(evidence.nodes.value), /KubeletNotReady/);
+    }
+    assert.equal(evidence.containers.length, 2);
+    for (const container of evidence.containers) {
+      assert.equal(container.state.status, "ok");
+      assert.equal(container.logs.status, "ok");
+      assert.match(container.logs.value, /network plugin is not ready/);
+    }
+    assert.doesNotMatch(artifactText, /do-not-publish/);
+    assert.doesNotMatch(result.stderr, /do-not-publish/);
+    if (scenario === "nodes-unready-diagnostics-failed") {
+      assert.equal(evidence.pods.status, "unavailable");
+      assert.equal(evidence.events.status, "timed-out");
+    } else if (scenario === "nodes-unready") {
+      assert.equal(evidence.pods.status, "ok");
+      assert.match(JSON.stringify(evidence.pods.value), /Unschedulable/);
+      assert.equal(evidence.events.status, "ok");
+      assert.match(JSON.stringify(evidence.events.value), /FailedScheduling/);
+    }
+
+    // Failure must retain owned cleanup state without admitting workload execution.
+    const state = JSON.parse(await readFile(commands.statePath, "utf8"));
+    const cluster = state.resources.find(({ kind }) => kind === "k3d-cluster");
+    assert.equal(evidence.cluster, cluster.name);
+    assert.equal(cluster.status, "planned");
+    assert.equal(state.env, undefined);
+    await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
+    const cleanup = commands.cleanup();
+    assert.equal(cleanup.status, 0, cleanup.stderr);
+    await assert.rejects(() => stat(commands.statePath), { code: "ENOENT" });
+    await assert.rejects(() => stat(cluster.directory), { code: "ENOENT" });
+    assert.equal(await readFile(artifactPath, "utf8"), artifactText);
+  });
+}
 
 for (const scenario of ["storage-unready", "storage-after-image-unready"]) {
   test(`fixture preparation reports unavailable storage without publishing workload inputs: ${scenario}`, async (t) => {

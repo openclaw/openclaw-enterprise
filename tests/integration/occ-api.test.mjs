@@ -520,23 +520,23 @@ async function createInjectedFixture(options = {}) {
               controller = new OpenClawController(installation, {
                 state: platformState,
                 recordOperations: options.recordOperations ?? false,
-                ...(options.providers === undefined ? {} : { providers: options.providers }),
+                ...(options.backends === undefined ? {} : { backends: options.backends }),
               });
-              if (options.providers?.length) {
+              if (options.backends?.length) {
                 // Association alone must never provision an upstream account or credential.
-                const unexpectedProviderCall = async () => assert.fail("Unexpected Provider call");
+                const unexpectedBackendCall = async () => assert.fail("Unexpected Backend call");
                 controller.registerDriver({
-                  id: options.providers[0].drivers.service_account,
+                  id: options.backends[0].drivers.service_account,
                   implementation: "chatgpt",
                   capability: "service_account",
-                  providerId: options.providers[0].id,
-                  create: unexpectedProviderCall,
-                  createCredential: unexpectedProviderCall,
-                  delete: unexpectedProviderCall,
+                  backendId: options.backends[0].id,
+                  create: unexpectedBackendCall,
+                  createCredential: unexpectedBackendCall,
+                  delete: unexpectedBackendCall,
                 });
                 controller.selectDriver(
                   "service_account",
-                  options.providers[0].drivers.service_account,
+                  options.backends[0].drivers.service_account,
                 );
               }
               return controller;
@@ -548,8 +548,8 @@ async function createInjectedFixture(options = {}) {
       secretDriver,
       resolveHarness: resolveApprovedDevelopmentHarness,
       auditSink,
-      ...(Object.hasOwn(options, "providerSummaries")
-        ? { providerSummaries: options.providerSummaries }
+      ...(Object.hasOwn(options, "backendSummaries")
+        ? { backendSummaries: options.backendSummaries }
         : {}),
       development: {
         enabled: true,
@@ -1227,9 +1227,9 @@ test("Agent deletion closes every synchronous mutation boundary before teardown"
   assert.equal(revisions.data.length, 1, "no mutation may admit work after deletion starts");
 });
 
-test("Agent Provider API preserves nullable drafts and immutable revision associations", async () => {
+test("Agent Backend API preserves nullable drafts and immutable revision associations", async () => {
   const fixture = await createInjectedFixture({
-    providers: [
+    backends: [
       {
         id: "openai",
         type: "chatgpt",
@@ -1240,19 +1240,16 @@ test("Agent Provider API preserves nullable drafts and immutable revision associ
         drivers: { service_account: "chatgpt-service-accounts" },
       },
     ],
-    providerSummaries: [{ id: "openai", type: "chatgpt" }],
+    backendSummaries: [{ id: "openai", type: "chatgpt" }],
   });
   const controller = {
     request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
   };
   await bootstrap(controller);
-  const providers = await controller.request("GET", "/providers");
-  assert.equal(providers.status, 200);
-  assert.deepEqual(providers.data, [{ id: "openai", type: "chatgpt" }]);
-  assert.doesNotMatch(
-    JSON.stringify(providers.body),
-    /apiKey|workspaceId|credential|drivers|path/i,
-  );
+  const backends = await controller.request("GET", "/backends");
+  assert.equal(backends.status, 200);
+  assert.deepEqual(backends.data, [{ id: "openai", type: "chatgpt" }]);
+  assert.doesNotMatch(JSON.stringify(backends.body), /apiKey|workspaceId|credential|drivers|path/i);
   const namespace = await createNamespace(controller, "provider-api");
   const configuration = await createConfiguration(controller, namespace.id);
   const collection = `/namespaces/${namespace.id}/agents`;
@@ -1260,16 +1257,16 @@ test("Agent Provider API preserves nullable drafts and immutable revision associ
   // Exercise wire defaults and persistence through the real authenticated Fastify routes.
   for (const [name, association] of [
     ["omitted", {}],
-    ["null", { providerId: null }],
-    ["selected", { providerId: "openai" }],
+    ["null", { backendId: null }],
+    ["selected", { backendId: "openai" }],
   ]) {
     const result = await controller.request("POST", collection, {
       body: { name, configurationId: configuration.id, ...association },
     });
     assert.equal(result.status, 201, JSON.stringify(result.body));
-    assert.equal(result.data.providerId, association.providerId ?? null);
+    assert.equal(result.data.backendId, association.backendId ?? null);
     const read = await controller.request("GET", `${collection}/${result.data.id}`);
-    assert.equal(read.data.providerId, association.providerId ?? null);
+    assert.equal(read.data.backendId, association.backendId ?? null);
   }
 
   const agents = await controller.request("GET", collection);
@@ -1279,42 +1276,42 @@ test("Agent Provider API preserves nullable drafts and immutable revision associ
     body: { configurationId: configuration.id },
   });
   assert.equal(preserved.status, 200);
-  assert.equal(preserved.data.providerId, "openai");
+  assert.equal(preserved.data.backendId, "openai");
   await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
   await bindHarnessKey(fixture, namespace.id, selected);
   const revision = await controller.request("POST", `${target}/deploy`);
   assert.equal(revision.status, 202, JSON.stringify(revision.body));
-  assert.equal(revision.data.providerId, "openai");
+  assert.equal(revision.data.backendId, "openai");
 
   const cleared = await controller.request("PATCH", target, {
-    body: { configurationId: configuration.id, providerId: null },
+    body: { configurationId: configuration.id, backendId: null },
   });
   assert.equal(cleared.status, 200);
-  assert.equal(cleared.data.providerId, null);
+  assert.equal(cleared.data.backendId, null);
   const prior = await controller.request("GET", `${target}/revisions/${revision.data.id}`);
-  assert.equal(prior.data.providerId, "openai", "draft changes cannot rewrite admitted revisions");
+  assert.equal(prior.data.backendId, "openai", "draft changes cannot rewrite admitted revisions");
   const independent = await controller.request("POST", `${target}/deploy`);
   assert.equal(independent.status, 202);
-  assert.equal(independent.data.providerId, null);
+  assert.equal(independent.data.backendId, null);
 
-  for (const providerId of ["", " ", "unknown", 42, [], {}]) {
-    const expectedStatus = providerId === "unknown" ? 404 : 400;
+  for (const backendId of ["", " ", "unknown", 42, [], {}]) {
+    const expectedStatus = backendId === "unknown" ? 404 : 400;
     const invalid = await controller.request("POST", collection, {
-      body: { name: "invalid-provider", configurationId: configuration.id, providerId },
+      body: { name: "invalid-provider", configurationId: configuration.id, backendId },
     });
     assert.equal(invalid.status, expectedStatus, JSON.stringify(invalid.body));
     const invalidPatch = await controller.request("PATCH", target, {
-      body: { configurationId: configuration.id, providerId },
+      body: { configurationId: configuration.id, backendId },
     });
     assert.equal(invalidPatch.status, expectedStatus, JSON.stringify(invalidPatch.body));
   }
   const unchanged = await controller.request("GET", target);
-  assert.equal(unchanged.data.providerId, null);
+  assert.equal(unchanged.data.backendId, null);
   const replaced = await controller.request("PATCH", target, {
-    body: { configurationId: configuration.id, providerId: "openai" },
+    body: { configurationId: configuration.id, backendId: "openai" },
   });
   assert.equal(replaced.status, 200);
-  assert.equal(replaced.data.providerId, "openai");
+  assert.equal(replaced.data.backendId, "openai");
 });
 
 test("Installation API exposes Agent provisioning capabilities without configured Providers", async () => {
@@ -1347,8 +1344,8 @@ test("Installation API exposes Agent provisioning capabilities without configure
     async retireRevision() {},
   };
   const fixture = await createInjectedFixture({
-    providers: [],
-    providerSummaries: [],
+    backends: [],
+    backendSummaries: [],
     computeDriver,
   });
   ensureNamespaceCalls = fixture.computeCalls.ensureNamespace;
@@ -1365,9 +1362,9 @@ test("Installation API exposes Agent provisioning capabilities without configure
   assert.equal(installation.status, 200);
   assert.deepEqual(installation.data.capabilities, bootstrapped.capabilities);
 
-  const providers = await controller.request("GET", "/providers");
-  assert.equal(providers.status, 200);
-  assert.deepEqual(providers.data, []);
+  const backends = await controller.request("GET", "/backends");
+  assert.equal(backends.status, 200);
+  assert.deepEqual(backends.data, []);
 });
 
 test("Agent deployment status polls the admitted revision work with exact read authorization", async () => {
@@ -2010,7 +2007,7 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
   assert.equal(accountList.status, 200);
   assert.deepEqual(accountList.data, [assigned.data]);
   assert.equal(JSON.stringify(accountList.data).includes(accountB.id), false);
-  assert.equal(Object.hasOwn(accountList.data[0], "providerId"), false);
+  assert.equal(Object.hasOwn(accountList.data[0], "backendId"), false);
 
   const denied = await injectedRequest(
     readerApp,
@@ -2948,6 +2945,7 @@ test("two Namespaces become independently ready and deletion tombstones only its
   assert.match(readyDeployment.data.id, identifier("rev"));
   assert.deepEqual(Object.keys(readyDeployment.data).sort(), [
     "agentId",
+    "backendId",
     "compute",
     "configuration",
     "configurationGeneration",
@@ -2958,7 +2956,6 @@ test("two Namespaces become independently ready and deletion tombstones only its
     "harnessAuth",
     "id",
     "namespaceId",
-    "providerId",
     "revision",
   ]);
   assert.equal(readyDeployment.data.configurationId, firstConfiguration.id);

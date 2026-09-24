@@ -198,7 +198,7 @@ export function validatePresetTemplate(template) {
   if (Object.hasOwn(template, "agent")) {
     closedObject(
       template.agent,
-      ["name", "executionMode", "providerId", "harnessAuth", "plugins"],
+      ["name", "executionMode", "backendId", "harnessAuth", "plugins"],
       "agent",
     );
   }

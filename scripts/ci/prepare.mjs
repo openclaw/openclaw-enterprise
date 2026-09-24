@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { loadTestSuites } from "./test-suites.mjs";
 import { cleanupResourceIds } from "./cleanup.mjs";
+import { captureK3dDiagnostics, k3dHostMetrics } from "./k3d-diagnostics.mjs";
 import { prepareGatewayRouting } from "./routing.mjs";
 import { prepareLogging } from "./logging.mjs";
 import {
@@ -293,10 +294,10 @@ function execFile(command, args, options = {}) {
     let stdout = "";
     let stderr = "";
     child.stdout?.on("data", (chunk) => {
-      stdout += chunk.toString();
+      stdout = (stdout + chunk.toString()).slice(-(options.maxOutputChars ?? Infinity));
     });
     child.stderr?.on("data", (chunk) => {
-      stderr += chunk.toString();
+      stderr = (stderr + chunk.toString()).slice(-(options.maxOutputChars ?? Infinity));
     });
     function commandError(message, properties = {}) {
       const error = new Error(message);
@@ -677,6 +678,30 @@ async function buildRuntimeImages(
   return { env, resourceIds: resources.map((resource) => resource.id) };
 }
 
+async function k3dStage(state, stage, run) {
+  const started = performance.now();
+  progress(state.lane, JSON.stringify({ stage, status: "started" }));
+  let status = "failed";
+  try {
+    const result = await run();
+    status = "passed";
+    return result;
+  } finally {
+    progress(
+      state.lane,
+      JSON.stringify({ stage, status, elapsedMs: Math.round(performance.now() - started) }),
+    );
+  }
+}
+
+async function logK3dHost(state, directory, stage) {
+  try {
+    progress(state.lane, JSON.stringify({ stage, ...(await k3dHostMetrics(directory)) }));
+  } catch {
+    progress(state.lane, JSON.stringify({ stage, status: "unavailable" }));
+  }
+}
+
 async function ensureK3dCluster(statePath, state) {
   const existing = state.resources.find((resource) => resource.kind === "k3d-cluster");
   if (existing) {
@@ -729,76 +754,107 @@ async function ensureK3dCluster(statePath, state) {
     resource.podSecurityAdmissionK3dArgs = podSecurityAdmission.k3dArgs;
     await writeState(statePath, state);
   }
-  await execFile(process.env.OPENCLAW_CI_K3D_BIN ?? "k3d", [
-    "cluster",
-    "create",
-    cluster,
-    ...(resource.nodeImage ? ["--image", resource.nodeImage] : []),
-    ...(resource.podSecurityAdmissionK3dArgs ?? []),
-    "--servers",
-    "1",
-    "--agents",
-    crossNodePluginStatus ? "1" : "0",
-    ...(sharedStorage ? ["--volume", `${sharedStorage}:/var/lib/rancher/k3s/storage@all`] : []),
-    "--api-port",
-    `127.0.0.1:${apiPort}`,
-    "--kubeconfig-update-default=false",
-    "--kubeconfig-switch-context=false",
-  ]);
-  const kubeconfigData = await execFile(process.env.OPENCLAW_CI_K3D_BIN ?? "k3d", [
-    "kubeconfig",
-    "get",
-    cluster,
-  ]);
-  await writeFile(kubeconfig, kubeconfigData.stdout, { mode: 0o600 });
-  await chmod(kubeconfig, 0o600);
-  await validateLoopbackKubeconfig(kubeconfig, resource.context, resource.kubectl);
-  await execFile(resource.kubectl ?? process.env.OCC_KUBECTL_BIN ?? "kubectl", [
-    "--kubeconfig",
-    kubeconfig,
-    "--context",
-    resource.context,
-    "wait",
-    "--for=condition=Ready",
-    "nodes",
-    "--all",
-    "--timeout=120s",
-  ]);
-  if (!openShell) {
-    const version = await execFile(process.env.OCC_KUBECTL_BIN ?? "kubectl", [
-      "--kubeconfig",
-      kubeconfig,
-      "--context",
-      resource.context,
-      "version",
-      "-o",
-      "json",
-    ]);
-    const gitVersion = JSON.parse(version.stdout)?.serverVersion?.gitVersion;
-    if (typeof gitVersion !== "string" || !/^v1\.35\./.test(gitVersion)) {
-      throw new Error("The ordinary k3d test cluster must resolve to Kubernetes 1.35.x.");
+  try {
+    if (crossNodePluginStatus) {
+      await logK3dHost(state, directory, "k3d-host-before");
     }
-    resource.kubernetesVersion = gitVersion;
-  }
-  if (crossNodePluginStatus) {
-    const worker = await execFile(process.env.OCC_KUBECTL_BIN ?? "kubectl", [
-      "--kubeconfig",
-      kubeconfig,
-      "--context",
-      resource.context,
-      "get",
-      "node",
-      `k3d-${cluster}-agent-0`,
-      "-o",
-      "json",
-    ]);
-    const podCidr = JSON.parse(worker.stdout)?.spec?.podCIDR;
-    const destination = typeof podCidr === "string" ? podCidr.split("/")[0] : undefined;
-    if (!isIPv4(destination ?? "")) {
-      throw new Error("The plugin status worker must have an IPv4 Pod CIDR.");
+    await k3dStage(state, "k3d-create", () =>
+      execFile(process.env.OPENCLAW_CI_K3D_BIN ?? "k3d", [
+        "cluster",
+        "create",
+        cluster,
+        ...(resource.nodeImage ? ["--image", resource.nodeImage] : []),
+        ...(resource.podSecurityAdmissionK3dArgs ?? []),
+        "--servers",
+        "1",
+        "--agents",
+        crossNodePluginStatus ? "1" : "0",
+        ...(sharedStorage ? ["--volume", `${sharedStorage}:/var/lib/rancher/k3s/storage@all`] : []),
+        "--api-port",
+        `127.0.0.1:${apiPort}`,
+        "--kubeconfig-update-default=false",
+        "--kubeconfig-switch-context=false",
+        // Keep failed fixture containers for diagnostics; registered cleanup
+        // owns their deletion after collection, including partial creation.
+        ...(crossNodePluginStatus ? ["--no-rollback"] : []),
+      ]),
+    );
+    await k3dStage(state, "k3d-kubeconfig", async () => {
+      const kubeconfigData = await execFile(process.env.OPENCLAW_CI_K3D_BIN ?? "k3d", [
+        "kubeconfig",
+        "get",
+        cluster,
+      ]);
+      await writeFile(kubeconfig, kubeconfigData.stdout, { mode: 0o600 });
+      await chmod(kubeconfig, 0o600);
+      await validateLoopbackKubeconfig(kubeconfig, resource.context, resource.kubectl);
+    });
+    await k3dStage(state, "k3d-nodes-ready", () =>
+      execFile(resource.kubectl ?? process.env.OCC_KUBECTL_BIN ?? "kubectl", [
+        "--kubeconfig",
+        kubeconfig,
+        "--context",
+        resource.context,
+        "wait",
+        "--for=condition=Ready",
+        "nodes",
+        "--all",
+        "--timeout=120s",
+      ]),
+    );
+    if (!openShell) {
+      resource.kubernetesVersion = await k3dStage(state, "k3d-version", async () => {
+        const version = await execFile(process.env.OCC_KUBECTL_BIN ?? "kubectl", [
+          "--kubeconfig",
+          kubeconfig,
+          "--context",
+          resource.context,
+          "version",
+          "-o",
+          "json",
+        ]);
+        const gitVersion = JSON.parse(version.stdout)?.serverVersion?.gitVersion;
+        if (typeof gitVersion !== "string" || !/^v1\.35\./.test(gitVersion)) {
+          throw new Error("The ordinary k3d test cluster must resolve to Kubernetes 1.35.x.");
+        }
+        return gitVersion;
+      });
     }
-    resource.pluginStatusProxyCidrs = await waitForPluginStatusProxySource(cluster, destination);
-    await verifyFixtureStorage(resource);
+    if (crossNodePluginStatus) {
+      resource.pluginStatusProxyCidrs = await k3dStage(state, "k3d-overlay", async () => {
+        const worker = await execFile(process.env.OCC_KUBECTL_BIN ?? "kubectl", [
+          "--kubeconfig",
+          kubeconfig,
+          "--context",
+          resource.context,
+          "get",
+          "node",
+          `k3d-${cluster}-agent-0`,
+          "-o",
+          "json",
+        ]);
+        const podCidr = JSON.parse(worker.stdout)?.spec?.podCIDR;
+        const destination = typeof podCidr === "string" ? podCidr.split("/")[0] : undefined;
+        if (!isIPv4(destination ?? "")) {
+          throw new Error("The plugin status worker must have an IPv4 Pod CIDR.");
+        }
+        return waitForPluginStatusProxySource(cluster, destination);
+      });
+      await k3dStage(state, "k3d-storage", () => verifyFixtureStorage(resource));
+    }
+    if (crossNodePluginStatus) {
+      await logK3dHost(state, directory, "k3d-host-after");
+    }
+  } catch (error) {
+    if (crossNodePluginStatus) {
+      await captureK3dDiagnostics({
+        execFile,
+        cluster: resource,
+        lane: state.lane,
+        statePath,
+      }).catch(() => progress(state.lane, "k3d diagnostics unavailable"));
+    }
+    throw error;
   }
   await markResourceReady(statePath, state, resource);
   return resource;

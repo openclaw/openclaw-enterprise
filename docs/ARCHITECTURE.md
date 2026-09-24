@@ -83,7 +83,7 @@ and contracts; [selection](reference/drivers/selection.md) explains trusted pack
 Compute owns workload provisioning, readiness, activation, and retirement.
 Other Drivers may participate through bounded
 [Compute lifecycle hooks](flows/compute-driver-lifecycle-hooks.md).
-[Providers](reference/providers.md) supply authenticated clients to related Drivers.
+[Experimental Backends](reference/backends.md) supply authenticated clients to related Drivers.
 [PluginDriver](reference/drivers/plugin.md) resolves curated Agent plugin
 selections and renders native runtime policy during revision startup.
 

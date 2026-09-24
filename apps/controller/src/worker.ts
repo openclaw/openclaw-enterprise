@@ -22,7 +22,7 @@ import type {
   Namespace,
   NamespaceDeleteResult,
   NamespaceEnsureResult,
-  ProviderDefinition,
+  BackendDefinition,
   SandboxDriver,
   SecretBindings,
   SecretDriver,
@@ -53,9 +53,9 @@ import {
   validateRuntimeFailureEvidence,
 } from "@openclaw-enterprise/occ";
 import {
-  providerDefinitionMap,
-  validateProviderDefinitions,
-  validateServiceAccountProviderBinding,
+  backendDefinitionMap,
+  validateBackendDefinitions,
+  validateServiceAccountBackendBinding,
 } from "@openclaw-enterprise/occ";
 import type { InstallationRuntimeDrivers } from "./composition/installation-config.ts";
 import { resolveApprovedHarness } from "./composition/production-harness.ts";
@@ -367,8 +367,8 @@ export class ControllerWorker {
   private readonly secretDriver: SecretDriver | undefined;
   private provisioningController: OpenClawController | undefined;
   private readonly sandbox: SandboxDriver | undefined;
-  private readonly providers: readonly ProviderDefinition[];
-  private readonly providerMap: ReadonlyMap<string, ProviderDefinition>;
+  private readonly backends: readonly BackendDefinition[];
+  private readonly backendMap: ReadonlyMap<string, BackendDefinition>;
   private readonly requireComputePreflight: boolean;
   private readonly pollIntervalMs: number;
   private readonly leaseDurationMs: number;
@@ -412,8 +412,8 @@ export class ControllerWorker {
     };
     this.state = new PostgresPlatformState(options.pool, { workQueue: this.queueOptions });
     this.queue = new PostgresWorkQueue(options.pool, this.queueOptions);
-    this.providers = validateProviderDefinitions(drivers?.installation.provider ?? []);
-    this.providerMap = providerDefinitionMap(this.providers);
+    this.backends = validateBackendDefinitions(drivers?.installation.backend ?? []);
+    this.backendMap = backendDefinitionMap(this.backends);
     this.iamDriverId = drivers?.installation.drivers.iam.id ?? "native-iam";
     this.iam =
       drivers === undefined
@@ -516,7 +516,7 @@ export class ControllerWorker {
     this.attachLifecycleDrivers(this.iam);
     const provisioning = new OpenClawController(installation, {
       state: this.state,
-      providers: this.providers,
+      backends: this.backends,
       recordOperations: true,
       ...(this.configuredServiceAccountDriverId === undefined
         ? {}
@@ -843,9 +843,9 @@ export class ControllerWorker {
     if (denied !== undefined) {
       throw new RepositoryCredentialAuthorityError(denied.code);
     }
-    const provider = await this.resolveRevisionProvider(revision);
-    if (provider !== undefined) {
-      throw new RepositoryCredentialAuthorityError(provider.code);
+    const backend = await this.resolveRevisionBackend(revision);
+    if (backend !== undefined) {
+      throw new RepositoryCredentialAuthorityError(backend.code);
     }
     if (typeof this.compute.validateRepositoryCredentials !== "function") {
       throw new RepositoryCredentialAuthorityError("REPOSITORY_RUNTIME_UNSUPPORTED");
@@ -1097,7 +1097,7 @@ export class ControllerWorker {
         return;
       }
       // Admission may change desired state while IAM is consulted. Reload the exact
-      // Agent immediately before any provider effect so a later deployment wins.
+      // Agent immediately before any backend effect so a later deployment wins.
       const resources = await this.state.read(async (view) => {
         const agent = await view.agents.findAgent(claim.namespaceId, claim.agentId!);
         const namespace = await view.namespaces.findNamespace(claim.namespaceId);
@@ -1739,9 +1739,9 @@ export class ControllerWorker {
         await this.finalizeRevision(claim, denied);
         return;
       }
-      const provider = await this.resolveRevisionProvider(revision);
-      if (provider !== undefined) {
-        await this.finalizeRevision(claim, provider);
+      const backend = await this.resolveRevisionBackend(revision);
+      if (backend !== undefined) {
+        await this.finalizeRevision(claim, backend);
         return;
       }
       if (agent.desiredRuntimeState === "stopped") {
@@ -2012,14 +2012,14 @@ export class ControllerWorker {
     return undefined;
   }
 
-  private async resolveRevisionProvider(
+  private async resolveRevisionBackend(
     revision: Readonly<AgentRevision>,
   ): Promise<RevisionDispatchResult | undefined> {
     if (
-      revision.providerId !== null &&
-      this.providerMap.get(revision.providerId)?.type !== "chatgpt"
+      revision.backendId !== null &&
+      this.backendMap.get(revision.backendId)?.type !== "chatgpt"
     ) {
-      return { outcome: "permanent", code: "PROVIDER_UNAVAILABLE" };
+      return { outcome: "permanent", code: "BACKEND_UNAVAILABLE" };
     }
     const auth = revision.harnessAuth;
     if (auth.method !== "chatgpt_service_account") {
@@ -2030,7 +2030,7 @@ export class ControllerWorker {
         revision.namespaceId,
         auth.serviceAccountId,
       ),
-      binding: await view.serviceAccounts.findServiceAccountProviderBinding(
+      binding: await view.serviceAccounts.findServiceAccountBackendBinding(
         revision.namespaceId,
         auth.serviceAccountId,
       ),
@@ -2046,21 +2046,21 @@ export class ControllerWorker {
       return { outcome: "permanent", code: "HARNESS_AUTH_SOURCE_CHANGED" };
     }
     try {
-      validateServiceAccountProviderBinding(this.providerMap, revision.providerId, binding);
-      const admitted = auth.providerBinding;
+      validateServiceAccountBackendBinding(this.backendMap, revision.backendId, binding);
+      const admitted = auth.backendBinding;
       if (
         admitted === undefined ||
         binding === undefined ||
-        binding.providerId !== admitted.providerId ||
+        binding.backendId !== admitted.backendId ||
         binding.driverId !== admitted.driverId ||
         binding.workspaceId !== admitted.workspaceId ||
         binding.credentialIssued !== admitted.credentialIssued
       ) {
-        return { outcome: "permanent", code: "SERVICE_ACCOUNT_PROVIDER_MISMATCH" };
+        return { outcome: "permanent", code: "SERVICE_ACCOUNT_BACKEND_MISMATCH" };
       }
       return undefined;
     } catch {
-      return { outcome: "permanent", code: "SERVICE_ACCOUNT_PROVIDER_MISMATCH" };
+      return { outcome: "permanent", code: "SERVICE_ACCOUNT_BACKEND_MISMATCH" };
     }
   }
 
@@ -2640,7 +2640,7 @@ export class ControllerWorker {
         this.repositoryCredentials.validate(revision);
       }
       // Keep each failed observation bounded without permanently abandoning
-      // an authorized active runtime after one prolonged provider outage.
+      // an authorized active runtime after one prolonged backend outage.
       await queue.fail(claim, { code }, { continuingRevision: true });
       await this.enqueueMaintenance(queue, claim, revision);
     }, this.queueOptions);

@@ -24,7 +24,7 @@ See [service forwarding and retirement](repository-credentials.md) and
 - `apps/controller/src/worker.ts:ControllerWorker.prepareRevision` prepares
   repository sessions before invoking the selected Compute Driver.
 
-The Installation selects a repository Driver and Provider. API, worker and service
+The Installation selects a repository Driver and Backend. API, worker and service
 share one immutable registry; the Namespace is ready. Unbound Agents bypass this
 capability.
 
@@ -136,8 +136,8 @@ serializer in `apps/controller/src/index.ts` returns only Driver identity,
 references, profiles and deadline.
 
 `apps/controller/src/composition/repository-credentials/platform.ts:composeRepoDriver`
-constructs `GitHubRepoDriver` for capability `repo` from a Provider-owned Unix
-client, validated registry and public CA. Installation and Provider membership
+constructs `GitHubRepoDriver` for capability `repo` from a Backend-owned Unix
+client, validated registry and public CA. Installation and Backend membership
 must select the same Driver ID. The API and worker never load the token engine or
 App key. The [production startup flow](production-startup.md) owns composition and
 sidecar launch; the service validates protected inputs before listening.
@@ -153,7 +153,7 @@ Driver and binding, and rejects new attempts for stopped or deleting owners.
 `RepositoryCredentialLifecycle.open` calls the Driver outside the transaction.
 State stores recovery identifiers and phases, never bearers or client files.
 
-`apps/controller/src/providers/repository-credentials/control-client.ts:UnixRepositoryCredentialControlClient`
+`apps/controller/src/backends/repository-credentials/control-client.ts:UnixRepositoryCredentialControlClient`
 sends the bound request over the private socket. The service independently
 resolves and compares the grant through
 `apps/controller/src/drivers/repo/github/credentials/registry-factory.ts:createGitHubRegistryDriverFactory`.

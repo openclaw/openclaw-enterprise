@@ -111,7 +111,7 @@ async function fixture(mode = "embedded", nodeEnrollment) {
     namespaceId: "namespace-repository-material",
     agentId: "agent-repository-material",
     revision: 1,
-    providerId: null,
+    backendId: null,
     configurationId: "configuration-repository-material",
     configurationKind: "agent",
     configurationGeneration: 1,
@@ -145,7 +145,7 @@ async function fixture(mode = "embedded", nodeEnrollment) {
         {
           repositoryRef: "project",
           profile: "read",
-          providerId: "github",
+          backendId: "github",
           grant: { providerInstanceId: "github-main", repositoryId: "project", grantId: "read" },
         },
       ],

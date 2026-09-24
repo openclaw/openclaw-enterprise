@@ -202,7 +202,7 @@ export const serviceAccountDriverBindings = occSchema.table(
   {
     serviceAccountId: text("service_account_id").primaryKey(),
     namespaceId: text("namespace_id").notNull(),
-    providerId: text("provider_id").notNull(),
+    backendId: text("backend_id").notNull(),
     driverId: text("driver_id").notNull(),
     externalAccountId: text("external_account_id").notNull(),
     externalCredentialId: text("external_credential_id"),
@@ -222,8 +222,8 @@ export const serviceAccountDriverBindings = occSchema.table(
       table.externalAccountId,
     ),
     check(
-      "service_account_driver_bindings_provider_id_valid",
-      sql`char_length(${table.providerId}) BETWEEN 1 AND 200 AND ${table.providerId} = btrim(${table.providerId})`,
+      "service_account_driver_bindings_backend_id_valid",
+      sql`char_length(${table.backendId}) BETWEEN 1 AND 200 AND ${table.backendId} = btrim(${table.backendId})`,
     ),
     check(
       "service_account_driver_bindings_driver_id_valid",
@@ -253,7 +253,7 @@ export const agents = occSchema.table(
       .references(() => namespaces.id, { onDelete: "restrict", onUpdate: "restrict" }),
     name: collatedText("name").notNull(),
     configurationId: text("configuration_id").notNull(),
-    providerId: text("provider_id"),
+    backendId: text("backend_id"),
     executionMode: text("execution_mode").$type<HarnessExecutionMode>().notNull(),
     plugins: jsonb("plugins").$type<PluginDesiredState>(),
     repositoryBindings: jsonb("repository_bindings").$type<readonly RepositoryBindingSelection[]>(),
@@ -294,8 +294,8 @@ export const agents = occSchema.table(
       sql`${table.status} <> 'deleting' OR ${table.desiredRuntimeState} = 'stopped'`,
     ),
     check(
-      "agents_provider_id_valid",
-      sql`${table.providerId} IS NULL OR (char_length(${table.providerId}) BETWEEN 1 AND 200 AND ${table.providerId} = btrim(${table.providerId}) AND ${table.providerId} !~ '[[:cntrl:]]')`,
+      "agents_backend_id_valid",
+      sql`${table.backendId} IS NULL OR (char_length(${table.backendId}) BETWEEN 1 AND 200 AND ${table.backendId} = btrim(${table.backendId}) AND ${table.backendId} !~ '[[:cntrl:]]')`,
     ),
     check(
       "agents_plugins_object",
@@ -439,7 +439,7 @@ export const agentRevisions = occSchema.table(
     namespaceId: text("namespace_id").notNull(),
     agentId: text("agent_id").notNull(),
     revisionNumber: bigint("revision_number", { mode: "number" }).notNull(),
-    providerId: text("provider_id"),
+    backendId: text("backend_id"),
     admittedSpec: jsonb("admitted_spec").$type<Record<string, unknown>>().notNull(),
     admittedAt: timestamp("admitted_at", { withTimezone: true }).notNull(),
   },
@@ -464,8 +464,8 @@ export const agentRevisions = occSchema.table(
     check("agent_revisions_id_format", sql`${table.id} ~ ${identifierPatterns.revision}`),
     check("agent_revisions_revision_positive", sql`${table.revisionNumber} > 0`),
     check(
-      "agent_revisions_provider_id_valid",
-      sql`${table.providerId} IS NULL OR (char_length(${table.providerId}) BETWEEN 1 AND 200 AND ${table.providerId} = btrim(${table.providerId}) AND ${table.providerId} !~ '[[:cntrl:]]')`,
+      "agent_revisions_backend_id_valid",
+      sql`${table.backendId} IS NULL OR (char_length(${table.backendId}) BETWEEN 1 AND 200 AND ${table.backendId} = btrim(${table.backendId}) AND ${table.backendId} !~ '[[:cntrl:]]')`,
     ),
     check("agent_revisions_spec_object", sql`jsonb_typeof(${table.admittedSpec}) = 'object'`),
     check(

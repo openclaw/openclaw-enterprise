@@ -58,7 +58,7 @@ async function fixture(t) {
     privateDirectory: join(privateVolume, "private"),
     controlSocket: join(controlVolume, "private", "control.sock"),
     expectedOrigin: "https://credentials.example.test",
-    providerId: "github-primary",
+    backendId: "github-primary",
   };
   const tls = await createTlsMaterial(t);
   const key = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({
@@ -75,7 +75,7 @@ async function fixture(t) {
     },
     backend: {
       kind: "github-app-registry",
-      providerId: options.providerId,
+      backendId: options.backendId,
       registryFile: options.registryFile,
       privateKeyFile: join(inputsDirectory, "private-key.pem"),
     },
@@ -87,7 +87,7 @@ async function fixture(t) {
   };
   const registry = {
     version: 1,
-    providerId: options.providerId,
+    backendId: options.backendId,
     providerInstanceId: "github-production",
     appId: "123",
     githubInstallationId: "456",
@@ -223,7 +223,7 @@ test("projection startup rejects mismatched deployment bindings and invalid actu
     },
     { ...f.config, gateway: { ...f.config.gateway, listen: "0.0.0.0:443" } },
     { ...f.config, gateway: { ...f.config.gateway, controlSocket: "/tmp/other.sock" } },
-    { ...f.config, backend: { ...f.config.backend, providerId: "different-provider" } },
+    { ...f.config, backend: { ...f.config.backend, backendId: "different-provider" } },
   ]) {
     await project(f.options.inputsDirectory, `..invalid-${generation++}`, {
       ...f.values,
@@ -237,7 +237,7 @@ test("projection startup rejects mismatched deployment bindings and invalid actu
   });
   await assert.rejects(f.prepare(), { message: "invalid-projected-inputs" });
   await project(f.options.inputsDirectory, "..restored", f.values);
-  const badRegistry = { ...f.registry, providerId: "different-provider" };
+  const badRegistry = { ...f.registry, backendId: "different-provider" };
   await unlink(join(f.registryGeneration, "registry.json"));
   await writeFile(join(f.registryGeneration, "registry.json"), JSON.stringify(badRegistry), {
     mode: 0o440,

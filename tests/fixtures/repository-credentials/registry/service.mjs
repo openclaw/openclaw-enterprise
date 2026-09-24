@@ -7,7 +7,7 @@ export function createRegistryServiceOwner(
     loadGitHubRepositoryRegistry,
     createGitHubRegistryDriverFactory,
     registryFile,
-    providerId,
+    backendId,
     privateKeyFile,
     config,
     key,
@@ -21,7 +21,7 @@ export function createRegistryServiceOwner(
   let activeScope;
   let registry;
   const start = async () => {
-    registry = await loadGitHubRepositoryRegistry(registryFile, providerId);
+    registry = await loadGitHubRepositoryRegistry(registryFile, backendId);
     const factory = createGitHubRegistryDriverFactory({
       registry,
       key,

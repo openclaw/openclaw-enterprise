@@ -447,11 +447,11 @@ function assertManagedAgent(agent, record) {
     agent.harnessAuth.source?.namespaceId !== record.namespaceId ||
     agent.harnessAuth.source?.id !== record.secretId ||
     agent.executionMode !== "embedded" ||
-    agent.providerId !== null ||
+    agent.backendId !== null ||
     Object.keys(agent.plugins ?? {}).length
   ) {
     throw new Error(
-      "The Agent's Configuration, credentials, Provider, or tools changed outside this helper. Use a different name or manage this Agent through OCC.",
+      "The Agent's Configuration, credentials, Backend, or tools changed outside this helper. Use a different name or manage this Agent through OCC.",
     );
   }
 }
@@ -491,7 +491,7 @@ function assertManagedRevision(revision, record, expected) {
     revision.harnessAuth.source?.kind !== "secret" ||
     revision.harnessAuth.source?.namespaceId !== record.namespaceId ||
     revision.harnessAuth.source?.id !== record.secretId ||
-    revision.providerId !== null ||
+    revision.backendId !== null ||
     Object.keys(revision.secretBindings ?? {}).length ||
     revision.plugins !== undefined
   ) {

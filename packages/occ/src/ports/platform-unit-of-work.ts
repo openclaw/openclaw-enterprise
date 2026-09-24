@@ -52,7 +52,7 @@ export function bindPlatformUnitOfWork(
     serviceAccounts: bindRepository(repositories.serviceAccounts, lifetime, [
       "findServiceAccount",
       "listServiceAccounts",
-      "findServiceAccountProviderBinding",
+      "findServiceAccountBackendBinding",
       "createServiceAccount",
       "lockServiceAccount",
       "updateCredential",

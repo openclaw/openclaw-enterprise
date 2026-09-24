@@ -789,7 +789,7 @@ export async function renderAgentDetail(context) {
         : snapshot.repositoryCredentials?.bindings;
       const details = [
         ["Execution mode", executionMode === "dedicated" ? "Dedicated" : "Embedded"],
-        ["Provider", draft ? agent.providerId : snapshot.providerId],
+        ["Backend (experimental)", draft ? agent.backendId : snapshot.backendId],
         [
           "Repository access",
           repositoryBindings

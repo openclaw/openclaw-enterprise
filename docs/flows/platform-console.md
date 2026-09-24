@@ -10,7 +10,7 @@ last_updated_session: public-pr/348
 
 Opening `/console/` resolves a cookie session and renders authorized resources.
 This trace follows Namespace selection, Agent creation and editing, runtime
-actions, Providers, and logout. It stops at rendered state or a submitted API
+actions, Backends, and logout. It stops at rendered state or a submitted API
 mutation; deletion additionally confirms absence. The [console reference](../reference/console.md)
 owns user-visible behavior, while API and IAM retain resource authority.
 
@@ -54,7 +54,7 @@ graph TD
   subgraph Controller["Controller API"]
     E --> F["Authenticate and authorize exact scope"]
     F -->|Agents or Namespaces| G["OCC reads and filters by IAM"]
-    F -->|Providers and Installation admin| H["Project loaded Provider IDs and types"]
+    F -->|Backends and Installation admin| H["Project loaded Backend IDs and types"]
     S1 -->|create| S2["POST stores Namespace Secret immediately"]
     S2 --> S3
     E1 -->|draft or optional discovery outage| M1["POST creates Configuration with staged bindings"]
@@ -93,9 +93,9 @@ graph TD
 
 `apps/controller/src/composition/development-postgres.ts:composePostgresDevelopment`
 
-Startup validates Provider definitions into safe `{id,type}` summaries passed to
+Startup validates Backend definitions into safe `{id,type}` summaries passed to
 `createFastifyApp`. Requests never scan configuration live, read credentials, or
-contact a Provider. [Provider-managed credential delivery](service-account-driver-credential-delivery.md)
+contact a Backend. [Backend-managed credential delivery](service-account-driver-credential-delivery.md)
 owns client construction and Driver activation.
 
 `apps/controller/src/console-assets.ts:readConsoleAsset` maps public console
@@ -140,7 +140,7 @@ selector.
 Agents use the selected Namespace's route. OCC requires Namespace read authority
 and filters Agents by exact read permission; Namespace listing similarly filters
 its Installation-wide collection. With no readable selection, the browser makes
-no Agent request. Providers use `GET /providers` independently of selection:
+no Agent request. Backends use `GET /backends` independently of selection:
 Installation `administer` precedes the safe startup-summary response. Explicit
 empty configuration is a successful empty list; absent wiring and dependency
 failure return errors.
@@ -155,7 +155,7 @@ Credential hints link to the token console and show expected prefixes.
 
 Presets fix saved credential providers and reject cross-provider JSON before
 writes. Saved service account tokens lock Codex; operator-managed credentials
-lock OpenClaw across provider changes. Installation Provider discovery is hidden. The [creation reference](../reference/console/create-and-deploy.md)
+lock OpenClaw across provider changes. Installation Backend discovery is hidden. The [creation reference](../reference/console/create-and-deploy.md)
 owns permissions and partial-save recovery.
 
 Advanced settings holds JSON and plugins; no model is selected initially.
@@ -258,7 +258,7 @@ redirect a newer session. Current authorization and dependency errors clear rows
 and expose recovery; a current protected `401` clears private state and opens
 login immediately. Failure views include only local reason messages and bounded
 request IDs, not backend error text.
-Global Providers and Namespaces pages remain visibly Installation-wide.
+Global Backends and Namespaces pages remain visibly Installation-wide.
 
 The [detail action flow](platform-console/agent-editing.md#stop-agent) traces
 confirmed Stop and Delete requests and their exact permission checks. Acceptance
@@ -290,12 +290,12 @@ uncertain response disables replay until refresh and inspection.
 ## Debugging and Verification
 
 - Use the displayed request ID to associate API failures with controller logs.
-  A Namespace-only user cannot discover Providers; check Installation authority
+  A Namespace-only user cannot discover Backends; check Installation authority
   before treating that denial as a configuration problem.
 - The browser suites exercise real Fastify routes, Better Auth, and Native IAM
   with in-memory storage. They verify user-visible navigation, list isolation,
   Agent creation, draft/history rendering, channel draft editing, and auth
-  behavior; they do not establish PostgreSQL persistence, live Provider health,
+  behavior; they do not establish PostgreSQL persistence, live Backend health,
   runtime dispatch, worker lease handling, or Compute Driver effects.
 - API tests cover safe discovery, permission boundaries, empty versus missing
   wiring, static MIME/allowlisting, and unchanged API JSON errors. See
@@ -305,7 +305,7 @@ uncertain response disables replay until refresh and inspection.
 
 - [Console reference](../reference/console.md)
 - [Authentication](../reference/authentication.md)
-- [Provider-managed credential delivery](service-account-driver-credential-delivery.md)
+- [Backend-managed credential delivery](service-account-driver-credential-delivery.md)
 - [Configuration and Agent revision](configuration-driver.md)
 - [Docker development](docker-compose-development.md)
 - [Production startup](production-startup.md)

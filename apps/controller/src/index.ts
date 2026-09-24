@@ -47,7 +47,7 @@ import {
   type Installation,
   type OccApiRoute,
   type PermissionAction,
-  type ProviderSummary,
+  type BackendSummary,
   type RepositoryBindingRequest,
   type ResourceKind,
   type ResourceRef,
@@ -133,7 +133,7 @@ export interface ControllerAppOptions {
   readonly sandboxDriver?: SandboxDriver;
   readonly resolveHarness: HarnessResolver;
   readonly auditSink: AuditSink;
-  readonly providerSummaries?: readonly ProviderSummary[];
+  readonly backendSummaries?: readonly BackendSummary[];
   readonly development: DevelopmentAdmission;
   readonly maxBodyBytes?: number;
   readonly auth: ControllerAuth;
@@ -716,7 +716,7 @@ function clientAgent(agent: Readonly<Agent>): Record<string, unknown> {
     name: agent.name,
     servicePrincipalId: agent.servicePrincipalId,
     configurationId: agent.configurationId,
-    providerId: agent.providerId,
+    backendId: agent.backendId,
     executionMode: agent.executionMode,
     ...(agent.plugins === undefined ? {} : { plugins: agent.plugins }),
     ...(agent.repositoryBindings === undefined
@@ -763,7 +763,7 @@ function clientRevision(revision: Readonly<AgentRevision>): Record<string, unkno
     configurationId: revision.configurationId,
     configurationKind: revision.configurationKind,
     configurationGeneration: revision.configurationGeneration,
-    providerId: revision.providerId,
+    backendId: revision.backendId,
     configuration: revision.configuration,
     harness: revision.harness,
     compute: revision.compute,
@@ -2109,14 +2109,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
-    if (operation.operationId === "listProviders") {
+    if (operation.operationId === "listBackends") {
       await requireInstallationAdmin(request, operation, context);
-      const providers = options.providerSummaries;
-      if (providers === undefined) {
+      const backends = options.backendSummaries;
+      if (backends === undefined) {
         throw dependencyUnavailable();
       }
       reply.send({
-        data: providers.map((provider) => ({ id: provider.id, type: provider.type })),
+        data: backends.map((backend) => ({ id: backend.id, type: backend.type })),
         meta: { requestId: request.id },
       });
       return;
@@ -2245,9 +2245,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           ...(provisionBody.workspaceDefaultsId === undefined
             ? {}
             : { workspaceDefaultsId: provisionBody.workspaceDefaultsId }),
-          ...(provisionBody.providerId === undefined
-            ? {}
-            : { providerId: provisionBody.providerId }),
+          ...(provisionBody.backendId === undefined ? {} : { backendId: provisionBody.backendId }),
           ...(provisionBody.executionMode === undefined
             ? {}
             : { executionMode: provisionBody.executionMode as HarnessExecutionMode }),
@@ -2344,9 +2342,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             : { workspaceDefaultsId: body.workspaceDefaultsId as string }),
           name: body?.name as string,
           configurationId: body?.configurationId as string,
-          ...(body?.providerId === undefined
-            ? {}
-            : { providerId: body.providerId as string | null }),
+          ...(body?.backendId === undefined ? {} : { backendId: body.backendId as string | null }),
           ...(body?.executionMode === undefined
             ? {}
             : { executionMode: body.executionMode as HarnessExecutionMode }),
@@ -2449,9 +2445,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           namespaceId,
           agentId,
           configurationId: body?.configurationId as string,
-          ...(body?.providerId === undefined
-            ? {}
-            : { providerId: body.providerId as string | null }),
+          ...(body?.backendId === undefined ? {} : { backendId: body.backendId as string | null }),
           ...(body?.executionMode === undefined
             ? {}
             : { executionMode: body.executionMode as HarnessExecutionMode }),

@@ -43,6 +43,7 @@ Each operation lists its supported status codes.
 | Resource | Operations |
 | --- | --- |
 | [Authentication](#authentication) | 6 operations |
+| [Backends](#backends) | 1 operation |
 | [Installation](#installation) | 2 operations |
 | [Namespaces](#namespaces) | 4 operations |
 | [Agents](#agents) | 17 operations |
@@ -53,7 +54,6 @@ Each operation lists its supported status codes.
 | [Presets](#presets) | 5 operations |
 | [Secrets](#secrets) | 5 operations |
 | [Service accounts](#service-accounts) | 6 operations |
-| [Providers](#providers) | 1 operation |
 
 ## Operations
 
@@ -303,6 +303,50 @@ Sign out of the current session
 | `data` | `object` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | — |
+
+<span id="backends"></span>
+
+### Backends
+
+| Operation | Summary |
+| --- | --- |
+| [`GET /backends`](#get-backends) | List configured Backends (experimental) |
+
+#### `GET /backends`
+
+<span id="get-backends"></span>
+
+List configured Backends (experimental)
+
+**Operation ID:** `listBackends`
+
+**Permissions:** Requires administer permission on the requested Installation.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `500` | Internal Server Error |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `array<object>` | Yes | — |
+| `data[].id` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)(?!.*[\u0000-\u001f\u007f]).+$` |
+| `data[].type` | `"chatgpt" or "github"` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
 <span id="installation"></span>
 
@@ -663,6 +707,7 @@ List authorized Agents in one exact Namespace
 | --- | --- | --- | --- |
 | `data` | `array<object>` | Yes | — |
 | `data[].activeRevisionId` | `string` | No | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data[].backendId` | `string or null` | Yes | — |
 | `data[].configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
 | `data[].desiredRuntimeState` | `"running" or "stopped"` | Yes | — |
@@ -672,7 +717,6 @@ List authorized Agents in one exact Namespace
 | `data[].name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)(?!.*[\u0000-\u001f\u007f]).+$` |
 | `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].plugins` | `PluginDesiredState` | No | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
-| `data[].providerId` | `string or null` | Yes | — |
 | `data[].repositoryBindings` | `array<object>` | No | min items: 1; max items: 16 |
 | `data[].repositoryBindings[].profile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `data[].repositoryBindings[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
@@ -712,6 +756,7 @@ Create a Namespace-owned Agent
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
+| `backendId` | `string or null` | No | — |
 | `configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `executionMode` | `"embedded" or "dedicated"` | No | — |
 | `harnessAuth` | `object or object or object or object or null` | No | — |
@@ -722,7 +767,6 @@ Create a Namespace-owned Agent
 | `initialWorkspaceFiles.USER.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
 | `name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)(?!.*[\u0000-\u001f\u007f]).+$` |
 | `plugins` | `PluginDesiredState` | No | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
-| `providerId` | `string or null` | No | — |
 | `repositoryBindings` | `array<object>` | No | max items: 16; Requested repository references and optional profiles. Omission means no bindings on create and preserves bindings on update; an empty update clears bindings. Admission requires unique repository references. |
 | `repositoryBindings[].profile` | `string` | No | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `repositoryBindings[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
@@ -749,6 +793,7 @@ Create a Namespace-owned Agent
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
 | `data.activeRevisionId` | `string` | No | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.backendId` | `string or null` | Yes | — |
 | `data.configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
 | `data.desiredRuntimeState` | `"running" or "stopped"` | Yes | — |
@@ -758,7 +803,6 @@ Create a Namespace-owned Agent
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)(?!.*[\u0000-\u001f\u007f]).+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.plugins` | `PluginDesiredState` | No | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
-| `data.providerId` | `string or null` | Yes | — |
 | `data.repositoryBindings` | `array<object>` | No | min items: 1; max items: 16 |
 | `data.repositoryBindings[].profile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `data.repositoryBindings[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
@@ -857,6 +901,7 @@ Create a new Agent and queue first-time provisioning
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
+| `backendId` | `string or null` | No | — |
 | `configuration` | `object` | Yes | — |
 | `configuration.kind` | `"agent"` | Yes | — |
 | `configuration.secretBindings` | `object<string, object>` | No | Optional Secret binding map. Keys are destination environment variable names; at most 64 bindings are accepted. Each value must contain `source.kind`, `source.namespaceId`, and `source.id`, and may contain `delivery.type: "env"`. Admission rejects reserved or process-control destinations such as `OPENCLAW_*`, `CODEX_*`, `OPENAI_*`, `ANTHROPIC_*`, `OCC_*`, `KUBERNETES_*`, `PATH`, `HOME`, and proxy variables. Model authentication belongs to Agent.harnessAuth. |
@@ -870,7 +915,6 @@ Create a new Agent and queue first-time provisioning
 | `initialWorkspaceFiles.USER.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
 | `name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)(?!.*[\u0000-\u001f\u007f]).+$` |
 | `plugins` | `PluginDesiredState` | No | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
-| `providerId` | `string or null` | No | — |
 | `repositoryBindings` | `array<object>` | No | max items: 16; Requested repository references and optional profiles. Omission means no bindings on create and preserves bindings on update; an empty update clears bindings. Admission requires unique repository references. |
 | `repositoryBindings[].profile` | `string` | No | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `repositoryBindings[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
@@ -1104,6 +1148,7 @@ Begin deletion of an exact Namespace-owned Agent and its AgentRevisions
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
 | `data.activeRevisionId` | `string` | No | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.backendId` | `string or null` | Yes | — |
 | `data.configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
 | `data.desiredRuntimeState` | `"running" or "stopped"` | Yes | — |
@@ -1113,7 +1158,6 @@ Begin deletion of an exact Namespace-owned Agent and its AgentRevisions
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)(?!.*[\u0000-\u001f\u007f]).+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.plugins` | `PluginDesiredState` | No | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
-| `data.providerId` | `string or null` | Yes | — |
 | `data.repositoryBindings` | `array<object>` | No | min items: 1; max items: 16 |
 | `data.repositoryBindings[].profile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `data.repositoryBindings[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
@@ -1161,6 +1205,7 @@ Get an exact Namespace-owned Agent
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
 | `data.activeRevisionId` | `string` | No | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.backendId` | `string or null` | Yes | — |
 | `data.configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
 | `data.desiredRuntimeState` | `"running" or "stopped"` | Yes | — |
@@ -1170,7 +1215,6 @@ Get an exact Namespace-owned Agent
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)(?!.*[\u0000-\u001f\u007f]).+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.plugins` | `PluginDesiredState` | No | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
-| `data.providerId` | `string or null` | Yes | — |
 | `data.repositoryBindings` | `array<object>` | No | min items: 1; max items: 16 |
 | `data.repositoryBindings[].profile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `data.repositoryBindings[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
@@ -1211,11 +1255,11 @@ Replace an exact Namespace-owned Agent's editable draft
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
+| `backendId` | `string or null` | No | — |
 | `configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `executionMode` | `"embedded" or "dedicated"` | No | — |
 | `harnessAuth` | `object or object or object or object or null` | No | — |
 | `plugins` | `PluginDesiredState` | No | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
-| `providerId` | `string or null` | No | — |
 | `repositoryBindings` | `array<object>` | No | max items: 16; Requested repository references and optional profiles. Omission means no bindings on create and preserves bindings on update; an empty update clears bindings. Admission requires unique repository references. |
 | `repositoryBindings[].profile` | `string` | No | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `repositoryBindings[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
@@ -1241,6 +1285,7 @@ Replace an exact Namespace-owned Agent's editable draft
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
 | `data.activeRevisionId` | `string` | No | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.backendId` | `string or null` | Yes | — |
 | `data.configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
 | `data.desiredRuntimeState` | `"running" or "stopped"` | Yes | — |
@@ -1250,7 +1295,6 @@ Replace an exact Namespace-owned Agent's editable draft
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)(?!.*[\u0000-\u001f\u007f]).+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.plugins` | `PluginDesiredState` | No | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
-| `data.providerId` | `string or null` | Yes | — |
 | `data.repositoryBindings` | `array<object>` | No | min items: 1; max items: 16 |
 | `data.repositoryBindings[].profile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `data.repositoryBindings[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
@@ -1302,6 +1346,7 @@ Admit an immutable revision from the Agent's saved draft
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
 | `data.agentId` | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.backendId` | `string or null` | Yes | — |
 | `data.compute` | `object` | Yes | — |
 | `data.compute.id` | `string` | Yes | min length: 1 |
 | `data.compute.implementation` | `string` | Yes | min length: 1 |
@@ -1322,7 +1367,6 @@ Admit an immutable revision from the Agent's saved draft
 | `data.plugins.driver.id` | `string` | Yes | min length: 1 |
 | `data.plugins.driver.implementation` | `string` | Yes | min length: 1 |
 | `data.plugins.plugins` | `PluginDesiredState` | Yes | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
-| `data.providerId` | `string or null` | Yes | — |
 | `data.repositoryCredentials` | `object` | No | — |
 | `data.repositoryCredentials.bindings` | `array<object>` | Yes | min items: 1; max items: 16 |
 | `data.repositoryCredentials.bindings[].profile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
@@ -1517,6 +1561,7 @@ Stop one Agent while retaining its revision and persistent state
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
 | `data.activeRevisionId` | `string` | No | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.backendId` | `string or null` | Yes | — |
 | `data.configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
 | `data.desiredRuntimeState` | `"running" or "stopped"` | Yes | — |
@@ -1526,7 +1571,6 @@ Stop one Agent while retaining its revision and persistent state
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)(?!.*[\u0000-\u001f\u007f]).+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.plugins` | `PluginDesiredState` | No | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
-| `data.providerId` | `string or null` | Yes | — |
 | `data.repositoryBindings` | `array<object>` | No | min items: 1; max items: 16 |
 | `data.repositoryBindings[].profile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `data.repositoryBindings[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
@@ -1743,6 +1787,7 @@ List authorized immutable revisions for one exact Agent
 | --- | --- | --- | --- |
 | `data` | `array<object>` | Yes | — |
 | `data[].agentId` | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data[].backendId` | `string or null` | Yes | — |
 | `data[].compute` | `object` | Yes | — |
 | `data[].compute.id` | `string` | Yes | min length: 1 |
 | `data[].compute.implementation` | `string` | Yes | min length: 1 |
@@ -1763,7 +1808,6 @@ List authorized immutable revisions for one exact Agent
 | `data[].plugins.driver.id` | `string` | Yes | min length: 1 |
 | `data[].plugins.driver.implementation` | `string` | Yes | min length: 1 |
 | `data[].plugins.plugins` | `PluginDesiredState` | Yes | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
-| `data[].providerId` | `string or null` | Yes | — |
 | `data[].repositoryCredentials` | `object` | No | — |
 | `data[].repositoryCredentials.bindings` | `array<object>` | Yes | min items: 1; max items: 16 |
 | `data[].repositoryCredentials.bindings[].profile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
@@ -1818,6 +1862,7 @@ Get an exact authorized immutable Agent revision
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
 | `data.agentId` | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.backendId` | `string or null` | Yes | — |
 | `data.compute` | `object` | Yes | — |
 | `data.compute.id` | `string` | Yes | min length: 1 |
 | `data.compute.implementation` | `string` | Yes | min length: 1 |
@@ -1838,7 +1883,6 @@ Get an exact authorized immutable Agent revision
 | `data.plugins.driver.id` | `string` | Yes | min length: 1 |
 | `data.plugins.driver.implementation` | `string` | Yes | min length: 1 |
 | `data.plugins.plugins` | `PluginDesiredState` | Yes | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
-| `data.providerId` | `string or null` | Yes | — |
 | `data.repositoryCredentials` | `object` | No | — |
 | `data.repositoryCredentials.bindings` | `array<object>` | Yes | min items: 1; max items: 16 |
 | `data.repositoryCredentials.bindings[].profile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
@@ -2516,11 +2560,11 @@ List readable Presets in one Namespace
 | `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].template` | `object` | Yes | Reusable partial Agent launch settings. Scalar values may use {{ vars.name }}. Admission validates template syntax and credential boundaries. Ordinary creation APIs validate concrete launch settings. |
 | `data[].template.agent` | `object` | No | — |
+| `data[].template.agent.backendId` | `SafeJsonValue` | No | — |
 | `data[].template.agent.executionMode` | `SafeJsonValue` | No | — |
 | `data[].template.agent.harnessAuth` | `SafeJsonValue` | No | — |
 | `data[].template.agent.name` | `SafeJsonValue` | No | — |
 | `data[].template.agent.plugins` | `SafeJsonValue` | No | — |
-| `data[].template.agent.providerId` | `SafeJsonValue` | No | — |
 | `data[].template.configuration` | `object` | No | — |
 | `data[].template.configuration.secretBindings` | `object<string, SafeJsonValue>` | No | Namespace-owned Secret bindings. Reference fields may use {{ vars.name }}. |
 | `data[].template.configuration.values` | `object<string, SafeJsonValue>` | No | A native OpenClaw configuration document. |
@@ -2559,11 +2603,11 @@ Create a reusable Namespace-owned Agent Preset
 | `name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)(?!.*[\u0000-\u001f\u007f]).+$` |
 | `template` | `object` | Yes | Reusable partial Agent launch settings. Scalar values may use {{ vars.name }}. Admission validates template syntax and credential boundaries. Ordinary creation APIs validate concrete launch settings. |
 | `template.agent` | `object` | No | — |
+| `template.agent.backendId` | `SafeJsonValue` | No | — |
 | `template.agent.executionMode` | `SafeJsonValue` | No | — |
 | `template.agent.harnessAuth` | `SafeJsonValue` | No | — |
 | `template.agent.name` | `SafeJsonValue` | No | — |
 | `template.agent.plugins` | `SafeJsonValue` | No | — |
-| `template.agent.providerId` | `SafeJsonValue` | No | — |
 | `template.configuration` | `object` | No | — |
 | `template.configuration.secretBindings` | `object<string, SafeJsonValue>` | No | Namespace-owned Secret bindings. Reference fields may use {{ vars.name }}. |
 | `template.configuration.values` | `object<string, SafeJsonValue>` | No | A native OpenClaw configuration document. |
@@ -2595,11 +2639,11 @@ Create a reusable Namespace-owned Agent Preset
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.template` | `object` | Yes | Reusable partial Agent launch settings. Scalar values may use {{ vars.name }}. Admission validates template syntax and credential boundaries. Ordinary creation APIs validate concrete launch settings. |
 | `data.template.agent` | `object` | No | — |
+| `data.template.agent.backendId` | `SafeJsonValue` | No | — |
 | `data.template.agent.executionMode` | `SafeJsonValue` | No | — |
 | `data.template.agent.harnessAuth` | `SafeJsonValue` | No | — |
 | `data.template.agent.name` | `SafeJsonValue` | No | — |
 | `data.template.agent.plugins` | `SafeJsonValue` | No | — |
-| `data.template.agent.providerId` | `SafeJsonValue` | No | — |
 | `data.template.configuration` | `object` | No | — |
 | `data.template.configuration.secretBindings` | `object<string, SafeJsonValue>` | No | Namespace-owned Secret bindings. Reference fields may use {{ vars.name }}. |
 | `data.template.configuration.values` | `object<string, SafeJsonValue>` | No | A native OpenClaw configuration document. |
@@ -2685,11 +2729,11 @@ Read one exact Namespace-owned Preset
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.template` | `object` | Yes | Reusable partial Agent launch settings. Scalar values may use {{ vars.name }}. Admission validates template syntax and credential boundaries. Ordinary creation APIs validate concrete launch settings. |
 | `data.template.agent` | `object` | No | — |
+| `data.template.agent.backendId` | `SafeJsonValue` | No | — |
 | `data.template.agent.executionMode` | `SafeJsonValue` | No | — |
 | `data.template.agent.harnessAuth` | `SafeJsonValue` | No | — |
 | `data.template.agent.name` | `SafeJsonValue` | No | — |
 | `data.template.agent.plugins` | `SafeJsonValue` | No | — |
-| `data.template.agent.providerId` | `SafeJsonValue` | No | — |
 | `data.template.configuration` | `object` | No | — |
 | `data.template.configuration.secretBindings` | `object<string, SafeJsonValue>` | No | Namespace-owned Secret bindings. Reference fields may use {{ vars.name }}. |
 | `data.template.configuration.values` | `object<string, SafeJsonValue>` | No | A native OpenClaw configuration document. |
@@ -2729,11 +2773,11 @@ Update a Preset without changing existing Agents
 | `name` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)(?!.*[\u0000-\u001f\u007f]).+$` |
 | `template` | `object` | No | Reusable partial Agent launch settings. Scalar values may use {{ vars.name }}. Admission validates template syntax and credential boundaries. Ordinary creation APIs validate concrete launch settings. |
 | `template.agent` | `object` | No | — |
+| `template.agent.backendId` | `SafeJsonValue` | No | — |
 | `template.agent.executionMode` | `SafeJsonValue` | No | — |
 | `template.agent.harnessAuth` | `SafeJsonValue` | No | — |
 | `template.agent.name` | `SafeJsonValue` | No | — |
 | `template.agent.plugins` | `SafeJsonValue` | No | — |
-| `template.agent.providerId` | `SafeJsonValue` | No | — |
 | `template.configuration` | `object` | No | — |
 | `template.configuration.secretBindings` | `object<string, SafeJsonValue>` | No | Namespace-owned Secret bindings. Reference fields may use {{ vars.name }}. |
 | `template.configuration.values` | `object<string, SafeJsonValue>` | No | A native OpenClaw configuration document. |
@@ -2765,11 +2809,11 @@ Update a Preset without changing existing Agents
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.template` | `object` | Yes | Reusable partial Agent launch settings. Scalar values may use {{ vars.name }}. Admission validates template syntax and credential boundaries. Ordinary creation APIs validate concrete launch settings. |
 | `data.template.agent` | `object` | No | — |
+| `data.template.agent.backendId` | `SafeJsonValue` | No | — |
 | `data.template.agent.executionMode` | `SafeJsonValue` | No | — |
 | `data.template.agent.harnessAuth` | `SafeJsonValue` | No | — |
 | `data.template.agent.name` | `SafeJsonValue` | No | — |
 | `data.template.agent.plugins` | `SafeJsonValue` | No | — |
-| `data.template.agent.providerId` | `SafeJsonValue` | No | — |
 | `data.template.configuration` | `object` | No | — |
 | `data.template.configuration.secretBindings` | `object<string, SafeJsonValue>` | No | Namespace-owned Secret bindings. Reference fields may use {{ vars.name }}. |
 | `data.template.configuration.values` | `object<string, SafeJsonValue>` | No | A native OpenClaw configuration document. |
@@ -3353,50 +3397,6 @@ Schema: `object`.
 | `data.id` | `string` | Yes | pattern: `^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)(?!.*[\u0000-\u001f\u007f]).+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `meta` | `object` | Yes | — |
-| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-
-<span id="providers"></span>
-
-### Providers
-
-| Operation | Summary |
-| --- | --- |
-| [`GET /providers`](#get-providers) | List configured Providers |
-
-#### `GET /providers`
-
-<span id="get-providers"></span>
-
-List configured Providers
-
-**Operation ID:** `listProviders`
-
-**Permissions:** Requires administer permission on the requested Installation.
-
-| Action | Resource | Scope |
-| --- | --- | --- |
-| `administer` | `installation` | `requested` |
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
-
-**`200` response body:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `data` | `array<object>` | Yes | — |
-| `data[].id` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)(?!.*[\u0000-\u001f\u007f]).+$` |
-| `data[].type` | `"chatgpt" or "github"` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 

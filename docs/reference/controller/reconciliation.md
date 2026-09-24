@@ -62,7 +62,7 @@ server-approved version, explicit Agent execution mode, and Compute
 implementation. The required Agent `harnessAuth` selects either an OCC Secret
 API-key source or an issued managed ChatGPT account. The revision freezes the
 Secret reference and selected Driver, or the account's exact access-token
-reference and verified private Provider binding. OCC separately authorizes the
+reference and verified private Backend binding. OCC separately authorizes the
 Configuration and harness source before queueing one revision operation in the
 same transaction. The source Configuration identity and generation remain pinned even when the
 admitted copy differs. Later Configuration, account, or Agent placement changes
@@ -74,7 +74,7 @@ Before processing that operation, the worker reloads current IAM policy,
 reauthorizes the original actor for the exact Agent and Configuration, and
 checks the frozen harness source. API-key delivery requires exact Secret
 `operate` for both actor and Agent service principal; managed ChatGPT delivery
-requires actor `read` on the exact account and matching credential/Provider
+requires actor `read` on the exact account and matching credential/Backend
 ownership. It also checks the owning ready Namespace, stable Agent service
 principal, and approved Harness, version, mode, and Compute implementation.
 These checks use the immutable revision, not a later Agent draft. Revoked source

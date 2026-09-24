@@ -129,7 +129,7 @@ const CONSOLE_SHELL_ROUTES = new Set([
   "/console/",
   "/console/login",
   "/console/agents",
-  "/console/providers",
+  "/console/backends",
   "/console/namespaces",
   "/console/settings",
 ]);

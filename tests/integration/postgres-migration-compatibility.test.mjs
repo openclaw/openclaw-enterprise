@@ -308,7 +308,7 @@ for (const legacyState of ["active_runtime", "harness_revision", "harness_accoun
         );
         await client.query(
           `INSERT INTO occ.agents
-           (id, namespace_id, name, configuration_id, provider_id, execution_mode,
+           (id, namespace_id, name, configuration_id, backend_id, execution_mode,
             service_principal_id, created_at)
          VALUES ($1, $2, $3, $4, NULL, 'dedicated', $5, clock_timestamp())`,
           [
@@ -322,7 +322,7 @@ for (const legacyState of ["active_runtime", "harness_revision", "harness_accoun
         if (legacyState !== "harness_account") {
           await client.query(
             `INSERT INTO occ.agent_revisions
-           (id, namespace_id, agent_id, revision_number, admitted_spec, provider_id, admitted_at)
+           (id, namespace_id, agent_id, revision_number, admitted_spec, backend_id, admitted_at)
          VALUES ($1, $2, $3, 1, $4, NULL, clock_timestamp())`,
             [
               revisionId,
@@ -502,7 +502,7 @@ test(
         );
         await client.query(
           `INSERT INTO occ.agents
-             (id, namespace_id, name, configuration_id, provider_id, execution_mode,
+             (id, namespace_id, name, configuration_id, backend_id, execution_mode,
               service_principal_id, created_at)
            VALUES ($1, $2, $3, $4, NULL, 'dedicated', $5, '2026-09-20T00:00:00Z'::timestamptz)`,
           [
@@ -531,7 +531,7 @@ test(
       ]) {
         await client.query(
           `INSERT INTO occ.agent_revisions
-             (id, namespace_id, agent_id, revision_number, admitted_spec, provider_id, admitted_at)
+             (id, namespace_id, agent_id, revision_number, admitted_spec, backend_id, admitted_at)
            VALUES ($1, $2, $3, $4, $5, NULL, '2026-09-20T00:00:00Z'::timestamptz)`,
           [revisionId, namespaceId, agentId, revisionNumber, admittedSpec],
         );
@@ -1031,11 +1031,11 @@ async function seedCanonicalData(db, { preset = false } = {}) {
       [servicePrincipal, namespace, agent],
     );
     await db.app.query(
-      "INSERT INTO occ.agents(id,namespace_id,name,configuration_id,provider_id,execution_mode,service_principal_id,created_at) VALUES($1,$2,$3,$4,NULL,'dedicated',$5,now())",
+      "INSERT INTO occ.agents(id,namespace_id,name,configuration_id,backend_id,execution_mode,service_principal_id,created_at) VALUES($1,$2,$3,$4,NULL,'dedicated',$5,now())",
       [agent, namespace, `agent-${randomUUID()}`, configuration, servicePrincipal],
     );
     await db.app.query(
-      "INSERT INTO occ.agent_revisions(id,namespace_id,agent_id,revision_number,admitted_spec,provider_id,admitted_at) VALUES($1,$2,$3,1,$4,NULL,now())",
+      "INSERT INTO occ.agent_revisions(id,namespace_id,agent_id,revision_number,admitted_spec,backend_id,admitted_at) VALUES($1,$2,$3,1,$4,NULL,now())",
       [
         revision,
         namespace,
@@ -1201,8 +1201,8 @@ test(
     const admissionId = `admission-${randomUUID()}`;
     const owner = (
       await db.app.query(
-        `INSERT INTO occ.agent_revisions (id,namespace_id,agent_id,revision_number,admitted_spec,provider_id,admitted_at)
-     SELECT $2,namespace_id,agent_id,2,admitted_spec || jsonb_build_object('repository_credentials',$3::jsonb),provider_id,now()
+        `INSERT INTO occ.agent_revisions (id,namespace_id,agent_id,revision_number,admitted_spec,backend_id,admitted_at)
+     SELECT $2,namespace_id,agent_id,2,admitted_spec || jsonb_build_object('repository_credentials',$3::jsonb),backend_id,now()
      FROM occ.agent_revisions WHERE namespace_id=$1 RETURNING agent_id`,
         [namespaceId, revisionId, JSON.stringify(snapshot)],
       )

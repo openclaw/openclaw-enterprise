@@ -3,7 +3,7 @@ RETURNS boolean LANGUAGE plpgsql IMMUTABLE AS $$
 DECLARE
   binding jsonb;
   identity_value jsonb;
-  provider_id text;
+  backend_id text;
   repository_refs text[] := ARRAY[]::text[];
 BEGIN
   IF jsonb_typeof(bindings) IS DISTINCT FROM 'array' OR admitted IS NULL THEN
@@ -30,19 +30,19 @@ BEGIN
       END IF;
       CONTINUE;
     END IF;
-    IF binding - 'repositoryRef' - 'profile' - 'providerId' - 'grant' <> '{}'::jsonb
-      OR jsonb_typeof(binding->'providerId') IS DISTINCT FROM 'string'
+    IF binding - 'repositoryRef' - 'profile' - 'backendId' - 'grant' <> '{}'::jsonb
+      OR jsonb_typeof(binding->'backendId') IS DISTINCT FROM 'string'
       OR jsonb_typeof(binding->'grant') IS DISTINCT FROM 'object' THEN
       RETURN false;
     END IF;
-    provider_id := binding->>'providerId';
-    -- Provider IDs retain their existing JavaScript whitespace and UTF-16 bounds.
-    IF char_length(provider_id)
-        + char_length(regexp_replace(provider_id, U&'[\0001-\FFFF]', '', 'g'))
+    backend_id := binding->>'backendId';
+    -- Backend IDs retain their existing JavaScript whitespace and UTF-16 bounds.
+    IF char_length(backend_id)
+        + char_length(regexp_replace(backend_id, U&'[\0001-\FFFF]', '', 'g'))
         NOT BETWEEN 1 AND 200
-      OR provider_id <> btrim(provider_id,
+      OR backend_id <> btrim(backend_id,
         U&' \0009\000A\000B\000C\000D\00A0\1680\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200A\2028\2029\202F\205F\3000\FEFF')
-      OR provider_id ~ U&'[\0001-\001F\007F\2028\2029]' THEN
+      OR backend_id ~ U&'[\0001-\001F\007F\2028\2029]' THEN
       RETURN false;
     END IF;
     IF NOT ((binding->'grant') ?& ARRAY['providerInstanceId', 'repositoryId', 'grantId'])

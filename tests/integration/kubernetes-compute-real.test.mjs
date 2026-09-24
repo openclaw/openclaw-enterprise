@@ -145,7 +145,7 @@ function runtimeDrivers({ computeDriver, configurationDriver, secretDriver }) {
     installation: {
       occ: { cluster: "kubernetes-agent-provisioning" },
       logging: {},
-      provider: [],
+      backend: [],
       drivers: {
         iam: { id: "native-iam", implementation: "native", configuration: {} },
         compute: {

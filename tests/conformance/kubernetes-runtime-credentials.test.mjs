@@ -23,7 +23,7 @@ const agent = Object.freeze({
   namespaceId: namespace.id,
   name: "Runtime credential Agent",
   configurationId: "cfg_runtime_00000000-0000-4000-8000-000000000001",
-  providerId: null,
+  backendId: null,
   executionMode: "dedicated",
   servicePrincipalId: "sp_runtime_00000000-0000-4000-8000-000000000001",
   createdAt: namespace.createdAt,

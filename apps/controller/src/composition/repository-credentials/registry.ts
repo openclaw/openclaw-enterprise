@@ -10,7 +10,7 @@ import type { GitHubRepositoryRegistry } from "../../drivers/repo/github/credent
 /** ConfigMap projections may use symlinks; one opened regular file supplies the snapshot. */
 export async function loadGitHubRepositoryRegistry(
   path: string,
-  expectedProviderId: string,
+  expectedBackendId: string,
 ): Promise<GitHubRepositoryRegistry> {
   if (!isAbsolute(path) || resolve(path) !== path) {
     throw new Error("invalid-repository-registry");
@@ -49,7 +49,7 @@ export async function loadGitHubRepositoryRegistry(
     }
     return validateGitHubRepositoryRegistry(
       JSON.parse(bytes.subarray(0, length).toString("utf8")),
-      expectedProviderId,
+      expectedBackendId,
     );
   } catch {
     throw new Error("invalid-repository-registry");

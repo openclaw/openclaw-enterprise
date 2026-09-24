@@ -279,7 +279,7 @@ function agentFromRow(row: PostgresRow): Readonly<Agent> {
   } catch {
     throw new DependencyUnavailableError("Persisted Agent harness authentication is invalid.");
   }
-  const providerId = row.provider_id === null ? null : text(row, "provider_id");
+  const backendId = row.backend_id === null ? null : text(row, "backend_id");
   const desiredRuntimeState = text(row, "desired_runtime_state");
   if (desiredRuntimeState !== "running" && desiredRuntimeState !== "stopped") {
     throw new DependencyUnavailableError("Persisted Agent desired runtime state is invalid.");
@@ -289,7 +289,7 @@ function agentFromRow(row: PostgresRow): Readonly<Agent> {
     namespaceId: text(row, "namespace_id"),
     name: text(row, "name"),
     configurationId: text(row, "configuration_id"),
-    providerId,
+    backendId,
     executionMode: text(row, "execution_mode") as Agent["executionMode"],
     ...(row.plugins === null || row.plugins === undefined
       ? {}
@@ -393,7 +393,7 @@ function revisionFromRow(row: PostgresRow): Readonly<AgentRevision> {
     namespaceId: text(row, "namespace_id"),
     agentId: text(row, "agent_id"),
     revision,
-    providerId: row.provider_id === null ? null : text(row, "provider_id"),
+    backendId: row.backend_id === null ? null : text(row, "backend_id"),
     configurationId: admitted.configuration_id,
     configurationKind: admitted.configuration_kind,
     configurationGeneration: admitted.configuration_generation,
@@ -1812,11 +1812,11 @@ export class PostgresPlatformState implements PlatformStateStore {
             ).rows,
           ).map(serviceAccountFromRow),
         ),
-      findServiceAccountProviderBinding: async (namespaceId, serviceAccountId) => {
+      findServiceAccountBackendBinding: async (namespaceId, serviceAccountId) => {
         const found = rows(
           (
             await client.query(
-              `SELECT b.provider_id, b.driver_id, b.workspace_id,
+              `SELECT b.backend_id, b.driver_id, b.workspace_id,
                       b.external_credential_id IS NOT NULL AS credential_issued
                FROM occ.service_account_driver_bindings AS b
                JOIN occ.namespaces AS n ON n.id = b.namespace_id AND n.deleted_at IS NULL
@@ -1828,7 +1828,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         return found === undefined
           ? undefined
           : immutableCopy({
-              providerId: text(found, "provider_id"),
+              backendId: text(found, "backend_id"),
               driverId: text(found, "driver_id"),
               workspaceId: text(found, "workspace_id"),
               credentialIssued: found.credential_issued === true,
@@ -1934,7 +1934,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         (
           await client.query(
             `SELECT a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                    a.provider_id, a.plugins, a.repository_bindings, a.service_principal_id, a.harness_auth,
+                    a.backend_id, a.plugins, a.repository_bindings, a.service_principal_id, a.harness_auth,
                     a.active_revision_id, a.desired_runtime_state, a.status, a.created_at
              FROM occ.agents AS a
              JOIN occ.namespaces AS n ON n.id = a.namespace_id AND n.deleted_at IS NULL
@@ -2017,7 +2017,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           (
             await client.query(
               `SELECT a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                      a.provider_id, a.plugins, a.repository_bindings, a.service_principal_id, a.harness_auth,
+                      a.backend_id, a.plugins, a.repository_bindings, a.service_principal_id, a.harness_auth,
                       a.active_revision_id, a.desired_runtime_state, a.status, a.created_at
                FROM occ.agents AS a
                JOIN occ.namespaces AS n ON n.id = a.namespace_id AND n.deleted_at IS NULL
@@ -2067,7 +2067,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         });
         await client.query(
           `INSERT INTO occ.agents
-           (id, namespace_id, name, configuration_id, provider_id, execution_mode,
+           (id, namespace_id, name, configuration_id, backend_id, execution_mode,
              service_principal_id, harness_auth, active_revision_id, created_at, plugins,
              repository_bindings)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11::jsonb, $12::jsonb)`,
@@ -2076,7 +2076,7 @@ export class PostgresPlatformState implements PlatformStateStore {
             saved.namespaceId,
             saved.name,
             saved.configurationId,
-            saved.providerId,
+            saved.backendId,
             saved.executionMode,
             saved.servicePrincipalId,
             saved.harnessAuth === null ? null : JSON.stringify(saved.harnessAuth),
@@ -2099,7 +2099,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         configurationId,
         executionMode,
         harnessAuth,
-        providerId,
+        backendId,
         plugins,
         repositoryBindings,
       ) => {
@@ -2120,14 +2120,14 @@ export class PostgresPlatformState implements PlatformStateStore {
               `UPDATE occ.agents AS a
                SET configuration_id = $3, execution_mode = COALESCE($4::text, a.execution_mode),
                    harness_auth = CASE WHEN $5::boolean THEN $6::jsonb ELSE a.harness_auth END,
-                   provider_id = CASE WHEN $7::boolean THEN $8::text ELSE a.provider_id END,
+                   backend_id = CASE WHEN $7::boolean THEN $8::text ELSE a.backend_id END,
                    plugins = CASE WHEN $9::boolean THEN $10::jsonb ELSE a.plugins END,
                    repository_bindings = CASE WHEN $11::boolean THEN $12::jsonb ELSE a.repository_bindings END
                FROM occ.namespaces AS n
                WHERE a.namespace_id = $1 AND a.id = $2
                  AND n.id = a.namespace_id AND n.deleted_at IS NULL
                  RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                          a.provider_id, a.plugins, a.repository_bindings, a.service_principal_id, a.harness_auth,
+                          a.backend_id, a.plugins, a.repository_bindings, a.service_principal_id, a.harness_auth,
                           a.active_revision_id, a.desired_runtime_state, a.status, a.created_at`,
               [
                 namespaceId,
@@ -2136,8 +2136,8 @@ export class PostgresPlatformState implements PlatformStateStore {
                 executionMode ?? null,
                 harnessAuth !== undefined,
                 harnessAuth == null ? null : JSON.stringify(harnessAuth),
-                providerId !== undefined,
-                providerId ?? null,
+                backendId !== undefined,
+                backendId ?? null,
                 plugins !== undefined,
                 nextPlugins === undefined ? null : JSON.stringify(nextPlugins),
                 repositoryBindings !== undefined,
@@ -2165,7 +2165,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                 AND a.active_revision_id IS NOT DISTINCT FROM $3::text
                   AND n.id = a.namespace_id AND n.deleted_at IS NULL
                   RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                          a.provider_id, a.plugins, a.repository_bindings, a.service_principal_id, a.harness_auth,
+                          a.backend_id, a.plugins, a.repository_bindings, a.service_principal_id, a.harness_auth,
                           a.active_revision_id, a.desired_runtime_state, a.status, a.created_at`,
               [namespaceId, agentId, expectedRevisionId ?? null, candidateRevisionId],
             )
@@ -2182,7 +2182,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                WHERE a.namespace_id = $1 AND a.id = $2 AND a.active_revision_id = $3
                  AND n.id = a.namespace_id AND n.deleted_at IS NULL
                 RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                         a.provider_id, a.plugins, a.repository_bindings, a.service_principal_id, a.harness_auth,
+                         a.backend_id, a.plugins, a.repository_bindings, a.service_principal_id, a.harness_auth,
                          a.active_revision_id, a.desired_runtime_state, a.status, a.created_at`,
               [namespaceId, agentId, expectedRevisionId],
             )
@@ -2201,7 +2201,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                  AND a.desired_runtime_state = ANY($3::text[])
                  AND n.id = a.namespace_id AND n.deleted_at IS NULL
                 RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                         a.provider_id, a.plugins, a.repository_bindings, a.service_principal_id, a.harness_auth,
+                         a.backend_id, a.plugins, a.repository_bindings, a.service_principal_id, a.harness_auth,
                          a.active_revision_id, a.desired_runtime_state, a.status, a.created_at`,
               [namespaceId, agentId, expectedStates, next],
             )
@@ -2223,7 +2223,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                  AND a.status = ANY($3::text[])
                  AND n.id = a.namespace_id AND n.deleted_at IS NULL
                RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                         a.provider_id, a.plugins, a.repository_bindings, a.service_principal_id, a.harness_auth,
+                         a.backend_id, a.plugins, a.repository_bindings, a.service_principal_id, a.harness_auth,
                          a.active_revision_id, a.desired_runtime_state, a.status, a.created_at`,
               [namespaceId, agentId, expectedStatuses, next],
             )
@@ -2238,7 +2238,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         const found = rows(
           (
             await client.query(
-              `SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.provider_id,
+              `SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.backend_id,
                       r.admitted_spec,
                       r.admitted_at, a.service_principal_id
                FROM occ.agent_revisions AS r
@@ -2255,7 +2255,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         const found = rows(
           (
             await client.query(
-              `SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.provider_id,
+              `SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.backend_id,
                       r.admitted_spec,
                       r.admitted_at, a.service_principal_id
                FROM occ.agent_revisions AS r
@@ -2287,7 +2287,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         if (
           owner === undefined ||
           owner.servicePrincipalId !== revision.servicePrincipalId ||
-          owner.providerId !== revision.providerId ||
+          owner.backendId !== revision.backendId ||
           !harnessAuthMatches(owner.harnessAuth, revision.harnessAuth)
         ) {
           throw new ScopeViolationError("The AgentRevision belongs to an unavailable Agent.");
@@ -2302,14 +2302,14 @@ export class PostgresPlatformState implements PlatformStateStore {
         }
         await client.query(
           `INSERT INTO occ.agent_revisions
-           (id, namespace_id, agent_id, revision_number, provider_id, admitted_spec, admitted_at)
+           (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, admitted_at)
            VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
           [
             revision.id,
             revision.namespaceId,
             revision.agentId,
             revision.revision,
-            revision.providerId,
+            revision.backendId,
             JSON.stringify({
               configuration_id: revision.configurationId,
               configuration_kind: revision.configurationKind,

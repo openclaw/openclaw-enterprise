@@ -18,7 +18,7 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.m
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
-import { waitFor } from "../helpers/postgres-provider-state.mjs";
+import { waitFor } from "../helpers/postgres-backend-state.mjs";
 
 const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const adminEmail = "postgres-agent-provisioning-v2@example.test";
@@ -204,7 +204,7 @@ function installationDrivers({ computeDriver, configurationDriver, secretDriver,
     installation: {
       occ: { cluster: "postgres-agent-provisioning" },
       logging: {},
-      provider:
+      backend:
         repoDriver === undefined
           ? []
           : [

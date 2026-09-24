@@ -12,7 +12,7 @@ The OCC API and controller worker start as separate Node.js processes, resolve
 the same singleton Installation and trusted Driver selections, and coordinate
 through PostgreSQL. Each process constructs its own shared Driver instances;
 when a ServiceAccount Driver is selected, only the API additionally initializes
-its Provider client and Driver. PostgreSQL-backed development uses the
+its Backend client and Driver. PostgreSQL-backed development uses the
 Docker Compute Driver by default, while the development filesystem
 Configuration Driver is API-only. The singleton invariant is the selected Driver
 identity, not JavaScript object identity. This trace ends when the API accepts
@@ -109,8 +109,8 @@ and does not receive API authentication configuration.
 
 When `OCC_CONFIG_PATH` is set, each process reads the same trusted file and
 constructs its own Installation, Compute, Configuration, and mandatory
-`createIAMDriver(state)` bundle. The shared loader parses provider-integration
-metadata but never reads an admin credential or initializes a provider client.
+`createIAMDriver(state)` bundle. The shared loader parses Backend integration
+metadata but never reads an admin credential or initializes a Backend client.
 Production requires the startup file. Development may omit it: the API then
 uses PostgreSQL plus the filesystem Configuration Driver rooted at
 `OCC_DEVELOPMENT_CONFIGURATION_ROOT`, and the worker uses the Docker Compute
@@ -122,10 +122,10 @@ comes from server-owned singleton state, never startup YAML.
 API and worker use matching logical Driver identities but separate instances.
 Each IAM Driver loads current persisted policy for every identity lookup and
 authorization decision. Only `server.mjs` reads the mounted ChatGPT admin key,
-constructs `Provider<ChatGPTClient>`, and injects it into the optional
-ServiceAccount Driver factory. The worker consumes only nonsecret Provider
+constructs `Backend<ChatGPTClient>`, and injects it into the optional
+ServiceAccount Driver factory. The worker consumes only nonsecret Backend
 metadata and never receives the client or admin credential. Startup validates
-required member selections without scanning saved Provider references. Exact
+required member selections without scanning saved Backend references. Exact
 ownership is checked when credentials or deployments are used, allowing the API
 to start so stale references can be repaired. Lifecycle owners remain stable,
 and controller Drivers are never exposed to tenant workloads.
@@ -228,7 +228,7 @@ execution begins in the adjacent
 
 ## Related docs
 
-- [Provider-managed credential delivery](service-account-driver-credential-delivery.md)
+- [Backend-managed credential delivery](service-account-driver-credential-delivery.md)
 
 - [Platform architecture](../ARCHITECTURE.md)
 - [Controller worker operation](../reference/controller.md)

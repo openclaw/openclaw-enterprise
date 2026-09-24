@@ -39,7 +39,7 @@ Creation body:
   "name": "ticket-triage",
   "configurationId": "cfg_123e4567-e89b-42d3-a456-426614174000",
   "executionMode": "dedicated",
-  "providerId": null
+  "backendId": null
 }
 ```
 
@@ -86,19 +86,19 @@ warnings record the observed startup result, not live plugin health.
 A later deployment admits a new revision with its own deployment status and does
 not rewrite the original result.
 
-## Provider association
+## Backend association
 
-An Agent can reference one Installation-configured [Provider](providers.md)
-through `providerId`. Create omission means `null`; PATCH omission preserves the
+An Agent can reference one Installation-configured [experimental Backend](backends.md)
+through `backendId`. Create omission means `null`; PATCH omission preserves the
 saved value, while explicit `null` clears the draft reference. A nonnull ID must
-resolve to a configured Provider. No default is inferred. The nullable reference
+resolve to a configured Backend. No default is inferred. The nullable reference
 is returned on both Agent and AgentRevision responses.
 
-The Provider reference is independent of native model names and Harness
+The Backend reference is independent of native model names and Harness
 selection. An Agent using an OpenAI or Anthropic API key, or a directly supplied
-service account token, does not need a Provider. An OCE-issued ChatGPT account
-token requires the matching Provider and account when deployment
-is requested and again before startup; see [Provider deployment checks](providers.md#agent-association-and-immutable-deployment).
+service account token, does not need a Backend. An OCE-issued ChatGPT account
+token requires the matching Backend and account when deployment
+is requested and again before startup; see [Backend deployment checks](backends.md#agent-association-and-immutable-deployment).
 Creating an Agent does not create a provider account or issue credentials.
 
 ## Harness authentication
@@ -129,8 +129,8 @@ It requires dedicated Codex; no managed account is created.
 
 For an already issued ChatGPT account credential, use
 `{ "method": "chatgpt_service_account", "serviceAccountId": "sa_123e4567-e89b-42d3-a456-426614174000" }`.
-This requires dedicated Codex and the account's matching `providerId`. Binding
-an account does not issue its credential or change the model, Harness, or Provider.
+This requires dedicated Codex and the account's matching `backendId`. Binding
+an account does not issue its credential or change the model, Harness, or Backend.
 
 For SSH embedded OpenClaw, use `{ "method": "runtime" }`. The operator supplies
 credentials in the protected host environment file; OCC neither reads nor
@@ -316,7 +316,7 @@ Permanent failures fail closed in `failed_permanent`; the Agent remains
 An Agent's `configurationId` selects exactly one native OpenClaw Configuration
 document with `kind: "agent"` in its own Namespace. A PATCH requires
 `configurationId`, exact-Agent `update`, and exact-Configuration `read`.
-This replaces the reference, preserving execution mode, harness binding, and Provider:
+This replaces the reference, preserving execution mode, harness binding, and Backend:
 
 ```json
 {
@@ -330,7 +330,7 @@ native nested document through its own exact-resource PATCH endpoint; see
 the Agent reference or Configuration values does not queue Compute work,
 change the active revision, or mutate earlier revisions. Agent create and update
 accept a Configuration reference, optional execution mode, optional harness authentication
-binding and Provider association, and optional Agent-owned plugin selections;
+binding and Backend association, and optional Agent-owned plugin selections;
 they do not accept an inline configuration document or competing gateway
 settings. Multiple Agents can
 share the same Configuration;
@@ -348,16 +348,16 @@ planning a deployment. Other sandbox execution combinations are rejected.
 
 ## Failure semantics
 
-- `400 INVALID_REQUEST`: The Provider ID is malformed or empty.
+- `400 INVALID_REQUEST`: The Backend ID is malformed or empty.
 - `400 INVALID_REQUEST`: The plugin map is structurally invalid.
-- `404 NOT_FOUND`: The nonempty Provider ID does not name a configured Provider.
+- `404 NOT_FOUND`: The nonempty Backend ID does not name a configured Backend.
 - `401`: The session cookie is missing, invalid, expired, or revoked.
 - `403`: Your principal lacks the exact permission for the Agent or Namespace.
 - `404`: The Namespace or Agent does not exist under the requested parent.
 - `404`: The selected Configuration does not belong to the Agent's Namespace.
 - `404`: An associated service account does not belong to the Agent's Namespace.
 - `409 RESOURCE_CONFLICT`: Harness authentication is missing, the selected
-  account has no issued access token, or its Provider binding or topology is incompatible.
+  account has no issued access token, or its Backend binding or topology is incompatible.
 - `400 INVALID_REQUEST`: A runtime `modelApiKey` selector is supplied. Use
   `harnessAuth` explicitly.
 - `409 RESOURCE_CONFLICT`: Another Agent already uses that name in the same

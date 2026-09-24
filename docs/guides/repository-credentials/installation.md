@@ -14,7 +14,7 @@ Create `registry.json` using the [canonical registry schema](../../reference/rep
 Use the real GitHub App, installation and numeric repository IDs, and the
 server-assigned OCC Namespace IDs. One App installation can serve several
 repository entries; each Agent binding still admits a separate single-repository
-session. The example below uses Provider ID `repository-provider`, registry
+session. The example below uses Backend ID `repository-backend`, registry
 maximum duration `86400`, and all three profiles.
 
 Choose the Namespace first with `occ namespace list` on an existing installation.
@@ -38,7 +38,7 @@ namespace consistently if installing elsewhere. The internal Service exposes
 HTTPS 443 and forwards to sidecar port 8443. Do not disable certificate
 verification or use the TLS private-key Secret as the public trust input.
 
-Write `config.json` with the same Provider ID and duration policy as the registry:
+Write `config.json` with the same Backend ID and duration policy as the registry:
 
 ```json
 {
@@ -54,7 +54,7 @@ Write `config.json` with the same Provider ID and duration policy as the registr
   },
   "backend": {
     "kind": "github-app-registry",
-    "providerId": "repository-provider"
+    "backendId": "repository-backend"
   }
 }
 ```
@@ -95,10 +95,10 @@ Agent configuration and command arguments.
 
 ## Select composition and network access
 
-Add the [GitHub Provider and Driver fragment](../../reference/providers.md#github-repository-credentials)
-to the existing Installation YAML. Set its Provider ID to `repository-provider`
+Add the [GitHub Backend and Driver fragment](../../reference/backends.md#github-repository-credentials)
+to the existing Installation YAML. Set its Backend ID to `repository-backend`
 and `sessionDurationSeconds` to `86400`. Select the optional capability through
-`drivers.repo` and the matching Provider `drivers.repo` member; keep the configured
+`drivers.repo` and the matching Backend `drivers.repo` member; keep the configured
 Driver ID unchanged. Keep the shown registry, control socket
 and public CA paths; Helm mounts exactly those locations.
 
@@ -131,7 +131,7 @@ placeholders before rendering:
 repositoryCredentials:
   enabled: true
   image: "<credential-service-image>@sha256:<digest>"
-  providerId: repository-provider
+  backendId: repository-backend
   registryConfigMapName: occ-repository-registry-v1
   serviceConfigSecretName: occ-repository-service
   appKeySecretName: occ-repository-app

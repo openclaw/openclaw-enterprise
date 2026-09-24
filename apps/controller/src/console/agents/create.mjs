@@ -252,7 +252,7 @@ function renderAgentForm(context, rendered) {
     (agent.name !== undefined && typeof agent.name !== "string") ||
     (agent.executionMode !== undefined &&
       !["embedded", "dedicated"].includes(agent.executionMode)) ||
-    (agent.providerId != null && typeof agent.providerId !== "string") ||
+    (agent.backendId != null && typeof agent.backendId !== "string") ||
     (agent.plugins !== undefined && !isObject(agent.plugins)) ||
     (rendered.configuration?.secretBindings !== undefined &&
       !isObject(rendered.configuration.secretBindings))
@@ -1271,7 +1271,7 @@ function renderAgentForm(context, rendered) {
       workspaceDefaultsId: WORKSPACE_DEFAULTS_ID,
       ...(repositoryBindings.length ? { repositoryBindings } : {}),
       ...(Object.keys(desiredPlugins).length ? { plugins: desiredPlugins } : {}),
-      ...(agent.providerId ? { providerId: agent.providerId } : {}),
+      ...(agent.backendId ? { backendId: agent.backendId } : {}),
     };
     pending = true;
     updateControls();

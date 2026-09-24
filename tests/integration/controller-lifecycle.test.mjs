@@ -661,7 +661,7 @@ test("Agent configuration references stay mutable while deployment admits deeply
       providers: {
         openai: {
           baseUrl: "https://replacement.example/v1",
-          apiKey: { source: "file", provider: "teamfile", id: "/providers/openai/apiKey" },
+          apiKey: { source: "file", provider: "teamfile", id: "/backends/openai/apiKey" },
         },
       },
     },

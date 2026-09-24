@@ -25,7 +25,7 @@ import type {
 } from "./installation-config.ts";
 import {
   initializeInstallationPresets,
-  providerSummariesFromDefinitions,
+  backendSummariesFromDefinitions,
 } from "./installation-config.ts";
 import type { LoggingConfiguration, OccLogger } from "../logging.ts";
 import { resolveApprovedHarness } from "./production-harness.ts";
@@ -146,7 +146,7 @@ export async function composePostgresDevelopment(
       recordOperations: true,
       defaultPresets: drivers?.defaultPresets ?? [],
       ...(loggingLevel === undefined ? {} : { loggingLevel }),
-      ...(drivers === undefined ? {} : { providers: drivers.installation.provider }),
+      ...(drivers === undefined ? {} : { backends: drivers.installation.backend }),
     });
     controller.registerDriver(iamDriver);
     const selected = controller.selectDriver("iam", driverId);
@@ -189,7 +189,7 @@ export async function composePostgresDevelopment(
       }
     }
     serviceAccountDriverFactory?.(controller, state);
-    await controller.validateProviderConfiguration();
+    await controller.validateBackendConfiguration();
     await initializeInstallationPresets(
       controller,
       iamDriver,
@@ -223,7 +223,7 @@ export async function composePostgresDevelopment(
       auditSink: state.auditSink,
       ...(drivers === undefined
         ? {}
-        : { providerSummaries: providerSummariesFromDefinitions(drivers.installation.provider) }),
+        : { backendSummaries: backendSummariesFromDefinitions(drivers.installation.backend) }),
       auth,
       ...(config.logger === undefined ? {} : { logger: config.logger }),
       provisionAuthAccount,

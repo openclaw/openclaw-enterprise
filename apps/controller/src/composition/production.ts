@@ -17,7 +17,7 @@ import type {
 } from "./installation-config.ts";
 import {
   initializeInstallationPresets,
-  providerSummariesFromDefinitions,
+  backendSummariesFromDefinitions,
 } from "./installation-config.ts";
 import { emitOccLogEvent, type OccLogger } from "../logging.ts";
 import { resolveApprovedProductionHarness } from "./production-harness.ts";
@@ -143,7 +143,7 @@ export async function composeProduction(config: ProductionConfig) {
     const controller = new OpenClawController(persistedInstallation, {
       state,
       recordOperations: true,
-      providers: installation.provider,
+      backends: installation.backend,
       defaultPresets: config.drivers.defaultPresets ?? [],
       loggingLevel: config.drivers.installation.logging.level,
     });
@@ -182,7 +182,7 @@ export async function composeProduction(config: ProductionConfig) {
         throw new Error("The configured repository credential Driver was not selected correctly.");
       }
     }
-    await controller.validateProviderConfiguration();
+    await controller.validateBackendConfiguration();
     await initializeInstallationPresets(
       controller,
       iamDriver,
@@ -215,7 +215,7 @@ export async function composeProduction(config: ProductionConfig) {
       ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
       resolveHarness: resolveApprovedProductionHarness,
       auditSink: state.auditSink,
-      providerSummaries: providerSummariesFromDefinitions(installation.provider),
+      backendSummaries: backendSummariesFromDefinitions(installation.backend),
       auth,
       ...(config.logger === undefined ? {} : { logger: config.logger }),
       provisionAuthAccount,

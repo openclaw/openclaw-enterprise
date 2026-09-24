@@ -139,7 +139,7 @@ function installationAdministratorServicePrincipal(iamState) {
 }
 
 function createAgentPluginApi({ request, namespaceId }) {
-  async function createAgent({ harnessId, executionMode, name, harnessAuth, providerId }) {
+  async function createAgent({ harnessId, executionMode, name, harnessAuth, backendId }) {
     const configuration = await request("POST", `/namespaces/${namespaceId}/configurations`, {
       kind: "agent",
       values: nativeConfiguration(harnessId),
@@ -149,7 +149,7 @@ function createAgentPluginApi({ request, namespaceId }) {
       name,
       configurationId: configuration.data.id,
       executionMode,
-      ...(providerId === undefined ? {} : { providerId }),
+      ...(backendId === undefined ? {} : { backendId }),
       ...(harnessAuth === undefined ? {} : { harnessAuth }),
     });
     assert.equal(agent.status, 201, JSON.stringify(agent.error));
@@ -167,7 +167,7 @@ function createAgentPluginApi({ request, namespaceId }) {
     const response = await request("PATCH", `/namespaces/${namespaceId}/agents/${agentId}`, {
       configurationId: current.configurationId,
       executionMode: current.executionMode,
-      ...(current.providerId === undefined ? {} : { providerId: current.providerId }),
+      ...(current.backendId === undefined ? {} : { backendId: current.backendId }),
       plugins,
     });
     assert.equal(response.status, 200, JSON.stringify(response.error));
@@ -237,7 +237,7 @@ function installationConfiguration({
   configuration.drivers.compute.configuration.network.pluginStatusProxySourceCidrs =
     pluginProofPluginStatusProxyCidrs();
   if (codexServiceAccountImport !== undefined) {
-    configuration.provider = [
+    configuration.backend = [
       {
         id: "openai",
         type: "chatgpt",
@@ -310,7 +310,7 @@ async function deriveCodexWorkspaceId(accessToken) {
 
 function createImportedCodexServiceAccountDriverFactory(imported, compute) {
   const driverId = "chatgpt-service-accounts";
-  const providerId = "openai";
+  const backendId = "openai";
   return (controller, state) => {
     const driver = {
       capability: "service_account",
@@ -321,12 +321,12 @@ function createImportedCodexServiceAccountDriverFactory(imported, compute) {
           state.queryInTransaction(
             unit,
             `INSERT INTO occ.service_account_driver_bindings
-               (service_account_id, namespace_id, provider_id, driver_id, external_account_id, workspace_id)
+               (service_account_id, namespace_id, backend_id, driver_id, external_account_id, workspace_id)
              VALUES ($1, $2, $3, $4, $5, $6)`,
             [
               account.id,
               account.namespaceId,
-              providerId,
+              backendId,
               driverId,
               `imported-${account.id}`,
               imported.workspaceId,
@@ -1651,7 +1651,7 @@ export async function createPluginDriverRealFixture(
     );
     assert.equal(account.status, 201, JSON.stringify(account.error));
     const binding = await pool.query(
-      `SELECT external_account_id, workspace_id, provider_id, driver_id
+      `SELECT external_account_id, workspace_id, backend_id, driver_id
        FROM occ.service_account_driver_bindings
        WHERE namespace_id = $1 AND service_account_id = $2`,
       [createdNamespace.data.id, account.data.id],
@@ -1659,7 +1659,7 @@ export async function createPluginDriverRealFixture(
     assert.equal(binding.rowCount, 1, "ServiceAccount creation must persist provider binding.");
     assert.equal(binding.rows[0].external_account_id, `imported-${account.data.id}`);
     assert.equal(binding.rows[0].workspace_id, codexServiceAccountImport.workspaceId);
-    assert.equal(binding.rows[0].provider_id, "openai");
+    assert.equal(binding.rows[0].backend_id, "openai");
     assert.equal(binding.rows[0].driver_id, "chatgpt-service-accounts");
 
     const issued = await request(

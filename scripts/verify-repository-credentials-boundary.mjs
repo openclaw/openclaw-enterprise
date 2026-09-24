@@ -8,7 +8,7 @@ const credentialDirectories = [
   "composition/repository-credentials",
   "drivers/repo/credentials",
   "drivers/repo/github",
-  "providers/repository-credentials",
+  "backends/repository-credentials",
 ];
 const processEntrypoints = ["repository-credentials.ts", "repository-credentials.mjs"];
 const requiredEntrypoints = [
@@ -87,7 +87,7 @@ const reviewedImports = {
     "node:fs/promises": ["lstat", "mkdir", "open", "readdir", "readlink", "realpath", "unlink"],
   },
   "composition/repository-credentials/probe.ts": { "node:http": ["request"] },
-  "providers/repository-credentials/control-client.ts": { "node:http": ["request"] },
+  "backends/repository-credentials/control-client.ts": { "node:http": ["request"] },
   "composition/repository-credentials/registry.ts": {
     "node:fs": ["constants"],
     "node:fs/promises": ["open", "stat"],
@@ -129,7 +129,7 @@ const senderConsumers = {
   "drivers/repo/credentials/transport/upstream.ts": {
     "drivers/repo/credentials/transport/agent.ts": ["createUpstreamSender"],
   },
-  "providers/repository-credentials/control-client.ts": {
+  "backends/repository-credentials/control-client.ts": {
     "composition/repository-credentials/platform.ts": ["UnixRepositoryCredentialControlClient"],
     "drivers/repo/github/driver.ts": ["RepositoryCredentialControlError"],
   },

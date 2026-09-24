@@ -679,9 +679,9 @@ async function setupRepositoryPlatformFixture(context, diagnostic) {
     throw error;
   }
   diagnostic.stage = "controller-restart";
-  configuration.provider = [
+  configuration.backend = [
     {
-      id: credentialsFixture.providerId,
+      id: credentialsFixture.backendId,
       type: "github",
       configuration: { registryPath: credentialsFixture.registryFile },
       drivers: { repo: "repository-credentials" },

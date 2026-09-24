@@ -6,7 +6,7 @@
 {{- if or (not $collector.configSecretName) (not $collector.envSecretName) -}}
 {{- fail "logging.collector requires dedicated operator-created config and environment Secrets" -}}
 {{- end -}}
-{{- range $name, $secret := dict "installation" .Values.installation.secretName "database" .Values.database.secretName "auth" .Values.auth.secretName "chatgpt" .Values.provider.chatgpt.secretName -}}
+{{- range $name, $secret := dict "installation" .Values.installation.secretName "database" .Values.database.secretName "auth" .Values.auth.secretName "chatgpt" .Values.backend.chatgpt.secretName -}}
 {{- if and $secret (or (eq $collector.configSecretName $secret) (and $collector.envSecretName (eq $collector.envSecretName $secret))) -}}
 {{- fail (printf "logging.collector Secrets must be dedicated and cannot reuse the %s Secret" $name) -}}
 {{- end -}}

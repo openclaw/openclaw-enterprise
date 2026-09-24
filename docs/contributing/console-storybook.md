@@ -3,7 +3,7 @@
 Browse the console's pages, component states, and Agent workflows without starting
 OCC or a cluster. Storybook uses the production console modules and styles with
 an isolated, in-memory API fixture for each preview. It does not deploy workloads,
-contact Providers, or verify runtime behavior. Use only dummy credentials.
+contact external services, or verify runtime behavior. Use only dummy credentials.
 
 ## Run locally
 
@@ -40,7 +40,7 @@ those states by interacting with the real controls after loading fixture data.
 | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Sign in                 | Signed out, rejected login, expired session, session-read failure, loading, unconfirmed logout.                                                                                                                                                                                                                                                                            |
 | Agents                  | Populated and empty collections, no search matches, inaccessible Namespace, no readable Namespaces, permission denial, read failure, loading.                                                                                                                                                                                                                              |
-| Providers               | Configured, empty, and discovery failure.                                                                                                                                                                                                                                                                                                                                  |
+| Backends               | Configured, empty, and discovery failure.                                                                                                                                                                                                                                                                                                                                  |
 | Namespaces              | Ready and provisioning, empty, permission denial.                                                                                                                                                                                                                                                                                                                          |
 | Settings and navigation | Signed-in account and unknown route.                                                                                                                                                                                                                                                                                                                                       |
 | Create Agent            | Preset variables, no Presets, fixed model choices before credential entry and manual model IDs, OpenAI Codex/OpenClaw and Anthropic OpenClaw harnesses, Service Accounts switching and bound Presets, seeded workspace files, storage/grant denial, repository selection/discovery and rejected-grant recovery, invalid JSON, partial save/conflict, unknown save outcome. |
@@ -104,7 +104,7 @@ Deploy again to admit a new snapshot. The fixture retains both versions.
 Credential edits likewise need deployment to affect managed runtime configuration.
 Workspace-file writes apply immediately and do not create a revision.
 
-Native JSON editing changes Configuration values, not Agent-owned Provider or
+Native JSON editing changes Configuration values, not Agent-owned Backend or
 execution-mode fields. The Slack drawer preserves existing access policies; it
 does not provide a policy selector. Its channel sender controls edit per-channel
 `users` lists, including `users: ["*"]` for everyone, while direct-message

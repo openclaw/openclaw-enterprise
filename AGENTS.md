@@ -63,8 +63,8 @@ suitably named class does not establish platform integration.
 Deliver capabilities with callers in the regular Agent workflow. Defer
 speculative components; test-only callers do not satisfy this requirement.
 
-For example, GitHub App token issuance implemented as a Provider must follow the
-[Provider contract](docs/reference/providers.md) and participate in composition.
+For example, GitHub App token issuance implemented as a Backend must follow the
+[Backend contract](docs/reference/backends.md) and participate in composition.
 Token minting and revocation alone are insufficient; see
 [PR #136](https://github.com/openclaw/openclaw-enterprise/pull/136).
 

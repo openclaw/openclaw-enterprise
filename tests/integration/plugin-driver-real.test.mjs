@@ -309,7 +309,7 @@ test(
       executionMode: "dedicated",
       name: `codex-calendar-plugin-${randomUUID()}`,
       harnessAuth: { method: "chatgpt_service_account", serviceAccountId: account.id },
-      providerId: "openai",
+      backendId: "openai",
     });
     const desired = await fixture.selectPlugin(agent.id, {
       pluginId,
@@ -407,14 +407,14 @@ test(
       executionMode: "dedicated",
       name: `cpf-primary-${randomUUID().slice(0, 8)}`,
       harnessAuth: { method: "chatgpt_service_account", serviceAccountId: account.id },
-      providerId: "openai",
+      backendId: "openai",
     });
     const sibling = await fixture.createAgent({
       harnessId: "codex",
       executionMode: "dedicated",
       name: `cpf-sibling-${randomUUID().slice(0, 8)}`,
       harnessAuth: { method: "chatgpt_service_account", serviceAccountId: account.id },
-      providerId: "openai",
+      backendId: "openai",
     });
 
     // Select the known connected app through OCC before native discovery: a

@@ -20,7 +20,7 @@ function slackChannels(scenario) {
 function configurationValues(scenario) {
   const values = {
     gateway: { mode: "local" },
-    agents: { defaults: { model: "codex/gpt-6-astra" } },
+    agents: { defaults: { model: "codex/gpt-4.1" } },
     channels: {},
   };
   if (scenario.slack) {
@@ -70,7 +70,7 @@ export function installFixture(scenario, evidence) {
           createdAt,
         },
       ];
-  const providers = scenario.emptyProviders
+  const backends = scenario.emptyBackends
     ? []
     : [{ id: "chatgpt-demo", name: "ChatGPT", type: "chatgpt" }];
   const secretMetadata = (id, name) => ({ id, namespaceId, name, ref: secretRef(id) });
@@ -86,7 +86,7 @@ export function installFixture(scenario, evidence) {
     {
       id: "sa_demo",
       name: "Research service",
-      providerId: "chatgpt-demo",
+      backendId: "chatgpt-demo",
       status: "active",
       createdAt,
     },
@@ -146,7 +146,7 @@ export function installFixture(scenario, evidence) {
       namespaceId,
       agentId: owner.id,
       revision,
-      providerId: owner.providerId ?? null,
+      backendId: owner.backendId ?? null,
       configurationId: configuration.id,
       configurationKind: configuration.kind,
       configurationGeneration: configuration.generation,
@@ -220,7 +220,7 @@ export function installFixture(scenario, evidence) {
         name: { type: "string", description: "Name for this Agent." },
         model: {
           type: "string",
-          default: "codex/gpt-6-astra",
+          default: "codex/gpt-4.1",
           description: "Model reference copied into the draft.",
         },
       },
@@ -302,8 +302,8 @@ export function installFixture(scenario, evidence) {
     if (path === "/namespaces" && method === "GET") {
       return response(namespaces);
     }
-    if (path === "/providers" && method === "GET") {
-      return response(providers);
+    if (path === "/backends" && method === "GET") {
+      return response(backends);
     }
     const match = path.match(/^\/namespaces\/([^/]+)\/(.*)$/);
     if (match) {

@@ -9,7 +9,7 @@ responses. The Driver performs provider operations and privately maps OCC
 accounts to provider accounts. The external provider retains its own authority.
 
 The Driver is optional. Today trusted startup can select only the bundled
-ChatGPT Provider member; it cannot load arbitrary ServiceAccount packages. With
+ChatGPT Backend member; it cannot load arbitrary ServiceAccount packages. With
 no Driver, OCC can still create native accounts, but it cannot issue a
 provider credential. See [Driver selection](selection.md).
 
@@ -43,9 +43,9 @@ values. See the [resource permissions](../service-accounts.md#account-ownership-
 
 ## Lifecycle
 
-Trusted startup checks the selected Driver and its Provider membership. In the
-current composition, only the API initializes the provider client; the worker
-receives nonsecret Provider metadata. The interface has no startup, shutdown, or
+Trusted startup checks the selected Driver and its Backend membership. In the
+current composition, only the API initializes the Backend client; the worker
+receives nonsecret Backend metadata. The interface has no startup, shutdown, or
 credential-renewal method.
 
 Creating an OCC account and issuing its credential are separate operations. An
@@ -68,26 +68,26 @@ own account record. See the [credential delivery flow](../../flows/service-accou
 
 ## Troubleshooting
 
-| Symptom                                         | What to check                                                                                                                                               |
-| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Account creation succeeds but has no credential | Creation and issuance are separate. Request issuance with `update` permission on that account.                                                              |
-| Credential issuance fails                       | Check the selected Provider/Driver pair, the private account binding, provider authority, Secret storage, and whether the account already has a credential. |
-| Deletion is rejected                            | Remove or update any Agent draft, active revision, or pending deployment reference through OCC before retrying.                                             |
-| A managed credential is expired or revoked      | Restore access through the supported provider/account workflow. Do not substitute a different identity or assume automatic renewal.                         |
+| Symptom                                         | What to check                                                                                                                                              |
+| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Account creation succeeds but has no credential | Creation and issuance are separate. Request issuance with `update` permission on that account.                                                             |
+| Credential issuance fails                       | Check the selected Backend/Driver pair, the private account binding, provider authority, Secret storage, and whether the account already has a credential. |
+| Deletion is rejected                            | Remove or update any Agent draft, active revision, or pending deployment reference through OCC before retrying.                                            |
+| A managed credential is expired or revoked      | Restore access through the supported provider/account workflow. Do not substitute a different identity or assume automatic renewal.                        |
 
 ## Implementations
 
 ### Bundled ChatGPT implementation
 
 The [ChatGPT Driver](../../../apps/controller/src/drivers/service-account/chatgpt.ts)
-requires a matching `type: chatgpt` Provider and an empty Driver configuration.
+requires a matching `type: chatgpt` Backend and an empty Driver configuration.
 It stores the private Namespace binding in PostgreSQL and asks selected Compute
 credential storage to write the token and workspace identity to an account-owned
-Secret. Issuance and deletion recheck Provider, Driver, and workspace ownership.
+Secret. Issuance and deletion recheck Backend, Driver, and workspace ownership.
 A missing binding makes provider deletion a no-op; conflicting ownership fails.
-Provider and Secret creation register compensation with OCC. Deletion revokes
+Backend and Secret creation register compensation with OCC. Deletion revokes
 the credential, removes its Secret, and deletes the upstream account. See
-[Provider configuration](../providers.md) and [service accounts](../service-accounts.md).
+[Backend configuration](../backends.md) and [service accounts](../service-accounts.md).
 
 ## Related
 

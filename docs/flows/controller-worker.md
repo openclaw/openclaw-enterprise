@@ -133,11 +133,11 @@ an invalid Agent Principal, a changed Harness descriptor, or a different Compute
 Driver identity. `authorizeRevision()` checks current `deploy` permission and,
 when a ServiceAccount snapshot is present, current `read` permission for that
 exact ServiceAccount. Admission-time permission does not substitute for these
-checks. The worker then resolves the revision's frozen Provider metadata and
-rechecks any managed credential's exact Provider, Driver, workspace, and issued
+checks. The worker then resolves the revision's frozen Backend metadata and
+rechecks any managed credential's exact Backend, Driver, workspace, and issued
 account binding before Compute effects. It uses a read-only projection and has
-no Provider client or admin key. The
-[Provider-managed credential delivery flow](service-account-driver-credential-delivery.md) owns these checks.
+no Backend client or admin key. The
+[Backend-managed credential delivery flow](service-account-driver-credential-delivery.md) owns these checks.
 
 Revocation and denial fail permanently before runtime creation. Older revisions
 complete as superseded; already-active revisions enter finalization or maintenance.
@@ -328,7 +328,7 @@ aborts in-flight work, waits for the loop, closes PostgreSQL, and emits
 ## Related docs
 
 - [Agent repository session preparation and durable cleanup](agent-repository-credentials.md)
-- [Provider-managed credential delivery](service-account-driver-credential-delivery.md)
+- [Backend-managed credential delivery](service-account-driver-credential-delivery.md)
 
 - [Controller reference](../reference/controller.md)
 - [Deployment guide: development and production](../guides/deploy.md)

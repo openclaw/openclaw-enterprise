@@ -31,7 +31,7 @@ export interface RepositoryOption {
 }
 
 export interface AdmittedRepositoryBinding extends RepositoryBindingSelection {
-  readonly providerId: string;
+  readonly backendId: string;
   readonly grant: RepositoryCredentialGrantIdentity;
 }
 

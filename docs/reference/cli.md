@@ -64,7 +64,7 @@ input is not supported. The server validates document fields against the
 | `occ agent stop ID`                         | Requests a stop while retaining revisions and persistent state.                                                                                                  |
 
 Use the [HTTP API](api.md) to inspect Agent deployment status and revisions, or
-to work with ServiceAccounts and configured Providers; the CLI has no
+to work with ServiceAccounts and configured Backends; the CLI has no
 commands for these. Neither the CLI nor the HTTP API offers Configuration
 listing. An accepted deploy returns a revision; `agent get`
 shows desired state and the selected revision, not runtime health. Use the

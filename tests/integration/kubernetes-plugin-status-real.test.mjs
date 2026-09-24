@@ -176,7 +176,7 @@ function revision(driver, owner, agentId, number, harnessAuth) {
     namespaceId: owner.id,
     agentId,
     revision: number,
-    providerId: null,
+    backendId: null,
     configurationId: `cfg_${randomUUID()}`,
     configurationKind: "agent",
     configurationGeneration: number,

@@ -267,7 +267,9 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
         ? `Namespace · ${session ? (selected?.name ?? "No available selection") : "Checking access"}`
         : feature === "settings"
           ? "Your account"
-          : "Installation-wide";
+          : feature === "backends"
+            ? "Installation-wide · Experimental"
+            : "Installation-wide";
     const refresh = button("Refresh", () => void loadPage());
     refresh.disabled = true;
     const header = element(
@@ -331,11 +333,11 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     if (!items.length) {
       panel(
         view,
-        feature === "providers"
-          ? "No providers configured"
+        feature === "backends"
+          ? "No backends configured"
           : `No accessible ${pages[feature].toLowerCase()}`,
-        feature === "providers"
-          ? "No Providers are configured for this Installation."
+        feature === "backends"
+          ? "No experimental Backends are configured for this Installation."
           : "Ask an administrator to provision resources or grant access, then refresh.",
         "Refresh",
         () => void loadPage(),
@@ -352,14 +354,14 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
             "div",
             {},
             element("p", { className: "resource-name" }, item.name ?? item.id),
-            feature === "providers" ? null : element("span", { className: "resource-id" }, item.id),
+            feature === "backends" ? null : element("span", { className: "resource-id" }, item.id),
           ),
           feature === "agents"
             ? null
             : element(
                 "span",
                 { className: "badge" },
-                feature === "providers" ? item.type : item.status,
+                feature === "backends" ? item.type : item.status,
               ),
         ),
       );

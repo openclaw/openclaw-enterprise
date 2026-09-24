@@ -36,18 +36,18 @@ distinguishes PR-safe checks from protected integrations.
 
 ## Code layout
 
-| Path                                          | Responsibility                                                                                   |
-| --------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `apps/controller/`                            | HTTP API, browser console, worker, and [Drivers](docs/guides/concepts.md#drivers-and-providers). |
-| `packages/contracts/`                         | Resource models, Driver interfaces, and API schemas.                                             |
-| `packages/occ/`                               | Resource lifecycle, persistence, and work queue.                                                 |
-| `packages/iam/`                               | Identities, roles, and resource authorization.                                                   |
-| `packages/audit/`                             | Audit events and sensitive-value sanitization.                                                   |
-| `cmd/occ/`                                    | Go entry point for the OCC domain CLI.                                                           |
-| `internal/occcli/`                            | OCC resource commands and human or structured output.                                            |
-| `internal/occclient/`                         | Internal Go client that owns OCC transport and authentication.                                   |
-| [`packages/utils/`](packages/utils/README.md) | Shared validation, hashing, and object helpers.                                                  |
-| `tests/`                                      | Conformance and integration tests.                                                               |
+| Path                                          | Responsibility                                                                                  |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `apps/controller/`                            | HTTP API, browser console, worker, and [Drivers](docs/guides/concepts.md#drivers-and-backends). |
+| `packages/contracts/`                         | Resource models, Driver interfaces, and API schemas.                                            |
+| `packages/occ/`                               | Resource lifecycle, persistence, and work queue.                                                |
+| `packages/iam/`                               | Identities, roles, and resource authorization.                                                  |
+| `packages/audit/`                             | Audit events and sensitive-value sanitization.                                                  |
+| `cmd/occ/`                                    | Go entry point for the OCC domain CLI.                                                          |
+| `internal/occcli/`                            | OCC resource commands and human or structured output.                                           |
+| `internal/occclient/`                         | Internal Go client that owns OCC transport and authentication.                                  |
+| [`packages/utils/`](packages/utils/README.md) | Shared validation, hashing, and object helpers.                                                 |
+| `tests/`                                      | Conformance and integration tests.                                                              |
 
 ## Documentation
 

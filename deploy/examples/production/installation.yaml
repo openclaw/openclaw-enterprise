@@ -9,10 +9,10 @@ occ:
   # See [Installation setup](../../../docs/guides/deploy/production-installation.md#configure-the-installation).
   cluster: production-west
 
-# No Provider is configured; add one with its matching ServiceAccount Driver
-# only when using provider-managed accounts.
-# See [Provider configuration](../../../docs/reference/providers.md#installation-configuration).
-provider: []
+# No Backend is configured; add one with its matching ServiceAccount Driver
+# only when using backend-managed accounts.
+# See [Backend configuration](../../../docs/reference/backends.md#installation-configuration).
+backend: []
 
 # Seed bundled Agent Presets without replacing existing same-name copies.
 # Omitted or false disables seeding; existing Presets are retained.

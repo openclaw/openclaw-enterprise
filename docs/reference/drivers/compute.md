@@ -145,7 +145,7 @@ that Agent. See [authorization](../authorization.md).
 
 `ComputeRevisionContext.harnessAuth` contains either the approved API-key source
 and its current backend reference, the managed-account credential reference and
-private Provider binding, or just `{ method: "runtime" }` for operator-managed
+private Backend binding, or just `{ method: "runtime" }` for operator-managed
 authentication. None contains credential values. The separate `secretEnvironment`
 contains Configuration bindings for gateway credentials. Deliver model credentials
 only to the selected Harness workload. Channel tokens are ordinary Namespace Secrets

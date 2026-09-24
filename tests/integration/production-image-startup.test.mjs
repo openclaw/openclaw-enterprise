@@ -31,7 +31,7 @@ function workloadPeer(namespace, labels) {
 function productionInstallation(adminKeyPath) {
   return {
     occ: { cluster: "production-image-smoke" },
-    provider: [
+    backend: [
       {
         id: "openai",
         type: "chatgpt",

@@ -130,13 +130,13 @@ spec:
         {{- end }}
         {{- end }}
         {{- if eq $component "api" }}
-        {{- if $.Values.provider.chatgpt.enabled }}
-        {{- $chatgpt := $.Values.provider.chatgpt }}
+        {{- if $.Values.backend.chatgpt.enabled }}
+        {{- $chatgpt := $.Values.backend.chatgpt }}
         {{- if or (not $chatgpt.secretName) (not $chatgpt.key) }}
-        {{- fail "provider.chatgpt requires a dedicated admin Secret name and key" }}
+        {{- fail "backend.chatgpt requires a dedicated admin Secret name and key" }}
         {{- end }}
         {{- if or (eq $chatgpt.secretName $.Values.installation.secretName) (eq $chatgpt.secretName $.Values.database.secretName) (eq $chatgpt.secretName $.Values.auth.secretName) }}
-        {{- fail "provider.chatgpt admin credentials must use a dedicated Secret" }}
+        {{- fail "backend.chatgpt admin credentials must use a dedicated Secret" }}
         {{- end }}
         - name: chatgpt-admin
           secret:
@@ -248,7 +248,7 @@ spec:
             {{- end }}
             {{- end }}
             {{- if eq $component "api" }}
-            {{- if $.Values.provider.chatgpt.enabled }}
+            {{- if $.Values.backend.chatgpt.enabled }}
             - name: chatgpt-admin
               mountPath: /etc/openclaw/chatgpt
               readOnly: true
@@ -292,8 +292,8 @@ spec:
           args:
             - --public-origin
             - {{ printf "https://openclaw-enterprise-repository-credentials.%s.svc" $.Release.Namespace | quote }}
-            - --provider-id
-            - {{ $.Values.repositoryCredentials.providerId | quote }}
+            - --backend-id
+            - {{ $.Values.repositoryCredentials.backendId | quote }}
           securityContext:
             {{- include "openclaw.containerSecurity" $ | nindent 12 }}
           resources:

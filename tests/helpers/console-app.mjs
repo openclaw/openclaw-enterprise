@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { once } from "node:events";
 
 import { createControllerAuth } from "../../apps/controller/src/auth/index.ts";
-import { providerSummariesFromDefinitions } from "../../apps/controller/src/composition/installation-config.ts";
+import { backendSummariesFromDefinitions } from "../../apps/controller/src/composition/installation-config.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
@@ -21,16 +21,16 @@ import { createTestConfigurationDriver } from "./configuration-driver.mjs";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
 
-export const providerFixtures = Object.freeze([
+export const backendFixtures = Object.freeze([
   Object.freeze({
     id: "openai-primary",
     type: "chatgpt",
     configuration: Object.freeze({
       workspaceId: "11111111-1111-4111-8111-111111111111",
-      apiKeyPath: "/var/run/secrets/openclaw/providers/openai-primary/api-key",
+      apiKeyPath: "/var/run/secrets/openclaw/backends/openai-primary/api-key",
       credentialTtlSeconds: 3600,
     }),
-    drivers: Object.freeze({ service_account: "chatgpt-provider-service-account" }),
+    drivers: Object.freeze({ service_account: "chatgpt-backend-service-account" }),
   }),
 ]);
 
@@ -125,11 +125,11 @@ export async function createConsoleAppFixture(t, options = {}) {
     { loadNativeIAMState: async () => policy },
     { id: "console-native-iam" },
   );
-  const providers = options.providers ?? providerFixtures;
+  const backends = options.backends ?? backendFixtures;
   const publicOrigin = options.publicOrigin === true ? origin : options.publicOrigin;
-  const providerSummaries = Object.hasOwn(options, "providerSummaries")
-    ? options.providerSummaries
-    : providerSummariesFromDefinitions(providers);
+  const backendSummaries = Object.hasOwn(options, "backendSummaries")
+    ? options.backendSummaries
+    : backendSummariesFromDefinitions(backends);
   const platformState = options.state ?? new InMemoryPlatformState({ auditSink });
   const secretDriver = Object.hasOwn(options, "secretDriver")
     ? options.secretDriver
@@ -160,31 +160,31 @@ export async function createConsoleAppFixture(t, options = {}) {
       controller = new OpenClawController(installation, {
         state: platformState,
         recordOperations: options.recordOperations ?? false,
-        providers,
+        backends,
         defaultPresets: options.defaultPresets ?? [],
       });
-      const modelProviders = providers.filter((provider) => provider.type === "chatgpt");
-      if (modelProviders.length > 0) {
-        const unexpectedProviderCall = async () =>
-          assert.fail("Console read tests must not call Provider clients or provision accounts.");
-        for (const provider of modelProviders) {
+      const modelBackends = backends.filter((backend) => backend.type === "chatgpt");
+      if (modelBackends.length > 0) {
+        const unexpectedBackendCall = async () =>
+          assert.fail("Console read tests must not call Backend clients or provision accounts.");
+        for (const backend of modelBackends) {
           controller.registerDriver({
-            id: provider.drivers.service_account,
+            id: backend.drivers.service_account,
             capability: "service_account",
-            implementation: "provider-read-test",
-            providerId: provider.id,
-            create: unexpectedProviderCall,
-            createCredential: unexpectedProviderCall,
-            delete: unexpectedProviderCall,
+            implementation: "backend-read-test",
+            backendId: backend.id,
+            create: unexpectedBackendCall,
+            createCredential: unexpectedBackendCall,
+            delete: unexpectedBackendCall,
           });
         }
-        controller.selectDriver("service_account", modelProviders[0].drivers.service_account);
+        controller.selectDriver("service_account", modelBackends[0].drivers.service_account);
       }
       return controller;
     },
   };
-  if (providerSummaries !== undefined) {
-    appOptions.providerSummaries = providerSummaries;
+  if (backendSummaries !== undefined) {
+    appOptions.backendSummaries = backendSummaries;
   }
   const app = createFastifyApp(appOptions);
   await app.listen({ host: "127.0.0.1", port });
@@ -422,7 +422,7 @@ export async function createConsoleAppFixture(t, options = {}) {
       body: {
         name,
         configurationId: configuration.id,
-        ...(options.providerId === undefined ? {} : { providerId: options.providerId }),
+        ...(options.backendId === undefined ? {} : { backendId: options.backendId }),
         harnessAuth,
         ...(options.executionMode === undefined ? {} : { executionMode: options.executionMode }),
       },

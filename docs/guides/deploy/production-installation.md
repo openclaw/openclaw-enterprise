@@ -305,7 +305,7 @@ read-only into migration, bootstrap, API, and worker containers at
 
 Enable repository credentials only after preparing the
 [repository service inputs](../repository-credentials/installation.md) and the matching
-[GitHub Provider selection](../../reference/providers.md#github-repository-credentials).
+[GitHub Backend selection](../../reference/backends.md#github-repository-credentials).
 The feature defaults disabled. It requires a separately built, immutable service
 image, an immutable registry ConfigMap, private service configuration, App key,
 TLS certificate/key for the exact internal Service hostname, and a separate

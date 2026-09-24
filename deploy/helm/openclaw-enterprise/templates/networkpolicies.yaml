@@ -71,10 +71,10 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.cluster.port }}
-{{- if .Values.provider.chatgpt.enabled }}
-{{- $providerCidr := .Values.provider.chatgpt.providerCidr }}
+{{- if .Values.backend.chatgpt.enabled }}
+{{- $providerCidr := .Values.backend.chatgpt.providerCidr }}
 {{- if not (regexMatch "^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+/32$" $providerCidr) }}
-{{- fail "provider.chatgpt.providerCidr must identify one IPv4 /32 destination for api.chatgpt.com:443; it does not configure a forward proxy" }}
+{{- fail "backend.chatgpt.providerCidr must identify one IPv4 /32 destination for api.chatgpt.com:443; it does not configure a forward proxy" }}
 {{- end }}
 ---
 apiVersion: networking.k8s.io/v1

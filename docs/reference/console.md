@@ -41,7 +41,7 @@ that the build revision is unavailable.
 
 The sidebar opens **Agents** or **Namespaces**. **Refresh** repeats the current
 read. Model provider and API-key setup are part of Agent creation; the separate
-Providers tab is hidden. Namespace rows remain read-only collection entries.
+[experimental Backends](backends.md) tab is hidden. Namespace rows remain read-only collection entries.
 
 | Page       | Scope and permission                                                     |
 | ---------- | ------------------------------------------------------------------------ |
@@ -199,9 +199,9 @@ An authorized empty list is different from a failed read. Access denied,
 unavailable dependencies, missing resources, and network failures clear affected
 rows and offer the relevant recovery action. Include a displayed request ID when
 reporting an API failure. Backend error text is not rendered. A current protected
-`401` clears private content and closes an open channel editor and harness authentication controls. Provider
+`401` clears private content and closes an open channel editor and harness authentication controls. Backend
 discovery shows configured IDs and types only; see
-[Providers](providers.md#read-configured-providers) for its limits.
+[Backends](backends.md#read-configured-backends) for its limits.
 
 Logout immediately hides private content and stops pending reads. The console
 returns to login after sign-out succeeds or a session check confirms that the
@@ -268,7 +268,7 @@ Agent-host activity does not extend that console session.
 ## Routes
 
 Supported pages are `/console/login`, `/console/agents`,
-`/console/agents/new`, `/console/agents/:agentId`, `/console/providers`,
+`/console/agents/new`, `/console/agents/:agentId`, `/console/backends`,
 `/console/namespaces`, and `/console/settings`. `/console/` resolves the session
 and opens Agents. Unknown console paths show a generic not-found page.
 See the [request flow](../flows/platform-console.md) and

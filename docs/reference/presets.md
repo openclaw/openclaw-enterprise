@@ -50,7 +50,7 @@ is valid. Its optional fields are:
 | `variables`                    | Named scalar inputs, their types, descriptions, and optional defaults.                               |
 | `agent.name`                   | Suggested Agent name; the saved Agent still needs a unique name.                                     |
 | `agent.executionMode`          | Embedded or dedicated execution.                                                                     |
-| `agent.providerId`             | Installation-configured Provider ID, or null.                                                        |
+| `agent.providerId`             | Installation-configured Backend ID, or null.                                                        |
 | `agent.harnessAuth`            | Credential binding or password variable token, or null; never stored credential bytes.               |
 | `agent.plugins`                | Desired plugin selections and policies.                                                              |
 | `configuration.values`         | Native Agent Configuration JSON, including models, Harness settings, channels, and sandbox settings. |

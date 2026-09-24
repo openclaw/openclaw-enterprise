@@ -42,7 +42,7 @@ Stores Agent drafts, their desired runtime state, and the active revision refere
 - `namespace_id`
 - `name`
 - `configuration_id`
-- `provider_id`
+- `backend_id`
 - `execution_mode`
 - `plugins`
 - `repository_bindings`
@@ -63,7 +63,7 @@ Stores numbered, immutable snapshots of Agent settings accepted for deployment.
 - `namespace_id`
 - `agent_id`
 - `revision_number`
-- `provider_id`
+- `backend_id`
 - `admitted_spec`
 - `admitted_at`
 
@@ -126,11 +126,11 @@ Stores Namespace service accounts and any credential Secret references.
 
 ### `service_account_driver_bindings`
 
-Links managed accounts to a Provider, Driver, upstream account, workspace, and any issued credential.
+Links managed accounts to a Backend, Driver, upstream account, workspace, and any issued credential.
 
 - `service_account_id`
 - `namespace_id`
-- `provider_id`
+- `backend_id`
 - `driver_id`
 - `external_account_id`
 - `external_credential_id`

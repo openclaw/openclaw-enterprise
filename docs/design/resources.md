@@ -8,7 +8,7 @@ the [current architecture](../ARCHITECTURE.md) describes implementation status.
 
 An OpenClaw Enterprise deployment owns exactly one server-selected
 `Installation`. It is the outer administrative boundary for configured
-Providers, installation-scoped IAM resources, and Namespaces. Bootstrap
+Backends, installation-scoped IAM resources, and Namespaces. Bootstrap
 creates one persistent Installation with a stable identifier; subsequent starts
 reload that same Installation, and a conflicting configured identifier fails
 closed. Platform resource writes are rejected before bootstrap completes.
@@ -16,10 +16,10 @@ There is no multi-Installation collection or caller-selected Installation.
 Installation configuration selects server-owned Drivers,
 including the authoritative `IAMDriver` for each resource kind and the selected
 service-account, inference, compute, sandbox, secret, and messaging capabilities.
-An Installation-scoped `Provider` owns an authenticated client and related
-capability-specific Drivers; neither the Provider nor its client is a Driver or
-an OCC resource. Each Agent has a nullable `providerId`, copied into each
-immutable AgentRevision. Provider membership does not change model configuration
+An Installation-scoped `Backend` owns an authenticated client and related
+capability-specific Drivers; neither the Backend nor its client is a Driver or
+an OCC resource. Each Agent has a nullable `backendId`, copied into each
+immutable AgentRevision. Backend membership does not change model configuration
 or authorize operations. The configured provider workspace is
 provider connection context, not an OCC Namespace mapping. A platform Namespace
 retains its tenant ownership across physical runtime targets; it is not
@@ -86,7 +86,7 @@ revisions.
 | `Configuration`  | Namespace                 | Reusable nonsecret configuration for Agents. Deployment snapshots the admitted contents into an `AgentRevision`; later edits affect only later deployments.                                                                                                                                                          |
 | `Preset`         | Namespace                 | Reusable launch settings and typed variables copied into an independent Agent and Configuration on creation. Later template changes do not change those resources or their revisions.                                                                                                                                |
 | `ServiceAccount` | Namespace                 | OCC-owned, provider-agnostic account with at most one opaque reference to a credential in its exact backing namespace. A selected ServiceAccountDriver privately links it to an upstream account. The account, Agent, and immutable revision never contain credential bytes or provider identity.                    |
-| `Agent`          | Namespace                 | Stable author-facing agent resource. It can reference one same-Namespace ServiceAccount and one Installation Provider, and owns its revision history, at most one active revision, exactly one deployed OpenClaw gateway, and one stable OCC-created `WorkloadIdentity`.                                             |
+| `Agent`          | Namespace                 | Stable author-facing agent resource. It can reference one same-Namespace ServiceAccount and one Installation Backend, and owns its revision history, at most one active revision, exactly one deployed OpenClaw gateway, and one stable OCC-created `WorkloadIdentity`.                                              |
 | `AgentRevision`  | Namespace                 | Immutable snapshot of one Agent and the exact configuration, references, harness, sandbox policy, and selected runtime implementations admitted for one deployment. OCC activates it only after preparing the Agent-owned gateway and candidate workload, verifying containment, and configuring a nonserving route. |
 | `Harness`        | Installation              | Versioned agent runtime published for the Installation. Deployment pins the admitted Harness version in the revision.                                                                                                                                                                                                |
 | `Channel`        | Namespace                 | Messaging surface available to an Agent through its own Namespace-scoped OpenClaw gateway. OCC owns the Channel resource; the messaging provider independently authorizes provider operations and owns provider credentials.                                                                                         |

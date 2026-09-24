@@ -20,7 +20,7 @@ import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
-import { createConsoleAppFixture, providerFixtures } from "../helpers/console-app.mjs";
+import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
@@ -87,7 +87,7 @@ async function login(page, fixture, path = "/console/agents", credentials = fixt
   await page.getByLabel("Username").fill(credentials.email);
   await page.getByLabel("Password").fill(credentials.password);
   await page.getByRole("button", { name: "Login" }).click();
-  await page.waitForURL(/\/console\/(agents|providers|namespaces|settings)/);
+  await page.waitForURL(/\/console\/(agents|backends|namespaces|settings)/);
 }
 
 function apiRequests(page, origin) {
@@ -444,7 +444,7 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByRole("button", { name: "Start without Preset" }).click();
-  assert.equal(await page.getByRole("link", { name: "Providers", exact: true }).count(), 0);
+  assert.equal(await page.getByRole("link", { name: "Backends", exact: true }).count(), 0);
   assert.deepEqual(await optionValues(page.getByLabel("Provider", { exact: true })), [
     { value: "openai", text: "OpenAI" },
     { value: "anthropic", text: "Anthropic" },
@@ -631,7 +631,7 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   assert.equal(created.data.configurationId, configuration.data.id);
   assert.equal(created.data.executionMode, "dedicated");
   assert.deepEqual(agentProvisionPostRequests(requests, namespace.id), []);
-  assert.equal(created.data.providerId, null);
+  assert.equal(created.data.backendId, null);
   assert.deepEqual(created.data.harnessAuth, { method: "api_key", source: secret.ref });
   assert.equal((await page.locator("body").textContent()).includes(key), false);
   assert.equal(
@@ -1631,7 +1631,7 @@ test("Dedicated Agent creation provisions inline Configuration and masked new Se
     namespaceId: namespace.id,
     agentId,
     revision: 1,
-    providerId: null,
+    backendId: null,
     configurationId: agent.configurationId,
     configurationKind: "agent",
     configurationGeneration: 2,
@@ -1996,7 +1996,7 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
     namespaceId: namespace.id,
     agentId,
     revision: 1,
-    providerId: null,
+    backendId: null,
     configurationId: agent.configurationId,
     configurationKind: "agent",
     configurationGeneration: 1,
@@ -2214,7 +2214,7 @@ test("Agent creation offers mainline Anthropic models before credentials and sav
   const fixture = await createConsoleAppFixture(t, {
     state,
     secretDriver,
-    providerSummaries: undefined,
+    backendSummaries: undefined,
   });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Anthropic authoring", { ready: true });
@@ -2303,7 +2303,7 @@ test("Agent creation offers mainline Anthropic models before credentials and sav
   const agent = (await response.json()).data;
   await page.waitForURL((url) => url.pathname === `/console/agents/${agent.id}`);
   assert.equal(agent.executionMode, "embedded");
-  assert.equal(agent.providerId, null);
+  assert.equal(agent.backendId, null);
   assert.equal(agent.harnessAuth.method, "api_key");
   const configuration = await fixture.request(
     "GET",
@@ -2319,7 +2319,7 @@ test("Agent creation offers mainline Anthropic models before credentials and sav
     configuration.data.values.agents.defaults.models["anthropic/claude-fable-5-1"].agentRuntime.id,
     "openclaw",
   );
-  assert.equal(pathRequests(requests, "GET", "/providers").length, 0);
+  assert.equal(pathRequests(requests, "GET", "/backends").length, 0);
   assert.equal(
     pathRequests(requests, "GET", `/namespaces/${namespace.id}/service-accounts`).length,
     0,
@@ -4790,7 +4790,7 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
         agent: {
           name: "{{ vars.name }}",
           executionMode: "{{ vars.execution }}",
-          providerId: providerFixtures[0].id,
+          backendId: backendFixtures[0].id,
           harnessAuth: { method: "codex_pat", source: secret.ref },
           plugins,
         },
@@ -4909,7 +4909,7 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   );
   assert.equal(created.data.name, "Preset Agent");
   assert.deepEqual(created.data.plugins, plugins);
-  assert.equal(created.data.providerId, providerFixtures[0].id);
+  assert.equal(created.data.backendId, backendFixtures[0].id);
   assert.deepEqual(created.data.harnessAuth, { method: "codex_pat", source: secret.ref });
   const saved = await fixture.request(
     "GET",

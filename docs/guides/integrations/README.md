@@ -2,18 +2,18 @@
 
 Use an integration to choose where Agents run, issue ChatGPT service-account
 credentials, or connect an Agent to Slack. Installation operators select Drivers
-and Providers; people configuring an Agent select its channel and model
+and experimental Backends; people configuring an Agent select its channel and model
 authentication.
 
 | If you want to…                                              | Start here                                                                         |
 | ------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
 | Run Agents on Kubernetes or an existing Linux host           | [Drivers overview](drivers.md)                                                     |
 | Choose which Drivers an Installation loads                   | [Drivers quickstart](../../reference/drivers/selection.md#choose-a-bundled-driver) |
-| Issue managed ChatGPT credentials for dedicated Codex Agents | [ChatGPT](chatgpt.md)                                                              |
+| Issue managed ChatGPT credentials for dedicated Codex Agents | [ChatGPT Backend (experimental)](chatgpt.md)                                       |
 | Let people send messages to an Agent in Slack                | [Slack](slack.md)                                                                  |
 
-[Providers](../../reference/providers.md) lists what an Installation can
-configure. A ChatGPT Provider manages service accounts; it does not route
+[Backends (experimental)](../../reference/backends.md) lists what an Installation can
+configure. A ChatGPT Backend manages service accounts; it does not route
 inference. To give an Agent an existing OpenAI API key, use the
 [Agent's model authentication](../../reference/agents.md#harness-authentication)
 instead.

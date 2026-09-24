@@ -24,7 +24,7 @@ const repository = fileURLToPath(new URL("../..", import.meta.url));
 const controllerEntrypoint = fileURLToPath(
   new URL("../../apps/controller/src/server.mjs", import.meta.url),
 );
-export const providerId = "openai";
+export const backendId = "openai";
 export const serviceAccountDriverId = "chatgpt-service-accounts";
 export const workspaceId = "11111111-1111-4111-8111-111111111111";
 export const alternateWorkspaceId = "22222222-2222-4222-8222-222222222222";
@@ -33,9 +33,9 @@ export const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 export const requiresPostgres = {
   skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL to run real PostgreSQL integration tests.",
 };
-export function providerDefinition(options = {}) {
+export function backendDefinition(options = {}) {
   return {
-    id: providerId,
+    id: backendId,
     type: "chatgpt",
     configuration: {
       workspaceId: options.workspaceId ?? workspaceId,
@@ -140,7 +140,7 @@ export async function cleanupNamespaces(pool, namespaceIds) {
     );
     await client.query(
       `UPDATE occ.agents
-       SET provider_id = NULL,
+       SET backend_id = NULL,
            harness_auth = NULL,
            active_revision_id = NULL
        WHERE namespace_id = ANY($1::text[])`,
@@ -152,7 +152,7 @@ export async function cleanupNamespaces(pool, namespaceIds) {
   });
 }
 
-export async function cleanupProviderFixtures(pool, namespaceId, cleanup) {
+export async function cleanupBackendFixtures(pool, namespaceId, cleanup) {
   if (
     [cleanup.serviceAccountIds, cleanup.agentIds, cleanup.revisionIds].every(
       (ids) => ids.length === 0,
@@ -176,7 +176,7 @@ export async function cleanupProviderFixtures(pool, namespaceId, cleanup) {
     );
     await client.query(
       `UPDATE occ.agents
-       SET provider_id = NULL, harness_auth = NULL, active_revision_id = NULL
+       SET backend_id = NULL, harness_auth = NULL, active_revision_id = NULL
        WHERE namespace_id = $1 AND id = ANY($2::text[])`,
       [namespaceId, cleanup.agentIds],
     );
@@ -229,16 +229,16 @@ export async function createAccessTokenServiceAccount(state, namespaceId, label)
   );
 }
 
-export async function seedProviderBinding(pool, account, options = {}) {
+export async function seedBackendBinding(pool, account, options = {}) {
   await pool.query(
     `INSERT INTO occ.service_account_driver_bindings
-       (service_account_id, namespace_id, provider_id, driver_id, external_account_id,
+       (service_account_id, namespace_id, backend_id, driver_id, external_account_id,
         external_credential_id, workspace_id)
      VALUES ($1, $2, $3, $4, $5, $6, $7)`,
     [
       account.id,
       account.namespaceId,
-      options.providerId ?? providerId,
+      options.backendId ?? backendId,
       options.driverId ?? serviceAccountDriverId,
       `external-account-${randomUUID()}`,
       options.credentialIssued === false ? null : `external-credential-${randomUUID()}`,
@@ -249,7 +249,7 @@ export async function seedProviderBinding(pool, account, options = {}) {
 
 export function registerCoreDrivers(controller, state, options = {}) {
   const iam = new NativeIAMDriver(state, { id: "native-iam", implementation: "native" });
-  const harnessAuthDriver = createTestKubernetesComputeDriver("provider-state-harness-auth");
+  const harnessAuthDriver = createTestKubernetesComputeDriver("backend-state-harness-auth");
   const compute = {
     ...createDevelopmentComputeDriver(),
     validateHarnessAuth: harnessAuthDriver.validateHarnessAuth.bind(harnessAuthDriver),
@@ -267,13 +267,13 @@ export function registerCoreDrivers(controller, state, options = {}) {
       capability: "service_account",
       implementation: "chatgpt",
       async create() {
-        assert.fail("Provider fixtures seed external account bindings directly.");
+        assert.fail("Backend fixtures seed external account bindings directly.");
       },
       async createCredential() {
-        assert.fail("Provider fixtures seed external credentials directly.");
+        assert.fail("Backend fixtures seed external credentials directly.");
       },
       async delete() {
-        assert.fail("Provider fixtures do not delete upstream accounts.");
+        assert.fail("Backend fixtures do not delete upstream accounts.");
       },
     };
     controller.registerDriver(driver);
@@ -282,20 +282,20 @@ export function registerCoreDrivers(controller, state, options = {}) {
   return { compute, configuration };
 }
 
-export function createProviderWorkerDrivers(
+export function createBackendWorkerDrivers(
   computeDriver,
-  providers = [providerDefinition()],
+  backends = [backendDefinition()],
   options = {},
 ) {
   const installation = createInstallationDriverConfiguration();
-  installation.provider = providers;
+  installation.backend = backends;
   installation.drivers.compute.id = computeDriver.id;
   if (options.secretDriver !== undefined) {
     installation.drivers.secret.id = options.secretDriver.id;
   }
-  if (providers.length > 0) {
+  if (backends.length > 0) {
     installation.drivers.service_account = {
-      id: providers[0]?.drivers.service_account ?? serviceAccountDriverId,
+      id: backends[0]?.drivers.service_account ?? serviceAccountDriverId,
     };
   }
   return {
@@ -315,19 +315,19 @@ export function createProviderWorkerDrivers(
   };
 }
 
-export function createProviderController(fixture, options = {}) {
-  const providers = options.providers ?? [providerDefinition()];
+export function createBackendController(fixture, options = {}) {
+  const backends = options.backends ?? [backendDefinition()];
   const controller = new OpenClawController(fixture.installation, {
     state: fixture.state,
-    providers,
+    backends,
   });
   registerCoreDrivers(controller, fixture.state, {
-    serviceAccountDriverId: providers[0]?.drivers.service_account,
+    serviceAccountDriverId: backends[0]?.drivers.service_account,
   });
   return controller;
 }
 
-export async function createProviderFixture(context) {
+export async function createBackendFixture(context) {
   const pool = new pg.Pool({ connectionString: databaseUrl, max: 8 });
   const workerPool = new pg.Pool({ connectionString: databaseUrl, max: 8 });
   const state = new PostgresPlatformState(pool);
@@ -340,7 +340,7 @@ export async function createProviderFixture(context) {
     }
   });
 
-  const installation = await ensureInstallation(state, "provider-ownership");
+  const installation = await ensureInstallation(state, "backend-ownership");
   const actor = authorizedPrincipal(await state.loadNativeIAMState(), [
     ["create", "configuration"],
     ["create", "agent"],
@@ -350,24 +350,24 @@ export async function createProviderFixture(context) {
     ["read", "service_account"],
     ["read", "agent_revision"],
   ]);
-  assert.ok(actor, "persisted IAM must contain an unrestricted provider-ownership Principal");
+  assert.ok(actor, "persisted IAM must contain an unrestricted backend-ownership Principal");
 
   function startWorker(options = {}) {
     const calls = [];
-    const harnessAuthDriver = createTestKubernetesComputeDriver("provider-worker-harness-auth");
+    const harnessAuthDriver = createTestKubernetesComputeDriver("backend-worker-harness-auth");
     const compute = {
       ...createDevelopmentComputeDriver(),
       validateHarnessAuth: harnessAuthDriver.validateHarnessAuth.bind(harnessAuthDriver),
     };
-    const providers = options.providers ?? [providerDefinition()];
-    const drivers = createProviderWorkerDrivers(
+    const backends = options.backends ?? [backendDefinition()];
+    const drivers = createBackendWorkerDrivers(
       {
         ...compute,
         async prepareRevision(revision, operationContext) {
           calls.push({
             action: "prepare",
             revisionId: revision.id,
-            providerId: revision.providerId,
+            backendId: revision.backendId,
           });
           return compute.prepareRevision(revision, operationContext);
         },
@@ -375,12 +375,12 @@ export async function createProviderFixture(context) {
           calls.push({
             action: "retire",
             revisionId: revision.id,
-            providerId: revision.providerId,
+            backendId: revision.backendId,
           });
           return compute.retireRevision(revision);
         },
       },
-      providers,
+      backends,
       options,
     );
     worker = createControllerWorker({
@@ -397,7 +397,7 @@ export async function createProviderFixture(context) {
   return { pool, state, workerPool, installation, actor, ...namespaces, startWorker };
 }
 
-export async function createBootstrappedProviderState(context, options) {
+export async function createBootstrappedBackendState(context, options) {
   await ensureDevelopmentBootstrap(context, {
     databaseUrl,
     email: options.email,
@@ -411,12 +411,12 @@ export async function createBootstrappedProviderState(context, options) {
   const pool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
   const state = new PostgresPlatformState(pool);
   const namespaces = trackNamespaces(context, pool);
-  const configurationRoot = await mkdtemp(join(tmpdir(), "openclaw-provider-repair-config-"));
+  const configurationRoot = await mkdtemp(join(tmpdir(), "openclaw-backend-repair-config-"));
   context.after(() => rm(configurationRoot, { recursive: true, force: true }));
   return { pool, state, configurationRoot, ...namespaces };
 }
 
-export function poolWithOneProviderBindingReadFault(pool) {
+export function poolWithOneBackendBindingReadFault(pool) {
   let remainingFailures = 1;
   const shouldFault = (text) =>
     remainingFailures > 0 &&
@@ -430,7 +430,7 @@ export function poolWithOneProviderBindingReadFault(pool) {
         async query(text, values) {
           if (shouldFault(text)) {
             remainingFailures -= 1;
-            throw new Error("simulated transient Provider binding metadata read failure");
+            throw new Error("simulated transient Backend binding metadata read failure");
           }
           return client.query(text, values);
         },
@@ -468,10 +468,9 @@ export async function stopProcess(child) {
   }
 }
 
-export async function startProviderlessDevelopmentServer(context, options) {
+export async function startBackendlessDevelopmentServer(context, options) {
   const configurationRoot =
-    options.configurationRoot ??
-    (await mkdtemp(join(tmpdir(), "openclaw-provider-repair-config-")));
+    options.configurationRoot ?? (await mkdtemp(join(tmpdir(), "openclaw-backend-repair-config-")));
   if (options.configurationRoot === undefined) {
     context.after(() => rm(configurationRoot, { recursive: true, force: true }));
   }
@@ -487,7 +486,7 @@ export async function startProviderlessDevelopmentServer(context, options) {
       OCC_AUTH_BASE_URL: options.origin,
       OCC_AUTH_SECRET: options.authSecret,
       OCC_DEVELOPMENT_CONFIGURATION_ROOT: configurationRoot,
-      OCC_DOCKER_RUNTIME_IMAGE: "openclaw-enterprise-runtime:not-used-by-provider-repair",
+      OCC_DOCKER_RUNTIME_IMAGE: "openclaw-enterprise-runtime:not-used-by-backend-repair",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -500,7 +499,7 @@ export async function startProviderlessDevelopmentServer(context, options) {
   child.stderr.on("data", (chunk) => (output += chunk));
 
   await waitFor(
-    "providerless development API to start despite stale Provider references",
+    "backendless development API to start despite stale Backend references",
     async () => {
       assert.equal(child.exitCode, null, `The OCC subprocess exited early:\n${output}`);
       return /"event"\s*:\s*"listening"/.test(output) || undefined;

@@ -46,7 +46,7 @@ async function fixture(t, configuration = installation()) {
 
 function chatgptInstallation() {
   const configuration = installation();
-  configuration.provider = [
+  configuration.backend = [
     {
       id: "openai",
       type: "chatgpt",
@@ -93,7 +93,7 @@ async function repositoryInstallation(t) {
   await chmod(writableCaPath, 0o666);
   const registry = {
     version: 1,
-    providerId: "github-primary",
+    backendId: "github-primary",
     providerInstanceId: "github-com",
     appId: "12345",
     githubInstallationId: "67890",
@@ -116,9 +116,9 @@ async function repositoryInstallation(t) {
   const publicCaPath = join(directory, "ca.crt");
   await symlink(tls.certFile, publicCaPath);
   const configuration = installation();
-  configuration.provider = [
+  configuration.backend = [
     {
-      id: registry.providerId,
+      id: registry.backendId,
       type: "github",
       configuration: { registryPath },
       drivers: { repo: "repository-credentials" },
@@ -158,7 +158,7 @@ test("repository startup constructs the same local resolver without a private so
   // The capability name does not replace the operator's opaque Driver identity.
   assert.equal(api.repoDriver.id, "repository-credentials");
   assert.equal(worker.repoDriver.id, api.repoDriver.id);
-  assert.deepEqual(api.installation.provider[0].drivers, { repo: api.repoDriver.id });
+  assert.deepEqual(api.installation.backend[0].drivers, { repo: api.repoDriver.id });
   assert.equal(Object.hasOwn(api.installation.drivers, "repository_credentials"), false);
   assert.equal(api.installation.drivers.repo.implementation, api.repoDriver.implementation);
   const selection = { namespaceId: "ns_repository", bindings: [{ repositoryRef: "application" }] };
@@ -173,14 +173,14 @@ test("repository startup constructs the same local resolver without a private so
   );
   const chatgpt = chatgptInstallation();
   const combined = structuredClone(configuration);
-  combined.provider.push(...chatgpt.provider);
+  combined.backend.push(...chatgpt.backend);
   combined.drivers.service_account = chatgpt.drivers.service_account;
   const combinedDrivers = await loadInstallationConfiguration({
     mode: "production",
     environment: { OCC_CONFIG_PATH: await fixture(t, combined) },
   });
   assert.deepEqual(
-    combinedDrivers.installation.provider.map((provider) => provider.type),
+    combinedDrivers.installation.backend.map((backend) => backend.type),
     ["github", "chatgpt"],
   );
 
@@ -208,7 +208,7 @@ test("repository startup constructs the same local resolver without a private so
 test("repository startup rejects unmatched ownership, registry identity, duration and CA inputs", async (t) => {
   const { configuration: baseline, tls, writableCaPath } = await repositoryInstallation(t);
   for (const [mutate, expected] of [
-    [(value) => delete value.provider, /requires an owning provider/],
+    [(value) => delete value.backend, /requires an owning backend/],
     [
       (value) => {
         value.drivers.repository_credentials = value.drivers.repo;
@@ -218,23 +218,23 @@ test("repository startup rejects unmatched ownership, registry identity, duratio
     ],
     [
       (value) => {
-        value.provider[0].drivers.repository_credentials = value.provider[0].drivers.repo;
-        delete value.provider[0].drivers.repo;
+        value.backend[0].drivers.repository_credentials = value.backend[0].drivers.repo;
+        delete value.backend[0].drivers.repo;
       },
       /plaintext credential/,
     ],
     [(value) => delete value.drivers.repo, /requires drivers\.repo/],
-    [(value) => (value.provider[0].drivers.repo = "other-driver"), /must match/],
+    [(value) => (value.backend[0].drivers.repo = "other-driver"), /must match/],
     [
-      (value) => (value.provider[0].configuration.registryPath = "relative.json"),
+      (value) => (value.backend[0].configuration.registryPath = "relative.json"),
       /absolute mounted/,
     ],
-    [(value) => (value.provider[0].configuration.apiKeyPath = "/unavailable"), /unsupported/],
+    [(value) => (value.backend[0].configuration.apiKeyPath = "/unavailable"), /unsupported/],
     [
-      (value) => value.provider.push({ ...structuredClone(value.provider[0]), id: "other-github" }),
-      /cannot belong to multiple Providers/,
+      (value) => value.backend.push({ ...structuredClone(value.backend[0]), id: "other-github" }),
+      /cannot belong to multiple Backends/,
     ],
-    [(value) => (value.provider[0].id = "other-provider"), /invalid-repository-registry/],
+    [(value) => (value.backend[0].id = "other-backend"), /invalid-repository-registry/],
     [
       (value) => (value.drivers.repo.configuration.sessionDurationSeconds = 3601),
       /duration|configuration/,
@@ -253,7 +253,7 @@ test("repository startup rejects unmatched ownership, registry identity, duratio
       /repository service peer/,
     ],
     [
-      (value) => (value.provider[0].drivers.repo = "ghp_notarealtoken123456"),
+      (value) => (value.backend[0].drivers.repo = "ghp_notarealtoken123456"),
       /plaintext credential/,
     ],
   ]) {
@@ -298,14 +298,14 @@ test("startup loads singleton Installation YAML and validates Drivers before con
   assert.equal(updated.installation.drivers.compute.configuration.network.gatewayPort, 8081);
 });
 
-test("shared startup loads provider metadata without reading the API-only ChatGPT admin Secret", async (t) => {
+test("shared startup loads backend metadata without reading the API-only ChatGPT admin Secret", async (t) => {
   // The worker shares this loader but deliberately cannot access the configured API-only mount.
   const drivers = await loadInstallationConfiguration({
     mode: "production",
     environment: { OCC_CONFIG_PATH: await fixture(t, chatgptInstallation()) },
   });
 
-  assert.deepEqual(drivers.installation.provider, [
+  assert.deepEqual(drivers.installation.backend, [
     {
       id: "openai",
       type: "chatgpt",
@@ -319,10 +319,7 @@ test("shared startup loads provider metadata without reading the API-only ChatGP
       },
     },
   ]);
-  assert.equal(
-    Object.hasOwn(drivers.installation.provider[0].configuration, "adminKeyPath"),
-    false,
-  );
+  assert.equal(Object.hasOwn(drivers.installation.backend[0].configuration, "adminKeyPath"), false);
   assert.deepEqual(drivers.installation.drivers.service_account, {
     id: "chatgpt-service-accounts",
   });
@@ -330,62 +327,59 @@ test("shared startup loads provider metadata without reading the API-only ChatGP
   assert.equal(Object.hasOwn(drivers, "chatgptClient"), false);
 });
 
-test("ChatGPT startup rejects retired integrations and unsafe provider configuration", async (t) => {
+test("ChatGPT startup rejects retired integrations and unsafe backend configuration", async (t) => {
   await assert.rejects(
     loadInstallationConfiguration({
       mode: "production",
       environment: { OCC_CONFIG_PATH: await fixture(t, retiredChatgptInstallation()) },
     }),
-    /integrations is retired.*provider.*apiKeyPath/,
+    /integrations is retired.*backend.*apiKeyPath/,
   );
 
   for (const [mutate, expected] of [
-    [(value) => delete value.provider, /requires an owning provider/],
+    [(value) => delete value.backend, /requires an owning backend/],
     [(value) => delete value.drivers.service_account, /requires drivers\.service_account/],
     [
-      (value) => delete value.provider[0].drivers.service_account,
+      (value) => delete value.backend[0].drivers.service_account,
       /drivers\.service_account.*required/,
     ],
+    [(value) => (value.backend[0].configuration.workspaceId = "untrusted"), /workspaceId.*invalid/],
     [
-      (value) => (value.provider[0].configuration.workspaceId = "untrusted"),
-      /workspaceId.*invalid/,
-    ],
-    [
-      (value) => (value.provider[0].configuration.apiKeyPath = "relative-admin-key"),
+      (value) => (value.backend[0].configuration.apiKeyPath = "relative-admin-key"),
       /absolute mounted file path/,
     ],
     [
-      (value) => (value.provider[0].configuration.credentialTtlSeconds = 2_592_001),
+      (value) => (value.backend[0].configuration.credentialTtlSeconds = 2_592_001),
       /between 1 and 2592000/,
     ],
     [
-      (value) => (value.provider[0].configuration.apiKey = "plaintext-admin-key"),
+      (value) => (value.backend[0].configuration.apiKey = "plaintext-admin-key"),
       /plaintext credential|unsupported option/,
     ],
     [
-      (value) => (value.provider[0].configuration.adminKeyPath = "/tmp/old-admin-key"),
+      (value) => (value.backend[0].configuration.adminKeyPath = "/tmp/old-admin-key"),
       /adminKeyPath.*unsupported/,
     ],
-    [(value) => (value.provider[0].type = "installed"), /must be chatgpt/],
-    [(value) => (value.provider[0].package = "@example/provider"), /unsupported option package/],
+    [(value) => (value.backend[0].type = "installed"), /must be chatgpt/],
+    [(value) => (value.backend[0].package = "@example/backend"), /unsupported option package/],
     [
-      (value) => (value.provider[0].drivers.service_account = "other-service-accounts"),
+      (value) => (value.backend[0].drivers.service_account = "other-service-accounts"),
       /must match the selected drivers\.service_account\.id/,
     ],
     [
-      (value) => value.provider.push(structuredClone(value.provider[0])),
-      /Provider IDs must be unique/,
+      (value) => value.backend.push(structuredClone(value.backend[0])),
+      /Backend IDs must be unique/,
     ],
     [
       (value) => {
-        const duplicate = structuredClone(value.provider[0]);
+        const duplicate = structuredClone(value.backend[0]);
         duplicate.id = "other-openai";
-        value.provider.push(duplicate);
+        value.backend.push(duplicate);
       },
-      /ServiceAccount Driver cannot belong to multiple Providers/,
+      /ServiceAccount Driver cannot belong to multiple Backends/,
     ],
     [
-      (value) => (value.drivers.service_account.configuration.providerId = "openai"),
+      (value) => (value.drivers.service_account.configuration.backendId = "openai"),
       /unsupported option/,
     ],
   ]) {
@@ -697,7 +691,7 @@ test("production server and worker resolve singleton startup without an Installa
   assert.doesNotMatch(worker.stderr, /OCC_INSTALLATION_ID|explicit Installation/);
 });
 
-test("only the actual API process reads ChatGPT admin credentials and provider accounts require PostgreSQL", async (t) => {
+test("only the actual API process reads ChatGPT admin credentials and backend accounts require PostgreSQL", async (t) => {
   const path = await fixture(t, chatgptInstallation());
   const shared = {
     PATH: process.env.PATH,
@@ -740,7 +734,7 @@ test("only the actual API process reads ChatGPT admin credentials and provider a
   );
   assert.doesNotMatch(worker.stderr, /ChatGPT|admin-key|ServiceAccount Driver/);
 
-  // Driver-private provider bindings cannot silently fall back to ephemeral in-memory persistence.
+  // Driver-private backend bindings cannot silently fall back to ephemeral in-memory persistence.
   const inMemory = spawnSync(process.execPath, ["apps/controller/src/server.mjs"], {
     cwd: process.cwd(),
     env: {

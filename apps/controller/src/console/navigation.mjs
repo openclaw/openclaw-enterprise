@@ -1,6 +1,6 @@
 export const pages = Object.freeze({
   agents: "Agents",
-  providers: "Providers",
+  backends: "Backends",
   namespaces: "Namespaces",
   settings: "Settings",
 });
@@ -56,7 +56,7 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }) {
       return;
     }
     const current = route().feature;
-    if (feature === "settings" && ["agents", "providers", "namespaces"].includes(current)) {
+    if (feature === "settings" && ["agents", "backends", "namespaces"].includes(current)) {
       previousCollection = current;
     }
     history[replace ? "replaceState" : "pushState"](
@@ -76,7 +76,7 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }) {
       return previousCollection;
     },
     restoreHistory() {
-      if (["agents", "providers", "namespaces"].includes(history.state?.previousCollection)) {
+      if (["agents", "backends", "namespaces"].includes(history.state?.previousCollection)) {
         previousCollection = history.state.previousCollection;
       }
     },
