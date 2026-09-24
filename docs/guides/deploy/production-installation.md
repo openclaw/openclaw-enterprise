@@ -59,8 +59,8 @@ Build these images for a registry your cluster can access:
 | Runtime    | [`deploy/runtime/Dockerfile`](../../../deploy/runtime/Dockerfile), assembling pinned OpenClaw source and Codex | Gateways and Agents (the same image serves both) |
 
 With Docker Buildx and registry push access, replace the example registry and
-repository and select your Kubernetes nodes’ platform. The base image below matches the [runtime recipe](../../../deploy/runtime/README.md),
-which also documents the pinned source identity and checksum.
+repository and select your Kubernetes nodes’ platform. The base image below
+matches the [runtime recipe](../../../deploy/runtime/README.md).
 
 Authenticate the builder before running the build block. For a standard registry,
 run `docker login <registry-host>` using your approved credentials; for private
