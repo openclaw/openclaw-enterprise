@@ -327,6 +327,10 @@ export function installFixture(scenario, evidence) {
         name: "Demo installation",
         createdAt,
         capabilities: {
+          pluginDiscovery: scenario.pluginDiscoveryCapabilities ?? {
+            authentication: "service_account_token",
+            search: false,
+          },
           ...(scenario.unsupportedProvisioning === true
             ? {}
             : { agentProvisioning: { executionModes: ["dedicated"] } }),
@@ -373,7 +377,9 @@ export function installFixture(scenario, evidence) {
         return selectedPreset ? response(selectedPreset) : error(404);
       }
       if (resource === "agents/plugins" && method === "POST" && scenario.pluginDiscovery) {
-        const page = scenario.pluginDiscovery.pages[body.cursor ?? "initial"];
+        const page = body.query
+          ? scenario.pluginDiscovery.searches?.[body.query]
+          : scenario.pluginDiscovery.pages[body.cursor ?? "initial"];
         return page ? response(page) : error(400, "PLUGIN_DISCOVERY_INVALID_RESPONSE");
       }
       if (resource === "agents/plugins/details" && method === "POST" && scenario.pluginDiscovery) {

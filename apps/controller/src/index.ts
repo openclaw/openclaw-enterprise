@@ -907,6 +907,12 @@ function requestFailure(error: unknown): RequestFailure {
   }
   if (error instanceof PluginDiscoveryError) {
     switch (error.reason) {
+      case "invalid_request":
+        return failure(
+          400,
+          "INVALID_REQUEST",
+          "The selected Plugin Driver does not support these discovery credentials or search parameters.",
+        );
       case "credentials_rejected":
         return failure(
           400,
@@ -2230,8 +2236,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
     if (operation.operationId === "discoverAgentPlugins") {
       const catalog = await controller.discoverAgentPlugins(context.actorId, namespaceId, {
-        accessToken: body?.accessToken as string,
+        ...(body?.accessToken === undefined ? {} : { accessToken: body.accessToken as string }),
         ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
+        ...(body?.query === undefined ? {} : { query: body.query as string }),
       });
       reply.header("cache-control", "no-store");
       reply.send({ data: catalog, meta: { requestId: request.id } });
@@ -2240,7 +2247,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
     if (operation.operationId === "discoverAgentPluginDetails") {
       const plugin = await controller.discoverAgentPluginDetails(context.actorId, namespaceId, {
-        accessToken: body?.accessToken as string,
+        ...(body?.accessToken === undefined ? {} : { accessToken: body.accessToken as string }),
         pluginId: body?.pluginId as string,
       });
       reply.header("cache-control", "no-store");

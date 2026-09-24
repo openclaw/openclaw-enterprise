@@ -62,6 +62,17 @@ const PluginCatalogEntrySchema = Type.Object(
     websiteUrl: Type.Optional(Type.String()),
     privacyPolicyUrl: Type.Optional(Type.String()),
     termsOfServiceUrl: Type.Optional(Type.String()),
+    metadata: Type.Optional(
+      Type.Object(
+        {
+          version: Type.Optional(Type.String()),
+          publisher: Type.Optional(Type.String()),
+          url: Type.Optional(Type.String()),
+          declaredTools: Type.Optional(Type.Array(Type.String())),
+        },
+        { additionalProperties: false },
+      ),
+    ),
     description: Type.Optional(Type.String()),
     available: Type.Optional(Type.Boolean()),
     unavailableReason: Type.Optional(Type.String()),
@@ -124,6 +135,15 @@ const InstallationCapabilitiesSchema = Type.Object(
     agentProvisioning: Type.Optional(
       Type.Object(
         { executionModes: Type.Array(HarnessExecutionModeSchema, { minItems: 1, maxItems: 2 }) },
+        { additionalProperties: false },
+      ),
+    ),
+    pluginDiscovery: Type.Optional(
+      Type.Object(
+        {
+          authentication: Type.Union([Type.Literal("none"), Type.Literal("service_account_token")]),
+          search: Type.Boolean(),
+        },
         { additionalProperties: false },
       ),
     ),

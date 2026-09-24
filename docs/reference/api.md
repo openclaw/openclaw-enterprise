@@ -347,6 +347,9 @@ Get the singleton Installation
 | `data.capabilities` | `object` | No | — |
 | `data.capabilities.agentProvisioning` | `object` | No | — |
 | `data.capabilities.agentProvisioning.executionModes` | `array<"embedded" or "dedicated">` | Yes | min items: 1; max items: 2 |
+| `data.capabilities.pluginDiscovery` | `object` | No | — |
+| `data.capabilities.pluginDiscovery.authentication` | `"none" or "service_account_token"` | Yes | — |
+| `data.capabilities.pluginDiscovery.search` | `boolean` | Yes | — |
 | `data.capabilities.pluginPolicies` | `object` | No | — |
 | `data.capabilities.pluginPolicies.driver` | `PluginDriverIdentity` | Yes | — |
 | `data.capabilities.pluginPolicies.driver.id` | `string` | Yes | min length: 1 |
@@ -412,6 +415,9 @@ Bootstrap the singleton Installation
 | `data.capabilities` | `object` | No | — |
 | `data.capabilities.agentProvisioning` | `object` | No | — |
 | `data.capabilities.agentProvisioning.executionModes` | `array<"embedded" or "dedicated">` | Yes | min items: 1; max items: 2 |
+| `data.capabilities.pluginDiscovery` | `object` | No | — |
+| `data.capabilities.pluginDiscovery.authentication` | `"none" or "service_account_token"` | Yes | — |
+| `data.capabilities.pluginDiscovery.search` | `boolean` | Yes | — |
 | `data.capabilities.pluginPolicies` | `object` | No | — |
 | `data.capabilities.pluginPolicies.driver` | `PluginDriverIdentity` | Yes | — |
 | `data.capabilities.pluginPolicies.driver.id` | `string` | Yes | min length: 1 |
@@ -635,8 +641,8 @@ Get an exact Installation-owned Namespace
 | [`GET /namespaces/{namespaceId}/agents`](#get-namespacesnamespaceidagents) | List authorized Agents in one exact Namespace |
 | [`POST /namespaces/{namespaceId}/agents`](#post-namespacesnamespaceidagents) | Create a Namespace-owned Agent |
 | [`POST /namespaces/{namespaceId}/agents/models`](#post-namespacesnamespaceidagentsmodels) | List provider models for Agent creation without storing the supplied credential |
-| [`POST /namespaces/{namespaceId}/agents/plugins`](#post-namespacesnamespaceidagentsplugins) | List available plugins for Agent creation without storing the supplied credential |
-| [`POST /namespaces/{namespaceId}/agents/plugins/details`](#post-namespacesnamespaceidagentspluginsdetails) | Read available plugin tools without storing the supplied credential |
+| [`POST /namespaces/{namespaceId}/agents/plugins`](#post-namespacesnamespaceidagentsplugins) | Browse or search the selected Driver plugin catalog for Agent creation |
+| [`POST /namespaces/{namespaceId}/agents/plugins/details`](#post-namespacesnamespaceidagentspluginsdetails) | Read plugin details and published metadata through the selected Driver |
 | [`POST /namespaces/{namespaceId}/agents/provision`](#post-namespacesnamespaceidagentsprovision) | Create a new Agent and queue first-time provisioning |
 | [`GET /namespaces/{namespaceId}/agents/provision/{workId}`](#get-namespacesnamespaceidagentsprovisionworkid) | Get first-time provisioning status for one exact work item |
 | [`POST /namespaces/{namespaceId}/agents/provision/{workId}/retry`](#post-namespacesnamespaceidagentsprovisionworkidretry) | Retry failed first-time provisioning for one exact work item |
@@ -859,7 +865,7 @@ List provider models for Agent creation without storing the supplied credential
 
 <span id="post-namespacesnamespaceidagentsplugins"></span>
 
-List available plugins for Agent creation without storing the supplied credential
+Browse or search the selected Driver plugin catalog for Agent creation
 
 **Operation ID:** `discoverAgentPlugins`
 
@@ -883,8 +889,9 @@ List available plugins for Agent creation without storing the supplied credentia
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `accessToken` | `string` | Yes | min length: 1; max length: 16384; pattern: `\S` |
+| `accessToken` | `string` | No | min length: 1; max length: 16384; pattern: `\S` |
 | `cursor` | `string` | No | min length: 1; max length: 8192 |
+| `query` | `string` | No | min length: 1; max length: 200; pattern: `\S` |
 
 ##### Responses
 
@@ -914,6 +921,11 @@ List available plugins for Agent creation without storing the supplied credentia
 | `data.plugins[].description` | `string` | No | — |
 | `data.plugins[].id` | `string` | Yes | — |
 | `data.plugins[].logoUrl` | `string` | No | — |
+| `data.plugins[].metadata` | `object` | No | — |
+| `data.plugins[].metadata.declaredTools` | `array<string>` | No | — |
+| `data.plugins[].metadata.publisher` | `string` | No | — |
+| `data.plugins[].metadata.url` | `string` | No | — |
+| `data.plugins[].metadata.version` | `string` | No | — |
 | `data.plugins[].name` | `string` | Yes | — |
 | `data.plugins[].privacyPolicyUrl` | `string` | No | — |
 | `data.plugins[].remoteId` | `string` | No | — |
@@ -936,7 +948,7 @@ List available plugins for Agent creation without storing the supplied credentia
 
 <span id="post-namespacesnamespaceidagentspluginsdetails"></span>
 
-Read available plugin tools without storing the supplied credential
+Read plugin details and published metadata through the selected Driver
 
 **Operation ID:** `discoverAgentPluginDetails`
 
@@ -960,7 +972,7 @@ Read available plugin tools without storing the supplied credential
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `accessToken` | `string` | Yes | min length: 1; max length: 16384; pattern: `\S` |
+| `accessToken` | `string` | No | min length: 1; max length: 16384; pattern: `\S` |
 | `pluginId` | `string` | Yes | min length: 1; max length: 256 |
 
 ##### Responses
@@ -989,6 +1001,11 @@ Read available plugin tools without storing the supplied credential
 | `data.description` | `string` | No | — |
 | `data.id` | `string` | Yes | — |
 | `data.logoUrl` | `string` | No | — |
+| `data.metadata` | `object` | No | — |
+| `data.metadata.declaredTools` | `array<string>` | No | — |
+| `data.metadata.publisher` | `string` | No | — |
+| `data.metadata.url` | `string` | No | — |
+| `data.metadata.version` | `string` | No | — |
 | `data.name` | `string` | Yes | — |
 | `data.privacyPolicyUrl` | `string` | No | — |
 | `data.remoteId` | `string` | No | — |

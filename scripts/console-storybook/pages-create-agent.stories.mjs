@@ -4,6 +4,9 @@ export default { title: "Pages/Create Agent" };
 
 export const CreateStart = { ...story("createStart"), name: "Choose a starting point" };
 export const CreateForm = { ...story("createForm"), name: "OpenAI with Codex harness" };
+export const ClawhubBrowse = story("createClawhubBrowse");
+export const ClawhubDetails = story("createClawhubDetails");
+export const ClawhubSearch = story("createClawhubSearch");
 export const PluginsUnavailable = {
   ...story("createPluginsUnavailable"),
   name: "Plugin discovery needs an entered token",

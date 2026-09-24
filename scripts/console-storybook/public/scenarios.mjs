@@ -85,6 +85,12 @@ const unavailablePlugins = [
     tools: null,
   },
 ];
+const nativePluginCapabilities = {
+  driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+  toolDefaults: { enabled: true, approval: ["native", "approve"], reviewer: [] },
+  tools: { enabled: true, approval: ["native", "approve"], reviewer: [] },
+  driverPolicySchema: { type: "object", properties: {}, additionalProperties: false },
+};
 const pluginCatalog = {
   status: "ready",
   setup: pluginSetup,
@@ -189,6 +195,46 @@ const pluginDiscoveryForm = [
 ];
 const pluginDiscoveryGap =
   "The real Create Agent controls call simulated OCC discovery routes with a dummy token. Catalog pages and policy capabilities are fixtures. This verifies UI discovery and draft JSON editing, not live plugin-service access or runtime enforcement.";
+const clawhubEntry = {
+  id: "clawhub:team-notes",
+  remoteId: "team-notes",
+  name: "Team Notes",
+  description: "Search a team's published notes.",
+  available: false,
+  unavailableReason: "This published package has not been admitted by this installation.",
+  tools: null,
+  metadata: {
+    version: "1.2.0",
+    publisher: "Example team",
+    url: "https://clawhub.ai/example/plugins/team-notes",
+  },
+};
+const clawhubDiscovery = {
+  pages: {
+    initial: { plugins: [clawhubEntry], nextCursor: "clawhub-page-2" },
+    "clawhub-page-2": {
+      plugins: [
+        { ...clawhubEntry, id: "clawhub:calendar", remoteId: "calendar", name: "Calendar" },
+      ],
+      nextCursor: null,
+    },
+  },
+  searches: { notes: { plugins: [clawhubEntry], nextCursor: null } },
+  details: {
+    "team-notes": {
+      ...clawhubEntry,
+      tools: [],
+      metadata: { ...clawhubEntry.metadata, declaredTools: ["search_notes", "read_note"] },
+    },
+  },
+};
+const clawhubForm = [
+  ...form,
+  { selector: "#agent-harness", value: "openclaw" },
+  click("Configure plugins"),
+];
+const clawhubGap =
+  "The production form uses simulated anonymous catalog routes. Published tool names are metadata, not policy-addressable tools. No package is installed, admitted, or invoked.";
 const repositoryOptionsPath =
   "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/repository-options";
 const account = [{ selector: ".account-toggle", click: true }];
@@ -484,6 +530,47 @@ export const scenarios = {
       "Change the model, then replace the dummy credential. Confirm the selected model remains. Confirm all three edited appServer settings remain in Configuration JSON.",
       "Choose Reset template and confirm to restore the standard runtime settings for the selected model.",
     ],
+  },
+  createClawhubBrowse: {
+    group: "Pages/Create Agent",
+    name: "Browse published OpenClaw plugins",
+    path: create,
+    pluginDiscoveryCapabilities: { authentication: "none", search: true },
+    pluginCapabilities: nativePluginCapabilities,
+    pluginDiscovery: clawhubDiscovery,
+    actions: clawhubForm,
+    description:
+      "Browse anonymously with the OpenClaw harness. Published packages remain unavailable until admitted by the installation.",
+    steps: [
+      "Use Next page and Previous page to browse server pages.",
+      "Enter notes and click Search to search the catalog. Clear search returns to browsing.",
+      "Choose Team Notes to inspect the version, publisher, source link, and declared tools. No Add action is offered.",
+    ],
+    gap: clawhubGap,
+  },
+  createClawhubDetails: {
+    group: "Pages/Create Agent",
+    name: "Published plugin metadata",
+    path: create,
+    pluginDiscoveryCapabilities: { authentication: "none", search: true },
+    pluginCapabilities: nativePluginCapabilities,
+    pluginDiscovery: clawhubDiscovery,
+    actions: [...clawhubForm, { selector: 'button[aria-label="Team Notes"]', click: true }],
+    description:
+      "Declared tool names are displayed as published package metadata without policy controls or an Add action.",
+    gap: clawhubGap,
+  },
+  createClawhubSearch: {
+    group: "Pages/Create Agent",
+    name: "Search published plugins",
+    path: create,
+    pluginDiscoveryCapabilities: { authentication: "none", search: true },
+    pluginCapabilities: nativePluginCapabilities,
+    pluginDiscovery: clawhubDiscovery,
+    actions: [...clawhubForm, { selector: "#plugin-search", value: "notes" }, click("Search")],
+    description:
+      "Search runs only on explicit submission; results are unpaged. Clear search restores the first browse page.",
+    gap: clawhubGap,
   },
   createPluginsUnavailable: {
     group: "Pages/Create Agent",
@@ -855,12 +942,7 @@ export const scenarios = {
       status: "ready",
       entries: [{ id: "occ-plugin:diffs", name: "Diffs", tools: null }],
     },
-    pluginCapabilities: {
-      driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
-      toolDefaults: { enabled: true, approval: ["native", "approve"], reviewer: [] },
-      tools: { enabled: true, approval: ["native", "approve"], reviewer: [] },
-      driverPolicySchema: { type: "object", properties: {}, additionalProperties: false },
-    },
+    pluginCapabilities: nativePluginCapabilities,
     pluginSelections: JSON.stringify(
       {
         "occ-plugin:diffs": {

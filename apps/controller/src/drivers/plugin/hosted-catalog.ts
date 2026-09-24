@@ -6,8 +6,9 @@ import type {
 import { PluginDiscoveryError } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
+import { readCatalogResponse as readResponse } from "./catalog-response.ts";
+
 const CATALOG_URL = "https://chatgpt.com/backend-api/ps/";
-const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 const PAGE_SIZE = 20;
 const WORKSPACE_PLUGINS = {
   label: "Manage workspace plugins",
@@ -32,52 +33,6 @@ function text(value: unknown, max = 8192): string {
 
 function array(value: unknown, max: number): unknown[] {
   return Array.isArray(value) && value.length <= max ? value : invalid();
-}
-
-async function readResponse(response: Response): Promise<Record<string, unknown>> {
-  if (!response.ok) {
-    await response.body?.cancel().catch(() => {});
-    throw new PluginDiscoveryError(
-      response.status === 401 || response.status === 403
-        ? "credentials_rejected"
-        : response.status === 429
-          ? "rate_limited"
-          : "unavailable",
-    );
-  }
-  if (Number(response.headers.get("content-length")) > MAX_RESPONSE_BYTES) {
-    await response.body?.cancel().catch(() => {});
-    invalid();
-  }
-  const reader = response.body?.getReader();
-  if (!reader) {
-    invalid();
-  }
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  try {
-    while (true) {
-      const chunk = await reader.read();
-      if (chunk.done) {
-        break;
-      }
-      size += chunk.value.byteLength;
-      if (size > MAX_RESPONSE_BYTES) {
-        invalid();
-      }
-      chunks.push(chunk.value);
-    }
-    try {
-      return record(JSON.parse(Buffer.concat(chunks, size).toString("utf8")));
-    } catch {
-      invalid();
-    }
-  } catch (error) {
-    await reader.cancel().catch(() => {});
-    throw error;
-  } finally {
-    reader.releaseLock();
-  }
 }
 
 async function withCredential<T>(

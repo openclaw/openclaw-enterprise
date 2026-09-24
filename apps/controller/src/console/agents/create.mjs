@@ -656,6 +656,8 @@ function renderAgentForm(context, rendered, presetOptions = {}) {
   const plugins = element("textarea", { id: "agent-plugins", rows: "4", spellcheck: "false" });
   plugins.value = JSON.stringify(agent.plugins ?? {}, null, 2);
   let pluginDiscoveryGeneration = 0;
+  let pluginDiscovery = null;
+  let pluginQuery = "";
   let pluginCatalog = { status: "idle", nextCursor: null };
   const pluginEntries = new Map();
   let pluginPageIds = [];
@@ -663,11 +665,15 @@ function renderAgentForm(context, rendered, presetOptions = {}) {
   let pluginPageIndex = 0;
   const pluginFields = createPluginFields({
     input: plugins,
-    onLoadPlugins: (direction) => void loadPluginCatalog(direction),
+    onLoadPlugins: (direction, query) => void loadPluginCatalog(direction, query),
     onLoadTools: (id) => void loadPluginTools(id),
   });
   function canDiscoverPlugins() {
+    if (pluginDiscovery?.authentication === "none") {
+      return true;
+    }
     return (
+      pluginDiscovery?.authentication === "service_account_token" &&
       !binding &&
       nativeProvider.value === "openai" &&
       harness.value === "codex" &&
@@ -678,6 +684,9 @@ function renderAgentForm(context, rendered, presetOptions = {}) {
   function updatePluginDiscovery() {
     pluginFields.setCatalog({
       ...pluginCatalog,
+      authentication: pluginDiscovery?.authentication,
+      search: pluginDiscovery?.search === true,
+      query: pluginQuery,
       entries: pluginPageIds.map((id) => pluginEntries.get(id)),
       knownEntries: [...pluginEntries.values()],
       pageNumber: pluginPageIndex + 1,
@@ -685,9 +694,13 @@ function renderAgentForm(context, rendered, presetOptions = {}) {
       canLoad: canDiscoverPlugins(),
       message:
         pluginCatalog.message ??
-        (canDiscoverPlugins()
-          ? "Load plugins available to this service account token. Your plugin selections stay unchanged."
-          : "To discover plugins, choose Service Accounts with the Codex harness and enter a token. Saved Preset credentials cannot be used for discovery here."),
+        (!pluginDiscovery
+          ? "Plugin discovery is unavailable in this installation. Existing selections remain in JSON."
+          : pluginDiscovery.authentication === "none"
+            ? "Browse published plugins. Discovery does not install or admit packages."
+            : canDiscoverPlugins()
+              ? "Load plugins available to this service account token. Your plugin selections stay unchanged."
+              : "To discover plugins, choose Service Accounts with the Codex harness and enter a token. Saved Preset credentials cannot be used for discovery here."),
     });
   }
   function resetPluginDiscovery() {
@@ -697,13 +710,16 @@ function renderAgentForm(context, rendered, presetOptions = {}) {
     pluginPageIds = [];
     pluginCursors = [null];
     pluginPageIndex = 0;
+    pluginQuery = "";
     pluginCatalog = { status: "idle", nextCursor: null };
     updatePluginDiscovery();
   }
   function pluginDiscoveryError(error) {
     const reason = {
       PLUGIN_DISCOVERY_CREDENTIALS_REJECTED:
-        "The service account token was rejected or cannot access plugins. Check its permissions.",
+        pluginDiscovery?.authentication === "none"
+          ? "The public plugin catalog denied this request. Check server access or contact your operator."
+          : "The service account token was rejected or cannot access plugins. Check its permissions.",
       PLUGIN_DISCOVERY_RATE_LIMITED: "The plugin service rate limit was reached. Try again later.",
       PLUGIN_DISCOVERY_UNAVAILABLE:
         "The plugin service is unavailable. Check the server's plugin service access and retry.",
@@ -712,13 +728,25 @@ function renderAgentForm(context, rendered, presetOptions = {}) {
     }[error.code];
     return `${reason ?? "Plugins could not be loaded. Check the credential and retry."}${error.requestId ? ` Request: ${error.requestId}` : ""}`;
   }
-  async function loadPluginCatalog(direction = "refresh") {
+  function pluginDiscoveryCredentials() {
+    // Anonymous catalogs must never receive a model credential or a leftover PAT.
+    return pluginDiscovery?.authentication === "service_account_token"
+      ? { accessToken: apiKey.value }
+      : {};
+  }
+  async function loadPluginCatalog(direction = "refresh", query = pluginQuery) {
     if (!canDiscoverPlugins() || pending || pluginCatalog.status === "loading") {
       return;
     }
     let pageIndex = pluginPageIndex;
     let cursor = pluginCursors[pageIndex];
-    if (direction === "next") {
+    if (direction === "search") {
+      pluginQuery = pluginDiscovery.search ? query.trim() : "";
+      pageIndex = 0;
+      cursor = null;
+    } else if (pluginQuery && direction !== "refresh") {
+      return;
+    } else if (direction === "next") {
       if (!pluginCatalog.nextCursor) {
         return;
       }
@@ -741,7 +769,10 @@ function renderAgentForm(context, rendered, presetOptions = {}) {
     try {
       const page = await request(`${namespacePath(namespaceId)}/agents/plugins`, {
         method: "POST",
-        body: { accessToken: apiKey.value, ...(cursor ? { cursor } : {}) },
+        body: {
+          ...pluginDiscoveryCredentials(),
+          ...(pluginQuery ? { query: pluginQuery } : cursor ? { cursor } : {}),
+        },
       });
       if (!context.isCurrent() || generation !== pluginDiscoveryGeneration) {
         return;
@@ -785,7 +816,7 @@ function renderAgentForm(context, rendered, presetOptions = {}) {
     try {
       const detail = await request(`${namespacePath(namespaceId)}/agents/plugins/details`, {
         method: "POST",
-        body: { accessToken: apiKey.value, pluginId: entry.remoteId },
+        body: { ...pluginDiscoveryCredentials(), pluginId: entry.remoteId },
       });
       if (
         !context.isCurrent() ||
@@ -1284,6 +1315,8 @@ function renderAgentForm(context, rendered, presetOptions = {}) {
         return;
       }
       pluginFields.setCapabilities(installation.capabilities?.pluginPolicies ?? null);
+      pluginDiscovery = installation.capabilities?.pluginDiscovery ?? null;
+      resetPluginDiscovery();
       provisionableExecutionModes.clear();
       for (const executionMode of installation.capabilities?.agentProvisioning?.executionModes ??
         []) {

@@ -11,6 +11,7 @@ import {
 } from "@openclaw-enterprise/contracts";
 import {
   NotImplementedError,
+  PluginDiscoveryError,
   PluginPolicyValidationError,
   ScopeViolationError,
 } from "@openclaw-enterprise/occ";
@@ -21,6 +22,7 @@ import {
 } from "./runtime-translator.ts";
 import { NativeCodexPluginCatalogReader } from "./stdio-catalog-reader.ts";
 import { discoverHostedPlugins, getHostedPlugin } from "./hosted-catalog.ts";
+import { discoverClawHubPlugins, getClawHubPlugin } from "./clawhub-catalog.ts";
 
 type ConfigurationRecord = Readonly<Record<string, unknown>>;
 
@@ -170,6 +172,30 @@ class BundledPluginDriverBase {
 
 export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDriver {
   static readonly configurationSchema = EMPTY_CONFIGURATION_SCHEMA;
+  readonly discoveryCapabilities = { authentication: "none", search: true } as const;
+
+  discoverCatalog(
+    input: { readonly accessToken?: string; readonly cursor?: string; readonly query?: string },
+    signal?: AbortSignal,
+  ): Promise<PluginCatalogPage> {
+    if (
+      input.accessToken !== undefined ||
+      (input.query !== undefined && input.cursor !== undefined)
+    ) {
+      throw new PluginDiscoveryError("invalid_request");
+    }
+    return discoverClawHubPlugins(input, signal);
+  }
+
+  getCatalogPlugin(
+    input: { readonly accessToken?: string; readonly pluginId: string },
+    signal?: AbortSignal,
+  ): Promise<PluginCatalogEntry> {
+    if (input.accessToken !== undefined) {
+      throw new PluginDiscoveryError("invalid_request");
+    }
+    return getClawHubPlugin(input, signal);
+  }
   readonly policyCapabilities: PluginPolicyCapabilities = deepFreeze({
     toolDefaults: { enabled: true, approval: ["native", "approve"], reviewer: [] },
     tools: { enabled: true, approval: ["native", "approve"], reviewer: [] },
@@ -197,6 +223,10 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
 
 export class CodexPluginDriver extends BundledPluginDriverBase implements PluginDriver {
   static readonly configurationSchema = CODEX_CONFIGURATION_SCHEMA;
+  readonly discoveryCapabilities = {
+    authentication: "service_account_token",
+    search: false,
+  } as const;
   // TODO: gate prompt on enforceable session constraints before this draft ships.
   // A permissive native session can bypass app-level review despite translation.
   readonly policyCapabilities: PluginPolicyCapabilities = deepFreeze({
@@ -219,17 +249,26 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
   }
 
   discoverCatalog(
-    input: { readonly accessToken: string; readonly cursor?: string },
+    input: { readonly accessToken?: string; readonly cursor?: string; readonly query?: string },
     signal?: AbortSignal,
   ): Promise<PluginCatalogPage> {
-    return discoverHostedPlugins(input, signal);
+    if (input.query !== undefined) {
+      throw new PluginDiscoveryError("invalid_request");
+    }
+    if (input.accessToken === undefined) {
+      throw new PluginDiscoveryError("credentials_rejected");
+    }
+    return discoverHostedPlugins({ ...input, accessToken: input.accessToken }, signal);
   }
 
   getCatalogPlugin(
-    input: { readonly accessToken: string; readonly pluginId: string },
+    input: { readonly accessToken?: string; readonly pluginId: string },
     signal?: AbortSignal,
   ): Promise<PluginCatalogEntry> {
-    return getHostedPlugin(input, signal);
+    if (input.accessToken === undefined) {
+      throw new PluginDiscoveryError("credentials_rejected");
+    }
+    return getHostedPlugin({ ...input, accessToken: input.accessToken }, signal);
   }
 
   constructor(

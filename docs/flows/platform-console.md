@@ -177,8 +177,8 @@ Missing capabilities preserve JSON and disable edits. Unsupported saved reviewer
 remain clearable. Agent submission saves the draft.
 
 `create.mjs:loadPluginCatalog` and `loadPluginTools` implement
-[transient PAT discovery](agent-plugins.md#credential-scoped-discovery): upstream
-pagination, local filtering, and tools loaded on selection. Credential, provider,
+[catalog discovery](agent-plugins.md#pre-agent-discovery): upstream pagination,
+Driver-supported search or local filtering, and details loaded on selection. Credential, provider,
 and Harness changes clear results and invalidate pending reads. The Driver owns
 upstream access.
 

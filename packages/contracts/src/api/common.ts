@@ -245,15 +245,16 @@ const PluginDiscoveryAccessToken = Type.String({
 
 export const DiscoverAgentPluginsBody = Type.Object(
   {
-    accessToken: PluginDiscoveryAccessToken,
+    accessToken: Type.Optional(PluginDiscoveryAccessToken),
     cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
+    query: Type.Optional(Type.String({ minLength: 1, maxLength: 200, pattern: "\\S" })),
   },
   { additionalProperties: false },
 );
 
 export const DiscoverAgentPluginDetailsBody = Type.Object(
   {
-    accessToken: PluginDiscoveryAccessToken,
+    accessToken: Type.Optional(PluginDiscoveryAccessToken),
     pluginId: Type.String({ minLength: 1, maxLength: 256 }),
   },
   { additionalProperties: false },

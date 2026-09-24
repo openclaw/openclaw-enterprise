@@ -9,7 +9,10 @@ import { chromium } from "playwright";
 
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
-import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import {
+  CodexPluginDriver,
+  OCCPluginDriver,
+} from "../../apps/controller/src/drivers/plugin/index.ts";
 import {
   WORKSPACE_DEFAULTS,
   WORKSPACE_DEFAULTS_ID,
@@ -5071,6 +5074,160 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
     ),
     false,
   );
+});
+
+test("Create Agent browses and searches public plugins without credentials or package admission", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const driver = new OCCPluginDriver();
+  fixture.controller.registerDriver(driver);
+  fixture.controller.selectDriver("plugin", driver.id);
+  const namespace = await fixture.createNamespace("Public plugin discovery", { ready: true });
+  const { page } = await newPage(t, fixture);
+  const originalFetch = globalThis.fetch;
+  const upstreamCalls = [];
+  const packageEntry = (name, displayName) => ({
+    name,
+    displayName,
+    family: "code-plugin",
+    summary: "Published plugin",
+    ownerHandle: "example",
+    latestVersion: "1.0.0",
+  });
+  const calendar = packageEntry("@example/calendar", "Calendar");
+  const notes = packageEntry("@example/notes", "Notes");
+  const heldSearch = Promise.withResolvers();
+  const searchStarted = Promise.withResolvers();
+  t.after(() => heldSearch.resolve());
+  // Only the public registry transport is simulated; the selected Driver and authenticated OCC routes are real.
+  t.mock.method(globalThis, "fetch", async (input, options) => {
+    const url = new URL(typeof input === "string" ? input : (input.url ?? input));
+    if (url.hostname !== "clawhub.ai") {
+      return originalFetch(input, options);
+    }
+    assert.equal(new Headers(options?.headers).has("Authorization"), false);
+    upstreamCalls.push(url.pathname + url.search);
+    if (url.pathname === "/api/v1/plugins") {
+      return Response.json({
+        items: url.searchParams.has("cursor") ? [notes] : [calendar],
+        nextCursor: url.searchParams.has("cursor") ? null : "page-two",
+      });
+    }
+    if (url.pathname === "/api/v1/plugins/search") {
+      if (url.searchParams.get("q") === "denied") {
+        return new Response("Private registry error", { status: 403 });
+      }
+      if (url.searchParams.get("q") === "delayed") {
+        searchStarted.resolve();
+        await heldSearch.promise;
+      }
+      return Response.json({
+        results: [
+          { score: 1, package: notes },
+          { score: 0.5, package: calendar },
+        ],
+      });
+    }
+    assert.equal(url.pathname, "/api/v1/packages/%40example%2Fcalendar/detail");
+    return Response.json({
+      package: calendar,
+      version: {
+        version: "1.1.0",
+        pluginManifestSummary: { contracts: { tools: ["search_events", "create_event"] } },
+      },
+    });
+  });
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset", exact: true }).click();
+  await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+  // An unrelated model credential must not be included in anonymous discovery requests.
+  await page.getByLabel("API key", { exact: true }).fill("private-model-key");
+  const selected = { "occ-plugin:existing": { enabled: false } };
+  await page.locator(".plugin-json > summary").click();
+  const json = page.getByLabel("Plugin selections JSON", { exact: true });
+  await json.fill(JSON.stringify(selected));
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  await dialog.getByRole("button", { name: "Calendar", exact: true }).waitFor();
+  await dialog.getByRole("button", { name: "Next page", exact: true }).click();
+  await dialog.getByRole("button", { name: "Notes", exact: true }).waitFor();
+  assert.equal(await dialog.getByRole("button", { name: "Calendar", exact: true }).count(), 0);
+  await dialog.getByRole("button", { name: "Previous page", exact: true }).click();
+  await dialog.getByRole("button", { name: "Calendar", exact: true }).click();
+  await dialog.getByText("Version: 1.1.0", { exact: true }).waitFor();
+  assert.equal(await dialog.getByText("Publisher: example", { exact: true }).isVisible(), true);
+  assert.equal(
+    await dialog.getByRole("link", { name: "View published plugin" }).getAttribute("href"),
+    "https://clawhub.ai/example/plugins/calendar",
+  );
+  assert.equal(
+    await dialog.getByRole("heading", { name: "Declared tools", exact: true }).isVisible(),
+    true,
+  );
+  assert.equal(await dialog.getByText("search_events", { exact: true }).isVisible(), true);
+  assert.equal(await dialog.getByRole("button", { name: "Add Calendar", exact: true }).count(), 0);
+  assert.equal(await dialog.locator("details.plugin-tool-row").count(), 0);
+  assert.deepEqual(JSON.parse(await json.inputValue()), selected);
+
+  const search = dialog.getByLabel("Search plugins", { exact: true });
+  const callsBeforeTyping = upstreamCalls.length;
+  await search.fill("calendar");
+  assert.equal(upstreamCalls.length, callsBeforeTyping);
+  await dialog.getByRole("button", { name: "Search", exact: true }).click();
+  await dialog
+    .getByText("2 search results (limited)", {
+      exact: true,
+    })
+    .waitFor();
+  assert.deepEqual(
+    await dialog
+      .locator(".plugin-list-item")
+      .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("aria-label"))),
+    ["Notes", "Calendar"],
+  );
+  assert.equal(
+    await dialog.getByRole("button", { name: "Next page", exact: true }).isVisible(),
+    false,
+  );
+  await dialog.getByRole("button", { name: "Clear search", exact: true }).click();
+  await dialog.getByText("Page 1 · 1 plugins", { exact: true }).waitFor();
+  assert.equal(await search.inputValue(), "");
+
+  await search.fill("denied");
+  await dialog.getByRole("button", { name: "Search", exact: true }).click();
+  await dialog.getByText(/The public plugin catalog denied this request/).waitFor();
+  assert.equal((await dialog.textContent()).includes("Private registry error"), false);
+  await dialog.getByRole("button", { name: "Clear search", exact: true }).click();
+  await dialog.getByText("Page 1 · 1 plugins", { exact: true }).waitFor();
+
+  // A late public result cannot restore an earlier query after the Harness changes.
+  await search.fill("delayed");
+  await dialog.getByRole("button", { name: "Search", exact: true }).click();
+  await searchStarted.promise;
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  await page.getByLabel("Harness", { exact: true }).selectOption("codex");
+  const lateResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/agents/plugins") &&
+      response.request().postDataJSON().query === "delayed",
+  );
+  heldSearch.resolve();
+  await lateResponse;
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  await dialog.getByRole("button", { name: "Calendar", exact: true }).waitFor();
+  assert.equal(await dialog.getByRole("button", { name: "Notes", exact: true }).count(), 0);
+  assert.equal(await search.inputValue(), "");
+  assert.deepEqual(JSON.parse(await json.inputValue()), selected);
+  const discoveryRequests = requests.filter((request) => request.path.includes("/agents/plugins"));
+  assert.ok(discoveryRequests.length > 0);
+  assert.equal(
+    discoveryRequests.some((request) => Object.hasOwn(request.body, "accessToken")),
+    false,
+  );
+  assert.equal(secretPostRequests(requests, namespace.id).length, 0);
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
+  assert.equal(agentPostRequests(requests, namespace.id).length, 0);
 });
 
 test("Agent creation edits Preset plugin policies through the modal and persists inherited fields independently", async (t) => {

@@ -1277,6 +1277,20 @@
                               "required": ["executionModes"],
                               "type": "object"
                             },
+                            "pluginDiscovery": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "authentication": {
+                                  "anyOf": [
+                                    { "const": "none", "type": "string" },
+                                    { "const": "service_account_token", "type": "string" }
+                                  ]
+                                },
+                                "search": { "type": "boolean" }
+                              },
+                              "required": ["authentication", "search"],
+                              "type": "object"
+                            },
                             "pluginPolicies": {
                               "additionalProperties": false,
                               "properties": {
@@ -1481,6 +1495,20 @@
                                 }
                               },
                               "required": ["executionModes"],
+                              "type": "object"
+                            },
+                            "pluginDiscovery": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "authentication": {
+                                  "anyOf": [
+                                    { "const": "none", "type": "string" },
+                                    { "const": "service_account_token", "type": "string" }
+                                  ]
+                                },
+                                "search": { "type": "boolean" }
+                              },
+                              "required": ["authentication", "search"],
                               "type": "object"
                             },
                             "pluginPolicies": {
@@ -3096,9 +3124,9 @@
                     "type": "string",
                     "writeOnly": true
                   },
-                  "cursor": { "maxLength": 8192, "minLength": 1, "type": "string" }
+                  "cursor": { "maxLength": 8192, "minLength": 1, "type": "string" },
+                  "query": { "maxLength": 200, "minLength": 1, "pattern": "\\S", "type": "string" }
                 },
-                "required": ["accessToken"],
                 "type": "object"
               }
             }
@@ -3124,6 +3152,19 @@
                               "description": { "type": "string" },
                               "id": { "type": "string" },
                               "logoUrl": { "type": "string" },
+                              "metadata": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "declaredTools": {
+                                    "items": { "type": "string" },
+                                    "type": "array"
+                                  },
+                                  "publisher": { "type": "string" },
+                                  "url": { "type": "string" },
+                                  "version": { "type": "string" }
+                                },
+                                "type": "object"
+                              },
                               "name": { "type": "string" },
                               "privacyPolicyUrl": { "type": "string" },
                               "remoteId": { "type": "string" },
@@ -3278,7 +3319,7 @@
             "description": "Default Response"
           }
         },
-        "summary": "List available plugins for Agent creation without storing the supplied credential",
+        "summary": "Browse or search the selected Driver plugin catalog for Agent creation",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" }
@@ -3315,7 +3356,7 @@
                   },
                   "pluginId": { "maxLength": 256, "minLength": 1, "type": "string" }
                 },
-                "required": ["accessToken", "pluginId"],
+                "required": ["pluginId"],
                 "type": "object"
               }
             }
@@ -3336,6 +3377,16 @@
                         "description": { "type": "string" },
                         "id": { "type": "string" },
                         "logoUrl": { "type": "string" },
+                        "metadata": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "declaredTools": { "items": { "type": "string" }, "type": "array" },
+                            "publisher": { "type": "string" },
+                            "url": { "type": "string" },
+                            "version": { "type": "string" }
+                          },
+                          "type": "object"
+                        },
                         "name": { "type": "string" },
                         "privacyPolicyUrl": { "type": "string" },
                         "remoteId": { "type": "string" },
@@ -3464,7 +3515,7 @@
             "description": "Default Response"
           }
         },
-        "summary": "Read available plugin tools without storing the supplied credential",
+        "summary": "Read plugin details and published metadata through the selected Driver",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" }

@@ -69,6 +69,15 @@ Unavailable entries explain the reported cause and link to recovery guidance:
 | No recognized reason                                     | Review workspace plugin access without assuming a specific cause.                                   |
 | Unsupported native components or no concrete hosted apps | Check [native limits](#native-mappings-and-limits); changing ChatGPT access cannot add OCE support. |
 
+The OpenClaw Driver also browses public ClawHub plugins without credentials.
+Browse requests forward the registry cursor with a 20-item limit; search forwards
+`query` to the plugin-only search endpoint, which does not paginate. Details show
+published package, version, publisher, and declared tools. Skills are excluded.
+These bounded, redirect-free reads use the same 15-second/4 MiB limits. ClawHub
+entries remain unavailable for selection: their registry IDs and tool declarations
+are not admitted runtime identities. Browse does not install packages or change
+the pinned OpenClaw runtime catalog. Private ClawHub credentials are unsupported.
+
 Catalog visibility and credentials do not establish native execution or policy
 enforcement. Startup independently resolves selections using the Agent's projected
 credentials. Unknown configuration options, arbitrary sources or versions, and

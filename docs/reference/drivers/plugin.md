@@ -29,7 +29,8 @@ The [shared interface](../../../packages/contracts/src/index.ts) exposes:
   native Configuration, and abort signal.
 
 Catalog entries contain `id`, `name`, and `tools`. `tools:null` means unknown;
-`tools:[]` means the observed inventory was empty for that read. Each tool has
+`tools:[]` means no policy-addressable tools were returned. Published declarations
+under `metadata.declaredTools` are informational and never grant tool access. Each tool has
 an opaque `id`, `name`, and `ownerId`. Description, availability, and safe
 unavailability reasons are optional metadata; `destructive` and `writes`
 annotations are also optional. Missing classifications mean unknown. An entry
@@ -52,7 +53,8 @@ grant access, or configure credentials. Connection verification and deployment
 gates are not part of this metadata contract.
 
 Authorized `GET /installation` exposes the selected Driver's identity and policy
-capabilities. See the [capability response](../agent-plugins.md#discover-policy-controls).
+capabilities. Optional `capabilities.pluginDiscovery` declares `authentication`
+(`none` or `service_account_token`) and server-side `search` support. See the [capability response](../agent-plugins.md#discover-policy-controls).
 
 There is no exported install, enable, policy-translation, or preparation method.
 The optional _backend reader_ in bundled Codex is different from the required
@@ -60,11 +62,13 @@ The optional _backend reader_ in bundled Codex is different from the required
 saving Agent selections and deploying supported selections can still use the
 Agent runtime's discovery path.
 
-Two optional methods serve pre-Agent discovery: `discoverCatalog({accessToken,
-cursor?}, signal?)` returns `{plugins, nextCursor, setup?}`, and
-`getCatalogPlugin({accessToken, pluginId}, signal?)` returns tool details. Here
-`pluginId` is the opaque `remoteId` from a discovery entry; the entry's `id` is
-the stable selection key. The HTTP routes are `POST /namespaces/:namespaceId/agents/plugins`
+Two optional methods serve pre-Agent discovery: `discoverCatalog({accessToken?,
+cursor?, query?}, signal?)` returns `{plugins, nextCursor, setup?}`, and
+`getCatalogPlugin({accessToken?, pluginId}, signal?)` returns details. The Driver
+validates its authentication and search requirements. `pluginId` is the opaque
+`remoteId` from discovery. An entry's `id` identifies the catalog result; only
+available, admitted entries may become Agent selection keys. Optional `metadata`
+contains published `version`, `publisher`, `url`, and `declaredTools`. The HTTP routes are `POST /namespaces/:namespaceId/agents/plugins`
 and its `/details` child. Both require Agent-create authority in the Namespace,
 perform no platform writes, and return `Cache-Control: no-store`. Tokens are
 write-only request fields and never appear in catalog responses or audit events.

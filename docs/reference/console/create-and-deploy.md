@@ -79,19 +79,22 @@ Presets and edited Configuration JSON retain their settings.
    [workspace editor](../console.md#edit-workspace-files). Pending inputs have no
    update API; see [workspace recovery](../../guides/topics/workspace-files.md#set-files-when-creating-an-agent).
 
-For Codex plugins, enter a **Service Accounts** token with **Codex** and open
-**Configure plugins**. **Previous page** and **Next page** fetch
-upstream pages; **Filter this page** filters locally. PAT catalog search is unavailable.
-Select a plugin to load tools, then **Add**. Use toggles for enablement and
-**Tool policy** for overrides. **Configured plugins** includes other pages'
-selections. **Done** closes the modal; **Create Agent** saves changes.
+**Configure plugins** browses the Driver's catalog.
+**Previous page** and **Next page** fetch pages. OpenClaw browses
+public ClawHub plugins anonymously with server **Search**.
+Unadmitted packages and declared tools are informational.
 
-[Discovery](../../flows/agent-plugins.md#credential-scoped-discovery) uses the entered
-token transiently, excluding saved Preset credentials. Credential/provider/Harness
-changes clear results; **Plugin selections JSON** preserves selections separately
-from Configuration. Check permissions for rejection or outbound access for service
-failure, then retry. Editing follows installation capabilities and the
-[policy contract](../agent-plugins.md); browsing proves no runtime permission.
+Codex discovery requires an entered **Service Accounts** token with **Codex**;
+saved Preset credentials are excluded. **Filter this page** filters locally because
+PAT search is unavailable. ChatGPT workspace settings control app access for the
+token's identity. **Add** an available plugin, then edit defaults or expand
+**Tool policy**. **Configured** spans pages.
+
+**Done** closes the modal; **Create Agent** saves changes. Credential/provider/Harness
+changes clear results, preserving **Plugin selections JSON**.
+[Discovery](../../flows/agent-plugins.md#pre-agent-discovery) proves no runtime permission;
+editing follows [policy capabilities](../agent-plugins.md).
+App connections remain unverified; check [setup guidance](../drivers/plugin-bundled.md#selection-and-catalogs) before deployment.
 
 Credentials are masked Namespace Secrets, excluded from Configuration JSON, Agent
 responses, and browser storage. Provisioning creates exact grants; ordinary drafts

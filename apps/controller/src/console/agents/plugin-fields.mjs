@@ -89,9 +89,16 @@ export function createPluginFields({
   const search = element("input", {
     type: "search",
     id: "plugin-search",
+    maxlength: "200",
     placeholder: "Filter this page",
   });
   const searchLabel = element("label", { for: search.id }, "Filter this page");
+  const submitSearch = button("Search", () => loadPage("search"));
+  const clearSearch = button("Clear search", () => {
+    search.value = "";
+    loadPage("search");
+  });
+  const searchActions = element("div", { className: "form-actions" }, submitSearch, clearSearch);
   const status = element("p", { className: "hint", role: "status" });
   const feedback = element("p", { className: "error", role: "status" });
   const policyStatus = element("p", { className: "hint", role: "status" });
@@ -113,7 +120,7 @@ export function createPluginFields({
     "div",
     { className: "plugin-browser" },
     element("div", { className: "plugin-tabs" }, available, configured),
-    element("div", { className: "form-field" }, searchLabel, search),
+    element("div", { className: "form-field" }, searchLabel, search, searchActions),
     element("div", { className: "plugin-browser-status" }, status, loadPlugins),
     list,
     pagination,
@@ -157,6 +164,9 @@ export function createPluginFields({
   dialog.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && event.target.matches('input[type="search"]')) {
       event.preventDefault();
+      if (event.target === search && catalog?.search && !configuredOnly) {
+        loadPage("search");
+      }
     }
   });
   const json = element(
@@ -179,13 +189,15 @@ export function createPluginFields({
 
   function loadPage(direction) {
     activeId = null;
-    search.value = "";
-    onLoadPlugins?.(direction);
+    if (!catalog?.search) {
+      search.value = "";
+    }
+    onLoadPlugins?.(direction, search.value);
   }
 
   function showConfigured(value) {
     configuredOnly = value;
-    search.value = "";
+    search.value = !value && catalog?.search ? (catalog.query ?? "") : "";
     activeId = null;
     render();
   }
@@ -258,6 +270,11 @@ export function createPluginFields({
     const focusedTool = document.activeElement?.closest("[data-tool]")?.dataset.tool;
     const focusedHeading = document.activeElement?.matches(".plugin-detail h3");
     const values = selections();
+    const serverSearch = catalog?.search && !configuredOnly;
+    const anonymous = catalog?.authentication === "none";
+    searchActions.hidden = !serverSearch;
+    submitSearch.disabled = disabled || !catalog?.canLoad || catalog?.status === "loading";
+    clearSearch.disabled = submitSearch.disabled || (!catalog?.query && !search.value);
     policyStatus.textContent = capabilities
       ? ""
       : "This installation does not support plugin policy editing. You can browse plugins; existing settings are preserved.";
@@ -299,12 +316,14 @@ export function createPluginFields({
     } else if (catalog?.status === "error") {
       status.textContent = catalog.message;
     } else if (catalog?.status === "ready") {
-      status.textContent = `Page ${catalog.pageNumber ?? 1} · ${catalog.entries.length} plugins`;
+      status.textContent = catalog.query
+        ? `${catalog.entries.length} search results (limited)`
+        : `Page ${catalog.pageNumber ?? 1} · ${catalog.entries.length} plugins`;
     }
     loadPlugins.textContent = catalog?.status === "loading" ? "Loading plugins…" : "Load plugins";
     loadPlugins.disabled = disabled || !catalog?.canLoad || catalog?.status === "loading";
     loadPlugins.hidden = configuredOnly || !onLoadPlugins;
-    pagination.hidden = configuredOnly || !onLoadPlugins;
+    pagination.hidden = configuredOnly || !onLoadPlugins || Boolean(catalog?.query);
     previous.disabled =
       disabled || !catalog?.canLoad || !catalog?.hasPrevious || catalog?.status === "loading";
     next.disabled =
@@ -320,14 +339,18 @@ export function createPluginFields({
       ...(catalog?.setup ? setupContent(catalog.setup) : []),
     );
     summary.textContent = `${count} plugin${count === 1 ? "" : "s"} configured. Select plugins and set their tool policies.`;
-    searchLabel.textContent = configuredOnly ? "Filter configured plugins" : "Filter this page";
+    searchLabel.textContent = configuredOnly
+      ? "Filter configured plugins"
+      : serverSearch
+        ? "Search plugins"
+        : "Filter this page";
     search.placeholder = searchLabel.textContent;
     if (configuredOnly) {
       status.textContent = `${count} configured plugin${count === 1 ? "" : "s"}`;
     }
     browser.setAttribute("aria-busy", String(catalog?.status === "loading"));
     workspace.dataset.showDetails = String(activeId !== null);
-    const query = search.value.trim().toLowerCase();
+    const query = serverSearch ? "" : search.value.trim().toLowerCase();
     const candidates = configuredOnly
       ? Object.keys(values ?? {}).map((id) => entries.get(id))
       : (catalog?.entries ?? []);
@@ -337,10 +360,11 @@ export function createPluginFields({
           text.toLowerCase().includes(query),
         ),
       )
-      .sort(
-        (a, b) =>
-          Number(a.available === false) - Number(b.available === false) ||
-          a.name.localeCompare(b.name),
+      .sort((a, b) =>
+        catalog?.search && !configuredOnly
+          ? 0
+          : Number(a.available === false) - Number(b.available === false) ||
+            a.name.localeCompare(b.name),
       );
     list.replaceChildren(
       ...visible.map((entry, index) => {
@@ -419,6 +443,35 @@ export function createPluginFields({
           ),
           entry.available === false ? unavailableMessage(entry) : null,
         );
+        if (entry.metadata) {
+          const metadata = entry.metadata;
+          if (metadata.version) {
+            details.append(element("p", { className: "hint" }, `Version: ${metadata.version}`));
+          }
+          if (metadata.publisher) {
+            details.append(element("p", { className: "hint" }, `Publisher: ${metadata.publisher}`));
+          }
+          if (/^https?:\/\//i.test(metadata.url ?? "")) {
+            details.append(
+              element(
+                "a",
+                { href: metadata.url, target: "_blank", rel: "noopener noreferrer" },
+                "View published plugin",
+              ),
+            );
+          }
+          if (metadata.declaredTools?.length) {
+            details.append(
+              element("h4", {}, "Declared tools"),
+              element(
+                "p",
+                { className: "hint" },
+                "Published package metadata only. These names are not available for tool policies or invocation.",
+              ),
+              element("ul", {}, ...metadata.declaredTools.map((name) => element("li", {}, name))),
+            );
+          }
+        }
         if (selected) {
           const enabled = element("input", {
             type: "checkbox",
@@ -551,7 +604,7 @@ export function createPluginFields({
               ),
             );
           }
-        } else {
+        } else if (!anonymous || entry.available !== false) {
           const add = button(`Add ${entry.name}`, () =>
             update((all) => {
               all[entry.id] = { enabled: true };
@@ -573,7 +626,9 @@ export function createPluginFields({
             element(
               "p",
               { className: "hint" },
-              "Tool list unavailable. Existing tool overrides are preserved; this does not mean the plugin has no tools.",
+              anonymous
+                ? "Load plugin details to view published metadata."
+                : "Tool list unavailable. Existing tool overrides are preserved; this does not mean the plugin has no tools.",
             ),
           );
           if (onLoadTools && entry.remoteId) {
@@ -581,15 +636,19 @@ export function createPluginFields({
               element(
                 "p",
                 { className: "hint" },
-                "Load tools to check this plugin before selecting it.",
+                anonymous
+                  ? "Discovery does not install this package."
+                  : "Load tools to check this plugin before selecting it.",
               ),
             );
             const load = button(
               entry.toolStatus === "loading"
-                ? "Loading tools…"
+                ? anonymous
+                  ? "Loading details…"
+                  : "Loading tools…"
                 : entry.toolError
-                  ? `Retry tools for ${entry.name}`
-                  : `Load tools for ${entry.name}`,
+                  ? `Retry ${anonymous ? "details" : "tools"} for ${entry.name}`
+                  : `Load ${anonymous ? "details" : "tools"} for ${entry.name}`,
               () => onLoadTools(entry.id),
             );
             load.dataset.discovery = "true";
@@ -598,7 +657,7 @@ export function createPluginFields({
             );
             details.append(load);
           }
-        } else if (tools.size === 0) {
+        } else if (tools.size === 0 && !entry.metadata?.declaredTools?.length) {
           details.append(element("p", { className: "hint" }, "No tools listed for this plugin."));
         }
         if (entry.toolError) {
@@ -814,6 +873,8 @@ export function createPluginFields({
     section,
     setDisabled(value) {
       disabled = value;
+      submitSearch.disabled = value || !catalog?.canLoad || catalog?.status === "loading";
+      clearSearch.disabled = submitSearch.disabled || (!catalog?.query && !search.value);
       section.toggleAttribute("inert", value);
       configure.disabled = value;
       loadPlugins.disabled = value || !catalog?.canLoad || catalog?.status === "loading";
@@ -834,6 +895,9 @@ export function createPluginFields({
       render();
     },
     setCatalog(value) {
+      if (catalog?.query !== value?.query || catalog?.search !== value?.search) {
+        search.value = configuredOnly ? "" : (value?.query ?? "");
+      }
       catalog = value;
       render();
     },

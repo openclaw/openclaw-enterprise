@@ -87,6 +87,7 @@ export interface ProviderSummary {
 export interface InstallationCapabilities {
   readonly agentProvisioning?: ComputeAgentProvisioningCapabilities;
   readonly pluginPolicies?: PluginPolicyCapabilities & { readonly driver: PluginDriverIdentity };
+  readonly pluginDiscovery?: PluginDiscoveryCapabilities;
 }
 
 export interface Provider<Client = unknown> {
@@ -318,10 +319,22 @@ export interface PluginCatalogLink {
   readonly url: string;
 }
 
+export interface PluginDiscoveryCapabilities {
+  readonly authentication: "none" | "service_account_token";
+  readonly search: boolean;
+}
+
 export interface PluginCatalogEntry {
   readonly id: string;
   readonly name: string;
   readonly remoteId?: string;
+  /** Published metadata is not an admitted runtime tool or policy identity. */
+  readonly metadata?: {
+    readonly version?: string;
+    readonly publisher?: string;
+    readonly url?: string;
+    readonly declaredTools?: readonly string[];
+  };
   readonly description?: string;
   /** Public HTTPS presentation image; may expire and is never selection state. */
   readonly logoUrl?: string;
@@ -847,13 +860,14 @@ export interface PluginDriver extends Driver {
   /** Checks policy support without installing plugins or performing authenticated discovery. */
   validatePolicies(selections: PluginDesiredState): void;
   listCatalog(context: PluginDriverContext): Promise<readonly PluginCatalogEntry[]>;
-  /** Pre-Agent discovery uses a transient credential; neither it nor results are persisted. */
+  readonly discoveryCapabilities?: PluginDiscoveryCapabilities;
+  /** Pre-Agent discovery never persists its optional credential or results. */
   discoverCatalog?(
-    input: { readonly accessToken: string; readonly cursor?: string },
+    input: { readonly accessToken?: string; readonly cursor?: string; readonly query?: string },
     signal?: AbortSignal,
   ): Promise<PluginCatalogPage>;
   getCatalogPlugin?(
-    input: { readonly accessToken: string; readonly pluginId: string },
+    input: { readonly accessToken?: string; readonly pluginId: string },
     signal?: AbortSignal,
   ): Promise<PluginCatalogEntry>;
 }
