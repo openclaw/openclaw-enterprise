@@ -123,9 +123,10 @@ for (const plugin of ["codex", "slack"]) {
 NODE
 COPY --from=openclaw-source /tmp/codex.patch /tmp/codex.patch
 COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
-RUN --mount=type=bind,from=openclaw-source,source=/source/scripts,target=/verify-scripts \
+RUN --mount=type=bind,from=openclaw-source,source=/source/scripts,target=/verification/scripts \
+    --mount=type=bind,from=openclaw-build,source=/source/node_modules,target=/verification/node_modules \
     node /tmp/build-runtime-assets.mjs package /source /out /tmp/codex.patch \
-    && NODE_PATH=/source/node_modules node /verify-scripts/check-package-dist-imports.mjs /source
+    && node /verification/scripts/check-package-dist-imports.mjs /source
 
 FROM ${NODE_RUNTIME_BASE_IMAGE} AS runtime
 
