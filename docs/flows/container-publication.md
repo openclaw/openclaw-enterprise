@@ -70,14 +70,15 @@ separately pinned. See the [runtime recipe](../../deploy/runtime/README.md) for
 source identity and installed-image checks.
 Before starting the runtime build,
 `scripts/ci/repository-platform-headroom.mjs:main` verifies it is running on the
-Ubuntu 24 GitHub-hosted runner and removes only its unused, fixed Android SDK
-directory. The helper rejects symlinks, mounts, and unexpected runner/SDK paths
-and logs free bytes and inodes before and after cleanup. BuildKit runs one build
-step at a time to avoid overlapping dependency-install peaks. Each runtime
-dependency-install stage removes its temporary pnpm store in the same layer;
-the installed dependencies and frozen lockfiles remain unchanged. These steps
-reduce peak disk use before OCI export. The SDK helper rejects local and
-self-hosted runners. Controller preparation does not use the SDK cleanup.
+Ubuntu 24 GitHub-hosted runner and removes fixed, unused Android, language SDK,
+and non-Node tool-cache directories. The helper rejects symlinks, mounts, and
+unexpected paths, then requires 36 GiB free and logs capacity before and after
+cleanup. Local and self-hosted runners are rejected. Controller preparation does
+not use this cleanup.
+
+BuildKit runs one build step at a time to avoid overlapping dependency-install
+peaks. Each runtime dependency-install stage removes its temporary pnpm store
+in the same layer; installed dependencies and frozen lockfiles remain unchanged.
 
 Each image job exports amd64 to an OCI directory, prunes only its dedicated
 Buildx builder's cache, then repeats for arm64. This keeps one architecture's
@@ -97,7 +98,7 @@ config must agree with the index's platform; missing, duplicate, unsupported, or
 corrupt entries stop preparation.
 
 `scripts/ci/container-release.mjs:smoke` binds the archive's root digest to the
-Buildx output, then uses Skopeo's explicit platform selection to load one variant
+assembly output, then uses Skopeo's explicit platform selection to load one variant
 at a time. Docker's loaded config ID must match the selected index entry before
 the existing controller or runtime startup suite runs against that ID. AMD64 runs
 natively and ARM64 under QEMU. The ARM64 invocation selects an emulation timeout
