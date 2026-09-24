@@ -137,7 +137,8 @@ Docker inspection failures stop preparation. Cleanup removes owned import tags
 and preserves the supplied source image.
 
 On GitHub-hosted runners, `k3d-observability` removes unused SDKs and requires
-36 GiB free before building and importing images. Local runs do not invoke this
+36 GiB free before building and importing images. SDK removals run concurrently
+with a ten-minute deadline and per-directory timing receipts. Local runs do not invoke this
 guarded cleanup.
 
 Image imports time out after ten minutes. Preparation verifies each immutable

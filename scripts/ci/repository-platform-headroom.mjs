@@ -180,36 +180,56 @@ async function main() {
     }
   }
   receipt.stage = "sdk-removal";
-  // The privileged timeout can terminate root-owned rm; the runner cannot.
-  await execute(
-    "/usr/bin/sudo",
-    [
-      "-n",
-      "--",
-      "/usr/bin/timeout",
-      "--signal=TERM",
-      "--kill-after=5s",
-      "240s",
-      "/usr/bin/rm",
-      "--recursive",
-      "--force",
-      "--one-file-system",
-      "--preserve-root=all",
-      "--",
-      ...removalRoots,
-    ],
-    250_000,
+  const observability = receipt.lane === "k3d-observability";
+  const groups = observability ? removalRoots.map((root) => [root]) : [removalRoots];
+  const timeoutSeconds = observability ? 600 : 240;
+  receipt.removals = groups.map((roots) => ({ roots, status: "pending" }));
+  // All roots have passed the ownership/mount guards. The fixed, disjoint SDK
+  // roots can be removed together; settle every process before checking capacity.
+  const removals = await Promise.allSettled(
+    receipt.removals.map(async (removal) => {
+      const started = performance.now();
+      removal.status = "failed";
+      try {
+        // The privileged timeout can terminate root-owned rm; the runner cannot.
+        await execute(
+          "/usr/bin/sudo",
+          [
+            "-n",
+            "--",
+            "/usr/bin/timeout",
+            "--signal=TERM",
+            "--kill-after=5s",
+            `${timeoutSeconds}s`,
+            "/usr/bin/rm",
+            "--recursive",
+            "--force",
+            "--one-file-system",
+            "--preserve-root=all",
+            "--",
+            ...removal.roots,
+          ],
+          (timeoutSeconds + 10) * 1_000,
+        );
+        for (const root of removal.roots) {
+          try {
+            await lstat(root);
+            assert.fail("Runner cleanup incomplete.");
+          } catch (error) {
+            assert(error.code === "ENOENT");
+          }
+        }
+        removal.status = "passed";
+      } finally {
+        removal.durationMs = Math.round(performance.now() - started);
+      }
+    }),
   );
-  for (const root of removalRoots) {
-    try {
-      await lstat(root);
-      assert.fail("Runner cleanup incomplete.");
-    } catch (error) {
-      assert(error.code === "ENOENT");
-    }
-  }
+  receipt.rootsRemoved = receipt.removals
+    .filter(({ status }) => status === "passed")
+    .flatMap(({ roots }) => roots);
+  assert(removals.every(({ status }) => status === "fulfilled"));
   receipt.sdkRemoved = true;
-  receipt.rootsRemoved = removalRoots;
   if (largeImageLane) {
     receipt.minimumAvailableBytes = minimumRuntimeAvailableBytes;
     receipt.stage = "capacity-guard";
