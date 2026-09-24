@@ -48,6 +48,71 @@ export const AgentModelListResponse = Type.Object(
   { additionalProperties: false },
 );
 
+const PluginCatalogLinkSchema = Type.Object(
+  { label: Type.String(), url: Type.String() },
+  { additionalProperties: false },
+);
+
+const PluginCatalogEntrySchema = Type.Object(
+  {
+    id: Type.String(),
+    name: Type.String(),
+    remoteId: Type.Optional(Type.String()),
+    logoUrl: Type.Optional(Type.String()),
+    websiteUrl: Type.Optional(Type.String()),
+    privacyPolicyUrl: Type.Optional(Type.String()),
+    termsOfServiceUrl: Type.Optional(Type.String()),
+    description: Type.Optional(Type.String()),
+    available: Type.Optional(Type.Boolean()),
+    unavailableReason: Type.Optional(Type.String()),
+    unavailableHelp: Type.Optional(PluginCatalogLinkSchema),
+    tools: Type.Union([
+      Type.Null(),
+      Type.Array(
+        Type.Object(
+          {
+            id: Type.String(),
+            name: Type.String(),
+            description: Type.Optional(Type.String()),
+            ownerId: Type.String(),
+            available: Type.Optional(Type.Boolean()),
+            unavailableReason: Type.Optional(Type.String()),
+            destructive: Type.Optional(Type.Boolean()),
+            writes: Type.Optional(Type.Boolean()),
+          },
+          { additionalProperties: false },
+        ),
+      ),
+    ]),
+  },
+  { additionalProperties: false },
+);
+
+export const AgentPluginCatalogResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        plugins: Type.Array(PluginCatalogEntrySchema),
+        nextCursor: Type.Union([Type.String(), Type.Null()]),
+        setup: Type.Optional(
+          Type.Object(
+            { message: Type.String(), links: Type.Array(PluginCatalogLinkSchema) },
+            { additionalProperties: false },
+          ),
+        ),
+      },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);
+
+export const AgentPluginDetailsResponse = Type.Object(
+  { data: PluginCatalogEntrySchema, meta: Meta },
+  { additionalProperties: false },
+);
+
 const RuntimeEvidenceTimestamp = Type.String({
   format: "date-time",
   pattern:

@@ -2,6 +2,7 @@ import { asRecord, deepFreeze, immutableCopy } from "@openclaw-enterprise/utils"
 import {
   type JSONSchema,
   type PluginCatalogEntry,
+  type PluginCatalogPage,
   type PluginDriver,
   type PluginDesiredState,
   type PluginPolicyCapabilities,
@@ -19,6 +20,7 @@ import {
   type CodexPluginCatalogReader,
 } from "./runtime-translator.ts";
 import { NativeCodexPluginCatalogReader } from "./stdio-catalog-reader.ts";
+import { discoverHostedPlugins, getHostedPlugin } from "./hosted-catalog.ts";
 
 type ConfigurationRecord = Readonly<Record<string, unknown>>;
 
@@ -214,6 +216,20 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
 
   static validateConfiguration(configuration: unknown): void {
     validateCodexConfiguration(configuration);
+  }
+
+  discoverCatalog(
+    input: { readonly accessToken: string; readonly cursor?: string },
+    signal?: AbortSignal,
+  ): Promise<PluginCatalogPage> {
+    return discoverHostedPlugins(input, signal);
+  }
+
+  getCatalogPlugin(
+    input: { readonly accessToken: string; readonly pluginId: string },
+    signal?: AbortSignal,
+  ): Promise<PluginCatalogEntry> {
+    return getHostedPlugin(input, signal);
   }
 
   constructor(

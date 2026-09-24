@@ -30,9 +30,26 @@ The [shared interface](../../../packages/contracts/src/index.ts) exposes:
 
 Catalog entries contain `id`, `name`, and `tools`. `tools:null` means unknown;
 `tools:[]` means the observed inventory was empty for that read. Each tool has
-an opaque `id`, `name`,
-and `ownerId`; `destructive` and `writes` annotations are optional. An entry
+an opaque `id`, `name`, and `ownerId`. Description, availability, and safe
+unavailability reasons are optional metadata; `destructive` and `writes`
+annotations are also optional. Missing classifications mean unknown. An entry
 does not grant access, select a plugin, or prove the policy can run.
+
+Optional `logoUrl` supplies a public HTTPS presentation image. Bundled Codex reads
+`release.interface.logo_url`, then `composer_icon_url`; missing or invalid URLs
+are omitted. Console loads these images without PAT/account headers or referrers,
+and shows initials if an image fails. URLs may expire and are never copied into
+Agent selections. Console CSP permits HTTPS images while retaining same-origin
+scripts and connections.
+
+Optional `websiteUrl`, `privacyPolicyUrl`, and `termsOfServiceUrl` provide public
+HTTPS links in plugin details. An unavailable entry can include `unavailableHelp`
+as `{label, url}`. Discovery pages can include `setup: {message, links}`, where
+each link has the same shape. The selected Driver owns these explanations and
+destinations; Console renders them without vendor-specific setup logic. This
+metadata never enters Agent selections and does not verify app connections,
+grant access, or configure credentials. Connection verification and deployment
+gates are not part of this metadata contract.
 
 Authorized `GET /installation` exposes the selected Driver's identity and policy
 capabilities. See the [capability response](../agent-plugins.md#discover-policy-controls).
@@ -41,8 +58,18 @@ There is no exported install, enable, policy-translation, or preparation method.
 The optional _backend reader_ in bundled Codex is different from the required
 `listCatalog` method: without that reader, an explicit catalog call fails, but
 saving Agent selections and deploying supported selections can still use the
-Agent runtime's discovery path. This interface does not provide an HTTP catalog
-discovery endpoint.
+Agent runtime's discovery path.
+
+Two optional methods serve pre-Agent discovery: `discoverCatalog({accessToken,
+cursor?}, signal?)` returns `{plugins, nextCursor, setup?}`, and
+`getCatalogPlugin({accessToken, pluginId}, signal?)` returns tool details. Here
+`pluginId` is the opaque `remoteId` from a discovery entry; the entry's `id` is
+the stable selection key. The HTTP routes are `POST /namespaces/:namespaceId/agents/plugins`
+and its `/details` child. Both require Agent-create authority in the Namespace,
+perform no platform writes, and return `Cache-Control: no-store`. Tokens are
+write-only request fields and never appear in catalog responses or audit events.
+A missing method reports unsupported discovery. These methods do not require an
+existing Agent, plugin installation, or runtime connection.
 See [bundled selection and catalog setup](plugin-bundled.md#selection-and-catalogs).
 
 ## IAM

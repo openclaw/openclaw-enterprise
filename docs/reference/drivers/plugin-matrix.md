@@ -5,7 +5,8 @@ This page preserves the **2026-09-17 historical source snapshot** below. Its
 the current API. For current authoring controls, read
 [Agent plugin policy](../agent-plugins.md#approval-policy),
 [bundled Driver mappings](plugin-bundled.md#native-mappings-and-limits), or the
-selected Driver's `GET /installation` capabilities.
+selected Driver's `GET /installation` capabilities. For current hosted discovery,
+see [Create Agent plugins](../console/create-and-deploy.md).
 
 The [local docs preview](../../local-preview.md) adds filters and expandable
 evidence to this historical table. GitHub shows the generated table with pinned

@@ -121,6 +121,9 @@
       "path": "tests/integration/secret-api.test.mjs"
     },
     {
+      "path": "tests/integration/plugin-discovery-api.test.mjs"
+    },
+    {
       "path": "tests/integration/runtime-credentials-api.test.mjs"
     },
     {
@@ -215,6 +218,9 @@
     },
     {
       "path": "tests/conformance/plugin-driver.test.mjs"
+    },
+    {
+      "path": "tests/conformance/hosted-plugin-discovery.test.mjs"
     },
     {
       "path": "tests/conformance/plugin-runtime-templates.test.mjs"

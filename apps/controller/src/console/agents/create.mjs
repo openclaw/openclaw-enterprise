@@ -4,6 +4,7 @@ import { harnessAuthDescription } from "./harness-auth.mjs";
 import { createRepositoryFields } from "./repositories.mjs";
 import { ensureSecretOperateBinding } from "./secret-access.mjs";
 import { createPresetFields } from "./presets.mjs";
+import { createPluginFields } from "./plugin-fields.mjs";
 import { renderChannels } from "../channels.mjs";
 import { link, message, namespacePath } from "./list.mjs";
 
@@ -592,6 +593,8 @@ function renderAgentForm(context, rendered) {
     updateControls();
   });
   configuration.addEventListener("input", () => {
+    const previousProvider = nativeProvider.value;
+    const previousHarness = harness.value;
     configuration.setCustomValidity("");
     feedback.textContent = "";
     const values = parseObject(configuration);
@@ -616,11 +619,173 @@ function renderAgentForm(context, rendered) {
         modelChoice.value = "";
       }
     }
+    if (previousProvider !== nativeProvider.value || previousHarness !== harness.value) {
+      resetPluginDiscovery();
+    }
     renderChannelEditor();
   });
 
   const plugins = element("textarea", { id: "agent-plugins", rows: "4", spellcheck: "false" });
   plugins.value = JSON.stringify(agent.plugins ?? {}, null, 2);
+  let pluginDiscoveryGeneration = 0;
+  let pluginCatalog = { status: "idle", nextCursor: null };
+  const pluginEntries = new Map();
+  let pluginPageIds = [];
+  let pluginCursors = [null];
+  let pluginPageIndex = 0;
+  const pluginFields = createPluginFields({
+    input: plugins,
+    onLoadPlugins: (direction) => void loadPluginCatalog(direction),
+    onLoadTools: (id) => void loadPluginTools(id),
+  });
+  function canDiscoverPlugins() {
+    return (
+      !binding &&
+      nativeProvider.value === "openai" &&
+      harness.value === "codex" &&
+      authMethod.value === "codex_pat" &&
+      Boolean(apiKey.value.trim())
+    );
+  }
+  function updatePluginDiscovery() {
+    pluginFields.setCatalog({
+      ...pluginCatalog,
+      entries: pluginPageIds.map((id) => pluginEntries.get(id)),
+      knownEntries: [...pluginEntries.values()],
+      pageNumber: pluginPageIndex + 1,
+      hasPrevious: pluginPageIndex > 0,
+      canLoad: canDiscoverPlugins(),
+      message:
+        pluginCatalog.message ??
+        (canDiscoverPlugins()
+          ? "Load plugins available to this service account token. Your plugin selections stay unchanged."
+          : "To discover plugins, choose Service Accounts with the Codex harness and enter a token. Saved Preset credentials cannot be used for discovery here."),
+    });
+  }
+  function resetPluginDiscovery() {
+    // A catalog belongs to the entered credential and harness; late responses cannot restore it.
+    pluginDiscoveryGeneration += 1;
+    pluginEntries.clear();
+    pluginPageIds = [];
+    pluginCursors = [null];
+    pluginPageIndex = 0;
+    pluginCatalog = { status: "idle", nextCursor: null };
+    updatePluginDiscovery();
+  }
+  function pluginDiscoveryError(error) {
+    const reason = {
+      PLUGIN_DISCOVERY_CREDENTIALS_REJECTED:
+        "The service account token was rejected or cannot access plugins. Check its permissions.",
+      PLUGIN_DISCOVERY_RATE_LIMITED: "The plugin service rate limit was reached. Try again later.",
+      PLUGIN_DISCOVERY_UNAVAILABLE:
+        "The plugin service is unavailable. Check the server's plugin service access and retry.",
+      PLUGIN_DISCOVERY_INVALID_RESPONSE:
+        "The plugin service returned an unsupported response. Retry or contact your operator.",
+    }[error.code];
+    return `${reason ?? "Plugins could not be loaded. Check the credential and retry."}${error.requestId ? ` Request: ${error.requestId}` : ""}`;
+  }
+  async function loadPluginCatalog(direction = "refresh") {
+    if (!canDiscoverPlugins() || pending || pluginCatalog.status === "loading") {
+      return;
+    }
+    let pageIndex = pluginPageIndex;
+    let cursor = pluginCursors[pageIndex];
+    if (direction === "next") {
+      if (!pluginCatalog.nextCursor) {
+        return;
+      }
+      pageIndex += 1;
+      cursor = pluginCatalog.nextCursor;
+    } else if (direction === "previous") {
+      if (pageIndex === 0) {
+        return;
+      }
+      pageIndex -= 1;
+      cursor = pluginCursors[pageIndex];
+    }
+    // Every navigation invalidates in-flight details; the service owns page boundaries.
+    const generation = ++pluginDiscoveryGeneration;
+    for (const [id, entry] of pluginEntries) {
+      pluginEntries.set(id, { ...entry, toolStatus: undefined });
+    }
+    pluginCatalog = { ...pluginCatalog, status: "loading" };
+    updatePluginDiscovery();
+    try {
+      const page = await request(`${namespacePath(namespaceId)}/agents/plugins`, {
+        method: "POST",
+        body: { accessToken: apiKey.value, ...(cursor ? { cursor } : {}) },
+      });
+      if (!context.isCurrent() || generation !== pluginDiscoveryGeneration) {
+        return;
+      }
+      for (const entry of page.plugins) {
+        pluginEntries.set(entry.id, entry);
+      }
+      pluginPageIds = page.plugins.map((entry) => entry.id);
+      pluginCursors = [...pluginCursors.slice(0, pageIndex), cursor];
+      pluginPageIndex = pageIndex;
+      pluginCatalog = { status: "ready", nextCursor: page.nextCursor, setup: page.setup };
+    } catch (error) {
+      if (!context.isCurrent() || generation !== pluginDiscoveryGeneration) {
+        return;
+      }
+      if (error.status === 401) {
+        context.onExpired();
+        return;
+      }
+      pluginCatalog = { ...pluginCatalog, status: "error", message: pluginDiscoveryError(error) };
+    } finally {
+      if (context.isCurrent() && generation === pluginDiscoveryGeneration) {
+        updatePluginDiscovery();
+      }
+    }
+  }
+  async function loadPluginTools(id) {
+    const entry = pluginEntries.get(id);
+    if (
+      !canDiscoverPlugins() ||
+      pending ||
+      pluginCatalog.status === "loading" ||
+      !entry?.remoteId ||
+      entry.toolStatus === "loading"
+    ) {
+      return;
+    }
+    const generation = pluginDiscoveryGeneration;
+    pluginEntries.set(id, { ...entry, toolStatus: "loading", toolError: undefined });
+    updatePluginDiscovery();
+    try {
+      const detail = await request(`${namespacePath(namespaceId)}/agents/plugins/details`, {
+        method: "POST",
+        body: { accessToken: apiKey.value, pluginId: entry.remoteId },
+      });
+      if (
+        !context.isCurrent() ||
+        generation !== pluginDiscoveryGeneration ||
+        pluginEntries.get(id)?.remoteId !== entry.remoteId
+      ) {
+        return;
+      }
+      pluginEntries.set(id, { ...entry, ...detail, toolStatus: undefined, toolError: undefined });
+    } catch (error) {
+      if (!context.isCurrent() || generation !== pluginDiscoveryGeneration) {
+        return;
+      }
+      if (error.status === 401) {
+        context.onExpired();
+        return;
+      }
+      pluginEntries.set(id, { ...entry, toolError: pluginDiscoveryError(error) });
+    } finally {
+      if (context.isCurrent() && generation === pluginDiscoveryGeneration) {
+        updatePluginDiscovery();
+      }
+    }
+  }
+  apiKey.addEventListener("input", resetPluginDiscovery);
+  for (const control of [nativeProvider, authMethod, harness]) {
+    control.addEventListener("change", resetPluginDiscovery);
+  }
   const secretBindings = element("textarea", {
     id: "configuration-secret-bindings",
     rows: "4",
@@ -791,6 +956,7 @@ function renderAgentForm(context, rendered) {
       feedback.textContent = "";
       updateControls();
     })).section,
+    pluginFields.section,
     element(
       "details",
       { className: "launch-advanced" },
@@ -798,7 +964,7 @@ function renderAgentForm(context, rendered) {
       element(
         "p",
         { className: "hint" },
-        "Defaults are ready to use. Customize configuration, Secret bindings, plugins, or initial workspace files when needed.",
+        "Defaults are ready to use. Customize configuration, Secret bindings, or initial workspace files when needed.",
       ),
       field(
         "Configuration JSON",
@@ -811,7 +977,6 @@ function renderAgentForm(context, rendered) {
         secretBindings,
         "Map environment names to existing Secret references in this Namespace. Do not enter credentials.",
       ),
-      field("Plugin selections JSON", plugins, "Desired plugin selections and policies."),
       workspaceSection,
     ),
   );
@@ -989,6 +1154,10 @@ function renderAgentForm(context, rendered) {
     for (const node of actions.querySelectorAll("button")) {
       node.disabled = pending;
     }
+    updatePluginDiscovery();
+    pluginFields.setDisabled(
+      pending || Boolean(savedAgent) || Boolean(provisioningAttempt) || outcomeUnknown,
+    );
     channelEditor.toggleAttribute("inert", pending || saved || outcomeUnknown);
     channelEditor.setAttribute("aria-busy", pending ? "true" : "false");
     const usesPat = (binding?.method ?? authMethod.value) === "codex_pat";
@@ -1105,6 +1274,7 @@ function renderAgentForm(context, rendered) {
       if (!context.isCurrent()) {
         return;
       }
+      pluginFields.setCapabilities(installation.capabilities?.pluginPolicies ?? null);
       provisionableExecutionModes.clear();
       for (const executionMode of installation.capabilities?.agentProvisioning?.executionModes ??
         []) {

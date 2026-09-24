@@ -22,7 +22,27 @@ history.replaceState(
 // Focus the isolated preview before the console registers its focus-refresh handler.
 // Otherwise the first interaction can reset a preselected Preset before it becomes a form.
 window.focus();
-await import("/console/console.mjs");
+if (scenario.component === "plugins") {
+  // Isolated previews pass fixture catalogs and capabilities to the real component.
+  const { createPluginFields } = await import("/console/agents/plugin-fields.mjs");
+  const input = document.createElement("textarea");
+  input.id = "agent-plugins";
+  input.rows = 6;
+  input.spellcheck = false;
+  input.value = scenario.pluginSelections ?? "{}";
+  const fields = createPluginFields({
+    input,
+    catalog: scenario.pluginCatalog ?? null,
+    capabilities: scenario.pluginCapabilities ?? null,
+  });
+  const panel = document.createElement("section");
+  panel.className = "agent-card agent-form";
+  panel.append(fields.section);
+  document.querySelector("#app").append(panel);
+  fields.setDisabled(scenario.disabled ?? false);
+} else {
+  await import("/console/console.mjs");
+}
 
 // Prepare open drawers and validation states by operating the real UI, not editing its markup.
 try {

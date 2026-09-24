@@ -30,7 +30,7 @@ Each operation lists its supported status codes.
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `error` | `object` | Yes | — |
-| `error.code` | `"INVALID_REQUEST" or "UNAUTHENTICATED" or "FORBIDDEN" or "NOT_FOUND" or "METHOD_NOT_ALLOWED" or "INSTALLATION_EXISTS" or "RESOURCE_CONFLICT" or "AGENT_DELETING" or "NAMESPACE_NOT_READY" or "NAMESPACE_NOT_EMPTY" or "PAYLOAD_TOO_LARGE" or "UNSUPPORTED_MEDIA_TYPE" or "UNKNOWN_OUTCOME" or "NOT_IMPLEMENTED" or "INTERNAL_ERROR" or "DEPENDENCY_UNAVAILABLE" or "REPOSITORY_OPTIONS_UNAVAILABLE" or "MODEL_DISCOVERY_CREDENTIALS_REJECTED" or "MODEL_DISCOVERY_RATE_LIMITED" or "MODEL_DISCOVERY_UNAVAILABLE" or "MODEL_DISCOVERY_INVALID_RESPONSE"` | Yes | — |
+| `error.code` | `"INVALID_REQUEST" or "UNAUTHENTICATED" or "FORBIDDEN" or "NOT_FOUND" or "METHOD_NOT_ALLOWED" or "INSTALLATION_EXISTS" or "RESOURCE_CONFLICT" or "AGENT_DELETING" or "NAMESPACE_NOT_READY" or "NAMESPACE_NOT_EMPTY" or "PAYLOAD_TOO_LARGE" or "UNSUPPORTED_MEDIA_TYPE" or "UNKNOWN_OUTCOME" or "NOT_IMPLEMENTED" or "INTERNAL_ERROR" or "DEPENDENCY_UNAVAILABLE" or "REPOSITORY_OPTIONS_UNAVAILABLE" or "MODEL_DISCOVERY_CREDENTIALS_REJECTED" or "MODEL_DISCOVERY_RATE_LIMITED" or "MODEL_DISCOVERY_UNAVAILABLE" or "MODEL_DISCOVERY_INVALID_RESPONSE" or "PLUGIN_DISCOVERY_CREDENTIALS_REJECTED" or "PLUGIN_DISCOVERY_RATE_LIMITED" or "PLUGIN_DISCOVERY_UNAVAILABLE" or "PLUGIN_DISCOVERY_INVALID_RESPONSE"` | Yes | — |
 | `error.details` | `array<object>` | No | max items: 32 |
 | `error.details[].code` | `"REQUIRED" or "UNKNOWN_FIELD" or "INVALID_TYPE" or "INVALID_FORMAT" or "INVALID_VALUE" or "TOO_LONG" or "TOO_DEEP"` | Yes | — |
 | `error.details[].path` | `string` | Yes | max length: 512; pattern: `^(?:/(?:[^~/]\|~0\|~1)*)*$` |
@@ -46,7 +46,7 @@ Each operation lists its supported status codes.
 | [Backends](#backends) | 1 operation |
 | [Installation](#installation) | 2 operations |
 | [Namespaces](#namespaces) | 4 operations |
-| [Agents](#agents) | 18 operations |
+| [Agents](#agents) | 20 operations |
 | [Agent deployments](#agent-deployments) | 1 operation |
 | [Agent revisions](#agent-revisions) | 2 operations |
 | [Configurations](#configurations) | 4 operations |
@@ -679,6 +679,8 @@ Get an exact Installation-owned Namespace
 | [`GET /namespaces/{namespaceId}/agents`](#get-namespacesnamespaceidagents) | List authorized Agents in one exact Namespace |
 | [`POST /namespaces/{namespaceId}/agents`](#post-namespacesnamespaceidagents) | Create a Namespace-owned Agent |
 | [`POST /namespaces/{namespaceId}/agents/models`](#post-namespacesnamespaceidagentsmodels) | List provider models for Agent creation without storing the supplied credential |
+| [`POST /namespaces/{namespaceId}/agents/plugins`](#post-namespacesnamespaceidagentsplugins) | List available plugins for Agent creation without storing the supplied credential |
+| [`POST /namespaces/{namespaceId}/agents/plugins/details`](#post-namespacesnamespaceidagentspluginsdetails) | Read available plugin tools without storing the supplied credential |
 | [`POST /namespaces/{namespaceId}/agents/provision`](#post-namespacesnamespaceidagentsprovision) | Create a new Agent and queue first-time provisioning |
 | [`GET /namespaces/{namespaceId}/agents/provision/{workId}`](#get-namespacesnamespaceidagentsprovisionworkid) | Get first-time provisioning status for one exact work item |
 | [`POST /namespaces/{namespaceId}/agents/provision/{workId}/retry`](#post-namespacesnamespaceidagentsprovisionworkidretry) | Retry failed first-time provisioning for one exact work item |
@@ -894,6 +896,153 @@ List provider models for Agent creation without storing the supplied credential
 | `data` | `array<object>` | Yes | — |
 | `data[].id` | `string` | Yes | — |
 | `data[].name` | `string` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+#### `POST /namespaces/{namespaceId}/agents/plugins`
+
+<span id="post-namespacesnamespaceidagentsplugins"></span>
+
+List available plugins for Agent creation without storing the supplied credential
+
+**Operation ID:** `discoverAgentPlugins`
+
+**Permissions:** Requires create permission for Agent resources in the requested Namespace.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `create` | `agent` | `namespace` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints |
+| --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `accessToken` | `string` | Yes | min length: 1; max length: 16384; pattern: `\S` |
+| `cursor` | `string` | No | min length: 1; max length: 8192 |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `409` | Conflict |
+| `413` | Payload Too Large |
+| `415` | Unsupported Media Type |
+| `429` | Too Many Requests |
+| `500` | Internal Server Error |
+| `501` | Not Implemented |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.nextCursor` | `string or null` | Yes | — |
+| `data.plugins` | `array<object>` | Yes | — |
+| `data.plugins[].available` | `boolean` | No | — |
+| `data.plugins[].description` | `string` | No | — |
+| `data.plugins[].id` | `string` | Yes | — |
+| `data.plugins[].logoUrl` | `string` | No | — |
+| `data.plugins[].name` | `string` | Yes | — |
+| `data.plugins[].privacyPolicyUrl` | `string` | No | — |
+| `data.plugins[].remoteId` | `string` | No | — |
+| `data.plugins[].termsOfServiceUrl` | `string` | No | — |
+| `data.plugins[].tools` | `null or array<object>` | Yes | — |
+| `data.plugins[].unavailableHelp` | `object` | No | — |
+| `data.plugins[].unavailableHelp.label` | `string` | Yes | — |
+| `data.plugins[].unavailableHelp.url` | `string` | Yes | — |
+| `data.plugins[].unavailableReason` | `string` | No | — |
+| `data.plugins[].websiteUrl` | `string` | No | — |
+| `data.setup` | `object` | No | — |
+| `data.setup.links` | `array<object>` | Yes | — |
+| `data.setup.links[].label` | `string` | Yes | — |
+| `data.setup.links[].url` | `string` | Yes | — |
+| `data.setup.message` | `string` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+#### `POST /namespaces/{namespaceId}/agents/plugins/details`
+
+<span id="post-namespacesnamespaceidagentspluginsdetails"></span>
+
+Read available plugin tools without storing the supplied credential
+
+**Operation ID:** `discoverAgentPluginDetails`
+
+**Permissions:** Requires create permission for Agent resources in the requested Namespace.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `create` | `agent` | `namespace` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints |
+| --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `accessToken` | `string` | Yes | min length: 1; max length: 16384; pattern: `\S` |
+| `pluginId` | `string` | Yes | min length: 1; max length: 256 |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `409` | Conflict |
+| `413` | Payload Too Large |
+| `415` | Unsupported Media Type |
+| `429` | Too Many Requests |
+| `500` | Internal Server Error |
+| `501` | Not Implemented |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.available` | `boolean` | No | — |
+| `data.description` | `string` | No | — |
+| `data.id` | `string` | Yes | — |
+| `data.logoUrl` | `string` | No | — |
+| `data.name` | `string` | Yes | — |
+| `data.privacyPolicyUrl` | `string` | No | — |
+| `data.remoteId` | `string` | No | — |
+| `data.termsOfServiceUrl` | `string` | No | — |
+| `data.tools` | `null or array<object>` | Yes | — |
+| `data.unavailableHelp` | `object` | No | — |
+| `data.unavailableHelp.label` | `string` | Yes | — |
+| `data.unavailableHelp.url` | `string` | Yes | — |
+| `data.unavailableReason` | `string` | No | — |
+| `data.websiteUrl` | `string` | No | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 

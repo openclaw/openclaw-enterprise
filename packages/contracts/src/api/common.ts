@@ -236,6 +236,29 @@ export const DiscoverAgentModelsBody = Type.Object(
   { additionalProperties: false },
 );
 
+const PluginDiscoveryAccessToken = Type.String({
+  minLength: 1,
+  maxLength: 16384,
+  pattern: "\\S",
+  writeOnly: true,
+});
+
+export const DiscoverAgentPluginsBody = Type.Object(
+  {
+    accessToken: PluginDiscoveryAccessToken,
+    cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
+  },
+  { additionalProperties: false },
+);
+
+export const DiscoverAgentPluginDetailsBody = Type.Object(
+  {
+    accessToken: PluginDiscoveryAccessToken,
+    pluginId: Type.String({ minLength: 1, maxLength: 256 }),
+  },
+  { additionalProperties: false },
+);
+
 export const PermissionActionSchema = Type.Union([
   Type.Literal("create"),
   Type.Literal("read"),
@@ -484,6 +507,10 @@ export const ERROR_CODES = Object.freeze([
   "MODEL_DISCOVERY_RATE_LIMITED",
   "MODEL_DISCOVERY_UNAVAILABLE",
   "MODEL_DISCOVERY_INVALID_RESPONSE",
+  "PLUGIN_DISCOVERY_CREDENTIALS_REJECTED",
+  "PLUGIN_DISCOVERY_RATE_LIMITED",
+  "PLUGIN_DISCOVERY_UNAVAILABLE",
+  "PLUGIN_DISCOVERY_INVALID_RESPONSE",
 ] as const);
 
 export const ErrorDetail = Type.Object(
@@ -534,6 +561,10 @@ export const ErrorResponse = Type.Object(
           Type.Literal("MODEL_DISCOVERY_RATE_LIMITED"),
           Type.Literal("MODEL_DISCOVERY_UNAVAILABLE"),
           Type.Literal("MODEL_DISCOVERY_INVALID_RESPONSE"),
+          Type.Literal("PLUGIN_DISCOVERY_CREDENTIALS_REJECTED"),
+          Type.Literal("PLUGIN_DISCOVERY_RATE_LIMITED"),
+          Type.Literal("PLUGIN_DISCOVERY_UNAVAILABLE"),
+          Type.Literal("PLUGIN_DISCOVERY_INVALID_RESPONSE"),
         ]),
         message: Type.String({ minLength: 1, maxLength: 256 }),
         details: Type.Optional(Type.Array(ErrorDetail, { maxItems: 32 })),

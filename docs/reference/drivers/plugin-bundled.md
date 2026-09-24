@@ -18,9 +18,9 @@ drivers:
     configuration: {}
 ```
 
-Dedicated Codex Agents can use `configuration: {}`: startup resolves selections
-with the Agent's projected credentials. An optional catalog reader supports the
-Driver's internal `listCatalog` interface:
+Dedicated Codex supports `configuration: {}` for startup and entered-PAT
+discovery. An optional controller-side `listCatalog` reader uses a separate native
+Codex profile:
 
 ```yaml
 drivers:
@@ -32,47 +32,62 @@ drivers:
       requestTimeoutMs: 10000
 ```
 
-`codexExecutable` and `codexHome` must be supplied together. The home must be a
-dedicated, operator-provisioned native Codex profile with existing Codex backend
-authentication. The optional timeout defaults to 10,000 milliseconds and accepts
-1–60,000. Catalog reads start native app-server and use `plugin/list`; native
-startup may update that profile's own cache. Use a separate profile from the
-operator's ordinary Codex workspace.
+Supply `codexExecutable` and `codexHome` together. Provision that home with Codex
+backend authentication, separately from the operator's ordinary profile.
+`requestTimeoutMs` defaults to 10,000 milliseconds and accepts 1–60,000.
+This reader starts native app-server, calls `plugin/list`, and may update its cache.
 
-An empty Codex Driver configuration permits Agent writes and deployment without
-controller-side catalog discovery. The catalog reader has no HTTP endpoint.
-Agent startup uses its projected credentials to resolve selections independently of this
-reader. Unknown options, arbitrary package selectors, and external PluginDriver
-packages are rejected. Existing required Driver selections remain necessary.
+Create Agent discovery instead hydrates entered PAT identity and reads GLOBAL
+plugin-service pages of up to 20 entries, fetching tools on demand. Requests have
+a 15-second deadline and 4 MiB response limit. Discovery does not read Codex home,
+install plugins, or return download URLs. Saved Secret and managed ServiceAccount
+references are unsupported. Plugin details show available website, privacy-policy,
+and terms-of-service links; invalid or non-HTTPS URLs are omitted.
+Catalog discovery does not verify current app connections. Check service-account
+connections in administration before deployment; OCE does not gate deployment on
+this unverified status.
 
-| Driver ID      | Implementation        | Agent Harness     | Catalog source                                                                                                   |
-| -------------- | --------------------- | ----------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `occ-plugin`   | `occ/openclaw-plugin` | Embedded OpenClaw | Bundled OpenClaw catalog, including `occ-plugin:diffs` (`@openclaw/diffs`).                                      |
-| `codex-plugin` | `occ/codex-plugin`    | Dedicated Codex   | Existing native Codex `openai-curated-remote` catalog, exposed as `codex-plugin:<plugin>@openai-curated-remote`. |
+To configure access:
 
-The OpenClaw catalog is bounded and pins Diffs `2026.8.2` plus npm integrity.
-The Codex catalog is discovered from the existing native curated marketplace at
-list/read time; Linear and Google Calendar are test fixtures, not production
-allowlist entries. API callers cannot choose arbitrary sources or versions.
-Startup resolves the current native identity, app mapping, and release metadata
-for each requested catalog ID.
+1. Open [ChatGPT workspace plugins](https://chatgpt.com/admin/plugins?catalog=GLOBAL)
+   and select the same workspace as the PAT. A workspace administrator must enable
+   plugin and app access for the token's user or service account.
+2. For service-account app credentials, open [OpenAI Admin](https://admin.openai.com/),
+   select that workspace and service account, and configure its app connections.
+   Workspace enablement and service-account credentials are separate requirements.
+3. Return to Create Agent and reload plugins. This refreshes catalog availability,
+   not connection verification. OCE plugin policies do not grant workspace access
+   or configure external credentials.
 
-Codex app mappings come only from concrete `plugin/read` entries in `detail.apps`.
-The Driver ignores `appTemplates` metadata, including materialized app IDs; an
-ID listed only in a template receives no policy grant. An app also present in
-`detail.apps` receives the selected policy normally. Plugins with no concrete
-apps remain unsupported. Template resolution and lifecycle handling are deferred.
+Unavailable entries explain the reported cause and link to recovery guidance:
 
-No PluginDriver selection is the default. Existing plugin-free deployments
-remain permitted. Saving nonempty Agent plugin selections requires a selected
-Driver and valid supported policy. It does not perform authenticated catalog
-discovery. Nonempty selections cannot start with a missing,
-changed, or Harness-incompatible Driver. Saved entries remain listable without
-their original Driver.
+| Cause                                                    | Next step                                                                                           |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Disabled by administrator                                | Ask a workspace administrator to review access for the token's identity.                            |
+| Plan not eligible                                        | Ask the administrator to review workspace plan availability.                                        |
+| Required app unavailable                                 | Review app access and setup; credentials alone may not resolve this.                                |
+| No recognized reason                                     | Review workspace plugin access without assuming a specific cause.                                   |
+| Unsupported native components or no concrete hosted apps | Check [native limits](#native-mappings-and-limits); changing ChatGPT access cannot add OCE support. |
 
-SSH Compute currently rejects every nonempty requested plugin map before host
-effects. It can run embedded OpenClaw revisions only when their requested plugin
-set is empty.
+Catalog visibility and credentials do not establish native execution or policy
+enforcement. Startup independently resolves selections using the Agent's projected
+credentials. Unknown configuration options, arbitrary sources or versions, and
+external PluginDriver packages are rejected.
+
+| Driver ID      | Implementation        | Agent Harness     | Catalog source                                                                                               |
+| -------------- | --------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------ |
+| `occ-plugin`   | `occ/openclaw-plugin` | Embedded OpenClaw | Bundled catalog: `occ-plugin:diffs` (`@openclaw/diffs`), pinned to `2026.8.2` and npm integrity.             |
+| `codex-plugin` | `occ/codex-plugin`    | Dedicated Codex   | Native `openai-curated-remote` marketplace; selection IDs are `codex-plugin:<plugin>@openai-curated-remote`. |
+
+Codex startup resolves current identity, release metadata, and concrete apps from
+`plugin/read`'s `detail.apps`. Template metadata alone grants no app access;
+plugins without concrete apps are unsupported. Template lifecycle is deferred.
+
+No PluginDriver is selected by default. Plugin-free deployments remain permitted.
+Nonempty selections require valid supported policy and the same compatible Driver
+at startup. Saving does not perform authenticated discovery; saved entries remain
+readable without their original Driver. SSH Compute rejects nonempty plugin maps
+before host effects and supports plugin-free embedded OpenClaw revisions.
 
 ## Native mappings and limits
 

@@ -62,6 +62,17 @@ export class ModelDiscoveryError extends Error {
   }
 }
 
+/** Safe discovery outcomes carry no upstream response, credential, or error cause. */
+export class PluginDiscoveryError extends Error {
+  readonly reason: "credentials_rejected" | "rate_limited" | "unavailable" | "invalid_response";
+
+  constructor(reason: PluginDiscoveryError["reason"]) {
+    super("Plugin discovery failed.");
+    this.name = "PluginDiscoveryError";
+    this.reason = reason;
+  }
+}
+
 export class ScopeViolationError extends Error {
   constructor(message: string) {
     super(message);

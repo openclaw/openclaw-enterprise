@@ -31,6 +31,8 @@ import type {
   PermissionAction,
   PluginDesiredSelection,
   PluginDesiredState,
+  PluginCatalogEntry,
+  PluginCatalogPage,
   PluginDriver,
   PluginRevisionState,
   BackendDefinition,
@@ -81,6 +83,7 @@ import {
   DependencyUnavailableError,
   DriverSelectionError,
   ModelDiscoveryError,
+  PluginDiscoveryError,
   NamespaceNotEmptyError,
   NamespaceNotReadyError,
   NotImplementedError,
@@ -144,6 +147,7 @@ export {
   DependencyUnavailableError,
   DriverSelectionError,
   ModelDiscoveryError,
+  PluginDiscoveryError,
   NamespaceNotEmptyError,
   NamespaceNotReadyError,
   NotImplementedError,
@@ -2718,6 +2722,52 @@ export class OpenClawController {
     } catch (error) {
       throw new ModelDiscoveryError(
         error instanceof ModelDiscoveryError ? error.reason : "unavailable",
+      );
+    }
+  }
+
+  async discoverAgentPlugins(
+    principalId: string,
+    namespaceId: string,
+    input: { readonly accessToken: string; readonly cursor?: string },
+    signal?: AbortSignal,
+  ): Promise<PluginCatalogPage> {
+    await this.authorize(principalId, "create", { kind: "agent", id: namespaceId, namespaceId });
+    await this.read((state) => this.exactNamespace(state, namespaceId));
+    const driver = this.pluginDriver();
+    if (!driver.discoverCatalog) {
+      throw new NotImplementedError("agent_plugins.discovery", "Plugin discovery is unavailable.");
+    }
+    // The credential belongs to this request; provider I/O must not hold a platform transaction.
+    try {
+      return await driver.discoverCatalog(input, signal);
+    } catch (error) {
+      throw new PluginDiscoveryError(
+        error instanceof PluginDiscoveryError ? error.reason : "unavailable",
+      );
+    }
+  }
+
+  async discoverAgentPluginDetails(
+    principalId: string,
+    namespaceId: string,
+    input: { readonly accessToken: string; readonly pluginId: string },
+    signal?: AbortSignal,
+  ): Promise<PluginCatalogEntry> {
+    await this.authorize(principalId, "create", { kind: "agent", id: namespaceId, namespaceId });
+    await this.read((state) => this.exactNamespace(state, namespaceId));
+    const driver = this.pluginDriver();
+    if (!driver.getCatalogPlugin) {
+      throw new NotImplementedError(
+        "agent_plugins.discovery",
+        "Plugin tool discovery is unavailable.",
+      );
+    }
+    try {
+      return await driver.getCatalogPlugin(input, signal);
+    } catch (error) {
+      throw new PluginDiscoveryError(
+        error instanceof PluginDiscoveryError ? error.reason : "unavailable",
       );
     }
   }

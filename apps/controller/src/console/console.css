@@ -527,6 +527,8 @@ select {
 .form-field input,
 .form-field select,
 .form-field textarea,
+.plugin-control select,
+.plugin-json textarea,
 .revision-selector select {
   width: 100%;
   border: 1px solid var(--input-border);
@@ -818,6 +820,351 @@ summary:focus-visible {
   margin-top: 12px;
 }
 
+.plugin-fields {
+  margin-block: 1.5rem;
+}
+.plugin-dialog {
+  width: min(72rem, calc(100vw - 2rem));
+  height: min(52rem, calc(100dvh - 2rem));
+  max-height: calc(100dvh - 2rem);
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 12px 48px rgba(13, 20, 33, 0.24);
+}
+.plugin-dialog[open] {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.plugin-dialog > p {
+  margin: 0;
+  flex-shrink: 0;
+}
+.plugin-dialog > p:empty {
+  display: none;
+}
+.plugin-access-help,
+.plugin-setup-reminder {
+  padding: 12px 16px;
+  background: #f7f9f8;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.plugin-dialog::backdrop {
+  background: rgba(15, 23, 42, 0.4);
+}
+.plugin-dialog-header,
+.plugin-detail-header,
+.plugin-tool-heading,
+.plugin-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.plugin-dialog-header h2,
+.plugin-detail-header h3 {
+  margin: 0;
+}
+.plugin-dialog-header {
+  flex-shrink: 0;
+}
+.plugin-workspace {
+  display: grid;
+  grid-template-columns: minmax(15rem, 18rem) minmax(0, 1fr);
+  flex: 1 0 24rem;
+  min-height: 24rem;
+  gap: 24px;
+}
+.plugin-browser,
+.plugin-detail {
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.plugin-browser {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: hidden;
+  padding: 4px 16px 4px 4px;
+  border-right: 1px solid var(--line);
+}
+.plugin-browser .form-field,
+.plugin-browser-status .hint {
+  margin: 0;
+}
+.plugin-browser-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.plugin-browser-status button {
+  flex-shrink: 0;
+  padding: 6px 10px;
+  font-size: 0.875rem;
+}
+.plugin-tabs,
+.plugin-pagination {
+  display: flex;
+  gap: 8px;
+}
+.plugin-tabs button,
+.plugin-pagination button {
+  flex: 1;
+  padding: 9px 8px;
+  font-size: 0.875rem;
+}
+.plugin-pagination {
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.plugin-tabs [aria-pressed="true"],
+.plugin-list-item[aria-current="true"] {
+  background: #e8f2ec;
+  border-color: var(--accent);
+}
+.plugin-list-item {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.plugin-identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.plugin-logo {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  overflow: hidden;
+  border-radius: 6px;
+  background: #f0f4f2;
+  color: var(--muted);
+  font-size: 1rem;
+}
+.plugin-logo img {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: white;
+}
+.plugin-detail-header .plugin-logo {
+  flex-basis: 40px;
+  width: 40px;
+  height: 40px;
+}
+.plugin-list-item .badge {
+  align-self: flex-start;
+  margin-left: 42px;
+  font-size: 0.75rem;
+}
+.plugin-detail-empty {
+  margin: 4rem 2rem;
+  text-align: center;
+}
+.plugin-back {
+  display: none;
+}
+.plugin-list {
+  display: grid;
+  align-content: start;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  gap: 8px;
+  padding: 4px;
+}
+.plugin-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 1rem;
+}
+.plugin-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 1rem;
+  margin-block: 0.75rem;
+}
+.plugin-control {
+  display: grid;
+  gap: 0.35rem;
+  flex: 1 1 12rem;
+}
+.plugin-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.plugin-toggle input {
+  width: auto;
+}
+.plugin-tool {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  margin-block: 0.75rem;
+  min-width: 0;
+}
+.plugin-tool-row {
+  margin-block: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.plugin-tool-row > summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 16px;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.plugin-tool-row > summary .plugin-tool-heading,
+.plugin-tool-description {
+  grid-column: 1;
+}
+.plugin-tool-actions {
+  display: flex;
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 16px;
+}
+.plugin-tool-policy-action {
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  font-size: 0.875rem;
+}
+.plugin-tool-policy-action::after {
+  content: " ▾";
+}
+.plugin-tool-row[open] .plugin-tool-policy-action::after {
+  content: " ▴";
+}
+.plugin-tool-switch {
+  appearance: none;
+  position: relative;
+  flex: 0 0 36px;
+  width: 36px;
+  height: 20px;
+  margin: 0;
+  border: 1px solid #bbc7c0;
+  border-radius: 12px;
+  background: #e3e8e5;
+  cursor: pointer;
+}
+.plugin-tool-switch::before {
+  content: "";
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  top: 2px;
+  left: 2px;
+  border-radius: 50%;
+  background: white;
+}
+.plugin-tool-switch:checked {
+  background: var(--accent);
+}
+.plugin-tool-switch:checked::before {
+  left: 18px;
+}
+.plugin-tool-switch:indeterminate::before {
+  width: 14px;
+  height: 2px;
+  top: 8px;
+  left: 10px;
+  border-radius: 0;
+  background: var(--accent);
+}
+.plugin-tool-switch:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.plugin-tool-switch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.plugin-tool-description {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  margin-top: 6px;
+}
+.plugin-tool-row .plugin-tool {
+  border: 0;
+  padding: 0;
+}
+.plugin-id {
+  overflow-wrap: anywhere;
+}
+.plugin-json > summary {
+  cursor: pointer;
+  font-weight: 550;
+  padding: 6px 0;
+}
+.plugin-json textarea {
+  display: block;
+  width: 100%;
+  height: 16rem;
+  min-height: 8rem;
+  max-height: 32rem;
+  margin-top: 12px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  resize: vertical;
+}
+.plugin-json {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+@media (max-width: 760px) {
+  .plugin-tool-row > summary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .plugin-tool-actions {
+    grid-column: 1;
+    grid-row: auto;
+    margin-top: 10px;
+  }
+  .plugin-dialog {
+    padding: 16px;
+  }
+  .plugin-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .plugin-browser {
+    border: 0;
+    padding: 4px;
+  }
+  .plugin-workspace[data-show-details="true"] .plugin-browser,
+  .plugin-workspace[data-show-details="false"] .plugin-detail {
+    display: none;
+  }
+  .plugin-back {
+    display: inline-block;
+    margin-bottom: 16px;
+  }
+}
+
 /* Progressive disclosure keeps the launch form focused on everyday choices. */
 .launch-intro {
   margin: 20px 0;
@@ -922,6 +1269,30 @@ summary:focus-visible {
   .harness-auth-fields {
     grid-template-columns: 1fr;
   }
+}
+
+.plugin-external-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  font-size: 0.875rem;
+}
+.plugin-external-links:empty {
+  display: none;
+}
+.plugin-access-help > p {
+  margin: 0 0 8px;
+}
+.plugin-access-help {
+  flex-shrink: 0;
+}
+.plugin-list-row .plugin-unavailable {
+  margin: 8px 4px 0;
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+.plugin-setup-reminder {
+  margin-top: 16px;
 }
 
 /* Keep mobile form text readable without browser focus zoom. */

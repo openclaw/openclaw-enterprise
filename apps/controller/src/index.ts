@@ -62,6 +62,7 @@ import {
   BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
   DependencyUnavailableError,
   ModelDiscoveryError,
+  PluginDiscoveryError,
   NamespaceNotEmptyError,
   NamespaceNotReadyError,
   NotImplementedError,
@@ -901,6 +902,34 @@ function requestFailure(error: unknown): RequestFailure {
           503,
           "MODEL_DISCOVERY_UNAVAILABLE",
           "The provider model service is unavailable. Retry or enter a model ID manually.",
+        );
+    }
+  }
+  if (error instanceof PluginDiscoveryError) {
+    switch (error.reason) {
+      case "credentials_rejected":
+        return failure(
+          400,
+          "PLUGIN_DISCOVERY_CREDENTIALS_REJECTED",
+          "The plugin service rejected this credential. Check its permission to list plugins, then retry.",
+        );
+      case "rate_limited":
+        return failure(
+          429,
+          "PLUGIN_DISCOVERY_RATE_LIMITED",
+          "The plugin service rate-limited discovery. Wait and retry.",
+        );
+      case "invalid_response":
+        return failure(
+          503,
+          "PLUGIN_DISCOVERY_INVALID_RESPONSE",
+          "The plugin service returned an invalid response. Retry discovery.",
+        );
+      case "unavailable":
+        return failure(
+          503,
+          "PLUGIN_DISCOVERY_UNAVAILABLE",
+          "The plugin service is unavailable. Retry discovery.",
         );
     }
   }
@@ -2196,6 +2225,26 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       });
       reply.header("cache-control", "no-store");
       reply.send({ data: models, meta: { requestId: request.id } });
+      return;
+    }
+
+    if (operation.operationId === "discoverAgentPlugins") {
+      const catalog = await controller.discoverAgentPlugins(context.actorId, namespaceId, {
+        accessToken: body?.accessToken as string,
+        ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
+      });
+      reply.header("cache-control", "no-store");
+      reply.send({ data: catalog, meta: { requestId: request.id } });
+      return;
+    }
+
+    if (operation.operationId === "discoverAgentPluginDetails") {
+      const plugin = await controller.discoverAgentPluginDetails(context.actorId, namespaceId, {
+        accessToken: body?.accessToken as string,
+        pluginId: body?.pluginId as string,
+      });
+      reply.header("cache-control", "no-store");
+      reply.send({ data: plugin, meta: { requestId: request.id } });
       return;
     }
 

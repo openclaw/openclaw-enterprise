@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
 updated: 2026-09-24
-last_updated_session: codex/01a0b17c-68b6-7e11-bedc-f74de7d606ed
+last_updated_session: 01a0d1dd-aa36-7622-9f43-8376f6ff935e
 ---
 
 # Agent Plugin Deployment Flow
@@ -51,6 +51,18 @@ graph TD
 ```
 
 ## Execution Trace
+
+### Credential-scoped discovery
+
+Create Agent posts PATs and remote IDs to the [discovery routes](../reference/drivers/plugin.md#selection-and-catalogs).
+OCC authorizes Namespace Agent creation; discovery performs no writes.
+
+[Codex discovery](../../apps/controller/src/drivers/plugin/hosted-catalog.ts) hydrates identity,
+pages 20 GLOBAL entries, and loads tools (`null`: unknown). Filtering stays local.
+Bounded, redirect-free reads return `no-store` metadata without credentials,
+artifacts, or upstream errors. Driver-owned links, unavailable reasons, and
+[setup guidance](../reference/drivers/plugin-bundled.md#selection-and-catalogs) remain outside selections. App connections stay unverified.
+HTTPS logos use no referrers and fall back to initials.
 
 ### 1. Validate desired state under exact-Agent authority
 
@@ -278,6 +290,9 @@ completed deployment attempt rather than ongoing runtime health.
 
 ## Changelog
 
+- 2026-09-24 19:44: Added Driver-owned setup and recovery links. (01a0d1dd-aa36-7622-9f43-8376f6ff935e - ef89ded5)
+
+- 2026-09-24 08:00: Added transient PAT discovery through the selected PluginDriver before Agent creation. (01a0d1dd-aa36-7622-9f43-8376f6ff935e - f62e17c)
 - 2026-09-24 07:50: Verify nested tool and account/link policy before readiness; retain session and live-enforcement gates (codex/01a0b17c-68b6-7e11-bedc-f74de7d606ed - 073bb5c1)
 
 - 2026-09-24 07:02: Aligned the common reviewer contract and scoped capabilities with the accepted specification; runtime reviewer/session checks remain draft gates (codex/01a0b17c-68b6-7e11-bedc-f74de7d606ed - 3606f2e9)

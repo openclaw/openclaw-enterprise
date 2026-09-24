@@ -14,17 +14,13 @@ Agent; it does not verify an Agent you create in the console.
 
 ## Create an Agent
 
-The Embedded and Dedicated starters enable native Control UI with explicit
-`http://127.0.0.1:18789` and `http://localhost:18789` browser origins. Compute
-Drivers render gateway authentication from the configured Installation trust
-boundary; the starter does not supply a gateway token. Loopback origins alone
-do not enable the OCE native admin link. Do not expose the gateway publicly.
-Presets and edited Configuration JSON retain their chosen settings.
-
-For the OCE **Open native admin UI** link, complete
-[native admin setup](../../guides/deploy/native-admin.md), including trusted-proxy
-authentication and the exact Agent HTTPS origin. Enabling the native UI alone
-does not make that link available.
+Embedded and Dedicated starters enable native Control UI at
+`http://127.0.0.1:18789` and `http://localhost:18789`. Compute renders gateway
+authentication from Installation trust; starters supply no gateway token.
+Do not expose the gateway publicly. **Open native admin UI** requires
+[native admin setup](../../guides/deploy/native-admin.md): trusted-proxy authentication
+and the exact Agent HTTPS origin. Loopback origins alone are insufficient.
+Presets and edited Configuration JSON retain their settings.
 
 1. Sign in, select the intended Namespace, open **Agents**, and select
    **Create Agent**.
@@ -67,46 +63,59 @@ does not make that link available.
    Channel settings, plugin entries, and selected Secret bindings are saved with
    the Configuration when you select **Create Agent**. You can also supply Slack
    credentials from the Agent's **Credentials** tab after creation.
-7. Optionally open **Advanced settings** to review Configuration JSON, Secret bindings,
-   plugin selections, and **Workspace files**. Each field contains its rendered OpenClaw default.
+7. Optionally configure plugins as described below, or open **Advanced settings**
+   to review Configuration JSON, Secret bindings, and **Workspace files**. Workspace fields contain OpenClaw defaults.
    Edit any of the four files, keep the text to submit that default, or clear a
    field to create an empty file. The browser submits LF newlines. See
    [initial contents](../agents.md#initial-contents-at-creation) for limits.
-8. Select **Create Agent**. For supported Dedicated runtimes, Console follows provisioning as the worker
-   saves the selected settings, creates the Agent and runtime credentials, and
-   submits deployment. After activation it opens that revision's Workspace files. For
-   ordinary create paths, the Console saves the Configuration first and opens a
-   draft Agent on **New revision** with no workload yet. After deployment, use
-   the [live workspace editor](../console.md#edit-workspace-files). Pending
-   inputs have no update API; see [workspace recovery](../../guides/topics/workspace-files.md#set-files-when-creating-an-agent).
+8. Select **Create Agent**. Supported Dedicated runtimes submit inline Configuration,
+   Secret references, Agent inputs, repositories, and workspace files for provisioning.
+   Console follows the job through resource creation, credential provisioning, and
+   first-deployment activation, then opens that revision's Workspace files.
+   Ordinary creation saves Configuration first and opens a draft on **New revision**,
+   without a workload. After deployment, use the
+   [workspace editor](../console.md#edit-workspace-files). Pending inputs have no
+   update API; see [workspace recovery](../../guides/topics/workspace-files.md#set-files-when-creating-an-agent).
 
-Credentials are masked and stored as Namespace Secrets, never Configuration JSON,
-Agent responses, or browser storage. Ordinary draft creation requires IAM
-administration permission to grant access to those Secrets.
+For Codex plugins, enter a **Service Accounts** token with **Codex** and open
+**Configure plugins**. **Previous page** and **Next page** fetch
+upstream pages; **Filter this page** filters locally. PAT catalog search is unavailable.
+Select a plugin to load tools, then **Add**. Use toggles for enablement and
+**Tool policy** for overrides. **Configured plugins** includes other pages' selections. **Done** closes the modal; **Create Agent** saves changes.
+
+[Discovery](../../flows/agent-plugins.md#credential-scoped-discovery) uses the entered
+token transiently, excluding saved Preset credentials. Credential/provider/Harness
+changes clear results; **Plugin selections JSON** preserves selections separately
+from Configuration. Check permissions for rejection or outbound access for service
+failure, then retry. Editing follows installation capabilities and the
+[policy contract](../agent-plugins.md); browsing proves no runtime permission.
+
+Credentials are masked Namespace Secrets, excluded from Configuration JSON, Agent
+responses, and browser storage. Provisioning creates exact grants; ordinary drafts
+require IAM administration permission.
 
 Presets retain their authentication binding. API-key and Service Accounts Presets
 fix the provider, including JSON edits; saved service account tokens also fix Codex.
 Operator-managed credentials fix OpenClaw across provider changes. Start without a
 Preset to change these choices, or edit authentication later in **Credentials**.
 
-Model discovery requires Namespace Agent `create` permission. It sends the supplied
-credential to the selected method's official API without saving it. Service Accounts
-(`codex_pat`) authenticate with OpenAI and list Codex models. The selected method,
-not the credential prefix, determines routing. Provider changes reset the harness,
-credential, and model; authentication-method changes reset credential and model.
-Switching an unsaved service account token to OpenClaw selects API-key authentication
-and clears token/model. API-key harness changes preserve both; credential edits
-clear the model. Select or enter a model before saving. Discovery does not establish
-runtime compatibility or provider acceptance.
+Provider changes reset Harness, credential, and model; authentication-method changes
+reset credential/model. Switching an unsaved PAT to OpenClaw selects API-key auth
+and clears token/model. API-key Harness changes preserve both. Credential edits
+preserve model selection. Select or enter a model before saving; the starter list
+does not prove runtime compatibility or provider acceptance.
 
-The OCC API process needs destination-scoped HTTPS egress to `api.openai.com:443`
+The model-discovery API remains available independently of Console model selection.
+It requires Namespace Agent `create`, sends credentials to the selected method's
+official API without saving them, and lists Codex models for `codex_pat`.
+For this API, OCC needs destination-scoped HTTPS egress to `api.openai.com:443`
 for OpenAI API keys, `api.anthropic.com:443` for Anthropic, or both
 `auth.openai.com:443` and `chatgpt.com:443` for service account tokens. Helm's
 default-deny policy does not grant these destinations. Operators must maintain
 provider IP CIDRs or use their cluster's FQDN policy support; standard NetworkPolicy
-does not accept DNS names. Manual model entry remains available without discovery.
+does not accept DNS names. Console model selection does not require this discovery.
 
-Failures distinguish rejected credentials/model-list permissions, rate limits,
+API failures distinguish rejected credentials/model-list permissions, rate limits,
 connectivity, and unsupported responses. Recovery guidance includes the request ID,
 never the raw provider response. A listing denial does not prove model execution
 is denied; manual entry remains available.
@@ -117,14 +126,13 @@ has no managed Secret storage or model-key delivery. Saving a key does not prove
 provider acceptance or runtime readiness. See
 [harness authentication](../agents.md#harness-authentication).
 
-For ordinary draft creation, saves are separate operations. After a successful step, the form retains its
-resource ID and freezes the saved inputs, including the authentication method. Correct a conflicting Agent name or
-restore the required permission, then retry to reuse the saved resources. If the
-Agent was saved but its model or Slack Secret grant failed, select **Retry credential access** to finish grants on that same Agent, or ask an administrator to check the saved Secret grants.
-An uncertain response blocks another creation attempt. Check the displayed saved
-IDs and the Agents list before starting again; give the displayed request ID to
-your operator if the outcome cannot be established. Leaving the form does not
-remove resources that were already saved.
+Each successful draft-save step retains its resource ID and freezes saved inputs,
+including authentication. Correct a conflicting name or restore permission, then
+retry using those resources. If model/Slack Secret grants fail after Agent creation,
+select **Retry credential access** or ask an administrator to check its grants.
+Uncertain responses block another attempt: check displayed IDs and the Agents list;
+give the request ID to your operator if the outcome remains unknown. Leaving the
+form retains saved resources.
 
 If provisioning admission loses its response, **Retry provisioning request** resubmits
 the same request ID and saved Secret references. An acknowledged job is retried through
