@@ -59,7 +59,17 @@ jobs:
         env:
           PLATFORM: linux/${{ matrix.arch }}
         run: |
-          node -e 'const os = require("node:os"); const arch = process.arch === "x64" ? "amd64" : process.arch; if (process.env.PLATFORM !== `linux/${arch}`) throw new Error("Select a native Linux runner"); console.log({arch, cpus: os.availableParallelism(), memoryBytes: os.totalmem()}); if (os.availableParallelism() < 4 || os.totalmem() < 12 * 1024 ** 3) throw new Error("Container builds require at least 4 CPUs and 12 GiB RAM; select a larger runner");'
+          node <<'NODE'
+          const os = require("node:os");
+          const arch = process.arch === "x64" ? "amd64" : process.arch;
+          if (process.env.PLATFORM !== `linux/${arch}`) {
+            throw new Error("Select a native Linux runner");
+          }
+          console.log({arch, cpus: os.availableParallelism(), memoryBytes: os.totalmem()});
+          if (os.availableParallelism() < 4 || os.totalmem() < 12 * 1024 ** 3) {
+            throw new Error("Container builds require at least 4 CPUs and 12 GiB RAM; select a larger runner");
+          }
+          NODE
           df -h / "$RUNNER_TEMP"
       - name: Reclaim unused toolchains on the standard AMD64 runtime runner
         if: ${{ matrix.image == 'runtime' && matrix.arch == 'amd64' && vars.CONTAINER_AMD64_RUNNER == 'ubuntu-24.04' }}
