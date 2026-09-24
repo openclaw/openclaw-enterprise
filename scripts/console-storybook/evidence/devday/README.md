@@ -2,7 +2,8 @@
 
 ## Current preset flow
 
-Captured on September 24, 2026; contents match source commit `3515dc6cf327f5a271ad0411af435d57b695e392`.
+Captured on September 24, 2026; connected walkthrough refreshed for source commit `6dca8848e220b7ff8d6198a49eb18c35a32733f1`.
+Existing-Secret and catalog-state captures retain matching UI from `3515dc6c`.
 Rebased onto main `4373b6e3`, including its updated Console styles.
 The Console uses the shipped `SWE Agent` JSON preset with editable model default
 `gpt-6-astra`, Codex service-account authentication, existing/new model Secret
@@ -38,7 +39,8 @@ enabled SWE Agent. Q&A Agent and Oncall Agent remain disabled in the Installatio
 example and are not seeded by this demo.
 
 The connected walkthrough selected SWE Agent, supplied fake credentials, verified
-the channel prefill, selected repository access and simulated Slack Secrets,
+the channel prefill, selected both `openclaw/openclaw-enterprise` and
+`openclaw/openclaw` with Contributor access and simulated Slack Secrets,
 completed creation, returned to the same Agent list, opened `oceclaw`'s sandboxed
 Admin UI popup, and sent a message. It made 37 intercepted fixture requests with
 no unhandled requests or browser errors. The preset permits mentions by channel
