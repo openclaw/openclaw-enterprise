@@ -863,6 +863,16 @@ test("Installation default Presets are opt-in and reject ambiguous YAML settings
     });
     assert.deepEqual(loaded.defaultPresets, []);
   }
+  const enabled = installation();
+  enabled.presets = { includeDefaults: true };
+  const enabledRuntime = await loadInstallationConfiguration({
+    mode: "production",
+    environment: { OCC_CONFIG_PATH: await fixture(t, enabled) },
+  });
+  assert.deepEqual(enabledRuntime.defaultPresets.map((preset) => preset.name).sort(), [
+    "standard-codex",
+    "standard-openclaw",
+  ]);
   for (const presets of [
     { includeDefaults: "true" },
     { includeDefaults: 1 },

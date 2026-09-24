@@ -99,10 +99,14 @@ credentials and deploy from Agent detail. These transitions demonstrate
 presentation only; they do not prove a worker ran.
 
 The DevDay create segment rehearses the same create-and-deploy path with a
-shipped DevDay Preset copied from standard Codex, a fake API key, `gpt-6-astra`,
+shipped SWE Agent Preset copied from standard Codex, a fake API key, `gpt-6-astra`,
 `openclaw/openclaw-enterprise`, prefilled channel `C0C43A2QA11`, and simulated
 Slack Secrets. The separate Preset workspace story demonstrates variable-rendered
 file contents and an intentionally empty file.
+The DevDay picker includes both bundled standard presets and the opt-in SWE Agent.
+The Standard OpenClaw preset story previews its native harness settings.
+Q&A Agent and Oncall Agent remain disabled in the example Installation YAML.
+
 Use the [DevDay storyboard](../../scripts/console-storybook/devday-storyboard.md)
 for the presenter actions, expected visible states, and fallbacks.
 

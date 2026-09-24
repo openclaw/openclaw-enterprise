@@ -522,6 +522,61 @@ test("standard Codex Preset installs and creates a dedicated Agent with restrict
   assert.equal(JSON.stringify(installed.body).includes("synthetic-model-key"), false);
 });
 
+test("standard OpenClaw Preset installs and creates an embedded Agent with native configuration", async (t) => {
+  const { renderPresetTemplate } = await import("../../packages/contracts/src/index.ts");
+  const fixture = await createFixture(t);
+  const namespace = await fixture.createNamespace("Standard OpenClaw", { ready: true });
+  const secret = await fixture.createSecret(namespace.id, "Model key", "synthetic-model-key");
+  const artifact = JSON.parse(
+    await readFile(new URL("../../deploy/presets/standard-openclaw.json", import.meta.url), "utf8"),
+  );
+  const installed = await fixture.request("POST", collection(namespace.id), { body: artifact });
+  assert.equal(installed.status, 201, JSON.stringify(installed.body));
+  const catalog = await fixture.request("GET", collection(namespace.id));
+  assert.equal(catalog.status, 200);
+  const preset = catalog.data.find(({ id }) => id === installed.data.id);
+  assert.equal(preset.name, "standard-openclaw");
+  const rendered = renderPresetTemplate(preset.template, {
+    name: "Native assistant",
+    model: "gpt-6-sol",
+    modelSecret: "synthetic-model-key",
+  });
+  const configuration = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/configurations`,
+    {
+      body: { kind: "agent", ...rendered.configuration },
+    },
+  );
+  assert.equal(configuration.status, 201, JSON.stringify(configuration.body));
+  const agent = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      ...rendered.agent,
+      harnessAuth: { method: rendered.agent.harnessAuth.method, source: secret.ref },
+      configurationId: configuration.data.id,
+    },
+  });
+  assert.equal(agent.status, 201, JSON.stringify(agent.body));
+  assert.equal(agent.data.executionMode, "embedded");
+  assert.deepEqual(agent.data.harnessAuth, { method: "api_key", source: secret.ref });
+  assert.deepEqual(agent.data.plugins, {});
+
+  // These are persisted launch contracts, not proof of a running OpenClaw runtime.
+  const values = configuration.data.values;
+  assert.equal(values.agents.defaults.model, "openai/gpt-6-sol");
+  assert.equal(values.agents.defaults.models["openai/gpt-6-sol"].agentRuntime.id, "openclaw");
+  assert.equal(values.models.providers.openai.baseUrl, "https://api.openai.com/v1");
+  assert.equal(values.models.providers.openai.api, "openai-responses");
+  assert.deepEqual(values.models.providers.openai.models, [{ id: "gpt-6-sol", name: "gpt-6-sol" }]);
+  assert.equal(values.plugins, undefined);
+  assert.deepEqual(values.tools.web.search, { enabled: true });
+  assert.equal(values.tools.web.fetch.enabled, false);
+  assert.equal(values.browser.enabled, false);
+  assert.equal(values.tools.elevated.enabled, false);
+  assert.equal(configuration.data.secretBindings, undefined);
+  assert.equal(JSON.stringify(installed.body).includes("synthetic-model-key"), false);
+});
+
 test("password Presets reject stored credentials and password substitution outside credential inputs", async (t) => {
   const fixture = await createFixture(t);
   const namespace = await fixture.createNamespace("Password admission", { ready: true });
@@ -566,6 +621,9 @@ test("Installation YAML seeds authorized default Presets for new and existing Na
   t.after(() => rm(directory, { recursive: true, force: true }));
   const path = join(directory, "installation.yaml");
   const configuration = createInstallationDriverConfiguration();
+  const customPreset = JSON.parse(
+    await readFile(new URL("../../deploy/presets/devday.json", import.meta.url), "utf8"),
+  );
   configuration.presets = {
     includeDefaults: true,
     files: [fileURLToPath(new URL("../../deploy/presets/devday.json", import.meta.url))],
@@ -579,14 +637,24 @@ test("Installation YAML seeds authorized default Presets for new and existing Na
   const namespace = await fixture.createNamespace("Default catalog", { ready: true });
   const list = await fixture.request("GET", collection(namespace.id));
   assert.equal(list.status, 200);
-  assert.deepEqual(list.data.map((preset) => preset.name).sort(), ["devday", "standard-codex"]);
+  const defaultNames = [customPreset.name, "standard-codex", "standard-openclaw"].sort();
+  assert.deepEqual(list.data.map((preset) => preset.name).sort(), defaultNames);
   assert.equal(list.data[0].template.variables.modelSecret.type, "password");
-  const devday = list.data.find((preset) => preset.name === "devday");
+  const customDefault = list.data.find((preset) => preset.name === customPreset.name);
+  assert.ok(customDefault, `missing ${customPreset.name}`);
   assert.equal(
-    devday.template.configuration.values.channels.slack.channels.C0C43A2QA11.requireMention,
+    customDefault.template.configuration.values.channels.slack.channels.C0C43A2QA11.requireMention,
     true,
   );
-  assert.equal(devday.template.configuration.values.plugins.entries.slack.enabled, true);
+  assert.equal(customDefault.template.configuration.values.plugins.entries.slack.enabled, true);
+  const openclaw = list.data.find((preset) => preset.name === "standard-openclaw");
+  assert.equal(openclaw.template.agent.executionMode, "embedded");
+  assert.equal(openclaw.template.agent.harnessAuth.method, "api_key");
+  assert.equal(
+    openclaw.template.configuration.values.agents.defaults.models["openai/{{ vars.model }}"]
+      .agentRuntime.id,
+    "openclaw",
+  );
   const principal = fixture.policy.identities.find((identity) => identity.kind === "principal");
   const renamedTemplate = { agent: { name: "Operator customization" } };
   const custom = await fixture.request("PATCH", `${collection(namespace.id)}/${list.data[0].id}`, {
@@ -610,7 +678,7 @@ test("Installation YAML seeds authorized default Presets for new and existing Na
   const retained = await fixture.request("GET", `${collection(namespace.id)}/${list.data[0].id}`);
   assert.deepEqual(retained.data.template, renamedTemplate);
   const seeded = await fixture.request("GET", collection(existing.id));
-  assert.deepEqual(seeded.data.map((preset) => preset.name).sort(), ["devday", "standard-codex"]);
+  assert.deepEqual(seeded.data.map((preset) => preset.name).sort(), defaultNames);
   const audit = fixture.audit.events.filter(
     (event) => event.details?.source === "installation-defaults",
   );
@@ -657,7 +725,7 @@ test("Installation YAML seeds authorized default Presets for new and existing Na
     (await fixture.request("GET", collection(permitted.data.id))).data
       .map((preset) => preset.name)
       .sort(),
-    ["devday", "standard-codex"],
+    defaultNames,
   );
   // Startup must skip a persisted non-administrator even when it is returned first.
   await initializeInstallationPresets(
@@ -682,6 +750,6 @@ test("Installation YAML seeds authorized default Presets for new and existing Na
     (await fixture.request("GET", collection(existing.id))).data
       .map((preset) => preset.name)
       .sort(),
-    ["devday", "standard-codex"],
+    defaultNames,
   );
 });

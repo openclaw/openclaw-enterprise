@@ -21,8 +21,9 @@ presets:
     - presets/devday.json
 ```
 
-Omitting `includeDefaults` or setting it to `false` disables only the bundled
-`standard-codex` Preset; explicit `files` still load. Each JSON file contains one
+`includeDefaults: true` seeds exactly `standard-codex` and `standard-openclaw`.
+Omitting it or setting it to `false` disables both bundled Presets; explicit
+`files` still load. Each JSON file contains one
 `{ "name": "...", "template": { ... } }` object. Relative file paths resolve beside
 the Installation YAML, independent of the process working directory; absolute
 paths are also supported. Mount the files readably for both the API and worker.
@@ -46,16 +47,37 @@ or template validation failure rolls back initialization and prevents startup
 or Namespace creation. The selected Configuration Driver validates native
 values; seeding does not create workloads or credentials.
 
-## DevDay preset
+## Standard harness presets
 
-[`deploy/presets/devday.json`](../../deploy/presets/devday.json) copies
+Both bundled presets ask for an Agent name, model ID, and masked model API key.
+They share the gateway defaults and disabled browser, elevated tools, and web
+fetch settings.
+
+| Preset                                                             | Harness  | Execution mode | Model reference  |
+| ------------------------------------------------------------------ | -------- | -------------- | ---------------- |
+| `standard-codex`                                                   | Codex    | Dedicated      | `codex/<model>`  |
+| [`standard-openclaw`](../../deploy/presets/standard-openclaw.json) | OpenClaw | Embedded       | `openai/<model>` |
+
+OpenClaw uses the ordinary OpenAI provider endpoint and native harness. It does
+not load the Codex plugin, its app-server configuration, or its hosted cached-search override. The Codex-specific
+sandbox and network proxy settings therefore apply only to `standard-codex`.
+
+## DevDay custom presets
+
+[`SWE Agent`](../../deploy/presets/devday.json) copies
 `standard-codex` and adds Slack Socket Mode with channel `C0C43A2QA11` prefilled.
 It retains the same name, model, and masked API-key variables and Codex settings.
 Load a copy beside your YAML as in the example above, or reference the shipped
 container file at `/app/deploy/presets/devday.json`. It is opt-in and is not added
 by `includeDefaults` alone.
 
-In the Console, choose **devday**, fill its variables, then use **Edit Slack** to
+[`Q&A Agent`](../../deploy/presets/devday-qa.json) and
+[`Oncall Agent`](../../deploy/presets/devday-oncall.json) copy the entire SWE Agent
+template, including its Slack and workspace instructions. Their separate file
+entries are commented out in the example Installation YAML, along with SWE Agent.
+Uncomment only the custom presets you want to install.
+
+In the Console, choose **SWE Agent**, fill its variables, then use **Edit Slack** to
 choose allowed senders and bind Slack app/bot Secrets. The preset allows channel members to mention the agent (`users: ["*"]`)
 in this channel and requires a mention. Narrow the sender list in the drawer if
 needed. No credentials are stored in the file.

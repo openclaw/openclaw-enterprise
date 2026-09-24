@@ -66,7 +66,7 @@ export interface SelectedDriverConfiguration<T = ConfigurationRecord> {
 export interface InstallationStartupConfiguration {
   readonly occ: { readonly cluster: string };
   readonly logging: LoggingConfiguration;
-  readonly presets?: { readonly includeDefaults: boolean };
+  readonly presets?: { readonly includeDefaults: boolean; readonly files?: readonly string[] };
   readonly provider: readonly ProviderDefinition[];
   readonly drivers: {
     readonly configuration: SelectedDriverConfiguration;
@@ -325,7 +325,9 @@ function presetDefinition(value: unknown, path: string): Pick<Preset, "name" | "
   });
 }
 
-async function loadPresetDefinition(path: string): Promise<Pick<Preset, "name" | "template">> {
+async function loadPresetDefinition(
+  path: string | URL,
+): Promise<Pick<Preset, "name" | "template">> {
   let contents: string;
   try {
     contents = await readFile(path, "utf8");
@@ -588,19 +590,16 @@ export async function loadInstallationConfiguration(options: {
   const defaultPresets: Pick<Preset, "name" | "template">[] = [];
   const defaultPresetNames = new Set<string>();
   if (includeDefaults) {
-    appendDefaultPreset(
-      defaultPresets,
-      defaultPresetNames,
-      presetDefinition(
-        JSON.parse(
-          await readFile(
-            new URL("../../../../deploy/presets/standard-codex.json", import.meta.url),
-            "utf8",
-          ),
-        ),
-        "Bundled default Preset",
-      ),
-    );
+    for (const preset of [
+      "../../../../deploy/presets/standard-codex.json",
+      "../../../../deploy/presets/standard-openclaw.json",
+    ]) {
+      appendDefaultPreset(
+        defaultPresets,
+        defaultPresetNames,
+        await loadPresetDefinition(new URL(preset, import.meta.url)),
+      );
+    }
   }
   const presetFiles = (presets.files ?? []) as readonly string[];
   for (const entry of presetFiles) {

@@ -1106,6 +1106,22 @@ export const scenarios = {
       "A reusable template with required and defaulted variables. Use Preset copies values into an editable draft.",
     gap: "Preset CRUD has no console page; the fixture supplies a pre-existing Preset.",
   },
+  createStandardOpenclawPreset: {
+    group: "Pages/Create Agent",
+    name: "Standard OpenClaw preset",
+    path: create,
+    standardOpenclawPreset: true,
+    actions: [
+      { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
+      { selector: "#preset-variable-name", value: "OpenClaw assistant" },
+      { selector: "#preset-variable-model", value: "gpt-5.1" },
+      { selector: "#preset-variable-modelSecret", value: "storybook-model-key" },
+      click("Use Preset"),
+    ],
+    description:
+      "The shipped standard-openclaw Preset uses the OpenClaw harness with a masked model API key. Review its native configuration before creation.",
+    gap: "All credentials and API responses in this preview are simulated.",
+  },
   createPasswordPreset: {
     group: "Pages/Create Agent",
     name: "Standard Codex password variable",
@@ -1968,7 +1984,7 @@ export const scenarios = {
       "DevDay create-flow rehearsal using real Console controls with fake API-key and Slack Secret data. Provisioning and deployment progress are simulated in the Storybook fixture.",
     steps: [
       "Start on the Agents list with the already deployed oceclaw seed, then click Create Agent.",
-      "Select the devday Preset copied from standard-codex and enter devday claw for its name.",
+      "Select the SWE Agent Preset copied from standard-codex and enter devday claw for its name.",
       "Enter gpt-6-astra and fake modelSecret sk-demo-devday-codex-api-key, then Use Preset. Review the supplied Ocalot AGENTS.md and editable workspace defaults.",
       "Select openclaw/openclaw-enterprise with Contributor access.",
       "Open Edit Slack. Confirm prefilled channel C0C43A2QA11, allow simulated user UDEMO123, then bind the existing simulated DevDay Slack Secrets and apply settings.",

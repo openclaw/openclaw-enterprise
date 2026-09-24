@@ -137,3 +137,8 @@ export const CreatePasswordPresetDenied = {
   ...story("createPasswordPresetDenied"),
   name: "Password Secret creation denied",
 };
+
+export const CreateStandardOpenclawPreset = {
+  ...story("createStandardOpenclawPreset"),
+  name: "Standard OpenClaw preset",
+};

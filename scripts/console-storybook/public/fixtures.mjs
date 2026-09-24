@@ -1,4 +1,5 @@
 import standardCodexPreset from "/console/standard-codex-preset.mjs";
+import standardOpenclawPreset from "/console/standard-openclaw-preset.mjs";
 import devdayPreset from "/console/devday-preset.mjs";
 
 const createdAt = "2026-09-01T12:00:00.000Z";
@@ -236,16 +237,31 @@ export function installFixture(scenario, evidence) {
       },
     },
   };
-  if (scenario.standardCodexPreset || scenario.devdayPreset) {
+  if (scenario.standardCodexPreset || scenario.standardOpenclawPreset || scenario.devdayPreset) {
     Object.assign(
       preset,
-      structuredClone(scenario.devdayPreset ? devdayPreset : standardCodexPreset),
+      structuredClone(
+        scenario.devdayPreset
+          ? devdayPreset
+          : scenario.standardOpenclawPreset
+            ? standardOpenclawPreset
+            : standardCodexPreset,
+      ),
     );
   }
   if (scenario.presetWorkspaceFiles) {
     preset.template.agent.initialWorkspaceFiles = structuredClone(scenario.presetWorkspaceFiles);
   }
   const presets = [preset];
+  if (scenario.devdayPreset) {
+    for (const definition of [standardCodexPreset, standardOpenclawPreset]) {
+      presets.push({
+        ...structuredClone(definition),
+        id: `pre_${definition.name.replaceAll("-", "_")}`,
+        namespaceId,
+      });
+    }
+  }
   const response = (data, status = 200, errorCode) =>
     new Response(
       JSON.stringify({

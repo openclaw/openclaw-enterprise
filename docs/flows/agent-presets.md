@@ -16,7 +16,9 @@ continues through [revision admission](configuration-driver/persistence-and-revi
 ## Entry Points
 
 - [Installation loader](../../apps/controller/src/composition/installation-config.ts):
-  `loadInstallationConfiguration` reads `presets.includeDefaults` and `presets.files`. Production and PostgreSQL development composition pass generic
+  `loadInstallationConfiguration` reads `presets.includeDefaults` and `presets.files`.
+  Bundled defaults are `standard-codex` and `standard-openclaw`; custom DevDay
+  files are loaded only when explicitly listed. Production and PostgreSQL development composition pass generic
   name/template definitions to OCC and call `initializeDefaultPresets`.
 
 - Source: `packages/contracts/src/api/routes.ts:occApiRoutes`.
@@ -202,6 +204,8 @@ or an immutable admitted revision.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-09-24: Seed both standard harness presets and keep named DevDay copies opt-in.
 
 - 2026-09-24 11:03: Load installation-linked JSON Presets and carry rendered workspace contents through Agent creation (codex/01a0d172-2f0a-7ec3-91ff-323d532464c7 - 935f91072adee63fc569e63db5fb2a5e64c77c5b)
 
