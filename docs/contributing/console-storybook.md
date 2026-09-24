@@ -101,7 +101,7 @@ presentation only; they do not prove a worker ran.
 The DevDay create segment rehearses the same create-and-deploy path with a
 shipped SWE Agent Preset copied from standard Codex, a fake service account token,
 a prefilled `gpt-6-astra` default, an existing model Secret option,
-`openclaw/openclaw-enterprise`, prefilled channel `C0C43A2QA11`, and simulated
+repository choices `openclaw/openclaw-enterprise` and `openclaw/openclaw`, prefilled channel `C0C43A2QA11`, and simulated
 Slack Secrets. The separate Preset workspace story demonstrates variable-rendered
 file contents and an intentionally empty file.
 The DevDay picker includes both bundled standard presets and the opt-in SWE Agent.
