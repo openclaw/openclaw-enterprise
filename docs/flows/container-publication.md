@@ -70,11 +70,12 @@ separately pinned. See the [runtime recipe](../../deploy/runtime/README.md) for
 source identity and installed-image checks.
 Before starting the runtime build,
 `scripts/ci/repository-platform-headroom.mjs:main` verifies it is running on the
-Ubuntu 24 GitHub-hosted runner and removes only its unused, fixed Android SDK
-directory. The helper rejects symlinks, mounts, and unexpected runner/SDK paths
-and logs free bytes and inodes before and after cleanup. This makes room for
-the source-build dependency layers before OCI export; local and self-hosted
-runners are rejected. Controller preparation does not use this cleanup.
+Ubuntu 24 GitHub-hosted runner and removes fixed, unused Android, language SDK,
+and non-Node tool-cache directories. The helper rejects symlinks, mounts, and
+unexpected paths, then requires 36 GiB free and logs capacity before and after
+cleanup. This makes room for both source-build dependency graphs before OCI
+export; local and self-hosted runners are rejected. Controller preparation does
+not use this cleanup.
 
 After OCI export, the job prunes only its dedicated Buildx builder's cache so
 the cache and unpacked smoke images do not exhaust the runner's disk together.
