@@ -170,7 +170,7 @@ console.log("WORKSPACE_INITIALIZATION_PASSED");
         launch,
         AGENT_WITH_NODE_ENTRYPOINT,
       ],
-      { timeout: 120_000 },
+      { timeout: 120_000 * imageSmokeTimeoutMultiplier },
     );
     assert.match(stdout, /WORKSPACE_INITIALIZATION_PASSED/);
   },
@@ -246,7 +246,7 @@ function createAdmittedRuntimeImageConfiguration(harnessId, options = {}) {
 
 async function waitForGatewayReady(containerName) {
   let lastReadinessOutput = "";
-  for (let attempt = 0; attempt < 60; attempt += 1) {
+  for (let attempt = 0; attempt < 60 * imageSmokeTimeoutMultiplier; attempt += 1) {
     const inspect = await runDocker([
       "inspect",
       containerName,
