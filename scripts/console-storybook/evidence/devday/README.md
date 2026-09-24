@@ -1,6 +1,21 @@
 # DevDay demo verification
 
-## Current preset flow
+## All DevDay preset choices
+
+Verified source `67c2d332af138b84e4295c11686da63c3162334f` in headed Chromium on September 24, 2026.
+Segment 1 includes SWE Agent, Q&A Agent, and Oncall Agent alongside both standard
+presets. Each custom preset was selected and applied using the real Console UI;
+all retained `gpt-6-astra`, Codex service-account authentication, and the rendered
+Agent name in `AGENTS.md`. No browser errors or unhandled fixture requests occurred.
+The Installation example still comments out custom presets; Storybook includes
+all three for rehearsal.
+
+- [SWE Agent](presets/11-swe-choice.png)
+- [Q&A Agent](presets/12-qa-choice.png)
+- [Oncall Agent](presets/13-oncall-choice.png)
+- [All three selections and rendered drafts](presets/all-devday-presets.webm)
+
+## Connected preset flow
 
 Captured on September 24, 2026; connected walkthrough refreshed for source commit `df3dfc0a9637848f68869e2139617113e4b977aa`.
 Existing-Secret and catalog-state captures retain matching UI from `3515dc6c`.
@@ -35,9 +50,9 @@ Storybook was rebuilt from this source and served only on loopback.
 - [Connected Console recording](presets/console-walkthrough.webm)
 - [Admin UI message recording](presets/admin-message.webm)
 
-The picker includes `standard-codex`, `standard-openclaw`, and the explicitly
-enabled SWE Agent. Q&A Agent and Oncall Agent remain disabled in the Installation
-example and are not seeded by this demo.
+This earlier connected recording selected SWE Agent with both standard presets
+available. The newer recording above verifies all three custom presets. Custom
+presets remain disabled in the Installation example.
 
 The connected walkthrough selected SWE Agent, supplied fake credentials, verified
 the channel prefill, selected both `openclaw/openclaw-enterprise` and
