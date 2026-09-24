@@ -115,3 +115,5 @@ export const CreatePasswordPresetDenied = {
   ...story("createPasswordPresetDenied"),
   name: "Password Secret creation denied",
 };
+
+export const CreateOAuth = { ...story("createOAuth"), name: "OpenAI OAuth during activation" };

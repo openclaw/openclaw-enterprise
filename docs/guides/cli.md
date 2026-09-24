@@ -113,6 +113,28 @@ to verify a response from this Agent on Kubernetes. If you lost the
 deploy result, check [revision history](../reference/agents/deployment.md#revisions-and-deployment)
 before retrying: each accepted request creates a revision.
 
+For an Agent whose saved draft uses `{ "method": "oauth" }`, deploy with the
+interactive OAuth activation flow:
+
+```bash
+occ agent deploy '<agent-id>' --auth oauth --auth-timeout 15m
+```
+
+`--auth oauth` is table-only because it prints the provider page, user code,
+expiry, and final deployment status for the operator. Do not combine it with
+`--output json` or `--output yaml`. The command first admits the immutable
+revision, retries OAuth start while OCC reports `preparing`, prints each
+attempt's code once, completes the attempt after provider authorization, and
+then waits for deployment status `succeeded`. `--auth-timeout` is a Go duration
+such as `5m` or `15m`; it bounds the full authorization and activation wait.
+
+Terminal OAuth failures such as `denied`, `expired`, `cancelled`,
+`account_mismatch`, or `unavailable` exit with an error. The CLI does not start
+a new grant after a terminal failure. Retry explicitly with another deploy
+command when the Agent is in the intended state. Use the existing
+`occ agent stop '<agent-id>'` command to cancel an unfinished attempt or to stop
+before reconnecting the same OAuth-bound Agent.
+
 Run `occ agent stop '<agent-id>'` to stop the workload while retaining its
 revision history and persistent state.
 

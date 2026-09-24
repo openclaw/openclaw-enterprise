@@ -276,7 +276,9 @@ function renderAgentForm(context, rendered) {
   if (
     binding != null &&
     (!isObject(binding) ||
-      !["runtime", "api_key", "codex_pat", "chatgpt_service_account"].includes(binding.method) ||
+      !["runtime", "oauth", "api_key", "codex_pat", "chatgpt_service_account"].includes(
+        binding.method,
+      ) ||
       (binding.method === "chatgpt_service_account" &&
         typeof binding.serviceAccountId !== "string") ||
       (["api_key", "codex_pat"].includes(binding.method) &&
@@ -348,6 +350,7 @@ function renderAgentForm(context, rendered) {
     { id: "agent-auth-method" },
     element("option", { value: "api_key" }, "OpenAI API key"),
     element("option", { value: "codex_pat" }, "Service Accounts"),
+    element("option", { value: "oauth" }, "OpenAI OAuth during activation"),
   );
   authMethod.value = passwordAuth?.method ?? binding?.method ?? "api_key";
   if (passwordAuth) {
@@ -404,6 +407,23 @@ function renderAgentForm(context, rendered) {
       updateModelConfiguration();
     });
   }
+  const credentialField = element(
+    "div",
+    { className: "form-field" },
+    credentialLabel,
+    apiKey,
+    credentialHelp,
+    element(
+      "p",
+      { className: "hint" },
+      "Stored as a Secret for this Agent. Credentials are never included in Configuration JSON.",
+    ),
+  );
+  const oauthHint = element(
+    "p",
+    { className: "hint" },
+    "Deploying starts provider authorization for embedded OpenClaw on Kubernetes. Stop the Agent to cancel or reconnect.",
+  );
   const authSection = element(
     "fieldset",
     { className: "harness-auth-fields" },
@@ -422,18 +442,8 @@ function renderAgentForm(context, rendered) {
             ? "This Preset's saved credential and provider are fixed. Start without a Preset to use a different provider."
             : "This Preset's saved authentication source is preserved.",
         )
-      : element(
-          "div",
-          { className: "form-field" },
-          credentialLabel,
-          apiKey,
-          credentialHelp,
-          element(
-            "p",
-            { className: "hint" },
-            "Stored as a Secret for this Agent. Credentials are never included in Configuration JSON.",
-          ),
-        ),
+      : credentialField,
+    oauthHint,
     modelSection,
   );
   name.value = agent.name ?? "";
@@ -441,7 +451,10 @@ function renderAgentForm(context, rendered) {
   if (authMethod.value === "codex_pat") {
     nativeProvider.value = "openai";
     mode.value = "dedicated";
-  } else if (nativeProvider.value === "anthropic" || binding?.method === "runtime") {
+  } else if (
+    nativeProvider.value === "anthropic" ||
+    ["runtime", "oauth"].includes(binding?.method)
+  ) {
     mode.value = "embedded";
   }
   harness.value = mode.value === "dedicated" ? "codex" : "openclaw";
@@ -563,7 +576,9 @@ function renderAgentForm(context, rendered) {
   nativeProvider.addEventListener("change", () => {
     // Operator-managed Presets retain the embedded harness required by their fixed binding.
     harness.value =
-      nativeProvider.value === "anthropic" || binding?.method === "runtime" ? "openclaw" : "codex";
+      nativeProvider.value === "anthropic" || ["runtime", "oauth"].includes(binding?.method)
+        ? "openclaw"
+        : "codex";
     mode.value = harness.value === "codex" ? "dedicated" : "embedded";
     // A provider change must not send the previous provider's key to a different service.
     apiKey.value = "";
@@ -581,6 +596,9 @@ function renderAgentForm(context, rendered) {
   model.addEventListener("change", () => updateModelConfiguration());
   harness.addEventListener("change", () => {
     mode.value = harness.value === "codex" ? "dedicated" : "embedded";
+    if (!binding && harness.value === "codex" && authMethod.value === "oauth") {
+      authMethod.value = "api_key";
+    }
     // Service account tokens cannot authenticate OpenClaw; require a new API key.
     if (!binding && harness.value === "openclaw" && authMethod.value === "codex_pat") {
       authMethod.value = "api_key";
@@ -991,10 +1009,18 @@ function renderAgentForm(context, rendered) {
     }
     channelEditor.toggleAttribute("inert", pending || saved || outcomeUnknown);
     channelEditor.setAttribute("aria-busy", pending ? "true" : "false");
+    const usesOAuth = (binding?.method ?? authMethod.value) === "oauth";
+    credentialField.hidden = usesOAuth;
+    oauthHint.hidden = !usesOAuth;
+    apiKey.required = !binding && !savedSecret && !usesOAuth;
+    const oauthOption = authMethod.querySelector('[value="oauth"]');
+    oauthOption.hidden = harness.value !== "openclaw" || nativeProvider.value !== "openai";
+    oauthOption.disabled = oauthOption.hidden;
     const usesPat = (binding?.method ?? authMethod.value) === "codex_pat";
     mode.disabled = true;
     harness.disabled ||=
-      binding?.method === "runtime" || (usesPat && Boolean(binding || savedSecret));
+      ["runtime", "oauth"].includes(binding?.method) ||
+      (usesPat && Boolean(binding || savedSecret));
     const codexOption = harness.querySelector('[value="codex"]');
     codexOption.hidden = nativeProvider.value === "anthropic";
     codexOption.disabled = nativeProvider.value === "anthropic";
@@ -1002,11 +1028,12 @@ function renderAgentForm(context, rendered) {
       harness.disabled && usesPat
         ? "This saved service account token requires Codex. Create a new draft without a Preset to use OpenClaw with an API key."
         : "OpenClaw is available for both providers. OpenAI defaults to Codex; Anthropic uses OpenClaw.";
-    if (binding?.method === "runtime") {
+    if (["runtime", "oauth"].includes(binding?.method)) {
       harnessHint.textContent =
         "This Preset's operator-managed credentials require the OpenClaw harness.";
     }
-    nativeProvider.disabled ||= Boolean(savedSecret) || hasBoundModelCredential;
+    nativeProvider.disabled ||=
+      Boolean(savedSecret) || hasBoundModelCredential || binding?.method === "oauth";
     authMethod.disabled ||= Boolean(savedSecret) || nativeProvider.value === "anthropic";
     authMethod.querySelector('[value="api_key"]').textContent =
       nativeProvider.value === "anthropic" ? "Anthropic API key" : "OpenAI API key";
@@ -1278,7 +1305,7 @@ function renderAgentForm(context, rendered) {
     feedback.textContent = "";
     let mutationStarted = false;
     try {
-      if (!binding && !savedSecret) {
+      if (!binding && !savedSecret && authMethod.value !== "oauth") {
         mutationStarted = true;
         savedSecret = await request(`${namespacePath(namespaceId)}/secrets`, {
           method: "POST",
@@ -1291,7 +1318,11 @@ function renderAgentForm(context, rendered) {
         }
         showSavedStatus();
       }
-      body.harnessAuth = binding ?? { method: authMethod.value, source: savedSecret.ref };
+      body.harnessAuth =
+        binding ??
+        (authMethod.value === "oauth"
+          ? { method: "oauth" }
+          : { method: authMethod.value, source: savedSecret.ref });
       if (shouldProvision()) {
         provisioningAttempt = {
           acknowledged: false,

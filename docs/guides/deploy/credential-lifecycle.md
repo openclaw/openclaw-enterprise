@@ -28,6 +28,7 @@ and who can stop affected workloads if access must be revoked immediately.
 | Provider-managed account credential  | The selected ServiceAccount Driver manages the upstream account, credential, and account-owned Secret.                         | Issuance is separate from creation. A second issuance conflicts; refresh and rotation are not implemented. See [service accounts](../../reference/service-accounts.md#account-and-credential-lifecycle).                                                                                                                             |
 | Native OCC ServiceAccount credential | The operator owns the referenced source Secret.                                                                                | The API can replace a native `api_key` reference; that reference cannot select model authentication. See [native API-key references](../../reference/service-accounts.md#native-api-key-references).                                                                                                                                 |
 | Harness API key                      | The upstream provider issues the key; the selected Secret Driver stores it as an OCC Secret.                                   | Bind its exact same-Namespace reference through Agent `harnessAuth`. Update the source, explicitly deploy each consumer, verify model access, then revoke the old key upstream.                                                                                                                                                      |
+| Agent-owned OAuth profile            | Native OpenClaw owns the provider profile inside one Agent's private gateway state.                                            | Bind `{ "method": "oauth" }`, deploy while stopped, complete device authorization, and verify activation through the model probe. Stop cancels unfinished attempts; provider-side revocation remains separate.                                                                                                                       |
 | Generated transport credentials      | The selected Compute Driver generates per-Agent transport material before first deployment.                                    | Initial console provisioning creates missing generated transport Secrets only; it cannot rotate existing values. Replacing transport credentials requires a separate stopped-runtime procedure when supported. See [runtime credentials](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials). |
 | OCC Secret bindings                  | The Secret Driver stores harness and channel values; Agent `harnessAuth` and Configurations bind them to authorized consumers. | Value updates preserve the reference. They do not restart consumers or remove delivered values. Channel Secrets are projected only to selected gateways after explicit deployment. See [update and redeploy](../../reference/drivers/kubernetes-secret.md#update-and-redeploy).                                                      |
 | Private gateway-routing service key  | The operator manages the Envoy credential and OCC's mounted client key.                                                        | Use the separate [routing key rotation](workspace-routing.md#rotate-the-service-key-and-certificates) procedure; OCC reads the file for each operation. This is not an OCC API key.                                                                                                                                                  |
@@ -87,6 +88,20 @@ a separately issued replacement account before it expires. Bind that account
 and explicitly deploy each intended consumer. Account deletion performs upstream
 cleanup and is blocked by Agent drafts, active revisions, and pending deployments;
 inactive history alone does not retain the source indefinitely.
+
+Agent-owned OAuth profiles are refreshed by native OpenClaw in the Agent's
+private gateway store. OCC does not rotate, read, export, or delete the profile.
+For routine reconnect, stop the Agent, deploy the OAuth-bound draft, complete
+authorization with the same upstream account, and wait for the model probe and
+deployment success. If the runtime reports that authorization committed but the
+attempt is unavailable, keep the Agent stopped and retry deployment; do not
+start a second account switch to compensate for the lost acknowledgement.
+
+If the provider grant must be revoked immediately, stop the Agent first, revoke
+the grant at the provider, and verify later deployment fails until a reviewed
+native cleanup or reconnect procedure restores the intended profile. Stop or IAM
+revocation prevents later platform work but does not revoke a provider grant
+already issued to native OpenClaw.
 
 ## Preserve administrator recovery
 

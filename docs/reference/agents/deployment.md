@@ -36,6 +36,10 @@ An Agent may also reference one same-Namespace, OCC-owned
 `harnessAuth: { method: "chatgpt_service_account", serviceAccountId }`; setting
 `harnessAuth` to `null` clears it. This credential binding does not
 replace its ServicePrincipal or Kubernetes ServiceAccount.
+An Agent may instead use `harnessAuth: { method: "oauth" }` for embedded
+OpenClaw on bundled Kubernetes Compute. That binding creates no OCC-owned
+credential source; the native provider profile is committed later inside the
+Agent's private gateway state during deployment authorization.
 
 ## Execution mode
 
@@ -125,6 +129,12 @@ has passed. After activation, OCC clears staged contents and retains setup
 identity and completion metadata. Later revisions check completion without
 reapplying the original text, preserving edits made in the live workspace.
 
+An OAuth revision is admitted and queued like other deployments, then the auth
+subresource starts the provider authorization attempt after the gateway runtime
+exists. OAuth commit alone does not set `activeRevisionId`; the embedded runtime
+must start normally, run its bounded primary-model probe with the committed
+native profile, and complete activation through the worker.
+
 Revision list and read operations are scoped beneath the exact Namespace and
 Agent. Each returned revision requires its own authorized read; substituting a
 parent does not grant access to another Agent's history. Public response shapes
@@ -154,3 +164,7 @@ sets desired state to `running`; OCC never restarts an old revision by mutating
 it. Revision preparation and maintenance recheck desired state before publication,
 so work that overlaps a stop shuts down its candidate instead of resurrecting the
 Agent.
+For OAuth, stop also cancels unfinished consent and is required before
+reconnect. The following deployment must authorize the same upstream account
+recorded in the Agent-local native profile; switching accounts requires a
+separate stopped cleanup path.

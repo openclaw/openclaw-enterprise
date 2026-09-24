@@ -17,6 +17,7 @@ import type {
   DriverCapability,
   HarnessDescriptor,
   HarnessExecutionMode,
+  HarnessOAuthObservation,
   IAMDriver,
   Installation,
   Namespace,
@@ -354,6 +355,10 @@ export interface UpdateConfigurationInput {
 export interface DeployAgentInput {
   readonly namespaceId: string;
   readonly agentId: string;
+}
+
+export interface CompleteHarnessOAuthInput {
+  readonly attemptId: string;
 }
 
 export interface ActiveAgentRevisionSelection {
@@ -1344,7 +1349,11 @@ export class OpenClawController {
       );
     }
     compute.validateAgentProvisioning({ executionMode, configuration: configurationInput.values });
-    if (harnessAuth === null || harnessAuth.method === "runtime") {
+    if (
+      harnessAuth === null ||
+      harnessAuth.method === "runtime" ||
+      harnessAuth.method === "oauth"
+    ) {
       throw new ScopeViolationError(
         "Agent provisioning requires dedicated Harness authentication.",
       );
@@ -1854,6 +1863,121 @@ export class OpenClawController {
         warnings: deploymentWarningsForWork(work),
       });
     });
+  }
+
+  async startDeploymentHarnessOAuth(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    deploymentId: string,
+  ): Promise<HarnessOAuthObservation> {
+    return immutableCopy(
+      await this.withHarnessOAuthDeployment(
+        principalId,
+        namespaceId,
+        agentId,
+        deploymentId,
+        "deploy",
+        { lock: true },
+        async (selection) => {
+          const start = selection.compute.startHarnessOAuth;
+          if (start === undefined) {
+            throw new DependencyUnavailableError("The selected Compute Driver cannot start OAuth.");
+          }
+          return this.harnessOAuthOperation(() =>
+            start.call(selection.compute, selection.revision, {
+              actorId: principalId,
+              deadline: this.harnessOAuthDeadline(),
+            }),
+          );
+        },
+      ),
+    );
+  }
+
+  async getDeploymentHarnessOAuthStatus(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    deploymentId: string,
+  ): Promise<HarnessOAuthObservation> {
+    return immutableCopy(
+      await this.withHarnessOAuthDeployment(
+        principalId,
+        namespaceId,
+        agentId,
+        deploymentId,
+        "read",
+        { lock: false },
+        async (selection) => {
+          const status = selection.compute.getHarnessOAuthStatus;
+          if (status === undefined) {
+            throw new DependencyUnavailableError(
+              "The selected Compute Driver cannot report OAuth.",
+            );
+          }
+          return this.harnessOAuthOperation(() =>
+            status.call(selection.compute, selection.revision, { actorId: principalId }),
+          );
+        },
+      ),
+    );
+  }
+
+  async completeDeploymentHarnessOAuth(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    deploymentId: string,
+    input: CompleteHarnessOAuthInput,
+  ): Promise<HarnessOAuthObservation> {
+    if (
+      !/^oauth_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+        input.attemptId,
+      )
+    ) {
+      throw new ScopeViolationError("The OAuth attempt identity is invalid.");
+    }
+    return immutableCopy(
+      await this.withHarnessOAuthDeployment(
+        principalId,
+        namespaceId,
+        agentId,
+        deploymentId,
+        "deploy",
+        { lock: true, allowActiveAcknowledgement: true },
+        async (selection) => {
+          if (selection.active) {
+            const status = selection.compute.getHarnessOAuthStatus;
+            if (status === undefined) {
+              throw new DependencyUnavailableError(
+                "The selected Compute Driver cannot report OAuth.",
+              );
+            }
+            const observation = await this.harnessOAuthOperation(() =>
+              status.call(selection.compute, selection.revision, { actorId: principalId }),
+            );
+            if (observation.phase === "committed" && observation.attemptId === input.attemptId) {
+              return observation;
+            }
+            throw new ResourceConflictError("The OAuth attempt is not committed for this Agent.");
+          }
+          const complete = selection.compute.completeHarnessOAuth;
+          if (complete === undefined) {
+            throw new DependencyUnavailableError(
+              "The selected Compute Driver cannot complete OAuth.",
+            );
+          }
+          return this.harnessOAuthOperation(() =>
+            complete.call(selection.compute, selection.revision, {
+              actorId: principalId,
+              attemptId: input.attemptId,
+              deadline: this.harnessOAuthDeadline(),
+            }),
+          );
+        },
+      ),
+    );
   }
 
   async getReadableActiveAgentRevision(
@@ -3441,6 +3565,141 @@ export class OpenClawController {
     return Object.freeze([]);
   }
 
+  private async withHarnessOAuthDeployment<T>(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    deploymentId: string,
+    action: "deploy" | "read",
+    options: { readonly lock: boolean; readonly allowActiveAcknowledgement?: boolean },
+    operation: (selection: {
+      readonly compute: ComputeDriver;
+      readonly revision: Readonly<AgentRevision>;
+      readonly active: boolean;
+    }) => Promise<T>,
+  ): Promise<T> {
+    if (!isNonEmptyString(namespaceId)) {
+      throw new ScopeViolationError("The exact Namespace identity is missing.");
+    }
+    if (!isNonEmptyString(agentId)) {
+      throw new ScopeViolationError("The exact Agent identity is missing.");
+    }
+    if (!isNonEmptyString(deploymentId)) {
+      throw new ScopeViolationError("The exact AgentRevision identity is missing.");
+    }
+
+    const select = async (
+      state: PlatformReadView,
+      namespace: Readonly<Namespace>,
+      agent: Readonly<Agent> | undefined,
+    ) => {
+      if (!agent) {
+        throw new ScopeViolationError(
+          "The Agent does not belong to the exact Installation and Namespace.",
+        );
+      }
+      await this.authorize(principalId, action, {
+        kind: "agent",
+        id: agent.id,
+        namespaceId: namespace.id,
+      });
+      const revision = await state.revisions.findRevision(namespace.id, agent.id, deploymentId);
+      if (!revision) {
+        throw new ScopeViolationError(
+          "The AgentRevision does not belong to the exact Agent and Namespace.",
+        );
+      }
+      await this.authorize(principalId, "read", {
+        kind: "configuration",
+        id: revision.configurationId,
+        namespaceId: namespace.id,
+      });
+      if (namespace.status !== "ready") {
+        throw new NamespaceNotReadyError();
+      }
+      if (revision.harnessAuth.method !== "oauth") {
+        throw new ResourceConflictError(
+          "The deployment does not use OAuth Harness authentication.",
+        );
+      }
+      if (agent.desiredRuntimeState !== "running") {
+        throw new ResourceConflictError("The deployment is not waiting for activation.");
+      }
+      const active = agent.activeRevisionId === revision.id;
+      if (
+        agent.activeRevisionId !== undefined &&
+        (!options.allowActiveAcknowledgement || !active)
+      ) {
+        throw new ResourceConflictError("OAuth activation requires a fully stopped Agent.");
+      }
+      const revisions = await state.revisions.listRevisions(namespace.id, agent.id);
+      const latest = revisions.at(-1);
+      if (latest?.id !== revision.id) {
+        throw new ResourceConflictError("Only the latest Agent deployment can start OAuth.");
+      }
+      const work = await state.operations.findWork(`agent_revision:${revision.id}:reconcile`);
+      if (
+        work === undefined ||
+        work.namespaceId !== revision.namespaceId ||
+        work.agentId !== revision.agentId ||
+        work.revisionId !== revision.id
+      ) {
+        throw new DependencyUnavailableError(
+          "The deployment reconciliation record is unavailable.",
+        );
+      }
+      if (work.actorId !== principalId) {
+        throw new AuthorizationDeniedError("Only the deployment actor can activate OAuth.");
+      }
+      if (action === "deploy" && !active && work.state !== "queued" && work.state !== "claimed") {
+        throw new DependencyUnavailableError(
+          "The deployment reconciliation record is unavailable.",
+        );
+      }
+      let compute: ComputeDriver;
+      try {
+        compute = this.selectedDriver("compute");
+      } catch {
+        throw new DependencyUnavailableError("The selected compute Driver is unavailable.");
+      }
+      if (
+        revision.compute.id !== compute.id ||
+        revision.compute.implementation !== compute.implementation
+      ) {
+        throw new DependencyUnavailableError(
+          "The selected compute Driver does not own deployment.",
+        );
+      }
+      return { compute, revision, active };
+    };
+
+    if (options.lock) {
+      return this.mutate(async (state) => {
+        const namespace = await this.lockNamespace(state, namespaceId);
+        const agent = await state.agents.lockAgent(namespace.id, agentId);
+        return operation(await select(state, namespace, agent));
+      });
+    }
+
+    return this.read(async (state) => {
+      const namespace = await this.exactNamespace(state, namespaceId);
+      const agent = await state.agents.findAgent(namespace.id, agentId);
+      return operation(await select(state, namespace, agent));
+    });
+  }
+
+  private harnessOAuthDeadline(): Date {
+    return new Date(this.clock().getTime() + 30_000);
+  }
+
+  private async harnessOAuthOperation<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation();
+    } catch {
+      throw new DependencyUnavailableError("The selected Compute Driver could not complete OAuth.");
+    }
+  }
+
   private async authorize(
     principalId: string,
     action: AuthorizationRequest["action"],
@@ -3597,7 +3856,7 @@ export class OpenClawController {
     namespaceId: string,
     binding: HarnessAuthBinding | null,
   ): Promise<void> {
-    if (binding === null || binding.method === "runtime") {
+    if (binding === null || binding.method === "runtime" || binding.method === "oauth") {
       return;
     }
     if (binding.method === "api_key" || binding.method === "codex_pat") {
@@ -3686,7 +3945,7 @@ export class OpenClawController {
       plan.harnessAuth,
     );
     const binding = plan.harnessAuth;
-    if (binding === null || binding.method === "runtime") {
+    if (binding === null || binding.method === "runtime" || binding.method === "oauth") {
       throw new ScopeViolationError(
         "Agent provisioning requires dedicated Harness authentication.",
       );
@@ -4122,7 +4381,11 @@ export class OpenClawController {
       if (!isNonEmptyString(name) || !validName(name)) {
         throw new ScopeViolationError("The provisioning Agent name is invalid.");
       }
-      if (plan.harnessAuth === null || plan.harnessAuth.method === "runtime") {
+      if (
+        plan.harnessAuth === null ||
+        plan.harnessAuth.method === "runtime" ||
+        plan.harnessAuth.method === "oauth"
+      ) {
         throw new ScopeViolationError(
           "Agent provisioning requires dedicated Harness authentication.",
         );
@@ -4408,7 +4671,7 @@ export class OpenClawController {
       );
     }
     await this.authorizeHarnessAuthSource(state, principalId, agent.namespaceId, binding);
-    if (binding.method === "runtime") {
+    if (binding.method === "runtime" || binding.method === "oauth") {
       return immutableCopy(binding);
     }
     if (binding.method === "api_key" || binding.method === "codex_pat") {

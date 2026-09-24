@@ -14,6 +14,7 @@ if (args[0] === "models" && args[1] === "status") {
     JSON.stringify({
       auth: {
         probes: {
+          totalTargets: 1,
           results: [
             {
               provider: "openai",

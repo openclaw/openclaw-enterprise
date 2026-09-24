@@ -388,11 +388,13 @@ export function createRealKubernetesFixture({
     const suffix = kubernetesHash(agentId);
     const tokenDirectory = join(directory, `tokens-${suffix}`);
     const transportToken = randomBytes(32).toString("hex");
+    const gatewayToken = randomBytes(32).toString("hex");
     const selectedGatewayPassword = gatewayPassword ?? randomBytes(32).toString("base64url");
     await mkdir(tokenDirectory, { mode: 0o700 });
     try {
       await Promise.all([
         writeFile(join(tokenDirectory, "app-server-token"), transportToken, { mode: 0o600 }),
+        writeFile(join(tokenDirectory, "gateway-token"), gatewayToken, { mode: 0o600 }),
         writeFile(join(tokenDirectory, "gateway-password"), selectedGatewayPassword, {
           mode: 0o600,
         }),

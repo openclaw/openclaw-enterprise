@@ -869,6 +869,22 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
           name: "rejects unknown setup diagnostic kind",
           diagnostic: { kind: `${secret}-kind`, stage: "relay-readiness" },
         },
+        {
+          name: "allowlisted repository platform active revision diagnostic",
+          diagnostic: { kind: "repository-platform-readiness", stage: "active-revision" },
+        },
+        {
+          name: "allowlisted repository platform ready pod diagnostic",
+          diagnostic: {
+            kind: "repository-platform-readiness",
+            stage: "ready-pod",
+            pod: { name: secret },
+          },
+        },
+        {
+          name: "rejects unsafe repository platform readiness diagnostic",
+          diagnostic: { kind: "repository-platform-readiness", stage: `${secret}-stage` },
+        },
         ...relayPodCases.map(({ name, stage = "relay-readiness", relayPod }) => ({
           name,
           diagnostic: { kind: "repository-platform-setup", stage, relayPod },
@@ -999,6 +1015,20 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     kind: "repository-platform-setup",
     stage: "relay-readiness",
   });
+  const activeRevisionFailure = summary.files[0].tests.find(
+    (entry) => entry.name === "allowlisted repository platform active revision diagnostic",
+  );
+  assert.deepEqual(activeRevisionFailure.error.diagnostic, {
+    kind: "repository-platform-readiness",
+    stage: "active-revision",
+  });
+  const readyPodFailure = summary.files[0].tests.find(
+    (entry) => entry.name === "allowlisted repository platform ready pod diagnostic",
+  );
+  assert.deepEqual(readyPodFailure.error.diagnostic, {
+    kind: "repository-platform-readiness",
+    stage: "ready-pod",
+  });
   for (const { name, stage = "relay-readiness", expected } of relayPodCases) {
     const relayFailure = summary.files[0].tests.find((entry) => entry.name === name);
     assert.equal(relayFailure.status, "failed");
@@ -1015,6 +1045,7 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     "rejects unsafe repository platform setup stage",
     "rejects nonstring repository platform setup stage",
     "rejects unknown setup diagnostic kind",
+    "rejects unsafe repository platform readiness diagnostic",
   ]) {
     const rejected = summary.files[0].tests.find((entry) => entry.name === name);
     assert.equal(rejected.status, "failed");

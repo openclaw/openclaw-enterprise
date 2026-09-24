@@ -330,6 +330,16 @@
     },
     {
       "path": "tests/integration/repository-runtime-materialization.test.mjs"
+    },
+    {
+      "path": "tests/integration/openclaw-oauth-runtime.test.mjs",
+      "expectedTests": [
+        "generated OAuth runtime gates gateway startup on actor-owned completion",
+        "generated OAuth runtime ignores completion before native authorization",
+        "generated OAuth runtime denies delayed native persistence after completion grant expiry",
+        "generated OAuth runtime maps SDK account mismatch to fixed account mismatch",
+        "generated OAuth runtime restarts from a committed profile without another consent flow"
+      ]
     }
   ]
 }

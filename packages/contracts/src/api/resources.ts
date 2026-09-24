@@ -8,6 +8,7 @@ import {
   ConfigurationId,
   ConfigurationKindSchema,
   ConfigurationValues,
+  HarnessOAuthAttemptId,
   HarnessExecutionModeSchema,
   HarnessAuthBindingSchema,
   InstallationId,
@@ -545,6 +546,62 @@ export const AgentDeploymentStatusResponse = Type.Object(
   { additionalProperties: false },
 );
 
+export const HarnessOAuthObservationSchema = Type.Union([
+  Type.Object({ phase: Type.Literal("preparing") }, { additionalProperties: false }),
+  Type.Object(
+    {
+      phase: Type.Literal("waiting"),
+      attemptId: HarnessOAuthAttemptId,
+      expiresAt: Timestamp,
+      verificationUrl: Type.String({
+        format: "uri",
+        maxLength: 2048,
+      }),
+      userCode: Type.String({
+        minLength: 1,
+        maxLength: 128,
+        pattern: "^[A-Za-z0-9._~:/+=-]+$",
+      }),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      phase: Type.Literal("authorized"),
+      attemptId: HarnessOAuthAttemptId,
+      expiresAt: Timestamp,
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      phase: Type.Literal("committed"),
+      attemptId: HarnessOAuthAttemptId,
+      expiresAt: Timestamp,
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      phase: Type.Literal("failed"),
+      reason: Type.Union([
+        Type.Literal("denied"),
+        Type.Literal("expired"),
+        Type.Literal("cancelled"),
+        Type.Literal("account_mismatch"),
+        Type.Literal("unavailable"),
+      ]),
+      attemptId: Type.Optional(HarnessOAuthAttemptId),
+    },
+    { additionalProperties: false },
+  ),
+]);
+
+export const AgentDeploymentAuthResponse = Type.Object(
+  { data: HarnessOAuthObservationSchema, meta: Meta },
+  { additionalProperties: false },
+);
+
 export const WorkspaceFileResponse = Type.Object(
   {
     data: Type.Object(
@@ -589,6 +646,7 @@ export type IAMRoleWire = Type.Static<typeof IAMRoleSchema>;
 export type IAMAccessBindingWire = Type.Static<typeof IAMAccessBindingSchema>;
 export type AgentRevisionWire = Type.Static<typeof AgentRevisionSchema>;
 export type AgentDeploymentStatusWire = Type.Static<typeof AgentDeploymentStatusSchema>;
+export type HarnessOAuthObservationWire = Type.Static<typeof HarnessOAuthObservationSchema>;
 export type InstallationResponse = Type.Static<typeof InstallationResponse>;
 export type NamespaceResponse = Type.Static<typeof NamespaceResponse>;
 export type NamespaceListResponse = Type.Static<typeof NamespaceListResponse>;
@@ -611,6 +669,7 @@ export type RepositoryOptionListResponse = Type.Static<typeof RepositoryOptionLi
 export type AgentRevisionResponse = Type.Static<typeof AgentRevisionResponse>;
 export type AgentRevisionListResponse = Type.Static<typeof AgentRevisionListResponse>;
 export type AgentDeploymentStatusResponse = Type.Static<typeof AgentDeploymentStatusResponse>;
+export type AgentDeploymentAuthResponse = Type.Static<typeof AgentDeploymentAuthResponse>;
 export type WorkspaceFileResponse = Type.Static<typeof WorkspaceFileResponse>;
 export type WorkspaceFileUpdateResponse = Type.Static<typeof WorkspaceFileUpdateResponse>;
 

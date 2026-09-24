@@ -750,35 +750,51 @@ async function setupRepositoryPlatformFixture(context, diagnostic) {
     return agent;
   }
   async function readyPod(agent, revision, previousUid) {
-    await kube.waitFor(
-      "exact active AgentRevision",
-      async () =>
-        (await request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`))
-          .activeRevisionId === revision.id,
-    );
-    return kube.waitFor("Ready Pod with current immutable revision and material", async () => {
-      const pods = await kube.resources(
-        "pods",
-        placement,
-        "-l",
-        `openclaw.dev/agent=${agent.id},openclaw.dev/workload-role=gateway`,
+    let stage = "active-revision";
+    try {
+      await kube.waitFor(
+        "exact active AgentRevision",
+        async () =>
+          (await request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`))
+            .activeRevisionId === revision.id,
       );
-      const matches = pods.filter(
-        (pod) =>
-          !pod.metadata.deletionTimestamp &&
-          pod.metadata.uid !== previousUid &&
-          pod.status.conditions?.some(
-            (condition) => condition.type === "Ready" && condition.status === "True",
-          ) &&
-          pod.spec.volumes.some(
-            (volume) =>
-              volume.configMap?.name ===
-              `gateway-${kubernetesHash(agent.id)}-rev-${kubernetesHash(revision.id)}`,
-          ),
+      stage = "ready-pod";
+      return await kube.waitFor(
+        "Ready Pod with current immutable revision and material",
+        async () => {
+          const pods = await kube.resources(
+            "pods",
+            placement,
+            "-l",
+            `openclaw.dev/agent=${agent.id},openclaw.dev/workload-role=gateway`,
+          );
+          const matches = pods.filter(
+            (pod) =>
+              !pod.metadata.deletionTimestamp &&
+              pod.metadata.uid !== previousUid &&
+              pod.status.conditions?.some(
+                (condition) => condition.type === "Ready" && condition.status === "True",
+              ) &&
+              pod.spec.volumes.some(
+                (volume) =>
+                  volume.configMap?.name ===
+                  `gateway-${kubernetesHash(agent.id)}-rev-${kubernetesHash(revision.id)}`,
+              ),
+          );
+          assert.ok(matches.length <= 1, "exact revision has multiple Ready gateway Pods");
+          return matches[0];
+        },
       );
-      assert.ok(matches.length <= 1, "exact revision has multiple Ready gateway Pods");
-      return matches[0];
-    });
+    } catch (error) {
+      const diagnostic = { kind: "repository-platform-readiness", stage };
+      if (error && typeof error === "object") {
+        error.openclawCiDiagnostic = diagnostic;
+        throw error;
+      }
+      const wrapped = new Error("Repository platform readiness failed.", { cause: error });
+      wrapped.openclawCiDiagnostic = diagnostic;
+      throw wrapped;
+    }
   }
   async function podNode(pod, script, input) {
     return execute(

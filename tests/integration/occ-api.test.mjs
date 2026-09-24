@@ -1478,6 +1478,287 @@ test("Agent deployment status polls the admitted revision work with exact read a
   assert.equal(denied.status, 403);
 });
 
+test("Agent deployment OAuth routes authorize the original deployment actor and call Compute", async () => {
+  const attemptId = `oauth_${randomUUID()}`;
+  const expiresAt = new Date(Date.now() + 600_000).toISOString();
+  const oauthCalls = [];
+  let committedAttemptId;
+  const computeDriver = {
+    id: "compute-integration",
+    capability: "compute",
+    implementation: "deterministic-test",
+    async ensureNamespace(namespace) {
+      return {
+        namespaceId: namespace.id,
+        namespaceReady: true,
+      };
+    },
+    async deleteNamespace(namespace) {
+      return {
+        namespaceId: namespace.id,
+        namespaceDeleted: true,
+      };
+    },
+    validateHarnessAuth() {},
+    async prepareRevision(revision) {
+      return {
+        namespaceId: revision.namespaceId,
+        agentId: revision.agentId,
+        revisionId: revision.id,
+        ready: true,
+      };
+    },
+    async stopRevision() {},
+    async retireRevision() {},
+    async startHarnessOAuth(revision, context) {
+      oauthCalls.push({
+        operation: "start",
+        revisionId: revision.id,
+        actorId: context.actorId,
+        deadlineIsDate: context.deadline instanceof Date,
+      });
+      return {
+        phase: "waiting",
+        attemptId,
+        expiresAt,
+        verificationUrl: "https://example.com/device",
+        userCode: "ABCD-EFGH",
+      };
+    },
+    async getHarnessOAuthStatus(revision, context) {
+      oauthCalls.push({
+        operation: "status",
+        revisionId: revision.id,
+        actorId: context.actorId,
+      });
+      if (committedAttemptId !== undefined) {
+        return { phase: "committed", attemptId: committedAttemptId, expiresAt };
+      }
+      return { phase: "authorized", attemptId, expiresAt };
+    },
+    async completeHarnessOAuth(revision, context) {
+      oauthCalls.push({
+        operation: "complete",
+        revisionId: revision.id,
+        actorId: context.actorId,
+        attemptId: context.attemptId,
+        deadlineIsDate: context.deadline instanceof Date,
+      });
+      if (context.attemptId !== attemptId) {
+        return { phase: "failed", reason: "expired", attemptId: context.attemptId };
+      }
+      committedAttemptId = context.attemptId;
+      return { phase: "committed", attemptId, expiresAt };
+    },
+  };
+  const fixture = await createInjectedFixture({ recordOperations: true, computeDriver });
+  const controller = {
+    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
+  };
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, "oauth-activation");
+  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  const configuration = await createConfiguration(controller, namespace.id);
+  const agentResult = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      name: "oauth-agent",
+      configurationId: configuration.id,
+      harnessAuth: { method: "oauth" },
+    },
+  });
+  assert.equal(agentResult.status, 201, JSON.stringify(agentResult.body));
+  assert.deepEqual(agentResult.data.harnessAuth, { method: "oauth" });
+
+  const admitted = await controller.request(
+    "POST",
+    `/namespaces/${namespace.id}/agents/${agentResult.data.id}/deploy`,
+  );
+  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+  assert.deepEqual(admitted.data.harnessAuth, { method: "oauth" });
+  const authPath = `/namespaces/${namespace.id}/agents/${agentResult.data.id}/deployments/${admitted.data.id}/auth`;
+
+  const siblingAgent = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      name: "oauth-sibling",
+      configurationId: configuration.id,
+      harnessAuth: { method: "oauth" },
+    },
+  });
+  assert.equal(siblingAgent.status, 201, JSON.stringify(siblingAgent.body));
+  const siblingBypass = await controller.request(
+    "POST",
+    `/namespaces/${namespace.id}/agents/${siblingAgent.data.id}/deployments/${admitted.data.id}/auth`,
+  );
+  assert.equal(siblingBypass.status, 404);
+  assert.equal(oauthCalls.length, 0);
+
+  const authAuditStart = fixture.auditSink.events.length;
+  const started = await controller.request("POST", authPath);
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  assert.deepEqual(started.data, {
+    phase: "waiting",
+    attemptId,
+    expiresAt,
+    verificationUrl: "https://example.com/device",
+    userCode: "ABCD-EFGH",
+  });
+
+  const status = await controller.request("GET", authPath);
+  assert.equal(status.status, 200, JSON.stringify(status.body));
+  assert.deepEqual(status.data, { phase: "authorized", attemptId, expiresAt });
+
+  const expiredAttemptId = `oauth_${randomUUID()}`;
+  const expired = await controller.request("POST", `${authPath}/complete`, {
+    body: { attemptId: expiredAttemptId },
+  });
+  assert.equal(expired.status, 200, JSON.stringify(expired.body));
+  assert.deepEqual(expired.data, {
+    phase: "failed",
+    reason: "expired",
+    attemptId: expiredAttemptId,
+  });
+
+  const completed = await controller.request("POST", `${authPath}/complete`, {
+    body: { attemptId },
+  });
+  assert.equal(completed.status, 200, JSON.stringify(completed.body));
+  assert.deepEqual(completed.data, { phase: "committed", attemptId, expiresAt });
+  await fixture.platformState.transact((unit) =>
+    unit.agents.compareAndSetActiveRevision(
+      namespace.id,
+      agentResult.data.id,
+      undefined,
+      admitted.data.id,
+    ),
+  );
+  const duplicate = await controller.request("POST", `${authPath}/complete`, {
+    body: { attemptId },
+  });
+  assert.equal(duplicate.status, 200, JSON.stringify(duplicate.body));
+  assert.deepEqual(duplicate.data, { phase: "committed", attemptId, expiresAt });
+  const wrongActiveAttempt = await controller.request("POST", `${authPath}/complete`, {
+    body: { attemptId: expiredAttemptId },
+  });
+  assert.equal(wrongActiveAttempt.status, 409);
+  assert.equal(wrongActiveAttempt.body.error.code, "RESOURCE_CONFLICT");
+
+  const authAuditEvents = fixture.auditSink.events
+    .slice(authAuditStart)
+    .filter((event) => event.action.startsWith("openclaw.agent_deployments.auth."));
+  assert.deepEqual(
+    authAuditEvents.map((event) => [event.action, event.outcome, event.reasonCode]),
+    [
+      ["openclaw.agent_deployments.auth.start", "success", undefined],
+      ["openclaw.agent_deployments.auth.complete", "failure", "HARNESS_OAUTH_EXPIRED"],
+      ["openclaw.agent_deployments.auth.complete", "success", undefined],
+      ["openclaw.agent_deployments.auth.complete", "success", undefined],
+    ],
+  );
+  assert.deepEqual(
+    authAuditEvents.map((event) => event.resource),
+    Array.from({ length: 4 }, () => ({
+      kind: "agent_revision",
+      id: admitted.data.id,
+      namespaceId: namespace.id,
+    })),
+  );
+  const authAuditRecord = JSON.stringify(authAuditEvents);
+  assert.equal(authAuditRecord.includes(attemptId), false);
+  assert.equal(authAuditRecord.includes(expiredAttemptId), false);
+  assert.equal(authAuditRecord.includes("https://example.com/device"), false);
+  assert.equal(authAuditRecord.includes("ABCD-EFGH"), false);
+  assert.deepEqual(oauthCalls, [
+    {
+      operation: "start",
+      revisionId: admitted.data.id,
+      actorId: fixture.principal.id,
+      deadlineIsDate: true,
+    },
+    {
+      operation: "status",
+      revisionId: admitted.data.id,
+      actorId: fixture.principal.id,
+    },
+    {
+      operation: "complete",
+      revisionId: admitted.data.id,
+      actorId: fixture.principal.id,
+      attemptId: expiredAttemptId,
+      deadlineIsDate: true,
+    },
+    {
+      operation: "complete",
+      revisionId: admitted.data.id,
+      actorId: fixture.principal.id,
+      attemptId,
+      deadlineIsDate: true,
+    },
+    {
+      operation: "status",
+      revisionId: admitted.data.id,
+      actorId: fixture.principal.id,
+    },
+    {
+      operation: "status",
+      revisionId: admitted.data.id,
+      actorId: fixture.principal.id,
+    },
+  ]);
+
+  const { principal: otherPrincipal } = await fixture.createAuthPrincipal("oauth-other-actor");
+  fixture.state.identities.push(otherPrincipal);
+  fixture.state.roles.push({
+    id: "role-oauth-other-actor",
+    namespaceId: namespace.id,
+    permissions: [
+      { action: "deploy", resourceKind: "agent" },
+      { action: "read", resourceKind: "configuration" },
+    ],
+  });
+  fixture.state.bindings.push(
+    {
+      id: "binding-oauth-other-agent",
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: otherPrincipal.id,
+      roleId: "role-oauth-other-actor",
+      resourceKind: "agent",
+      resourceId: agentResult.data.id,
+    },
+    {
+      id: "binding-oauth-other-configuration",
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: otherPrincipal.id,
+      roleId: "role-oauth-other-actor",
+      resourceKind: "configuration",
+      resourceId: configuration.id,
+    },
+  );
+  const otherApp = fixture.createApp(otherPrincipal);
+  const otherComplete = await injectedRequest(otherApp, "POST", `${authPath}/complete`, {
+    body: { attemptId },
+  });
+  assert.equal(otherComplete.status, 403);
+  assert.equal(otherComplete.body.error.code, "FORBIDDEN");
+  assert.equal(oauthCalls.filter(({ operation }) => operation === "complete").length, 2);
+  assert.equal(
+    oauthCalls.filter((call) => call.operation === "complete" && call.attemptId === attemptId)
+      .length,
+    1,
+  );
+
+  const newer = await controller.request(
+    "POST",
+    `/namespaces/${namespace.id}/agents/${agentResult.data.id}/deploy`,
+  );
+  assert.equal(newer.status, 202, JSON.stringify(newer.body));
+  const stale = await controller.request("POST", `${authPath}/complete`, { body: { attemptId } });
+  assert.equal(stale.status, 409);
+  assert.equal(stale.body.error.code, "RESOURCE_CONFLICT");
+  assert.equal(oauthCalls.filter(({ operation }) => operation === "complete").length, 2);
+});
+
 test("Agent create and update replace policy-only plugin maps and revisions freeze the requested snapshot", async () => {
   const controller = await configuredController();
   await bootstrap(controller);

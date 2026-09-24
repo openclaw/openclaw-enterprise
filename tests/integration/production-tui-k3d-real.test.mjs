@@ -616,7 +616,10 @@ test(
       secrets.push(gatewayPassword);
       await createSecret(
         `openclaw-agent-transport-${agentHash}`,
-        { "app-server-token": secret(), "gateway-password": gatewayPassword },
+        {
+          "app-server-token": secret(),
+          "gateway-password": gatewayPassword,
+        },
         tenant,
       );
       await createSecret(

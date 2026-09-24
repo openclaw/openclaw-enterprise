@@ -591,12 +591,15 @@ export function createOpenShellKubernetesFixture({
     const suffix = openshellHash(agentId);
     const tokenDirectory = await mkdtemp(join(directory, `openshell-transport-${suffix}-`));
     const appServerToken = randomBytes(32).toString("hex");
+    const gatewayToken = randomBytes(32).toString("hex");
     const gatewayPassword = randomBytes(32).toString("base64url");
     try {
       const appServerTokenPath = join(tokenDirectory, "app-server-token");
+      const gatewayTokenPath = join(tokenDirectory, "gateway-token");
       const gatewayPasswordPath = join(tokenDirectory, "gateway-password");
       await Promise.all([
         writeFile(appServerTokenPath, appServerToken, { mode: 0o600 }),
+        writeFile(gatewayTokenPath, gatewayToken, { mode: 0o600 }),
         writeFile(gatewayPasswordPath, gatewayPassword, { mode: 0o600 }),
       ]);
       await kubectl(

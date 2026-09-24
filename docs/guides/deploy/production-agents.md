@@ -87,19 +87,13 @@ is the Kubernetes namespace created by the driver during
 
 ## Configure the Agent runtime
 
-Both examples enable Control UI. Their explicit loopback origins allow the first
-revision to start without trusting an arbitrary browser host. After deployment,
+Both examples enable Control UI with loopback origins only. After deployment,
 [finish Control UI access](#open-control-ui) by adding this Agent's exact HTTPS
-origin. Loopback origins alone do not enable the OCE native admin link.
-
-Complete [private routing](workspace-routing.md#configure-private-routing) first.
-Configure verified Envoy source CIDRs in the trusted Installation YAML before
-deploying either example. Kubernetes Compute renders native trusted-proxy
-authentication for Console workspace access; the examples omit Driver-owned
-settings. Follow the [native authentication requirements](workspace-routing.md#configure-native-gateway-authentication)
-for proxy identity and NetworkPolicy isolation; do not trust arbitrary client
-addresses. The gateway password SecretRef enables the separate local model check.
-Dedicated Codex also requires the [matching runtime images](workspace-routing.md#runtime-prerequisite-for-separate-storage).
+origin. Complete [private routing](workspace-routing.md#configure-private-routing)
+first, including verified Envoy source CIDRs and the
+[native authentication requirements](workspace-routing.md#configure-native-gateway-authentication).
+The gateway password SecretRef enables the separate local model check. Dedicated
+Codex also requires the [matching runtime images](workspace-routing.md#runtime-prerequisite-for-separate-storage).
 
 Choose one runtime mode and write the matching Namespace-owned
 `kind: "agent"` Configuration. Use `embedded` for built-in OpenClaw:
@@ -416,43 +410,31 @@ Secrets.
 ## Verify workspace access
 
 After deployment, complete [Verify routing and file access](workspace-routing.md#verify-routing-and-file-access):
-require the Gateway and Agent HTTPRoute to be accepted, TLS certificates ready,
-and a successful read through the OCC workspace-file API. In the Console, open
-the Agent and select **Reload AGENTS.md**. An existing file should load without
-**Workspace access is unavailable**. The caller needs exact-Agent `read`
-permission; saving also requires `operate`.
-
-An empty editor after an error is not evidence of an empty workspace. A missing
-file is a separate result: the file API can create or replace a file, but cannot
-delete it. Verify access before creating a missing file. See [workspace-file errors](../../reference/agents.md#workspace-files).
-Do not treat this setup as complete merely because a revision is active or
-credentials are stored. Keep model verification as a separate check below.
+require accepted HTTPRoutes, ready TLS certificates, and a successful OCC
+workspace-file read. In the Console, **Reload AGENTS.md** should load an existing
+file without **Workspace access is unavailable**. Exact-Agent `read` is required;
+saving also requires `operate`. Verify access before creating a missing file,
+and keep model verification as a separate check below.
 
 ## Open Control UI
 
-Complete [native admin setup](native-admin.md#steps) for the Installation, then
-[configure this Agent's origin](native-admin.md#configure-each-agent) using an
-OCE browser session with exact Agent `administer` permission. The first active
-revision makes its stable origin discoverable; copy that origin into
-`gateway.controlUi.allowedOrigins`, save the Configuration, and deploy a new
-revision. Do not use a wildcard, the Console origin, or host-header fallback.
-
-On the Agent detail page, select **Refresh access** in **Native admin UI**.
-Expect **available**, open **Open native admin UI**, and verify the native
-Control UI loads on the returned Agent HTTPS host. Model verification below is
-separate from this browser-access check.
+Complete [native admin setup](native-admin.md#steps), then
+[configure this Agent's origin](native-admin.md#configure-each-agent) with exact
+Agent `administer` permission. Copy the first active revision's stable origin
+into `gateway.controlUi.allowedOrigins`, save the Configuration, and deploy a
+new revision. On the Agent detail page, **Refresh access** should report
+**available**; then open **Open native admin UI**. Model verification remains
+separate.
 
 ## Verify production workloads
 
-Wait for `GET /namespaces/$NAMESPACE_ID/agents/$AGENT_ID` to report the
-expected `activeRevisionId`, then require a real model response from that
-Agent. Use its optional loopback password to [attach with the OpenClaw
-TUI](#attach-with-the-openclaw-tui), or [verify rejection of an unauthenticated
-request and a real model response](../operate/model-verification.md) over an
-operator's local Kubernetes connection.
+Wait for `GET /namespaces/$NAMESPACE_ID/agents/$AGENT_ID` to report the expected
+`activeRevisionId`, then require a real model response. Use the optional loopback
+password to [attach with the OpenClaw TUI](#attach-with-the-openclaw-tui), or
+[verify over HTTP](../operate/model-verification.md) from the operator's local
+Kubernetes connection.
 
-A Helm release, ready controller, or active revision does not show that the
-Agent can reach its model.
+Controller readiness does not prove model access.
 
 ## Attach with the OpenClaw TUI
 
@@ -541,9 +523,9 @@ fi
 ```
 
 Confirm the model replies with the exact nonce. The TUI uses the Pod-local
-WebSocket listener and configured gateway password. The extra client process unsets
-`OPENAI_API_KEY`; model access stays in the serving gateway path. Ctrl+D exits
-only the client.
+WebSocket listener and gateway password; the extra client process unsets
+`OPENAI_API_KEY`, so model access stays in the serving gateway path. Ctrl+D
+exits only the client.
 
 This Pod-local TUI procedure requires the optional password SecretRef shown
 above. Trusted-proxy authentication remains active for routed requests. Use the
@@ -552,9 +534,8 @@ model response, and the OCC file API for workspace-file administration.
 
 ## End the operator session
 
-After model verification, remove only temporary delivery copies created by
-these guides. The command leaves a caller-supplied `OCC_SERVICE_KEY_FILE` and
-the protected original `OCC_BOOTSTRAP_KEY_FILE` untouched:
+After verification, remove temporary delivery copies created by these
+guides. Caller-supplied and bootstrap key files stay untouched:
 
 ```bash
 case "${OCC_SERVICE_KEY_DIRECTORY:-}" in
@@ -575,7 +556,9 @@ unset OCC_SERVICE_KEY_FILE OCC_SERVICE_KEY_DIRECTORY
 case "${SECRET_DIRECTORY:-}" in
   /tmp/occ-agent-transport.[[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]])
     if [ -d "$SECRET_DIRECTORY" ] && [ ! -L "$SECRET_DIRECTORY" ]; then
-      rm -f -- "$SECRET_DIRECTORY/app-server-token" "$SECRET_DIRECTORY/gateway-password" &&
+      rm -f -- \
+        "$SECRET_DIRECTORY/app-server-token" \
+        "$SECRET_DIRECTORY/gateway-password" &&
       rmdir -- "$SECRET_DIRECTORY"
     fi ;;
   '') ;;

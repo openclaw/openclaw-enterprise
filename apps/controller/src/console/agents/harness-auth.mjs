@@ -11,6 +11,9 @@ export function harnessAuthDescription(binding) {
   if (binding.method === "codex_pat") {
     return "Service Accounts · Secret configured";
   }
+  if (binding.method === "oauth") {
+    return "OpenAI OAuth during activation";
+  }
   return binding.method === "api_key"
     ? "API key · Secret configured"
     : `ChatGPT service account · ${binding.serviceAccountId}`;
@@ -24,6 +27,9 @@ export function createHarnessAuthFields(context, binding = null, executionMode =
     element("option", { value: "api_key" }, "API key"),
     executionMode === "dedicated"
       ? element("option", { value: "codex_pat" }, "Service Accounts")
+      : null,
+    executionMode === "embedded"
+      ? element("option", { value: "oauth" }, "OpenAI OAuth during activation")
       : null,
     element("option", { value: "runtime" }, "Operator-managed credentials"),
     element("option", { value: "chatgpt_service_account" }, "ChatGPT service account"),
@@ -77,6 +83,11 @@ export function createHarnessAuthFields(context, binding = null, executionMode =
     { className: "hint" },
     "Configured on the runtime host; not validated by OCC.",
   );
+  const oauthHint = element(
+    "p",
+    { className: "hint" },
+    "Deploying starts provider authorization for embedded OpenClaw on Kubernetes. Stop the Agent to cancel or reconnect.",
+  );
   const section = element(
     "fieldset",
     { className: "harness-auth-fields" },
@@ -86,6 +97,7 @@ export function createHarnessAuthFields(context, binding = null, executionMode =
     secretField,
     accountField,
     runtimeHint,
+    oauthHint,
     feedback,
     element(
       "p",
@@ -99,6 +111,7 @@ export function createHarnessAuthFields(context, binding = null, executionMode =
     secretField.hidden = !directSecret;
     secretLabel.textContent =
       method.value === "codex_pat" ? "Service account token Secret ID" : "API key Secret ID";
+    oauthHint.hidden = method.value !== "oauth";
     accountField.hidden = method.value !== "chatgpt_service_account";
     secret.required = directSecret;
     account.required = method.value === "chatgpt_service_account";
@@ -151,6 +164,9 @@ export function createHarnessAuthFields(context, binding = null, executionMode =
       }
       if (method.value === "runtime") {
         return { method: "runtime" };
+      }
+      if (method.value === "oauth") {
+        return { method: "oauth" };
       }
       if (method.value === "chatgpt_service_account") {
         if (!account.value) {

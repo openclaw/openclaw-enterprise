@@ -48,13 +48,14 @@ activation after authorization.
 
 ### Optional additions
 
-| Method or declaration                                                  | When it is needed                                                                                                                                                                                                                                   |
-| ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `bindAgent({ namespace, agent })`                                      | Receives the approved Namespace, Agent, and ServicePrincipal before the worker operates on a revision. It may be asynchronous. Failure stops that attempt before further runtime work.                                                              |
-| `validateHarnessAuth(harness, auth, configuration)`                    | Deployment requires this check of the Harness, authentication snapshot, and native Configuration. It must have no side effects. A missing method causes a dependency-unavailable error; a thrown error becomes a resource conflict before queueing. |
-| `activateRevision(revision, context?)`, `deactivateRevision(revision)` | Production startup requires both. The worker also calls activation if a development Driver provides it. See [revision stages](#production-revision-stages).                                                                                         |
-| `setLifecycleDrivers(drivers)`                                         | Startup requires it when another selected Driver provides [Compute hooks](#optional-selected-driver-hooks).                                                                                                                                         |
-| `activationOrder`, `maintenanceIntervalMs`                             | Control [activation timing](#production-revision-stages) and optional [maintenance](#optional-active-runtime-maintenance).                                                                                                                          |
+| Method or declaration                                                                                                         | When it is needed                                                                                                                                                                                                                                                                 |
+| ----------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bindAgent({ namespace, agent })`                                                                                             | Receives the approved Namespace, Agent, and ServicePrincipal before the worker operates on a revision. It may be asynchronous. Failure stops that attempt before further runtime work.                                                                                            |
+| `validateHarnessAuth(harness, auth, configuration)`                                                                           | Deployment requires this check of the Harness, authentication snapshot, and native Configuration. It must have no side effects. A missing method causes a dependency-unavailable error; a thrown error becomes a resource conflict before queueing.                               |
+| `startHarnessOAuth(revision, context)`, `getHarnessOAuthStatus(revision, context)`, `completeHarnessOAuth(revision, context)` | Manage an admitted OAuth deployment after `prepareRevision` has staged the exact Agent runtime. Return safe observations only, bind every operation to the actor and revision supplied by OCC, and keep provider transport and native profile details behind the Driver boundary. |
+| `activateRevision(revision, context?)`, `deactivateRevision(revision)`                                                        | Production startup requires both. The worker also calls activation if a development Driver provides it. See [revision stages](#production-revision-stages).                                                                                                                       |
+| `setLifecycleDrivers(drivers)`                                                                                                | Startup requires it when another selected Driver provides [Compute hooks](#optional-selected-driver-hooks).                                                                                                                                                                       |
+| `activationOrder`, `maintenanceIntervalMs`                                                                                    | Control [activation timing](#production-revision-stages) and optional [maintenance](#optional-active-runtime-maintenance).                                                                                                                                                        |
 
 ### Optional startup preflight
 
@@ -145,12 +146,14 @@ that Agent. See [authorization](../authorization.md).
 
 `ComputeRevisionContext.harnessAuth` contains either the approved API-key source
 and its current backend reference, the managed-account credential reference and
-private Provider binding, or just `{ method: "runtime" }` for operator-managed
-authentication. None contains credential values. The separate `secretEnvironment`
-contains Configuration bindings for gateway credentials. Deliver model credentials
-only to the selected Harness workload. Channel tokens are ordinary Namespace Secrets
-referenced by Configuration bindings; never expose them in responses, Configuration,
-audit, logs, or errors. See the [credential delivery flow](../../flows/native-service-account-credential-delivery.md).
+private Provider binding, or only `{ method: "runtime" }` or
+`{ method: "oauth" }` for methods without an OCC-owned delivery reference. None
+contains credential values. The separate `secretEnvironment` contains
+Configuration bindings for gateway credentials. Deliver model credentials only
+to the selected Harness workload. Channel tokens are ordinary Namespace Secrets
+referenced by Configuration bindings; never expose them in responses,
+Configuration, audit, logs, or errors. See the
+[credential delivery flow](../../flows/native-service-account-credential-delivery.md).
 Installed Drivers run with control-plane privileges. Validating a package does
 not isolate untrusted code.
 
@@ -214,7 +217,8 @@ and original deployment Principal. The worker prepares and activates the revisio
 again; those operations must be safe to repeat. Failed observations, including
 asynchronous binding failures, schedule another authorized pass without changing
 the active revision. Maintenance survives worker restarts and ends when a newer
-revision replaces it. Without an interval, lifecycle work responds to events. New deployments have limited retries.
+revision replaces it. Without an interval, lifecycle work responds to events.
+New deployments have limited retries.
 
 ### Plugin startup warnings
 

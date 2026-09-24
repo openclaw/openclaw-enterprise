@@ -53,11 +53,14 @@ pnpm db:migrate --check
 ```
 
 An exit-0 `migration.checked` record reports `empty`, `prePresetsMain`, `main`,
-`repositoryCredentials`, or `completed`. `prePresetsMain` means the exact canonical
-history through `0023_runtime_failure_timestamp_validation`; `main` also includes
+`repositoryCredentials`, `repositoryRetention`, `workspaceSetup`, or `completed`.
+`prePresetsMain` means the exact canonical history through
+`0023_runtime_failure_timestamp_validation`; `main` also includes
 `0024_agent_presets`. `repositoryCredentials` adds `0025_repository_credentials`
-and `0026_privileged_function_search_paths`. `completed` also includes
-`0027_repository_attempt_retention` at journal index 27.
+and `0026_privileged_function_search_paths`; `repositoryRetention` adds
+`0027_repository_attempt_retention`; `workspaceSetup` adds
+`0028_agent_workspace_setup`; and `completed` also includes
+`0029_oauth_harness_auth`.
 The source manifest is
 [`migrations/meta/canonical-history.json`](../../../migrations/meta/canonical-history.json).
 Empty schemas may be absent or have only their owner's ordinary `CREATE` and

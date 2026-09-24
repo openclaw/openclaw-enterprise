@@ -849,10 +849,38 @@ test(
         (error) => error.code === code && error.constraint === constraint,
       );
     }
+    await pool.query("UPDATE occ.agents SET harness_auth = $1::jsonb WHERE id = $2", [
+      JSON.stringify({ method: "oauth" }),
+      fixture.agent.id,
+    ]);
+    assert.deepEqual(
+      (await state.read((view) => view.agents.findAgent(fixture.namespace.id, fixture.agent.id)))
+        .harnessAuth,
+      { method: "oauth" },
+    );
+    await assert.rejects(
+      pool.query("UPDATE occ.agents SET harness_auth = $1::jsonb WHERE id = $2", [
+        JSON.stringify({ method: "oauth", provider: "sentinel" }),
+        fixture.agent.id,
+      ]),
+      (error) => error.code === "23514" && error.constraint === "agents_harness_auth_valid",
+    );
+    await pool.query("UPDATE occ.agents SET harness_auth = $1::jsonb WHERE id = $2", [
+      JSON.stringify(fixture.agent.harnessAuth),
+      fixture.agent.id,
+    ]);
     assert.deepEqual(
       (await state.read((view) => view.agents.findAgent(fixture.namespace.id, fixture.agent.id)))
         .harnessAuth,
       fixture.agent.harnessAuth,
+    );
+    await pool.query(
+      `INSERT INTO occ.agent_revisions
+        (id, namespace_id, agent_id, revision_number, provider_id, admitted_spec, admitted_at)
+       SELECT $1, namespace_id, agent_id, $2, provider_id,
+         jsonb_set(admitted_spec, '{harness_auth}', $3::jsonb), admitted_at
+       FROM occ.agent_revisions WHERE id = $4`,
+      [`rev_${randomUUID()}`, 9999, JSON.stringify({ method: "oauth" }), fixture.revision.id],
     );
     for (const [offset, invalid] of [
       null,

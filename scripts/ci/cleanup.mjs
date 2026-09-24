@@ -2,7 +2,7 @@
 import { cleanupLogging, ciOtelBackendResourceKind } from "./logging.mjs";
 import { spawn } from "node:child_process";
 import { constants } from "node:fs";
-import { access, chmod, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { access, chmod, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -132,6 +132,18 @@ function assertOwnedK3dFilesystem(resource) {
   }
 }
 
+async function pathExists(path) {
+  try {
+    await access(path, constants.F_OK);
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+}
+
 function composeArgs(resource, state, ...args) {
   assertResourceOwner(resource, state);
   if (resource.composeFile !== composePostgresFile) {
@@ -189,10 +201,41 @@ async function cleanupDatabase(resource, state) {
   );
 }
 
+async function normalizeK3dLocalPathStorage(resource) {
+  const storageDirectory = join(resource.directory, "storage");
+  if (!(await pathExists(storageDirectory))) {
+    return;
+  }
+  // Preparation registers storage before the server exists; an empty directory
+  // has no Pod-written state that needs container-side ownership restoration.
+  if ((await readdir(storageDirectory)).length === 0) {
+    return;
+  }
+  const uid = process.getuid?.();
+  const gid = process.getgid?.();
+  if (!Number.isSafeInteger(uid) || !Number.isSafeInteger(gid)) {
+    throw new Error("Unable to determine runner ownership for k3d storage cleanup.");
+  }
+  await execFile(process.env.OCC_DOCKER_BIN ?? "docker", [
+    "exec",
+    `k3d-${resource.name}-server-0`,
+    "sh",
+    "-c",
+    [
+      "set -e",
+      "if [ -d /var/lib/rancher/k3s/storage ]; then",
+      `chown -R ${uid}:${gid} /var/lib/rancher/k3s/storage`,
+      "find /var/lib/rancher/k3s/storage -type d -exec chmod u+rwx {} +",
+      "fi",
+    ].join("\n"),
+  ]);
+}
+
 async function cleanupK3dCluster(resource, state) {
   assertResourceOwner(resource, state);
   assertOwnedName("openclaw-k8s-", resource.name, "k3d cluster");
   assertOwnedK3dFilesystem(resource);
+  await normalizeK3dLocalPathStorage(resource);
   await execFile(process.env.OPENCLAW_CI_K3D_BIN ?? "k3d", ["cluster", "delete", resource.name]);
   await rm(resource.directory, { recursive: true, force: true });
 }

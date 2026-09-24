@@ -89,6 +89,7 @@ function handleModels(args) {
     writeJson({
       auth: {
         probes: {
+          totalTargets: 1,
           results: [
             {
               provider: "openai",

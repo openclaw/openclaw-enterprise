@@ -11,6 +11,8 @@ export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
   const gatewayRuntime =
     options.workspaceNodeId !== undefined || options.env?.APP_SERVER_URL !== undefined;
   const calls = options.calls ?? [];
+  const stderr = [];
+  const processExitMarker = Symbol("process.exit");
   const files = new Map([
     [
       "/etc/openclaw/openclaw.json",
@@ -24,8 +26,24 @@ export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
     ],
     ...(options.files ?? []),
   ]);
+  const exitProcess = (code = 0) => {
+    const numericCode = Number(code);
+    const error = new Error(`process.exit(${Number.isFinite(numericCode) ? numericCode : 1})`);
+    error.exitCode = Number.isFinite(numericCode) ? numericCode : 1;
+    error[processExitMarker] = true;
+    throw error;
+  };
+  const isProcessExit = (error) => Boolean(error?.[processExitMarker]);
+  const result = (extra = {}) => ({ calls, files, stderr, ...extra });
   const sandbox = {
     Buffer,
+    console: {
+      error(...args) {
+        stderr.push(
+          args.map((arg) => (arg instanceof Error ? arg.message : String(arg))).join(" "),
+        );
+      },
+    },
     JSON,
     files,
     process: {
@@ -37,6 +55,7 @@ export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
           ? {}
           : { OPENCLAW_WORKSPACE_NODE_ID: options.workspaceNodeId }),
       },
+      exit: exitProcess,
       on() {},
     },
     require(specifier) {
@@ -83,13 +102,26 @@ result.value = installOpenClawPlugins(${JSON.stringify(runtime)}, ${JSON.stringi
       sandbox,
     );
     if (gatewayRuntime) {
-      return execution.then(() => ({ calls, files }));
+      return execution
+        .then(() => result())
+        .catch((error) => {
+          if (isProcessExit(error)) {
+            return result({ exitCode: error.exitCode });
+          }
+          if (options.captureError === true) {
+            return result({ error });
+          }
+          throw error;
+        });
     }
   } catch (error) {
+    if (isProcessExit(error)) {
+      return result({ exitCode: error.exitCode });
+    }
     if (options.captureError === true) {
-      return { calls, files, error };
+      return result({ error });
     }
     throw error;
   }
-  return { calls, files, value: sandbox.result.value };
+  return result({ value: sandbox.result.value });
 }

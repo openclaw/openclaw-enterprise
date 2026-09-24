@@ -50,8 +50,8 @@ The worker manages PersistentVolumeClaims and, when private gateway routing is
 enabled, HTTPRoutes through tenant-local RoleBindings. Only the controller API
 issues provider credentials. The worker reads admitted transport/channel material
 and maintains revision-owned Gateway Secret projections in the separate target.
-The API does not need gateway Pod reads, exec, route writes, or certificate
-management for workspace-file access. Do not grant wildcard permissions,
+OAuth activation additionally requires API gateway Pod reads and Pod proxy access.
+Workspace-file access does not require exec, route writes, or certificate management. Do not grant wildcard permissions,
 cluster-wide access to tenant resources, workload access to controller
 credentials, or permission to create or escalate RoleBindings.
 
@@ -183,7 +183,7 @@ node-level execution fencing.
 The Agent's Harness configuration determines its execution topology:
 
 - **Embedded:** OpenClaw runs the gateway and Harness in one Pod. It accepts
-  an Agent-scoped model API key, uses `openai/` models, and does not require
+  an Agent-scoped model API key or Agent-owned OpenAI OAuth, and does not require
   shared storage.
 - **Dedicated:** The gateway and Codex Harness run in separate namespaces and
   Pods, with separate ServiceAccounts and storage. They communicate through
@@ -196,6 +196,15 @@ Enabled external channels require dedicated execution. Unsupported Harness and
 execution-mode combinations fail deployment. OpenShell is designed for
 dedicated Codex only, but stock OpenShell currently blocks that deployment;
 embedded OpenClaw is rejected as well.
+
+OAuth is accepted only for embedded OpenClaw when runtime support is configured.
+The Driver starts the gateway in an auth-only waiting state, proxies
+start/status/complete requests to the exact owned gateway Pod, and authenticates
+that private endpoint with a revision-derived token. The normal gateway process
+does not start until the native profile is committed. A committed OAuth profile
+then uses the regular primary-model probe before activation. Reconnecting an
+OAuth Agent requires a fully stopped Agent; a replacement over an active gateway
+fails before the new workload is published.
 
 Stopping an Agent first deletes its exact gateway route and gateway runtime,
 then removes the dedicated Harness Deployment or delegates provider-owned
@@ -256,6 +265,11 @@ for additional execution details.
   Native plugin startup, authentication, transport, and installation failures
   remain generic workload startup failures unless the Compute-owned runtime
   reports a verified current-startup warning for an admitted selected plugin.
+- **OAuth authorization is unavailable:** Confirm the Agent uses embedded
+  OpenClaw with `{ "method": "oauth" }`, the Agent is fully stopped before
+  reconnect, the selected gateway image contains the managed OAuth runtime, the
+  exact gateway Pod is still the admitted revision, and API RBAC allows the
+  authenticated Pod proxy to the gateway's OAuth management port.
 - **Gateway storage is pending or rejected:** Check the configured
   `runtime.gatewayStorageClassName`, available `10Gi` capacity, filesystem
   support, worker PVC permissions, and the PVC's exact ownership. Preserve

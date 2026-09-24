@@ -65,26 +65,21 @@ GET /namespaces/:namespaceId/agents/:agentId/deployments/:deploymentId
 
 The caller needs read access to that exact AgentRevision. Responses include the
 original `deploymentId`, `namespaceId`, `agentId`, a `status`, nullable
-`error`, and plugin `warnings`. `queued` means no live worker claim currently owns the original work,
-including after a claim lease expires. `running` means a worker claim is still
-live. `succeeded` means the original deployment work completed activation or
-was already active; it is historical completion evidence, not a live health
-probe. `failed` means the original work reached a terminal failed outcome or
-completed without activating the requested revision.
+`error`, and plugin `warnings`. `queued` means no live worker claim currently
+owns the original work. `running` means a claim is live. `succeeded` is
+historical activation evidence, not a live health probe. `failed` means the
+original work reached a terminal failed outcome or did not activate the requested
+revision.
 
 Errors use fixed platform codes, messages, and allowlisted `error.data`.
 For `CONVERGENCE_DEADLINE_EXCEEDED`, data contains positive `timeoutMs` and may
 include `runtimeFailure` with safe `component`, `check`, `checkedAt`, and `code`
 fields captured by Compute from that revision's runtime. The primary code and
-message remain unchanged. Missing evidence leaves the cause unspecified.
-The result is persisted with terminal work and survives runtime deletion or
-controller restart. Polling this endpoint reads stored state only; it performs
-no runtime, provider, or model probes and requires no Agent `operate` permission.
-A successful deployment can include plugin warnings containing a closed code
-and admitted `pluginId`; see [Agent plugins](agent-plugins.md#lifecycle). These
-warnings record the observed startup result, not live plugin health.
-A later deployment admits a new revision with its own deployment status and does
-not rewrite the original result.
+message remain unchanged. Missing evidence leaves the cause unspecified. Polling
+reads stored state only; it performs no runtime, provider, or model probes and
+requires no Agent `operate` permission. Plugin warnings record the observed
+startup result, not live plugin health. A later deployment has its own status and
+does not rewrite the original result.
 
 ## Provider association
 
@@ -132,6 +127,14 @@ For an already issued ChatGPT account credential, use
 This requires dedicated Codex and the account's matching `providerId`. Binding
 an account does not issue its credential or change the model, Harness, or Provider.
 
+For Agent-owned OpenAI OAuth during activation, use `{ "method": "oauth" }`.
+This binding is supported only for embedded OpenClaw on bundled Kubernetes
+Compute. It does not reference an OCC Secret, Provider account, caller-supplied
+profile path, or existing user login. Deployment auth routes expose short-lived
+device authorization observations. The native profile stays in that Agent's
+private gateway state, and activation still waits for the normal bounded model
+probe and deployment completion.
+
 For SSH embedded OpenClaw, use `{ "method": "runtime" }`. The operator supplies
 credentials in the protected host environment file; OCC neither reads nor
 delivers credentials and performs no authentication/model probe. Agent and
@@ -143,14 +146,37 @@ API-key and service account token bindings require the actor's exact Secret `ope
 requires the Agent service principal's exact Secret `operate`. ChatGPT binding
 requires the actor's exact account `read`, including the current account when
 replacing or clearing a binding. There is no implied account grant for the Agent
-principal. Each consumer of a shared source is authorized independently.
+principal. OAuth and runtime bindings have no credential-source permission
+because no OCC-owned source is selected. Each consumer of a shared source is
+authorized independently.
 
 Deployment freezes binding references; dispatch rechecks source ownership and actor/Agent grants.
 Public responses omit credential values and private backend/account metadata. Draft
-changes require deployment. A `runtime` snapshot records only its method: host
+changes require deployment. A `runtime` or `oauth` snapshot records only its method: host
 credential changes can affect existing revisions, and readiness does not prove model access. See
 [credential delivery](harness-execution.md#harness-authentication) and
 [Secret consumption grants](drivers/kubernetes-secret.md#bind-a-secret-to-gateway-environment).
+
+## Deployment OAuth authorization
+
+OAuth deployments use the deployment auth subresource:
+
+```text
+POST /namespaces/:namespaceId/agents/:agentId/deployments/:deploymentId/auth
+GET /namespaces/:namespaceId/agents/:agentId/deployments/:deploymentId/auth
+POST /namespaces/:namespaceId/agents/:agentId/deployments/:deploymentId/auth/complete
+```
+
+Start and complete require exact Agent deployment authority; status requires
+exact revision read authority. OCC rechecks the Configuration, ready Namespace,
+selected Compute Driver, latest revision, running desired state, and absence of
+an active revision. Responses report `preparing`, `waiting`, `authorized`,
+`committed`, or `failed`; `waiting` includes the attempt ID, verification URL,
+user code, and expiry. Complete accepts the observed attempt ID. These states
+report consent and credential commit; deployment status determines activation
+success. Start and complete audit failures with fixed reason codes, excluding
+consent codes and provider details. Retry unavailable committed attempts after
+stopping the Agent.
 
 ## Plugin selections
 
@@ -170,8 +196,9 @@ and the selected-only runtime contract.
 
 ### Initial contents at creation
 
-`POST /namespaces/:namespaceId/agents` accepts `initialWorkspaceFiles`, an optional
-partial map of the four filenames below to strings. Replace the example Configuration ID with yours:
+`POST /namespaces/:namespaceId/agents` accepts `initialWorkspaceFiles`, an
+optional partial map for `AGENTS.md`, `SOUL.md`, `IDENTITY.md`, and `USER.md`.
+Replace the example Configuration ID with yours:
 
 ```json
 {
@@ -201,8 +228,7 @@ See the [workspace guide](../guides/topics/workspace-files.md) and
 
 ### Live file access
 
-Read, create, or replace `AGENTS.md`, `SOUL.md`, `IDENTITY.md`, and `USER.md`
-in an Agent's live workspace:
+Read, create, or replace the four supported files in an Agent's live workspace:
 
 ```text
 /namespaces/:namespaceId/agents/:agentId/workspace/files/:name
@@ -215,9 +241,7 @@ in an Agent's live workspace:
 
 Authenticate with a session or scoped service API key. Session-authenticated
 writes must pass the [CSRF checks](authentication.md). The Agent must have an
-active revision and a reachable gateway.
-
-`PUT` accepts one `content` field:
+active revision and reachable gateway. `PUT` accepts one `content` field:
 
 ```json
 { "content": "You are a support assistant.\n" }
@@ -226,20 +250,9 @@ active revision and a reachable gateway.
 `content` must be well-formed Unicode without NUL characters and fit within
 16 KiB when encoded as UTF-8. The complete request body is limited to 48 KiB.
 Successful requests return `200`; `size` is the written content's UTF-8 byte
-count. Successful writes record the Agent, file name, and outcome in the audit log.
-
-| Error                        | Meaning                                              |
-| ---------------------------- | ---------------------------------------------------- |
-| `400 INVALID_REQUEST`        | Invalid file name or content.                        |
-| `404 NOT_FOUND`              | The requested Agent or file was not found.           |
-| `409 AGENT_DELETING`         | The Agent is being deleted.                          |
-| `409 RESOURCE_CONFLICT`      | The Agent is stopping.                               |
-| `413 PAYLOAD_TOO_LARGE`      | The request body exceeds 48 KiB.                     |
-| `503 DEPENDENCY_UNAVAILABLE` | Workspace access is unavailable.                     |
-| `503 UNKNOWN_OUTCOME`        | OCC could not confirm the write or its audit record. |
-
-After `UNKNOWN_OUTCOME`, read the current file before deciding whether to submit
-another write.
+count. Successful writes record the Agent, file name, and outcome in the audit
+log. After `UNKNOWN_OUTCOME`, read the current file before deciding whether to
+submit another write.
 
 See [gateway routing](gateway-routing.md) for transport configuration and
 [workspace-file setup](../guides/deploy/workspace-routing.md#agent-workspace-files) to enable
@@ -253,14 +266,8 @@ Trusted operators can open the selected Agent gateway's stock native admin UI
 when the Installation enables [Agent native admin UI access](agent-native-admin.md).
 The availability route requires exact Agent `administer`; `read` and `operate`
 are insufficient. The Agent must be desired running, have an active revision,
-and expose a private gateway endpoint through the selected Compute Driver.
-
-The native UI uses the Agent's derived browser host and the existing private
-gateway route. The derived host authenticates with the ordinary OCE browser
-session cookie under the configured shared cookie parent domain; OCC still
-resolves and authorizes the exact Agent before proxying. OCE does not turn
-native edits into Configuration changes or AgentRevision snapshots. Redeploy
-applies the managed revision again but does not erase all gateway-local state.
+and expose a private gateway endpoint. Native edits stay gateway-local; OCE does
+not convert them into Configuration changes or AgentRevision snapshots.
 
 ## Namespace ownership
 
@@ -290,26 +297,23 @@ retirement owned by the current Compute. Repeating stop is safe. A later
 deployment creates a new revision and sets desired state back to `running`;
 you cannot restart an old revision directly.
 
+For OAuth, stop is also the cancellation path for an unfinished attempt and the
+required first step before reconnecting. Reconnect must authorize the same
+upstream provider account recorded in the Agent-local native profile; changing
+accounts requires a future credential removal procedure, not a draft edit.
+
 ## Deletion
 
-An authorized bodyless `DELETE /namespaces/:namespaceId/agents/:agentId`
-sets `status` to `deleting`, sets desired runtime state to `stopped`, queues
-teardown, and returns `202`. A deleting Agent remains readable while work is in
-flight, but update, deployment, runtime-credential provisioning, and workspace
-writes return `409`. Repeating deletion while the Agent exists converges on the
-same queued operation.
-
-The worker reauthorizes the original caller, binds the persisted Agent identity
-into Compute, retires every revision, and removes the Agent's runtime credentials
-before atomically deleting the Agent, its
+An authorized bodyless `DELETE /namespaces/:namespaceId/agents/:agentId` sets
+`status` to `deleting`, sets desired runtime state to `stopped`, queues teardown,
+and returns `202`. Update, deployment, runtime-credential provisioning, and
+workspace writes then return `409`. The worker reauthorizes the original caller,
+retires every revision, removes Agent runtime credentials, and deletes the Agent,
 revision history, service principal, service-principal API keys, and exact IAM
-bindings and restrictions. Kubernetes revision retirement waits for exact
-workload Pods and removes Agent-owned compute artifacts, including workspace
-data. Namespace-owned Configurations and Secrets survive. After success,
-the Agent disappears from reads and its name can be reused. Retryable cleanup
-failures leave the Agent in `deleting` while bounded queue retries continue.
-Permanent failures fail closed in `failed_permanent`; the Agent remains
-`deleting`, and the current API has no requeue or operator recovery path.
+bindings. Agent-owned compute artifacts and workspace data are removed;
+Namespace-owned Configurations and Secrets survive. Retryable cleanup failures
+leave the Agent in `deleting`; permanent failures fail closed in
+`failed_permanent` with no current requeue API.
 
 ## Editable configuration
 
@@ -348,8 +352,8 @@ planning a deployment. Other sandbox execution combinations are rejected.
 
 ## Failure semantics
 
-- `400 INVALID_REQUEST`: The Provider ID is malformed or empty.
-- `400 INVALID_REQUEST`: The plugin map is structurally invalid.
+- `400 INVALID_REQUEST`: The Provider ID, plugin map, removed legacy credential
+  selector, or workspace-file request is invalid.
 - `404 NOT_FOUND`: The nonempty Provider ID does not name a configured Provider.
 - `401`: The session cookie is missing, invalid, expired, or revoked.
 - `403`: Your principal lacks the exact permission for the Agent or Namespace.

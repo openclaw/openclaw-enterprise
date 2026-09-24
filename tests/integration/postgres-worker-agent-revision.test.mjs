@@ -184,7 +184,7 @@ async function setup(
     plugins,
   ) {
     let harnessAuth;
-    if (owner.harnessAuth.method === "runtime") {
+    if (owner.harnessAuth.method === "runtime" || owner.harnessAuth.method === "oauth") {
       harnessAuth = owner.harnessAuth;
     } else if (owner.harnessAuth.method === "chatgpt_service_account") {
       const account = await state.read((view) =>
@@ -3955,6 +3955,175 @@ test(
       [fixture.namespace.id, owner.id],
     );
     assert.equal(active.rows[0].active_revision_id, candidate.id);
+  },
+);
+
+test(
+  "OAuth revisions pending user authorization do not activate and still honor stop",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context);
+    const created = await fixture.agent("oauth-pending-consent");
+    const owner = await fixture.state.transact((unit) =>
+      unit.agents.updateConfiguration(
+        fixture.namespace.id,
+        created.id,
+        created.configurationId,
+        undefined,
+        { method: "oauth" },
+      ),
+    );
+    assert.deepEqual(owner.harnessAuth, { method: "oauth" });
+    const candidate = await fixture.revision(owner, 1);
+    let observations = 0;
+    const stopped = [];
+
+    await fixture.start({
+      ...fixture.compute,
+      async prepareRevision(revision, deploymentContext) {
+        observations += 1;
+        assert.equal(deploymentContext.harnessAuth.method, "oauth");
+        return { ...(await fixture.compute.prepareRevision(revision)), ready: false };
+      },
+      async stopRevision(revision) {
+        stopped.push(revision.id);
+      },
+    });
+
+    await waitFor("OAuth deployment to remain pending", async () =>
+      observations > 0 ? true : undefined,
+    );
+    const pendingAgent = await fixture.state.read((view) =>
+      view.agents.findAgent(fixture.namespace.id, owner.id),
+    );
+    assert.equal(pendingAgent.activeRevisionId, undefined);
+    assert.equal(pendingAgent.desiredRuntimeState, "running");
+
+    const stop = await fixture.requestStop(owner);
+    await fixture.work(stop, "succeeded");
+    const stoppedAgent = await fixture.state.read((view) =>
+      view.agents.findAgent(fixture.namespace.id, owner.id),
+    );
+    assert.equal(stoppedAgent.activeRevisionId, undefined);
+    assert.equal(stoppedAgent.desiredRuntimeState, "stopped");
+    assert.deepEqual(stopped, [candidate.id]);
+
+    const activation = await fixture.observerPool.query(
+      `SELECT id FROM occ.audit_events
+       WHERE namespace_id = $1 AND action = 'openclaw.agents.lifecycle.activate'
+         AND resource_id = $2`,
+      [fixture.namespace.id, candidate.id],
+    );
+    assert.deepEqual(activation.rows, []);
+  },
+);
+
+test(
+  "OAuth completion holds the Agent lock against concurrent stop admission",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context);
+    const created = await fixture.agent("oauth-complete-lock");
+    const owner = await fixture.state.transact((unit) =>
+      unit.agents.updateConfiguration(
+        fixture.namespace.id,
+        created.id,
+        created.configurationId,
+        undefined,
+        { method: "oauth" },
+      ),
+    );
+    const attemptId = `oauth_${randomUUID()}`;
+    const expiresAt = new Date(Date.now() + 600_000).toISOString();
+    let releaseComplete;
+    const completeCanReturn = new Promise((resolve) => {
+      releaseComplete = resolve;
+    });
+    let completeEntered;
+    const completeStarted = new Promise((resolve) => {
+      completeEntered = resolve;
+    });
+    const compute = {
+      ...fixture.compute,
+      id: "oauth-lock-compute",
+      implementation: "deterministic-oauth-lock-test",
+      async completeHarnessOAuth(revision, context) {
+        completeEntered({ revisionId: revision.id, actorId: context.actorId });
+        await completeCanReturn;
+        return { phase: "committed", attemptId: context.attemptId, expiresAt };
+      },
+    };
+    fixture.controller.registerDriver(compute);
+    fixture.controller.selectDriver("compute", compute.id);
+
+    const candidate = {
+      id: `rev_${randomUUID()}`,
+      namespaceId: fixture.namespace.id,
+      agentId: owner.id,
+      revision: 1,
+      providerId: owner.providerId,
+      configuration: { revision: "oauth-complete-lock" },
+      configurationId: owner.configurationId,
+      configurationKind: "agent",
+      configurationGeneration: 1,
+      harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+      compute: { id: compute.id, implementation: compute.implementation },
+      harnessAuth: { method: "oauth" },
+      servicePrincipalId: owner.servicePrincipalId,
+      createdAt: new Date().toISOString(),
+    };
+    await fixture.state.transactWithQueue(async (unit, queue) => {
+      await unit.revisions.createRevision(candidate);
+      await unit.agents.transitionAgentDesiredRuntimeState(
+        fixture.namespace.id,
+        owner.id,
+        ["stopped", "running"],
+        "running",
+      );
+      await queue.enqueue({
+        idempotencyKey: `agent_revision:${candidate.id}:reconcile`,
+        namespaceId: fixture.namespace.id,
+        agentId: owner.id,
+        revisionId: candidate.id,
+        actorId: fixture.actor.id,
+        availableAt: new Date(0),
+      });
+    });
+
+    const completion = fixture.controller.completeDeploymentHarnessOAuth(
+      fixture.actor.id,
+      fixture.namespace.id,
+      owner.id,
+      candidate.id,
+      { attemptId },
+    );
+    assert.deepEqual(await completeStarted, {
+      revisionId: candidate.id,
+      actorId: fixture.actor.id,
+    });
+
+    let stopFinished = false;
+    const stop = fixture.controller
+      .stopAgent(fixture.actor.id, fixture.namespace.id, owner.id)
+      .then(() => {
+        stopFinished = true;
+      });
+    assert.equal(
+      await Promise.race([stop.then(() => "stop"), delay(100).then(() => "held")]),
+      "held",
+    );
+    assert.equal(stopFinished, false);
+
+    releaseComplete();
+    assert.deepEqual(await completion, { phase: "committed", attemptId, expiresAt });
+    await stop;
+    assert.equal(stopFinished, true);
+
+    const stopped = await fixture.state.read((view) =>
+      view.agents.findAgent(fixture.namespace.id, owner.id),
+    );
+    assert.equal(stopped.activeRevisionId, undefined);
+    assert.equal(stopped.desiredRuntimeState, "stopped");
   },
 );
 

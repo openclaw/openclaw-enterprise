@@ -53,6 +53,7 @@ import {
   type ResourceRef,
   type SandboxDriver,
   type SecretDriver,
+  type HarnessOAuthObservation,
   type UpdateWorkspaceFileBody,
   type WorkspaceFileName,
 } from "@openclaw-enterprise/contracts";
@@ -389,6 +390,7 @@ function operationTarget(
   const secretId = typeof params.secretId === "string" ? params.secretId : undefined;
   const agentId = typeof params.agentId === "string" ? params.agentId : undefined;
   const revisionId = typeof params.revisionId === "string" ? params.revisionId : undefined;
+  const deploymentId = typeof params.deploymentId === "string" ? params.deploymentId : undefined;
   if (operation.operationId === "createNamespace") {
     return { kind: "namespace", id: installationId };
   }
@@ -434,6 +436,16 @@ function operationTarget(
   }
   if (operation.operationId === "getAgentRevision" && namespaceId && revisionId) {
     return { kind: "agent_revision", id: revisionId, namespaceId };
+  }
+  if (
+    (operation.operationId === "getAgentDeployment" ||
+      operation.operationId === "startAgentDeploymentAuth" ||
+      operation.operationId === "getAgentDeploymentAuth" ||
+      operation.operationId === "completeAgentDeploymentAuth") &&
+    namespaceId &&
+    deploymentId
+  ) {
+    return { kind: "agent_revision", id: deploymentId, namespaceId };
   }
   if (agentId && namespaceId) {
     return { kind: "agent", id: agentId, namespaceId };
@@ -591,6 +603,23 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
         scope: "requested",
         condition: "provisioning_work",
       },
+    ];
+  }
+
+  if (
+    operation.operationId === "startAgentDeploymentAuth" ||
+    operation.operationId === "completeAgentDeploymentAuth"
+  ) {
+    return [
+      { action: "deploy", resourceKind: "agent", scope: "requested" },
+      { action: "read", resourceKind: "configuration", scope: "requested" },
+    ];
+  }
+
+  if (operation.operationId === "getAgentDeploymentAuth") {
+    return [
+      { action: "read", resourceKind: "agent", scope: "requested" },
+      { action: "read", resourceKind: "configuration", scope: "requested" },
     ];
   }
 
@@ -796,6 +825,31 @@ function clientDeploymentStatus(status: Readonly<DeploymentStatusResult>): Recor
     error: status.error,
     warnings: status.warnings,
   };
+}
+
+function clientHarnessOAuthObservation(observation: object): Record<string, unknown> {
+  return { ...(observation as Record<string, unknown>) };
+}
+
+function harnessOAuthAuditResult(observation: HarnessOAuthObservation): {
+  readonly outcome: "success" | "failure";
+  readonly reasonCode?: string;
+} {
+  if (observation.phase !== "failed") {
+    return { outcome: "success" };
+  }
+  switch (observation.reason) {
+    case "denied":
+      return { outcome: "failure", reasonCode: "HARNESS_OAUTH_DENIED" };
+    case "expired":
+      return { outcome: "failure", reasonCode: "HARNESS_OAUTH_EXPIRED" };
+    case "cancelled":
+      return { outcome: "failure", reasonCode: "HARNESS_OAUTH_CANCELLED" };
+    case "account_mismatch":
+      return { outcome: "failure", reasonCode: "HARNESS_OAUTH_ACCOUNT_MISMATCH" };
+    case "unavailable":
+      return { outcome: "failure", reasonCode: "HARNESS_OAUTH_UNAVAILABLE" };
+  }
 }
 
 function responseHeaders(reply: FastifyReply, requestId: string): void {
@@ -2810,6 +2864,76 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         params.deploymentId as string,
       );
       reply.send({ data: clientDeploymentStatus(status), meta: { requestId: request.id } });
+      return;
+    }
+
+    if (operation.operationId === "startAgentDeploymentAuth") {
+      const observed = await controller.transact(async (unit) => {
+        const result = await controller!.startDeploymentHarnessOAuth(
+          context.actorId,
+          namespaceId,
+          agentId,
+          params.deploymentId as string,
+        );
+        await unit.audit.append(
+          event(
+            operation,
+            request,
+            { kind: "agent_revision", id: params.deploymentId as string, namespaceId },
+            "mutation",
+            context,
+            undefined,
+            harnessOAuthAuditResult(result),
+          ),
+        );
+        return clientHarnessOAuthObservation(result);
+      });
+      reply.status(202).send({ data: observed, meta: { requestId: request.id } });
+      return;
+    }
+
+    if (operation.operationId === "getAgentDeploymentAuth") {
+      const observed = await controller.getDeploymentHarnessOAuthStatus(
+        context.actorId,
+        namespaceId,
+        agentId,
+        params.deploymentId as string,
+      );
+      reply.send({
+        data: clientHarnessOAuthObservation(observed),
+        meta: { requestId: request.id },
+      });
+      return;
+    }
+
+    if (operation.operationId === "completeAgentDeploymentAuth") {
+      const body = request.body as { readonly attemptId?: string };
+      const attemptId = body.attemptId;
+      if (attemptId === undefined) {
+        throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
+      }
+      const observed = await controller.transact(async (unit) => {
+        const result = await controller!.completeDeploymentHarnessOAuth(
+          context.actorId,
+          namespaceId,
+          agentId,
+          params.deploymentId as string,
+          { attemptId },
+        );
+        await unit.audit.append(
+          event(
+            operation,
+            request,
+            { kind: "agent_revision", id: params.deploymentId as string, namespaceId },
+            "mutation",
+            context,
+            undefined,
+            harnessOAuthAuditResult(result),
+          ),
+        );
+        return clientHarnessOAuthObservation(result);
+      });
+      reply.send({ data: observed, meta: { requestId: request.id } });
       return;
     }
 

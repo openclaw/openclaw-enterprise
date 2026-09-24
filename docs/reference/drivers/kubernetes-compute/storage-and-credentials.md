@@ -83,6 +83,14 @@ without credentials or additional privileges. The nested
 Codex credentials remain ephemeral. The remaining private runtime home is
 also ephemeral. Persisting these directories does not persist the entire home.
 
+For embedded OpenClaw OAuth, the fixed native profile
+`openai:occ-managed` is committed inside this private gateway state. OCC does
+not store OAuth tokens, provider subjects, user codes, callback payloads, or
+native profile contents in Agent resources, Configurations, Secrets, logs, or
+audit records. The same filesystem locking and fencing requirements above apply
+to OAuth refresh because OpenClaw owns the profile and later token rotation
+inside its native store.
+
 ## Harness storage
 
 Each dedicated Agent receives a `40Gi` `ReadWriteMany` claim mounted only by
@@ -201,6 +209,8 @@ trusted-proxy authentication only. Initial provisioning generates
 requires the latter for its Harness transport. Dedicated provisioning requires
 two separate nonempty single-key Secrets; embedded provisioning retains the
 combined bundle. Credential inspection rejects other shapes.
+OAuth management derives a revision-scoped token from the embedded bundle's
+`gateway-password` using a separate HMAC domain; gateway token authentication remains disabled.
 The Driver projects `gateway-password` as `OPENCLAW_GATEWAY_PASSWORD`
 only when `gateway.auth.password` explicitly uses an environment SecretRef with
 that ID. This supports native local-direct password access alongside trusted-proxy
@@ -213,6 +223,7 @@ exact reference; account tokens use an account-owned CP source. Compute delivers
 only the admitted fields to a revision-owned runtime Secret and selects the
 explicit login mode during workload rendering. Only the combined embedded gateway/Harness or dedicated
 Codex consumer receives it; a dedicated gateway never receives model auth.
+OAuth instead commits a native Agent-local profile and projects no provider token.
 
 If channels are enabled, configure `runtime.channels.proxyUrl`, then store the
 Agent's channel credentials as Namespace Secrets referenced by Configuration

@@ -221,6 +221,92 @@ function agentDeleteRequests(requests, namespaceId, agentId) {
   );
 }
 
+function apiEnvelope(data) {
+  return {
+    data,
+    meta: { requestId: `req_${randomUUID()}` },
+  };
+}
+
+async function fulfillActivatedDeployment(route, { fixture, namespaceId, agentId, deploymentId }) {
+  const active = await fixture.request("GET", `/namespaces/${namespaceId}/agents/${agentId}`);
+  assert.equal(active.data.activeRevisionId, deploymentId);
+  await route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify(
+      apiEnvelope({
+        deploymentId,
+        namespaceId,
+        agentId,
+        status: "succeeded",
+        error: null,
+        warnings: [],
+      }),
+    ),
+  });
+}
+
+function oauthConsoleComputeDriver({ attemptId, expiresAt, observed, preparingStarts = 0 } = {}) {
+  let starts = 0;
+  let transportConfigured = false;
+  return {
+    id: "console-oauth-compute",
+    capability: "compute",
+    implementation: "test-oauth-lifecycle",
+    validateHarnessAuth(harness, auth) {
+      assert.equal(harness.id, "openclaw");
+      assert.equal(harness.mode, "embedded");
+      assert.equal(auth.method, "oauth");
+    },
+    async ensureNamespace(namespace) {
+      return { namespaceId: namespace.id, namespaceReady: true };
+    },
+    async deleteNamespace(namespace) {
+      return { namespaceId: namespace.id, namespaceDeleted: true };
+    },
+    async prepareRevision(revision) {
+      return {
+        namespaceId: revision.namespaceId,
+        agentId: revision.agentId,
+        revisionId: revision.id,
+        ready: true,
+      };
+    },
+    async getAgentRuntimeCredentialStatus() {
+      return { transportConfigured };
+    },
+    async provisionAgentRuntimeCredentials() {
+      transportConfigured = true;
+      return { transportConfigured };
+    },
+    async startHarnessOAuth() {
+      observed?.push(["start", null]);
+      starts += 1;
+      if (starts <= preparingStarts) {
+        return { phase: "preparing" };
+      }
+      return {
+        phase: "waiting",
+        attemptId,
+        expiresAt,
+        verificationUrl: "https://auth.openai.example/device",
+        userCode: "OPEN-CLAW",
+      };
+    },
+    async getHarnessOAuthStatus() {
+      observed?.push(["status", null]);
+      return { phase: "authorized", attemptId, expiresAt };
+    },
+    async completeHarnessOAuth(_revision, input) {
+      observed?.push(["complete", { attemptId: input.attemptId }]);
+      assert.equal(input.attemptId, attemptId);
+      return { phase: "committed", attemptId, expiresAt };
+    },
+    async retireRevision() {},
+  };
+}
+
 function agentStopRequests(requests, namespaceId, agentId) {
   return pathRequests(
     requests,
@@ -261,6 +347,16 @@ async function createRuntimeAuthFixture(t, namespaceName) {
     unit.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
   );
   return { fixture, namespace, state };
+}
+
+async function provisionRuntimeCredentials(fixture, namespaceId, agentId) {
+  const response = await fixture.request(
+    "POST",
+    `/namespaces/${namespaceId}/agents/${agentId}/runtime-credentials`,
+    { body: {}, headers: { origin: fixture.origin } },
+  );
+  assert.equal(response.status, 200, JSON.stringify(response.body));
+  assert.deepEqual(response.data, { transportConfigured: true });
 }
 
 async function optionValues(locator) {
@@ -778,6 +874,75 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
   assert.equal(agentPostRequests(requests, namespace.id).length, 0);
   assert.match(page.url(), new RegExp(`/console/agents/new\\?namespace=${namespace.id}$`));
+});
+
+test("Agent creation saves OpenAI OAuth from the real create form", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("OAuth Agent authoring", { ready: true });
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("heading", { name: "Create Agent" }).waitFor();
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+  const authSource = page.getByLabel("Authentication method");
+  assert.ok((await optionValues(authSource)).some((option) => option.value === "oauth"));
+  await authSource.selectOption("oauth");
+  await page
+    .getByText(/Deploying starts provider authorization for embedded OpenClaw on Kubernetes/)
+    .waitFor();
+  assert.equal(await page.getByLabel("API key", { exact: true }).isVisible(), false);
+  await page.getByLabel("Agent name").fill("OAuth Console-created Agent");
+  await page.getByLabel("Model", { exact: true }).selectOption({ index: 1 });
+
+  const configurationResponse = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/configurations` &&
+      response.request().method() === "POST",
+  );
+  const createResponse = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  const configuration = await (await configurationResponse).json();
+  const created = await (await createResponse).json();
+
+  assert.equal(configuration.data.kind, "agent");
+  assert.equal(created.data.namespaceId, namespace.id);
+  assert.equal(created.data.executionMode, "embedded");
+  assert.equal(created.data.configurationId, configuration.data.id);
+  assert.deepEqual(created.data.harnessAuth, { method: "oauth" });
+  assert.equal(created.data.activeRevisionId, undefined);
+  assert.deepEqual(agentPostRequests(requests, namespace.id).at(-1).body.harnessAuth, {
+    method: "oauth",
+  });
+});
+
+test("Agent creation rejects non-object native Configuration JSON before any write request", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Invalid JSON", { ready: true });
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("heading", { name: "Create Agent" }).waitFor();
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  requests.length = 0;
+
+  await page.getByLabel("Agent name").fill("Broken Agent");
+  await page.getByLabel("Configuration JSON").fill("[]");
+  await page.getByRole("button", { name: "Create Agent" }).click();
+
+  const validation = await page
+    .getByLabel("Configuration JSON")
+    .evaluate((node) => node.validationMessage);
+  assert.equal(validation, "Enter a valid JSON object.");
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
 });
 
 test("Agent creation selects approved repositories with one common explicit profile", async (t) => {
@@ -3019,6 +3184,598 @@ test("Agent creation saves explicitly selected models for both harnesses", async
       { id: selectedModel, name: selectedModel },
     ]);
   }
+});
+
+test("OAuth draft deploy drives provider authorization before activation success", async (t) => {
+  const attemptId = `oauth_${randomUUID()}`;
+  const expiresAt = new Date(Date.now() + 60_000).toISOString();
+  const observed = [];
+  const fixture = await createConsoleAppFixture(t, {
+    computeDriver: oauthConsoleComputeDriver({
+      attemptId,
+      expiresAt,
+      observed,
+      preparingStarts: 1,
+    }),
+    recordOperations: true,
+    publicOrigin: true,
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("OAuth deploy", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "OAuth deployment Agent",
+    nativeValues("oauth-deploy"),
+    { executionMode: "embedded", harnessAuth: { method: "oauth" } },
+  );
+  const { page } = await newPage(t, fixture);
+  let deploymentReady = false;
+  let completed = false;
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/**`,
+    async (route, request) => {
+      const url = new URL(request.url());
+      const deploymentId = url.pathname.match(/\/deployments\/([^/]+)/)?.[1];
+      assert.ok(deploymentId);
+      if (url.pathname.endsWith("/auth/complete")) {
+        completed = true;
+        await route.continue();
+        return;
+      }
+      if (url.pathname.endsWith("/auth")) {
+        await route.continue();
+        return;
+      }
+      const status = completed ? "succeeded" : deploymentReady ? "running" : "queued";
+      deploymentReady = true;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(
+          apiEnvelope({
+            deploymentId,
+            namespaceId: namespace.id,
+            agentId: agent.id,
+            status,
+            error: null,
+            warnings: [],
+          }),
+        ),
+      });
+    },
+  );
+
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").pathname +
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").search,
+  );
+  await page.getByRole("heading", { name: "New revision" }).waitFor();
+  await page
+    .getByText(/Deploy requires stored credential metadata: Generated runtime credentials/)
+    .waitFor();
+  const deploy = page.getByRole("button", { name: "Deploy new revision" });
+  assert.equal(await deploy.isDisabled(), true);
+  await page.getByRole("button", { name: "Credentials", exact: true }).click();
+  await page.getByText("Generated runtime credentials", { exact: true }).waitFor();
+  await page.getByText("Missing", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Provision generated runtime credentials" }).click();
+  await page.getByText("Generated runtime credential metadata refreshed.").waitFor();
+  await page.getByRole("button", { name: "Configuration", exact: true }).click();
+  await page
+    .getByText(/Deploy prepares the Agent runtime, then starts OpenAI OAuth authorization/)
+    .waitFor();
+  const readyDeploy = page.getByRole("button", { name: "Deploy new revision" });
+  assert.equal(await readyDeploy.isDisabled(), false);
+
+  await readyDeploy.click();
+  await page.getByRole("heading", { name: "Authorize OpenAI" }).waitFor();
+  await page.getByText("OPEN-CLAW").waitFor();
+  await page.getByRole("link", { name: "https://auth.openai.example/device" }).waitFor();
+  await page.waitForURL((url) => {
+    return (
+      url.pathname === `/console/agents/${agent.id}` &&
+      url.searchParams.get("namespace") === namespace.id &&
+      url.searchParams.get("tab") === "workspace" &&
+      url.searchParams.get("revision") !== "draft"
+    );
+  });
+  assert.deepEqual(observed, [
+    ["start", null],
+    ["start", null],
+    ["status", null],
+    ["complete", { attemptId }],
+  ]);
+  assert.equal(
+    await page.evaluate(() =>
+      Object.keys(globalThis.localStorage).some((key) => key.includes("oauth")),
+    ),
+    false,
+  );
+});
+
+test("OAuth draft deploy skips consent when deployment already activated", async (t) => {
+  const attemptId = `oauth_${randomUUID()}`;
+  const expiresAt = new Date(Date.now() + 60_000).toISOString();
+  const observed = [];
+  const fixture = await createConsoleAppFixture(t, {
+    computeDriver: oauthConsoleComputeDriver({ attemptId, expiresAt, observed }),
+    recordOperations: true,
+    publicOrigin: true,
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("OAuth reused activation", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "OAuth reused activation Agent",
+    nativeValues("oauth-reused"),
+    { executionMode: "embedded", harnessAuth: { method: "oauth" } },
+  );
+  await provisionRuntimeCredentials(fixture, namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  let authCalled = false;
+  let activatedRevisionId;
+  // Browser fixtures do not run the worker queue that marks deployment work succeeded.
+  // The route exposes a terminal status only after fixture state selects the revision.
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/**`,
+    async (route, request) => {
+      const url = new URL(request.url());
+      if (url.pathname.includes("/auth")) {
+        authCalled = true;
+        await route.fulfill({
+          status: 500,
+          contentType: "application/json",
+          body: JSON.stringify(apiEnvelope({ unexpected: "auth" })),
+        });
+        return;
+      }
+      const deploymentId = url.pathname.match(/\/deployments\/([^/]+)/)?.[1];
+      assert.ok(deploymentId);
+      if (activatedRevisionId === undefined) {
+        await fixture.activateRevision(namespace.id, agent.id, deploymentId, undefined);
+        activatedRevisionId = deploymentId;
+      }
+      assert.equal(activatedRevisionId, deploymentId);
+      await fulfillActivatedDeployment(route, {
+        fixture,
+        namespaceId: namespace.id,
+        agentId: agent.id,
+        deploymentId,
+      });
+    },
+  );
+
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").pathname +
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").search,
+  );
+  await page.getByRole("heading", { name: "New revision" }).waitFor();
+  await page.getByRole("button", { name: "Deploy new revision" }).click();
+  await page.waitForURL((url) => {
+    return (
+      url.pathname === `/console/agents/${agent.id}` &&
+      url.searchParams.get("namespace") === namespace.id &&
+      url.searchParams.get("tab") === "workspace" &&
+      url.searchParams.get("revision") !== "draft"
+    );
+  });
+  await expectNoText(page, "Authorize OpenAI");
+  assert.equal(authCalled, false);
+  assert.deepEqual(observed, []);
+});
+
+test("OAuth draft deploy accepts activation that wins the auth start race", async (t) => {
+  const attemptId = `oauth_${randomUUID()}`;
+  const expiresAt = new Date(Date.now() + 60_000).toISOString();
+  const observed = [];
+  const fixture = await createConsoleAppFixture(t, {
+    computeDriver: oauthConsoleComputeDriver({ attemptId, expiresAt, observed }),
+    recordOperations: true,
+    publicOrigin: true,
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("OAuth start race", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "OAuth start race Agent",
+    nativeValues("oauth-start-race"),
+    { executionMode: "embedded", harnessAuth: { method: "oauth" } },
+  );
+  await provisionRuntimeCredentials(fixture, namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  let authStarts = 0;
+  let activatedRevisionId;
+  // This races the real auth start route against an actual Agent activation,
+  // then reports the worker-completed status from the verified active revision.
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/**`,
+    async (route, request) => {
+      const url = new URL(request.url());
+      const deploymentId = url.pathname.match(/\/deployments\/([^/]+)/)?.[1];
+      assert.ok(deploymentId);
+      if (url.pathname.endsWith("/auth")) {
+        authStarts += 1;
+        activatedRevisionId = deploymentId;
+        await fixture.activateRevision(namespace.id, agent.id, deploymentId, undefined);
+        await route.continue();
+        return;
+      }
+      if (activatedRevisionId === deploymentId) {
+        await fulfillActivatedDeployment(route, {
+          fixture,
+          namespaceId: namespace.id,
+          agentId: agent.id,
+          deploymentId,
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(
+          apiEnvelope({
+            deploymentId,
+            namespaceId: namespace.id,
+            agentId: agent.id,
+            status: "running",
+            error: null,
+            warnings: [],
+          }),
+        ),
+      });
+    },
+  );
+
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").pathname +
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").search,
+  );
+  await page.getByRole("heading", { name: "New revision" }).waitFor();
+  await page.getByRole("button", { name: "Deploy new revision" }).click();
+  await page.waitForURL((url) => {
+    return (
+      url.pathname === `/console/agents/${agent.id}` &&
+      url.searchParams.get("namespace") === namespace.id &&
+      url.searchParams.get("tab") === "workspace" &&
+      url.searchParams.get("revision") !== "draft"
+    );
+  });
+  await expectNoText(page, "Authorize OpenAI");
+  assert.equal(authStarts, 1);
+  assert.deepEqual(observed, []);
+});
+
+test("OAuth draft deploy accepts activation while start remains preparing", async (t) => {
+  const attemptId = `oauth_${randomUUID()}`;
+  const expiresAt = new Date(Date.now() + 60_000).toISOString();
+  const observed = [];
+  let deployedRevisionId;
+  const fixture = await createConsoleAppFixture(t, {
+    computeDriver: oauthConsoleComputeDriver({
+      attemptId,
+      expiresAt,
+      observed,
+      preparingStarts: 1,
+    }),
+    recordOperations: true,
+    publicOrigin: true,
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("OAuth preparing reuse", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "OAuth preparing reuse Agent",
+    nativeValues("oauth-preparing-reuse"),
+    { executionMode: "embedded", harnessAuth: { method: "oauth" } },
+  );
+  await provisionRuntimeCredentials(fixture, namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  let authStarts = 0;
+  let activatedRevisionId;
+  // After the real start route returns preparing, the fixture activates the
+  // revision before the Console's next poll; the status mock is tied to that state.
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/**`,
+    async (route, request) => {
+      const url = new URL(request.url());
+      const deploymentId = url.pathname.match(/\/deployments\/([^/]+)/)?.[1];
+      assert.ok(deploymentId);
+      if (url.pathname.endsWith("/auth")) {
+        authStarts += 1;
+        deployedRevisionId = deploymentId;
+        await route.continue();
+        return;
+      }
+      if (activatedRevisionId === deploymentId) {
+        await fulfillActivatedDeployment(route, {
+          fixture,
+          namespaceId: namespace.id,
+          agentId: agent.id,
+          deploymentId,
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(
+          apiEnvelope({
+            deploymentId,
+            namespaceId: namespace.id,
+            agentId: agent.id,
+            status: "running",
+            error: null,
+            warnings: [],
+          }),
+        ),
+      });
+    },
+  );
+
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").pathname +
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").search,
+  );
+  await page.getByRole("heading", { name: "New revision" }).waitFor();
+  const preparingResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith("/auth") && response.request().method() === "POST";
+  });
+  await page.getByRole("button", { name: "Deploy new revision" }).click();
+  const preparing = await (await preparingResponse).json();
+  assert.equal(preparing.data.phase, "preparing");
+  assert.ok(deployedRevisionId);
+  await fixture.activateRevision(namespace.id, agent.id, deployedRevisionId, undefined);
+  activatedRevisionId = deployedRevisionId;
+  await page.waitForURL((url) => {
+    return (
+      url.pathname === `/console/agents/${agent.id}` &&
+      url.searchParams.get("namespace") === namespace.id &&
+      url.searchParams.get("tab") === "workspace" &&
+      url.searchParams.get("revision") !== "draft"
+    );
+  });
+  await expectNoText(page, "Authorize OpenAI");
+  assert.equal(authStarts, 1);
+  assert.deepEqual(observed, [["start", null]]);
+});
+
+test("OAuth draft deploy accepts activation while waiting for consent", async (t) => {
+  const attemptId = `oauth_${randomUUID()}`;
+  const expiresAt = new Date(Date.now() + 60_000).toISOString();
+  const observed = [];
+  let deployedRevisionId;
+  const fixture = await createConsoleAppFixture(t, {
+    computeDriver: oauthConsoleComputeDriver({
+      attemptId,
+      expiresAt,
+      observed,
+    }),
+    recordOperations: true,
+    publicOrigin: true,
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("OAuth waiting reuse", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "OAuth waiting reuse Agent",
+    nativeValues("oauth-waiting-reuse"),
+    { executionMode: "embedded", harnessAuth: { method: "oauth" } },
+  );
+  await provisionRuntimeCredentials(fixture, namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  let authStarts = 0;
+  let authStatusPolls = 0;
+  // The start route returns a real waiting observation, then the fixture
+  // activates the revision before the Console would poll auth status.
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/**`,
+    async (route, request) => {
+      const url = new URL(request.url());
+      const deploymentId = url.pathname.match(/\/deployments\/([^/]+)/)?.[1];
+      assert.ok(deploymentId);
+      if (url.pathname.endsWith("/auth") && request.method() === "POST") {
+        authStarts += 1;
+        deployedRevisionId = deploymentId;
+        const response = await route.fetch();
+        const body = await response.json();
+        assert.equal(body.data.phase, "waiting");
+        await fixture.activateRevision(namespace.id, agent.id, deploymentId, undefined);
+        await route.fulfill({
+          response,
+          body: JSON.stringify(body),
+        });
+        return;
+      }
+      if (url.pathname.endsWith("/auth")) {
+        authStatusPolls += 1;
+        await route.fulfill({
+          status: 500,
+          contentType: "application/json",
+          body: JSON.stringify(apiEnvelope({ unexpected: "auth-status-poll" })),
+        });
+        return;
+      }
+      if (deployedRevisionId === deploymentId) {
+        await fulfillActivatedDeployment(route, {
+          fixture,
+          namespaceId: namespace.id,
+          agentId: agent.id,
+          deploymentId,
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(
+          apiEnvelope({
+            deploymentId,
+            namespaceId: namespace.id,
+            agentId: agent.id,
+            status: "running",
+            error: null,
+            warnings: [],
+          }),
+        ),
+      });
+    },
+  );
+
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").pathname +
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").search,
+  );
+  await page.getByRole("heading", { name: "New revision" }).waitFor();
+  const waitingResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith("/auth") && response.request().method() === "POST";
+  });
+  await page.getByRole("button", { name: "Deploy new revision" }).click();
+  const waiting = await (await waitingResponse).json();
+  assert.equal(waiting.data.phase, "waiting");
+  assert.ok(deployedRevisionId);
+  await page.waitForURL((url) => {
+    return (
+      url.pathname === `/console/agents/${agent.id}` &&
+      url.searchParams.get("namespace") === namespace.id &&
+      url.searchParams.get("tab") === "workspace" &&
+      url.searchParams.get("revision") !== "draft"
+    );
+  });
+  assert.equal(authStarts, 1);
+  assert.equal(authStatusPolls, 0);
+  assert.deepEqual(observed, [["start", null]]);
+});
+
+test("OAuth draft deploy cancels polling when the operator stops authorization", async (t) => {
+  const attemptId = `oauth_${randomUUID()}`;
+  const expiresAt = new Date(Date.now() + 60_000).toISOString();
+  const observed = [];
+  const fixture = await createConsoleAppFixture(t, {
+    computeDriver: oauthConsoleComputeDriver({ attemptId, expiresAt, observed }),
+    recordOperations: true,
+    publicOrigin: true,
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("OAuth stale polling", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "OAuth stale polling Agent",
+    nativeValues("oauth-stale"),
+    { executionMode: "embedded", harnessAuth: { method: "oauth" } },
+  );
+  await provisionRuntimeCredentials(fixture, namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  let deploymentReady = false;
+  let authStatusPolls = 0;
+  let authCompletes = 0;
+  let rejectNextStop = true;
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/**`,
+    async (route, request) => {
+      const url = new URL(request.url());
+      if (url.pathname.endsWith("/auth") && request.method() === "POST") {
+        await route.continue();
+        return;
+      }
+      if (url.pathname.endsWith("/auth/complete")) {
+        authCompletes += 1;
+        await route.fulfill({
+          status: 500,
+          contentType: "application/json",
+          body: JSON.stringify(apiEnvelope({ unexpected: "auth-complete-after-stop" })),
+        });
+        return;
+      }
+      if (url.pathname.endsWith("/auth")) {
+        authStatusPolls += 1;
+        await route.fulfill({
+          status: 500,
+          contentType: "application/json",
+          body: JSON.stringify(apiEnvelope({ unexpected: "auth-poll-after-stop" })),
+        });
+        return;
+      }
+      const deploymentId = url.pathname.match(/\/deployments\/([^/]+)/)?.[1];
+      assert.ok(deploymentId);
+      const status = deploymentReady ? "running" : "queued";
+      deploymentReady = true;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(
+          apiEnvelope({
+            deploymentId,
+            namespaceId: namespace.id,
+            agentId: agent.id,
+            status,
+            error: null,
+            warnings: [],
+          }),
+        ),
+      });
+    },
+  );
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/stop`,
+    async (route) => {
+      if (!rejectNextStop) {
+        await route.continue();
+        return;
+      }
+      rejectNextStop = false;
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify(apiEnvelope({ stopped: false })),
+      });
+    },
+  );
+
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").pathname +
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").search,
+  );
+  await page.getByRole("button", { name: "Deploy new revision" }).click();
+  await page.getByRole("heading", { name: "Authorize OpenAI" }).waitFor();
+  await page.getByText("OPEN-CLAW").waitFor();
+
+  const oauthPanel = page.locator(".oauth-activation");
+  await oauthPanel.getByRole("button", { name: "Stop Agent" }).click();
+  await page.getByText("Agent stop request failed.").waitFor();
+  await page.waitForTimeout(1_300);
+  assert.deepEqual(observed, [["start", null]]);
+  assert.equal(authStatusPolls, 0);
+  assert.equal(authCompletes, 0);
+  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), false);
+
+  await page.getByRole("button", { name: "Deploy new revision" }).click();
+  await page.getByRole("heading", { name: "Authorize OpenAI" }).waitFor();
+  await page.getByText("OPEN-CLAW").waitFor();
+  await oauthPanel.getByRole("button", { name: "Stop Agent" }).click();
+  await oauthPanel.getByRole("heading", { name: "OAuth authorization cancelled" }).waitFor();
+  await page.waitForTimeout(1_300);
+  assert.deepEqual(observed, [
+    ["start", null],
+    ["start", null],
+  ]);
+  assert.equal(authStatusPolls, 0);
+  assert.equal(authCompletes, 0);
+  assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 2);
 });
 
 test("Agent detail preserves admitted revision history while draft edits change current configuration", async (t) => {

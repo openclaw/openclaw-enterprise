@@ -20,7 +20,9 @@ function slackChannels(scenario) {
 function configurationValues(scenario) {
   const values = {
     gateway: { mode: "local" },
-    agents: { defaults: { model: "codex/gpt-6-astra" } },
+    agents: {
+      defaults: { model: scenario.auth === "oauth" ? "openai/gpt-4.1" : "codex/gpt-6-astra" },
+    },
     channels: {},
   };
   if (scenario.slack) {
@@ -116,11 +118,13 @@ export function installFixture(scenario, evidence) {
   const selectedAuth =
     scenario.auth === null
       ? null
-      : scenario.auth === "runtime"
-        ? { method: "runtime" }
-        : scenario.auth === "service"
-          ? { method: "chatgpt_service_account", serviceAccountId: "sa_demo" }
-          : auth;
+      : scenario.auth === "oauth"
+        ? { method: "oauth" }
+        : scenario.auth === "runtime"
+          ? { method: "runtime" }
+          : scenario.auth === "service"
+            ? { method: "chatgpt_service_account", serviceAccountId: "sa_demo" }
+            : auth;
   const agent = {
     id: "agt_00000000-0000-4000-8000-000000000001",
     namespaceId,
@@ -128,7 +132,7 @@ export function installFixture(scenario, evidence) {
     status: scenario.deleting ? "deleting" : "active",
     desiredRuntimeState: scenario.stopped ? "stopped" : scenario.deployed ? "running" : "stopped",
     configurationId: config.id,
-    executionMode: "dedicated",
+    executionMode: scenario.auth === "oauth" ? "embedded" : "dedicated",
     harnessAuth: selectedAuth,
     servicePrincipalId: "identity_demo_agent",
     createdAt,
@@ -226,7 +230,7 @@ export function installFixture(scenario, evidence) {
       },
       agent: {
         name: "{{ vars.name }}",
-        executionMode: "dedicated",
+        executionMode: scenario.auth === "oauth" ? "embedded" : "dedicated",
         harnessAuth: { ...auth, method: scenario.presetAuth ?? auth.method },
       },
       configuration: {
@@ -569,7 +573,7 @@ export function installFixture(scenario, evidence) {
           deployments.set(next.id, {
             deploymentId: `dep_${next.id}`,
             revisionId: next.id,
-            status: "queued",
+            status: scenario.oauthPhase ? "running" : "queued",
             reads: 0,
             error: null,
           });
@@ -583,12 +587,26 @@ export function installFixture(scenario, evidence) {
             ? response(revisions.get(suffix.split("/")[2]))
             : error(404);
         }
+        if (/^\/deployments\/[^/]+\/auth(?:\/complete)?$/.test(suffix)) {
+          return response(
+            scenario.oauthPhase === "failed"
+              ? { phase: "failed", reason: "unavailable" }
+              : {
+                  phase: "waiting",
+                  attemptId: "oauth_00000000-0000-4000-8000-000000000001",
+                  expiresAt: new Date(Date.now() + 900000).toISOString(),
+                  verificationUrl: "https://auth.openai.com/codex/device",
+                  userCode: "DEMO-1234",
+                },
+            method === "POST" ? 202 : 200,
+          );
+        }
         if (suffix.startsWith("/deployments/") && method === "GET") {
           const deployment = deployments.get(suffix.split("/")[2]);
           if (!deployment) {
             return error(404);
           }
-          if (deployment.reads !== undefined && ++deployment.reads > 1) {
+          if (!scenario.oauthPhase && deployment.reads !== undefined && ++deployment.reads > 1) {
             deployment.status = "succeeded";
             saved.desiredRuntimeState = "running";
             saved.activeRevisionId = deployment.revisionId;

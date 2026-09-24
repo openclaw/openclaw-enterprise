@@ -37,7 +37,7 @@ does not make that link available.
    **OpenClaw**. **Execution mode** follows the harness: Dedicated for Codex,
    Embedded for OpenClaw.
    With OpenAI and Codex, choose **OpenAI API key** or **Service Accounts** under
-   **Authentication method**. OpenClaw uses the selected provider's API key.
+   **Authentication method**. OpenAI with OpenClaw also offers **OpenAI OAuth during activation**, without a token field; Anthropic uses an API key.
    For API keys, use [OpenAI API keys](https://platform.openai.com/api-keys). For
    Service Accounts, open [OpenAI admin](https://admin.openai.com/), choose your
    workspace, open **Service accounts**, and create a token with Codex scope.
@@ -213,31 +213,20 @@ bound through the Agent's Configuration. Model credentials are selected
 separately during Agent creation through `harnessAuth`; runtime credential
 provisioning does not change that key.
 
-Select **Provision generated runtime credentials** to create the transport bundle.
-The Kubernetes Driver generates an app-server transport token and a local
-gateway password. Kubernetes gateway authentication is trusted-proxy only. The
-password is projected only when native Configuration
-explicitly selects the supported environment reference; it is never returned by
-the credential API. Provisioning checks for existing Agent runtime Deployments
-before writing credentials so it does not modify values after a runtime has
-started.
+Select **Provision generated runtime credentials** before the first revision.
+The API generates transport credentials and reports storage status without
+returning values. Provisioning requires exact Agent `read` and `operate`;
+inspection requires `read`. It creates missing whole Secrets, never rotates
+existing values, and rejects foreign ownership or unexpected keys. Embedded
+Agents use a combined `app-server-token` and `gateway-password` bundle;
+dedicated Agents use separate single-key Secrets in their Gateway namespace.
+OAuth derives its management token from the embedded password with a separate
+HMAC domain. Gateways continue to use trusted-proxy authentication.
 
-The generated credential API uses `GET` and initial `POST {}` on
-`/namespaces/:namespaceId/agents/:agentId/runtime-credentials`. Reading requires
-exact Agent `read`; provisioning also requires `operate`. Returned status reports
-transport storage only. The server derives Kubernetes names from the admitted
-Namespace, Agent, and Installation driver configuration. Generated credential
-values never pass through the browser. Audit records contain the actor, target,
-action, and outcome, never the values.
-
-Provisioning creates missing whole Secrets before any AgentRevision exists. It
-never rotates or overwrites existing credentials. A retry may reuse complete,
-owned transport groups. The Kubernetes transport group must contain exactly
-`app-server-token` and `gateway-password`. Unexpected keys, foreign ownership,
-or malformed values produce a conflict. If a response is lost or a dependency fails, refresh
-stored status before explicitly retrying. Already-created Secrets remain in place
-even when later storage or audit work fails; there is no automatic retry or
-rollback deletion.
+Refresh status after an uncertain response before retrying. Already-created
+Secrets remain if later storage or audit fails. See
+[runtime credentials](../drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials)
+for storage and recovery boundaries.
 
 On the **Credentials** tab, bound Slack tokens appear as filled password fields using a synthetic mask.
 The browser never reads the saved token values. Focus a field to enter a
@@ -263,6 +252,15 @@ and requests deployment through the existing exact-Agent endpoint. A changed dra
 requires a refresh. These checks are separate reads, not an atomic compare-and-set.
 Teams-enabled drafts cannot deploy through this console path because Teams credential
 readiness is not exposed; use the operator deployment workflow for those Agents.
+
+For an OAuth draft, deployment first prepares the embedded OpenClaw runtime and
+then opens an authorization panel. Use the provider page and user code shown
+there; the browser does not store the code in local storage. The console polls
+deployment auth status, completes the observed attempt after provider
+authorization, then waits for normal deployment success. A committed OAuth
+profile is still followed by the runtime model probe before the Agent is active.
+Use **Stop Agent** from the panel to cancel an unfinished attempt. Reconnecting
+or changing the authorized account requires stopping the Agent first.
 
 If a deployment response is lost, inspect the Agent's revision history before
 trying again; the console does not automatically repeat an uncertain request.

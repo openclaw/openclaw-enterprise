@@ -691,6 +691,24 @@ summary:focus-visible {
 .runtime-credentials {
   max-width: 960px;
 }
+.oauth-activation {
+  border-top: 1px solid var(--line);
+  margin-top: 18px;
+  padding-top: 18px;
+}
+.oauth-code-list {
+  display: grid;
+  grid-template-columns: 130px minmax(0, 1fr);
+  gap: 10px 16px;
+  margin: 18px 0 4px;
+}
+.oauth-code-list dt {
+  color: var(--muted);
+}
+.oauth-code-list dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
 .credential-status-list {
   display: grid;
   grid-template-columns: 130px minmax(0, 1fr);

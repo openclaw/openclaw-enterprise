@@ -4,17 +4,20 @@ import {
   numericErrorStatus,
   sha256Hex,
 } from "@openclaw-enterprise/utils";
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import { BlockList, isIP } from "node:net";
 import { isAbsolute } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type {
   AppsV1Api,
+  ConfigurationOptions,
   CoreV1Api,
   DiscoveryV1Api,
   KubernetesObject,
   KubernetesObjectApi,
   NetworkingV1Api,
+  RequestContext,
+  ResponseContext,
   VersionApi,
   V1ConfigMap,
   V1EnvVar,
@@ -39,6 +42,9 @@ import type {
   ComputeRevisionContext,
   WorkspaceSetup,
   Driver,
+  HarnessOAuthCompleteContext,
+  HarnessOAuthObservation as PublicHarnessOAuthObservation,
+  HarnessOAuthOperationContext,
   HarnessWorkloadRequirements,
   HarnessAuthSnapshot,
   PluginDeploymentWarning,
@@ -90,6 +96,7 @@ import {
   AGENT_WITH_NODE_ENTRYPOINT,
   GATEWAY_RUNTIME_ENTRYPOINT,
   GATEWAY_READINESS_ENTRYPOINT,
+  OAUTH_MANAGEMENT_TOKEN_HMAC_DOMAIN,
 } from "./runtime-entrypoints.ts";
 
 import {
@@ -337,6 +344,38 @@ interface PrivateStatusReadback {
   readonly containerId: string | undefined;
 }
 
+type HarnessOAuthPhase = "preparing" | "waiting" | "authorized" | "committed" | "failed";
+type RawHarnessOAuthFailureReason =
+  | "AUTH_NOT_REQUIRED"
+  | "ATTEMPT_NOT_FOUND"
+  | "AUTH_EXPIRED"
+  | "AUTH_CANCELLED"
+  | "AUTH_DENIED"
+  | "ACCOUNT_MISMATCH"
+  | "AUTH_SUPERSEDED"
+  | "PROVIDER_UNAVAILABLE"
+  | "PROBE_FAILED"
+  | "RUNTIME_UNAVAILABLE";
+
+interface RawHarnessOAuthObservation {
+  readonly namespaceId: string;
+  readonly agentId: string;
+  readonly revisionId: string;
+  readonly phase: HarnessOAuthPhase;
+  readonly attemptId?: string;
+  readonly expiresAt?: string;
+  readonly verificationUrl?: string;
+  readonly userCode?: string;
+  readonly failure?: {
+    readonly reason: RawHarnessOAuthFailureReason;
+    readonly message: string;
+  } | null;
+}
+
+interface HarnessOAuthStatusInput {
+  readonly actorId: string;
+}
+
 class OwnershipFailure extends Error {}
 class ConfigurationFailure extends Error {}
 
@@ -356,7 +395,7 @@ interface RuntimeCredentialContext {
 }
 
 interface PreparedHarnessAuth {
-  readonly loginMode: HarnessAuthSnapshot["method"];
+  readonly loginMode: HarnessWorkloadRequirements["loginMode"];
   readonly environment: readonly V1EnvVar[];
 }
 
@@ -396,6 +435,12 @@ function prepareHarnessAuth(
         key: SERVICE_ACCOUNT_WORKSPACE_KEY,
       }),
     );
+  } else if (
+    resolvedAuth.method === "oauth" &&
+    harness.mode === "embedded" &&
+    harness.id === "openclaw"
+  ) {
+    environment.push({ name: OPENCLAW_HARNESS_AUTH_MODE, value: "oauth" });
   } else {
     throw new ConfigurationFailure("Harness authentication method is unsupported.");
   }
@@ -423,6 +468,8 @@ const COMPUTE_PRIVATE_STATUS_ENVIRONMENT = new Set([
   "OPENCLAW_RUNTIME_STATUS_PORT",
   "OPENCLAW_POD_UID",
 ]);
+const OAUTH_MANAGEMENT_PORT = 18_792;
+const OAUTH_MANAGEMENT_PATH = "/openclaw/oauth";
 const AGENT_REVISION_ANNOTATION = "openclaw.dev/agent-revision";
 const AGENT_REVISION_ID_ANNOTATION = "openclaw.dev/agent-revision-id";
 const APPLY_CONTENT_TYPE = "application/apply-patch+yaml";
@@ -438,6 +485,12 @@ const AGENT_TRANSPORT_PORT = 18_790;
 const AGENT_TRANSPORT_TOKEN_KEY = "app-server-token";
 const GATEWAY_PASSWORD_KEY = "gateway-password";
 const OPENCLAW_GATEWAY_PASSWORD = "OPENCLAW_GATEWAY_PASSWORD";
+const OPENCLAW_HARNESS_AUTH_MODE = "OPENCLAW_HARNESS_AUTH_MODE";
+const OPENCLAW_OAUTH_MANAGEMENT_PORT = "OPENCLAW_OAUTH_MANAGEMENT_PORT";
+const OPENCLAW_OAUTH_MANAGEMENT_TOKEN = "OPENCLAW_OAUTH_MANAGEMENT_TOKEN";
+const OPENCLAW_AGENT_REVISION_ID = "OPENCLAW_AGENT_REVISION_ID";
+const OPENCLAW_AGENT_ID = "OPENCLAW_AGENT_ID";
+const OPENCLAW_NAMESPACE_ID = "OPENCLAW_NAMESPACE_ID";
 const TRUSTED_PROXY_IDENTITY = "occ-workspace-files";
 const TRUSTED_PROXY_HEADER = "x-occ-identity";
 const MODEL_API_KEY = "OPENAI_API_KEY";
@@ -982,6 +1035,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
     ReturnType<typeof import("@kubernetes/client-node").setHeaderOptions> | undefined;
   private mergePatchOptions:
     ReturnType<typeof import("@kubernetes/client-node").setHeaderOptions> | undefined;
+  private oauthProxyOptions:
+    | ((
+        token: string,
+        payload:
+          | { readonly actorId: string; readonly deadline?: string; readonly attemptId?: string }
+          | undefined,
+        query: { readonly actorId?: string } | undefined,
+      ) => ConfigurationOptions)
+    | undefined;
 
   static validateConfiguration(configuration: unknown): void {
     const candidate = asRecord(configuration);
@@ -1285,13 +1347,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
   ): void {
     const embedded = harness.mode === "embedded" && harness.id === "openclaw";
     const dedicated = harness.mode === "dedicated" && harness.id === "codex";
+    const authMethod = auth?.method;
     if (
       (!embedded && !dedicated) ||
       !auth ||
-      (auth.method !== "api_key" &&
-        auth.method !== "codex_pat" &&
-        auth.method !== "chatgpt_service_account") ||
-      (embedded && auth.method !== "api_key")
+      (authMethod !== "api_key" &&
+        authMethod !== "codex_pat" &&
+        authMethod !== "chatgpt_service_account" &&
+        authMethod !== "oauth") ||
+      (embedded && authMethod !== "api_key" && authMethod !== "oauth") ||
+      (dedicated && authMethod === "oauth") ||
+      (authMethod === "oauth" && this.options.runtime === undefined)
     ) {
       throw new ConfigurationFailure(
         "Harness authentication is incompatible with the selected topology.",
@@ -1324,6 +1390,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const prefixes = embedded ? [`${native.providerId}/`] : ["openai/", "codex/"];
     if (
       (embedded && native.providerId === "codex") ||
+      (authMethod === "oauth" && native.providerId !== "openai") ||
       models.length === 0 ||
       models.some(
         (model) =>
@@ -1371,7 +1438,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (config?.apiKey === undefined) {
         continue;
       }
-      if (!embedded) {
+      if (!embedded || authMethod === "oauth") {
         throw conflictingAuth();
       }
       if (config.apiKey === `\${${native.environmentName}}`) {
@@ -1517,6 +1584,368 @@ export class KubernetesComputeDriver implements ComputeDriver {
         context.namespace,
       );
     });
+  }
+
+  async startHarnessOAuth(
+    revision: AgentRevision,
+    input: HarnessOAuthOperationContext,
+  ): Promise<PublicHarnessOAuthObservation> {
+    return this.harnessOAuthOperation(revision, "start", input);
+  }
+
+  async getHarnessOAuthStatus(
+    revision: AgentRevision,
+    input: HarnessOAuthStatusInput,
+  ): Promise<PublicHarnessOAuthObservation> {
+    return this.harnessOAuthOperation(revision, "status", input);
+  }
+
+  async completeHarnessOAuth(
+    revision: AgentRevision,
+    input: HarnessOAuthCompleteContext,
+  ): Promise<PublicHarnessOAuthObservation> {
+    return this.harnessOAuthOperation(revision, "complete", input);
+  }
+
+  private async harnessOAuthOperation(
+    revision: AgentRevision,
+    operation: "start" | "status" | "complete",
+    input: HarnessOAuthOperationContext | HarnessOAuthStatusInput | HarnessOAuthCompleteContext,
+  ): Promise<PublicHarnessOAuthObservation> {
+    if (
+      revision.compute.id !== this.id ||
+      revision.compute.implementation !== this.implementation ||
+      revision.harness.mode !== "embedded" ||
+      revision.harness.id !== "openclaw" ||
+      revision.harnessAuth.method !== "oauth"
+    ) {
+      return this.harnessOAuthFailure(
+        revision,
+        "AUTH_NOT_REQUIRED",
+        "Deployment does not require OAuth.",
+      );
+    }
+    const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
+    const namespaceObject = await this.get("Namespace", namespace);
+    if (namespaceObject === undefined || namespaceObject.status?.phase !== "Active") {
+      return this.harnessOAuthPreparing(revision);
+    }
+    this.verifyNamespaceOwnership(namespaceObject, { namespaceId: revision.namespaceId }, external);
+
+    const ownership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
+    const gatewayName = `gateway-${sha256Hex(revision.agentId, 12)}`;
+    const gateway = await this.getOwned("Deployment", gatewayName, namespace, ownership);
+    if (
+      gateway?.metadata.annotations?.[AGENT_REVISION_ID_ANNOTATION] !== revision.id ||
+      gateway.spec?.replicas !== 1
+    ) {
+      return this.harnessOAuthPreparing(revision);
+    }
+
+    const pods = (await this.revisionPods(revision, namespace, "gateway")).filter(
+      (pod) => asRecord(pod.metadata)?.deletionTimestamp === undefined,
+    );
+    if (pods.length !== 1) {
+      return this.harnessOAuthPreparing(revision);
+    }
+    const pod = pods[0]!;
+    const metadata = asRecord(pod.metadata);
+    const podName = required(metadata?.name, "OAuth management Pod name");
+    const podUid = required(metadata?.uid, "OAuth management Pod UID");
+    const containerId = this.podContainerId(pod, "gateway");
+    const token = await this.oauthManagementToken(revision, namespace);
+    const payload =
+      operation === "status"
+        ? { actorId: input.actorId }
+        : {
+            actorId: input.actorId,
+            deadline: this.harnessOAuthDeadline(
+              (input as HarnessOAuthOperationContext | HarnessOAuthCompleteContext).deadline,
+            ),
+            ...(operation === "complete"
+              ? { attemptId: (input as HarnessOAuthCompleteContext).attemptId }
+              : {}),
+          };
+    let parsed: unknown;
+    try {
+      parsed = await this.harnessOAuthPodProxy(namespace, podName, operation, token, payload);
+    } catch (error) {
+      return this.harnessOAuthProxyFailure(revision, error);
+    }
+    const clients = await this.clients();
+    const latestPod = await this.request(() =>
+      clients.core.readNamespacedPod({ name: podName, namespace }),
+    );
+    const latestMetadata = asRecord(asRecord(latestPod)?.metadata);
+    const latestContainerId = this.podContainerId(latestPod, "gateway");
+    if (
+      latestMetadata?.uid !== podUid ||
+      latestMetadata.deletionTimestamp !== undefined ||
+      ((containerId !== undefined || latestContainerId !== undefined) &&
+        latestContainerId !== containerId)
+    ) {
+      return this.harnessOAuthFailure(
+        revision,
+        "RUNTIME_UNAVAILABLE",
+        "The Agent OAuth runtime changed during the OAuth operation.",
+      );
+    }
+    return this.normalizeOAuthObservation(parsed, revision);
+  }
+
+  private harnessOAuthDeadline(value: Date): string {
+    if (!(value instanceof Date) || !Number.isFinite(value.getTime())) {
+      throw new ConfigurationFailure("OAuth operation deadline is invalid.");
+    }
+    return value.toISOString();
+  }
+
+  private harnessOAuthPreparing(revision: AgentRevision): PublicHarnessOAuthObservation {
+    return this.normalizeOAuthObservation(
+      {
+        namespaceId: revision.namespaceId,
+        agentId: revision.agentId,
+        revisionId: revision.id,
+        phase: "preparing",
+        failure: null,
+      },
+      revision,
+    );
+  }
+
+  private harnessOAuthFailure(
+    revision: AgentRevision,
+    reason: RawHarnessOAuthFailureReason,
+    message: string,
+  ): PublicHarnessOAuthObservation {
+    const raw: RawHarnessOAuthObservation = {
+      namespaceId: revision.namespaceId,
+      agentId: revision.agentId,
+      revisionId: revision.id,
+      phase: "failed",
+      failure: { reason, message },
+    };
+    return this.normalizeOAuthObservation(raw, revision);
+  }
+
+  private harnessOAuthProxyFailure(
+    revision: AgentRevision,
+    error: unknown,
+  ): PublicHarnessOAuthObservation {
+    const body = this.oauthProxyErrorBody(error);
+    const observed = asRecord(body);
+    if (observed?.phase === "failed") {
+      return this.normalizeOAuthObservation(body, revision);
+    }
+    if (this.isTransientOAuthPodProxyError(error, body)) {
+      return this.harnessOAuthPreparing(revision);
+    }
+    return this.harnessOAuthFailure(
+      revision,
+      "RUNTIME_UNAVAILABLE",
+      "The Agent OAuth runtime is unavailable.",
+    );
+  }
+
+  private oauthProxyErrorBody(error: unknown): unknown {
+    const body = asRecord(error)?.body;
+    if (typeof body !== "string") {
+      return body;
+    }
+    try {
+      return JSON.parse(body);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private isTransientOAuthPodProxyError(error: unknown, body: unknown): boolean {
+    const status = numericErrorStatus(error);
+    if (status === 404) {
+      return this.isKubernetesPodProxyNotFound(body);
+    }
+    if (status !== undefined && status < 500) {
+      return false;
+    }
+    const bodyRecord = asRecord(body);
+    const details = [bodyRecord?.message, asRecord(error)?.message, asRecord(error)?.body]
+      .filter((value): value is string => typeof value === "string")
+      .join("\n")
+      .toLowerCase();
+    return [
+      "connection refused",
+      "connect: connection",
+      "pod does not have a host assigned",
+      "pod does not have a pod ip",
+      "no endpoints available",
+      "no route to host",
+    ].some((fragment) => details.includes(fragment));
+  }
+
+  private isKubernetesPodProxyNotFound(body: unknown): boolean {
+    const status = asRecord(body);
+    if (
+      status?.kind !== "Status" ||
+      status.reason !== "NotFound" ||
+      typeof status.message !== "string"
+    ) {
+      return false;
+    }
+    return /\bpods?\b/i.test(status.message) || /pod proxy/i.test(status.message);
+  }
+
+  private async harnessOAuthPodProxy(
+    namespace: string,
+    podName: string,
+    operation: "start" | "status" | "complete",
+    token: string,
+    payload:
+      | { readonly actorId: string; readonly deadline?: string; readonly attemptId?: string }
+      | undefined,
+  ): Promise<unknown> {
+    const clients = await this.clients();
+    const options = this.oauthProxyOptions?.(
+      token,
+      operation === "status" ? undefined : payload,
+      operation === "status" ? { actorId: payload?.actorId ?? "" } : undefined,
+    );
+    if (options === undefined) {
+      throw new DependencyUnavailableError("The Kubernetes OAuth proxy option is unavailable.");
+    }
+    const request = {
+      name: `${podName}:${OAUTH_MANAGEMENT_PORT}`,
+      namespace,
+      path: `${OAUTH_MANAGEMENT_PATH.slice(1)}/${operation}`,
+    };
+    if (operation === "status") {
+      return this.request(() =>
+        clients.core.connectGetNamespacedPodProxyWithPath(request, options),
+      );
+    }
+    if (payload === undefined) {
+      throw new DependencyUnavailableError(
+        "The Kubernetes OAuth proxy request payload is unavailable.",
+      );
+    }
+    return this.request(
+      () => clients.core.connectPostNamespacedPodProxyWithPath(request, options),
+      { mutating: true },
+    );
+  }
+
+  private async oauthManagementToken(revision: AgentRevision, namespace: string): Promise<string> {
+    const runtime = this.options.runtime;
+    if (runtime === undefined) {
+      throw new DependencyUnavailableError("The Agent OAuth runtime is unavailable.");
+    }
+    const name = `${runtime.transportSecretPrefix}-${sha256Hex(revision.agentId, 12)}`;
+    const secret = await this.getOwned("Secret", name, namespace, {
+      namespaceId: revision.namespaceId,
+      agentId: revision.agentId,
+    });
+    if (secret === undefined) {
+      throw new DependencyUnavailableError("The Agent OAuth runtime is unavailable.");
+    }
+    this.requireCompleteRuntimeCredentialSecret(secret, {
+      name,
+      keys: [AGENT_TRANSPORT_TOKEN_KEY, GATEWAY_PASSWORD_KEY],
+    });
+    const encoded = asRecord(secret.data)?.[GATEWAY_PASSWORD_KEY];
+    if (typeof encoded !== "string") {
+      throw new DependencyUnavailableError("The Agent OAuth runtime is unavailable.");
+    }
+    const baseToken = this.decodedRuntimeCredentialBytes(encoded);
+    return createHmac("sha256", baseToken)
+      .update(OAUTH_MANAGEMENT_TOKEN_HMAC_DOMAIN)
+      .update("\0")
+      .update(revision.id)
+      .digest("hex");
+  }
+
+  private normalizeOAuthObservation(
+    value: unknown,
+    revision: AgentRevision,
+  ): PublicHarnessOAuthObservation {
+    const observed = asRecord(value);
+    if (
+      observed === undefined ||
+      observed.namespaceId !== revision.namespaceId ||
+      observed.agentId !== revision.agentId ||
+      observed.revisionId !== revision.id
+    ) {
+      throw new DependencyUnavailableError("OAuth management returned invalid status.");
+    }
+    if (observed.phase === "preparing") {
+      return { phase: "preparing" };
+    }
+    if (
+      observed.phase === "waiting" &&
+      isNonEmptyString(observed.attemptId) &&
+      isNonEmptyString(observed.expiresAt) &&
+      isNonEmptyString(observed.verificationUrl) &&
+      isNonEmptyString(observed.userCode)
+    ) {
+      this.requireOAuthExpiresAt(observed.expiresAt);
+      return {
+        phase: "waiting",
+        attemptId: observed.attemptId,
+        expiresAt: observed.expiresAt,
+        verificationUrl: observed.verificationUrl,
+        userCode: observed.userCode,
+      };
+    }
+    if (
+      (observed.phase === "authorized" || observed.phase === "committed") &&
+      isNonEmptyString(observed.attemptId) &&
+      isNonEmptyString(observed.expiresAt)
+    ) {
+      this.requireOAuthExpiresAt(observed.expiresAt);
+      return {
+        phase: observed.phase,
+        attemptId: observed.attemptId,
+        expiresAt: observed.expiresAt,
+      };
+    }
+    if (observed.phase === "failed") {
+      return {
+        phase: "failed",
+        reason: this.safeOAuthFailureReason(observed.failure),
+        ...(isNonEmptyString(observed.attemptId) ? { attemptId: observed.attemptId } : {}),
+      };
+    }
+    throw new DependencyUnavailableError("OAuth management returned invalid status.");
+  }
+
+  private requireOAuthExpiresAt(value: string): void {
+    if (!Number.isFinite(Date.parse(value))) {
+      throw new DependencyUnavailableError("OAuth management returned invalid expiry.");
+    }
+  }
+
+  private safeOAuthFailureReason(
+    value: unknown,
+  ): PublicHarnessOAuthObservation extends infer Observation
+    ? Observation extends { readonly phase: "failed"; readonly reason: infer Reason }
+      ? Reason
+      : never
+    : never {
+    const failure = asRecord(value);
+    switch (failure?.reason) {
+      case "AUTH_DENIED":
+        return "denied";
+      case "ACCOUNT_MISMATCH":
+        return "account_mismatch";
+      case "ATTEMPT_NOT_FOUND":
+      case "AUTH_EXPIRED":
+        return "expired";
+      case "AUTH_CANCELLED":
+      case "AUTH_SUPERSEDED":
+        return "cancelled";
+      case "PROBE_FAILED":
+        return "unavailable";
+      default:
+        return "unavailable";
+    }
   }
 
   async storeServiceAccountCredential(input: {
@@ -1963,6 +2392,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
       admittedRevision.configuration,
       revision.secretBindings,
     );
+    const oauthHarness = revision.harnessAuth.method === "oauth";
+    if (oauthHarness && (this.options.network.pluginStatusProxySourceCidrs ?? []).length === 0) {
+      throw new ConfigurationFailure("OAuth management proxy source CIDRs are required.");
+    }
     const channels = this.enabledChannels(admittedRevision);
     this.verifyGatewayRoutingConfiguration(admittedRevision);
     const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
@@ -2202,6 +2635,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
       existingGateway.metadata.annotations?.[AGENT_REVISION_ID_ANNOTATION] !== revision.id &&
       (workspaceSetup === undefined || workspaceSetup.completed)
     ) {
+      if (oauthHarness) {
+        throw new ConfigurationFailure(
+          "OAuth reconnect requires the Agent to be fully stopped before deployment.",
+        );
+      }
       // The shared Recreate gateway validates auth in the replacement's startup.
       // An unready predecessor must not prevent repair through a new deployment.
       return { ...result, ready: true };
@@ -2522,6 +2960,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
       admittedRevision.configuration,
       revision.secretBindings,
     );
+    const oauthHarness = revision.harnessAuth.method === "oauth";
+    if (oauthHarness && (this.options.network.pluginStatusProxySourceCidrs ?? []).length === 0) {
+      throw new ConfigurationFailure("OAuth management proxy source CIDRs are required.");
+    }
     const channels = this.enabledChannels(admittedRevision);
     const pluginRuntime = this.pluginRuntimeSnapshot(admittedRevision);
     const { name: namespace } = await this.resolveNamespace(revision.namespaceId);
@@ -4197,6 +4639,27 @@ export class KubernetesComputeDriver implements ComputeDriver {
     );
     this.patchOptions = sdk.setHeaderOptions("Content-Type", APPLY_CONTENT_TYPE);
     this.mergePatchOptions = sdk.setHeaderOptions("Content-Type", MERGE_PATCH_CONTENT_TYPE);
+    this.oauthProxyOptions = (token, payload, query) => ({
+      middlewareMergeStrategy: "append",
+      middleware: [
+        {
+          pre(request: RequestContext) {
+            request.setHeaderParam("x-occ-oauth-token", token);
+            if (query?.actorId !== undefined) {
+              request.setQueryParam("actorId", query.actorId);
+            }
+            if (payload !== undefined) {
+              request.setHeaderParam("content-type", "application/json");
+              request.setBody(JSON.stringify(payload));
+            }
+            return new sdk.Observable(Promise.resolve(request));
+          },
+          post(response: ResponseContext) {
+            return new sdk.Observable(Promise.resolve(response));
+          },
+        },
+      ],
+    });
     return {
       version: new sdk.VersionApi(clientConfiguration),
       core: new sdk.CoreV1Api(clientConfiguration),
@@ -6618,6 +7081,48 @@ export class KubernetesComputeDriver implements ComputeDriver {
     ];
   }
 
+  private oauthManagementNetworkPolicies(
+    revision: AgentRevision,
+    namespace: string,
+  ): ManagedKubernetesObject[] {
+    if (revision.harnessAuth.method !== "oauth") {
+      return [];
+    }
+    const sourceCidrs = this.options.network.pluginStatusProxySourceCidrs ?? [];
+    if (sourceCidrs.length === 0) {
+      throw new ConfigurationFailure("OAuth management proxy source CIDRs are required.");
+    }
+    const suffix = sha256Hex(revision.agentId, 12);
+    const ownership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
+    return [
+      {
+        ...this.manifest(
+          "networking.k8s.io/v1",
+          "NetworkPolicy",
+          `allow-oauth-management-proxy-${suffix}`,
+          ownership,
+          namespace,
+        ),
+        spec: {
+          podSelector: {
+            matchLabels: {
+              "openclaw.dev/workload-role": "gateway",
+              "openclaw.dev/agent": revision.agentId,
+              "openclaw.dev/revision": revision.id,
+            },
+          },
+          policyTypes: ["Ingress"],
+          ingress: [
+            {
+              from: sourceCidrs.map((cidr) => ({ ipBlock: { cidr } })),
+              ports: [{ protocol: "TCP", port: OAUTH_MANAGEMENT_PORT }],
+            },
+          ],
+        },
+      },
+    ];
+  }
+
   private agentNetworkPolicies(
     revision: AgentRevision,
     namespace: string,
@@ -6653,9 +7158,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
       spec,
     });
     const statusPolicies = this.pluginStatusNetworkPolicies(revision, namespace);
+    const oauthPolicies = this.oauthManagementNetworkPolicies(revision, namespace);
     const runtime = this.options.runtime;
     if (runtime === undefined) {
-      return statusPolicies;
+      return [...statusPolicies, ...oauthPolicies];
     }
     // TODO(model-egress-proxy): Replace public TCP/443 with the approved per-Agent model proxy.
     const modelEgress = [
@@ -6688,6 +7194,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           egress: [...modelEgress, ...repositoryEgress],
         }),
         ...statusPolicies,
+        ...oauthPolicies,
       ];
     }
     const transport = [
@@ -6714,6 +7221,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         egress: [...modelEgress, ...repositoryEgress],
       }),
       ...statusPolicies,
+      ...oauthPolicies,
     ];
   }
 
@@ -7244,6 +7752,32 @@ export class KubernetesComputeDriver implements ComputeDriver {
         });
       }
     }
+    if (harnessAuth?.loginMode === "oauth") {
+      const revisionId = required(
+        configuration?.revisionId ?? ownership.revisionId,
+        "OAuth management revision ID",
+      );
+      if (!needsPrivateStatus) {
+        variables.push({
+          name: OPENCLAW_AGENT_REVISION_ID,
+          value: revisionId,
+        });
+      }
+      variables.push(
+        {
+          name: OPENCLAW_AGENT_ID,
+          value: required(ownership.agentId, "OAuth management Agent ID"),
+        },
+        {
+          name: OPENCLAW_NAMESPACE_ID,
+          value: required(ownership.namespaceId, "OAuth management Namespace ID"),
+        },
+        {
+          name: OPENCLAW_OAUTH_MANAGEMENT_PORT,
+          value: String(OAUTH_MANAGEMENT_PORT),
+        },
+      );
+    }
     if (projected !== undefined) {
       volumes.push({
         name: "openclaw-service-principal",
@@ -7358,6 +7892,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
             name: "APP_SERVER_URL",
             value: `ws://agent-${suffix}.${required(configuration?.harnessNamespace, "Harness namespace")}.svc:${AGENT_TRANSPORT_PORT}`,
           });
+        }
+        if (harnessAuth?.loginMode === "oauth") {
+          variables.push(
+            secret(
+              OPENCLAW_OAUTH_MANAGEMENT_TOKEN,
+              runtime.transportSecretPrefix,
+              GATEWAY_PASSWORD_KEY,
+            ),
+          );
         }
         if (configuration?.usesGatewayPasswordEnv === true) {
           variables.push(
@@ -7532,6 +8075,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
                   { containerPort: port, name: role === "agent" && runtime ? "websocket" : "http" },
                   ...(needsPrivateStatus
                     ? [{ containerPort: PLUGIN_RUNTIME_STATUS_PORT, name: "plugin-status" }]
+                    : []),
+                  ...(harnessAuth?.loginMode === "oauth" &&
+                  role === "gateway" &&
+                  runtime !== undefined
+                    ? [{ containerPort: OAUTH_MANAGEMENT_PORT, name: "oauth-mgmt" }]
                     : []),
                 ],
                 readinessProbe: {

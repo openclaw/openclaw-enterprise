@@ -28,7 +28,7 @@ existing groups. It provides no credential readback, rotation, or deletion API.
 A failed request can leave completed Secret creates in place; recovery reads
 metadata and never deletes them as a rollback.
 
-There are two supported model-credential paths:
+There are three supported model-credential paths:
 
 - **Existing API key:** Agent `harnessAuth` references a same-Namespace OCC
   Secret. Admission requires the actor and Agent principal's exact Secret
@@ -46,14 +46,24 @@ There are two supported model-credential paths:
   login state only in its bounded ephemeral workload volume. Embedded access
   tokens are rejected before deployment.
 
-A dedicated gateway never receives either model credential. Public OCC Agent
+- **Agent-owned OAuth profile:** For embedded OpenClaw on Kubernetes, Agent
+  `harnessAuth` can select `{ "method": "oauth" }`. Deployment authorization
+  commits the provider profile inside the exact Agent's private gateway state
+  under the fixed native profile ID `openai:occ-managed`. OCC stores no tokens,
+  provider subjects, user codes, callback payloads, or native profile contents.
+  The profile is not shared across Agents and is not projected through a
+  Kubernetes Secret.
+
+A dedicated gateway never receives these model credentials. Public OCC Agent
 and AgentRevision responses can include the configured provider ID, which is
 persisted on the mutable Agent row and immutable AgentRevision row. Credential
 bytes stay out of OCC resources, AgentRevision snapshots, ConfigMaps, responses,
 and audit records. Upstream account, credential, and workspace identifiers remain
 private: the internal immutable auth snapshot retains verified Provider/workspace
-ownership, while public responses expose only safe references. The runtime
-Secret retains the credential material required for authentication.
+ownership, while public responses expose only safe references. For OAuth, native
+OpenClaw retains provider subject metadata in its private store for same-account
+reconnect checks. The runtime Secret or native private profile retains the
+credential material required for authentication.
 
 The API's dedicated controller identity receives tenant control-plane Secret `get`,
 `create`, `update`, `patch`, and `delete` permissions for credential provisioning
@@ -92,10 +102,11 @@ The issued account credential requests only
 `chatgpt.workspace.feature.allow-codex-local-access.access`, has a maximum
 30-day configured lifetime, and is not refreshed automatically.
 
-Direct model-credential possession, Agent TCP/443 egress, and capability-token
-`ws://` remain explicit temporary exceptions: brokered model credentials, a
-restricted model egress proxy, mutually authenticated TLS, and short-lived
-workload-bound transport identity remain required follow-up work.
+Direct model-credential possession, native OAuth refresh inside Agent private
+state, Agent TCP/443 egress, and capability-token `ws://` remain explicit
+temporary exceptions: brokered model credentials, a restricted model egress
+proxy, mutually authenticated TLS, and short-lived workload-bound transport
+identity remain required follow-up work.
 
 ## Selected SandboxDriver boundary
 
@@ -123,10 +134,10 @@ Service. Guarded routing does not guarantee a physical process singleton during
 Kubernetes node partitions or manual replacement; the
 [Compute reference](../drivers/kubernetes-compute.md#execution-modes) records that
 limitation. Embedded OpenClaw receives only its operator-owned API
-key in its combined gateway/Harness. Dedicated Codex receives either its
-Secret-backed API key or its bound account's directly projected access
-token only in its separate workload, and uses authenticated WebSocket
-transport. A dedicated
+key or Agent-owned OAuth profile in its combined gateway/Harness. Dedicated
+Codex receives either its Secret-backed API key or its bound account's directly
+projected access token only in its separate workload, and uses authenticated
+WebSocket transport. A dedicated
 replacement app-server can start idle before the current workload is retired.
 Existing claim-fenced worker reconciliation allows temporary unavailability but
 fails closed across Agent and Namespace boundaries. Brokered credentials,

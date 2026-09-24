@@ -116,6 +116,9 @@ function classifyReceipts(receipts, manifest) {
   if (receipts.length === 30) {
     return "agentProvisioning";
   }
+  if (receipts.length === 31) {
+    return "codexPat";
+  }
   refuse("an incomplete or unsupported development history is installed");
 }
 

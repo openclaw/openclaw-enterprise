@@ -832,7 +832,17 @@ test(
       {
         apiGroups: ["apps"],
         resources: ["deployments"],
-        verbs: ["list"],
+        verbs: ["get", "list"],
+      },
+      {
+        apiGroups: [""],
+        resources: ["pods"],
+        verbs: ["get", "list"],
+      },
+      {
+        apiGroups: [""],
+        resources: ["pods/proxy"],
+        verbs: ["get", "create"],
       },
     ]);
     // Only the unbound tenant-worker role can reconcile and remove an Agent-owned claim.
@@ -1027,7 +1037,17 @@ test(
       {
         apiGroups: ["apps"],
         resources: ["deployments"],
-        verbs: ["list"],
+        verbs: ["get", "list"],
+      },
+      {
+        apiGroups: [""],
+        resources: ["pods"],
+        verbs: ["get", "list"],
+      },
+      {
+        apiGroups: [""],
+        resources: ["pods/proxy"],
+        verbs: ["get", "create"],
       },
     ]);
     assert.ok(

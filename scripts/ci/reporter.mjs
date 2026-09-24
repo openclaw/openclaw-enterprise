@@ -38,6 +38,8 @@ const safeRepositoryPlatformSetupStages = new Set([
   "controller-restart",
 ]);
 
+const safeRepositoryPlatformReadinessStages = new Set(["active-revision", "ready-pod"]);
+
 function isRecord(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -302,6 +304,12 @@ function failureDiagnostic(error) {
           relayNode:
             stage === "relay-readiness" ? relayNodeDiagnostic(diagnostic.relayNode) : undefined,
         }
+      : undefined;
+  }
+  if (diagnostic.kind === "repository-platform-readiness") {
+    const stage = diagnostic.stage;
+    return typeof stage === "string" && safeRepositoryPlatformReadinessStages.has(stage)
+      ? { kind: "repository-platform-readiness", stage }
       : undefined;
   }
   if (diagnostic.kind !== "controller-http") {

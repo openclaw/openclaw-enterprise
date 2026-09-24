@@ -10,8 +10,10 @@ last_updated_session: 01a0cf72-6985-7712-ba92-d8cc32470f24
 
 An authorized deployment resolves its harness from native selected-model/provider policy, freezes
 the Agent's explicit `embedded` or `dedicated` placement and harness authentication binding
-in its AgentRevision, and asks Compute to start that topology. The flow ends after guarded route
-publication, predecessor retirement, and exactly-once activation audit.
+in its AgentRevision, and asks Compute to start that topology. For embedded OpenClaw OAuth,
+the prepared gateway waits for provider consent and native profile commit before normal startup.
+The flow ends after guarded route publication, predecessor retirement, and exactly-once
+activation audit.
 
 ## Entry Points
 
@@ -21,7 +23,8 @@ publication, predecessor retirement, and exactly-once activation audit.
   `apps/controller/src/worker.ts:ControllerWorker`.
 - Assumptions: authorized actor; ready Namespace; same-Namespace native agent Configuration;
   explicit Agent execution mode; and a supported `harnessAuth` binding. Managed methods reference an authorized OCC
-  Secret API key or a Driver-issued account-owned access-token credential.
+  Secret API key, a Driver-issued account-owned access-token credential, or Agent-owned OAuth
+  authorization that starts only after the exact revision runtime is staged.
 
 ## Flow
 
@@ -34,7 +37,11 @@ graph TD
   E -->|embedded OpenClaw| F["Create gateway or stage replacement"]
   E -->|dedicated Codex| G["Start control-plane Gateway and data-plane Codex in separate namespaces"]
   E -->|unsupported or mismatched| H["Reject before workload creation"]
-  F --> I["Activate shared gateway; Recreate on replacement"]
+  F --> O{"Agent-owned OAuth?"}
+  O -->|yes| P["Start private OAuth management listener"]
+  P --> Q["Relay device authorization and commit native profile"]
+  Q --> I["Start normal gateway and model probe"]
+  O -->|no| I
   I --> K{"Gateway ready after startup authentication?"}
   K -->|no| L["Stay unready; Agent may be unavailable until repair"]
   K -->|yes| J["Complete activation, retire predecessor, and commit audit"]
@@ -97,6 +104,8 @@ exact revision-owned DP Secret, including the account token/workspace for ChatGP
 Dedicated gateways receive neither model source. This namespace-local delivery
 also applies to fixture images without native runtime configuration; only the
 native dedicated transport token depends on that configuration.
+For Agent-owned OAuth, Compute sets the login mode and exact Agent, Namespace,
+revision, management-port, and management-token metadata on the embedded gateway.
 See the [harness authentication flow](native-service-account-credential-delivery.md)
 for admission, immutable source snapshots, and worker reauthorization.
 
@@ -123,6 +132,57 @@ The selected Sandbox consumes the same rendered projections and explicit login
 mode in `HarnessWorkloadRequirements`. Unsupported upstream projection fails
 without a test-only credential bridge.
 
+For `{ "method": "oauth" }`, `prepareRevision` stages the embedded OpenClaw
+gateway without an OCC Secret or caller-local OpenClaw/Codex profile. The gateway
+entrypoint starts a private HTTP listener under `/openclaw/oauth` and waits for a
+committed managed OpenAI device-code profile before spawning the normal OpenClaw
+gateway process. OCC reaches that listener only through the Kubernetes Pod proxy
+after rechecking the exact Namespace, gateway Deployment, nonterminating gateway
+Pod, revision annotation, Pod UID, and container identity. The management token is
+derived from the Agent transport Secret and revision ID; the token is removed from
+the process environment before the normal gateway starts.
+
+`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:GATEWAY_RUNTIME_ENTRYPOINT`
+starts the listener and blocks normal startup until OAuth commit. It calls
+`runManagedModelsAuthLoginFlow` from
+`openclaw/plugin-sdk/provider-auth-managed-login-runtime` after checking the
+supported version marker. The entrypoint owns attempt lifecycle through its
+`beforePersist` and `assertCurrent` callbacks; native OpenClaw owns provider login
+and credential persistence.
+`apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.startHarnessOAuth`
+selects the exact Pod and proxies the operation. The Driver also requires
+`network.pluginStatusProxySourceCidrs` before OAuth preparation or activation so
+the tenant NetworkPolicy can fail closed when the API-server proxy source is not
+configured. Pod proxy connection failures while the selected gateway listener is
+still starting remain `preparing`; runtime endpoint failures and proxy
+authorization failures return a fixed public failure observation. The OAuth start
+and complete routes derive the mutation audit outcome from that observation:
+`failed` records a failure with a fixed reason code. Audit records exclude consent
+codes, attempt IDs, verification URLs, and provider details.
+
+On restart or a stopped redeploy, the entrypoint checks for the exact
+`openai:occ-managed` OAuth profile before creating another grant. A matching
+profile closes new grant creation, runs the normal bounded authentication probe
+against that profile, and then lets the gateway hand off to normal startup. If
+the probe fails, the runtime keeps waiting for explicit authorization instead of
+publishing the gateway. Clients still observe the real deployment result; a
+successful redeploy with a valid committed profile needs no new user code.
+
+The deployment auth subresource owns consent progress:
+`POST .../auth` starts one runtime-managed device-code attempt, `GET .../auth`
+observes `preparing`, `waiting`, `authorized`, `committed`, or `failed`, and
+`POST .../auth/complete` commits the observed `attemptId`. The waiting observation
+contains the provider page and user code; OCC and structured CLI output do not
+persist or replay the code. A failed attempt is terminal for that attempt. The
+existing Agent stop path is the cancellation mechanism and the required reset
+before reconnecting; there is no separate disconnect path in this flow.
+
+`apps/controller/src/index.ts:createFastifyApp` exposes the three routes, and
+`packages/occ/src/index.ts:OpenClawController.withHarnessOAuthDeployment`
+reauthorizes the actor, exact Agent, source Configuration, latest revision,
+running desired state, stopped-active state, work record, original deployment
+actor, and Compute ownership before each operation.
+
 When a selected SandboxDriver provisions the dedicated Harness,
 `providerHarnessReady` lists Pods using the same Agent/revision/role labels as
 the active Service. It validates the complete observation and requires exactly
@@ -140,7 +200,11 @@ for candidate rules and the limits of this observation.
 The predecessor's Kubernetes Service selector remains intact while
 `prepareRevision` stages the replacement. Dedicated Codex must complete its
 bounded native authentication/model probe before its app-server becomes ready.
-Embedded preparation does not validate the replacement's credentials. See the
+Embedded preparation does not validate the replacement's credentials unless the
+revision uses Agent-owned OAuth. In that case, the worker keeps the deployment
+work incomplete while the staged runtime waits for user consent. After complete
+commits the native profile, the gateway startup probe and normal deployment
+status still decide whether activation succeeded. See the
 [authentication flow](native-service-account-credential-delivery.md#5-authenticate-during-runtime-startup).
 
 The worker commits the database `activeRevisionId` with an exact compare-and-set
@@ -207,6 +271,14 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
   `node --test tests/integration/service-account-driver-real.test.mjs`,
   `OCC_TEST_CHATGPT_SERVICE_ACCOUNT_REAL=1`, and an authorized mounted
   `OCC_TEST_CHATGPT_ADMIN_KEY_PATH`; this scenario does not use `OPENAI_API_KEY`.
+- For OAuth, verify that the Console or CLI can drive the deployment auth
+  subresource through a real embedded Kubernetes gateway, complete provider
+  consent, observe native profile commit, and still wait for the normal
+  deployment status before treating the Agent as active.
+- A source-backed pass of the routes and flow proves API shape and lifecycle
+  ordering only. Genuine provider consent, refresh, restart, and revocation
+  recovery require authorized live credentials and a gateway image that contains
+  the supported managed-login runtime.
 - Treat unavailable credentials, runtime images, provider access, or either real model response as
   a verification failure. Never substitute a readiness probe, handshake, fixture, or skipped test.
 
@@ -215,11 +287,14 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 - [Harness execution topology implementation specification](../../specs/.archive/07-harness-execution-topology.md)
 - [Platform design](../design/workloads.md#openclaw-gateways)
 - [Agent placement and deployment](../reference/agents/deployment.md#execution-mode)
+- [Agent OAuth authorization](../reference/agents.md#deployment-oauth-authorization)
 - [Controller worker](../reference/controller/reconciliation.md#agentrevision-lifecycle)
 - [Docker Compute Driver](../reference/drivers/docker-compute.md)
 - [Kubernetes Compute Driver](../reference/drivers/kubernetes-compute.md)
+- [Kubernetes gateway storage](../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
 - [Compute Driver lifecycle hooks flow](compute-driver-lifecycle-hooks.md)
 - [Service Account Driver credential delivery flow](service-account-driver-credential-delivery.md)
+- [OAuth activation specification](../../specs/31-agent-oauth-activation.md)
 - [Shared-drive specification](../../specs/.archive/12-dedicated-harness-shared-workspace-drive.md)
 
 ## Manual Notes
@@ -243,6 +318,10 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 
 - 2026-09-22 22:02: Trace Docker managed gateway passwords while preserving harness admission limits and Codex transport authentication. (authoring-run/b91ebd83-2105-4b1e-aad8-6747fe22c2f1 - 01b42feaf8321e231fbe23a80e00ba641bb9fbcb)
 - Bundled Compute Drivers use managed passwords or trusted proxy for native gateway authentication. (NOT_IN_SPEC)
+
+- 2026-09-19 10:40: Trace OAuth proxy failure normalization and observation-derived mutation audit outcomes.
+
+- 2026-09-19 08:18: Trace Agent-owned OAuth device-code activation through the Kubernetes management listener and deployment auth subresource.
 
 - 2026-09-17 19:14: Distinguish SSH operator credentials from Kubernetes managed authentication. (01a0acbf-4d5a-7413-9411-dce911f3ad23 - b8cabaf9a49e069a7668ccf88b9e71a7484227b7)
 

@@ -29,6 +29,15 @@ An omitted list adds no API-proxy ingress rule and leaves status unavailable
 where the cluster blocks that traffic. This setting does not expose the native
 gateway or grant workloads Kubernetes API access.
 
+OAuth activation for embedded OpenClaw uses the same source CIDR list for a
+separate Kubernetes NetworkPolicy to the exact gateway Pod's private management
+port, TCP/18792. When an Agent uses `{ "method": "oauth" }`, the Driver fails
+closed if `network.pluginStatusProxySourceCidrs` is empty. The tenant API role
+must also allow `get` on `deployments`, `get` and `list` on `pods`, and `get` and
+`create` on `pods/proxy`, because OAuth status uses the authenticated Pod proxy
+with `GET` and start/complete use the same proxy with `POST`. The controller still
+authenticates each management request with a revision-derived token.
+
 When private Agent routing is enabled, Compute derives the only allowed peer
 from `gatewayRouting`: the Envoy namespace and the Gateway's exact owning name
 and namespace labels. Omit `network.gatewayClients`; startup rejects explicit

@@ -437,13 +437,17 @@ test("Gateway launch binds the enrolled node without expanding owner writes or c
     { deny: ["file-transfer"] },
     { entries: { "file-transfer": { enabled: false } } },
   ]) {
-    await assert.rejects(
-      () =>
-        runOpenClawRuntimeHelper(undefined, [], {
-          baseConfig: { plugins },
-          workspaceNodeId: "enrolled-node",
-        }),
-      /requires the file-transfer plugin/,
+    const denied = await runOpenClawRuntimeHelper(undefined, [], {
+      baseConfig: { plugins },
+      workspaceNodeId: "enrolled-node",
+    });
+
+    assert.equal(denied.exitCode, 1);
+    assert.match(denied.stderr.join("\n"), /requires the file-transfer plugin/);
+    assert.equal(
+      denied.calls.some((call) => call.command === "node" && call.args?.[1] === "gateway"),
+      false,
+      "gateway process must not spawn when the workspace node transfer plugin is denied",
     );
   }
 });

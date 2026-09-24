@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +7,7 @@ import { createRequire } from "node:module";
 import { runInNewContext } from "node:vm";
 import test from "node:test";
 import { GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { ApiException } from "../../apps/controller/node_modules/@kubernetes/client-node/dist/gen/apis/exception.js";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import {
   createKubernetesComputeDriver,
@@ -1920,6 +1921,260 @@ test("Kubernetes drivers require explicit authentication, images, and production
   );
 });
 
+test("Kubernetes OAuth management uses the owned Pod proxy path and scoped token", async () => {
+  const runtime = {
+    transportSecretPrefix: "transport",
+    gatewayStorageClassName: "local-path",
+  };
+  const driver = createKubernetesComputeDriver(options({ runtime }));
+  const revision = {
+    id: "revision-oauth-proxy-1",
+    namespaceId: tenant.id,
+    agentId: "agent-oauth-proxy",
+    revision: 1,
+    configurationId: "cfg_oauth_proxy_1",
+    configurationKind: "agent",
+    configurationGeneration: 1,
+    configuration: {
+      agents: { defaults: { model: "openai/gpt-5" } },
+      gateway: {
+        trustedProxies: ["10.42.0.0/16"],
+        allowRealIpFallback: true,
+        auth: {
+          mode: "trusted-proxy",
+          trustedProxy: {
+            userHeader: "x-occ-identity",
+            allowUsers: ["occ-workspace-files"],
+          },
+          identityScopes: { "occ-workspace-files": ["operator.admin"] },
+        },
+      },
+    },
+    harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+    harnessAuth: { method: "oauth" },
+    compute: { id: driver.id, implementation: driver.implementation },
+    servicePrincipalId: "service-principal-oauth-proxy",
+    createdAt: tenant.createdAt,
+  };
+  const namespace = kubernetesNamespaceName(revision.namespaceId);
+  const ownershipMetadata = (ownership) => {
+    const labels = {
+      "app.kubernetes.io/managed-by": "openclaw-enterprise",
+      "openclaw.dev/namespace": ownership.namespaceId,
+    };
+    const annotations = { "openclaw.dev/namespace-id": ownership.namespaceId };
+    if (ownership.agentId !== undefined) {
+      labels["openclaw.dev/agent"] = ownership.agentId;
+      annotations["openclaw.dev/agent-id"] = ownership.agentId;
+    }
+    if (ownership.revisionId !== undefined) {
+      labels["openclaw.dev/revision"] = ownership.revisionId;
+      annotations["openclaw.dev/revision-id"] = ownership.revisionId;
+    }
+    return { labels, annotations };
+  };
+  const namespaceResource = {
+    apiVersion: "v1",
+    kind: "Namespace",
+    metadata: { name: namespace, ...ownershipMetadata({ namespaceId: revision.namespaceId }) },
+    status: { phase: "Active" },
+  };
+  const gatewayName = `gateway-${digest(revision.agentId)}`;
+  const gateway = {
+    apiVersion: "apps/v1",
+    kind: "Deployment",
+    metadata: {
+      name: gatewayName,
+      namespace,
+      ...ownershipMetadata({ namespaceId: revision.namespaceId, agentId: revision.agentId }),
+      annotations: {
+        ...ownershipMetadata({ namespaceId: revision.namespaceId, agentId: revision.agentId })
+          .annotations,
+        "openclaw.dev/agent-revision-id": revision.id,
+      },
+    },
+    spec: { replicas: 1 },
+  };
+  const podName = `${gatewayName}-pod`;
+  const pod = {
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: {
+      name: podName,
+      namespace,
+      uid: "oauth-pod-uid",
+      labels: {
+        "openclaw.dev/namespace": revision.namespaceId,
+        "openclaw.dev/agent": revision.agentId,
+        "openclaw.dev/revision": revision.id,
+        "openclaw.dev/workload-role": "gateway",
+      },
+    },
+    status: { containerStatuses: [{ name: "gateway", containerID: "containerd://gateway-1" }] },
+  };
+  const gatewayToken = "gateway-password-bytes";
+  const transportSecret = {
+    apiVersion: "v1",
+    kind: "Secret",
+    type: "Opaque",
+    immutable: false,
+    metadata: {
+      name: `transport-${digest(revision.agentId)}`,
+      namespace,
+      ...ownershipMetadata({ namespaceId: revision.namespaceId, agentId: revision.agentId }),
+    },
+    data: {
+      "app-server-token": Buffer.from("app-server-token-bytes").toString("base64"),
+      "gateway-password": Buffer.from("gateway-password-bytes").toString("base64"),
+    },
+  };
+  let proxyRequest;
+  let proxyOptions;
+  let proxyResponse = {
+    namespaceId: revision.namespaceId,
+    agentId: revision.agentId,
+    revisionId: revision.id,
+    phase: "failed",
+    failure: { reason: "ACCOUNT_MISMATCH", message: "provider detail stays private" },
+  };
+  driver.oauthProxyOptions = (token, payload, query) => {
+    proxyOptions = { token, payload, query };
+    return proxyOptions;
+  };
+  driver.apiClients = Promise.resolve({
+    core: {
+      async readNamespace({ name }) {
+        assert.equal(name, namespace);
+        return structuredClone(namespaceResource);
+      },
+      async listNamespace() {
+        return { apiVersion: "v1", kind: "NamespaceList", items: [] };
+      },
+      async listNamespacedPod({ namespace: requestedNamespace, labelSelector }) {
+        assert.equal(requestedNamespace, namespace);
+        assert.equal(
+          labelSelector,
+          `openclaw.dev/agent=${revision.agentId},openclaw.dev/revision=${revision.id},openclaw.dev/workload-role=gateway`,
+        );
+        return { apiVersion: "v1", kind: "PodList", items: [structuredClone(pod)] };
+      },
+      async readNamespacedSecret({ name, namespace: requestedNamespace }) {
+        assert.equal(requestedNamespace, namespace);
+        assert.equal(name, transportSecret.metadata.name);
+        return structuredClone(transportSecret);
+      },
+      async connectPostNamespacedPodProxyWithPath(request, options) {
+        proxyRequest = structuredClone(request);
+        assert.equal(options, proxyOptions);
+        if (proxyResponse instanceof Error) {
+          throw proxyResponse;
+        }
+        return structuredClone(proxyResponse);
+      },
+      async readNamespacedPod({ name, namespace: requestedNamespace }) {
+        assert.equal(requestedNamespace, namespace);
+        assert.equal(name, podName);
+        return structuredClone(pod);
+      },
+    },
+    apps: {
+      async readNamespacedDeployment({ name, namespace: requestedNamespace }) {
+        assert.equal(requestedNamespace, namespace);
+        assert.equal(name, gatewayName);
+        return structuredClone(gateway);
+      },
+    },
+  });
+
+  const deadline = new Date("2026-09-19T17:00:00.000Z");
+  const observed = await driver.startHarnessOAuth(revision, { actorId: "actor-1", deadline });
+
+  assert.deepEqual(observed, { phase: "failed", reason: "account_mismatch" });
+  assert.deepEqual(proxyRequest, {
+    name: `${podName}:18792`,
+    namespace,
+    path: "openclaw/oauth/start",
+  });
+  assert.equal(Object.hasOwn(proxyRequest, "path2"), false);
+  assert.deepEqual(proxyOptions.payload, {
+    actorId: "actor-1",
+    deadline: deadline.toISOString(),
+  });
+  assert.equal(proxyOptions.query, undefined);
+  assert.equal(
+    proxyOptions.token,
+    createHmac("sha256", Buffer.from(gatewayToken))
+      .update("openclaw-oauth-management/token/v1")
+      .update("\0")
+      .update(revision.id)
+      .digest("hex"),
+  );
+
+  const unavailableObservation = {
+    namespaceId: revision.namespaceId,
+    agentId: revision.agentId,
+    revisionId: revision.id,
+    phase: "failed",
+    failure: {
+      reason: "PROVIDER_UNAVAILABLE",
+      message: "internal runtime detail stays private: connection refused",
+    },
+  };
+  proxyResponse = new ApiException(503, "Service Unavailable", unavailableObservation, {});
+  assert.deepEqual(await driver.startHarnessOAuth(revision, { actorId: "actor-1", deadline }), {
+    phase: "failed",
+    reason: "unavailable",
+  });
+
+  proxyResponse = new ApiException(404, "Not Found", unavailableObservation, {});
+  assert.deepEqual(await driver.startHarnessOAuth(revision, { actorId: "actor-1", deadline }), {
+    phase: "failed",
+    reason: "unavailable",
+  });
+
+  proxyResponse = new ApiException(
+    403,
+    "Forbidden",
+    { kind: "Status", status: "Failure", reason: "Forbidden", message: "Pod proxy forbidden" },
+    {},
+  );
+  assert.deepEqual(await driver.startHarnessOAuth(revision, { actorId: "actor-1", deadline }), {
+    phase: "failed",
+    reason: "unavailable",
+  });
+
+  proxyResponse = new ApiException(
+    503,
+    "Service Unavailable",
+    {
+      kind: "Status",
+      status: "Failure",
+      reason: "ServiceUnavailable",
+      message:
+        "error trying to reach service: dial tcp 10.42.0.10:18792: connect: connection refused",
+    },
+    {},
+  );
+  assert.deepEqual(await driver.startHarnessOAuth(revision, { actorId: "actor-1", deadline }), {
+    phase: "preparing",
+  });
+
+  proxyResponse = new ApiException(
+    404,
+    "Not Found",
+    {
+      kind: "Status",
+      status: "Failure",
+      reason: "NotFound",
+      message: `pods "${podName}" not found`,
+    },
+    {},
+  );
+  assert.deepEqual(await driver.startHarnessOAuth(revision, { actorId: "actor-1", deadline }), {
+    phase: "preparing",
+  });
+});
+
 test("the canonical Kubernetes runtime validates channel proxy configuration", () => {
   const runtime = {
     transportSecretPrefix: "transport",
@@ -3288,6 +3543,7 @@ test("embedded startup probes its selected provider before starting the gateway"
                     stdout: JSON.stringify({
                       auth: {
                         probes: {
+                          totalTargets: 1,
                           results: [
                             {
                               provider: accepted ? provider : "another-provider",
@@ -4676,6 +4932,24 @@ test("revision lifecycle rejects another driver or missing identity before clust
       }),
     );
   }
+  for (const apiKey of [
+    "${OPENAI_API_KEY}",
+    { source: "env", provider: "model", id: "OPENAI_API_KEY" },
+  ]) {
+    assert.throws(
+      () =>
+        production.validateHarnessAuth(
+          embeddedRevision.harness,
+          { method: "oauth" },
+          {
+            ...embeddedRevision.configuration,
+            secrets: { providers: { model: { source: "env", allowlist: ["OPENAI_API_KEY"] } } },
+            models: { providers: { openai: { apiKey } } },
+          },
+        ),
+      /credentials must use.*binding/i,
+    );
+  }
   for (const transport of [
     { baseUrl: "${PROVIDER_URL}" },
     { headers: { "x-provider-feature": "${HEADER}" } },
@@ -4748,6 +5022,67 @@ test("revision lifecycle rejects another driver or missing identity before clust
   assert.equal(environment.HOME.value, "/home/node");
   assert.equal(environment.APP_SERVER_TOKEN, undefined);
   assert.equal(environment.APP_SERVER_URL, undefined);
+
+  const trustedProxyRevision = {
+    ...embeddedRevision,
+    id: "revision-a-embedded-trusted-proxy",
+    configuration: {
+      ...embeddedRevision.configuration,
+      gateway: { ...embeddedRevision.configuration.gateway, auth: { mode: "trusted-proxy" } },
+    },
+  };
+  const trustedProxyGateway = production.deployment(
+    `gateway-${agentHash.slice(0, 12)}-trusted-proxy`,
+    { namespaceId: tenant.id, agentId: revision.agentId },
+    namespace,
+    "openclaw-enterprise/gateway-fixture:local",
+    `agent-${agentHash.slice(0, 12)}`,
+    "gateway",
+    {},
+    production.gatewayConfiguration(trustedProxyRevision).loggingLevel,
+    production.gatewayConfiguration(trustedProxyRevision),
+    true,
+    revision.servicePrincipalId,
+    preparedAuth(production, namespace, true),
+  );
+  const trustedProxyEnvironment = Object.fromEntries(
+    trustedProxyGateway.spec.template.spec.containers[0].env.map((entry) => [entry.name, entry]),
+  );
+  assert.equal(trustedProxyEnvironment.OPENCLAW_GATEWAY_TOKEN, undefined);
+
+  const oauthRevision = {
+    ...trustedProxyRevision,
+    id: "revision-a-embedded-oauth",
+    harnessAuth: { method: "oauth" },
+  };
+  const oauthGateway = production.deployment(
+    `gateway-${agentHash.slice(0, 12)}-oauth`,
+    { namespaceId: tenant.id, agentId: revision.agentId },
+    namespace,
+    "openclaw-enterprise/gateway-fixture:local",
+    `agent-${agentHash.slice(0, 12)}`,
+    "gateway",
+    {},
+    production.gatewayConfiguration(oauthRevision).loggingLevel,
+    production.gatewayConfiguration(oauthRevision),
+    true,
+    revision.servicePrincipalId,
+    preparedAuth(production, namespace, true, { method: "oauth" }),
+  );
+  const oauthEnvironment = Object.fromEntries(
+    oauthGateway.spec.template.spec.containers[0].env.map((entry) => [entry.name, entry]),
+  );
+  assert.equal(oauthEnvironment.OPENCLAW_HARNESS_AUTH_MODE.value, "oauth");
+  assert.equal(oauthEnvironment.OPENCLAW_AGENT_REVISION_ID.value, oauthRevision.id);
+  assert.equal(oauthEnvironment.OPENCLAW_AGENT_ID.value, revision.agentId);
+  assert.equal(oauthEnvironment.OPENCLAW_NAMESPACE_ID.value, tenant.id);
+  assert.equal(oauthEnvironment.OPENCLAW_OAUTH_MANAGEMENT_PORT.value, "18792");
+  assert.deepEqual(oauthEnvironment.OPENCLAW_OAUTH_MANAGEMENT_TOKEN.valueFrom.secretKeyRef, {
+    name: `transport-${agentHash.slice(0, 12)}`,
+    key: "gateway-password",
+  });
+  assert.equal(oauthEnvironment.OPENCLAW_GATEWAY_TOKEN, undefined);
+  assert.equal(oauthEnvironment.OPENAI_API_KEY, undefined);
 
   const policies = production.agentNetworkPolicies(embeddedRevision, namespace);
   assert.equal(policies.length, 1);

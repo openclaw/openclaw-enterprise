@@ -320,7 +320,7 @@ export function validHarnessAuthSnapshot(value: HarnessAuthSnapshot, namespaceId
     return false;
   }
   try {
-    if (value.method === "runtime") {
+    if (value.method === "runtime" || value.method === "oauth") {
       return normalizeHarnessAuthBinding(value) !== null;
     }
     const binding =
@@ -372,6 +372,9 @@ export function harnessAuthMatches(
   if (binding.method === "runtime") {
     return true;
   }
+  if (binding.method === "oauth") {
+    return true;
+  }
   return (binding.method === "api_key" || binding.method === "codex_pat") &&
     (snapshot.method === "api_key" || snapshot.method === "codex_pat")
     ? binding.source.namespaceId === snapshot.source.namespaceId &&
@@ -413,7 +416,7 @@ export async function assertHarnessAuthAvailable(
   } catch {
     throw new ScopeViolationError("The Agent harness authentication binding is invalid.");
   }
-  if (binding === null || binding.method === "runtime") {
+  if (binding === null || binding.method === "runtime" || binding.method === "oauth") {
     return;
   }
   if (binding.method === "api_key" || binding.method === "codex_pat") {

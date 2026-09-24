@@ -1967,7 +1967,11 @@ export class ControllerWorker {
       ) {
         refs.push(auth.source);
       }
-    } else if (auth.method !== "chatgpt_service_account" && auth.method !== "runtime") {
+    } else if (
+      auth.method !== "chatgpt_service_account" &&
+      auth.method !== "oauth" &&
+      auth.method !== "runtime"
+    ) {
       return { outcome: "permanent", code: "INVALID_HARNESS_AUTH" };
     }
     for (const ref of refs) {

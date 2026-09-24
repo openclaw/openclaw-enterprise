@@ -21,6 +21,7 @@ export const ConfigurationGeneration = Type.Integer({
 });
 export const AgentId = Type.String({ pattern: `^agt_${UUID_V4}$` });
 export const RevisionId = Type.String({ pattern: `^rev_${UUID_V4}$` });
+export const HarnessOAuthAttemptId = Type.String({ pattern: `^oauth_${UUID_V4}$` });
 export const AuditId = Type.String({ pattern: `^aud_${UUID_V4}$` });
 export const RequestId = Type.String({ pattern: `^req_${UUID_V4}$` });
 export const AgentProvisioningWorkId = Type.String({
@@ -162,6 +163,7 @@ export const SecretReference = Type.Object(
 
 export const HarnessAuthBindingSchema = Type.Union([
   Type.Object({ method: Type.Literal("runtime") }, { additionalProperties: false }),
+  Type.Object({ method: Type.Literal("oauth") }, { additionalProperties: false }),
   Type.Object(
     { method: Type.Literal("api_key"), source: SecretReference },
     { additionalProperties: false },
@@ -441,6 +443,11 @@ export const UpdateWorkspaceFileBody = Type.Object(
         "Workspace file content. The controller also enforces a 16 KiB UTF-8 byte limit and rejects unpaired UTF-16 surrogates.",
     }),
   },
+  { additionalProperties: false },
+);
+
+export const CompleteHarnessOAuthBody = Type.Object(
+  { attemptId: HarnessOAuthAttemptId },
   { additionalProperties: false },
 );
 

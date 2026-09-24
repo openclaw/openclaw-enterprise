@@ -91,6 +91,7 @@ model-auth selector. Kubernetes supports these combinations:
 | `api_key` with an OCC Secret   | Dedicated Codex   | Only Codex receives `OPENAI_API_KEY` and logs in through stdin.                                                   |
 | `codex_pat` with an OCC Secret | Dedicated Codex   | Only Codex receives `CODEX_ACCESS_TOKEN`; native login validates its account identity.                            |
 | `chatgpt_service_account`      | Dedicated Codex   | Only Codex receives the account token and forced workspace.                                                       |
+| `oauth`                        | Embedded OpenClaw | Combined gateway/Harness commits one Agent-local native profile.                                                  |
 
 Kubernetes workload rendering prepares one explicit login mode and exact Secret
 projections. The selected Sandbox consumes the same already-rendered workload
@@ -100,6 +101,20 @@ only `{ "method": "runtime" }`: systemd loads operator-provided host credentials
 and OCC checks gateway readiness without validating model authentication. Host
 credential changes are outside revision immutability; see [SSH Compute](drivers/ssh-compute.md).
 Kubernetes rejects `runtime`; its managed validation remains unchanged.
+
+OAuth is provider-managed consent during deployment, currently for OpenAI device
+authorization in embedded OpenClaw on Kubernetes. OCC stores only the binding
+method and operation/audit evidence. The fixed native profile
+`openai:occ-managed` lives in the exact Agent's private gateway state. Start,
+status, and complete calls target the latest admitted OAuth revision through the
+selected Compute Driver and return only safe observations. `committed` means the
+native runtime reported profile commit; it is not activation success.
+
+OAuth deployment requires the Agent to be fully stopped before reconnecting.
+Stop cancels unfinished consent and prevents an overlapping serving gateway from
+sharing the same private native store. The reconnect path must match the same
+upstream provider account recorded by the native profile. A first-class
+disconnect or account-switch UI is not supported.
 
 Codex rejects missing or conflicting runtime inputs before starting its app
 server. After login, a bounded native model turn must succeed before the server
@@ -118,8 +133,15 @@ provider failure leave the replacement unready and the Agent unavailable until
 repair and restart or a new deployment. There is no automatic rollback.
 Readiness polling does not repeat model calls.
 
-Both startup checks call the configured primary model. OpenClaw disables tools
-and model fallback. Codex ignores user configuration and rules, disables execution
+For OAuth, the normal gateway waits for native profile commit before starting.
+It then runs the same bounded primary-model probe using that exact profile,
+with tools and fallback disabled. If the profile was committed but the runtime
+crashed before acknowledgement, the OAuth attempt can be reported unavailable;
+the committed profile remains in private state for an explicit stopped retry and
+the same activation probe.
+
+Both probes check the configured primary model. OpenClaw disables tools and
+model fallback. Codex ignores user configuration and rules, disables execution
 and external tools, and uses read-only filesystem policy without approval grants;
 a tool event cannot satisfy its success check. Each probe has a process timeout
 and captures native output, emitting only a fixed failure message if unsuccessful.
@@ -138,6 +160,9 @@ Provider/workspace ownership. Later reconciliation cannot substitute a newly
 issued account credential. Source updates require explicit deployment and a real
 model turn to verify consumption; selected metadata does not establish readiness.
 See [renewal and revocation](../guides/deploy/credential-lifecycle.md).
+An OAuth snapshot records no source reference, and later native refreshes remain
+owned by OpenClaw inside the private Agent store. OCC status does not prove
+continuing provider availability after activation.
 
 ## Runtime logging
 

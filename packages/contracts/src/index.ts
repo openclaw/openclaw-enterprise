@@ -221,11 +221,13 @@ export type HarnessAuthBinding =
   | { readonly method: "api_key"; readonly source: SecretReference }
   | { readonly method: "codex_pat"; readonly source: SecretReference }
   | { readonly method: "chatgpt_service_account"; readonly serviceAccountId: string }
+  | { readonly method: "oauth" }
   | { readonly method: "runtime" };
 
 /** Private admission metadata. Public APIs expose only HarnessAuthBinding. */
 export type HarnessAuthSnapshot =
   | { readonly method: "runtime" }
+  | { readonly method: "oauth" }
   | {
       readonly method: "api_key";
       readonly source: SecretReference;
@@ -253,7 +255,7 @@ export type ResolvedHarnessAuth =
   | (Extract<HarnessAuthSnapshot, { method: "api_key" | "codex_pat" }> & {
       readonly backendRef: SecretBackendRef;
     })
-  | Extract<HarnessAuthSnapshot, { method: "chatgpt_service_account" | "runtime" }>;
+  | Extract<HarnessAuthSnapshot, { method: "chatgpt_service_account" | "oauth" | "runtime" }>;
 
 export interface ComputeRevisionContext {
   readonly workspaceSetup?: Readonly<WorkspaceSetup>;
@@ -863,6 +865,43 @@ export interface AgentRuntimeCredentialStatus {
   readonly transportConfigured: boolean;
 }
 
+export type HarnessOAuthFailureReason =
+  "denied" | "expired" | "cancelled" | "account_mismatch" | "unavailable";
+
+export type HarnessOAuthObservation =
+  | { readonly phase: "preparing" }
+  | {
+      readonly phase: "waiting";
+      readonly attemptId: string;
+      readonly expiresAt: string;
+      readonly verificationUrl: string;
+      readonly userCode: string;
+    }
+  | {
+      readonly phase: "authorized";
+      readonly attemptId: string;
+      readonly expiresAt: string;
+    }
+  | {
+      readonly phase: "committed";
+      readonly attemptId: string;
+      readonly expiresAt: string;
+    }
+  | {
+      readonly phase: "failed";
+      readonly reason: HarnessOAuthFailureReason;
+      readonly attemptId?: string;
+    };
+
+export interface HarnessOAuthOperationContext {
+  readonly actorId: string;
+  readonly deadline: Date;
+}
+
+export interface HarnessOAuthCompleteContext extends HarnessOAuthOperationContext {
+  readonly attemptId: string;
+}
+
 export interface ComputePreflightWarning {
   readonly code: string;
   readonly message: string;
@@ -910,6 +949,18 @@ export interface ComputeDriver extends Driver {
     input: AgentRuntimeCredentialsInput,
   ): Promise<AgentRuntimeCredentialStatus>;
   deleteAgentRuntimeCredentials?(binding: ComputeAgentBinding): Promise<void>;
+  startHarnessOAuth?(
+    revision: AgentRevision,
+    context: HarnessOAuthOperationContext,
+  ): Promise<HarnessOAuthObservation>;
+  getHarnessOAuthStatus?(
+    revision: AgentRevision,
+    context: Pick<HarnessOAuthOperationContext, "actorId">,
+  ): Promise<HarnessOAuthObservation>;
+  completeHarnessOAuth?(
+    revision: AgentRevision,
+    context: HarnessOAuthCompleteContext,
+  ): Promise<HarnessOAuthObservation>;
   getGatewayEndpoint?(revision: AgentRevision): string | undefined;
   ensureNamespace(namespace: Namespace): Promise<NamespaceEnsureResult>;
   deleteNamespace(namespace: Namespace): Promise<NamespaceDeleteResult>;

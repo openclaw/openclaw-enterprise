@@ -157,6 +157,48 @@ function createDeploymentStatusPanel(context, path, revisionId) {
   return section;
 }
 
+const OAUTH_STATUS_POLL_MS = 1000;
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function oauthFailureMessage(reason) {
+  if (reason === "denied") {
+    return "Authorization was denied at the provider.";
+  }
+  if (reason === "expired") {
+    return "Authorization expired. Start a new OAuth attempt to continue.";
+  }
+  if (reason === "cancelled") {
+    return "Authorization was cancelled.";
+  }
+  if (reason === "account_mismatch") {
+    return "The authorized provider account does not match this Agent binding.";
+  }
+  return "OAuth authorization is unavailable. Retry after the runtime is ready.";
+}
+
+function oauthVerificationLink(observation) {
+  try {
+    const url = new URL(observation.verificationUrl);
+    if (url.protocol !== "https:" && url.protocol !== "http:") {
+      return element("span", {}, observation.verificationUrl);
+    }
+    return element(
+      "a",
+      {
+        href: url.toString(),
+        target: "_blank",
+        rel: "noreferrer noopener",
+      },
+      observation.verificationUrl,
+    );
+  } catch {
+    return element("span", {}, observation.verificationUrl);
+  }
+}
+
 export async function renderAgentDetail(context) {
   const { view, namespaceId, agentId, request, url } = context;
   const path = `${namespacePath(namespaceId)}/agents/${encodeURIComponent(agentId)}`;
@@ -197,9 +239,27 @@ export async function renderAgentDetail(context) {
     ),
   );
   const identity = element("p", { className: "resource-id" }, agent.id);
-  const stop = createAgentStop(context, path, agent, showDeleting, () =>
-    context.navigate(target(selected, selectedTab), namespaceId, true),
-  );
+  let oauthActivationGeneration = 0;
+  function startOAuthActivationRun() {
+    oauthActivationGeneration += 1;
+    return oauthActivationGeneration;
+  }
+  function cancelOAuthActivationRun() {
+    oauthActivationGeneration += 1;
+  }
+  function oauthActivationCurrent(generation) {
+    return context.isCurrent() && generation === oauthActivationGeneration;
+  }
+  function onStoppedAgentChanged() {
+    cancelOAuthActivationRun();
+    context.navigate(target(selected, selectedTab), namespaceId, true);
+  }
+  let stop = createAgentStop(context, path, agent, showDeleting, onStoppedAgentChanged);
+  function updateOAuthStopPanel(current) {
+    const next = createAgentStop(context, path, current, showDeleting, onStoppedAgentChanged);
+    stop.replaceWith(next);
+    stop = next;
+  }
   const deletion = createAgentDeletion(context, path, agent, showDeleting);
   function showDeleting() {
     deleting = true;
@@ -407,6 +467,7 @@ export async function renderAgentDetail(context) {
       reloadRequired: false,
     };
     const runtimeAuth = agent.harnessAuth?.method === "runtime";
+    const oauthAuth = agent.harnessAuth?.method === "oauth";
     const credentials =
       draft && !runtimeAuth
         ? createRuntimeCredentialsPanel({
@@ -453,6 +514,9 @@ export async function renderAgentDetail(context) {
         } else if (runtimeAuth) {
           deployStatus.textContent =
             "Configured on the runtime host; not validated by OCC. Gateway readiness does not confirm model access.";
+        } else if (oauthAuth && credentials?.canDeploy()) {
+          deployStatus.textContent =
+            "Deploy prepares the Agent runtime, then starts OpenAI OAuth authorization. Stop the Agent to cancel or reconnect.";
         } else {
           deployStatus.textContent = agent.harnessAuth
             ? credentials.deployGateMessage()
@@ -462,10 +526,361 @@ export async function renderAgentDetail(context) {
     }
     if (draft) {
       deployStatus = element("p", { className: "muted", role: "status" });
+      const oauthPanel = element("div", { className: "oauth-activation", hidden: true });
+
+      function renderDeploymentFailure(status) {
+        const detail = status.error?.message ?? "The deployment failed before activation.";
+        oauthPanel.replaceChildren(
+          element("h3", {}, "OAuth authorization unavailable"),
+          element("p", { className: "error", role: "alert" }, detail),
+        );
+      }
+
+      async function readDeploymentStatus(revisionId, generation) {
+        if (!oauthActivationCurrent(generation)) {
+          return null;
+        }
+        const status = await request(`${path}/deployments/${encodeURIComponent(revisionId)}`);
+        if (!oauthActivationCurrent(generation)) {
+          return null;
+        }
+        if (status.status === "failed") {
+          renderDeploymentFailure(status);
+          return null;
+        }
+        return status;
+      }
+
+      async function waitForDeployment(revisionId, target, generation) {
+        while (oauthActivationCurrent(generation)) {
+          const status = await readDeploymentStatus(revisionId, generation);
+          if (status === null) {
+            return null;
+          }
+          if (target === "runtime" && status.status !== "queued") {
+            return status;
+          }
+          if (target === "succeeded" && status.status === "succeeded") {
+            return status;
+          }
+          deployStatus.textContent =
+            target === "runtime"
+              ? "Waiting for the OAuth runtime to prepare…"
+              : "OAuth committed. Waiting for deployment activation…";
+          await delay(OAUTH_STATUS_POLL_MS);
+        }
+        return null;
+      }
+
+      async function stopOAuthActivation(onAccepted) {
+        cancelOAuthActivationRun();
+        deployStatus.textContent = "Stopping Agent to cancel OAuth authorization…";
+        try {
+          const stopped = await request(`${path}/stop`, { method: "POST" });
+          if (context.isCurrent()) {
+            updateOAuthStopPanel(stopped);
+            deployPending = false;
+            updateDeployControls();
+            onAccepted();
+          }
+        } catch (error) {
+          if (!context.isCurrent()) {
+            return;
+          }
+          if (error.status === 401) {
+            context.onExpired();
+            return;
+          }
+          deployPending = false;
+          updateDeployControls();
+          deployStatus.textContent = `Agent stop request failed. ${message(error, true)}`;
+        }
+      }
+
+      function renderOAuthObservation(observation, revisionId) {
+        oauthPanel.hidden = false;
+        if (observation.phase === "waiting") {
+          oauthPanel.replaceChildren(
+            element("h3", {}, "Authorize OpenAI"),
+            element(
+              "p",
+              { className: "muted" },
+              "Use this provider page and code to authorize the Agent. The Console keeps them only on this page.",
+            ),
+            element(
+              "dl",
+              { className: "oauth-code-list" },
+              element("dt", {}, "Provider page"),
+              element("dd", {}, oauthVerificationLink(observation)),
+              element("dt", {}, "User code"),
+              element("dd", {}, element("code", {}, observation.userCode)),
+              element("dt", {}, "Expires"),
+              element("dd", {}, displayDate(observation.expiresAt)),
+            ),
+            element(
+              "div",
+              { className: "form-actions credential-actions" },
+              button("Stop Agent", () =>
+                stopOAuthActivation(() => {
+                  oauthPanel.replaceChildren(
+                    element("h3", {}, "OAuth authorization cancelled"),
+                    element(
+                      "p",
+                      { className: "muted" },
+                      "The Agent stop request was accepted. Refresh deployment status before retrying.",
+                    ),
+                  );
+                }),
+              ),
+            ),
+          );
+          return;
+        }
+        if (observation.phase === "failed") {
+          oauthPanel.replaceChildren(
+            element("h3", {}, "OAuth authorization failed"),
+            element(
+              "p",
+              { className: "error", role: "alert" },
+              oauthFailureMessage(observation.reason),
+            ),
+            element(
+              "div",
+              { className: "form-actions credential-actions" },
+              button("Retry OAuth authorization", async () => {
+                if (!context.isCurrent()) {
+                  return;
+                }
+                const generation = startOAuthActivationRun();
+                deployPending = true;
+                updateDeployControls();
+                await runOAuthActivation(revisionId, generation);
+              }),
+              button("Stop Agent", () =>
+                stopOAuthActivation(() => {
+                  deployStatus.textContent = "Agent stop request accepted.";
+                }),
+              ),
+            ),
+          );
+          deployPending = false;
+          updateDeployControls();
+          return;
+        }
+        const text =
+          observation.phase === "authorized"
+            ? "Provider authorization completed. Committing the Agent-local profile…"
+            : observation.phase === "committed"
+              ? "OAuth profile committed. Waiting for deployment activation…"
+              : "Preparing OAuth authorization…";
+        oauthPanel.replaceChildren(
+          element("h3", {}, "OAuth authorization"),
+          element("p", {}, text),
+        );
+      }
+
+      async function deploymentSucceededAfterAuthRace(revisionId, generation) {
+        if (!oauthActivationCurrent(generation)) {
+          return false;
+        }
+        try {
+          const status = await request(`${path}/deployments/${encodeURIComponent(revisionId)}`);
+          return oauthActivationCurrent(generation) && status.status === "succeeded";
+        } catch {
+          return false;
+        }
+      }
+
+      async function oauthOperationOrAcceptActivated(revisionId, operation, generation) {
+        if (!oauthActivationCurrent(generation)) {
+          return { cancelled: true };
+        }
+        try {
+          const observation = await operation();
+          if (!oauthActivationCurrent(generation)) {
+            return { cancelled: true };
+          }
+          return {
+            activated: false,
+            observation,
+          };
+        } catch (error) {
+          if (!oauthActivationCurrent(generation)) {
+            return { cancelled: true };
+          }
+          if (error.status === 401) {
+            throw error;
+          }
+          if (await deploymentSucceededAfterAuthRace(revisionId, generation)) {
+            return { activated: true };
+          }
+          throw error;
+        }
+      }
+
+      async function startOAuthOrAcceptActivated(revisionId, generation) {
+        return oauthOperationOrAcceptActivated(
+          revisionId,
+          () =>
+            request(`${path}/deployments/${encodeURIComponent(revisionId)}/auth`, {
+              method: "POST",
+            }),
+          generation,
+        );
+      }
+
+      async function readOAuthOrAcceptActivated(revisionId, generation) {
+        return oauthOperationOrAcceptActivated(
+          revisionId,
+          () => request(`${path}/deployments/${encodeURIComponent(revisionId)}/auth`),
+          generation,
+        );
+      }
+
+      async function completeOAuthOrAcceptActivated(revisionId, attemptId, generation) {
+        return oauthOperationOrAcceptActivated(
+          revisionId,
+          () =>
+            request(`${path}/deployments/${encodeURIComponent(revisionId)}/auth/complete`, {
+              method: "POST",
+              body: { attemptId },
+            }),
+          generation,
+        );
+      }
+
+      async function checkOAuthDeploymentSucceeded(revisionId, generation) {
+        const status = await readDeploymentStatus(revisionId, generation);
+        if (status === null) {
+          return { done: true, succeeded: false };
+        }
+        if (status.status === "succeeded") {
+          return { done: true, succeeded: true };
+        }
+        return { done: false };
+      }
+
+      async function pollOAuthObservation(revisionId, initialObservation, generation) {
+        let observation = initialObservation;
+        while (oauthActivationCurrent(generation)) {
+          renderOAuthObservation(observation, revisionId);
+          if (observation.phase === "failed") {
+            return false;
+          }
+          if (observation.phase === "committed") {
+            const status = await waitForDeployment(revisionId, "succeeded", generation);
+            return status !== null;
+          }
+          const deployment = await checkOAuthDeploymentSucceeded(revisionId, generation);
+          if (deployment.done) {
+            return deployment.succeeded;
+          }
+          if (observation.phase === "authorized") {
+            if (!oauthActivationCurrent(generation)) {
+              return false;
+            }
+            const completed = await completeOAuthOrAcceptActivated(
+              revisionId,
+              observation.attemptId,
+              generation,
+            );
+            if (completed.cancelled) {
+              return false;
+            }
+            if (completed.activated) {
+              return true;
+            }
+            observation = completed.observation;
+            continue;
+          }
+          await delay(OAUTH_STATUS_POLL_MS);
+          if (!oauthActivationCurrent(generation)) {
+            return false;
+          }
+          const current = await checkOAuthDeploymentSucceeded(revisionId, generation);
+          if (current.done) {
+            return current.succeeded;
+          }
+          if (observation.phase === "preparing") {
+            const started = await startOAuthOrAcceptActivated(revisionId, generation);
+            if (started.cancelled) {
+              return false;
+            }
+            if (started.activated) {
+              return true;
+            }
+            observation = started.observation;
+          } else {
+            const status = await readOAuthOrAcceptActivated(revisionId, generation);
+            if (status.cancelled) {
+              return false;
+            }
+            if (status.activated) {
+              return true;
+            }
+            observation = status.observation;
+          }
+        }
+        return false;
+      }
+
+      async function runOAuthActivation(revisionId, generation) {
+        try {
+          if (!oauthActivationCurrent(generation)) {
+            return;
+          }
+          oauthPanel.hidden = false;
+          oauthPanel.replaceChildren(
+            element("h3", {}, "OAuth authorization"),
+            element("p", {}, "Waiting for the OAuth runtime to prepare…"),
+          );
+          const ready = await waitForDeployment(revisionId, "runtime", generation);
+          if (ready === null || !oauthActivationCurrent(generation)) {
+            return;
+          }
+          if (ready.status === "succeeded") {
+            change(revisionId, "workspace");
+            return;
+          }
+          const started = await startOAuthOrAcceptActivated(revisionId, generation);
+          if (started.cancelled) {
+            return;
+          }
+          if (started.activated) {
+            change(revisionId, "workspace");
+            return;
+          }
+          const completed = await pollOAuthObservation(revisionId, started.observation, generation);
+          if (completed && oauthActivationCurrent(generation)) {
+            change(revisionId, "workspace");
+          }
+        } catch (error) {
+          if (!oauthActivationCurrent(generation)) {
+            return;
+          }
+          if (error.status === 401) {
+            context.onExpired();
+            return;
+          }
+          oauthPanel.hidden = false;
+          oauthPanel.replaceChildren(
+            element("h3", {}, "OAuth authorization unavailable"),
+            element("p", { className: "error", role: "alert" }, message(error, true)),
+          );
+        } finally {
+          if (oauthActivationCurrent(generation)) {
+            deployPending = false;
+            updateDeployControls();
+          }
+        }
+      }
+
       deploy = button("Deploy new revision", async () => {
         deploy.disabled = true;
         deployPending = true;
         deployStatus.textContent = "Checking Configuration…";
+        oauthPanel.hidden = true;
+        oauthPanel.replaceChildren();
         let submitted = false;
         try {
           const [freshAgent, freshConfig, freshCredentials] = await Promise.all([
@@ -502,6 +917,16 @@ export async function renderAgentDetail(context) {
           submitted = true;
           deployStatus.textContent = "Requesting deployment…";
           const revision = await request(`${path}/deploy`, { method: "POST" });
+          if (oauthAuth) {
+            const current = await request(path);
+            if (!context.isCurrent()) {
+              return;
+            }
+            updateOAuthStopPanel(current);
+            const generation = startOAuthActivationRun();
+            await runOAuthActivation(revision.id, generation);
+            return;
+          }
           if (context.isCurrent()) {
             change(revision.id, "workspace");
           }
@@ -538,6 +963,7 @@ export async function renderAgentDetail(context) {
         ),
         deploy,
         deployStatus,
+        oauthPanel,
       );
     }
     if (!draft) {

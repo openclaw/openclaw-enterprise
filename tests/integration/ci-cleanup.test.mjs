@@ -163,6 +163,39 @@ test("cleanup removes an owned k3d cluster resource through the CLI", async (t) 
   await assert.rejects(() => stat(clusterDirectory), { code: "ENOENT" });
 });
 
+test("cleanup removes empty storage after cluster creation fails before the server exists", async (t) => {
+  const root = await fixture(t);
+  const clusterName = "openclaw-k8s-partial-preparation";
+  const clusterDirectory = join(root, `${clusterName}-state`);
+  const statePath = join(root, "state.json");
+  // Preparation registers empty storage before creating any containers.
+  await mkdir(join(clusterDirectory, "storage"), { recursive: true });
+  await writeExecutable(join(root, "bin/k3d"), "#!/bin/sh\nexit 0\n");
+  await writeState(statePath, {
+    version: 1,
+    repositoryRoot,
+    prefix: "openclaw-ci-partial-preparation",
+    resources: [
+      {
+        id: "cluster-1",
+        kind: "k3d-cluster",
+        owner: "openclaw-ci-partial-preparation",
+        name: clusterName,
+        directory: clusterDirectory,
+        kubeconfig: join(clusterDirectory, "kubeconfig"),
+      },
+    ],
+  });
+  const result = runCleanup(statePath, {
+    // No container command is available before server creation.
+    OCC_DOCKER_BIN: join(root, "missing-docker"),
+    OPENCLAW_CI_K3D_BIN: join(root, "bin/k3d"),
+  });
+  assert.equal(result.status, 0, result.stderr);
+  await assert.rejects(() => stat(statePath), { code: "ENOENT" });
+  await assert.rejects(() => stat(clusterDirectory), { code: "ENOENT" });
+});
+
 test("cleanup retains state when a resource command fails", async (t) => {
   const root = await fixture(t);
   const clusterName = "openclaw-k8s-failing-cluster-123abc456def";
@@ -198,6 +231,51 @@ test("cleanup retains state when a resource command fails", async (t) => {
   assert.match(result.stderr, /Cleanup failed/);
   assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
   assert.equal((await stat(statePath)).mode & 0o777, 0o600);
+});
+
+test("cleanup retains state when owned k3d storage ownership cannot be restored", async (t) => {
+  const root = await fixture(t);
+  const clusterName = "openclaw-k8s-storage-failure-123abc456def";
+  const clusterDirectory = join(root, `${clusterName}-state`);
+  const kubeconfig = join(clusterDirectory, "kubeconfig");
+  const k3dLog = join(root, "k3d.log");
+  const storageDirectory = join(clusterDirectory, "storage");
+  await mkdir(join(storageDirectory, "pod-private-state"), { recursive: true });
+  await writeFile(kubeconfig, "apiVersion: v1\n", { mode: 0o600 });
+  await writeExecutable(join(root, "bin/docker"), ["#!/bin/sh", "exit 23", ""].join("\n"));
+  await writeExecutable(
+    join(root, "bin/k3d"),
+    ["#!/bin/sh", `printf '%s\\n' "$*" >> ${JSON.stringify(k3dLog)}`, "exit 0", ""].join("\n"),
+  );
+
+  const statePath = join(root, "state.json");
+  const state = {
+    version: 1,
+    repositoryRoot,
+    prefix: "openclaw-ci-local-storage-failure",
+    resources: [
+      {
+        id: "cluster-1",
+        kind: "k3d-cluster",
+        owner: "openclaw-ci-local-storage-failure",
+        name: clusterName,
+        directory: clusterDirectory,
+        kubeconfig,
+      },
+    ],
+  };
+  await writeState(statePath, state);
+
+  const result = runCleanup(statePath, {
+    OCC_DOCKER_BIN: join(root, "bin/docker"),
+    OPENCLAW_CI_K3D_BIN: join(root, "bin/k3d"),
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Cleanup failed/);
+  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
+  await assert.rejects(() => stat(k3dLog), { code: "ENOENT" });
+  assert.equal((await stat(clusterDirectory)).isDirectory(), true);
 });
 
 test("cleanup rejects a k3d cluster directory outside the owned cluster prefix", async (t) => {

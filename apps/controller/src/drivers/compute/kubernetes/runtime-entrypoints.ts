@@ -1,6 +1,7 @@
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
 
 export const PLUGIN_APP_SERVER_TOKEN_HMAC_DOMAIN = "openclaw-plugin-runtime/app-server-token/v1";
+export const OAUTH_MANAGEMENT_TOKEN_HMAC_DOMAIN = "openclaw-oauth-management/token/v1";
 
 const PLUGIN_APP_SERVER_TOKEN_DERIVATION_HELPER = String.raw`
 function derivePluginAppServerTokenFromBase(baseToken, revisionId, startupId) {
@@ -20,6 +21,24 @@ function derivePluginAppServerTokenFromBase(baseToken, revisionId, startupId) {
     .update(revisionId)
     .update("\0")
     .update(startupId)
+    .digest("hex");
+}
+`;
+
+const OAUTH_MANAGEMENT_TOKEN_DERIVATION_HELPER = String.raw`
+function deriveOAuthManagementTokenFromBase(baseToken, revisionId) {
+  if (
+    typeof baseToken !== "string" ||
+    baseToken.length === 0 ||
+    typeof revisionId !== "string" ||
+    revisionId.length === 0
+  ) {
+    throw new Error("OpenClaw OAuth management token derivation inputs are invalid.");
+  }
+  return createHmac("sha256", baseToken)
+    .update(${JSON.stringify(OAUTH_MANAGEMENT_TOKEN_HMAC_DOMAIN)})
+    .update("\0")
+    .update(revisionId)
     .digest("hex");
 }
 `;
@@ -1059,11 +1078,12 @@ function probeOpenClawAuthenticationFailureCode() {
   const directory = fs.mkdtempSync("/tmp/openclaw-auth-probe-");
   try {
     const model = process.env.OPENCLAW_HARNESS_MODEL;
+    const oauth = process.env.OPENCLAW_HARNESS_AUTH_MODE === "oauth";
     const provider = process.env.OPENCLAW_HARNESS_PROVIDER;
     const credentialEnvironment = process.env.OPENCLAW_HARNESS_CREDENTIAL_ENV;
     if (typeof provider !== "string" || typeof credentialEnvironment !== "string" ||
       typeof model !== "string" || !model.startsWith(provider + "/") ||
-      !process.env[credentialEnvironment]?.trim()) return "UNAVAILABLE";
+      (!oauth && !process.env[credentialEnvironment]?.trim()) || (oauth && provider !== "openai")) return "UNAVAILABLE";
     const configuration = JSON.parse(process.env.OPENCLAW_HARNESS_PROBE_CONFIG);
     if (configuration.agents?.defaults?.model !== model) return "UNAVAILABLE";
     configuration.agents.defaults.workspace = directory + "/workspace";
@@ -1071,27 +1091,32 @@ function probeOpenClawAuthenticationFailureCode() {
     const configPath = directory + "/openclaw.json";
     fs.writeFileSync(configPath, JSON.stringify(configuration), { mode: 0o600 });
     const result = spawnSync("node", [
-      "/app/openclaw.mjs", "models", "status", "--json", "--probe",
+      "/app/openclaw.mjs", "models", "status", "--json", "--agent", "main", "--probe",
       "--probe-provider", provider, "--probe-concurrency", "1",
       "--probe-timeout", "15000", "--probe-max-tokens", "16",
+      ...(oauth ? ["--probe-profile", "openai:occ-managed"] : []),
     ], {
       cwd: directory,
       env: {
         PATH: process.env.PATH,
-        HOME: directory,
-        OPENCLAW_STATE_DIR: directory + "/state",
+        HOME: oauth ? "/home/node" : directory,
+        OPENCLAW_STATE_DIR: oauth ? process.env.OPENCLAW_STATE_DIR : directory + "/state",
         OPENCLAW_CONFIG_PATH: configPath,
-        [credentialEnvironment]: process.env[credentialEnvironment],
+        ...(oauth ? {} : { [credentialEnvironment]: process.env[credentialEnvironment] }),
       },
       encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
       timeout: 30000, killSignal: "SIGKILL", maxBuffer: 262144,
     });
     if (result.error?.code === "ETIMEDOUT" || result.signal === "SIGKILL") return "MODEL_PROBE_TIMEOUT";
     if (result.status !== 0 || result.error) return "MODEL_PROBE_FAILED";
-    const results = JSON.parse(result.stdout).auth?.probes?.results;
-    return Array.isArray(results) && results.length === 1 &&
+    const auth = JSON.parse(result.stdout).auth;
+    const probes = auth?.probes;
+    const results = probes?.results;
+    return Array.isArray(results) && results.length === 1 && probes.totalTargets === 1 &&
       results[0].provider === provider && results[0].model === model &&
-      results[0].source === "env" && results[0].status === "ok"
+      results[0].source === (oauth ? "profile" : "env") &&
+      (!oauth || (results[0].profileId === "openai:occ-managed" && results[0].mode === "oauth")) &&
+      results[0].status === "ok"
         ? undefined
         : "MODEL_PROBE_FAILED";
   } catch {
@@ -1099,6 +1124,536 @@ function probeOpenClawAuthenticationFailureCode() {
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
+}
+`;
+
+const OPENCLAW_OAUTH_MANAGEMENT_HELPERS = String.raw`
+${OAUTH_MANAGEMENT_TOKEN_DERIVATION_HELPER}
+const OAUTH_MANAGEMENT_PATH = "/openclaw/oauth";
+const OAUTH_MANAGED_PROFILE_ID = "openai:occ-managed";
+const OAUTH_REQUEST_LIMIT_BYTES = 8192;
+const oauthAttempts = new Map();
+let oauthCommitResolver;
+let oauthCommitted = false;
+let oauthGrantRequestsClosed = false;
+let oauthAuthenticationProbeAccepted = false;
+let oauthStartupFailureReason;
+const oauthCommitPromise = new Promise((resolve) => {
+  oauthCommitResolver = resolve;
+});
+
+function oauthJson(response, statusCode, payload) {
+  response.writeHead(statusCode, {
+    "content-type": "application/json",
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+  });
+  response.end(JSON.stringify(payload));
+}
+
+function oauthObservation(phase, extra = {}) {
+  return {
+    revisionId: requireNonEmptyString(process.env.OPENCLAW_AGENT_REVISION_ID, "OAuth revision ID"),
+    agentId: requireNonEmptyString(process.env.OPENCLAW_AGENT_ID, "OAuth Agent ID"),
+    namespaceId: requireNonEmptyString(process.env.OPENCLAW_NAMESPACE_ID, "OAuth Namespace ID"),
+    phase,
+    ...extra,
+  };
+}
+
+function oauthFailure(reason, message, extra = {}) {
+  return oauthObservation("failed", {
+    failure: { reason, message },
+    ...extra,
+  });
+}
+
+const cachedOAuthManagementToken = process.env.OPENCLAW_HARNESS_AUTH_MODE === "oauth"
+  ? deriveOAuthManagementTokenFromBase(
+    requireNonEmptyString(process.env.OPENCLAW_OAUTH_MANAGEMENT_TOKEN, "OpenClaw OAuth management token"),
+    requireNonEmptyString(process.env.OPENCLAW_AGENT_REVISION_ID, "OAuth revision ID"),
+  )
+  : "";
+
+function oauthManagementToken() {
+  return cachedOAuthManagementToken;
+}
+
+function requireOAuthManagementRequest(request, response) {
+  if (request.headers["x-occ-oauth-token"] !== oauthManagementToken()) {
+    oauthJson(response, 403, oauthFailure("RUNTIME_UNAVAILABLE", "OAuth management authentication failed."));
+    return false;
+  }
+  return true;
+}
+
+function readOAuthRequestBody(request) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    request.setEncoding("utf8");
+    request.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > OAUTH_REQUEST_LIMIT_BYTES) {
+        reject(new Error("OAuth management request body is too large."));
+        request.destroy();
+      }
+    });
+    request.on("end", () => {
+      if (body.length === 0) {
+        resolve({});
+        return;
+      }
+      try {
+        resolve(JSON.parse(body));
+      } catch {
+        reject(new Error("OAuth management request body is invalid JSON."));
+      }
+    });
+    request.on("error", reject);
+  });
+}
+
+const MANAGED_MODELS_AUTH_LOGIN_FLOW_CAPABILITY = "openclaw.models.auth.managed.v1";
+const OAUTH_CONSENT_TTL_MS = 15 * 60 * 1000;
+const OAUTH_NATIVE_AGENT_ID = "main";
+const OAUTH_OPENAI_DEVICE_VERIFICATION_URL = "https://auth.openai.com/codex/device";
+
+function loadManagedOAuthRuntime() {
+  try {
+    const runtime = require("openclaw/plugin-sdk/provider-auth-managed-login-runtime");
+    if (
+      runtime !== null &&
+      typeof runtime === "object" &&
+      runtime.MANAGED_MODELS_AUTH_LOGIN_FLOW_CAPABILITY === MANAGED_MODELS_AUTH_LOGIN_FLOW_CAPABILITY &&
+      typeof runtime.runManagedModelsAuthLoginFlow === "function"
+    ) {
+      return runtime;
+    }
+  } catch {}
+  return undefined;
+}
+
+function fixedOAuthFailureReason(error) {
+  if (error?.name === "AbortError") return "AUTH_CANCELLED";
+  if (error?.code === "AUTH_CANCELLED") return "AUTH_CANCELLED";
+  if (error?.code === "AUTH_SUPERSEDED" || error?.code === "OAUTH_ATTEMPT_SUPERSEDED") return "AUTH_SUPERSEDED";
+  if (error?.code === "AUTH_EXPIRED" || error?.code === "OAUTH_ATTEMPT_EXPIRED") return "AUTH_EXPIRED";
+  if (error?.code === "account_mismatch") return "ACCOUNT_MISMATCH";
+  if (error?.code === "AUTH_DENIED" || error?.code === "OAUTH_AUTH_DENIED") return "AUTH_DENIED";
+  return "PROVIDER_UNAVAILABLE";
+}
+
+function fixedOAuthFailureMessage(reason) {
+  switch (reason) {
+    case "AUTH_CANCELLED": return "OAuth authorization was cancelled.";
+    case "AUTH_SUPERSEDED": return "OAuth authorization was superseded by a newer attempt.";
+    case "AUTH_EXPIRED": return "OAuth authorization expired.";
+    case "AUTH_DENIED": return "OAuth authorization was denied.";
+    case "ACCOUNT_MISMATCH": return "OAuth authorization used a different account.";
+    default: return "OAuth provider authorization is unavailable.";
+  }
+}
+
+function oauthError(code) {
+  const error = new Error(code);
+  error.code = code;
+  return error;
+}
+
+function parseOAuthDeadline(value) {
+  const deadlineMs = Date.parse(value);
+  if (!Number.isFinite(deadlineMs)) throw oauthError("OAUTH_ATTEMPT_EXPIRED");
+  return deadlineMs;
+}
+
+function requireActiveOAuthGrant(value) {
+  const deadlineMs = parseOAuthDeadline(value);
+  if (deadlineMs <= Date.now()) throw oauthError("OAUTH_ATTEMPT_EXPIRED");
+  return deadlineMs;
+}
+
+function createOAuthRuntimeEnv() {
+  return {
+    log: () => {},
+    error: () => {},
+    exit: (code) => {
+      const error = oauthError("PROVIDER_UNAVAILABLE");
+      error.exitCode = code;
+      throw error;
+    },
+  };
+}
+
+function createOAuthFlowEnv() {
+  const env = { ...process.env };
+  env.HOME = "/home/node";
+  env.OPENCLAW_STATE_DIR = requireNonEmptyString(process.env.OPENCLAW_STATE_DIR, "OpenClaw state directory");
+  delete env.OPENAI_API_KEY;
+  return env;
+}
+
+function oauthAttemptObservation(attempt) {
+  if (attempt.phase === "waiting") {
+    return oauthObservation("waiting", {
+      attemptId: attempt.attemptId,
+      expiresAt: attempt.expiresAt,
+      verificationUrl: attempt.verificationUrl,
+      userCode: attempt.userCode,
+      failure: null,
+    });
+  }
+  if (attempt.phase === "authorized" || attempt.phase === "committed") {
+    return oauthObservation(attempt.phase, {
+      attemptId: attempt.attemptId,
+      expiresAt: attempt.expiresAt,
+      failure: null,
+    });
+  }
+  if (attempt.phase === "failed") {
+    return oauthFailure(attempt.failureReason, fixedOAuthFailureMessage(attempt.failureReason), {
+      attemptId: attempt.attemptId,
+    });
+  }
+  return oauthObservation("preparing", {
+    attemptId: attempt.attemptId,
+    expiresAt: attempt.expiresAt,
+    failure: null,
+  });
+}
+
+function failOAuthAttempt(attempt, reason) {
+  attempt.phase = "failed";
+  attempt.failureReason = reason;
+  attempt.controller.abort(oauthError(reason));
+  if (typeof attempt.completeResolve === "function") attempt.completeResolve(false);
+}
+
+function assertOAuthAttemptCurrent(attempt, attemptId, requireCompletionGrant = false) {
+  if (oauthAttempts.get(attemptId) !== attempt) throw oauthError("OAUTH_ATTEMPT_SUPERSEDED");
+  if (attempt.controller.signal.aborted) throw oauthError(attempt.failureReason ?? "AUTH_CANCELLED");
+  if (attempt.expiresAtMs <= Date.now()) throw oauthError("AUTH_EXPIRED");
+  if (requireCompletionGrant) {
+    if (!Number.isSafeInteger(attempt.completionDeadlineMs) || attempt.completionDeadlineMs <= Date.now()) {
+      throw oauthError("AUTH_EXPIRED");
+    }
+  }
+}
+
+function cleanExpiredOAuthAttempts() {
+  const now = Date.now();
+  for (const [, attempt] of oauthAttempts) {
+    if (attempt.phase === "failed" || attempt.phase === "committed") {
+      continue;
+    }
+    if (attempt.expiresAtMs <= now) {
+      failOAuthAttempt(attempt, "AUTH_EXPIRED");
+    } else if (attempt.controller.signal.aborted) {
+      failOAuthAttempt(attempt, "AUTH_CANCELLED");
+    }
+  }
+}
+
+function normalizeOAuthVerificationUrl(value) {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim().replace(/[).,;]+$/u, "");
+  return trimmed === OAUTH_OPENAI_DEVICE_VERIFICATION_URL ? trimmed : "";
+}
+
+function normalizeOAuthDeviceCode(deviceCode, fallbackVerificationUrl) {
+  if (deviceCode === null || typeof deviceCode !== "object") throw oauthError("PROVIDER_UNAVAILABLE");
+  const userCode = typeof deviceCode.code === "string" ? deviceCode.code.trim() : "";
+  const verificationUrl = normalizeOAuthVerificationUrl(fallbackVerificationUrl);
+  const expiresInMinutes = Number(deviceCode.expiresInMinutes);
+  const providerExpiryMs = Number.isFinite(expiresInMinutes) && expiresInMinutes > 0
+    ? Date.now() + expiresInMinutes * 60 * 1000
+    : Date.now() + OAUTH_CONSENT_TTL_MS;
+  const expiresAt = new Date(Math.min(providerExpiryMs, Date.now() + OAUTH_CONSENT_TTL_MS)).toISOString();
+  if (!verificationUrl || !userCode) throw oauthError("PROVIDER_UNAVAILABLE");
+  return { verificationUrl, userCode, expiresAt };
+}
+
+function completeOAuthAttemptAfterNativeCommit(attempt, result) {
+  if (result?.providerId !== "openai" || result.methodId !== "device-code" || !Array.isArray(result.profiles)) {
+    throw oauthError("PROVIDER_UNAVAILABLE");
+  }
+  const matchingProfiles = result.profiles.filter(
+    (profile) =>
+      profile?.profileId === OAUTH_MANAGED_PROFILE_ID &&
+      profile.provider === "openai" &&
+      profile.mode === "oauth",
+  );
+  if (matchingProfiles.length !== 1) throw oauthError("PROVIDER_UNAVAILABLE");
+  attempt.phase = "committed";
+  return oauthAttemptObservation(attempt);
+}
+
+function createOAuthPrompter(attempt) {
+  const unsupported = async () => {
+    throw oauthError("PROVIDER_UNAVAILABLE");
+  };
+  return {
+    intro: async () => {},
+    outro: async () => {},
+    note: async () => {},
+    plain: async () => {},
+    select: unsupported,
+    multiselect: unsupported,
+    text: unsupported,
+    confirm: unsupported,
+    progress: () => ({ update: () => {}, stop: () => {} }),
+    deviceCode: async (deviceCode) => {
+      const normalized = normalizeOAuthDeviceCode(deviceCode, attempt.openedVerificationUrl);
+      attempt.verificationUrl = normalized.verificationUrl;
+      attempt.userCode = normalized.userCode;
+      attempt.expiresAt = normalized.expiresAt;
+      attempt.expiresAtMs = Math.min(attempt.expiresAtMs, Date.parse(normalized.expiresAt));
+      attempt.phase = "waiting";
+    },
+  };
+}
+
+function currentOAuthAttemptForActor(actorId) {
+  for (const attempt of oauthAttempts.values()) {
+    if (attempt.actorId === actorId) return attempt;
+  }
+  return undefined;
+}
+
+function activeOAuthAttempt() {
+  for (const attempt of oauthAttempts.values()) {
+    if (attempt.phase !== "failed" && attempt.phase !== "committed") return attempt;
+  }
+  return undefined;
+}
+
+function closeOAuthGrantRequests() {
+  oauthGrantRequestsClosed = true;
+}
+
+function oauthPreparingObservation() {
+  return oauthObservation("preparing", { failure: null });
+}
+
+function startOAuthAttempt(runtime, body) {
+  const actorId = typeof body.actorId === "string" ? body.actorId.trim() : "";
+  if (!actorId) return oauthFailure("RUNTIME_UNAVAILABLE", "OAuth actor is invalid.");
+  if (oauthStartupFailureReason !== undefined) {
+    return oauthFailure(oauthStartupFailureReason, fixedOAuthFailureMessage(oauthStartupFailureReason));
+  }
+  requireActiveOAuthGrant(body.deadline);
+  const existing = currentOAuthAttemptForActor(actorId);
+  if (existing !== undefined) {
+    if (existing.phase !== "failed") return oauthAttemptObservation(existing);
+  }
+  if (oauthGrantRequestsClosed || activeOAuthAttempt() !== undefined) {
+    return oauthPreparingObservation();
+  }
+  if (existing !== undefined) {
+    existing.controller.abort();
+    oauthAttempts.delete(existing.attemptId);
+  }
+  const attemptId = "oauth_" + require("node:crypto").randomUUID();
+  const controller = new AbortController();
+  let completeResolve;
+  const completePromise = new Promise((resolve) => {
+    completeResolve = resolve;
+  });
+  const attempt = {
+    actorId,
+    attemptId,
+    phase: "preparing",
+    expiresAt: new Date(Date.now() + OAUTH_CONSENT_TTL_MS).toISOString(),
+    expiresAtMs: Date.now() + OAUTH_CONSENT_TTL_MS,
+    controller,
+    completeResolve,
+    openedVerificationUrl: "",
+    completionDeadlineMs: undefined,
+  };
+  oauthAttempts.set(attemptId, attempt);
+  attempt.resultPromise = (async () => {
+    try {
+      const fs = require("node:fs");
+      const configPath = requireNonEmptyString(process.env.OPENCLAW_CONFIG_PATH, "OpenClaw config path");
+      const result = await runtime.runManagedModelsAuthLoginFlow({
+        provider: "openai",
+        method: "device-code",
+        agent: "main",
+        profileId: OAUTH_MANAGED_PROFILE_ID,
+        config: JSON.parse(fs.readFileSync(configPath, "utf8")),
+        runtime: createOAuthRuntimeEnv(),
+        env: createOAuthFlowEnv(),
+        isRemote: true,
+        signal: controller.signal,
+        openUrl: async (url) => {
+          const verificationUrl = normalizeOAuthVerificationUrl(url);
+          if (!verificationUrl) throw oauthError("PROVIDER_UNAVAILABLE");
+          attempt.openedVerificationUrl = verificationUrl;
+        },
+        prompter: createOAuthPrompter(attempt),
+        managed: {
+          capability: MANAGED_MODELS_AUTH_LOGIN_FLOW_CAPABILITY,
+          profileId: OAUTH_MANAGED_PROFILE_ID,
+          stateDir: requireNonEmptyString(process.env.OPENCLAW_STATE_DIR, "OpenClaw state directory"),
+          beforePersist: async () => {
+            assertOAuthAttemptCurrent(attempt, attemptId);
+            attempt.phase = "authorized";
+            await completePromise;
+            assertOAuthAttemptCurrent(attempt, attemptId, true);
+          },
+          assertCurrent: () => {
+            assertOAuthAttemptCurrent(attempt, attemptId, attempt.completionDeadlineMs !== undefined);
+          },
+        },
+      });
+      return completeOAuthAttemptAfterNativeCommit(attempt, result);
+    } catch (error) {
+      const reason = fixedOAuthFailureReason(error);
+      attempt.phase = "failed";
+      attempt.failureReason = reason;
+      return oauthAttemptObservation(attempt);
+    }
+  })();
+  return oauthAttemptObservation(attempt);
+}
+
+async function completeOAuthAttempt(body) {
+  const actorId = typeof body.actorId === "string" ? body.actorId.trim() : "";
+  const attemptId = typeof body.attemptId === "string" ? body.attemptId.trim() : "";
+  const deadlineMs = requireActiveOAuthGrant(body.deadline);
+  const attempt = oauthAttempts.get(attemptId);
+  if (attempt === undefined || attempt.actorId !== actorId) {
+    return oauthFailure("ATTEMPT_NOT_FOUND", "OAuth attempt was not found.", { attemptId });
+  }
+  if (attempt.phase === "committed") {
+    return oauthAttemptObservation(attempt);
+  }
+  if (attempt.expiresAtMs <= Date.now()) {
+    failOAuthAttempt(attempt, "AUTH_EXPIRED");
+    return oauthFailure("AUTH_EXPIRED", fixedOAuthFailureMessage("AUTH_EXPIRED"), { attemptId });
+  }
+  if (attempt.phase !== "authorized") {
+    return oauthAttemptObservation(attempt);
+  }
+  attempt.completionDeadlineMs = deadlineMs;
+  if (typeof attempt.completeResolve === "function") attempt.completeResolve(true);
+  const timeout = new Promise((resolve) => {
+    const delay = Math.max(0, deadlineMs - Date.now());
+    setTimeout(() => {
+      if (attempt.phase !== "committed") {
+        failOAuthAttempt(attempt, "AUTH_EXPIRED");
+      }
+      resolve(oauthFailure("AUTH_EXPIRED", fixedOAuthFailureMessage("AUTH_EXPIRED"), { attemptId }));
+    }, delay).unref();
+  });
+  return Promise.race([attempt.resultPromise, timeout]);
+}
+
+function markOAuthCommitted() {
+  closeOAuthGrantRequests();
+  oauthCommitted = true;
+  if (typeof oauthCommitResolver === "function") {
+    oauthCommitResolver(true);
+  }
+}
+
+function hasCommittedOAuthProfile() {
+  if (process.env.OPENCLAW_HARNESS_AUTH_MODE !== "oauth") return true;
+  const { spawnSync } = require("node:child_process");
+  const result = spawnSync("node", [
+    "/app/openclaw.mjs", "models", "auth", "list", "--json",
+    "--agent", OAUTH_NATIVE_AGENT_ID, "--provider", "openai",
+  ], {
+    env: { ...process.env, HOME: "/home/node" },
+    encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+    timeout: 15000, killSignal: "SIGKILL", maxBuffer: 262144,
+  });
+  if (result.status !== 0 || result.error) return false;
+  try {
+    const profiles = JSON.parse(result.stdout).profiles;
+    return Array.isArray(profiles) && profiles.some((profile) =>
+      profile?.id === OAUTH_MANAGED_PROFILE_ID &&
+      profile.provider === "openai" &&
+      profile.type === "oauth",
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function waitForOAuthCommit() {
+  if (process.env.OPENCLAW_HARNESS_AUTH_MODE !== "oauth") return true;
+  if (oauthCommitted) return true;
+  if (activeOAuthAttempt() !== undefined) return oauthCommitPromise;
+  if (hasCommittedOAuthProfile()) {
+    closeOAuthGrantRequests();
+    if (
+      process.env.OPENCLAW_HARNESS_PROBE_CONFIG === undefined ||
+      probeOpenClawAuthenticationFailureCode() === undefined
+    ) {
+      oauthAuthenticationProbeAccepted = true;
+      return true;
+    }
+    oauthGrantRequestsClosed = false;
+  }
+  return oauthCommitPromise;
+}
+
+function startOAuthManagementServer() {
+  if (process.env.OPENCLAW_HARNESS_AUTH_MODE !== "oauth") return undefined;
+  const port = Number(process.env.OPENCLAW_OAUTH_MANAGEMENT_PORT);
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {
+    throw new Error("OAuth management port is invalid.");
+  }
+  const http = require("node:http");
+  const server = http.createServer(async (request, response) => {
+    if (!requireOAuthManagementRequest(request, response)) return;
+    const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    if (!url.pathname.startsWith(OAUTH_MANAGEMENT_PATH)) {
+      oauthJson(response, 404, oauthFailure("RUNTIME_UNAVAILABLE", "OAuth management path is unavailable."));
+      return;
+    }
+    if (oauthStartupFailureReason !== undefined) {
+      oauthJson(response, 200, oauthFailure(oauthStartupFailureReason, fixedOAuthFailureMessage(oauthStartupFailureReason)));
+      return;
+    }
+    cleanExpiredOAuthAttempts();
+    const runtime = loadManagedOAuthRuntime();
+    if (runtime === undefined) {
+      oauthJson(response, 503, oauthFailure("PROVIDER_UNAVAILABLE", "OAuth managed-login runtime is unavailable."));
+      return;
+    }
+    try {
+      if (request.method === "GET" && url.pathname === OAUTH_MANAGEMENT_PATH + "/status") {
+        const actorId = url.searchParams.get("actorId") ?? "";
+        const attempt = currentOAuthAttemptForActor(actorId);
+        oauthJson(response, 200, attempt === undefined ? oauthObservation("preparing", { failure: null }) : oauthAttemptObservation(attempt));
+        return;
+      }
+      if (request.method !== "POST") {
+        oauthJson(response, 405, oauthFailure("RUNTIME_UNAVAILABLE", "OAuth management method is unsupported."));
+        return;
+      }
+      const body = await readOAuthRequestBody(request);
+      if (url.pathname === OAUTH_MANAGEMENT_PATH + "/start") {
+        oauthJson(response, 200, startOAuthAttempt(runtime, body));
+        return;
+      }
+      if (url.pathname === OAUTH_MANAGEMENT_PATH + "/complete") {
+        const observed = await completeOAuthAttempt(body);
+        if (observed?.phase === "committed") {
+          markOAuthCommitted();
+        }
+        oauthJson(response, 200, observed);
+        return;
+      }
+      oauthJson(response, 404, oauthFailure("RUNTIME_UNAVAILABLE", "OAuth management path is unavailable."));
+    } catch (error) {
+      const reason = fixedOAuthFailureReason(error);
+      oauthJson(response, 200, oauthFailure(reason, fixedOAuthFailureMessage(reason)));
+    }
+  });
+  server.listen(port, "0.0.0.0");
+  return server;
 }
 `;
 
@@ -1147,14 +1702,17 @@ const { spawn } = require("node:child_process");
 ${PLUGIN_RUNTIME_HELPERS}
 ${WORKSPACE_ASSET_HELPERS}
 ${OPENCLAW_AUTH_PROBE_HELPERS}
+${OPENCLAW_OAUTH_MANAGEMENT_HELPERS}
 
 startPluginRuntimeStatusServer();
+const oauthManagementServer = startOAuthManagementServer();
 
 function forwardTermination(child) {
   let terminating = false;
   const forward = (signal) => {
     if (terminating) return;
     terminating = true;
+    if (oauthManagementServer !== undefined) oauthManagementServer.close();
     child.kill(signal);
     setTimeout(() => child.kill("SIGKILL"), 8_000).unref();
   };
@@ -1162,11 +1720,17 @@ function forwardTermination(child) {
   process.on("SIGINT", () => forward("SIGINT"));
 }
 
+(async () => {
+await waitForOAuthCommit();
+delete process.env.OPENCLAW_OAUTH_MANAGEMENT_TOKEN;
 const openClawAuthenticationFailureCode =
-  process.env.OPENCLAW_HARNESS_PROBE_CONFIG === undefined
+  process.env.OPENCLAW_HARNESS_PROBE_CONFIG === undefined || oauthAuthenticationProbeAccepted
     ? undefined
     : probeOpenClawAuthenticationFailureCode();
 if (openClawAuthenticationFailureCode !== undefined) {
+  if (process.env.OPENCLAW_HARNESS_AUTH_MODE === "oauth") {
+    oauthStartupFailureReason = "PROBE_FAILED";
+  }
   holdFailedAuthentication("model-probe", openClawAuthenticationFailureCode);
 } else {
 mkdirSync("/home/node/.openclaw", { recursive: true });
@@ -1177,7 +1741,6 @@ if (process.env.OPENCLAW_WORKSPACE_DIR !== undefined) {
 }
 delete process.env.OPENCLAW_LOG_LEVEL;
 const pluginRuntime = readGatewayPluginRuntime();
-(async () => {
 const peerStatus =
   pluginRuntime?.manifest?.kind === "codex" && hasEnabledPluginSelections(pluginRuntime)
     ? await waitForPeerPluginRuntimeStatus()
@@ -1324,8 +1887,11 @@ if (pluginRuntime?.manifest?.kind === "codex" && hasEnabledPluginSelections(plug
   }, 2_000).unref();
 }
 child.on("exit", (code, signal) => process.exit(code ?? (signal === "SIGTERM" ? 0 : 1)));
-})();
 }
+})().catch((error) => {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+});
 `;
 
 export const AGENT_RUNTIME_ENTRYPOINT = String.raw`

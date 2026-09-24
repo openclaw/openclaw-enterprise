@@ -50,6 +50,9 @@
 ### Agent deployments
 
 - [`getAgentDeployment`](../api.md#get-namespacesnamespaceidagentsagentiddeploymentsdeploymentid): Get the durable deployment status for one admitted Agent revision.
+- [`getAgentDeploymentAuth`](../api.md#get-namespacesnamespaceidagentsagentiddeploymentsdeploymentidauth): Get OAuth authorization status for one admitted Agent deployment.
+- [`completeAgentDeploymentAuth`](../api.md#post-namespacesnamespaceidagentsagentiddeploymentsdeploymentidauthcomplete): Commit OAuth authorization for one admitted Agent deployment attempt.
+- [`startAgentDeploymentAuth`](../api.md#post-namespacesnamespaceidagentsagentiddeploymentsdeploymentidauth): Start OAuth authorization for one admitted Agent deployment.
 
 ### Agent revisions
 

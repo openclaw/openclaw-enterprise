@@ -331,6 +331,39 @@ export const scenarios = {
     description:
       "The creation form seeds AGENTS.md, SOUL.md, IDENTITY.md, and USER.md before the Agent's first deployment. Clearing a field creates an empty file.",
   },
+  createOAuth: {
+    group: "Pages/Create Agent",
+    name: "OpenAI OAuth during activation",
+    path: create,
+    actions: [
+      ...form,
+      { selector: "#agent-harness", value: "openclaw" },
+      { selector: "#agent-auth-method", value: "oauth" },
+    ],
+    description:
+      "Create an embedded OAuth Agent without entering a provider token. Consent begins on deployment.",
+    gap: "This preview does not contact an OAuth provider or deploy an Agent.",
+  },
+  oauthWaiting: {
+    group: "Pages/Agent detail",
+    name: "OAuth authorization waiting",
+    path: draft,
+    auth: "oauth",
+    oauthPhase: "waiting",
+    actions: [{ click: "Deploy new revision" }],
+    description:
+      "A deployment waits for the original actor to authorize its device code. Stop cancels activation.",
+  },
+  oauthUnavailable: {
+    group: "Pages/Agent detail",
+    name: "OAuth authorization unavailable",
+    path: draft,
+    auth: "oauth",
+    oauthPhase: "failed",
+    actions: [{ click: "Deploy new revision" }],
+    description:
+      "A failed OAuth observation keeps the gateway unavailable and offers Stop as recovery.",
+  },
   createEmbedded: {
     group: "Pages/Create Agent",
     name: "OpenAI with OpenClaw harness",

@@ -236,6 +236,34 @@ func (client *Client) DeployAgent(namespaceID, agentID string) (any, error) {
 	)
 }
 
+// GetAgentDeployment fetches the durable deployment status for an admitted Agent revision.
+func (client *Client) GetAgentDeployment(namespaceID, agentID, deploymentID string) (any, error) {
+	return client.get("namespaces", namespaceID, "agents", agentID, "deployments", deploymentID)
+}
+
+// StartAgentDeploymentAuth starts an OAuth authorization attempt for an admitted deployment.
+func (client *Client) StartAgentDeploymentAuth(namespaceID, agentID, deploymentID string) (any, error) {
+	return client.send(
+		http.MethodPost,
+		[]string{"namespaces", namespaceID, "agents", agentID, "deployments", deploymentID, "auth"},
+		nil,
+	)
+}
+
+// GetAgentDeploymentAuth fetches OAuth authorization status for an admitted deployment.
+func (client *Client) GetAgentDeploymentAuth(namespaceID, agentID, deploymentID string) (any, error) {
+	return client.get("namespaces", namespaceID, "agents", agentID, "deployments", deploymentID, "auth")
+}
+
+// CompleteAgentDeploymentAuth commits an externally authorized OAuth attempt.
+func (client *Client) CompleteAgentDeploymentAuth(namespaceID, agentID, deploymentID, attemptID string) (any, error) {
+	return client.send(
+		http.MethodPost,
+		[]string{"namespaces", namespaceID, "agents", agentID, "deployments", deploymentID, "auth", "complete"},
+		map[string]string{"attemptId": attemptID},
+	)
+}
+
 // StopAgent stops an Agent while retaining its revision history and persistent state.
 func (client *Client) StopAgent(namespaceID, agentID string) (any, error) {
 	return client.send(

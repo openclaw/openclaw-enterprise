@@ -283,7 +283,7 @@ async function createScopedController(context, identifier, platformNamespace, ku
   const binding = `oce-production-controller-${suffix}`;
   const apiBinding = `oce-production-secret-api-${suffix}`;
   const apiNamespaceRole = `oce-production-secret-namespaces-${suffix}`;
-  const apiSecretRole = `oce-production-secrets-${suffix}`;
+  const apiSecretRole = `oce-production-tenant-api-${suffix}`;
   const apiConfigurationRole = `oce-production-configurations-${suffix}`;
   const directory = await mkdtemp(join(tmpdir(), "openclaw-production-controller-"));
   context.after(async () => {
@@ -394,6 +394,30 @@ async function createScopedController(context, identifier, platformNamespace, ku
     apiSecretRole,
     "--verb=get,create,update,patch,delete",
     "--resource=secrets",
+  );
+  await kubectl(
+    "patch",
+    "clusterrole",
+    apiSecretRole,
+    "--type=json",
+    "--patch",
+    JSON.stringify([
+      {
+        op: "add",
+        path: "/rules/-",
+        value: { apiGroups: ["apps"], resources: ["deployments"], verbs: ["get", "list"] },
+      },
+      {
+        op: "add",
+        path: "/rules/-",
+        value: { apiGroups: [""], resources: ["pods"], verbs: ["get", "list"] },
+      },
+      {
+        op: "add",
+        path: "/rules/-",
+        value: { apiGroups: [""], resources: ["pods/proxy"], verbs: ["get", "create"] },
+      },
+    ]),
   );
   await kubectl(
     "create",
@@ -1798,6 +1822,30 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
       placement,
     );
     assert.equal(operatorAccess.trim(), "yes", `the external test operator must authorize ${verb}`);
+  }
+
+  for (const [verb, resource] of [
+    ["get", "deployments.apps"],
+    ["list", "deployments.apps"],
+    ["get", "pods"],
+    ["list", "pods"],
+    ["get", "pods/proxy"],
+    ["create", "pods/proxy"],
+  ]) {
+    const apiAccess = await kubectl(
+      "auth",
+      "can-i",
+      verb,
+      resource,
+      "--namespace",
+      placement,
+      `--as=system:serviceaccount:${platformNamespace}:${controller.apiAccount}`,
+    );
+    assert.equal(
+      apiAccess.trim(),
+      "yes",
+      `the production API must authorize OAuth runtime ${verb} ${resource}`,
+    );
   }
 
   for (const verb of ["list", "patch"]) {

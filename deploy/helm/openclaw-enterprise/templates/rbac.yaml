@@ -98,7 +98,13 @@ rules:
     verbs: [get, create, update, patch, delete]
   - apiGroups: [apps]
     resources: [deployments]
-    verbs: [list]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods/proxy]
+    verbs: [get, create]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole

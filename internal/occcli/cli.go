@@ -22,6 +22,13 @@ const defaultTimeoutSeconds = "30"
 // Version is replaced with a release version when distribution packaging is added.
 var Version = "dev"
 
+var oauthPollDelay = 2 * time.Second
+
+type deploymentOAuthStart struct {
+	deploymentStatus any
+	observation      any
+}
+
 type application struct {
 	out            io.Writer
 	url            string
@@ -712,6 +719,8 @@ func (app *application) agentCommand() *cobra.Command {
 	update.Flags().StringVar(&updateFile, "file", "", "JSON document path")
 	_ = update.MarkFlagRequired("file")
 
+	var deployAuth string
+	var deployAuthTimeout string
 	deploy := &cobra.Command{
 		Use:   "deploy ID",
 		Short: "Deploy an Agent and create an immutable revision",
@@ -721,6 +730,16 @@ func (app *application) agentCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if deployAuth != "" && deployAuth != "oauth" {
+				return fmt.Errorf("unsupported deployment auth method %q: expected oauth", deployAuth)
+			}
+			if deployAuth == "oauth" && app.output != "table" {
+				return fmt.Errorf("OAuth activation prints a user code and requires table output")
+			}
+			authTimeout, err := time.ParseDuration(deployAuthTimeout)
+			if err != nil || authTimeout <= 0 {
+				return fmt.Errorf("OAuth activation timeout must be a positive duration")
+			}
 			client, err := app.client()
 			if err != nil {
 				return err
@@ -728,6 +747,36 @@ func (app *application) agentCommand() *cobra.Command {
 			revision, err := client.DeployAgent(namespace, args[0])
 			if err != nil {
 				return err
+			}
+			if deployAuth == "oauth" {
+				deploymentID, err := requiredStringField(revision, "id")
+				if err != nil {
+					return err
+				}
+				deadline := time.Now().Add(authTimeout)
+				started, err := startDeploymentOAuth(client, namespace, args[0], deploymentID, deadline)
+				if err != nil {
+					return err
+				}
+				status := started.deploymentStatus
+				if status == nil {
+					status, err = app.activateDeploymentOAuth(
+						client,
+						namespace,
+						args[0],
+						deploymentID,
+						started.observation,
+						deadline,
+					)
+					if err != nil {
+						return err
+					}
+				}
+				return app.printItems(status, false, []column{
+					{title: "DEPLOYMENT", key: "deploymentId"},
+					{title: "STATUS", key: "status"},
+					{title: "AGENT", key: "agentId"},
+				})
 			}
 			return app.printItems(revision, false, []column{
 				{title: "ID", key: "id"},
@@ -737,6 +786,8 @@ func (app *application) agentCommand() *cobra.Command {
 			})
 		},
 	}
+	deploy.Flags().StringVar(&deployAuth, "auth", "", "Deployment auth flow to complete: oauth")
+	deploy.Flags().StringVar(&deployAuthTimeout, "auth-timeout", "15m", "Maximum time to wait for OAuth activation")
 	stop := &cobra.Command{
 		Use:   "stop ID",
 		Short: "Stop an Agent while retaining its revision history and persistent state",
@@ -883,6 +934,313 @@ func (app *application) printAgent(value any, collection bool) error {
 		{title: "STATUS", key: "status"},
 		{title: "ACTIVE REVISION", key: "activeRevisionId"},
 	})
+}
+
+func startDeploymentOAuth(
+	client *occclient.Client,
+	namespaceID string,
+	agentID string,
+	deploymentID string,
+	deadline time.Time,
+) (deploymentOAuthStart, error) {
+	for {
+		if time.Now().After(deadline) {
+			return deploymentOAuthStart{}, fmt.Errorf("OAuth activation timed out")
+		}
+		status, done, err := observeDeploymentStatus(client, namespaceID, agentID, deploymentID, "before OAuth activation")
+		if err != nil {
+			return deploymentOAuthStart{}, err
+		}
+		if done {
+			return deploymentOAuthStart{deploymentStatus: status}, nil
+		}
+		observation, err := client.StartAgentDeploymentAuth(namespaceID, agentID, deploymentID)
+		if err != nil {
+			status, done, statusErr := observeDeploymentStatus(
+				client,
+				namespaceID,
+				agentID,
+				deploymentID,
+				"after OAuth start failure",
+			)
+			if statusErr != nil {
+				return deploymentOAuthStart{}, statusErr
+			}
+			if done {
+				return deploymentOAuthStart{deploymentStatus: status}, nil
+			}
+			return deploymentOAuthStart{}, err
+		}
+		phase, err := requiredStringField(observation, "phase")
+		if err != nil {
+			return deploymentOAuthStart{}, err
+		}
+		status, done, err = observeDeploymentStatus(client, namespaceID, agentID, deploymentID, "after OAuth start")
+		if err != nil {
+			return deploymentOAuthStart{}, err
+		}
+		if done {
+			return deploymentOAuthStart{deploymentStatus: status}, nil
+		}
+		if phase != "preparing" {
+			return deploymentOAuthStart{observation: observation}, nil
+		}
+		if err := sleepUntilNextOAuthPoll(deadline); err != nil {
+			return deploymentOAuthStart{}, err
+		}
+	}
+}
+
+func (app *application) activateDeploymentOAuth(
+	client *occclient.Client,
+	namespaceID string,
+	agentID string,
+	deploymentID string,
+	initial any,
+	deadline time.Time,
+) (any, error) {
+	observation := initial
+	printedAttempts := map[string]bool{}
+	for {
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("OAuth activation timed out")
+		}
+		status, done, err := observeDeploymentStatus(client, namespaceID, agentID, deploymentID, "during OAuth activation")
+		if err != nil {
+			return nil, err
+		}
+		if done {
+			return status, nil
+		}
+		phase, err := requiredStringField(observation, "phase")
+		if err != nil {
+			return nil, err
+		}
+		switch phase {
+		case "preparing":
+			if err := sleepUntilNextOAuthPoll(deadline); err != nil {
+				return nil, err
+			}
+			observation, err = client.GetAgentDeploymentAuth(namespaceID, agentID, deploymentID)
+			if err != nil {
+				return deploymentStatusIfSucceededAfterAuthError(
+					client,
+					namespaceID,
+					agentID,
+					deploymentID,
+					err,
+				)
+			}
+		case "waiting":
+			attemptID, err := requiredStringField(observation, "attemptId")
+			if err != nil {
+				return nil, err
+			}
+			if !printedAttempts[attemptID] {
+				if err := app.printOAuthDeviceCode(observation); err != nil {
+					return nil, err
+				}
+				printedAttempts[attemptID] = true
+			}
+			expired, err := oauthAttemptExpired(observation)
+			if err != nil {
+				return nil, err
+			}
+			if expired {
+				return nil, fmt.Errorf("OAuth authorization expired")
+			}
+			if err := sleepUntilNextOAuthPoll(deadline); err != nil {
+				return nil, err
+			}
+			observation, err = client.GetAgentDeploymentAuth(namespaceID, agentID, deploymentID)
+			if err != nil {
+				return deploymentStatusIfSucceededAfterAuthError(
+					client,
+					namespaceID,
+					agentID,
+					deploymentID,
+					err,
+				)
+			}
+		case "authorized":
+			attemptID, err := requiredStringField(observation, "attemptId")
+			if err != nil {
+				return nil, err
+			}
+			observation, err = client.CompleteAgentDeploymentAuth(
+				namespaceID,
+				agentID,
+				deploymentID,
+				attemptID,
+			)
+			if err != nil {
+				return deploymentStatusIfSucceededAfterAuthError(
+					client,
+					namespaceID,
+					agentID,
+					deploymentID,
+					err,
+				)
+			}
+		case "committed":
+			return waitForDeploymentSucceeded(client, namespaceID, agentID, deploymentID, deadline)
+		case "failed":
+			reason, _ := stringField(observation, "reason")
+			if reason == "" {
+				reason = "unavailable"
+			}
+			return nil, fmt.Errorf("OAuth authorization failed: %s", reason)
+		default:
+			return nil, fmt.Errorf("OCC returned unsupported OAuth phase %q", phase)
+		}
+	}
+}
+
+func deploymentStatusIfSucceededAfterAuthError(
+	client *occclient.Client,
+	namespaceID string,
+	agentID string,
+	deploymentID string,
+	authErr error,
+) (any, error) {
+	if strings.Contains(authErr.Error(), "(HTTP 401)") {
+		return nil, authErr
+	}
+	status, err := client.GetAgentDeployment(namespaceID, agentID, deploymentID)
+	if err != nil {
+		return nil, authErr
+	}
+	state, err := requiredStringField(status, "status")
+	if err != nil {
+		return nil, authErr
+	}
+	if state == "succeeded" {
+		return status, nil
+	}
+	return nil, authErr
+}
+
+func observeDeploymentStatus(
+	client *occclient.Client,
+	namespaceID string,
+	agentID string,
+	deploymentID string,
+	context string,
+) (any, bool, error) {
+	status, err := client.GetAgentDeployment(namespaceID, agentID, deploymentID)
+	if err != nil {
+		return nil, false, err
+	}
+	state, err := requiredStringField(status, "status")
+	if err != nil {
+		return nil, false, err
+	}
+	switch state {
+	case "succeeded":
+		return status, true, nil
+	case "failed":
+		return nil, true, fmt.Errorf("deployment failed %s", context)
+	case "queued", "running":
+		return nil, false, nil
+	default:
+		return nil, false, fmt.Errorf("OCC returned unsupported deployment status %q", state)
+	}
+}
+
+func (app *application) printOAuthDeviceCode(observation any) error {
+	verificationURL, err := requiredStringField(observation, "verificationUrl")
+	if err != nil {
+		return err
+	}
+	userCode, err := requiredStringField(observation, "userCode")
+	if err != nil {
+		return err
+	}
+	expiresAt, err := requiredStringField(observation, "expiresAt")
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(
+		app.out,
+		"OpenAI OAuth authorization required.\nVisit: %s\nUser code: %s\nExpires: %s\nWaiting for authorization...\n\n",
+		verificationURL,
+		userCode,
+		expiresAt,
+	)
+	return err
+}
+
+func waitForDeploymentSucceeded(
+	client *occclient.Client,
+	namespaceID string,
+	agentID string,
+	deploymentID string,
+	deadline time.Time,
+) (any, error) {
+	for {
+		status, err := client.GetAgentDeployment(namespaceID, agentID, deploymentID)
+		if err != nil {
+			return nil, err
+		}
+		state, err := requiredStringField(status, "status")
+		if err != nil {
+			return nil, err
+		}
+		switch state {
+		case "succeeded":
+			return status, nil
+		case "failed":
+			return nil, fmt.Errorf("deployment failed after OAuth commit")
+		case "queued", "running":
+			if err := sleepUntilNextOAuthPoll(deadline); err != nil {
+				return nil, err
+			}
+		default:
+			return nil, fmt.Errorf("OCC returned unsupported deployment status %q", state)
+		}
+	}
+}
+
+func sleepUntilNextOAuthPoll(deadline time.Time) error {
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return fmt.Errorf("OAuth activation timed out")
+	}
+	delay := oauthPollDelay
+	if remaining < delay {
+		delay = remaining
+	}
+	time.Sleep(delay)
+	return nil
+}
+
+func oauthAttemptExpired(value any) (bool, error) {
+	expiresAt, err := requiredStringField(value, "expiresAt")
+	if err != nil {
+		return false, err
+	}
+	expires, err := time.Parse(time.RFC3339, expiresAt)
+	if err != nil {
+		return false, fmt.Errorf("OCC returned an invalid OAuth expiration")
+	}
+	return !time.Now().Before(expires), nil
+}
+
+func requiredStringField(value any, key string) (string, error) {
+	result, ok := stringField(value, key)
+	if !ok || result == "" {
+		return "", fmt.Errorf("OCC returned an invalid response")
+	}
+	return result, nil
+}
+
+func stringField(value any, key string) (string, bool) {
+	record, ok := value.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	result, ok := record[key].(string)
+	return result, ok
 }
 
 func (app *application) printDeletion(kind, id string) error {
