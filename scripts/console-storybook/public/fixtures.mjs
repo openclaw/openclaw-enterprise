@@ -295,6 +295,10 @@ export function installFixture(scenario, evidence) {
       ) {
         continue;
       }
+      if (rule.skip > 0) {
+        rule.skip -= 1;
+        continue;
+      }
       rule.used = rule.once === true;
       if (rule.hold) {
         return new Promise((_resolve, reject) => {

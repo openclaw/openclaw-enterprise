@@ -172,7 +172,7 @@ that exact Secret through your authorized Namespace IAM operations. If the
 binding saves but the grant fails, ask a Namespace administrator to confirm
 `secret:operate` for this Agent on that Secret, then use **Retry credential
 access**. The retry checks the saved binding and does not resave it. If the
-binding changed, or the save outcome is unknown, use **Refresh** first.
+binding changed, or the save outcome is unknown, use **Reload authentication source** first.
 Deployment authorization failures remain visible beside **Deploy new revision**;
 check both your deployment permission and the Agent's credential access.
 The account availability message describes discovery, not model readiness.

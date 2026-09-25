@@ -42,3 +42,4 @@ export const AuthSecretGrantLoading = {
   name: "Checking model Secret access",
 };
 export const AuthSaveUnknown = { ...story("authSaveUnknown"), name: "Authentication save unknown" };
+export const AuthenticationNavigation = story("authenticationNavigation");

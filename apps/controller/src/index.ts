@@ -3517,14 +3517,16 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     reply.status(asset.statusCode).send(request.method === "HEAD" ? undefined : asset.body);
   }
 
+  // Route patterns are fixed for this app; retain contract order for the Allow header.
+  const methodRoutes = occApiRoutes.map(({ method, path }) => ({
+    method,
+    pattern: new RegExp(`^${path.replace(/:[^/]+/g, "[^/]+")}$`),
+  }));
   app.setNotFoundHandler(async (request, reply) => {
     const pathname = request.url.split("?", 1)[0] ?? "";
-    const allowed = occApiRoutes
-      .filter((operation) => {
-        const pattern = operation.path.replace(/:[^/]+/g, "[^/]+");
-        return new RegExp(`^${pattern}$`).test(pathname);
-      })
-      .map((operation) => operation.method);
+    const allowed = methodRoutes
+      .filter(({ pattern }) => pattern.test(pathname))
+      .map(({ method }) => method);
     if (allowed.length > 0) {
       reply.header("allow", [...new Set(allowed)].join(", "));
       canonicalFailure(

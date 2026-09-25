@@ -70,6 +70,7 @@ Namespace. Enter a token only in new mode; it is stored when you create the Agen
 Existing mode reuses the selected reference without reading credential bytes.
 
 Variables are used once to fill the form. Edit the resulting fields directly.
+You can navigate away and return to your [unsaved Console draft](../../reference/console/create-and-deploy.md#create-an-agent); reenter any new credentials.
 Before saving, to choose another Preset or supply different variables, select **Start over**
 and confirm that the unsaved draft can be discarded. A supplied
 `configuration.values` replaces the entire native JSON editor.

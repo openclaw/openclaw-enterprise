@@ -1,15 +1,14 @@
 ---
 created: 2026-09-01
-updated: 2026-09-24
-last_updated_session: authoring-run/fdba83e7-9f34-4b8b-8af2-625214851f27
+updated: 2026-09-25
+last_updated_session: 01a0d557-f6e3-7da2-af52-993d05735554
 ---
 
 # Platform console request flow
 
 ## Overview
 
-Opening `/console/` resolves a session and renders authorized resources.
-This trace follows Namespace selection, Agent workflows, Backends, and logout.
+`/console/` resolves a session and renders authorized resources.
 The [console reference](../reference/console.md) owns user-visible behavior;
 API and IAM authorize resources.
 
@@ -17,14 +16,12 @@ API and IAM authorize resources.
 
 - Browser entry: `apps/controller/src/console/console.mjs` composes the session,
   request client, view lifetime, navigation, and shell.
-- Browser modules: `apps/controller/src/console/api-client.mjs` owns request
-  cancellation and current-session expiry handling; `view-lifetime.mjs` owns
-  generation and abort state; `navigation.mjs` owns safe return paths and history;
-  `shell.mjs` owns shared navigation and collection rendering.
-- Capability pages: `apps/controller/src/console/agents/{list,create,detail}.mjs`
-  own Agent views, while `channels/{slack,shared-ui}.mjs` own the Slack form
-  and its shared editor. Existing `agents.mjs` and `channels.mjs` compose these
-  modules through their current entrypoints.
+- `api-client.mjs` owns cancellation and session expiry; `view-lifetime.mjs`
+  owns generation and abort state; `navigation.mjs` owns return paths and history;
+  `shell.mjs` owns navigation and collections.
+- `agents/{list,create,detail}.mjs` own Agent views;
+  `channels/{slack,shared-ui}.mjs` own Slack editing. `agents.mjs` and
+  `channels.mjs` compose them.
 - HTTP: `apps/controller/src/index.ts:createFastifyApp`.
 - Startup: `apps/controller/src/composition/production.ts:composeProduction`
   and `development-postgres.ts:composePostgresDevelopment`.
@@ -124,9 +121,9 @@ these reads. Missing provenance and failures remain explicit. The
 
 `apps/controller/src/console/console.mjs:loadPage`
 
-The browser clears the prior view, advances its generation, and requests
+The browser clears the view, advances generation, and requests
 `GET /api/auth/session`. Missing sessions open login; failed reads offer Retry.
-Login submits email and password.
+Login submits credentials.
 `apps/controller/src/auth/index.ts:requireTrustedBrowserOrigin` checks browser
 Origin before sign-in/out, including SDK calls that bypass Better Auth middleware.
 Headerless CLI requests remain supported. Better Auth owns session cookies and
@@ -204,7 +201,9 @@ selections but retains created Namespace Secrets.
 Console submits opaque references and an explicit common profile. Read-only and
 Contributor use approved profiles; customization can disable issue management. Only
 `503 REPOSITORY_OPTIONS_UNAVAILABLE` permits a fresh draft without bindings;
-other failures block submission. Retry discovery before provisioning.
+other failures block submission. `draftBindings()` captures selections independently
+of discovery results. Failed reads retain them and block creation; successful
+reads filter them against current policy. Retry discovery before provisioning.
 
 Supported Dedicated runtimes with successful repository discovery submit inline
 Configuration, repository bindings, and Secret references to
@@ -250,16 +249,14 @@ sender lists or a `*` channel entry are rejected by the simple editor so native
 Configuration JSON remains the source of truth.
 
 `apps/controller/src/console/agents/detail.mjs:renderAgentDetail` registers a
-handler for tab-only navigation with `console.mjs:loadPage`. For the same Agent,
-Namespace, and revision, tab clicks and browser history update the URL and replace
-only the content below the tabs. The shell, native-admin panel, and loaded
-revision controls remain mounted. Configuration and revision reads are shared
+handler for tab-only navigation with `console.mjs:loadPage`. Within one Agent, Namespace, and revision, tabs and browser history replace only
+tab content. The shell, native-admin panel, and revision controls stay mounted. Configuration and revision reads are shared
 within that detail view; a direct Workspace files URL does not wait for or start
 those reads. Refresh, revision changes, and successful channel or authentication
 edits use the full page read path.
 
 Each tab render captures its own generation. Late panel reads and form callbacks
-cannot overwrite a newer tab; leaving a tab clears its password inputs. Channel
+cannot overwrite a newer tab; password values clear while [draft captures](platform-console/agent-editing.md#4-render-draft-revision-or-channels) retain edits. Channel
 Secret saves update the shared draft snapshot used by other tabs and deployment
 preflight. Session expiry still clears the whole private view.
 
@@ -331,6 +328,10 @@ uncertain response disables replay until refresh and inspection.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-25 00:00: Retain repository draft bindings through failed rediscovery. (01a0d557-f6e3-7da2-af52-993d05735554 - 2e0604a2)
+
+- 2026-09-24 22:03: Link shared editor draft capture before tab teardown. (01a0d557-f6e3-7da2-af52-993d05735554 - a91cbfdd37b64c88b7ee48647096ff6bfd993e02)
 
 - 2026-09-24 17:13: Trace the header Namespace selector and preserved navigation scope. (authoring-run/fdba83e7-9f34-4b8b-8af2-625214851f27 - 1a458b227585c572ec0ac70fd10efc3834165075)
 

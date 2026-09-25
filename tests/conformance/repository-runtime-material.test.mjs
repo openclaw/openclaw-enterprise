@@ -1107,6 +1107,28 @@ test("Kubernetes rejects malformed repository exec configuration before any API 
   }
 });
 
+test("Kubernetes rejects invalid repository text before any API access", async (t) => {
+  for (const [name, content] of [
+    ["unpaired high surrogate", "\ud800"],
+    ["unpaired low surrogate", "\udfff"],
+    ["UTF-8 byte limit", "\u00e9".repeat(32 * 1024) + "a"],
+  ]) {
+    await t.test(name, async () => {
+      const f = await fixture();
+      const binding = runtimeBinding();
+      binding.files["ca.pem"] = content;
+      const document = JSON.parse(binding.files["client.json"]);
+      document.hasPublicCa = true;
+      binding.files["client.json"] = JSON.stringify(document);
+      // No Secret or workload may observe text that cannot be stored losslessly.
+      await assert.rejects(f.driver.prepareRevision(f.revision, f.context([binding])), {
+        message: "Repository credential material is invalid.",
+      });
+      assert.deepEqual(f.apiCalls, []);
+    });
+  }
+});
+
 for (const mode of ["embedded", "dedicated"]) {
   test(`Kubernetes repository material lifecycle (${mode})`, async (t) => {
     await t.test(

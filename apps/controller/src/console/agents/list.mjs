@@ -46,6 +46,8 @@ export function renderAgentList(context) {
     "aria-label": "Search Agents",
     placeholder: "Search Agents by name or ID",
   });
+  search.value = context.drafts.get("agent-search") ?? "";
+  context.drafts.track("agent-search", () => search.value || undefined);
   const rows = element("div");
   const create = button("Create Agent", () => context.navigate("agents/new"), {
     className: "primary",

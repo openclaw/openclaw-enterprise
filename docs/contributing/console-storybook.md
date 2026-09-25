@@ -149,6 +149,22 @@ requires a current nonempty repository selection before retrying. GitHub App
 setup, Namespace approvals, runtime images, and credential-service networking
 remain operator prerequisites; the fixture does not verify them.
 
+### Keep edits while navigating
+
+Use **Pages/Agent detail → Keep Configuration edits**, **Components/Workspace →
+Keep unsaved files**, **Components/Credentials → Keep authentication choices**,
+and **Components/Channels → Keep Slack edits**. Edit each form, visit another tab
+or Namespaces, and return with Back/Forward. Check empty and invalid text, then
+explicit Cancel or Reload. The Configuration story keeps deployment disabled;
+workspace Save changes only the selected simulated file.
+
+Use **Pages/Create Agent → Keep Preset variables** before applying a Preset and
+**Keep an unsaved Preset draft** afterward. Ordinary fields survive while token
+inputs clear. Revisit the Agents list to check its search filter. Existing denied,
+loading, missing-file, and uncertain-write stories verify that retention does not
+bypass the editor's access or recovery controls. These are simulated UI checks,
+not backend persistence or live gateway proof.
+
 ### Discover and configure plugins
 
 **Create Agent / Discover plugins with a service account token** uses a dummy

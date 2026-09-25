@@ -45,6 +45,8 @@ export function renderWorkspaceFiles(context, agent, path) {
     return section;
   }
   for (const name of filenames) {
+    const draftKey = `workspace:${name}`;
+    const retained = context.drafts.get(draftKey);
     const endpoint = `${path}/workspace/files/${encodeURIComponent(name)}`;
     const editor = element("textarea", {
       id: `workspace-${name}`,
@@ -59,13 +61,23 @@ export function renderWorkspaceFiles(context, agent, path) {
     let pending = false;
     let loaded = false;
     let baseline;
-    let outcomeUnknown = false;
+    let outcomeUnknown = retained?.outcomeUnknown ?? false;
+    let writing = false;
+    let initialized = false;
+    context.drafts.track(draftKey, () => {
+      if (!loaded && !initialized) {
+        return retained;
+      }
+      return writing || outcomeUnknown || editor.value !== (baseline ?? "")
+        ? { text: editor.value, baseline, outcomeUnknown: outcomeUnknown || writing }
+        : undefined;
+    });
     const save = element(
       "button",
       { type: "submit", className: "primary", disabled: true },
       `Save ${name}`,
     );
-    const reload = button(`Reload ${name}`, () => void load());
+    const reload = button(`Reload ${name}`, () => void load(true));
     const form = element(
       "form",
       { className: "agent-card agent-form" },
@@ -93,7 +105,7 @@ export function renderWorkspaceFiles(context, agent, path) {
       editor.setCustomValidity("");
       updateControls();
     });
-    async function load() {
+    async function load(discard = false) {
       if (pending || !context.isCurrent()) {
         return;
       }
@@ -112,6 +124,15 @@ export function renderWorkspaceFiles(context, agent, path) {
         loaded = true;
         outcomeUnknown = false;
         status.textContent = `${name} loaded.`;
+        if (!discard && retained && !initialized) {
+          editor.value = retained.text;
+          baseline = retained.baseline;
+          outcomeUnknown = retained.outcomeUnknown;
+          status.textContent = outcomeUnknown
+            ? "Outcome unknown. Reload this file before saving again."
+            : "Unsaved edits restored. Reload replaces them with the current file.";
+        }
+        initialized = true;
       } catch (cause) {
         if (!context.isCurrent()) {
           return;
@@ -122,8 +143,9 @@ export function renderWorkspaceFiles(context, agent, path) {
         }
         // A missing file can be created through PUT. Other read failures never enable a blank overwrite.
         if (cause.status === 404 && !outcomeUnknown) {
-          editor.value = "";
-          baseline = undefined;
+          editor.value = !discard && retained ? retained.text : "";
+          baseline = !discard && retained ? retained.baseline : undefined;
+          initialized = true;
           editor.setCustomValidity("");
           loaded = true;
         } else {
@@ -134,6 +156,7 @@ export function renderWorkspaceFiles(context, agent, path) {
       } finally {
         if (context.isCurrent()) {
           pending = false;
+          writing = false;
           updateControls();
         }
       }
@@ -162,6 +185,7 @@ export function renderWorkspaceFiles(context, agent, path) {
         return;
       }
       pending = true;
+      writing = true;
       updateControls();
       error.textContent = "";
       status.textContent = `Saving ${name}…`;
@@ -171,6 +195,7 @@ export function renderWorkspaceFiles(context, agent, path) {
           return;
         }
         baseline = content;
+        outcomeUnknown = false;
         status.textContent = `${name} saved.`;
       } catch (cause) {
         if (!context.isCurrent()) {
@@ -186,6 +211,7 @@ export function renderWorkspaceFiles(context, agent, path) {
       } finally {
         if (context.isCurrent()) {
           pending = false;
+          writing = false;
           updateControls();
         }
       }

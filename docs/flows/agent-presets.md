@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
 updated: 2026-09-24
-last_updated_session: codex/01a0d172-2f0a-7ec3-91ff-323d532464c7
+last_updated_session: codex/01a0d557-f6e3-7da2-af52-993d05735554
 ---
 
 # Agent Presets flow
@@ -141,6 +141,19 @@ chooser clears its detached password controls. Preset updates or deletion cannot
 chooser. After a save succeeds or its outcome becomes uncertain, restart is
 disabled so the user follows ordinary creation recovery.
 
+`apps/controller/src/console/console.mjs:loadPage`
+
+Before resetting the view, Console captures the unsaved form's raw editor text,
+model controls, workspace files, repository selections, and staged Secret
+references. The in-memory map is scoped to the signed-in user and Namespace.
+Returning through navigation or browser history reconstructs the form from that
+copy; capability and repository discovery run again against current access.
+Invalid JSON survives as text. Password controls and plugin discovery results
+are excluded. Start over removes the copy; session loss, logout, a different
+signed-in user, and page exit clear the map. Starting a save removes its capture
+before any mutation, so a later route return cannot replay a pre-save copy as a
+new Agent. Existing partial-save recovery remains local to its form.
+
 ### 4. Save an independent draft
 
 `apps/controller/src/console/agents/create.mjs:renderCreateAgent`
@@ -214,6 +227,8 @@ or an immutable admitted revision.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-09-24 21:39: Retain unsaved Console draft edits across navigation in memory, clearing credentials and preserving explicit discard (codex/01a0d557-f6e3-7da2-af52-993d05735554 - 12fc35b9c358c7992c09f7f23ffb5d4df349a19c)
 
 - 2026-09-24 12:03: Default SWE Agent to GPT-6-Astra with Codex service-account authentication; allow existing or new model Secrets in the Preset chooser (codex/01a0d172-2f0a-7ec3-91ff-323d532464c7 - a4733ed0759840ff65907be03b49cf8979256ecf)
 

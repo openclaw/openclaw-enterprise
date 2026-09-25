@@ -401,12 +401,16 @@ export async function renderAgentDetail(context) {
     let deployPending = false;
     let deployStatus;
     let deployFeedback;
-    let authenticationPending = false;
+    const retainedAuthentication = context.drafts.get("authentication");
+    let authenticationPending = Boolean(
+      retainedAuthentication?.outcomeUnknown || retainedAuthentication?.savedAuthentication,
+    );
+    const retainedEditor = context.drafts.get("configuration");
     const draftEditorState = {
-      dirty: false,
+      dirty: Boolean(retainedEditor && retainedEditor.text !== retainedEditor.initialText),
       saving: false,
-      outcomeUnknown: false,
-      reloadRequired: false,
+      outcomeUnknown: retainedEditor?.outcomeUnknown ?? false,
+      reloadRequired: retainedEditor?.reloadRequired ?? false,
     };
     const runtimeAuth = agent.harnessAuth?.method === "runtime";
     const credentials =
@@ -584,9 +588,7 @@ export async function renderAgentDetail(context) {
             ? "Reload this draft before leaving the editor."
             : draftEditorState.saving
               ? "Wait for Configuration save to finish before leaving the editor."
-              : draftEditorState.dirty
-                ? "Save or cancel Configuration edits before leaving this tab."
-                : null;
+              : null;
         updateNavigationControls();
         updateDeployControls();
       },
@@ -594,6 +596,7 @@ export async function renderAgentDetail(context) {
   }
 
   async function renderTab() {
+    context.flushDrafts();
     const activeTab = ++tabGeneration;
     const tabContext = {
       ...context,
@@ -652,6 +655,8 @@ export async function renderAgentDetail(context) {
         executionMode,
         readOnly: !draft,
         drawerContext: {
+          drafts: context.drafts,
+          baseline: JSON.stringify([snapshot.id, snapshot.generation]),
           namespaceId,
           request,
           agentName: agent.name,
@@ -711,6 +716,7 @@ export async function renderAgentDetail(context) {
               throw error;
             }
             if (context.isCurrent()) {
+              context.drafts.forget("channels");
               change("draft", "channels");
             }
           } catch (error) {
@@ -739,22 +745,73 @@ export async function renderAgentDetail(context) {
       });
       content.append(channels);
     } else if (selectedTab === "credentials" && draft) {
-      const auth = createHarnessAuthFields(context, agent.harnessAuth, agent.executionMode);
+      const retained = context.drafts.get("authentication");
+      const baseline = retained?.baseline ?? {
+        configurationId: agent.configurationId,
+        harnessAuth: agent.harnessAuth,
+      };
+      const auth = createHarnessAuthFields(
+        context,
+        agent.harnessAuth,
+        agent.executionMode,
+        retained?.fields,
+      );
       const feedback = element("p", { role: "status", className: "hint" });
       const save = element(
         "button",
         { type: "submit", className: "primary" },
         "Save authentication source",
       );
-      const form = element("form", { className: "agent-card" }, auth.section, save, feedback);
-      let outcomeUnknown = false;
-      let savedAuthentication = null;
+      const reload = button("Reload authentication source", () => {
+        context.drafts.forget("authentication");
+        change("draft", "credentials");
+      });
+      const form = element(
+        "form",
+        { className: "agent-card" },
+        auth.section,
+        save,
+        reload,
+        feedback,
+      );
+      let outcomeUnknown = retained?.outcomeUnknown ?? false;
+      let pending = false;
+      let savedAuthentication = retained?.savedAuthentication ?? null;
+      const originalFields = retained?.originalFields ?? auth.capture();
+      context.drafts.track("authentication", () => {
+        const fields = auth.capture();
+        return pending ||
+          outcomeUnknown ||
+          savedAuthentication ||
+          JSON.stringify(fields) !== JSON.stringify(originalFields)
+          ? {
+              fields,
+              originalFields,
+              baseline,
+              savedAuthentication,
+              outcomeUnknown: outcomeUnknown || pending,
+            }
+          : undefined;
+      });
+      if (savedAuthentication) {
+        save.textContent = "Retry credential access";
+        auth.setDisabled(true);
+        feedback.textContent =
+          "Authentication source saved. Retry credential access to confirm this Agent can use the selected Secret.";
+      }
+      if (outcomeUnknown) {
+        save.disabled = true;
+        auth.setDisabled(true);
+        feedback.textContent = "Outcome unknown. Reload authentication source before saving again.";
+      }
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
         if (!form.reportValidity() || save.disabled) {
           return;
         }
         save.disabled = true;
+        pending = true;
+        reload.disabled = true;
         auth.setDisabled(true);
         data.setAuthenticationPending(true);
         feedback.textContent = savedAuthentication
@@ -767,13 +824,13 @@ export async function renderAgentDetail(context) {
           if (!context.isCurrent()) {
             return;
           }
-          const expected = savedAuthentication ?? agent;
+          const expected = savedAuthentication ?? baseline;
           if (
             current.configurationId !== expected.configurationId ||
             JSON.stringify(current.harnessAuth) !== JSON.stringify(expected.harnessAuth)
           ) {
             feedback.textContent =
-              "The Configuration changed. Refresh before saving authentication.";
+              "The Configuration changed. Reload authentication source before saving.";
             outcomeUnknown = true;
             return;
           }
@@ -791,6 +848,7 @@ export async function renderAgentDetail(context) {
           }
           data.setAuthenticationPending(false);
           if (context.isCurrent()) {
+            context.drafts.forget("authentication");
             change("draft", "credentials");
           }
         } catch (error) {
@@ -811,6 +869,8 @@ export async function renderAgentDetail(context) {
             save.textContent = savedAuthentication
               ? "Retry credential access"
               : "Save authentication source";
+            pending = false;
+            reload.disabled = false;
             save.disabled = outcomeUnknown;
             auth.setDisabled(outcomeUnknown || savedAuthentication !== null);
           }
@@ -877,11 +937,13 @@ export async function renderAgentDetail(context) {
   function renderDraftConfigurationEditor(context, data) {
     const { snapshot, values, setDraftEditorState } = data;
     const container = element("div", { className: "configuration-draft-editor" });
-    let editing = false;
+    const retained = context.drafts.get("configuration");
+    let baseline = retained?.baseline ?? { id: snapshot.id, generation: snapshot.generation };
+    let editing = Boolean(retained);
     let pending = false;
-    let outcomeUnknown = false;
-    let reloadRequired = false;
-    const initialText = JSON.stringify(values, null, 2);
+    let outcomeUnknown = retained?.outcomeUnknown ?? false;
+    let reloadRequired = retained?.reloadRequired ?? false;
+    let initialText = retained?.initialText ?? JSON.stringify(values, null, 2);
     const editor = element("textarea", {
       id: "configuration-json",
       name: "configuration",
@@ -891,7 +953,18 @@ export async function renderAgentDetail(context) {
       spellcheck: "false",
       "aria-describedby": "configuration-json-hint",
     });
-    editor.value = initialText;
+    editor.value = retained?.text ?? initialText;
+    context.drafts.track("configuration", () =>
+      editing
+        ? {
+            text: editor.value,
+            initialText,
+            baseline,
+            outcomeUnknown: outcomeUnknown || pending,
+            reloadRequired,
+          }
+        : undefined,
+    );
     const feedback = element("p", { className: "hint", role: "status" });
     let feedbackLocked = false;
     const edit = button("Edit Configuration", () => {
@@ -902,6 +975,8 @@ export async function renderAgentDetail(context) {
       className: "primary",
     });
     const cancel = button("Cancel", () => {
+      baseline = { id: snapshot.id, generation: snapshot.generation };
+      initialText = JSON.stringify(values, null, 2);
       editing = false;
       editor.value = initialText;
       editor.setCustomValidity("");
@@ -916,6 +991,7 @@ export async function renderAgentDetail(context) {
       render();
     });
     const reload = button("Reload draft", () => {
+      context.drafts.forget("configuration");
       context.navigate(target("draft", "configuration"), namespaceId, true);
     });
 
@@ -1009,15 +1085,15 @@ export async function renderAgentDetail(context) {
         const [freshAgent, freshConfig] = await Promise.all([
           request(path),
           request(
-            `${namespacePath(namespaceId)}/configurations/${encodeURIComponent(snapshot.id)}`,
+            `${namespacePath(namespaceId)}/configurations/${encodeURIComponent(baseline.id)}`,
           ),
         ]);
         if (!context.isCurrent()) {
           return;
         }
         if (
-          freshAgent.configurationId !== snapshot.id ||
-          freshConfig.generation !== snapshot.generation
+          freshAgent.configurationId !== baseline.id ||
+          freshConfig.generation !== baseline.generation
         ) {
           feedback.textContent =
             "The saved Configuration changed while you were editing. Reload this draft before saving.";
@@ -1027,13 +1103,14 @@ export async function renderAgentDetail(context) {
         }
         mutationStarted = true;
         await request(
-          `${namespacePath(namespaceId)}/configurations/${encodeURIComponent(snapshot.id)}`,
+          `${namespacePath(namespaceId)}/configurations/${encodeURIComponent(baseline.id)}`,
           {
             method: "PATCH",
             body: { values: nextValues },
           },
         );
         if (context.isCurrent()) {
+          context.drafts.forget("configuration");
           context.navigate(target("draft", "configuration"), namespaceId, true);
         }
       } catch (error) {

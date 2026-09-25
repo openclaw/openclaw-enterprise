@@ -77,9 +77,26 @@ Configuration authorization and generation ownership.
 A successful save reloads the draft; admitted snapshots and active revision
 selection remain unchanged. Invalid input, denied writes, and stale drafts retain
 editor text. An uncertain mutation outcome blocks another save until successful
-readback. Unsaved or unresolved edits block deployment of the old saved values and tab or revision
-navigation until save, cancel, or the required reload resolves them.
+readback. Unsaved or unresolved edits block deployment of the old saved values.
+Ordinary edits survive tab, revision, and page navigation; pending or unresolved
+Configuration saves still block tab and revision changes until readback.
 Saving and deploying remain separate explicit actions.
+
+`apps/controller/src/console/drafts.mjs:createDraftStore` owns document-local
+snapshots. `console.mjs:resetReads` and `detail.mjs:renderTab` flush registered
+editor captures before teardown. Each editor explicitly selects its retained
+fields; actual passwords are excluded. Namespace and Agent keys isolate editors,
+and session expiry, user changes, logout, and page exit clear both snapshots and
+captures. No browser storage or URL carries draft contents. Preset variables,
+Create Agent fields, and Agent search use the same store.
+
+Configuration and authentication snapshots retain their original save baselines,
+so fresh reads on reentry cannot silently authorize overwriting concurrent edits.
+Channel snapshots retain their opening generation, raw controls, and staged Secret
+metadata; a changed baseline disables Save until Cancel discards the drawer.
+Successful saves forget their capture before navigation. Cancel and explicit
+editor reload discard edits; navigation during a pending save retains an
+unknown-outcome guard rather than replaying the request.
 
 `apps/controller/src/console/channels.mjs:renderChannels` renders supported
 Slack channel settings in **New revision** only. Slack uses fixed unresolved
@@ -155,26 +172,24 @@ After the Agent PATCH succeeds, it drops the cached detail snapshot and calls
 for a direct Secret source (`api_key` or `codex_pat`). The helper reads or creates
 a role containing only Secret `operate`, then reads or creates an exact binding
 for the Agent service principal and selected Secret in the current Namespace.
-These use the signed-in actor's authorized IAM routes. No broader permission or
-human access is granted. Issued accounts and runtime authentication do not use
-this grant path.
+Grants use the signed-in actor's IAM authority. Issued accounts and runtime
+authentication skip this path.
 
 A failed grant preserves the saved authentication and freezes its controls.
 **Retry credential access** rereads the Agent, refuses changed bindings, and
 repeats only the grant check. A lost committed grant response is recovered by
 reading existing bindings. An unknown PATCH outcome blocks another save and
-requires Refresh before any grant attempt. Saving and unresolved access block
-deployment in the current view; server admission remains authoritative after
-navigation or refresh. The deployment handler renders preflight and authorization
+requires **Reload authentication source** before any grant attempt. The saved
+binding and unresolved access survive navigation; deployment remains blocked
+until access is confirmed or the source is explicitly reloaded. Server admission
+remains authoritative. The deployment handler renders preflight and authorization
 errors separately from credential metadata so its final control update cannot
 erase the failure. Confirmed access does not establish provider readiness.
 
 `apps/controller/src/console/agents/credentials.mjs:createRuntimeCredentialsPanel`
 
 The **Operator-managed credentials** selection saves `{ "method": "runtime" }`
-without a source field. The console explains “Configured on the runtime host;
-not validated by OCC.” This mode does not request managed credential metadata
-or provisioning; it still requires readable revision history and unchanged draft
+without a source field. This mode skips managed credential metadata and provisioning; it still requires readable revision history and unchanged draft
 state before submitting deployment. API authorization and selected-driver
 compatibility checks remain authoritative.
 
@@ -213,7 +228,9 @@ history reads, because workspace contents belong to the live Agent. An Agent
 without an active revision gets an unavailable explanation without file requests.
 
 The editor issues one GET for each supported filename. A successful response
-populates that file's editor; `404` permits an explicit create attempt, and other
+reauthorizes file access before restoring retained text, including empty edits.
+Retained drafts keep their original baseline; explicit Reload replaces them with
+the current file. `404` permits an explicit create attempt, and other
 failures leave it disabled. Save sends `{ content }` to the same exact-Agent PUT
 route. It neither patches Configuration nor admits a revision. The existing
 [workspace flow](../workspace-files.md) owns authorization and native file transport.
@@ -303,6 +320,7 @@ subsequent worker cleanup and the Namespace-owned resources it preserves.
 ## Changelog
 
 - 2026-09-25 00:24: Trace authentication Secret grants, partial-save recovery, and persistent deployment errors in the accompanying change. (01a0d5ee-ab06-7571-8d4a-9ae0f33d5737 - 5f2f3a7448c7f5f0f4a5ed08be2395f2c5623ed7)
+- 2026-09-24 22:03: Trace shared document-local drafts, navigation capture, explicit discard, and retained save baselines. (01a0d557-f6e3-7da2-af52-993d05735554 - a91cbfdd37b64c88b7ee48647096ff6bfd993e02)
 
 - 2026-09-23 19:52: Record unsupported mixed Slack sender lists, unrepresentable sender IDs, and channel wildcard maps in the simple drawer. (01a0d150-104a-71a3-9e56-6c5e3ee510ea - 77aedc620f443056f9ee859050b8dc657a9c3133)
 
