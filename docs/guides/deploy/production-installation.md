@@ -193,7 +193,8 @@ Edit the protected YAML copies before provisioning anything:
 - `$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml`: set the bootstrap PVC name,
   namespace, size, and protected `storageClassName` for the cluster.
 
-Require these checks before provisioning:
+Require all checks below, including Helm rendering, to pass before provisioning.
+API startup also validates shared-cookie domain compatibility:
 
 ```bash
 yq e -e '.images.controller | test("@sha256:[a-f0-9]{64}$")' \

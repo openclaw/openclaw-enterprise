@@ -227,8 +227,10 @@ backups, credential renewal, and recovery responsibilities.
 Follow the [routing and file checks](workspace-routing.md#verify-routing-and-file-access)
 after Agent activation. Require accepted/programmed Gateway and HTTPRoute
 status, ready certificates, and an accepted API-key SecurityPolicy. Verify
-missing/invalid keys are rejected, and ordinary Agent workloads cannot connect
-to Envoy or the native gateway directly, even when Service DNS resolves.
+missing/invalid operator service keys are rejected. Dedicated Harnesses connect
+to Envoy for their authenticated workspace-node channel; this does not grant
+operator-route access. Verify that they cannot reach the native gateway directly,
+even when Service DNS resolves.
 
 Open the Agent's **Workspace files** tab in the signed-in Console. Read all four
 paths, save and reload a harmless temporary change, then restore the original
