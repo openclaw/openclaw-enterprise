@@ -163,6 +163,17 @@ function digest(value, length = 12) {
   return createHash("sha256").update(value).digest("hex").slice(0, length);
 }
 
+function previousKubernetesNamespaceName(namespaceId) {
+  const slug =
+    namespaceId
+      .toLowerCase()
+      .replace(/[^a-z0-9-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 46)
+      .replace(/-+$/g, "") || "ns";
+  return `oce-${slug}-${digest(namespaceId)}`;
+}
+
 function defaultGatewayHostname(routing) {
   return `occ-gateway-${digest(`${routing.gatewayNamespace}/${routing.gatewayName}`)}.${routing.envoyNamespace}.svc`;
 }
@@ -738,6 +749,10 @@ test("namespace resolver selects exact, secure external ownership using a transp
   delete managed.metadata.annotations["openclaw.dev/namespace-lifecycle"];
   assert.deepEqual(await discover([managed]), { name: managed.metadata.name, external: false });
 
+  const upgraded = structuredClone(managed);
+  upgraded.metadata.name = previousKubernetesNamespaceName(tenant.id);
+  assert.deepEqual(await discover([upgraded]), { name: upgraded.metadata.name, external: false });
+
   await assert.rejects(discover([external, structuredClone(external)]), /multiple/i);
   for (const [mutate, expected] of [
     [(item) => (item.metadata.name = ""), /unowned/i],
@@ -747,6 +762,21 @@ test("namespace resolver selects exact, secure external ownership using a transp
     ],
     [
       (item) => delete item.metadata.annotations["openclaw.dev/namespace-lifecycle"],
+      /external ownership/i,
+    ],
+    [
+      (item) => {
+        delete item.metadata.annotations["openclaw.dev/namespace-lifecycle"];
+        item.metadata.labels["app.kubernetes.io/managed-by"] = "openclaw-enterprise";
+        item.metadata.name = `oce-${digest(item.metadata.name, 15)}`;
+      },
+      /external ownership/i,
+    ],
+    [
+      (item) => {
+        delete item.metadata.annotations["openclaw.dev/namespace-lifecycle"];
+        item.metadata.name = previousKubernetesNamespaceName(tenant.id);
+      },
       /external ownership/i,
     ],
     [
@@ -767,7 +797,7 @@ test("Kubernetes namespace deletion waits for Sandbox namespace cleanup", async 
   const calls = [];
   let cleanupAttempts = 0;
   let present = true;
-  const namespaceName = kubernetesNamespaceName(tenant.id);
+  const namespaceName = previousKubernetesNamespaceName(tenant.id);
   const namespaceResource = {
     apiVersion: "v1",
     kind: "Namespace",
