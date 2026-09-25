@@ -163,16 +163,11 @@ function digest(value, length = 12) {
   return createHash("sha256").update(value).digest("hex").slice(0, length);
 }
 
-function previousKubernetesNamespaceName(namespaceId) {
-  const slug =
-    namespaceId
-      .toLowerCase()
-      .replace(/[^a-z0-9-]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 46)
-      .replace(/-+$/g, "") || "ns";
-  return `oce-${slug}-${digest(namespaceId)}`;
-}
+const previousTenantNamespaceName = "oce-ns-00000000-0000-4000-8000-000000000001-89d99db2f971";
+const previousPunctuatedNamespace = {
+  id: "Very_Long.Namespace/With Mixed_CASE_and punctuation that truncates before hash suffix 1234567890",
+  name: "oce-very-long-namespace-with-mixed-case-and-punctu-13352a1af7c0",
+};
 
 function defaultGatewayHostname(routing) {
   return `occ-gateway-${digest(`${routing.gatewayNamespace}/${routing.gatewayName}`)}.${routing.envoyNamespace}.svc`;
@@ -726,15 +721,15 @@ test("namespace resolver selects exact, secure external ownership using a transp
     status: { phase: "Active" },
   };
   // The fixture supplies Kubernetes response data only; the actual resolver makes every decision.
-  const discover = (items) =>
+  const discover = (items, namespaceId = tenant.id) =>
     resolveKubernetesNamespace(
       {
         async listNamespace(request) {
-          assert.equal(request.labelSelector, `openclaw.dev/namespace=${tenant.id}`);
+          assert.equal(request.labelSelector, `openclaw.dev/namespace=${namespaceId}`);
           return { apiVersion: "v1", kind: "NamespaceList", items };
         },
       },
-      tenant.id,
+      namespaceId,
     );
 
   assert.deepEqual(await discover([external]), { name: "customer-support", external: true });
@@ -750,8 +745,18 @@ test("namespace resolver selects exact, secure external ownership using a transp
   assert.deepEqual(await discover([managed]), { name: managed.metadata.name, external: false });
 
   const upgraded = structuredClone(managed);
-  upgraded.metadata.name = previousKubernetesNamespaceName(tenant.id);
+  upgraded.metadata.name = previousTenantNamespaceName;
   assert.deepEqual(await discover([upgraded]), { name: upgraded.metadata.name, external: false });
+
+  const upgradedPunctuated = structuredClone(managed);
+  upgradedPunctuated.metadata.name = previousPunctuatedNamespace.name;
+  upgradedPunctuated.metadata.labels["openclaw.dev/namespace"] = previousPunctuatedNamespace.id;
+  upgradedPunctuated.metadata.annotations["openclaw.dev/namespace-id"] =
+    previousPunctuatedNamespace.id;
+  assert.deepEqual(await discover([upgradedPunctuated], previousPunctuatedNamespace.id), {
+    name: previousPunctuatedNamespace.name,
+    external: false,
+  });
 
   await assert.rejects(discover([external, structuredClone(external)]), /multiple/i);
   for (const [mutate, expected] of [
@@ -768,14 +773,14 @@ test("namespace resolver selects exact, secure external ownership using a transp
       (item) => {
         delete item.metadata.annotations["openclaw.dev/namespace-lifecycle"];
         item.metadata.labels["app.kubernetes.io/managed-by"] = "openclaw-enterprise";
-        item.metadata.name = `oce-${digest(item.metadata.name, 15)}`;
+        item.metadata.name = "oce-wrong-managed-name";
       },
       /external ownership/i,
     ],
     [
       (item) => {
         delete item.metadata.annotations["openclaw.dev/namespace-lifecycle"];
-        item.metadata.name = previousKubernetesNamespaceName(tenant.id);
+        item.metadata.name = previousTenantNamespaceName;
       },
       /external ownership/i,
     ],
@@ -797,7 +802,7 @@ test("Kubernetes namespace deletion waits for Sandbox namespace cleanup", async 
   const calls = [];
   let cleanupAttempts = 0;
   let present = true;
-  const namespaceName = previousKubernetesNamespaceName(tenant.id);
+  const namespaceName = previousTenantNamespaceName;
   const namespaceResource = {
     apiVersion: "v1",
     kind: "Namespace",
