@@ -210,18 +210,19 @@ nor the audit event receives credential bytes. External Secret creation cannot
 be rolled back by a failed database transaction, so errors require readback.
 
 Slack fields separately derive bound state from Configuration `secretBindings`.
-Each bound field renders a synthetic password mask, never a saved Secret value.
-Focusing the field clears the mask for replacement; an empty bound field keeps
-its existing binding. The save gate requires at least one entered replacement
-and either an existing binding or replacement for both token slots.
+Each field uses the shared Secret reference picker: it lists readable Namespace
+Secrets, shows the current Secret reference by name when metadata is readable,
+falls back to the bound Secret ID when metadata is unavailable, and can create a
+new Namespace Secret without reading any existing value back.
 
-On explicit submission, the browser skips unchanged slots. For each replacement,
-`storeChannelSecret` creates or updates the Namespace Secret and
-`ensureSecretOperateBinding` grants the Agent access. The Configuration PATCH
-preserves other bindings and incorporates the written Secret references. These
-are separate writes; uncertain outcomes block another save until refresh. The
-mask never enters the write set. Entered values clear after an attempt or panel
-teardown; masks are recreated from bound metadata.
+On explicit submission, the browser PATCHes the Configuration with the selected
+Secret references and then calls `ensureSecretOperateBinding` for the changed
+Secrets. The Configuration PATCH preserves other bindings. These are separate
+writes; an access-grant failure after the PATCH leaves the new binding saved,
+shows a partial-success warning, and blocks deployment from the current view
+until the operator repairs access or refreshes. Secret value rotation remains a
+separate Secret operation; changing the picker switches references rather than
+overwriting a shared Secret value.
 
 ### 6. Read and replace live workspace files
 
@@ -332,6 +333,7 @@ subsequent worker cleanup and the Namespace-owned resources it preserves.
 - 2026-09-23 08:30: Trace Slack Secret menus, immediate creation, staged bindings, and explicit IAM grants before Configuration save. (01a0cd92-fd3f-7d83-a51e-f6264ef6be09 - 941edc9f6971a24ae29a74a6ca749b6375e6ec01)
 
 - 2026-09-23 02:26: Trace Slack credential navigation and preservation of unsaved channel edits; remove the generic drawer sharing footnote. (01a0cd92-fd3f-7d83-a51e-f6264ef6be09 - 380f7706e2856f1ac1e3bed7f5ddd9c71d133ba8)
+- 2026-09-24: Use shared Secret pickers for draft harness authentication and Slack runtime credential bindings; switching references no longer overwrites existing Secret values.
 
 - 2026-09-22 23:30: Trace native Configuration draft editing, save checks, and immutable snapshot navigation. (01a0ccc0-00fa-7173-ab45-f7a5fb55b3b6 - 0dabaafb97326254e5ae173491be014aaa6388c6)
 

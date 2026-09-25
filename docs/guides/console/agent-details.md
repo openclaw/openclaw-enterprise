@@ -158,13 +158,13 @@ the console. Use the operator workflow for those Agents.
 
 **Authentication source** determines how the harness gets model credentials:
 
-| Choice                           | Required input and effect                                                                           |
-| -------------------------------- | --------------------------------------------------------------------------------------------------- |
-| **None**                         | No binding; deployment remains blocked.                                                             |
-| **API key**                      | Existing Namespace Secret ID, not the API key value.                                                |
-| **Service Accounts**             | Existing Namespace Secret ID containing a service account token; available for Dedicated execution. |
-| **Operator-managed credentials** | Credentials configured on the runtime host; OCC does not validate them.                             |
-| **ChatGPT service account**      | Select an already issued account in this Namespace. This selector does not create an account.       |
+| Choice                           | Required input and effect                                                                        |
+| -------------------------------- | ------------------------------------------------------------------------------------------------ |
+| **None**                         | No binding; deployment remains blocked.                                                          |
+| **API key**                      | Select a Namespace Secret containing the API key, or create one through the picker.              |
+| **Service Accounts**             | Select a Namespace Secret containing a service account token; available for Dedicated execution. |
+| **Operator-managed credentials** | Credentials configured on the runtime host; OCC does not validate them.                          |
+| **ChatGPT service account**      | Select an already issued account in this Namespace. This selector does not create an account.    |
 
 **Save authentication source** saves the Agent binding for a future deployment.
 For API keys and Service Accounts tokens, it also grants the Agent access to
@@ -175,7 +175,9 @@ access**. The retry checks the saved binding and does not resave it. If the
 binding changed, or the save outcome is unknown, use **Reload authentication source** first.
 Deployment authorization failures remain visible beside **Deploy new revision**;
 check both your deployment permission and the Agent's credential access.
-The account availability message describes discovery, not model readiness.
+Changing between **API key** and **Service Accounts** clears the selected Secret
+so a token is not silently reused for another authentication method. The account
+availability message describes discovery, not model readiness.
 See [harness authentication](../../reference/harness-execution.md#harness-authentication).
 
 ### Runtime and Slack credentials
@@ -186,18 +188,17 @@ See [harness authentication](../../reference/harness-execution.md#harness-authen
 | **Slack app token / bot token: Bound/Missing**    | Reports saved Secret references, not whether Slack accepts the tokens.                                                                                                        |
 | **Refresh status**                                | Reloads credential metadata.                                                                                                                                                  |
 | **Provision generated runtime credentials**       | Provisions initial connection credentials for ordinary draft Agents. Locked after the first revision; not a rotation action.                                                  |
-| **Slack app token** / **Slack bot token** inputs  | Bound tokens show a synthetic mask. Focus to replace; leave empty to keep a bound token. Missing tokens need a value.                                                         |
-| **Save channel Secrets**                          | Stores Namespace Secrets, grants the Agent access, and updates Configuration bindings. Deploy explicitly to apply them.                                                       |
+| **Slack app token** / **Slack bot token** pickers | Select a readable Namespace Secret or **Create new Secret...**. Missing tokens need a selected binding.                                                                       |
+| **Save channel Secrets**                          | Saves Configuration Secret bindings, grants the Agent access, and requires an explicit deployment to apply them.                                                              |
 
 Runtime controls apply to managed authentication. Provisioning requires Agent
 `read` and `operate`; saving channel Secrets additionally requires Secret,
 Configuration, and Namespace IAM permissions. These are multiple writes, so a
 failure can leave partial progress. **Outcome unknown** means refresh and inspect
-saved state before retrying. Save requires at least one replacement and a bound
-or entered value for each token. Only entered replacements are written; an
-unchanged bound token stays intact. Existing values are never fetched or
-displayed, and the mask is never submitted. Entered values clear after a save
-attempt; bound fields return to their mask.
+saved state before retrying. Save requires at least one changed selection and a
+bound Secret for each token. Changing the picker switches the referenced Secret;
+it does not overwrite an existing shared Secret value. Existing values are never
+fetched or displayed.
 
 ## Workspace files tab
 

@@ -1,10 +1,10 @@
 import { element } from "../dom.mjs";
-import { namespacePath } from "../agents/list.mjs";
+import { SLACK_SECRET_BINDINGS, secretIdForBinding } from "../agents/credentials.mjs";
 import {
-  SLACK_SECRET_BINDINGS,
+  createSecretReferenceField,
+  sameNamespaceSecretHref,
   secretBinding,
-  secretIdForBinding,
-} from "../agents/credentials.mjs";
+} from "../agents/secret-picker.mjs";
 import {
   isRecord,
   refsEqual,
@@ -25,8 +25,6 @@ const STANDARD_REFS = {
 };
 
 const DM_POLICIES = ["pairing", "allowlist", "open", "disabled"];
-
-const CREATE_SECRET_VALUE = "__openclaw_create_secret__";
 
 function channelUsers(channel) {
   const users = uniqueList(channel?.users ?? []);
@@ -216,99 +214,18 @@ function updatedSecretBindings(context = {}) {
 }
 
 function sameNamespaceEnvSecretHref(binding, namespaceId) {
-  const secretId = secretIdForBinding(binding);
-  if (
-    secretId === null ||
-    binding?.source?.namespaceId !== namespaceId ||
-    binding?.delivery?.type !== "env"
-  ) {
+  if (binding?.source?.namespaceId !== namespaceId || binding?.delivery?.type !== "env") {
     return null;
   }
-  return secretMetadataPath(namespaceId, secretId);
-}
-
-function credentialLink(href, label) {
-  return element("a", { href, target: "_blank", rel: "noopener" }, `${label} (opens in new tab)`);
-}
-
-function secretMetadataPath(namespaceId, secretId) {
-  return `${namespacePath(namespaceId)}/secrets/${encodeURIComponent(secretId)}`;
+  return sameNamespaceSecretHref(binding.source, namespaceId);
 }
 
 function activeSecretBindings(context) {
   return context.draftSecretBindings ?? context.secretBindings ?? {};
 }
 
-function activeSecretSource(binding, context) {
+function activeSecretBinding(binding, context) {
   return activeSecretBindings(context)[binding.key];
-}
-
-function boundSecretId(binding, context) {
-  const source = activeSecretSource(binding, context);
-  if (source?.source?.namespaceId !== context.namespaceId || source?.delivery?.type !== "env") {
-    return null;
-  }
-  return secretIdForBinding(source);
-}
-
-function updateSecretMetadataLink(link, binding, context) {
-  const href = sameNamespaceEnvSecretHref(
-    activeSecretSource(binding, context),
-    context.namespaceId,
-  );
-  if (href === null) {
-    link.hidden = true;
-    link.removeAttribute("href");
-    return;
-  }
-  link.hidden = false;
-  link.href = href;
-}
-
-function isSecretMetadata(secret, namespaceId) {
-  return (
-    isRecord(secret) &&
-    typeof secret.id === "string" &&
-    typeof secret.name === "string" &&
-    secret.namespaceId === namespaceId &&
-    isRecord(secret.ref) &&
-    secret.ref.kind === "secret" &&
-    secret.ref.namespaceId === namespaceId &&
-    secret.ref.id === secret.id
-  );
-}
-
-function secretOptionLabel(secret) {
-  return `${secret.name} · ${secret.id}`;
-}
-
-function setSecretOptions(select, binding, context, secrets = []) {
-  const selectedSecretId = boundSecretId(binding, context);
-  const selectedSecret = secrets.find((secret) => secret.id === selectedSecretId);
-  const options = [];
-  if (selectedSecretId === null) {
-    options.push(element("option", { value: "", selected: "" }, "No Secret bound"));
-  } else if (selectedSecret === undefined) {
-    options.push(
-      element(
-        "option",
-        { value: selectedSecretId, selected: "" },
-        `Bound Secret · ${selectedSecretId}`,
-      ),
-    );
-  }
-  for (const secret of secrets) {
-    options.push(
-      element(
-        "option",
-        { value: secret.id, ...(secret.id === selectedSecretId ? { selected: "" } : {}) },
-        secretOptionLabel(secret),
-      ),
-    );
-  }
-  options.push(element("option", { value: CREATE_SECRET_VALUE }, "Create new Secret..."));
-  select.replaceChildren(...options);
-  select.value = selectedSecretId ?? "";
 }
 
 function modalSecretName(binding, context) {
@@ -319,32 +236,7 @@ function modalSecretName(binding, context) {
   return `${trimmedAgentName} ${binding.secretName}`;
 }
 
-function credentialMutationError(error) {
-  if (error.status === 400) {
-    return "Check the Secret fields and try again.";
-  }
-  if (error.status === 403) {
-    return "Access denied. You do not have permission to manage this Secret binding.";
-  }
-  if (error.status === 404) {
-    return "The selected Secret metadata is unavailable.";
-  }
-  if (error.status === 409) {
-    return "The Secret or Configuration changed. Refresh before trying again.";
-  }
-  if (error.status === 429) {
-    return "Too many requests. Wait before trying again.";
-  }
-  return "Secret binding could not be confirmed. Refresh before trying again.";
-}
-
-async function bindSecret(binding, context, secret, status, select, secrets, metadataLink) {
-  const previous = boundSecretId(binding, context);
-  if (secret.id === previous) {
-    return;
-  }
-  select.disabled = true;
-  status.className = "hint";
+async function bindSecret(binding, context, secret) {
   context.draftSecretBindings = {
     ...activeSecretBindings(context),
     [binding.key]: secretBinding(secret),
@@ -353,192 +245,27 @@ async function bindSecret(binding, context, secret, status, select, secrets, met
     ...(context.draftChangedSecrets ?? {}),
     [binding.key]: secret,
   };
-  if (!secrets.some((item) => item.id === secret.id)) {
-    secrets.push(secret);
-  }
-  setSecretOptions(select, binding, context, secrets);
-  if (metadataLink !== undefined) {
-    updateSecretMetadataLink(metadataLink, binding, context);
-  }
-  status.textContent = "Secret binding staged. Apply the channel settings to save it.";
-  select.disabled = false;
-}
-
-function openCreateSecretDialog(binding, context, status, select, secrets, metadataLink) {
-  const dialog = element("dialog", {
-    className: "channel-dialog credential-secret-dialog",
-    "aria-label": `Create ${binding.label} Secret`,
-  });
-  const key = element("input", {
-    id: `create-${binding.key.toLowerCase().replaceAll("_", "-")}-key`,
-    value: binding.key,
-    readonly: "",
-  });
-  const value = element("input", {
-    id: `create-${binding.key.toLowerCase().replaceAll("_", "-")}-value`,
-    type: "password",
-    required: "",
-    autocomplete: "off",
-  });
-  const feedback = element("p", { className: "error", role: "alert" });
-  const cancel = element("button", { type: "button" }, "Cancel");
-  const submit = element("button", { type: "submit", className: "primary" }, "Create Secret");
-  let creating = false;
-  let outcomeUnknown = false;
-  const form = element(
-    "form",
-    { method: "dialog", className: "channel-drawer-form" },
-    element(
-      "div",
-      { className: "channel-drawer-head" },
-      element("h2", {}, `Create ${binding.label} Secret`),
-      element("button", { type: "button" }, "Close"),
-    ),
-    field("Binding key", key, "This environment key is fixed for Slack Socket Mode."),
-    field("Secret value", value, "Stored as a Namespace Secret. The value is never read back."),
-    feedback,
-    element("div", { className: "form-actions" }, cancel, submit),
-  );
-  const close = () => {
-    if (creating) {
-      return;
-    }
-    value.value = "";
-    dialog.close();
-    dialog.remove();
-    select.value = boundSecretId(binding, context) ?? "";
-  };
-  form.querySelector(".channel-drawer-head button").addEventListener("click", close);
-  cancel.addEventListener("click", close);
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    if (creating || outcomeUnknown || !form.reportValidity()) {
-      return;
-    }
-    creating = true;
-    submit.disabled = true;
-    cancel.disabled = true;
-    value.disabled = true;
-    feedback.textContent = "";
-    let createdSecret;
-    try {
-      createdSecret = await context.request(`${namespacePath(context.namespaceId)}/secrets`, {
-        method: "POST",
-        body: { name: modalSecretName(binding, context), value: value.value },
-      });
-      await bindSecret(binding, context, createdSecret, status, select, secrets, metadataLink);
-      if (boundSecretId(binding, context) === createdSecret.id) {
-        dialog.close();
-        dialog.remove();
-      } else {
-        submit.disabled = false;
-        cancel.disabled = false;
-        value.disabled = false;
-      }
-    } catch (error) {
-      outcomeUnknown =
-        createdSecret !== undefined ||
-        error.status === undefined ||
-        ![400, 403, 404, 409, 429].includes(error.status);
-      feedback.textContent = outcomeUnknown
-        ? "Secret creation outcome could not be confirmed. Refresh before trying again."
-        : credentialMutationError(error);
-      submit.disabled = outcomeUnknown;
-      cancel.disabled = false;
-      value.disabled = outcomeUnknown;
-    } finally {
-      creating = false;
-      value.value = "";
-    }
-  });
-  dialog.append(form);
-  document.body.append(dialog);
-  dialog.addEventListener("cancel", (event) => {
-    if (creating) {
-      event.preventDefault();
-      return;
-    }
-    event.preventDefault();
-    close();
-  });
-  dialog.addEventListener("close", () => dialog.remove(), { once: true });
-  dialog.showModal();
-  value.focus();
 }
 
 function credentialReferenceField(binding, context = {}) {
-  const secretHref = sameNamespaceEnvSecretHref(
-    activeSecretSource(binding, context),
-    context.namespaceId,
-  );
-  const select = element("select", {
+  const picker = createSecretReferenceField({
+    context,
     id: `slack-secret-${binding.key.toLowerCase().replaceAll("_", "-")}`,
-    "aria-describedby": `slack-secret-${binding.key.toLowerCase().replaceAll("_", "-")}-status`,
+    label: binding.label,
+    getCurrentSource: () => activeSecretBinding(binding, context)?.source,
+    onSecretSelected: (secret) => bindSecret(binding, context, secret),
+    createSecretName: () => modalSecretName(binding, context),
+    createDialogTitle: `Create ${binding.label} Secret`,
+    createFixedKey: {
+      label: "Binding key",
+      value: binding.key,
+      hint: "This environment key is fixed for Slack Socket Mode.",
+    },
+    metadataLabel: `View ${binding.label.replace("Slack ", "")} Secret metadata`,
+    fieldClassName: "channel-field channel-reference",
+    selectClassName: "channel-select",
   });
-  const status = element("p", {
-    id: `slack-secret-${binding.key.toLowerCase().replaceAll("_", "-")}-status`,
-    className: "hint",
-    role: "status",
-  });
-  const metadataLink = credentialLink(
-    secretHref ?? "#",
-    `View ${binding.label.replace("Slack ", "")} Secret metadata`,
-  );
-  updateSecretMetadataLink(metadataLink, binding, context);
-  const fieldChildren = [
-    element("label", { for: select.id, className: "channel-label" }, binding.label),
-    select,
-    metadataLink,
-  ];
-  if (!context.namespaceId || typeof context.request !== "function") {
-    fieldChildren.push(
-      element(
-        "p",
-        { className: "hint" },
-        secretHref
-          ? "Secret metadata is bound for this token."
-          : "No Secret is bound for this token.",
-      ),
-    );
-    setSecretOptions(select, binding, context);
-    select.disabled = true;
-    return element("div", { className: "channel-field channel-reference" }, ...fieldChildren);
-  }
-  const secrets = [];
-  setSecretOptions(select, binding, context, secrets);
-  status.textContent = "Loading available Secrets...";
-  context
-    .request(`${namespacePath(context.namespaceId)}/secrets`)
-    .then((items) => {
-      secrets.splice(
-        0,
-        secrets.length,
-        ...(Array.isArray(items)
-          ? items.filter((item) => isSecretMetadata(item, context.namespaceId))
-          : []),
-      );
-      setSecretOptions(select, binding, context, secrets);
-      status.textContent = secrets.length
-        ? "Choose an existing Secret or create a new one."
-        : "No readable Secrets yet. Create a new Secret to bind this token.";
-    })
-    .catch((error) => {
-      status.className = "error";
-      status.textContent = credentialMutationError(error);
-    });
-  select.addEventListener("change", () => {
-    if (select.value === CREATE_SECRET_VALUE) {
-      select.value = boundSecretId(binding, context) ?? "";
-      openCreateSecretDialog(binding, context, status, select, secrets, metadataLink);
-      return;
-    }
-    const secret = secrets.find((item) => item.id === select.value);
-    if (secret) {
-      void bindSecret(binding, context, secret, status, select, secrets, metadataLink);
-    }
-  });
-  fieldChildren.push(status);
-  return element("div", { className: "channel-field channel-reference" }, ...fieldChildren);
+  return picker.field;
 }
 
 function credentialNavigation(context = {}) {
@@ -552,7 +279,11 @@ function credentialNavigation(context = {}) {
   return element(
     "p",
     { className: "hint" },
-    credentialLink(context.credentialsHref, "Open Agent Credentials"),
+    element(
+      "a",
+      { href: context.credentialsHref, target: "_blank", rel: "noopener" },
+      "Open Agent Credentials (opens in new tab)",
+    ),
     " to review runtime credential status. Secret menu changes are saved with these channel settings.",
   );
 }

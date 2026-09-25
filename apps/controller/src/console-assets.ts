@@ -32,6 +32,7 @@ const CONSOLE_ASSETS = new Map([
       "agents/native-admin.mjs",
       "agents/harness-auth.mjs",
       "agents/secret-access.mjs",
+      "agents/secret-picker.mjs",
       "agents/credentials.mjs",
       "channels/slack.mjs",
       "channels/shared-ui.mjs",

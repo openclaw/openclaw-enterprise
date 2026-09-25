@@ -60,22 +60,22 @@ actual OpenClaw disconnected gateway screen at the revision above.
 The sidebar contains these groups. Stories with open dialogs or errors reach
 those states by interacting with the real controls after loading fixture data.
 
-| Group                   | Coverage                                                                                                                                                                                                                                                                                                                                                                   |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Sign in                 | Signed out, rejected login, expired session, session-read failure, loading, unconfirmed logout.                                                                                                                                                                                                                                                                            |
-| Agents                  | Populated and empty collections, no search matches, inaccessible Namespace, no readable Namespaces, permission denial, read failure, loading.                                                                                                                                                                                                                              |
-| Backends                | Configured, empty, and discovery failure.                                                                                                                                                                                                                                                                                                                                  |
-| Namespaces              | Ready and provisioning, empty, permission denial.                                                                                                                                                                                                                                                                                                                          |
-| Settings and navigation | Signed-in account and unknown route.                                                                                                                                                                                                                                                                                                                                       |
-| Create Agent            | Preset variables, no Presets, fixed model choices before credential entry and manual model IDs, OpenAI Codex/OpenClaw and Anthropic OpenClaw harnesses, Service Accounts switching and bound Presets, seeded workspace files, storage/grant denial, repository selection/discovery and rejected-grant recovery, invalid JSON, partial save/conflict, unknown save outcome. |
-| Agent detail            | New revision, native JSON editor, invalid JSON, admitted snapshot, queued or failed deployment, denied deployment, missing Agent, unavailable Configuration and revision history.                                                                                                                                                                                          |
-| Navigation components   | Account menu, Namespace switcher, mobile drawer, OCE branding, simulated OCC revision, missing development metadata, debug runtime image identities and unavailable metadata.                                                                                                                                                                                              |
-| Channels                | Unconfigured cards, Slack editor with pairing/open/disabled policies, everyone and restricted channel sender access, incomplete sender access, unsupported mixed sender lists, unsupported wildcard channel maps, read-only snapshot, save conflict.                                                                                                                       |
-| Credentials             | Stored and missing metadata, masked Slack tokens, one-token replacement, partially missing tokens, generated credentials locked after admission, metadata failure, missing authentication, operator-managed credentials, issued ChatGPT account, model Secret replacement, denied or pending grants, and unknown authentication saves.                                     |
-| Native admin            | Available launch, stopped or unsupported runtime, denied panel hidden. The launch target is an explanatory fixture page.                                                                                                                                                                                                                                                   |
-| Workspace               | Four editable deployed files, undeployed Agent, denied reads, missing file, unknown write outcome.                                                                                                                                                                                                                                                                         |
-| Stop Agent              | Confirmation, stopped requested state, permission denial, unknown outcome requiring refresh.                                                                                                                                                                                                                                                                               |
-| Deletion                | Confirmation, pending cleanup, permission denial, conflict, unknown outcome.                                                                                                                                                                                                                                                                                               |
+| Group                   | Coverage                                                                                                                                                                                                                                                                                                                                                                              |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Sign in                 | Signed out, rejected login, expired session, session-read failure, loading, unconfirmed logout.                                                                                                                                                                                                                                                                                       |
+| Agents                  | Populated and empty collections, no search matches, inaccessible Namespace, no readable Namespaces, permission denial, read failure, loading.                                                                                                                                                                                                                                         |
+| Backends                | Configured, empty, and discovery failure.                                                                                                                                                                                                                                                                                                                                             |
+| Namespaces              | Ready and provisioning, empty, permission denial.                                                                                                                                                                                                                                                                                                                                     |
+| Settings and navigation | Signed-in account and unknown route.                                                                                                                                                                                                                                                                                                                                                  |
+| Create Agent            | Preset variables, no Presets, fixed model choices before credential entry and manual model IDs, OpenAI Codex/OpenClaw and Anthropic OpenClaw harnesses, Service Accounts switching and bound Presets, seeded workspace files, storage/grant denial, repository selection/discovery and rejected-grant recovery, invalid JSON, partial save/conflict, unknown save outcome.            |
+| Agent detail            | New revision, native JSON editor, invalid JSON, admitted snapshot, queued or failed deployment, denied deployment, missing Agent, unavailable Configuration and revision history.                                                                                                                                                                                                     |
+| Navigation components   | Account menu, Namespace switcher, mobile drawer, OCE branding, simulated OCC revision, missing development metadata, debug runtime image identities and unavailable metadata.                                                                                                                                                                                                         |
+| Channels                | Unconfigured cards, Slack editor with pairing/open/disabled policies, everyone and restricted channel sender access, incomplete sender access, unsupported mixed sender lists, unsupported wildcard channel maps, read-only snapshot, save conflict.                                                                                                                                  |
+| Credentials             | Stored and missing metadata, named Secret selection and creation, API-key and Slack Secret switching, denied metadata and grants, partially missing tokens, generated credentials locked after admission, metadata failure, missing authentication, operator-managed credentials, issued ChatGPT account, model Secret replacement, pending grants, and unknown authentication saves. |
+| Native admin            | Available launch, stopped or unsupported runtime, denied panel hidden. The launch target is an explanatory fixture page.                                                                                                                                                                                                                                                              |
+| Workspace               | Four editable deployed files, undeployed Agent, denied reads, missing file, unknown write outcome.                                                                                                                                                                                                                                                                                    |
+| Stop Agent              | Confirmation, stopped requested state, permission denial, unknown outcome requiring refresh.                                                                                                                                                                                                                                                                                          |
+| Deletion                | Confirmation, pending cleanup, permission denial, conflict, unknown outcome.                                                                                                                                                                                                                                                                                                          |
 
 The production UI supplies buttons, forms, tables, badges, notices, JSON views,
 revision controls, and dialogs inside these stories. Storybook does not duplicate
@@ -135,9 +135,10 @@ These choices do not establish whether a credential can access a model. Executio
 Preset story shows why its harness is fixed to Codex.
 
 The fixture supplies a ready Namespace, Preset, and model Secret. Namespace
-provisioning, Preset CRUD, model-Secret creation, and service-account issuance
-have no console pages. The model API-key field takes an existing Secret ID.
-Slack tokens can be created and selected in the Slack drawer under Channels.
+provisioning, Preset CRUD, and service-account issuance have no dedicated console
+pages. New revision credentials select existing model Secrets or create new ones
+through the Secret picker. Slack tokens use that picker in both the Credentials
+tab and the Slack drawer under Channels.
 Teams credentials remain operator-managed; the console blocks deployment while Teams is enabled.
 See [Create and deploy in the console](../reference/console/create-and-deploy.md)
 for the supported installation workflow and prerequisites.
@@ -164,6 +165,28 @@ inputs clear. Revisit the Agents list to check its search filter. Existing denie
 loading, missing-file, and uncertain-write stories verify that retention does not
 bypass the editor's access or recovery controls. These are simulated UI checks,
 not backend persistence or live gateway proof.
+
+### Choose and switch revision Secrets
+
+Open **Components / Credentials / Slack tokens stored** to inspect the current
+model, app-token, and bot-token Secret references. Select **Create new Secret...**,
+then **Cancel** to preserve the selection without writing a Secret. Choosing an
+existing Secret stages a binding; the relevant Save button applies it. Switching
+the app token leaves the bot token unchanged. The API-key switch story provides a
+second model Secret.
+
+**Secret list denied** preserves existing references when metadata cannot be
+listed. **Slack grant denied** shows the saved reference and explains that the
+Agent still needs access to that Secret; it does not report deployment readiness.
+
+Review the [bound model Secret](../assets/revision-secret-picker/harness-bound.png),
+[staged Slack switch](../assets/revision-secret-picker/slack-switch.png),
+[creation dialog](../assets/revision-secret-picker/create-secret.png),
+[denied list](../assets/revision-secret-picker/list-denied.png),
+[denied grant](../assets/revision-secret-picker/grant-denied.png), and
+[walkthrough](../assets/revision-secret-picker/walkthrough.mp4). These use dummy
+Storybook data and prove UI behavior only, not live authorization, credential
+validity, or deployment.
 
 ### Discover and configure plugins
 

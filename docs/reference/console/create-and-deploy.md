@@ -252,20 +252,19 @@ stored status before explicitly retrying. Already-created Secrets remain in plac
 even when later storage or audit work fails; there is no automatic retry or
 rollback deletion.
 
-On the **Credentials** tab, bound Slack tokens appear as filled password fields using a synthetic mask.
-The browser never reads saved tokens. Focus a field to enter a
-replacement; leave it empty to keep its existing binding. Missing tokens remain
-empty and must be supplied before saving. **Save channel Secrets** requires at
-least one new value and a saved binding or new value for each token.
+On the **Credentials** tab, Slack token fields use the same Secret picker as the
+creation and channel-editing flows. Select a readable Namespace Secret or
+**Create new Secret...**. The browser never reads saved token values. Missing
+tokens must be bound before saving. **Save channel Secrets** requires at least
+one changed selection and a saved binding for each token.
 
-Saving writes only the entered tokens through the Namespace Secret API, creates
-exact IAM bindings for the returned Agent `servicePrincipalId`, and saves
-gateway environment references in the Agent's Configuration `secretBindings`. It
-reuses only Roles with the required permission set. Unchanged tokens and their
-bindings are preserved; the mask is never submitted. Entered values clear after
-a save attempt or when leaving the tab, and bound fields return to their mask.
-Tokens are never stored in local storage, URLs, or native Configuration values. A stored channel Secret confirms storage and binding only; it does not
-prove provider acceptance, runtime readiness, or a channel connection.
+Saving writes only Configuration `secretBindings` and exact IAM bindings for
+the changed Secret references. It reuses only Roles with the required permission
+set. Unchanged token bindings are preserved. Switching a picker changes which
+Secret is referenced; it does not overwrite an existing shared Secret value.
+Tokens are never stored in local storage, URLs, or native Configuration values.
+A stored channel Secret confirms storage and binding only; it does not prove
+provider acceptance, runtime readiness, or a channel connection.
 
 <span id="deploy-a-saved-draft"></span>
 

@@ -1866,7 +1866,7 @@ export const scenarios = {
     group: "Components/Credentials",
     name: "Stored",
     path: `${draft}&tab=credentials`,
-    description: "Masked Secret reference and stored generated-runtime credential metadata.",
+    description: "Stored harness Secret reference and generated-runtime credential metadata.",
   },
   credentialsMissing: {
     group: "Components/Credentials",
@@ -1883,7 +1883,7 @@ export const scenarios = {
     slack: true,
     slackBindings: false,
     description:
-      "Both Slack token slots are empty and required before a Slack-enabled draft can deploy.",
+      "Both Slack token bindings are empty and required before a Slack-enabled draft can deploy.",
   },
   credentialsSlackStored: {
     group: "Components/Credentials",
@@ -1891,16 +1891,50 @@ export const scenarios = {
     path: `${draft}&tab=credentials`,
     slack: true,
     description:
-      "Synthetic masks show existing Secret bindings. The console does not retrieve stored token values.",
+      "Readable Secret names show existing bindings. The console does not retrieve stored token values.",
   },
   credentialsSlackReplacement: {
     group: "Components/Credentials",
-    name: "Slack token replacement",
+    name: "Slack token switch",
     path: `${draft}&tab=credentials`,
     slack: true,
-    actions: [{ selector: "#runtime-slack-app-token", value: "xapp-replacement-preview" }],
+    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
     description:
-      "Only fields with entered replacements are saved. Empty stored fields preserve their existing Secret binding.",
+      "The app token binding is staged to a different Secret while the bot token binding remains unchanged.",
+  },
+  credentialsSecretListDenied: {
+    group: "Components/Credentials",
+    name: "Secret list denied",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets",
+        method: "GET",
+        status: 403,
+      },
+    ],
+    description:
+      "Secret references remain preserved when Secret metadata cannot be listed in this Namespace.",
+  },
+  credentialsSlackGrantDenied: {
+    group: "Components/Credentials",
+    name: "Slack grant denied",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    actions: [
+      { selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" },
+      click("Save channel Secrets"),
+    ],
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/iam/access-bindings",
+        method: "POST",
+        status: 403,
+      },
+    ],
+    description:
+      "A saved Secret reference remains visible when the follow-up exact Secret access grant is denied.",
   },
   credentialsSlackPartial: {
     group: "Components/Credentials",
@@ -1909,7 +1943,7 @@ export const scenarios = {
     slack: true,
     slackBindings: "app",
     description:
-      "The app token is already bound and masked; the missing bot token remains empty and required.",
+      "The app token is already bound; the missing bot token remains empty and required.",
   },
   credentialsLocked: {
     group: "Components/Credentials",
@@ -1954,7 +1988,18 @@ export const scenarios = {
     path: `${draft}&tab=credentials`,
     auth: null,
     description: "Select a source before deployment.",
-    gap: "The API-key field expects an existing Secret ID, not a raw model API key. Create that Secret outside this console.",
+    gap: "The API-key field expects an existing Secret or a Secret created through the picker. It never reads raw credential values back.",
+  },
+  authApiKeySwitch: {
+    group: "Components/Credentials",
+    name: "API key Secret switch",
+    path: `${draft}&tab=credentials`,
+    extraSecrets: [
+      { id: "sec_demo_model_replacement", name: "Replacement model API key (simulated)" },
+    ],
+    actions: [{ selector: "#harness-auth-secret", value: "sec_demo_model_replacement" }],
+    description:
+      "The authentication source uses the same Secret picker and stages a different API-key Secret.",
   },
   authSecretReplacement: {
     group: "Components/Credentials",

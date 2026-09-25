@@ -750,12 +750,10 @@ export async function renderAgentDetail(context) {
         configurationId: agent.configurationId,
         harnessAuth: agent.harnessAuth,
       };
-      const auth = createHarnessAuthFields(
-        context,
-        agent.harnessAuth,
-        agent.executionMode,
-        retained?.fields,
-      );
+      const auth = createHarnessAuthFields(context, agent.harnessAuth, agent.executionMode, {
+        agentName: agent.name,
+        draft: retained?.fields,
+      });
       const feedback = element("p", { role: "status", className: "hint" });
       const save = element(
         "button",
@@ -860,8 +858,12 @@ export async function renderAgentDetail(context) {
           } else if (savedAuthentication) {
             feedback.textContent = `Authentication source saved, but this Agent's Secret access could not be confirmed. ${message(error)} Ask a Namespace administrator to grant this Agent secret:operate on the selected Secret, then retry credential access. Deployment readiness is not confirmed.`;
           } else {
-            feedback.textContent = message(error, mutationStarted);
-            outcomeUnknown = mutationStarted && ![400, 403, 404, 409, 429].includes(error.status);
+            outcomeUnknown =
+              error.outcomeUnknown ??
+              (mutationStarted && ![400, 403, 404, 409, 429].includes(error.status));
+            feedback.textContent = error.outcomeUnknown
+              ? error.message
+              : message(error, mutationStarted);
             data.setAuthenticationPending(outcomeUnknown);
           }
         } finally {
