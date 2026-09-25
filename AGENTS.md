@@ -385,6 +385,9 @@ controls:
   feature in use. Show the relevant user actions and visible result, not only a
   static screen or terminal output. Keep the walkthrough within the requested
   behavior; do not invent additional acceptance criteria.
+- Do not commit PR evidence, including screenshots, recordings, or generated
+  evidence reports, to the repository. Keep local captures outside the checkout
+  and upload media as native GitHub attachments for the PR's Verification section.
 - Include the screenshots, video, and Storybook story names or links in **both
   the task conversation and the PR's Verification section**. Embed media where
   supported; otherwise provide direct, reviewer-accessible links with captions.
