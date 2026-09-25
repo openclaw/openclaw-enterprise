@@ -1,8 +1,7 @@
 # Kubernetes tests
 
-Verify Kubernetes resources with an HTTP fixture, then select real-runtime
-tests for gateway, Codex, model, and Secret behavior. Prepare the
-[shared requirements](README.md#requirements-and-credentials) first.
+Prepare [shared prerequisites](README.md#requirements-and-credentials) for
+Kubernetes HTTP fixtures or real-runtime gateway, Codex, model, and Secret tests.
 
 ## Kubernetes HTTP fixture
 
@@ -378,8 +377,4 @@ fixture readiness is not a substitute for model-backed acceptance.
 
 ## Production observability
 
-Use `pnpm test:observability` for credential-free Helm metrics/log smoke testing
-on an owned k3d cluster, as in ordinary PR CI. Run
-`pnpm test:observability --demo` separately for Prometheus/Loki/Grafana. See [acceptance scope and prerequisites](metrics.md#kubernetes-observability-acceptance).
-Real model-turn log validation remains a separate explicit command and protected
-CI lane.
+See [smoke tests and model-log validation](metrics.md#kubernetes-observability-acceptance).

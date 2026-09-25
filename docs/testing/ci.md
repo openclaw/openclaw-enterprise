@@ -48,7 +48,7 @@ runtime image. Its proof covers HTTP, PostgreSQL, Unix control and credential
 material inside Kubernetes; NetworkPolicy enforcement is proved separately by
 the Kubernetes fixture lanes on the compatible GitHub runner kernel.
 
-The PR workflow runs eleven lanes on ephemeral runners: checks/baseline/browser, PostgreSQL migrations, PostgreSQL application, image/packaging, Kubernetes Compute/Configuration, Kubernetes state/lifecycle, Kubernetes plugin status, logging collector, `repository-credentials-container`, and `repository-credentials-platform`. The container lane builds separate emitted service/client images and a combined qualification image, then selects controlled provider and separate-container cases; it does not contact a live GitHub installation. The platform lane exercises ordinary Agent repository bindings through HTTP, PostgreSQL, Unix control and Kubernetes using a fixture Harness and controlled repositories; it does not use a model or live GitHub. Full Integration runs through manual dispatch using the immutable event commit. All lanes require `main` except `k3d-model`, which also accepts a branch explicitly allowed by the `integration-model` environment. Environment gates apply only to lanes that declare an environment; `helper-timeout` and standalone `logging-collector` declare none. The ChatGPT `provider-account` lane keeps its main-only credential environment without per-run approval. Other model, routing, Slack, OpenShell, and additional OpenTelemetry lanes require separately approved environments. A missing environment or selected prerequisite fails the run. A PR aggregate is not full credentialed coverage; targeted protected runs also report only their selected lanes.
+Full Integration runs through manual dispatch using the immutable event commit. All lanes require `main` except `k3d-model`, which also accepts a branch explicitly allowed by the `integration-model` environment. Environment gates apply only to lanes that declare an environment; `helper-timeout` and standalone `logging-collector` declare none. The ChatGPT `provider-account` lane keeps its main-only credential environment without per-run approval. Other model, routing, Slack, OpenShell, and additional OpenTelemetry lanes require separately approved environments. A missing environment or selected prerequisite fails the run. A PR aggregate is not full credentialed coverage; targeted protected runs also report only their selected lanes.
 
 The `postgres` lane owns migration compatibility tests; `postgres-application`
 owns the remaining PostgreSQL files. Each has its own disposable PostgreSQL
@@ -251,16 +251,11 @@ suite-map groups and workflow entrypoints.
 
 ## Production observability lane
 
-`k3d-observability` runs in ordinary PR/main CI on Ubuntu 22.04. It checks raw
-metrics and OTLP exports without the demo stack. Run it locally with
-`pnpm test:observability`.
+`k3d-observability` checks raw metrics and OTLP exports in ordinary PR/main CI
+on Ubuntu 22.04. The separate [Observability Demo workflow](../../.github/workflows/observability-demo.yml)
+runs `k3d-observability-demo` for relevant changes, merge groups, and manual dispatch;
+Full Integration includes it with `all`. Both retain strict case counts, image
+digests, and cleanup.
 
-The separate [Observability Demo workflow](../../.github/workflows/observability-demo.yml)
-runs `k3d-observability-demo` for relevant changes, merge groups, and manual dispatch.
-Full Integration also includes it when `all` is selected.
-Run `pnpm test:observability --demo` locally. Both lanes retain strict case counts,
-image digests, and cleanup; see [scope and prerequisites](metrics.md#kubernetes-observability-acceptance).
-
-Gateway/Codex model-log proof remains in protected `k3d-otel`, selected by
-`pnpm test:observability:models` or `integration-otel` dispatch. Ordinary CI does
-not establish that credentialed proof.
+Gateway/Codex model-log proof remains in protected `k3d-otel`; ordinary CI does
+not establish it. See [local commands, scope, and prerequisites](metrics.md#kubernetes-observability-acceptance).
