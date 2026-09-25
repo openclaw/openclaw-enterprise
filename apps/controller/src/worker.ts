@@ -977,12 +977,12 @@ export class ControllerWorker {
       if ((await queue.heartbeat(claim)) === undefined) {
         throw new WorkClaimLostError();
       }
+      const attempts = await unit.repositorySessions.listRevisionAttempts({
+        namespaceId: claim.namespaceId,
+        agentId: claim.agentId!,
+        revisionId: claim.revisionId!,
+      });
       if (complete) {
-        const attempts = await unit.repositorySessions.listRevisionAttempts({
-          namespaceId: claim.namespaceId,
-          agentId: claim.agentId!,
-          revisionId: claim.revisionId!,
-        });
         complete = !attempts.some(
           (attempt) => attempt.phase === "closing" || attempt.phase === "invalidated",
         );
@@ -993,7 +993,9 @@ export class ControllerWorker {
         await queue.defer(
           claim,
           { code: "REPOSITORY_CLEANUP_PENDING" },
-          { delayMs: this.repositoryCleanupRetryMs },
+          attempts.some((attempt) => attempt.phase === "invalidated")
+            ? { delayMs: this.repositoryCleanupRetryMs }
+            : undefined,
         );
       }
     }, this.queueOptions);
@@ -1441,11 +1443,7 @@ export class ControllerWorker {
           claim.agentId!,
         );
         if (completed === "cleanup-pending") {
-          await queue.defer(
-            claim,
-            { code: "REPOSITORY_CLEANUP_PENDING" },
-            { delayMs: this.repositoryCleanupRetryMs },
-          );
+          await queue.defer(claim, { code: "REPOSITORY_CLEANUP_PENDING" });
         }
         return completed;
       }, this.queueOptions);

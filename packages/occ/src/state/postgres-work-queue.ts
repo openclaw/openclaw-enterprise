@@ -793,10 +793,7 @@ export class PostgresWorkQueue {
     options: { readonly delayMs?: number } = {},
   ): Promise<void> {
     validateClaim(claim);
-    if (
-      options.delayMs !== undefined &&
-      (!isPositiveSafeInteger(options.delayMs) || options.delayMs > MAX_BACKOFF_MS)
-    ) {
+    if (options.delayMs !== undefined && !isPositiveSafeInteger(options.delayMs)) {
       throw new ScopeViolationError("The deferred Work delay is invalid.");
     }
     const deferred = await this.client.query(

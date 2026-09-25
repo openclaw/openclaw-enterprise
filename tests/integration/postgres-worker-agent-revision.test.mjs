@@ -786,35 +786,14 @@ test(
       ).rows[0].count,
       1,
     );
-    const pendingCleanupDelay = await fixture.observerPool.query(
-      `SELECT EXTRACT(EPOCH FROM (available_at - updated_at)) * 1000 AS delay_ms
-       FROM occ.controller_work
-       WHERE idempotency_key = $1`,
-      [deletion.idempotencyKey],
-    );
-    assert.ok(
-      Number(pendingCleanupDelay.rows[0].delay_ms) >= 29_000,
-      "pending repository cleanup must wait for the Driver maintenance interval",
-    );
     await clock.advance(3_600_001);
-    // The provider fixture clock is independent from PostgreSQL's wall clock.
-    await fixture.observerPool.query(
-      `UPDATE occ.controller_work SET available_at = clock_timestamp()
-       WHERE state = 'queued' AND (idempotency_key = $1 OR revision_id = $2)`,
-      [deletion.idempotencyKey, pendingRevision.id],
-    );
-    await waitFor("settled provider cleanup to release physical deletion", async () => {
-      await fixture.observerPool.query(
-        `UPDATE occ.controller_work SET available_at = clock_timestamp()
-         WHERE state = 'queued' AND (idempotency_key = $1 OR revision_id = $2)`,
-        [deletion.idempotencyKey, pendingRevision.id],
-      );
-      return (await fixture.state.read((view) =>
+    await waitFor("settled provider cleanup to release physical deletion", async () =>
+      (await fixture.state.read((view) =>
         view.agents.findAgent(fixture.namespace.id, pendingOwner.id),
       )) === undefined
         ? true
-        : undefined;
-    });
+        : undefined,
+    );
     const settled = await fixture.state.read((view) =>
       view.repositorySessions.findAttempt(pendingAttempt.admissionId),
     );
@@ -1154,6 +1133,20 @@ for (const loss of ["missing", "closed-repair"]) {
       await waitFor("unsafe revision runtime to retire", async () =>
         stopped.includes(candidate.id) ? true : undefined,
       );
+      if (loss === "missing") {
+        await waitFor("invalidated cleanup to wait for Driver maintenance", async () => {
+          const delayed = await fixture.observerPool.query(
+            `SELECT EXTRACT(EPOCH FROM (available_at - updated_at)) * 1000 AS delay_ms
+             FROM occ.controller_work
+             WHERE revision_id = $1 AND state = 'queued' AND idempotency_key LIKE $2`,
+            [candidate.id, `agent_revision:${candidate.id}:repository_cleanup:retire:%`],
+          );
+          return Number(delayed.rows[0]?.delay_ms) >=
+            repository.driver.maintenanceIntervalMs - 1_000
+            ? true
+            : undefined;
+        });
+      }
       await fixture.stop();
       const refusal = await fixture.observerPool.query(
         "SELECT reason_code FROM occ.controller_work WHERE idempotency_key = $1",
