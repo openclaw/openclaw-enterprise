@@ -31,6 +31,9 @@ function configurationValues(scenario) {
     values.channels.slack = {
       enabled: true,
       mode: scenario.slackMode ?? "socket",
+      ...(scenario.slackReplyToMode === undefined
+        ? {}
+        : { replyToMode: scenario.slackReplyToMode }),
       dmPolicy: scenario.slackPolicy ?? "pairing",
       groupPolicy: scenario.slackPolicy === "open" ? "open" : "allowlist",
       appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },

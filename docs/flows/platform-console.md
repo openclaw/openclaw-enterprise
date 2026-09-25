@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-09-24
-last_updated_session: authoring-run/fdba83e7-9f34-4b8b-8af2-625214851f27
+updated: 2026-09-25
+last_updated_session: 01a0d5e6-743e-7743-8a5e-2d8c24b78b81
 ---
 
 # Platform console request flow
@@ -237,17 +237,16 @@ traces draft/revision rendering, channel changes, credential provisioning,
 workspace reads/writes, stopping, and deletion. Each request returns through the
 response-ordering checks below.
 
-`apps/controller/src/console/channels/slack.mjs:supportSlack` checks whether the
-channel editor can preserve the stored settings. Existing `dmPolicy` and
-`groupPolicy` values do not block editing. `updatedSlack` copies those values
-unchanged, including their absence, when saving channel IDs, channel sender
-users, or mention settings. It preserves unrelated properties on selected
-channel entries, then writes the selected channels' `users` lists from the
-drawer. The everyone option writes `users: ["*"]` on each selected channel;
-direct-message `allowFrom` is not changed by channel edits. Only a new Slack
-configuration receives allowlist defaults. Existing channel maps with mixed
-sender lists or a `*` channel entry are rejected by the simple editor so native
-Configuration JSON remains the source of truth.
+`apps/controller/src/console/channels/slack.mjs:supportSlack` rejects shapes the
+editor cannot preserve; [Agent editing](platform-console/agent-editing.md#4-render-draft-revision-or-channels)
+owns those limits. `updatedSlack` preserves existing policies and reply settings,
+including omission and chat-type/per-channel overrides. Only a new Slack block
+receives allowlist defaults and `replyToMode: "all"`.
+The API stores native values unchanged; admission snapshots them into the
+AgentRevision. Kubernetes Compute's
+`apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision` carries
+the channel block through `kubernetesGatewayConfigurationDocument` into the
+Gateway's `openclaw.json` ConfigMap without adding Slack reply defaults.
 
 `apps/controller/src/console/agents/detail.mjs:renderAgentDetail` registers a
 handler for tab-only navigation with `console.mjs:loadPage`. For the same Agent,
@@ -331,6 +330,8 @@ uncertain response disables replay until refresh and inspection.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-25 00:15: Trace new Slack reply defaults and preservation through gateway rendering. (01a0d5e6-743e-7743-8a5e-2d8c24b78b81 - 29bf7a8681390fe60ced612beeb538101c87bc34)
 
 - 2026-09-24 17:13: Trace the header Namespace selector and preserved navigation scope. (authoring-run/fdba83e7-9f34-4b8b-8af2-625214851f27 - 1a458b227585c572ec0ac70fd10efc3834165075)
 

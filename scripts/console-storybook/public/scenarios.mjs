@@ -1565,6 +1565,29 @@ export const scenarios = {
     slack: true,
     description: "Enabled Socket Mode with standard unresolved credential references.",
   },
+  slackThreadedDefault: {
+    group: "Components/Channels",
+    name: "Slack threaded default",
+    path: `${draft}&tab=channels`,
+    description:
+      "New Slack setup saves threaded replies. Missing credentials remain visible until Secrets are bound.",
+    steps: [
+      "Configure Slack, enter CDEMO123, and allow everyone in the channel.",
+      "Save configuration and open Configuration → View native Configuration: replyToMode is all.",
+    ],
+  },
+  slackReplyOverride: {
+    group: "Components/Channels",
+    name: "Slack non-threaded override",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    slackReplyToMode: "off",
+    description: "An existing explicit non-threaded setting survives Slack drawer edits.",
+    steps: [
+      "Edit Slack, change the channel IDs, and save configuration.",
+      "Open Configuration → View native Configuration: replyToMode remains off.",
+    ],
+  },
   slackDrawer: {
     group: "Components/Channels",
     name: "Slack editor",

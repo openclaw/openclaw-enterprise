@@ -61,6 +61,9 @@
       "path": "tests/conformance/secret-occ.test.mjs"
     },
     {
+      "path": "tests/conformance/slack-configuration.test.mjs"
+    },
+    {
       "path": "tests/conformance/service-account-driver.test.mjs"
     },
     {

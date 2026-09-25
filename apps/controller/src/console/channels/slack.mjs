@@ -162,6 +162,7 @@ function updatedSlack(values, body) {
   if (!isRecord(existingConfig)) {
     config.dmPolicy = "allowlist";
     config.groupPolicy = "allowlist";
+    config.replyToMode = "all";
   }
   return withProvider(values, "slack", config);
 }

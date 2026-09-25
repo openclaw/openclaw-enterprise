@@ -1836,6 +1836,7 @@ test("Dedicated Agent creation provisions inline Configuration and masked new Se
     channels: { C0123456789: { requireMention: true, users: ["*"] } },
     dmPolicy: "allowlist",
     groupPolicy: "allowlist",
+    replyToMode: "all",
   });
   assert.deepEqual(provisionBody.configuration, {
     kind: "agent",
@@ -1966,6 +1967,7 @@ test("Dedicated Agent creation uses regular create when provisioning is unsuppor
   assert.deepEqual(savedConfiguration.data.values.channels.slack.channels, {
     CUNSUPPORTED123: { requireMention: true, users: ["USENDER123"] },
   });
+  assert.equal(savedConfiguration.data.values.channels.slack.replyToMode, "all");
   assert.equal(savedConfiguration.data.values.channels.slack.groupPolicy, "allowlist");
   assert.equal(savedConfiguration.data.values.channels.slack.dmPolicy, "allowlist");
   assert.equal(Object.hasOwn(savedConfiguration.data.values.channels.slack, "allowFrom"), false);
@@ -4050,6 +4052,8 @@ test("Channel drawer saves channel edits without exposing Secret values or dropp
         slack: {
           enabled: true,
           mode: "socket",
+          replyToMode: "off",
+          replyToModeByChatType: { direct: "first", channel: "off" },
           appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
           botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
           dmPolicy: "allowlist",
@@ -4177,6 +4181,11 @@ test("Channel drawer saves channel edits without exposing Secret values or dropp
   assert.deepEqual(configuration.data.values.channels.slack.channels, {
     COLD123: { requireMention: true, users: ["UNEW123"] },
     CNEW123: { requireMention: true, users: ["UNEW123"] },
+  });
+  assert.equal(configuration.data.values.channels.slack.replyToMode, "off");
+  assert.deepEqual(configuration.data.values.channels.slack.replyToModeByChatType, {
+    direct: "first",
+    channel: "off",
   });
   assert.equal(configuration.data.values.channels.slack.dmPolicy, "allowlist");
   assert.deepEqual(configuration.data.values.channels.slack.allowFrom, ["UOLD123"]);

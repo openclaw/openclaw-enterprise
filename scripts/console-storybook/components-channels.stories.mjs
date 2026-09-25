@@ -3,6 +3,8 @@ import { story } from "./story.mjs";
 export default { title: "Components/Channels" };
 
 export const Slack = { ...story("slack"), name: "Slack configured" };
+export const SlackThreadedDefault = { ...story("slackThreadedDefault") };
+export const SlackReplyOverride = { ...story("slackReplyOverride") };
 export const SlackDrawer = { ...story("slackDrawer"), name: "Slack editor" };
 export const SlackEveryone = { ...story("slackEveryone"), name: "Slack everyone in channels" };
 export const SlackRestrictedUsers = {

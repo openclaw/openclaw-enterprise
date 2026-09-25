@@ -31,7 +31,9 @@ go to the Agent's gateway; model credentials are configured separately.
 1. Open the Agent's new revision in the console and open **Channels**. Enable
    Slack, enter the channel IDs, then either enter **Allowed channel user IDs**
    or select **Allow everyone in these channels to mention the agent**. Leave
-   **Require mention** enabled for this setup. For each token menu, select a
+   **Require mention** enabled for this setup. New Slack setups use
+   [threaded replies](../../reference/configuration/secrets.md#native-channel-configuration).
+   For each token menu, select a
    Namespace Secret or **Create new Secret...**.
    The modal prefills the token key and accepts its value in a password field.
    **Create Secret** stores it immediately; **Save configuration** saves the

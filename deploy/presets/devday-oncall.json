@@ -140,6 +140,7 @@
           "slack": {
             "enabled": true,
             "mode": "socket",
+            "replyToMode": "all",
             "dmPolicy": "pairing",
             "groupPolicy": "allowlist",
             "appToken": {

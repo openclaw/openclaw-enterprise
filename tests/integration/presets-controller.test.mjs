@@ -611,6 +611,7 @@ test("SWE Agent Preset defaults to Astra and reuses an existing service-account 
     method: "codex_pat",
     source: serviceAccount.ref,
   });
+  assert.equal(rendered.configuration.values.channels.slack.replyToMode, "all");
   assert.equal(rendered.configuration.values.agents.defaults.model, "codex/gpt-6-astra");
   assert.equal(
     rendered.configuration.values.agents.defaults.models["codex/gpt-6-astra"].agentRuntime.id,
@@ -642,6 +643,7 @@ test("SWE Agent Preset defaults to Astra and reuses an existing service-account 
     },
   );
   assert.equal(configuration.status, 201, JSON.stringify(configuration.body));
+  assert.equal(configuration.data.values.channels.slack.replyToMode, "all");
   const before = await fixture.request("GET", `/namespaces/${namespace.id}/secrets`);
   assert.deepEqual(
     before.data.map((secret) => secret.id),

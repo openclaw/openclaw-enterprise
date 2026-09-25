@@ -98,6 +98,7 @@ Add a native default Slack account with environment SecretRefs:
     "slack": {
       "enabled": true,
       "mode": "socket",
+      "replyToMode": "all",
       "appToken": { "source": "env", "provider": "default", "id": "SLACK_APP_TOKEN" },
       "botToken": { "source": "env", "provider": "default", "id": "SLACK_BOT_TOKEN" },
       "dmPolicy": "allowlist",
@@ -107,6 +108,14 @@ Add a native default Slack account with environment SecretRefs:
   }
 }
 ```
+
+The console's new Slack setup and bundled Slack Presets set
+`channels.slack.replyToMode: "all"`, which threads all replies. Existing Slack
+blocks keep their saved settings, including an omitted mode or explicit `"off"`.
+To disable threading, set `replyToMode: "off"` in native Configuration JSON;
+chat-type and per-channel overrides are preserved. The API stores the supplied
+native document unchanged, so API clients should include `"replyToMode": "all"`
+as in this example. Save and redeploy to apply an intentional change.
 
 Microsoft Teams uses the native `msteams` provider identifier. Its application
 and tenant identifiers are ordinary nonsecret configuration strings; only the
