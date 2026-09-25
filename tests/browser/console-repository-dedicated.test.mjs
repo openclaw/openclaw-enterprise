@@ -121,6 +121,8 @@ for (const issuesEnabled of [true, false]) {
     await page.getByLabel("Slack channel IDs").fill("CDEMO123");
     await page.getByLabel("Allowed channel user IDs").fill("UDEMO123");
     const channelDialog = page.getByRole("dialog", { name: "Configure Slack" });
+    // This workflow enables channel mentions without granting direct-message access.
+    await channelDialog.getByLabel("Direct-message policy").selectOption("disabled");
     for (const [label, value] of [
       ["Slack app token", "xapp-synthetic-demo"],
       ["Slack bot token", "xoxb-synthetic-demo"],
