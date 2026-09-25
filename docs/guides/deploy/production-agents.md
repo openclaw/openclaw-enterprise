@@ -1,10 +1,10 @@
 # Deploy and verify production Agents
 
-Deploy an Agent into a ready Namespace and verify that its model answers. Complete
+Deploy an Agent into a ready Namespace and verify model execution. Complete
 [control-plane installation](production-installation.md) and its authenticated
-API check first. Run commands from the repository root in the same operator shell,
-retaining its credentials and Kubernetes context. For an OpenAI API key, you or
-an Installation administrator must also [grant the Agent access to the model
+API check first. Run commands from the repository root,
+retaining its credentials and Kubernetes context. For Secret-backed authentication,
+you or an Installation administrator must also [grant the Agent access to the model
 Secret](#grant-the-agent-access-to-its-model-secret) before deployment.
 
 ## Prepare each Namespace
@@ -271,18 +271,20 @@ export CONFIGURATION_ID
 Create the Agent with the captured Configuration ID and the matching execution
 mode. Mismatched Harness and mode pairs fail before deployment. Create a
 [Namespace-owned OCC Secret](../../reference/drivers/kubernetes-secret.md#create-a-namespace-owned-secret)
-containing the protected OpenAI key first, then set `HARNESS_SECRET_ID` to its
-returned `data.id`. That example uses this shell's `OCC_URL` and protected
-`OCC_SERVICE_KEY_FILE`. The caller needs exact Secret `operate` to bind it.
-For the alternative ChatGPT method, select an already issued same-Namespace
-account and matching Backend as described in [Agent harness authentication](../../reference/agents.md#harness-authentication).
+containing the credential; set `HARNESS_SECRET_ID` to its `data.id`. Choose
+`api_key`, or `codex_pat` for Dedicated Codex with an externally issued
+[Codex service-account token](../../reference/console/create-and-deploy.md#create-an-agent).
+Neither requires a Backend. The caller needs exact Secret `operate`.
+For OCE-managed accounts, use the account/Backend binding in
+[Harness authentication](../../reference/agents.md#harness-authentication).
 
 ```bash
 : "${AGENT_EXECUTION_MODE:?choose embedded or dedicated above}"
-: "${HARNESS_SECRET_ID:?set the OCC Secret ID containing the key}"
+: "${HARNESS_SECRET_ID:?set the OCC Secret ID containing the credential}"
 export HARNESS_SECRET_ID
-printf '{"name":"production-agent","configurationId":"%s","executionMode":"%s","harnessAuth":{"method":"api_key","source":{"kind":"secret","namespaceId":"%s","id":"%s"}}}\n' \
-  "$CONFIGURATION_ID" "$AGENT_EXECUTION_MODE" "$NAMESPACE_ID" "$HARNESS_SECRET_ID" > agent.json
+export HARNESS_AUTH_METHOD='api_key' # Or codex_pat for Dedicated Codex.
+printf '{"name":"production-agent","configurationId":"%s","executionMode":"%s","harnessAuth":{"method":"%s","source":{"kind":"secret","namespaceId":"%s","id":"%s"}}}\n' \
+  "$CONFIGURATION_ID" "$AGENT_EXECUTION_MODE" "$HARNESS_AUTH_METHOD" "$NAMESPACE_ID" "$HARNESS_SECRET_ID" > agent.json
 AGENT_RESPONSE="$(occ agent create --file agent.json --output json)" &&
 AGENT_ID="$(printf '%s' "$AGENT_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')" &&
 AGENT_SERVICE_PRINCIPAL_ID="$(printf '%s' "$AGENT_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["servicePrincipalId"])')" &&
@@ -414,7 +416,9 @@ AgentRevision for structured output. If `configuration.json` includes OCC
 `secretBindings`, the caller and Agent service principal must have `operate` on
 every selected Secret before deploy. Binding changes are authorized by OCC IAM;
 Kubernetes RoleBindings only allow the API to materialize backing tenant
-Secrets.
+Secrets. Wait for this revision's [deployment status](../../reference/agents.md#deployment-status)
+to become `succeeded` before the checks below; admission and an active revision
+alone do not prove workspace connectivity.
 
 ## Verify workspace access
 

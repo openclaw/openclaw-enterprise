@@ -118,8 +118,8 @@ Review other workloads before changing the cluster default. The worker stops
 predecessors before preparing a replacement; allow for termination and disk
 reattachment downtime. EBS availability-zone constraints still apply. Existing
 owned RWX workspace claims retain their original storage and data; RWX is no
-longer required for new Harness workspaces. This local change does not establish
-EKS storage failover or node-fencing acceptance.
+longer required for new Harness workspaces. Validate storage failover and
+node fencing separately for your deployment.
 
 ## Enable Console workspace files
 
@@ -217,7 +217,11 @@ For another PostgreSQL provider, use its verified TLS settings and CA instead.
 Finish the shared procedure to create Secrets, prepare the fresh bootstrap PVC,
 install Helm, and authenticate with `occ installation get`. Then complete
 [production Agent deployment](production-agents.md), including tenant grants,
-exact-Agent model credentials, and a real model turn. Check PVC binding and
+exact-Agent model credentials, and a real model turn. Select credentials and a
+model allowed from this AWS workload; AWS IAM access does not grant model access.
+Dedicated Codex supports both API keys and externally issued Codex service-account
+tokens through the existing Secret binding. The API-key example is optional.
+Check PVC binding and
 persistent gateway state across Pod replacement. Use
 [production handoff](production-handoff.md) to record AWS resource owners,
 backups, credential renewal, and recovery responsibilities.
