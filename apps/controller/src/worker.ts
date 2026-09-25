@@ -376,6 +376,7 @@ export class ControllerWorker {
   private readonly convergenceTimeoutMs: number;
   private readonly maintenanceIntervalMs: number | undefined;
   private readonly repoDriver: RepoDriver | undefined;
+  private readonly repositoryCleanupRetryMs: number;
   private readonly pluginDriver: PluginDriver | undefined;
   private readonly repositoryCredentials: RepositoryCredentialLifecycle;
   private readonly mode: "development" | "production";
@@ -480,6 +481,10 @@ export class ControllerWorker {
       });
     this.onHealthy = options.onHealthy;
     this.repoDriver = drivers?.repoDriver;
+    this.repositoryCleanupRetryMs = positiveInteger(
+      this.repoDriver?.maintenanceIntervalMs ?? 30_000,
+      "Repository cleanup retry interval",
+    );
     this.pluginDriver = drivers?.pluginDriver;
     if (this.repoDriver !== undefined) {
       const driver = this.repoDriver;
@@ -985,7 +990,11 @@ export class ControllerWorker {
       if (complete) {
         await queue.complete(claim);
       } else {
-        await queue.defer(claim, { code: "REPOSITORY_CLEANUP_PENDING" });
+        await queue.defer(
+          claim,
+          { code: "REPOSITORY_CLEANUP_PENDING" },
+          { delayMs: this.repositoryCleanupRetryMs },
+        );
       }
     }, this.queueOptions);
     this.emit({
@@ -1432,7 +1441,11 @@ export class ControllerWorker {
           claim.agentId!,
         );
         if (completed === "cleanup-pending") {
-          await queue.defer(claim, { code: "REPOSITORY_CLEANUP_PENDING" });
+          await queue.defer(
+            claim,
+            { code: "REPOSITORY_CLEANUP_PENDING" },
+            { delayMs: this.repositoryCleanupRetryMs },
+          );
         }
         return completed;
       }, this.queueOptions);
