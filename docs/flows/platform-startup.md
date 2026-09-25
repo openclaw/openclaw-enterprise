@@ -1,7 +1,7 @@
 ---
 created: 2026-08-20
-updated: 2026-09-22
-last_updated_session: authoring-run/a9a43fbc-2e26-46d5-a17c-ea6636555547
+updated: 2026-09-24
+last_updated_session: authoring-run/e027d71c-4d0b-4289-bf0d-f590c14c92cb
 ---
 
 # Platform Startup Flow
@@ -83,8 +83,13 @@ graph TD
 Before launch, the operator runs the supported migration command using the
 separate migrator role. Its
 [history preflight](../../scripts/migration-history.mjs) accepts only reviewed
-receipt and catalog prefixes, including current main with Agent presets; it
-refuses the older divergent credential history before migration DDL. The
+receipt and catalog prefixes, including the two published 31-receipt completed
+lineages: the current Backend terminology history and the historical Provider
+terminology history. The append-only compatibility migration converts the
+Provider schema and owned persisted JSON to Backend terminology without
+rewriting applied receipts or terminal provisioning fingerprints. It refuses
+mixed receipt histories, manually edited catalogs, and the older divergent
+credential history before migration DDL. The
 [migration history reference](../reference/settings/operations.md#migration-history)
 owns the exact supported shapes and recovery boundary. Neither API nor worker
 startup rewrites migration receipts or converts an unsupported database.
@@ -246,6 +251,8 @@ execution begins in the adjacent
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-24 22:50: Document exact Provider and Backend migration lineage handling accompanying the compatibility migration. (authoring-run/e027d71c-4d0b-4289-bf0d-f590c14c92cb - 1985586676c42cd359b9ecc22e22ce8f0e30034d)
 
 - 2026-09-22 04:19: Record the migration prerequisite and refusal boundary accompanying the main synchronization. (authoring-run/a9a43fbc-2e26-46d5-a17c-ea6636555547 - a7fbcdc39a1cfb1d093c2b4d1e238e39e89dae2a)
 

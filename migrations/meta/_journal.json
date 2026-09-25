@@ -218,6 +218,13 @@
       "when": 1787000000030,
       "tag": "0030_codex_pat_harness_auth",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1787000000031,
+      "tag": "0031_backend_terminology_compatibility",
+      "breakpoints": true
     }
   ]
 }

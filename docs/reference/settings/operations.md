@@ -52,12 +52,19 @@ Classify a database without applying migrations:
 pnpm db:migrate --check
 ```
 
-An exit-0 `migration.checked` record reports `empty`, `prePresetsMain`, `main`,
-`repositoryCredentials`, or `completed`. `prePresetsMain` means the exact canonical
-history through `0023_runtime_failure_timestamp_validation`; `main` also includes
-`0024_agent_presets`. `repositoryCredentials` adds `0025_repository_credentials`
-and `0026_privileged_function_search_paths`. `completed` also includes
-`0027_repository_attempt_retention` at journal index 27.
+An exit-0 `migration.checked` record reports one reviewed history shape:
+`empty`, `prePresetsMain`, `main`, `repositoryCredentials`,
+`repositoryRetention`, `workspaceSetup`, `agentProvisioning`,
+`backendCompleted`, `providerCompleted`, or `completed`. `prePresetsMain` means
+the exact canonical history through `0023_runtime_failure_timestamp_validation`;
+`main` also includes `0024_agent_presets`. `repositoryCredentials` adds
+`0025_repository_credentials` and `0026_privileged_function_search_paths`.
+`repositoryRetention`, `workspaceSetup`, and `agentProvisioning` add migrations
+through `0029_agent_provisioning_work`. `backendCompleted` is the exact
+31-receipt Backend terminology history published before the compatibility
+migration. `providerCompleted` is the exact 31-receipt Provider terminology
+history published before the rename. `completed` is the current canonical
+history with all receipts, including the compatibility migration.
 The source manifest is
 [`migrations/meta/canonical-history.json`](../../../migrations/meta/canonical-history.json).
 Empty schemas may be absent or have only their owner's ordinary `CREATE` and
@@ -72,10 +79,26 @@ and receipts in its normal transaction on that same connection. Existing
 canonical receipts remain unchanged. `--check` is also accepted by the
 production command.
 
+The compatibility migration appends a new receipt instead of rewriting either
+published 31-receipt history. On a Provider terminology database it renames the
+owned relational columns, admitted harness and repository bindings, preset
+templates, retained repository cleanup contexts, accepted provisioning plans,
+validation functions, and trigger definitions to Backend terminology. It
+preserves unrelated Provider terms such as Better Auth `account.provider_id`,
+model Provider catalogs, gateway authentication providers, repository grant
+`providerInstanceId`, and historical audit payloads. Existing terminal
+provisioning rows keep their `request_fingerprint` as historical idempotency
+evidence while the accepted plan JSON is rewritten from `providerId` to
+`backendId`. Replaying the old public Provider-shaped request against the
+renamed API is a distinct request and receives a distinct fingerprint. The
+preflight and migration both refuse a persisted object that contains both old
+and new keys at one of these owned paths.
+
 `MIGRATION_HISTORY_UNSUPPORTED` means the command refused before migration DDL.
-The earlier development history that installed repository credentials at index 24
-without Agent presets is unsupported, even if all of its own migrations completed.
-It cannot be converted by renaming or rewriting applied receipts.
+Mixed Provider and Backend receipt histories, partial manual edits, and the
+earlier development history that installed repository credentials at index 24
+without Agent presets are unsupported, even if all of their own migrations
+completed. They cannot be converted by renaming or rewriting applied receipts.
 Do not edit the ledger, run Drizzle directly to bypass the check, or restore an
 old schema over the canonical one. A failed or disconnected migration is not
 proof of rollback: reconnect, run `--check`, and inspect the retained database
