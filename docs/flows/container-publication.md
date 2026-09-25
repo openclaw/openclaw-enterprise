@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-09-24
-last_updated_session: codex/01a0d171-59c4-7b42-95ab-4050d18eab79
+updated: 2026-09-25
+last_updated_session: authoring-run/79b51ae7-5ded-47f2-bb2f-ebcb115445d0
 ---
 
 # Container publication flow
@@ -29,11 +29,12 @@ not deploy workloads or change package visibility.
 ```mermaid
 graph TD
   A["Operator selects main SHA and successful CI"] --> B["Validate source, CI and approved base"]
-  B --> C["Build controller and runtime on native AMD64 and ARM64"]
-  C --> D["Load and smoke each native config ID"]
-  D --> E["Verify successful receipts and assemble OCI indexes"]
-  E -->|either fails| X["Stop before publication"]
-  E -->|both pass| F["Seal and upload each archive"]
+  B --> C["Pin timestamps to the source commit"]
+  C --> D["Build controller and runtime on native AMD64 and ARM64"]
+  D --> E["Load and smoke each native config ID"]
+  E --> H["Canonicalize descriptors and assemble OCI indexes"]
+  H -->|either fails| X["Stop before publication"]
+  H -->|both pass| F["Seal and upload each archive"]
   F -->|publish false| G["Finish with retained artifacts"]
   F -->|publish true| I["Recheck source, CI, seals and private packages"]
   I --> J["Copy all manifests with digest preservation"]
@@ -75,6 +76,9 @@ verified before the workflow first lands on main. It has no publication job or
 package-write permission.
 The build exports
 an OCI directory without registry publication or credentials.
+Before Buildx runs, the workflow derives `SOURCE_DATE_EPOCH` from the exact
+source commit. BuildKit rewrites image and filesystem timestamps to that epoch,
+so wall-clock time does not change the image manifests on a cold-cache rebuild.
 
 `deploy/runtime/Dockerfile:openclaw-source` verifies the pinned source archive and
 applies the reviewed Codex 0.156.0 dependency/lockfile patch. Both installs use
@@ -104,8 +108,10 @@ smokes cannot upload platform artifacts. The temporary loaded image is removed.
 `.github/workflows/container-publish.yml:jobs.assemble` downloads both successful
 platform artifacts from this exact run/attempt. `container-release.mjs:assemble`
 rejects mismatched receipts, platform configs, blob sizes, or hashes before linking
-blobs into one OCI layout. It writes the multi-platform index and archive without
-rebuilding either variant, then removes the temporary layouts.
+blobs into one OCI layout. It retains only the manifest media type, digest, size,
+and platform in each assembled descriptor, excluding exporter-only annotations
+such as the build time and local reference name. It writes the multi-platform
+index and archive without rebuilding either variant, then removes the temporary layouts.
 `readArchivePlatforms` checks the archive contains exactly one AMD64 and one ARM64
 Linux manifest with matching config and content digests. Publication still consumes
 this sealed archive; registry access is not needed during assembly.
@@ -148,6 +154,10 @@ not rebuild them. Old amd64-only seals cannot satisfy this platform contract.
 - Run `actionlint .github/workflows/container-publish.yml` for workflow syntax.
 - In a hosted preparation, require smoke output for both architectures of both
   images. A config mismatch, missing platform, or failed startup blocks upload.
+- Repeat publication for the same source and CI evidence to prove that the
+  registry index identity is stable; the second run must retain the existing
+  source tag. Mutable external package inputs can still produce a legitimate
+  conflict, which remains fail-closed.
 - Inspect the published reference with `docker buildx imagetools inspect` and
   require Linux amd64 and arm64 plus the receipt's index digest. Startup checks
   do not establish native ARM64 performance, cluster behavior, or model turns.
@@ -161,6 +171,8 @@ not rebuild them. Old amd64-only seals cannot satisfy this platform contract.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-09-25 00:51: Pin build timestamps to the source commit and exclude exporter-only annotations from registry image identity so same-source publication is idempotent when resolved inputs are unchanged. (authoring-run/79b51ae7-5ded-47f2-bb2f-ebcb115445d0 - 0f3a4789)
 
 - 2026-09-24 17:20: Keep the default native build cache on Blacksmith sticky disks and avoid exporting the same intermediate layers to the GitHub Actions cache. (codex/01a0d171-59c4-7b42-95ab-4050d18eab79 - 6b5c9093)
 

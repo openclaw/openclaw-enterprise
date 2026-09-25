@@ -52,6 +52,12 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Pin image timestamps to the source commit
+        run: |
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          SOURCE_DATE_EPOCH="$(git show --no-patch --format=%ct "$SOURCE_SHA")"
+          test -n "$SOURCE_DATE_EPOCH"
+          printf 'SOURCE_DATE_EPOCH=%s\n' "$SOURCE_DATE_EPOCH" >> "$GITHUB_ENV"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: "24.16.0"
@@ -102,10 +108,11 @@ jobs:
           build-args: |
             NODE_BASE_IMAGE=${{ env.NODE_BASE_IMAGE }}
             OCC_BUILD_REVISION=${{ env.SOURCE_SHA }}
+            SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
           labels: |
             org.opencontainers.image.source=https://github.com/openclaw/openclaw-enterprise
             org.opencontainers.image.revision=${{ env.SOURCE_SHA }}
-          outputs: type=oci,dest=${{ runner.temp }}/oci,tar=false
+          outputs: type=oci,dest=${{ runner.temp }}/oci,tar=false,rewrite-timestamp=true
           cache-from: ${{ !startsWith(matrix.runner, 'blacksmith-') && format('type=gha,scope=enterprise-{0}-{1}', matrix.image, matrix.arch) || '' }}
           cache-to: ${{ !startsWith(matrix.runner, 'blacksmith-') && format('type=gha,mode=max,scope=enterprise-{0}-{1}', matrix.image, matrix.arch) || '' }}
           provenance: false

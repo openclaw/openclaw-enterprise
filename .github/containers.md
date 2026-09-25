@@ -155,12 +155,15 @@ expose the built images to public repository readers even with `publish: false`.
 No registry push does not mean artifact confidentiality; review the image
 contents and artifact audience before dispatch.
 
-A new dispatch rebuilds, so rerunning publication for the same source may be
-rejected if registry-resolved dependencies changed the bytes. Do not delete or
-overwrite existing tags to evade that rejection. Publication of the two images
-is not transactional; on a partial failure inspect each recorded registry digest
-before deciding on recovery. The publisher's concurrency lock serializes these
-workflow writes, not external registry administrators.
+Preparation pins image timestamps to the source commit and removes exporter-only
+annotations from the assembled multi-platform index. Repeating a build with the
+same resolved inputs therefore produces the same registry image identity. A
+rerun can still be rejected if mutable external package inputs resolve to
+different bytes. Do not delete or overwrite existing tags to evade that
+rejection. Publication of the two images is not transactional; on a partial
+failure inspect each recorded registry digest before deciding on recovery. The
+publisher's concurrency lock serializes these workflow writes, not external
+registry administrators.
 
 ## Recover a partial publication
 
