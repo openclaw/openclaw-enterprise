@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-09-23
-last_updated_session: 01a0d150-104a-71a3-9e56-6c5e3ee510ea
+updated: 2026-09-25
+last_updated_session: 01a0d5e6-743e-7743-8a5e-2d8c24b78b81
 ---
 
 # Console Agent editing and runtime requests
@@ -97,8 +97,18 @@ the **Allowed channel user IDs** input. The input disables the everyone checkbox
 while it contains IDs, and the checkbox disables the input while selected.
 **Require a mention** reads `requireMention` and stays independent.
 `updatedSlack` writes `users: ["*"]` or the explicit user ID list onto each
-selected channel entry while copying unrelated per-channel properties, `dmPolicy`,
-`groupPolicy`, `allowFrom`, token references, and unrelated Secret bindings.
+selected channel entry while copying unrelated per-channel properties,
+`groupPolicy`, token references, and unrelated Secret bindings.
+
+`appendFields` also renders **Direct-message policy** and **Allowed DM user IDs**.
+The shared drawer supplies `isConfigured` so existing omitted policies remain
+omitted while new setup starts with Allowlist. `validate` rejects empty or
+wildcard DM allowlists and unsupported organization-wide policy choices before
+saving. `updatedSlack` applies the selected policy and edited DM sender list;
+selecting Open writes `allowFrom: ["*"]`. Leaving Open for Allowlist or Pairing
+clears the wildcard input, requiring an intentional sender selection. Untouched
+lists and native `dm.enabled` remain unchanged. The normal Configuration save
+persists these fields; redeployment applies them to a runtime.
 
 `apps/controller/src/console/agents/detail.mjs:renderAgentDetail` passes the
 selected Namespace, saved Secret bindings, and draft Credentials URL to the
@@ -274,6 +284,8 @@ subsequent worker cleanup and the Namespace-owned resources it preserves.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-25 01:15: Trace DM policy selection, sender validation, and organization-wide restrictions. (01a0d5e6-743e-7743-8a5e-2d8c24b78b81 - 919f92c3bb3ea63acf7042b138e9a0c6e1d97719)
 
 - 2026-09-23 19:52: Record unsupported mixed Slack sender lists, unrepresentable sender IDs, and channel wildcard maps in the simple drawer. (01a0d150-104a-71a3-9e56-6c5e3ee510ea - 77aedc620f443056f9ee859050b8dc657a9c3133)
 

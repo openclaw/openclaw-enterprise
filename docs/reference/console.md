@@ -138,7 +138,7 @@ Refresh loads current saved state. The write may have succeeded; there is no
 automatic replay. **Disable Slack** edits only the draft. It does not disable
 access, stop execution, or change an admitted revision.
 
-Slack editing preserves existing direct-message and channel policies, including
+Slack editing preserves untouched direct-message and channel policies, including
 pairing, open, disabled, and omitted policies. It preserves unrelated
 per-channel settings while replacing the selected channels' sender lists.
 New Slack configurations use allowlist policies. **Allowed channel user IDs**
@@ -147,8 +147,9 @@ channels to mention the agent** writes `users: ["*"]` on each selected channel
 and leaves direct-message `allowFrom` unchanged. The checkbox and user ID input
 are mutually exclusive: entering IDs disables the everyone option, clearing IDs
 makes everyone selectable, and turning everyone off re-enables ID entry.
-**Require a mention** is independent of sender access. The editor does not
-change DM or group policy when saving channel settings. Slack Socket Mode uses fixed
+**Require a mention** is independent of sender access. Use **Direct-message policy** and **Allowed DM user IDs** to change DM access
+separately; see [Slack policies](configuration/secrets.md#native-channel-configuration).
+Channel sender edits leave DM and group policies unchanged. Slack Socket Mode uses fixed
 unresolved references to `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN`.
 Slack requires dedicated execution and Kubernetes runtime projection.
 

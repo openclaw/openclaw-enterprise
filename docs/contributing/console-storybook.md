@@ -188,10 +188,10 @@ Credential edits likewise need deployment to affect managed runtime configuratio
 Workspace-file writes apply immediately and do not create a revision.
 
 Native JSON editing changes Configuration values, not Agent-owned Backend or
-execution-mode fields. The Slack drawer preserves existing access policies; it
-does not provide a policy selector. Its channel sender controls edit per-channel
-`users` lists, including `users: ["*"]` for everyone, while direct-message
-`allowFrom` stays unchanged. See [Agent revisions](../guides/topics/agent-revisions.md).
+execution-mode fields. The Slack drawer edits DM policy and allowed DM users
+separately from channel sender controls. Channel edits update per-channel
+`users` lists, including `users: ["*"]` for everyone, while untouched DM settings
+stay unchanged. See [Agent revisions](../guides/topics/agent-revisions.md).
 
 The DevDay Admin UI segment starts from a deployed `oceclaw` Agent whose Slack
 fixture represents `#openclaw-feedback`. Its native Admin UI target is a
@@ -259,3 +259,16 @@ Navigate to Namespaces and confirm `debug=true` persists. Repeat in the mobile
 drawer. **Debug metadata unavailable** covers a failed read; ordinary navigation
 stories keep diagnostics hidden. These are presentation fixtures; Docker image
 inspection and the Kubernetes API/worker integration suite verify Driver behavior.
+
+### Slack reply and DM policy checks
+
+In **Components/Channels**, use **Slack Threaded Default** to save a new
+channel-only setup with DMs disabled and inspect its native Configuration.
+**Slack Reply Override** must preserve an existing `replyToMode: "off"`.
+In **Slack Dm Policy**, exercise an empty Allowlist error, save explicit DM
+sender IDs, then switch through Open, Disabled, and Pairing. Reopen the editor
+after saving and verify channel senders stay unchanged. **Slack Enterprise Dm**
+shows organization-wide policy restrictions. Existing missing-credential,
+read-only, and save-failure stories still cover those surrounding states.
+Capture the final interactions and native values outside the repository;
+attach reviewable screenshots and video to the task and PR.

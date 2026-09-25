@@ -239,9 +239,9 @@ response-ordering checks below.
 
 `apps/controller/src/console/channels/slack.mjs:supportSlack` rejects shapes the
 editor cannot preserve; [Agent editing](platform-console/agent-editing.md#4-render-draft-revision-or-channels)
-owns those limits. `updatedSlack` preserves existing policies and reply settings,
-including omission and chat-type/per-channel overrides. Only a new Slack block
-receives allowlist defaults and `replyToMode: "all"`.
+owns those limits and DM policy editing. `updatedSlack` preserves untouched
+policies and reply overrides. New Slack blocks receive group allowlist access
+and `replyToModeByChatType: { channel: "all" }`.
 The API stores native values unchanged; admission snapshots them into the
 AgentRevision. Kubernetes Compute's
 `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision` carries
@@ -330,6 +330,8 @@ uncertain response disables replay until refresh and inspection.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-25 01:15: Trace channel-only Slack reply defaults and explicit DM policy editing. (01a0d5e6-743e-7743-8a5e-2d8c24b78b81 - 919f92c3bb3ea63acf7042b138e9a0c6e1d97719)
 
 - 2026-09-25 00:15: Trace new Slack reply defaults and preservation through gateway rendering. (01a0d5e6-743e-7743-8a5e-2d8c24b78b81 - 29bf7a8681390fe60ced612beeb538101c87bc34)
 

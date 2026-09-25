@@ -507,6 +507,7 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
   await page.getByRole("button", { name: "Configure Slack" }).click();
   const createChannelDialog = page.getByRole("dialog", { name: /^(Configure|Edit) Slack$/ });
+  await createChannelDialog.getByLabel("Direct-message policy").selectOption("disabled");
   await createChannelDialog
     .getByText("Choose existing Slack token Secrets or create them here before creating the Agent.")
     .waitFor();
@@ -968,6 +969,7 @@ test("Dedicated repository Agent keeps its bindings through Slack save and the d
   assert.notEqual(agent.harnessAuth.source.id, modelSecret.id);
   await page.getByRole("button", { name: "Channels", exact: true }).click();
   await page.getByRole("button", { name: "Configure Slack", exact: true }).click();
+  await page.getByLabel("Direct-message policy").selectOption("disabled");
   await page.getByLabel("Slack channel IDs").fill("CREPOSITORY123");
   await page.getByLabel("Allow everyone in these channels to mention the agent").check();
   const savedResponse = page.waitForResponse(
@@ -1770,6 +1772,7 @@ test("Dedicated Agent creation provisions inline Configuration and masked new Se
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
   await page.getByRole("button", { name: "Configure Slack" }).click();
   const channelDialog = page.getByRole("dialog", { name: "Configure Slack" });
+  await channelDialog.getByLabel("Direct-message policy").selectOption("disabled");
   await channelDialog
     .getByText("Choose existing Slack token Secrets or create them here before creating the Agent.")
     .waitFor();
@@ -1834,9 +1837,9 @@ test("Dedicated Agent creation provisions inline Configuration and masked new Se
     appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
     botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
     channels: { C0123456789: { requireMention: true, users: ["*"] } },
-    dmPolicy: "allowlist",
+    dmPolicy: "disabled",
     groupPolicy: "allowlist",
-    replyToMode: "all",
+    replyToModeByChatType: { channel: "all" },
   });
   assert.deepEqual(provisionBody.configuration, {
     kind: "agent",
@@ -1895,6 +1898,7 @@ test("Dedicated Agent creation uses regular create when provisioning is unsuppor
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
   await page.getByRole("button", { name: "Configure Slack" }).click();
   const channelDialog = page.getByRole("dialog", { name: "Configure Slack" });
+  await channelDialog.getByLabel("Direct-message policy").selectOption("disabled");
   await channelDialog.getByLabel("Slack channel IDs").fill("CUNSUPPORTED123");
   await channelDialog.getByLabel("Allow everyone in these channels to mention the agent").check();
   await channelDialog.getByRole("button", { name: "Apply channel settings" }).click();
@@ -1967,10 +1971,60 @@ test("Dedicated Agent creation uses regular create when provisioning is unsuppor
   assert.deepEqual(savedConfiguration.data.values.channels.slack.channels, {
     CUNSUPPORTED123: { requireMention: true, users: ["USENDER123"] },
   });
-  assert.equal(savedConfiguration.data.values.channels.slack.replyToMode, "all");
+  assert.equal(savedConfiguration.data.values.channels.slack.replyToMode, undefined);
+  assert.deepEqual(savedConfiguration.data.values.channels.slack.replyToModeByChatType, {
+    channel: "all",
+  });
   assert.equal(savedConfiguration.data.values.channels.slack.groupPolicy, "allowlist");
-  assert.equal(savedConfiguration.data.values.channels.slack.dmPolicy, "allowlist");
+  assert.equal(savedConfiguration.data.values.channels.slack.dmPolicy, "disabled");
   assert.equal(Object.hasOwn(savedConfiguration.data.values.channels.slack, "allowFrom"), false);
+
+  // Exercise DM policy changes through the normal Agent editor and real Configuration API.
+  // An empty or wildcard allowlist must not produce a write or broaden channel access.
+  await savedDialog.getByLabel("Direct-message policy").selectOption("allowlist");
+  for (const invalid of ["", "*"]) {
+    await savedDialog.getByLabel("Allowed DM user IDs").fill(invalid);
+    requests.length = 0;
+    await savedDialog.getByRole("button", { name: "Save configuration", exact: true }).click();
+    await savedDialog
+      .getByText("Enter specific allowed DM user IDs, or choose a different direct-message policy.")
+      .waitFor();
+    assert.equal(nonAuthWriteRequests(requests).length, 0);
+  }
+  for (const [policy, senders] of [
+    ["allowlist", ["UDIRECT123"]],
+    ["open", ["*"]],
+    ["disabled", ["*"]],
+    ["pairing", ["UPREAPPROVED123"]],
+  ]) {
+    await savedDialog.getByLabel("Direct-message policy").selectOption(policy);
+    if (policy === "allowlist" || policy === "pairing") {
+      if (policy === "pairing") {
+        assert.equal(await savedDialog.getByLabel("Allowed DM user IDs").inputValue(), "");
+      }
+      await savedDialog.getByLabel("Allowed DM user IDs").fill(senders.join(", "));
+    }
+    const policySaved = page.waitForResponse(
+      (response) =>
+        response.request().method() === "PATCH" &&
+        response.url().endsWith(`/configurations/${createdAgent.configurationId}`),
+    );
+    await savedDialog.getByRole("button", { name: "Save configuration", exact: true }).click();
+    assert.equal((await policySaved).status(), 200);
+    await page.reload();
+    await page.getByRole("button", { name: "Edit Slack", exact: true }).click();
+    savedDialog = page.getByRole("dialog", { name: "Edit Slack" });
+    assert.equal(await savedDialog.getByLabel("Direct-message policy").inputValue(), policy);
+    const persisted = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/configurations/${createdAgent.configurationId}`,
+    );
+    assert.deepEqual(persisted.data.values.channels.slack, {
+      ...savedConfiguration.data.values.channels.slack,
+      dmPolicy: policy,
+      allowFrom: senders,
+    });
+  }
 });
 
 test("Dedicated Agent creation reuses separately saved Secret references after provisioning failure", async (t) => {
@@ -2135,6 +2189,7 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
   await page.getByRole("button", { name: "Configure Slack" }).click();
   const channelDialog = page.getByRole("dialog", { name: "Configure Slack" });
+  await channelDialog.getByLabel("Direct-message policy").selectOption("disabled");
   await channelDialog.getByLabel("Slack app token").selectOption("__openclaw_create_secret__");
   const appSecretDialog = page.getByRole("dialog", { name: "Create Slack app token Secret" });
   await appSecretDialog.getByLabel("Secret value").fill("retry-slack-app-secret");
@@ -5584,13 +5639,14 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   );
 });
 
-for (const [dmPolicy, groupPolicy] of [
+for (const [dmPolicy, groupPolicy, enterpriseOrgInstall] of [
   ["pairing", "allowlist"],
   ["open", "open"],
   ["disabled", "disabled"],
   [undefined, undefined],
+  ["disabled", "allowlist", true],
 ]) {
-  test(`Slack channel editing preserves ${dmPolicy ?? "omitted"} DM and ${groupPolicy ?? "omitted"} group policies`, async (t) => {
+  test(`Slack channel editing preserves ${dmPolicy ?? "omitted"} DM and ${groupPolicy ?? "omitted"} group policies${enterpriseOrgInstall ? " on an organization-wide install" : ""}`, async (t) => {
     const fixture = await createConsoleAppFixture(t);
     await fixture.bootstrap();
     const namespace = await fixture.createNamespace("Slack policy editing", { ready: true });
@@ -5599,6 +5655,7 @@ for (const [dmPolicy, groupPolicy] of [
       mode: "socket",
       appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
       botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+      ...(enterpriseOrgInstall ? { enterpriseOrgInstall } : {}),
       ...(dmPolicy === undefined ? {} : { dmPolicy }),
       ...(groupPolicy === undefined ? {} : { groupPolicy }),
       allowFrom: dmPolicy === "open" ? ["*"] : ["UKEEP123"],
@@ -5621,6 +5678,24 @@ for (const [dmPolicy, groupPolicy] of [
     assert.equal(await edit.isEnabled(), true);
     await edit.click();
     const dialog = page.getByRole("dialog", { name: "Edit Slack" });
+    if (enterpriseOrgInstall) {
+      // Per-user DM authorization cannot be shared across organization workspaces.
+      for (const unsupported of ["pairing", "allowlist"]) {
+        await dialog.getByLabel("Direct-message policy").selectOption(unsupported);
+        await dialog.getByRole("button", { name: "Save configuration", exact: true }).click();
+        await dialog
+          .getByText(
+            "Choose Disabled or Open for direct messages on an organization-wide Slack install.",
+          )
+          .waitFor();
+      }
+      const unchanged = await fixture.request(
+        "GET",
+        `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+      );
+      assert.deepEqual(unchanged.data.values.channels.slack, slack);
+      await dialog.getByLabel("Direct-message policy").selectOption("disabled");
+    }
     const allowedUsers = dialog.getByLabel("Allowed channel user IDs");
     const allowEveryone = dialog.getByLabel(
       "Allow everyone in these channels to mention the agent",

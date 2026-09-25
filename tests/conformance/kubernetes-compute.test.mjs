@@ -7246,7 +7246,7 @@ test("gateway configuration preserves Slack reply modes and native overrides", (
   const driver = createKubernetesComputeDriver(options());
   for (const policy of [
     {},
-    { replyToMode: "all" },
+    { replyToModeByChatType: { channel: "all" }, dmPolicy: "disabled" },
     { replyToMode: "off" },
     {
       replyToMode: "all",

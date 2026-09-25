@@ -34,6 +34,7 @@ function configurationValues(scenario) {
       ...(scenario.slackReplyToMode === undefined
         ? {}
         : { replyToMode: scenario.slackReplyToMode }),
+      ...(scenario.slackEnterpriseOrgInstall ? { enterpriseOrgInstall: true } : {}),
       dmPolicy: scenario.slackPolicy ?? "pairing",
       groupPolicy: scenario.slackPolicy === "open" ? "open" : "allowlist",
       appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },

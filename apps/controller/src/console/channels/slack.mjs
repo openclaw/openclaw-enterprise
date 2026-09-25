@@ -24,6 +24,8 @@ const STANDARD_REFS = {
   },
 };
 
+const DM_POLICIES = ["pairing", "allowlist", "open", "disabled"];
+
 const CREATE_SECRET_VALUE = "__openclaw_create_secret__";
 
 function channelUsers(channel) {
@@ -80,6 +82,9 @@ function supportSlack(values) {
   if (config.channels !== undefined && !isRecord(config.channels)) {
     return { supported: false, reason: "Slack channels are not stored as a channel map.", config };
   }
+  if (config.dmPolicy !== undefined && !DM_POLICIES.includes(config.dmPolicy)) {
+    return { supported: false, reason: "Slack direct-message policy is unsupported.", config };
+  }
   const channelEntries = Object.entries(config.channels ?? {});
   if (channelEntries.some(([, value]) => !isRecord(value))) {
     return {
@@ -88,7 +93,10 @@ function supportSlack(values) {
       config,
     };
   }
-  if (config.allowFrom !== undefined && !arrayOfStrings(config.allowFrom)) {
+  if (
+    config.allowFrom !== undefined &&
+    (!arrayOfStrings(config.allowFrom) || config.allowFrom.some((user) => /[,\r\n]/.test(user)))
+  ) {
     return {
       supported: false,
       reason: "Slack allowed users are not stored as string IDs.",
@@ -160,9 +168,22 @@ function updatedSlack(values, body) {
     channels,
   };
   if (!isRecord(existingConfig)) {
-    config.dmPolicy = "allowlist";
     config.groupPolicy = "allowlist";
-    config.replyToMode = "all";
+    config.replyToModeByChatType = { channel: "all" };
+  }
+  const dmPolicy = body.querySelector("#slack-dm-policy").value;
+  if (dmPolicy !== "") {
+    config.dmPolicy = dmPolicy;
+  }
+  const dmUsers = body.querySelector("#slack-dm-user-ids").value;
+  if (dmPolicy === "open" && current.dmPolicy !== "open") {
+    config.allowFrom = ["*"];
+  } else if (
+    dmPolicy !== "open" &&
+    dmPolicy !== "disabled" &&
+    dmUsers !== (current.allowFrom ?? []).join(", ")
+  ) {
+    config.allowFrom = uniqueList(dmUsers.split(","));
   }
   return withProvider(values, "slack", config);
 }
@@ -555,11 +576,42 @@ function appendFields(body, config, context) {
   allowedUsers.addEventListener("input", updateAccessControls);
   everyone.addEventListener("change", updateAccessControls);
   updateAccessControls();
+  const dmPolicy = element("select", { id: "slack-dm-policy" });
+  if (context.isConfigured && config.dmPolicy === undefined) {
+    dmPolicy.append(element("option", { value: "" }, "Runtime default (pairing)"));
+  }
+  for (const [value, label] of [
+    ["pairing", "Pairing — approve new senders"],
+    ["allowlist", "Allowlist — selected users only"],
+    ["open", "Open — anyone"],
+    ["disabled", "Disabled — no direct messages"],
+  ]) {
+    dmPolicy.append(element("option", { value }, label));
+  }
+  dmPolicy.value = config.dmPolicy ?? (context.isConfigured ? "" : "allowlist");
+  dmPolicy.dataset.enterpriseRestricted = String(
+    config.enterpriseOrgInstall === true && config.dm?.enabled !== false,
+  );
+  const dmUsers = input("slack-dm-user-ids", (config.allowFrom ?? []).join(", "));
+  const updateDmControls = () => {
+    dmUsers.disabled = dmPolicy.value === "open" || dmPolicy.value === "disabled";
+  };
+  dmPolicy.addEventListener("change", () => {
+    // Leaving open access must require an explicit sender choice for an allowlist.
+    if (
+      ["allowlist", "pairing"].includes(dmPolicy.value) &&
+      dmUsers.value.split(",").some((id) => id.trim() === "*")
+    ) {
+      dmUsers.value = "";
+    }
+    updateDmControls();
+  });
+  updateDmControls();
   body.append(
     element(
       "p",
       { className: "hint" },
-      "Choose who can interact in the selected channels. Existing direct-message policies and channel restrictions are preserved.",
+      "Choose channel access and direct-message access separately.",
     ),
     field(
       "Slack channel IDs",
@@ -578,6 +630,35 @@ function appendFields(body, config, context) {
       "Applies only to the selected channels and respects their existing access restrictions. Require a mention controls when the agent responds.",
     ),
     checkbox("slack-require-mention", "Require a mention", Boolean(mention)),
+    element("h2", {}, "Direct messages"),
+    field(
+      "Direct-message policy",
+      dmPolicy,
+      "Open allows anyone to send direct messages. Disabled is recommended for organization-wide installs.",
+    ),
+    field(
+      "Allowed DM user IDs",
+      dmUsers,
+      "Comma-separated Slack user IDs. Required for Allowlist; optional preapproved senders for Pairing. These IDs do not change channel access.",
+    ),
+    ...(config.enterpriseOrgInstall === true
+      ? [
+          element(
+            "p",
+            { className: "hint" },
+            "Organization-wide installs support Disabled or Open direct-message access.",
+          ),
+        ]
+      : []),
+    ...(config.dm?.enabled === false
+      ? [
+          element(
+            "p",
+            { className: "hint" },
+            "Direct messages are also disabled in native Configuration (dm.enabled). Changing this policy does not enable them.",
+          ),
+        ]
+      : []),
     element("h2", {}, "Credential references"),
     element(
       "p",
@@ -621,6 +702,17 @@ export const slack = {
     }
     if (ids.length > 0 && users.length === 0 && !allowEveryone) {
       return "Enter allowed channel user IDs or allow everyone in these channels.";
+    }
+    const dmPolicy = body.querySelector("#slack-dm-policy");
+    const dmUsers = uniqueList(body.querySelector("#slack-dm-user-ids").value.split(","));
+    if (
+      dmPolicy.dataset.enterpriseRestricted === "true" &&
+      !["disabled", "open"].includes(dmPolicy.value)
+    ) {
+      return "Choose Disabled or Open for direct messages on an organization-wide Slack install.";
+    }
+    if (dmPolicy.value === "allowlist" && (dmUsers.length === 0 || dmUsers.includes("*"))) {
+      return "Enter specific allowed DM user IDs, or choose a different direct-message policy.";
     }
     return null;
   },
