@@ -15,6 +15,9 @@ test("runtime assembly preserves executable assets and links while excluding dev
     "package.json": '{"packageManager":"pnpm@12.4.2","dependencies":{"dep":"1.0.0"}}',
     "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
     "dist/index.js": "export const ready = true;\n",
+    "openclaw.mjs":
+      'import { ready } from "./node-compile-cache.mjs"; process.stdout.write(ready);\n',
+    "node-compile-cache.mjs": 'export const ready = "runtime-ready";\n',
     "extensions/slack/skills/slack/SKILL.md": "Slack runtime skill",
     "extensions/slack/src/client.test.ts": "development test",
     "extensions/slack/__tests__/fixture.json": "{}",
@@ -53,9 +56,11 @@ test("runtime assembly preserves executable assets and links while excluding dev
   );
   const patch = join(directory, "codex.patch");
   await writeFile(patch, "reviewed dependency patch");
+  const sourceAlias = join(directory, "source-alias");
+  await symlink(root, sourceAlias, "dir");
   execFileSync(
     process.execPath,
-    ["scripts/build-runtime-assets.mjs", "package", root, output, patch],
+    ["scripts/build-runtime-assets.mjs", "package", sourceAlias, output, patch],
     {
       env: { ...process.env, GIT_COMMIT: "a".repeat(40) },
     },
@@ -71,6 +76,11 @@ test("runtime assembly preserves executable assets and links while excluding dev
     await assert.rejects(readFile(join(root, name)), { code: "ENOENT" });
   }
   const contents = await readFile(join(output, "contents.json"));
+  // The pinned upstream launcher imports this sibling before loading dist.
+  assert.equal(
+    execFileSync(process.execPath, [join(root, "openclaw.mjs")], { encoding: "utf8" }),
+    "runtime-ready",
+  );
   const manifest = JSON.parse(contents);
   for (const name of [
     "node_modules/.pnpm/dep@1.0.0/node_modules/dep/package.json",

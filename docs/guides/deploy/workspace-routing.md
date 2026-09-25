@@ -32,11 +32,11 @@ They do not establish support for a dedicated OpenClaw remote worker.
 Before creating a dedicated Agent, configure the service-key Secret and proxy
 trust below. Embedded Harnesses also support direct access.
 
-The runtime Dockerfile's default `2026.9.1` packages do not include this stack.
-Updating the controller alone removes dedicated Gateway workspace mounts without
-supplying the replacement runtime path. Use matching images before deploying
-this change; source merges alone do not update installed images. Native node
-enrollment through Envoy and a complete Enterprise task remain unverified.
+Build the matching Gateway and Harness images from the repository's pinned
+runtime sources; see the [runtime image procedure](../../../deploy/runtime/README.md).
+Updating the controller alone does not update installed images. Verify native
+node enrollment, workspace access, and a real model turn with your selected
+images before accepting the deployment.
 
 ## Agent workspace files
 

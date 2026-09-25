@@ -11,7 +11,6 @@ import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mj
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   assertGatewayModelTurn,
-  configureExistingK3dLocalPathSharedFileSystem,
   createKubernetesInstallationConfiguration,
   createRealKubernetesFixture,
   kubernetesHash as hash,
@@ -171,7 +170,6 @@ test(
   },
   async (context) => {
     const kubeconfig = await prerequisites();
-    await configureExistingK3dLocalPathSharedFileSystem({ kubeconfigPath, kubernetesContext });
     const suffix = hash(randomUUID());
     const platformNamespace = `oce-service-account-driver-${suffix}`;
     const directory = await mkdtemp(join(tmpdir(), "oce-service-account-driver-real-"));

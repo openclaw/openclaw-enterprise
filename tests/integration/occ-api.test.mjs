@@ -2566,11 +2566,22 @@ test("OCC Fastify enforces strict schemas, canonical errors, and its real 64 KiB
   assert.equal(oversized.status, 413);
   assert.equal(oversized.body.error.code, "PAYLOAD_TOO_LARGE");
 
-  const unsupportedMethod = await controller.request("DELETE", "/namespaces");
-  assert.equal(unsupportedMethod.status, 405);
-  assert.equal(unsupportedMethod.body.error.code, "METHOD_NOT_ALLOWED");
-  assert.match(unsupportedMethod.headers.get("allow") ?? "", /GET/);
-  assert.match(unsupportedMethod.headers.get("allow") ?? "", /POST/);
+  // Keep method order and overlapping literal/parameter paths in the public Allow header.
+  for (const [method, path, allowed] of [
+    ["DELETE", "/namespaces", "POST, GET"],
+    [
+      "OPTIONS",
+      `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+      "GET, PATCH, DELETE",
+    ],
+    ["OPTIONS", `/namespaces/${namespace.id}/agents/${agent.id}/deploy?ignored=true`, "POST"],
+    ["OPTIONS", `/namespaces/${namespace.id}/agents/provision`, "POST, PATCH, GET, DELETE"],
+  ]) {
+    const unsupportedMethod = await controller.request(method, path);
+    assert.equal(unsupportedMethod.status, 405);
+    assert.equal(unsupportedMethod.body.error.code, "METHOD_NOT_ALLOWED");
+    assert.equal(unsupportedMethod.headers.get("allow"), allowed);
+  }
 
   const fixture = await createInjectedFixture();
   const bootstrapped = await injectedRequest(fixture.app, "POST", "/installation/bootstrap", {

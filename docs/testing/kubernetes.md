@@ -30,8 +30,9 @@ OCC_TEST_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/opencla
   node --test tests/integration/kubernetes-compute-real.test.mjs
 ```
 
-All three fixture cases must run: Driver lifecycle/isolation, externally managed
-namespace preservation, and PostgreSQL API-plus-worker reconciliation. No model
+All four fixture cases must run: Driver lifecycle/isolation, externally managed
+namespace preservation, provisioning handoff, and PostgreSQL API-plus-worker
+reconciliation. No model
 key is needed. Missing all cluster selectors skips the suite; partial selectors
 fail, and a missing database skips the API-plus-worker case.
 
@@ -41,9 +42,13 @@ Secret and private-state claim deletion. The case uses nonfunctional fixture
 credentials and performs no model turn.
 
 The tests require an explicit loopback `k3d-*` context and enforcing
-NetworkPolicies. They create scoped RBAC and resources, and configure the
-selected cluster's local-path provisioner for shared filesystem tests. Because
-that changes cluster-wide storage configuration, use a disposable cluster.
+NetworkPolicies. They create scoped RBAC and resources and use the stock
+local-path provisioner for RWO Harness workspaces. The API-plus-worker case
+verifies that replacement retains the PVC UID and a file written by the old
+Harness. The HTTP fixture can fail native readiness using a workspace marker;
+a later deployment must retain both earlier files and writes from the failed
+candidate. This proves serial replacement on local storage, not cloud CSI detach,
+node fencing, or data movement between nodes. Use a disposable cluster.
 
 ### Fixture images and security controls
 
@@ -54,13 +59,10 @@ Its local mutable tag and unpinned `docker.io/library/node:24-bookworm` base are
 disposable fixture; production images still require the documented pinning and
 review.
 
-The suite inspects restricted tenant labels, quotas and limits, NetworkPolicies,
-nonroot execution, `RuntimeDefault` seccomp, dropped capabilities, denied
-privilege escalation, a read-only root filesystem, and resource bounds. A
-skipped cluster case does not verify enforcement. The HTTP fixture exercises
-infrastructure. Its API-plus-worker case verifies Secret binding admission and
-gateway projection with synthetic values, but genuine Slack/channel runtime
-requires the runtime images and credentials below.
+The suite checks tenant isolation, resource bounds, nonroot execution, seccomp,
+dropped capabilities, and a read-only root filesystem. Skipped cases prove no
+enforcement. API-plus-worker coverage uses synthetic Secrets for binding admission
+and gateway projection; genuine channel runtime needs the images and credentials below.
 
 Live Configuration ConfigMap CRUD and least-privilege RBAC cases require the
 selected disposable cluster and tenant credentials. Without those inputs, they
@@ -86,9 +88,8 @@ Credentialed repository access requires separate proof.
 
 ### Develop with local containers and k3d
 
-The repository can prepare a disposable k3d cluster, an isolated PostgreSQL
-database, and the current gateway and Codex runtime images. Start Docker or a
-Podman API socket. On macOS, start Podman Machine. Then start the helper:
+The helper prepares disposable k3d, isolated PostgreSQL, and gateway/Codex images.
+Start Docker or Podman's API socket (Podman Machine on macOS), then run:
 
 ```sh
 export OCC_TEST_OPENAI_MODEL=gpt-6-astra

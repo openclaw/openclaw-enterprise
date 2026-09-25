@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: "2026-09-21"
-last_updated_session: "authoring-run/7fb656ee-ae7a-45a8-a160-6d73bc5ae25b"
+updated: 2026-09-24
+last_updated_session: 01a0cf72-6985-7712-ba92-d8cc32470f24
 ---
 
 # Controller Worker Flow
@@ -141,6 +141,9 @@ no Backend client or admin key. The
 
 Revocation and denial fail permanently before runtime creation. Older revisions
 complete as superseded; already-active revisions enter finalization or maintenance.
+A newer admitted revision for which Compute requires stopped predecessors also
+supersedes older active maintenance before any Compute effects. This remains
+true after candidate failure; recovery uses a new revision.
 
 Agent-stop work rechecks current exact-Agent `operate`. Superseded desired state
 completes without shutdown. An absent active pointer does not prove candidates
@@ -161,6 +164,15 @@ dispatch optionally binds the exact Agent, then calls `prepareRevision` with its
 immutable snapshot. The worker validates the returned observation's owner and
 shape before treating it as ready. A pending observation defers convergence;
 an invalid observation fails permanently.
+
+`apps/controller/src/worker.ts:ControllerWorker.prepareRevision` checks Compute's
+`requiresStoppedPredecessors` capability. When selected, it loads all earlier
+snapshots, closes their credential sessions, and calls `stopRevision` under the
+claim heartbeat before preparing the candidate. This includes failed candidates;
+a release failure prevents new preparation. The per-Agent queue serializes these
+operations, and the earlier dispatch guard prevents maintenance from recreating
+a predecessor between readiness observations. Durable storage remains Driver-owned.
+This replacement path accepts downtime and recovers through a new higher revision.
 
 The worker validates Compute's startup plugin warning codes and selection keys
 against the immutable revision. Warnings permit deployment only after Compute
@@ -345,6 +357,8 @@ aborts in-flight work, waits for the loop, closes PostgreSQL, and emits
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-24 11:28: Document exclusive dedicated preparation and durable RWO workspaces in the accompanying change. (01a0cf72-6985-7712-ba92-d8cc32470f24 - 14a4508baad876d3eea4e6fe6388f8d8a91559b7)
 
 - 2026-09-21 07:24: Tighten the baseline execution trace while preserving lifecycle boundaries and historical notes. (authoring-run/7fb656ee-ae7a-45a8-a160-6d73bc5ae25b - d2b31887be1d114c9147e2ed6f07c1f38e765c6f)
 

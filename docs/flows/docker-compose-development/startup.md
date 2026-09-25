@@ -47,7 +47,7 @@ running `podman` as root on the host.
 
 If neither a shared runtime image nor separate gateway/Agent images are set,
 the helper selects `openclaw-enterprise-runtime:quickstart` for this invocation.
-It builds that default image from `deploy/runtime` only when the image is
+It builds that default image with `deploy/runtime/Dockerfile` and the repository-root context only when the image is
 missing. Custom image references must already exist; an incomplete custom
 selection fails before startup is reported successful.
 
@@ -167,7 +167,11 @@ Startup refuses existing cluster or project resources, validates the resolved
 Compose publications through `internal/occdev/compose.go:AnalyzeCompose`, and
 rejects external or unscoped networks and volumes through
 `internal/occdev/up.go:validateResourceOwnership`. It then claims the state directory with an exclusive `0700` creation. It writes the
-rendered Compose snapshot privately before creating resources. Startup and
+rendered Compose snapshot privately before creating resources.
+`setKubernetesBridgeGateway` preserves an explicit development-network gateway
+or derives the first usable address from its rendered subnet before saving the
+snapshot. This supplies the bridge gateway k3d requires, including when the
+operator overrides the subnet. Startup and
 cleanup both use that snapshot, so later `.env` edits cannot change the saved
 project configuration.
 
@@ -191,7 +195,9 @@ imports the selected local runtime image, resolves its in-cluster digest, and
 writes Installation configuration selecting Kubernetes Compute, Configuration,
 and Secret Drivers with native IAM. Its runtime section configures the transport
 Secret prefix and gateway storage class accepted by the current Compute Driver
-schema. The container configuration and kubeconfig are individually readable by
+schema. Generated Gateway and Harness resource limits allow 2 GiB of memory per
+workload; the current runtime can exceed the former 1 GiB limit during startup.
+The container configuration and kubeconfig are individually readable by
 non-root containers, behind the private host directory, and mounted read-only
 into the API and Kubernetes worker. Neither service receives the engine socket.
 

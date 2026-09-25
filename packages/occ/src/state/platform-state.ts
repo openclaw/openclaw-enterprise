@@ -651,12 +651,9 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     workspaceSetups: new Map(
       Array.from(snapshot.workspaceSetups, ([key, setup]) => [key, immutableCopy(setup)]),
     ),
-    revisions: new Map(
-      Array.from(snapshot.revisions, ([key, revisions]) => [
-        key,
-        Object.freeze(revisions.map((revision) => immutableCopy(revision))),
-      ]),
-    ),
+    // Revisions are copied on ingress/egress; appends replace frozen history arrays.
+    // A separate Map isolates this snapshot's future appends without copying history.
+    revisions: new Map(snapshot.revisions),
     roles: new Map(Array.from(snapshot.roles, ([key, role]) => [key, immutableCopy(role)])),
     bindings: new Map(
       Array.from(snapshot.bindings, ([key, binding]) => [key, immutableCopy(binding)]),

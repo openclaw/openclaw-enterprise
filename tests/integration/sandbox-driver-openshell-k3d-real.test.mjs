@@ -19,7 +19,6 @@ import {
   openShellAgentName,
   openshellHash as hash,
 } from "../helpers/openshell-kubernetes-real.mjs";
-import { configureExistingK3dLocalPathSharedFileSystem } from "../helpers/kubernetes-real.mjs";
 
 const kubeconfigPath = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;
 const kubernetesContext = process.env.OCC_TEST_KUBERNETES_CONTEXT;
@@ -1121,7 +1120,6 @@ async function prepareProductionInstallation(
   { expectUnsupportedProjection = false } = {},
 ) {
   const kubeconfig = await validateOpenShellPrerequisites();
-  await configureExistingK3dLocalPathSharedFileSystem({ kubeconfigPath, kubernetesContext });
   const identifier = randomUUID();
   const platformNamespace = `oce-openshell-${hash(identifier)}`;
   await kubectl("create", "namespace", platformNamespace);

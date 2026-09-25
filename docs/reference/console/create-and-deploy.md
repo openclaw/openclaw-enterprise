@@ -222,12 +222,9 @@ approval policy; review both before demonstrating edits.
 
 ## Initial runtime credentials
 
-First-time provisioning creates generated transport credentials automatically.
-For ordinary draft Agents, before the first deployment, provision generated transport credentials
-and, when Slack is enabled, store its app and bot tokens as Namespace Secrets
-bound through the Agent's Configuration. Model credentials are selected
-separately during Agent creation through `harnessAuth`; runtime credential
-provisioning does not change that key.
+Before deploying a draft Agent, provision transport credentials and bind Slack
+tokens as Namespace Secrets. This leaves the separately selected `harnessAuth`
+model credential unchanged.
 
 Select **Provision generated runtime credentials** to create the transport bundle.
 The Kubernetes Driver generates an app-server transport token and a local
@@ -238,25 +235,25 @@ the credential API. Provisioning checks for existing Agent runtime Deployments
 before writing credentials so it does not modify values after a runtime has
 started.
 
-The generated credential API uses `GET` and initial `POST {}` on
+The credential API uses `GET` and initial `POST {}` on
 `/namespaces/:namespaceId/agents/:agentId/runtime-credentials`. Reading requires
-exact Agent `read`; provisioning also requires `operate`. Returned status reports
-transport storage only. The server derives Kubernetes names from the admitted
-Namespace, Agent, and Installation driver configuration. Generated credential
-values never pass through the browser. Audit records contain the actor, target,
+exact Agent `read`; provisioning also requires `operate`. Status reports transport storage only. The server derives Kubernetes names from the admitted
+Namespace, Agent, and Installation driver configuration. The browser never receives generated credentials. Audit records contain the actor, target,
 action, and outcome, never the values.
 
 Provisioning creates missing whole Secrets before any AgentRevision exists. It
 never rotates or overwrites existing credentials. A retry may reuse complete,
-owned transport groups. The Kubernetes transport group must contain exactly
-`app-server-token` and `gateway-password`. Unexpected keys, foreign ownership,
+owned transport groups. For dedicated Agents, the CP transport Secret contains only `app-server-token`,
+and a separate CP Secret contains only `gateway-password`. Compute delivers the
+transport token to the Harness without copying the Gateway password. Embedded
+Agents use one tenant-local transport group with both keys. Unexpected keys, foreign ownership,
 or malformed values produce a conflict. If a response is lost or a dependency fails, refresh
 stored status before explicitly retrying. Already-created Secrets remain in place
 even when later storage or audit work fails; there is no automatic retry or
 rollback deletion.
 
 On the **Credentials** tab, bound Slack tokens appear as filled password fields using a synthetic mask.
-The browser never reads the saved token values. Focus a field to enter a
+The browser never reads saved tokens. Focus a field to enter a
 replacement; leave it empty to keep its existing binding. Missing tokens remain
 empty and must be supplied before saving. **Save channel Secrets** requires at
 least one new value and a saved binding or new value for each token.

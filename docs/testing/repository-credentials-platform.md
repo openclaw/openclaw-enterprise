@@ -124,8 +124,7 @@ Supply existing authorized `OPENAI_API_KEY`, `OCC_TEST_OPENAI_MODEL`, and immuta
 current source, imports immutable references and supplies kubeconfig/context.
 It also installs the pinned Envoy Gateway and cert-manager controllers. Dedicated
 setup enables the production Helm private route and CA, admits only the observed
-Envoy proxy address, and configures the disposable cluster's shared workspace
-storage. OCC enrolls the native workspace node through that authenticated route.
+Envoy proxy address, and uses stock local-path RWO Harness storage. OCC enrolls the native workspace node through that authenticated route.
 The Helm fixture creates its own PostgreSQL; no external test database is needed.
 The installed case additionally uses these variables with prefix
 `OCC_TEST_REPOSITORY_CREDENTIALS_`:

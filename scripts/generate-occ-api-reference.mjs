@@ -286,8 +286,8 @@ function operationRows(operations) {
   ].join("\n");
 }
 
-function errorSchema(document) {
-  const operations = operationEntries(document).map(({ operation }) => operation);
+function errorSchema(document, entries) {
+  const operations = entries.map(({ operation }) => operation);
   return (
     operations
       .flatMap((operation) => Object.entries(operation.responses))
@@ -349,10 +349,10 @@ function operationEntries(document) {
   );
 }
 
-function referenceGroups(document) {
+function referenceGroups(entries) {
   const groups = [];
   const byTag = new Map();
-  for (const entry of operationEntries(document)) {
+  for (const entry of entries) {
     let group = byTag.get(entry.tag);
     if (!group) {
       group = {
@@ -368,13 +368,13 @@ function referenceGroups(document) {
   return groups;
 }
 
-function referencePage(document, groups) {
+function referencePage(document, groups, entries) {
   const sections = [
     `# ${document.info.title} reference`,
     generatedComment(),
     ...introduction(document),
   ];
-  const schema = errorSchema(document);
+  const schema = errorSchema(document, entries);
 
   if (schema) {
     sections.push(
@@ -463,12 +463,12 @@ function cheatSheetOperationOrder({ method, operationId, path }) {
   return 4;
 }
 
-function cheatSheetPage(document) {
+function cheatSheetPage(entries) {
   const groups = new Map();
   const operationIds = new Set();
   const operationAnchors = new Map();
 
-  for (const entry of operationEntries(document)) {
+  for (const entry of entries) {
     if (typeof entry.operationId !== "string" || !entry.operationId.trim()) {
       throw new Error(
         `Missing OpenAPI operationId for ${entry.method.toUpperCase()} ${entry.path}.`,
@@ -529,17 +529,18 @@ function cheatSheetPage(document) {
 }
 
 export function generateApiReferenceOutputs(document) {
-  const groups = referenceGroups(document);
+  const entries = operationEntries(document);
+  const groups = referenceGroups(entries);
   const outputs = [
     {
       label: "API reference",
       path: "docs/reference/api.md",
-      content: referencePage(document, groups),
+      content: referencePage(document, groups, entries),
     },
     {
       label: "API cheat sheet",
       path: "docs/reference/cheatsheets/api.md",
-      content: cheatSheetPage(document),
+      content: cheatSheetPage(entries),
     },
   ];
   return outputs;

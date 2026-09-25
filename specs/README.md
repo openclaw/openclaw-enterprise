@@ -43,6 +43,9 @@ from [AGENTS.md](../AGENTS.md#running-integration-tests) instead.
 
 ## Active specifications
 
+[Dedicated Harness RWO workspace](38-harness-rwo-workspace-plan.md) — Implementing;
+exclusive revision preparation, durable RWO workspaces, and retained existing claims.
+
 [Plugin policy enforcement](37-plugin-policy-enforcement.md) — Proposed for alignment;
 revises the earlier plugin policy proposals with nested defaults and tool overrides,
 Driver extensions, and admission-to-runtime enforcement. Draft implementation

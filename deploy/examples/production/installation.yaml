@@ -68,14 +68,14 @@ drivers:
             memory: 128Mi
           limits:
             cpu: 500m
-            memory: 256Mi
+            memory: 2Gi
         agent:
           requests:
             cpu: 100m
             memory: 128Mi
           limits:
             cpu: 500m
-            memory: 256Mi
+            memory: 2Gi
         # Each tenant namespace receives a Pod quota and default container bounds.
         # See [Namespace isolation](../../../docs/reference/drivers/kubernetes-compute/networking-and-isolation.md#namespaces-and-isolation).
         namespace:
@@ -87,7 +87,7 @@ drivers:
               memory: 128Mi
             limits:
               cpu: 500m
-              memory: 256Mi
+              memory: 2Gi
       network:
         # With repositoryCredentials.enabled, add this exact service endpoint peer.
         # The instance label must equal the Helm release name; this example uses oce.
