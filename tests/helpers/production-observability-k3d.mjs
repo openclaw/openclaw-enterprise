@@ -7,7 +7,6 @@ import { run as runProcess } from "../fixtures/repository-credentials/process.mj
 import { installProductionHelmControlPlane } from "./production-helm-real.mjs";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import {
-  configureExistingK3dLocalPathSharedFileSystem,
   createKubernetesClient,
   createKubernetesInstallationConfiguration,
   kubectlArguments,
@@ -35,9 +34,6 @@ export async function installObservabilityControlPlane(t, { modelTurns = false }
     kubernetesContext: process.env.OCC_TEST_KUBERNETES_CONTEXT,
   };
   await validateExplicitK3dLoopbackContext(selection);
-  if (modelTurns) {
-    await configureExistingK3dLocalPathSharedFileSystem(selection);
-  }
   const images = Object.fromEntries(
     [
       ["controller", "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE"],
