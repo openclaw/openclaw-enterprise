@@ -1792,6 +1792,56 @@ export const scenarios = {
     description: "Select a source before deployment.",
     gap: "The API-key field expects an existing Secret ID, not a raw model API key. Create that Secret outside this console.",
   },
+  authSecretReplacement: {
+    group: "Components/Credentials",
+    name: "Replace model Secret",
+    path: `${draft}&tab=credentials`,
+    extraSecrets: [{ id: "sec_demo_replacement", name: "Replacement model token" }],
+    actions: [
+      { selector: "#harness-auth-method", value: "codex_pat" },
+      { selector: "#harness-auth-secret", value: "sec_demo_replacement" },
+    ],
+    description:
+      "Save the selected model Secret, then confirm the exact Agent grant through Namespace IAM. Saving does not establish model readiness.",
+    steps: [
+      "Click Save authentication source.",
+      "The refreshed form retains Service Accounts; the request log shows the Agent PATCH followed by exact Secret access creation.",
+    ],
+  },
+  authSecretGrantDenied: {
+    group: "Components/Credentials",
+    name: "Authentication saved, grant denied",
+    path: `${draft}&tab=credentials`,
+    rules: [{ suffix: "/iam/access-bindings", method: "POST", status: 403, once: true }],
+    actions: [click("Save authentication source")],
+    description:
+      "The Agent binding is saved, but granting its Secret access is denied. Deployment stays blocked in this view until access is confirmed.",
+    steps: [
+      "Read the partial-save message and disabled authentication controls.",
+      "Click Retry credential access. This fixture permits the next grant to simulate an administrator restoring authority.",
+      "The form refreshes without another Agent PATCH.",
+    ],
+  },
+  authSecretGrantLoading: {
+    group: "Components/Credentials",
+    name: "Checking model Secret access",
+    path: `${draft}&tab=credentials`,
+    rules: [{ suffix: "/iam/access-bindings", method: "POST", hold: true }],
+    actions: [click("Save authentication source")],
+    description:
+      "Authentication is saved while the grant is pending. Saving and deployment remain disabled; a timeout reports partial success.",
+  },
+  authSaveUnknown: {
+    group: "Components/Credentials",
+    name: "Authentication save unknown",
+    path: `${draft}&tab=credentials`,
+    rules: [
+      { suffix: "/agents/agt_00000000-0000-4000-8000-000000000001", method: "PATCH", status: 503 },
+    ],
+    actions: [click("Save authentication source")],
+    description:
+      "An unavailable save response requires Refresh to inspect persisted state before another save or grant attempt.",
+  },
   authRuntime: {
     group: "Components/Credentials",
     name: "Operator-managed authentication",

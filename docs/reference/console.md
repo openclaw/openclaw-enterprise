@@ -108,6 +108,16 @@ the API still enforces permissions and driver/topology support. Gateway readines
 does not establish model access. **Selected revision** displays `activeRevisionId`; neither the
 newest admitted revision nor the viewed snapshot must match it.
 
+**Save authentication source** saves the binding, then confirms an exact
+`secret:operate` grant from the Agent service principal to its selected Secret
+for API keys and Service Accounts tokens. Namespace IAM authorizes grant changes
+as the signed-in actor; denied authority is not bypassed. Issued ChatGPT accounts
+and operator-managed authentication do not create a Secret grant here.
+If access cannot be confirmed after saving, the console reports partial success
+and offers **Retry credential access** without repeating the Agent update.
+Deployment errors remain visible beside the deployment control. Neither a saved
+binding nor a confirmed grant establishes provider login or runtime readiness.
+
 Read-only AgentRevision snapshots cannot be edited, rolled back, redeployed, or
 used as a live-health check. **Edit current Configuration** opens the current
 draft; saving it leaves the viewed snapshot unchanged. Activation means the revision was admitted and

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-09-23
-last_updated_session: 01a0d150-104a-71a3-9e56-6c5e3ee510ea
+updated: 2026-09-25
+last_updated_session: 01a0d5ee-ab06-7571-8d4a-9ae0f33d5737
 ---
 
 # Console Agent editing and runtime requests
@@ -34,6 +34,10 @@ graph TD
   end
   subgraph API["Controller API"]
     C --> F["Authorize exact request"]
+    F -->|authentication saved| V["Confirm exact Agent Secret grant"]
+    V -->|confirmed| W["Reload saved draft"]
+    V -->|denied or interrupted| X["Show partial save and grant-only retry"]
+    X -->|binding unchanged| V
     D --> F
     E --> G["DELETE exact Agent"]
     S --> T["POST exact Agent stop"]
@@ -126,7 +130,7 @@ changed. It preserves unrelated bindings. If that PATCH is rejected, no new
 Secret grant is written for the staged channel selection.
 
 After the PATCH succeeds,
-`apps/controller/src/console/agents/credentials.mjs:ensureSecretOperateBinding` grants the Agent's service
+`apps/controller/src/console/agents/secret-access.mjs:ensureSecretOperateBinding` grants the Agent's service
 principal access to the final selected Secrets through the Namespace IAM API.
 Grants and Configuration updates are separate writes. If the grant write fails,
 the Configuration remains saved. The detail view drops its cached snapshot so
@@ -140,7 +144,30 @@ Configuration values; it does not stop a running Agent. The
 [console reference](../../reference/console.md#inspect-detail-revisions-and-channel-drafts)
 describes the supported edits and their deployment boundaries.
 
-### 5. Provision initial runtime credentials
+<span id="5-provision-initial-runtime-credentials"></span>
+
+### 5. Save authentication and provision initial runtime credentials
+
+`apps/controller/src/console/agents/detail.mjs:renderAgentDetail` rereads the
+Agent before saving authentication, rejecting a changed Configuration or binding.
+After the Agent PATCH succeeds, it drops the cached detail snapshot and calls
+`apps/controller/src/console/agents/secret-access.mjs:ensureSecretOperateBinding`
+for a direct Secret source (`api_key` or `codex_pat`). The helper reads or creates
+a role containing only Secret `operate`, then reads or creates an exact binding
+for the Agent service principal and selected Secret in the current Namespace.
+These use the signed-in actor's authorized IAM routes. No broader permission or
+human access is granted. Issued accounts and runtime authentication do not use
+this grant path.
+
+A failed grant preserves the saved authentication and freezes its controls.
+**Retry credential access** rereads the Agent, refuses changed bindings, and
+repeats only the grant check. A lost committed grant response is recovered by
+reading existing bindings. An unknown PATCH outcome blocks another save and
+requires Refresh before any grant attempt. Saving and unresolved access block
+deployment in the current view; server admission remains authoritative after
+navigation or refresh. The deployment handler renders preflight and authorization
+errors separately from credential metadata so its final control update cannot
+erase the failure. Confirmed access does not establish provider readiness.
 
 `apps/controller/src/console/agents/credentials.mjs:createRuntimeCredentialsPanel`
 
@@ -274,6 +301,8 @@ subsequent worker cleanup and the Namespace-owned resources it preserves.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-25 00:24: Trace authentication Secret grants, partial-save recovery, and persistent deployment errors in the accompanying change. (01a0d5ee-ab06-7571-8d4a-9ae0f33d5737 - 5f2f3a7448c7f5f0f4a5ed08be2395f2c5623ed7)
 
 - 2026-09-23 19:52: Record unsupported mixed Slack sender lists, unrepresentable sender IDs, and channel wildcard maps in the simple drawer. (01a0d150-104a-71a3-9e56-6c5e3ee510ea - 77aedc620f443056f9ee859050b8dc657a9c3133)
 

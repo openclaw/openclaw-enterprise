@@ -6098,3 +6098,218 @@ test("Preset picker ignores stale Preset responses after switching selection", a
   await page.getByLabel("Agent name", { exact: true }).waitFor();
   assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "Current Agent");
 });
+
+for (const method of ["api_key", "codex_pat"]) {
+  test(`Credentials grants exact Agent access when rebinding ${method}`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Model credential replacement", {
+      ready: true,
+    });
+    const agent = await fixture.createAgent(
+      namespace.id,
+      "Credential Agent",
+      createHarnessConfiguration("codex", "gpt-4.1"),
+      { executionMode: "dedicated" },
+    );
+    const replacement = await fixture.createSecret(
+      namespace.id,
+      "Replacement model credential",
+      "test-replacement-token",
+    );
+    const unrelated = await fixture.createSecret(
+      namespace.id,
+      "Unrelated credential",
+      "test-unrelated-token",
+    );
+    const { page } = await newPage(t, fixture);
+    await login(
+      page,
+      fixture,
+      `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+    );
+    await page.getByLabel("Authentication source").selectOption(method);
+    await page
+      .getByLabel(method === "api_key" ? "API key Secret ID" : "Service account token Secret ID")
+      .fill(replacement.id);
+    await page.getByRole("button", { name: "Save authentication source" }).click();
+    // Wait for the real IAM write and the refreshed form, not just the earlier Agent PATCH.
+    await page.waitForFunction(
+      () => globalThis.document.querySelector("#harness-auth-method")?.disabled === false,
+    );
+    const bindings = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/iam/access-bindings`,
+    );
+    const roles = await fixture.request("GET", `/namespaces/${namespace.id}/iam/roles`);
+    const grants = bindings.data.filter(
+      (binding) =>
+        binding.subjectId === agent.servicePrincipalId && binding.resourceId === replacement.id,
+    );
+    assert.equal(grants.length, 1);
+    assert.deepEqual(grants[0], {
+      id: grants[0].id,
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: agent.servicePrincipalId,
+      roleId: grants[0].roleId,
+      resourceKind: "secret",
+      resourceId: replacement.id,
+    });
+    assert.deepEqual(roles.data.find((role) => role.id === grants[0].roleId).permissions, [
+      { action: "operate", resourceKind: "secret" },
+    ]);
+    assert.equal(
+      bindings.data.some((binding) => binding.resourceId === unrelated.id),
+      false,
+    );
+    const saved = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+    assert.deepEqual(saved.data.harnessAuth, { method, source: replacement.ref });
+    // Saving the same source again repairs missing access and reuses an existing exact binding.
+    await page.getByRole("button", { name: "Save authentication source" }).click();
+    await page.waitForFunction(
+      () => globalThis.document.querySelector("#harness-auth-method")?.disabled === false,
+    );
+    assert.deepEqual(
+      (await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)).data,
+      bindings.data,
+    );
+  });
+}
+
+test("Credentials retries denied and interrupted grants without repeating the authentication save", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  const installation = await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Credential access recovery", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Recovery Agent",
+    createHarnessConfiguration("codex", "gpt-4.1"),
+    { executionMode: "dedicated" },
+  );
+  const replacement = await fixture.createSecret(
+    namespace.id,
+    "Replacement credential",
+    "test-retry-token",
+  );
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const bindingsPath = `/namespaces/${namespace.id}/iam/access-bindings`;
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(
+    page,
+    fixture,
+    `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+  );
+  // Native IAM denies the actor's grant authority while the Agent update remains authorized.
+  fixture.policy.restrictions.push({
+    id: "deny-update-credential-grant",
+    resourceKind: "installation",
+    resourceId: installation.id,
+    action: "administer",
+    effect: "deny",
+  });
+  await page.getByLabel("Authentication source").selectOption("codex_pat");
+  await page.getByLabel("Service account token Secret ID").fill(replacement.id);
+  await page.getByRole("button", { name: "Save authentication source" }).click();
+  await page
+    .getByText(/Authentication source saved, but this Agent's Secret access could not be confirmed/)
+    .waitFor();
+  assert.equal(await page.getByLabel("Authentication source").isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), true);
+  assert.equal(pathRequests(requests, "POST", bindingsPath).length, 0);
+  assert.equal(
+    (await fixture.request("GET", agentPath)).data.harnessAuth.source.id,
+    replacement.id,
+  );
+  fixture.policy.restrictions.splice(
+    fixture.policy.restrictions.findIndex((item) => item.id === "deny-update-credential-grant"),
+    1,
+  );
+  // Commit the binding through the real API, then lose only its response. Read-before-create makes retry safe.
+  await page.route(`**${bindingsPath}`, async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    const response = await route.fetch();
+    assert.equal(response.status(), 201);
+    await route.abort("failed");
+  });
+  await page.getByRole("button", { name: "Retry credential access" }).click();
+  await page.getByText(/Secret access could not be confirmed.*Request interrupted/).waitFor();
+  await page.unroute(`**${bindingsPath}`);
+  await page.getByRole("button", { name: "Retry credential access" }).click();
+  await page.getByRole("button", { name: "Save authentication source" }).waitFor();
+  const grants = (await fixture.request("GET", bindingsPath)).data.filter(
+    (binding) => binding.resourceId === replacement.id,
+  );
+  assert.equal(grants.length, 1);
+  assert.equal(grants[0].subjectId, agent.servicePrincipalId);
+  assert.equal(pathRequests(requests, "PATCH", agentPath).length, 1);
+  assert.equal(pathRequests(requests, "POST", bindingsPath).length, 1);
+});
+
+test("Credentials blocks repeat saves after losing an authentication PATCH response", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Unknown credential save", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Unknown save Agent",
+    createHarnessConfiguration("openclaw", "gpt-4.1"),
+  );
+  const replacement = await fixture.createSecret(
+    namespace.id,
+    "Replacement credential",
+    "test-unknown-token",
+  );
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(
+    page,
+    fixture,
+    `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+  );
+  await page.route(`**${agentPath}`, async (route) => {
+    if (route.request().method() !== "PATCH") {
+      await route.continue();
+      return;
+    }
+    assert.equal((await route.fetch()).status(), 200);
+    await route.abort("failed");
+  });
+  await page.getByLabel("API key Secret ID").fill(replacement.id);
+  await page.getByRole("button", { name: "Save authentication source" }).click();
+  await page
+    .locator("form.agent-card")
+    .getByText(/Outcome unknown/)
+    .waitFor();
+  assert.equal(
+    await page.getByRole("button", { name: "Save authentication source" }).isDisabled(),
+    true,
+  );
+  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), true);
+  assert.equal(pathRequests(requests, "PATCH", agentPath).length, 1);
+  assert.equal(
+    pathRequests(requests, "POST", `/namespaces/${namespace.id}/iam/access-bindings`).length,
+    0,
+  );
+  // Explicit refresh recovers the committed source; saving it again confirms the missing grant.
+  await page.unroute(`**${agentPath}`);
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.getByLabel("API key Secret ID").waitFor();
+  assert.equal(await page.getByLabel("API key Secret ID").inputValue(), replacement.id);
+  await page.getByRole("button", { name: "Save authentication source" }).click();
+  await page.waitForFunction(
+    () => globalThis.document.querySelector("#harness-auth-method")?.disabled === false,
+  );
+  assert.equal(
+    (await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)).data.some(
+      (binding) =>
+        binding.subjectId === agent.servicePrincipalId && binding.resourceId === replacement.id,
+    ),
+    true,
+  );
+});

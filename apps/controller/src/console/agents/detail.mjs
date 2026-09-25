@@ -400,6 +400,8 @@ export async function renderAgentDetail(context) {
     let deploy;
     let deployPending = false;
     let deployStatus;
+    let deployFeedback;
+    let authenticationPending = false;
     const draftEditorState = {
       dirty: false,
       saving: false,
@@ -430,6 +432,7 @@ export async function renderAgentDetail(context) {
       }
       deploy.disabled =
         deployPending ||
+        authenticationPending ||
         draftEditorState.dirty ||
         draftEditorState.saving ||
         draftEditorState.outcomeUnknown ||
@@ -438,7 +441,10 @@ export async function renderAgentDetail(context) {
         revisionResult.status !== "fulfilled" ||
         (!runtimeAuth && !credentials?.canDeploy());
       if (!deployPending) {
-        if (draftEditorState.outcomeUnknown) {
+        if (authenticationPending) {
+          deployStatus.textContent =
+            "Confirm authentication and Secret access in Credentials before deploying.";
+        } else if (draftEditorState.outcomeUnknown) {
           deployStatus.textContent =
             "Refresh this draft before deploying because the last Configuration save outcome is unknown.";
         } else if (draftEditorState.reloadRequired) {
@@ -462,7 +468,9 @@ export async function renderAgentDetail(context) {
     }
     if (draft) {
       deployStatus = element("p", { className: "muted", role: "status" });
+      deployFeedback = element("p", { className: "error", role: "alert" });
       deploy = button("Deploy new revision", async () => {
+        deployFeedback.textContent = "";
         deploy.disabled = true;
         deployPending = true;
         deployStatus.textContent = "Checking Configuration…";
@@ -483,19 +491,19 @@ export async function renderAgentDetail(context) {
             JSON.stringify(freshAgent.harnessAuth) !== JSON.stringify(agent.harnessAuth) ||
             freshConfig.generation !== snapshot.generation
           ) {
-            deployStatus.textContent = "The Configuration changed. Refresh before deploying.";
+            deployFeedback.textContent = "The Configuration changed. Refresh before deploying.";
             return;
           }
           const credentialBlockReason = runtimeCredentialBlockReason(freshConfig.values);
           if (credentialBlockReason !== null) {
-            deployStatus.textContent = credentialBlockReason;
+            deployFeedback.textContent = credentialBlockReason;
             return;
           }
           if (
             !runtimeAuth &&
             !hasRequiredRuntimeCredentials(freshCredentials, freshConfig.values, freshConfig)
           ) {
-            deployStatus.textContent =
+            deployFeedback.textContent =
               "Runtime credential metadata changed. Refresh status before deploying.";
             return;
           }
@@ -513,7 +521,10 @@ export async function renderAgentDetail(context) {
             context.onExpired();
             return;
           }
-          deployStatus.textContent = message(error, submitted);
+          deployFeedback.textContent =
+            error.status === 403
+              ? "Deployment denied. Check your Agent deployment permission and this Agent’s access to the selected credential Secret in Credentials. Ask a Namespace administrator to confirm the required grants."
+              : message(error, submitted);
           if (!submitted || [400, 403, 404, 409, 429].includes(error.status)) {
             deployPending = false;
           }
@@ -538,6 +549,7 @@ export async function renderAgentDetail(context) {
         ),
         deploy,
         deployStatus,
+        deployFeedback,
       );
     }
     if (!draft) {
@@ -560,6 +572,10 @@ export async function renderAgentDetail(context) {
       draft,
       executionMode,
       credentials,
+      setAuthenticationPending(pending) {
+        authenticationPending = pending;
+        updateDeployControls();
+      },
       setDraftEditorState(nextState) {
         Object.assign(draftEditorState, nextState);
         draftEditorNavigationBlock = draftEditorState.outcomeUnknown
@@ -732,6 +748,7 @@ export async function renderAgentDetail(context) {
       );
       const form = element("form", { className: "agent-card" }, auth.section, save, feedback);
       let outcomeUnknown = false;
+      let savedAuthentication = null;
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
         if (!form.reportValidity() || save.disabled) {
@@ -739,26 +756,40 @@ export async function renderAgentDetail(context) {
         }
         save.disabled = true;
         auth.setDisabled(true);
+        data.setAuthenticationPending(true);
+        feedback.textContent = savedAuthentication
+          ? "Checking Secret access…"
+          : "Saving authentication…";
         let mutationStarted = false;
         try {
-          const harnessAuth = await auth.readBinding();
+          const harnessAuth = savedAuthentication?.harnessAuth ?? (await auth.readBinding());
           const current = await request(path);
           if (!context.isCurrent()) {
             return;
           }
+          const expected = savedAuthentication ?? agent;
           if (
-            current.configurationId !== agent.configurationId ||
-            JSON.stringify(current.harnessAuth) !== JSON.stringify(agent.harnessAuth)
+            current.configurationId !== expected.configurationId ||
+            JSON.stringify(current.harnessAuth) !== JSON.stringify(expected.harnessAuth)
           ) {
             feedback.textContent =
               "The Configuration changed. Refresh before saving authentication.";
+            outcomeUnknown = true;
             return;
           }
-          mutationStarted = true;
-          await request(path, {
-            method: "PATCH",
-            body: { configurationId: agent.configurationId, harnessAuth },
-          });
+          if (!savedAuthentication) {
+            mutationStarted = true;
+            savedAuthentication = await request(path, {
+              method: "PATCH",
+              body: { configurationId: agent.configurationId, harnessAuth },
+            });
+            details = null;
+          }
+          if (harnessAuth?.source?.kind === "secret") {
+            feedback.textContent = "Authentication saved. Checking Secret access…";
+            await ensureSecretOperateBinding(context, current, harnessAuth.source);
+          }
+          data.setAuthenticationPending(false);
           if (context.isCurrent()) {
             change("draft", "credentials");
           }
@@ -768,14 +799,20 @@ export async function renderAgentDetail(context) {
           }
           if (error.status === 401) {
             context.onExpired();
+          } else if (savedAuthentication) {
+            feedback.textContent = `Authentication source saved, but this Agent's Secret access could not be confirmed. ${message(error)} Ask a Namespace administrator to grant this Agent secret:operate on the selected Secret, then retry credential access. Deployment readiness is not confirmed.`;
           } else {
             feedback.textContent = message(error, mutationStarted);
             outcomeUnknown = mutationStarted && ![400, 403, 404, 409, 429].includes(error.status);
+            data.setAuthenticationPending(outcomeUnknown);
           }
         } finally {
           if (context.isCurrent()) {
+            save.textContent = savedAuthentication
+              ? "Retry credential access"
+              : "Save authentication source";
             save.disabled = outcomeUnknown;
-            auth.setDisabled(outcomeUnknown);
+            auth.setDisabled(outcomeUnknown || savedAuthentication !== null);
           }
         }
       });
