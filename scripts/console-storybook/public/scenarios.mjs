@@ -1079,6 +1079,33 @@ export const scenarios = {
     description:
       "The endpoint-specific optional-unavailability response permits an ordinary Agent. The preview does not establish real authorization.",
   },
+  createRepositoryNavigationOutage: {
+    group: "Pages/Create Agent",
+    name: "Keep repository choices through an outage",
+    path: create,
+    actions: [
+      ...form,
+      { selector: "#agent-name", value: "Repository assistant" },
+      { selector: "#repository-application", click: true },
+      { selector: "#repository-profile-git-full", click: true },
+    ],
+    rules: [
+      {
+        path: repositoryOptionsPath,
+        skip: 1,
+        once: true,
+        status: 503,
+        code: "REPOSITORY_OPTIONS_UNAVAILABLE",
+      },
+    ],
+    description:
+      "A failed refresh retains repository selections while blocking Create until current choices can be checked.",
+    steps: [
+      "Open Agents, then Create Agent. Discovery fails and reports that selections are retained.",
+      "Retry repository choices. The application repository and Contributor access return selected.",
+    ],
+    gap: "Simulated UI proof only; this walkthrough does not create an Agent or contact GitHub.",
+  },
   createRepositoriesDenied: {
     group: "Pages/Create Agent",
     name: "Repository discovery denied",
@@ -1215,6 +1242,36 @@ export const scenarios = {
     actions: passwordPresetForm,
     description:
       "The password remains masked in the editable draft; Configuration JSON contains no model key. There is no raw Secret bindings JSON editor.",
+  },
+  presetVariableNavigation: {
+    group: "Pages/Create Agent",
+    name: "Keep Preset variables",
+    path: create,
+    standardCodexPreset: true,
+    actions: passwordPresetForm.slice(0, -1),
+    description:
+      "Preset variable edits and Secret reference choices survive navigation. New token bytes clear.",
+    steps: [
+      "Open Agents, then Create Agent. Check the retained name/model and cleared token.",
+      "Reenter a dummy token, then Use Preset to continue.",
+    ],
+    gap: "Simulated UI proof only.",
+  },
+  createPresetNavigation: {
+    group: "Pages/Create Agent",
+    name: "Keep an unsaved Preset draft",
+    path: create,
+    standardCodexPreset: true,
+    actions: passwordPresetForm,
+    description:
+      "Unsaved settings remain in memory while navigating the Console. Password inputs clear when leaving the form. Start over explicitly discards the draft.",
+    steps: [
+      "Rename the Agent and edit a workspace file under Advanced settings.",
+      "Open Namespaces, then use browser Back and Forward to revisit both pages.",
+      "Open Agents and Create Agent: the edited draft returns with an empty API key field.",
+      "Select Start over, cancel once, then confirm. Navigate away and return to see the fresh Preset chooser.",
+    ],
+    gap: "Simulated UI proof only; this walkthrough does not save or deploy an Agent.",
   },
   createPasswordPresetDenied: {
     group: "Pages/Create Agent",
@@ -1402,6 +1459,22 @@ export const scenarios = {
     path: draft,
     description:
       "Editable desired configuration, masked authentication summary, deployment gate, and Agent deletion.",
+  },
+  configurationNavigation: {
+    group: "Pages/Agent detail",
+    name: "Keep Configuration edits",
+    path: draft,
+    actions: [
+      click("Edit Configuration"),
+      { selector: "#configuration-json", value: '{"unfinished":' },
+    ],
+    description:
+      "Unfinished JSON survives tabs, pages, and browser history. Unsaved edits continue to block deployment.",
+    steps: [
+      "Visit Channels, then Configuration and confirm the unfinished text remains.",
+      "Open Namespaces and return with Back. Cancel discards the edit without saving.",
+    ],
+    gap: "Simulated UI proof; no deployment or real persistence.",
   },
   configurationEditor: {
     group: "Pages/Agent detail",
@@ -1619,6 +1692,24 @@ export const scenarios = {
       "Edit Slack, change the channel IDs, and save configuration.",
       "Open Configuration → View native Configuration: replyToMode remains off.",
     ],
+  },
+  slackNavigation: {
+    group: "Components/Channels",
+    name: "Keep Slack edits",
+    path: `${draft}&tab=configuration`,
+    slack: true,
+    actions: [
+      click("Channels"),
+      click("Edit Slack"),
+      { selector: "#slack-channel-ids", value: "CNAVIGATION" },
+    ],
+    description:
+      "An open Slack drawer restores ordinary edits and staged Secret references after browser history navigation.",
+    steps: [
+      "Use Back to return to Configuration, then Forward to reopen the drawer.",
+      "Confirm CNAVIGATION remains. Cancel, reopen Slack, and check saved channel IDs.",
+    ],
+    gap: "Simulated UI proof, not Slack delivery or Secret propagation.",
   },
   slackDrawer: {
     group: "Components/Channels",
@@ -1840,6 +1931,23 @@ export const scenarios = {
     ],
     description: "Metadata failure disables dependent provisioning and deployment controls.",
   },
+  authenticationNavigation: {
+    group: "Components/Credentials",
+    name: "Keep authentication choices",
+    path: `${draft}&tab=credentials`,
+    auth: null,
+    actions: [
+      { selector: "#harness-auth-method", value: "api_key" },
+      { selector: "#harness-auth-secret", value: "sec_demo_model" },
+    ],
+    description:
+      "Authentication method and existing source references survive navigation. Reload authentication source discards the choice.",
+    steps: [
+      "Switch to Configuration and back to Credentials.",
+      "Open Namespaces and return. Reload authentication source to restore saved settings.",
+    ],
+    gap: "Simulated Secret metadata, not provider authentication proof.",
+  },
   authMissing: {
     group: "Components/Credentials",
     name: "No authentication source",
@@ -1847,6 +1955,56 @@ export const scenarios = {
     auth: null,
     description: "Select a source before deployment.",
     gap: "The API-key field expects an existing Secret ID, not a raw model API key. Create that Secret outside this console.",
+  },
+  authSecretReplacement: {
+    group: "Components/Credentials",
+    name: "Replace model Secret",
+    path: `${draft}&tab=credentials`,
+    extraSecrets: [{ id: "sec_demo_replacement", name: "Replacement model token" }],
+    actions: [
+      { selector: "#harness-auth-method", value: "codex_pat" },
+      { selector: "#harness-auth-secret", value: "sec_demo_replacement" },
+    ],
+    description:
+      "Save the selected model Secret, then confirm the exact Agent grant through Namespace IAM. Saving does not establish model readiness.",
+    steps: [
+      "Click Save authentication source.",
+      "The refreshed form retains Service Accounts; the request log shows the Agent PATCH followed by exact Secret access creation.",
+    ],
+  },
+  authSecretGrantDenied: {
+    group: "Components/Credentials",
+    name: "Authentication saved, grant denied",
+    path: `${draft}&tab=credentials`,
+    rules: [{ suffix: "/iam/access-bindings", method: "POST", status: 403, once: true }],
+    actions: [click("Save authentication source")],
+    description:
+      "The Agent binding is saved, but granting its Secret access is denied. Deployment stays blocked in this view until access is confirmed.",
+    steps: [
+      "Read the partial-save message and disabled authentication controls.",
+      "Click Retry credential access. This fixture permits the next grant to simulate an administrator restoring authority.",
+      "The form refreshes without another Agent PATCH.",
+    ],
+  },
+  authSecretGrantLoading: {
+    group: "Components/Credentials",
+    name: "Checking model Secret access",
+    path: `${draft}&tab=credentials`,
+    rules: [{ suffix: "/iam/access-bindings", method: "POST", hold: true }],
+    actions: [click("Save authentication source")],
+    description:
+      "Authentication is saved while the grant is pending. Saving and deployment remain disabled; a timeout reports partial success.",
+  },
+  authSaveUnknown: {
+    group: "Components/Credentials",
+    name: "Authentication save unknown",
+    path: `${draft}&tab=credentials`,
+    rules: [
+      { suffix: "/agents/agt_00000000-0000-4000-8000-000000000001", method: "PATCH", status: 503 },
+    ],
+    actions: [click("Save authentication source")],
+    description:
+      "An unavailable save response requires Refresh to inspect persisted state before another save or grant attempt.",
   },
   authRuntime: {
     group: "Components/Credentials",
@@ -1896,6 +2054,25 @@ export const scenarios = {
     deployed: true,
     nativeAdmin: "denied",
     description: "Denied native-admin access hides the whole panel.",
+  },
+  workspaceNavigation: {
+    group: "Components/Workspace",
+    name: "Keep unsaved files",
+    path: `${revision}&tab=workspace`,
+    deployed: true,
+    actions: [
+      {
+        selector: '[id="workspace-AGENTS.md"]',
+        value: "# Unsaved guidance\nKeep these edits while navigating.\n",
+      },
+      { selector: '[id="workspace-USER.md"]', value: "" },
+    ],
+    description: "File edits, including empty text, survive tabs and pages until Save or Reload.",
+    steps: [
+      "Switch to Configuration and back to Workspace files.",
+      "Open Namespaces, return with Back, then save AGENTS.md and reload USER.md.",
+    ],
+    gap: "Simulated files; no live Agent gateway.",
   },
   workspace: {
     group: "Components/Workspace",

@@ -57,6 +57,36 @@ const fill = (material, extra = {}, path) =>
 const pin = (material, binding) =>
   JSON.stringify([material.manifest.generation, binding.repositoryRef, binding.sessionId]);
 
+test("manifest requires canonical reference order and its exact generation digest", async (t) => {
+  const material = await createNativeClientMaterial(
+    t,
+    ["a", "Z", "A"].map((repositoryRef) => ({ opened: opened(repositoryRef), repositoryRef })),
+  );
+  assert.deepEqual(
+    (await readRuntimeRepositoryManifest(material.root)).bindings.map(
+      ({ repositoryRef }) => repositoryRef,
+    ),
+    ["A", "Z", "a"],
+  );
+  const reversed = [...material.manifest.bindings].reverse();
+  for (const manifest of [
+    { ...material.manifest, generation: "0".repeat(64) },
+    {
+      ...material.manifest,
+      bindings: reversed,
+      // A self-consistent digest cannot authorize noncanonical binding order.
+      generation: hash(reversed.map(({ repositoryRef, sessionId }) => [repositoryRef, sessionId])),
+    },
+  ]) {
+    await writeFile(join(material.root, "manifest.json"), JSON.stringify(manifest), {
+      mode: 0o600,
+    });
+    await assert.rejects(readRuntimeRepositoryManifest(material.root), {
+      message: "invalid-repository-material",
+    });
+  }
+});
+
 test("duplicate bindings select only explicit authority and never an alternate unexpired grant", async (t) => {
   const read = opened("read");
   const write = opened("write");

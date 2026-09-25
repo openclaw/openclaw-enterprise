@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -850,6 +850,41 @@ test("Agent creation selects approved repositories with one common explicit prof
   await page.getByText(/Does not grant ordinary issue management/).waitFor();
   assert.equal(await page.locator("#repository-issue-access").isDisabled(), true);
   assert.equal(await page.locator("#repository-issue-access").isChecked(), false);
+  // Restored selections must survive rediscovery and still be submitted through the real create path.
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page.locator("#repository-application").waitFor();
+  assert.equal(await page.locator("#repository-application").isChecked(), true);
+  assert.equal(await page.locator("#repository-documentation").isChecked(), true);
+  assert.equal(await page.locator("#repository-profile-git-write").isChecked(), true);
+  // Discovery failures must not erase the draft, even after another navigation.
+  const optionsUrl = `**/namespaces/${namespace.id}/agents/repository-options`;
+  for (const status of [503, 500]) {
+    await page.route(optionsUrl, (route) =>
+      route.fulfill({
+        status,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: {
+            code: status === 503 ? "REPOSITORY_OPTIONS_UNAVAILABLE" : "INTERNAL_ERROR",
+            message: "Repository discovery is temporarily unavailable.",
+          },
+        }),
+      }),
+    );
+    for (let navigation = 0; navigation < 2; navigation += 1) {
+      await page.getByRole("link", { name: "← Agents" }).click();
+      await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+      await page.getByRole("button", { name: "Retry repository choices" }).waitFor();
+      assert.equal(await page.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
+    }
+    await page.unroute(optionsUrl);
+    await page.getByRole("button", { name: "Retry repository choices" }).click();
+    await page.locator("#repository-application").waitFor();
+    assert.equal(await page.locator("#repository-application").isChecked(), true);
+    assert.equal(await page.locator("#repository-documentation").isChecked(), true);
+    assert.equal(await page.locator("#repository-profile-git-write").isChecked(), true);
+  }
   await enterManualModel(page, "repository-fixture-model-key", "gpt-5.1");
   await page.getByLabel("Agent name").fill("Repository Agent");
 
@@ -3194,6 +3229,10 @@ test("Agent detail preserves admitted revision history while draft edits change 
     nativeValues("stale-server"),
   );
   assert.equal(stale.generation, 4);
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
+  await page.goBack();
+  assert.match(await editor.inputValue(), /stale-client/);
   await page.getByRole("button", { name: "Save Configuration" }).click();
   await page.getByText("The saved Configuration changed while you were editing.").waitFor();
   assert.deepEqual(configurationPatchRequests(requests, namespace.id, agent.configurationId), []);
@@ -3206,29 +3245,21 @@ test("Agent detail preserves admitted revision history while draft edits change 
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(editedValues, null, 2));
   await page.getByText("Save or cancel these Configuration edits before deploying.").waitFor();
   await page.getByText("Save or cancel Configuration edits before deploying.").waitFor();
-  assert.equal(await page.getByRole("button", { name: "Channels" }).isDisabled(), true);
-  await page.evaluate(() => {
-    const next = new URL(globalThis.location.href);
-    next.searchParams.set("tab", "channels");
-    globalThis.history.pushState(globalThis.history.state, "", next);
-    globalThis.dispatchEvent(new globalThis.PopStateEvent("popstate"));
-  });
-  await page.getByText("Save or cancel Configuration edits before leaving this tab.").waitFor();
-  assert.equal(new URL(page.url()).searchParams.get("tab"), "configuration");
-  assert.equal(await page.getByLabel("AgentRevision").isDisabled(), true);
-  assert.equal(
-    await page.getByRole("button", { name: "View current revision" }).isDisabled(),
-    true,
-  );
-  await page.evaluate((revisionId) => {
-    const next = new URL(globalThis.location.href);
-    next.searchParams.set("revision", revisionId);
-    globalThis.history.pushState(globalThis.history.state, "", next);
-    globalThis.dispatchEvent(new globalThis.PopStateEvent("popstate"));
-  }, second.revision.id);
-  await page.getByText("Save or cancel Configuration edits before leaving this tab.").waitFor();
-  assertRevisionUrl(page, "draft");
+  // Tabs, admitted revision browsing, and global routes preserve this exact unsaved draft.
+  await page.getByRole("button", { name: "Channels", exact: true }).click();
+  await page.getByRole("heading", { name: "Channels", exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), true);
+  await page.getByRole("button", { name: "Configuration", exact: true }).click();
   assert.deepEqual(JSON.parse(await editor.inputValue()), editedValues);
+  await page.getByLabel("AgentRevision").selectOption(second.revision.id);
+  await page.getByRole("button", { name: "Edit current Configuration" }).click();
+  assert.deepEqual(JSON.parse(await editor.inputValue()), editedValues);
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
+  await page.goBack();
+  assert.deepEqual(JSON.parse(await editor.inputValue()), editedValues);
+  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), true);
+  assert.deepEqual(configurationPatchRequests(requests, namespace.id, agent.configurationId), []);
   const savedConfiguration = page.waitForResponse(
     (response) =>
       response.url() ===
@@ -3263,6 +3294,13 @@ test("Agent detail preserves admitted revision history while draft edits change 
 
   await page.getByRole("button", { name: "Credentials", exact: true }).click();
   await page.getByLabel("Authentication source").selectOption("");
+  await page.getByRole("button", { name: "Configuration", exact: true }).click();
+  await page.getByRole("button", { name: "Credentials", exact: true }).click();
+  assert.equal(await page.getByLabel("Authentication source").inputValue(), "");
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
+  await page.goBack();
+  assert.equal(await page.getByLabel("Authentication source").inputValue(), "");
   const saved = page.waitForResponse(
     (response) =>
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}` &&
@@ -3281,6 +3319,24 @@ test("Agent detail preserves admitted revision history while draft edits change 
     (await page.locator("body").textContent()).includes(agent.harnessAuth.source.id),
     false,
   );
+  // Cancel discards the retained baseline too: reopening uses the freshly read saved document.
+  await page.getByRole("button", { name: "Edit current Configuration" }).click();
+  await page.getByRole("button", { name: "Edit Configuration" }).click();
+  await editor.fill(JSON.stringify(nativeValues("discard-this-edit")));
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
+  await fixture.updateConfiguration(
+    namespace.id,
+    agent.configurationId,
+    nativeValues("cancel-server"),
+  );
+  await page.goBack();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.getByRole("button", { name: "Edit Configuration" }).click();
+  assert.match(await editor.inputValue(), /"marker": "cancel-server"/);
+  await editor.fill(JSON.stringify(nativeValues("after-cancel")));
+  await page.getByRole("button", { name: "Save Configuration" }).click();
+  await page.getByText(/generation 7/).waitFor();
 });
 
 test("Agent detail blocks repeat Configuration saves after an uncertain draft update", async (t) => {
@@ -3354,6 +3410,12 @@ test("Agent detail blocks repeat Configuration saves after an uncertain draft up
   assert.equal(saved.data.generation, 2);
   assert.deepEqual(saved.data.values, nextValues);
 
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
+  await page.goBack();
+  await page.getByLabel("Configuration JSON").waitFor();
+  assert.equal(await page.getByRole("button", { name: "Save Configuration" }).isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), true);
   await page.getByRole("button", { name: "Reload draft" }).click();
   await page.getByText(/generation 2/).waitFor();
   await revealNativeConfiguration(page, "View native Configuration");
@@ -4358,6 +4420,9 @@ test("Channel drawer binds existing Slack Secrets without dropping unsaved chann
 
   await login(page, fixture, url.pathname + url.search);
   await page.getByRole("heading", { name: "Unbound Slack Agent" }).waitFor();
+  // Establish a same-document history entry before opening the modal.
+  await page.getByRole("button", { name: "Configuration", exact: true }).click();
+  await page.getByRole("button", { name: "Channels", exact: true }).click();
   await page.getByRole("button", { name: "Edit Slack" }).click();
   const dialog = page.getByRole("dialog", { name: "Edit Slack" });
   assert.equal(await dialog.getByRole("link", { name: /Secret metadata/ }).count(), 0);
@@ -4377,6 +4442,18 @@ test("Channel drawer binds existing Slack Secrets without dropping unsaved chann
       .getAttribute("href"),
     `/console/agents/${agent.id}?revision=draft&tab=credentials&namespace=${namespace.id}`,
   );
+  await page.goBack();
+  await page.getByRole("button", { name: "Edit Configuration" }).waitFor();
+  await page.goForward();
+  await dialog.waitFor();
+  assert.equal(await channelIds.inputValue(), "CUNBOUND123, CBOUND456");
+  assert.equal(await dialog.getByLabel("Slack app token").inputValue(), slackAppSecret.id);
+  assert.equal(await dialog.getByLabel("Slack bot token").inputValue(), slackBotSecret.id);
+  const beforeSave = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+  );
+  assert.equal(beforeSave.data.generation, 1);
   await page.getByRole("button", { name: "Save configuration" }).click();
   await page.getByText(/Configuration .*generation 2/).waitFor();
   const configuration = await fixture.request(
@@ -5516,6 +5593,32 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   await openAdvancedSettings(page);
   await page.getByLabel("Configuration JSON", { exact: true }).fill(JSON.stringify(edited));
   await page.getByLabel("AGENTS.md", { exact: true }).fill("# Edited workspace\n");
+  // Route reconstruction must retain the rendered copy even after its source Preset was deleted.
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
+  await page.goBack();
+  await page.getByLabel("Agent name", { exact: true }).waitFor();
+  assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "Edited name");
+  assert.deepEqual(
+    JSON.parse(await page.getByLabel("Configuration JSON", { exact: true }).inputValue()),
+    edited,
+  );
+  assert.equal(
+    await page.getByLabel("AGENTS.md", { exact: true }).inputValue(),
+    "# Edited workspace\n",
+  );
+  assert.equal(await page.getByLabel("IDENTITY.md", { exact: true }).inputValue(), "");
+  assert.deepEqual(
+    JSON.parse(await page.getByLabel("Plugin selections JSON").inputValue()),
+    plugins,
+  );
+  await page.goForward();
+  await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page.getByLabel("Agent name", { exact: true }).waitFor();
+  assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "Edited name");
+  assert.deepEqual(nonAuthWriteRequests(requests), [], "navigation must not save the local draft");
   // Canceling Start over keeps the ordinary draft and its ability to save.
   page.once("dialog", (dialog) => dialog.dismiss());
   await page.getByRole("button", { name: "Start over" }).click();
@@ -6181,4 +6284,452 @@ test("Preset picker ignores stale Preset responses after switching selection", a
   await page.getByRole("button", { name: "Use Preset" }).click();
   await page.getByLabel("Agent name", { exact: true }).waitFor();
   assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "Current Agent");
+});
+
+for (const method of ["api_key", "codex_pat"]) {
+  test(`Credentials grants exact Agent access when rebinding ${method}`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Model credential replacement", {
+      ready: true,
+    });
+    const agent = await fixture.createAgent(
+      namespace.id,
+      "Credential Agent",
+      createHarnessConfiguration("codex", "gpt-4.1"),
+      { executionMode: "dedicated" },
+    );
+    const replacement = await fixture.createSecret(
+      namespace.id,
+      "Replacement model credential",
+      "test-replacement-token",
+    );
+    const unrelated = await fixture.createSecret(
+      namespace.id,
+      "Unrelated credential",
+      "test-unrelated-token",
+    );
+    const { page } = await newPage(t, fixture);
+    await login(
+      page,
+      fixture,
+      `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+    );
+    await page.getByLabel("Authentication source").selectOption(method);
+    await page
+      .getByLabel(method === "api_key" ? "API key Secret ID" : "Service account token Secret ID")
+      .fill(replacement.id);
+    await page.getByRole("button", { name: "Save authentication source" }).click();
+    // Wait for the real IAM write and the refreshed form, not just the earlier Agent PATCH.
+    await page.waitForFunction(
+      () => globalThis.document.querySelector("#harness-auth-method")?.disabled === false,
+    );
+    const bindings = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/iam/access-bindings`,
+    );
+    const roles = await fixture.request("GET", `/namespaces/${namespace.id}/iam/roles`);
+    const grants = bindings.data.filter(
+      (binding) =>
+        binding.subjectId === agent.servicePrincipalId && binding.resourceId === replacement.id,
+    );
+    assert.equal(grants.length, 1);
+    assert.deepEqual(grants[0], {
+      id: grants[0].id,
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: agent.servicePrincipalId,
+      roleId: grants[0].roleId,
+      resourceKind: "secret",
+      resourceId: replacement.id,
+    });
+    assert.deepEqual(roles.data.find((role) => role.id === grants[0].roleId).permissions, [
+      { action: "operate", resourceKind: "secret" },
+    ]);
+    assert.equal(
+      bindings.data.some((binding) => binding.resourceId === unrelated.id),
+      false,
+    );
+    const saved = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+    assert.deepEqual(saved.data.harnessAuth, { method, source: replacement.ref });
+    // Saving the same source again repairs missing access and reuses an existing exact binding.
+    await page.getByRole("button", { name: "Save authentication source" }).click();
+    await page.waitForFunction(
+      () => globalThis.document.querySelector("#harness-auth-method")?.disabled === false,
+    );
+    assert.deepEqual(
+      (await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)).data,
+      bindings.data,
+    );
+  });
+}
+
+test("Credentials retries denied and interrupted grants without repeating the authentication save", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  const installation = await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Credential access recovery", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Recovery Agent",
+    createHarnessConfiguration("codex", "gpt-4.1"),
+    { executionMode: "dedicated" },
+  );
+  const replacement = await fixture.createSecret(
+    namespace.id,
+    "Replacement credential",
+    "test-retry-token",
+  );
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const bindingsPath = `/namespaces/${namespace.id}/iam/access-bindings`;
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(
+    page,
+    fixture,
+    `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+  );
+  // Native IAM denies the actor's grant authority while the Agent update remains authorized.
+  fixture.policy.restrictions.push({
+    id: "deny-update-credential-grant",
+    resourceKind: "installation",
+    resourceId: installation.id,
+    action: "administer",
+    effect: "deny",
+  });
+  await page.getByLabel("Authentication source").selectOption("codex_pat");
+  await page.getByLabel("Service account token Secret ID").fill(replacement.id);
+  await page.getByRole("button", { name: "Save authentication source" }).click();
+  await page
+    .getByText(/Authentication source saved, but this Agent's Secret access could not be confirmed/)
+    .waitFor();
+  assert.equal(await page.getByLabel("Authentication source").isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), true);
+  assert.equal(pathRequests(requests, "POST", bindingsPath).length, 0);
+  assert.equal(
+    (await fixture.request("GET", agentPath)).data.harnessAuth.source.id,
+    replacement.id,
+  );
+  // A partial save survives navigation without repeating PATCH or enabling deployment.
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
+  await page.goBack();
+  await page.getByRole("button", { name: "Retry credential access" }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), true);
+  fixture.policy.restrictions.splice(
+    fixture.policy.restrictions.findIndex((item) => item.id === "deny-update-credential-grant"),
+    1,
+  );
+  // Commit the binding through the real API, then lose only its response. Read-before-create makes retry safe.
+  await page.route(`**${bindingsPath}`, async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    const response = await route.fetch();
+    assert.equal(response.status(), 201);
+    await route.abort("failed");
+  });
+  await page.getByRole("button", { name: "Retry credential access" }).click();
+  await page.getByText(/Secret access could not be confirmed.*Request interrupted/).waitFor();
+  await page.unroute(`**${bindingsPath}`);
+  await page.getByRole("button", { name: "Retry credential access" }).click();
+  await page.getByRole("button", { name: "Save authentication source" }).waitFor();
+  const grants = (await fixture.request("GET", bindingsPath)).data.filter(
+    (binding) => binding.resourceId === replacement.id,
+  );
+  assert.equal(grants.length, 1);
+  assert.equal(grants[0].subjectId, agent.servicePrincipalId);
+  assert.equal(pathRequests(requests, "PATCH", agentPath).length, 1);
+  assert.equal(pathRequests(requests, "POST", bindingsPath).length, 1);
+});
+
+test("Credentials blocks repeat saves after losing an authentication PATCH response", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Unknown credential save", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Unknown save Agent",
+    createHarnessConfiguration("openclaw", "gpt-4.1"),
+  );
+  const replacement = await fixture.createSecret(
+    namespace.id,
+    "Replacement credential",
+    "test-unknown-token",
+  );
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(
+    page,
+    fixture,
+    `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+  );
+  await page.route(`**${agentPath}`, async (route) => {
+    if (route.request().method() !== "PATCH") {
+      await route.continue();
+      return;
+    }
+    assert.equal((await route.fetch()).status(), 200);
+    await route.abort("failed");
+  });
+  await page.getByLabel("API key Secret ID").fill(replacement.id);
+  await page.getByRole("button", { name: "Save authentication source" }).click();
+  await page
+    .locator("form.agent-card")
+    .getByText(/Outcome unknown/)
+    .waitFor();
+  assert.equal(
+    await page.getByRole("button", { name: "Save authentication source" }).isDisabled(),
+    true,
+  );
+  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), true);
+  assert.equal(pathRequests(requests, "PATCH", agentPath).length, 1);
+  assert.equal(
+    pathRequests(requests, "POST", `/namespaces/${namespace.id}/iam/access-bindings`).length,
+    0,
+  );
+  // Explicit reload recovers the committed source; saving it again confirms the missing grant.
+  await page.unroute(`**${agentPath}`);
+  await page.getByRole("button", { name: "Reload authentication source", exact: true }).click();
+  await page.getByLabel("API key Secret ID").waitFor();
+  assert.equal(await page.getByLabel("API key Secret ID").inputValue(), replacement.id);
+  await page.getByRole("button", { name: "Save authentication source" }).click();
+  await page.waitForFunction(
+    () => globalThis.document.querySelector("#harness-auth-method")?.disabled === false,
+  );
+  assert.equal(
+    (await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)).data.some(
+      (binding) =>
+        binding.subjectId === agent.servicePrincipalId && binding.resourceId === replacement.id,
+    ),
+    true,
+  );
+});
+
+test("unsaved Preset drafts retain unfinished edits across navigation until explicit discard", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const root = await mkdtemp(join(tmpdir(), "occ-preset-navigation-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  fixture.controller.registerDriver(configurationDriver);
+  fixture.controller.selectDriver("configuration", configurationDriver.id);
+  const namespace = await fixture.createNamespace("Draft navigation", { ready: true });
+  const artifact = JSON.parse(
+    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+  );
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: artifact,
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByLabel("Variable: name", { exact: true }).fill("Navigation draft");
+  await page.getByLabel("Variable: model", { exact: true }).fill("gpt-5.1");
+  await page.getByLabel("Variable: modelSecret", { exact: true }).fill("synthetic-navigation-key");
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  assert.equal(
+    await page.getByLabel("Variable: name", { exact: true }).inputValue(),
+    "Navigation draft",
+  );
+  assert.equal(await page.getByLabel("Variable: model", { exact: true }).inputValue(), "gpt-5.1");
+  assert.equal(await page.getByLabel("Variable: modelSecret", { exact: true }).inputValue(), "");
+  await page.getByLabel("Variable: modelSecret", { exact: true }).fill("synthetic-navigation-key");
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  await openAdvancedSettings(page);
+  const unfinished = '{"agents":';
+  await page.getByLabel("Configuration JSON", { exact: true }).fill(unfinished);
+  await page.getByLabel("USER.md", { exact: true }).fill("");
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page.getByLabel("Agent name", { exact: true }).waitFor();
+  assert.equal(
+    await page.getByLabel("Agent name", { exact: true }).inputValue(),
+    "Navigation draft",
+  );
+  assert.equal(
+    await page.getByLabel("Configuration JSON", { exact: true }).inputValue(),
+    unfinished,
+  );
+  assert.equal(await page.getByLabel("USER.md", { exact: true }).inputValue(), "");
+  // Navigation keeps the established credential-clearing rule, even though ordinary edits survive.
+  assert.equal(await page.getByLabel("API key", { exact: true }).inputValue(), "");
+  assert.deepEqual(
+    await page.evaluate(() => ({ local: { ...localStorage }, session: { ...sessionStorage } })),
+    { local: {}, session: {} },
+  );
+  assert.equal(new URL(page.url()).search, `?namespace=${namespace.id}`);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+
+  page.once("dialog", (dialog) => dialog.dismiss());
+  await page.getByRole("button", { name: "Start over" }).click();
+  assert.equal(
+    await page.getByLabel("Configuration JSON", { exact: true }).inputValue(),
+    unfinished,
+  );
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Start over" }).click();
+  await page.getByLabel("Preset template").waitFor();
+  assert.equal(await page.getByLabel("Preset template").inputValue(), "");
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page.getByLabel("Preset template").waitFor();
+  assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
+
+  // Reload ends the SPA session; a new form must not recover discarded or browser-stored inputs.
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name", { exact: true }).fill("Reload-only draft");
+  await page.reload();
+  await page.getByLabel("Preset template").waitFor();
+  assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
+
+  // Signing back in without reloading must not recover the previous session's in-memory draft.
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name", { exact: true }).fill("Private session draft");
+  await page.getByRole("button", { name: "OpenClaw Enterprise", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Logout" }).click();
+  await page.getByLabel("Username").fill(fixture.credentials.email);
+  await page.getByLabel("Password").fill(fixture.credentials.password);
+  await page.getByRole("button", { name: "Login", exact: true }).click();
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page.getByLabel("Preset template").waitFor();
+  assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
+});
+
+test("live workspace drafts survive navigation, stay Agent-scoped, and clear on explicit reload or save", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "console-workspace-drafts-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  // Exercise the real Console, Fastify, and IAM paths with disk-backed file transport.
+  // This checks UI navigation and file requests, not a live Agent gateway.
+  const fixture = await createConsoleAppFixture(t, {
+    publicOrigin: true,
+    workspaceFilesAccess: {
+      async read({ revision, filename }) {
+        return {
+          status: "ok",
+          file: {
+            name: filename,
+            content: await readFile(join(root, revision.agentId, filename), "utf8"),
+          },
+        };
+      },
+      async write({ revision, filename, content }) {
+        await writeFile(join(root, revision.agentId, filename), content);
+        return { status: "ok", file: { name: filename, size: Buffer.byteLength(content) } };
+      },
+    },
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Workspace navigation", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Workspace draft owner",
+    nativeValues("workspace"),
+  );
+  const other = await fixture.createAgent(
+    namespace.id,
+    "Other workspace Agent",
+    nativeValues("other"),
+  );
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  await fixture.seedActiveAgentRevision(namespace.id, other.id);
+  for (const owner of [agent, other]) {
+    await mkdir(join(root, owner.id));
+    for (const name of Object.keys(WORKSPACE_DEFAULTS)) {
+      await writeFile(join(root, owner.id, name), `# Saved ${name}\n`);
+    }
+  }
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const url = detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace");
+  await login(page, fixture, url.pathname + url.search);
+  const file = page.getByLabel("AGENTS.md", { exact: true });
+  await file.fill("# Unsaved instructions\n");
+  await page.getByLabel("USER.md", { exact: true }).fill("");
+  await page.getByRole("button", { name: "Configuration", exact: true }).click();
+  await page.getByRole("button", { name: "Workspace files", exact: true }).click();
+  await page.waitForFunction(() => {
+    const editor = globalThis.document.getElementById("workspace-AGENTS.md");
+    return editor && !editor.disabled;
+  });
+  assert.equal(await file.inputValue(), "# Unsaved instructions\n");
+  assert.equal(await page.getByLabel("USER.md", { exact: true }).inputValue(), "");
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await page.getByRole("link", { name: "Other workspace Agent", exact: true }).click();
+  await page.getByRole("button", { name: "Workspace files", exact: true }).click();
+  await page.getByText("AGENTS.md loaded.", { exact: true }).waitFor();
+  assert.equal(await file.inputValue(), "# Saved AGENTS.md\n");
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await page.getByLabel("Search Agents").fill("Workspace draft owner");
+  await page.getByRole("link", { name: "Workspace draft owner", exact: true }).click();
+  await page.getByRole("button", { name: "Workspace files", exact: true }).click();
+  await page.waitForFunction(() => {
+    const editor = globalThis.document.getElementById("workspace-AGENTS.md");
+    return editor && !editor.disabled;
+  });
+  assert.equal(await file.inputValue(), "# Unsaved instructions\n");
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  const saved = page.waitForResponse(
+    (response) =>
+      response.request().method() === "PUT" &&
+      response.url().endsWith("/workspace/files/AGENTS.md"),
+  );
+  await page.getByRole("button", { name: "Save AGENTS.md", exact: true }).click();
+  assert.equal((await saved).status(), 200);
+  assert.equal(
+    await readFile(join(root, agent.id, "AGENTS.md"), "utf8"),
+    "# Unsaved instructions\n",
+  );
+  await page.getByRole("button", { name: "Reload USER.md", exact: true }).click();
+  await page.getByText("USER.md loaded.", { exact: true }).waitFor();
+  assert.equal(await page.getByLabel("USER.md", { exact: true }).inputValue(), "# Saved USER.md\n");
+  await page.getByRole("link", { name: "← Agents" }).click();
+  assert.equal(await page.getByLabel("Search Agents").inputValue(), "Workspace draft owner");
+  await page.goBack();
+  await page.getByText("AGENTS.md loaded.", { exact: true }).waitFor();
+  assert.equal(
+    await page.getByRole("button", { name: "Save AGENTS.md", exact: true }).isDisabled(),
+    true,
+  );
+  assert.equal(await page.getByLabel("USER.md", { exact: true }).inputValue(), "# Saved USER.md\n");
+});
+
+test("authentication drafts retain Secret references and their original save baseline", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Authentication navigation", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Authentication draft",
+    nativeValues("auth"),
+  );
+  const secret = await fixture.createSecret(namespace.id, "Replacement key", "synthetic-auth-key");
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "credentials");
+  await login(page, fixture, url.pathname + url.search);
+  await page.getByLabel("API key Secret ID", { exact: true }).fill(secret.id);
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
+  // A saved auth change must not rebase the retained local choice when the page is recreated.
+  const changed = await fixture.request("PATCH", `/namespaces/${namespace.id}/agents/${agent.id}`, {
+    body: { configurationId: agent.configurationId, harnessAuth: null },
+  });
+  assert.equal(changed.status, 200);
+  await page.goBack();
+  assert.equal(await page.getByLabel("API key Secret ID", { exact: true }).inputValue(), secret.id);
+  await page.getByRole("button", { name: "Save authentication source" }).click();
+  await page
+    .getByText("The Configuration changed. Reload authentication source before saving.")
+    .waitFor();
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  await page.getByRole("button", { name: "Reload authentication source" }).click();
+  await page.getByLabel("Authentication source").waitFor();
+  assert.equal(await page.getByLabel("Authentication source").inputValue(), "");
+  await page.getByLabel("Authentication source").selectOption("api_key");
+  assert.equal(await page.getByLabel("API key Secret ID", { exact: true }).inputValue(), "");
 });

@@ -71,7 +71,7 @@ those states by interacting with the real controls after loading fixture data.
 | Agent detail            | New revision, native JSON editor, invalid JSON, admitted snapshot, queued or failed deployment, denied deployment, missing Agent, unavailable Configuration and revision history.                                                                                                                                                                                          |
 | Navigation components   | Account menu, Namespace switcher, mobile drawer, OCE branding, simulated OCC revision, missing development metadata, debug runtime image identities and unavailable metadata.                                                                                                                                                                                              |
 | Channels                | Unconfigured cards, Slack editor with pairing/open/disabled policies, everyone and restricted channel sender access, incomplete sender access, unsupported mixed sender lists, unsupported wildcard channel maps, read-only snapshot, save conflict.                                                                                                                       |
-| Credentials             | Stored and missing metadata, masked Slack tokens, one-token replacement, partially missing tokens, generated credentials locked after admission, metadata failure, missing authentication, operator-managed credentials, issued ChatGPT account.                                                                                                                           |
+| Credentials             | Stored and missing metadata, masked Slack tokens, one-token replacement, partially missing tokens, generated credentials locked after admission, metadata failure, missing authentication, operator-managed credentials, issued ChatGPT account, model Secret replacement, denied or pending grants, and unknown authentication saves.                                     |
 | Native admin            | Available launch, stopped or unsupported runtime, denied panel hidden. The launch target is an explanatory fixture page.                                                                                                                                                                                                                                                   |
 | Workspace               | Four editable deployed files, undeployed Agent, denied reads, missing file, unknown write outcome.                                                                                                                                                                                                                                                                         |
 | Stop Agent              | Confirmation, stopped requested state, permission denial, unknown outcome requiring refresh.                                                                                                                                                                                                                                                                               |
@@ -148,6 +148,22 @@ after a rejected save. The recovery story retains its saved Configuration and
 requires a current nonempty repository selection before retrying. GitHub App
 setup, Namespace approvals, runtime images, and credential-service networking
 remain operator prerequisites; the fixture does not verify them.
+
+### Keep edits while navigating
+
+Use **Pages/Agent detail → Keep Configuration edits**, **Components/Workspace →
+Keep unsaved files**, **Components/Credentials → Keep authentication choices**,
+and **Components/Channels → Keep Slack edits**. Edit each form, visit another tab
+or Namespaces, and return with Back/Forward. Check empty and invalid text, then
+explicit Cancel or Reload. The Configuration story keeps deployment disabled;
+workspace Save changes only the selected simulated file.
+
+Use **Pages/Create Agent → Keep Preset variables** before applying a Preset and
+**Keep an unsaved Preset draft** afterward. Ordinary fields survive while token
+inputs clear. Revisit the Agents list to check its search filter. Existing denied,
+loading, missing-file, and uncertain-write stories verify that retention does not
+bypass the editor's access or recovery controls. These are simulated UI checks,
+not backend persistence or live gateway proof.
 
 ### Discover and configure plugins
 

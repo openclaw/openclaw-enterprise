@@ -137,6 +137,7 @@ export async function createConsoleAppFixture(t, options = {}) {
   let controller;
   const appOptions = {
     metrics: options.metrics,
+    workspaceFilesAccess: options.workspaceFilesAccess,
     auth,
     iamDriver,
     auditSink,

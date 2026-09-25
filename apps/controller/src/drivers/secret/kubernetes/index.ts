@@ -7,7 +7,6 @@ import {
   sha256Hex,
 } from "@openclaw-enterprise/utils";
 import { randomUUID } from "node:crypto";
-import { isAbsolute } from "node:path";
 import type { CoreV1Api, V1ObjectMeta, V1Secret } from "@kubernetes/client-node";
 import type {
   JSONSchema,
@@ -27,10 +26,11 @@ import {
   currentComputeAbortSignal,
   withComputeAbortSignal,
 } from "../../compute/operation-context.ts";
-
-type KubernetesAuthentication =
-  | { readonly mode: "inCluster" }
-  | { readonly mode: "kubeconfig"; readonly kubeconfigPath: string; readonly context: string };
+import {
+  createKubernetesAuthenticationOptionsSchema,
+  validateKubernetesAuthentication,
+  type KubernetesAuthentication,
+} from "../../kubernetes/authentication.ts";
 
 type KubernetesRecord = Record<string, unknown>;
 
@@ -141,33 +141,7 @@ function timeoutFailure(action: string): Error {
 }
 
 export class KubernetesSecretDriver implements SecretDriver {
-  static readonly configurationSchema: JSONSchema = Object.freeze({
-    type: "object",
-    additionalProperties: false,
-    required: ["authentication"],
-    properties: {
-      authentication: {
-        oneOf: [
-          {
-            type: "object",
-            additionalProperties: false,
-            required: ["mode"],
-            properties: { mode: { const: "inCluster" } },
-          },
-          {
-            type: "object",
-            additionalProperties: false,
-            required: ["mode", "kubeconfigPath", "context"],
-            properties: {
-              mode: { const: "kubeconfig" },
-              kubeconfigPath: { type: "string", minLength: 1 },
-              context: { type: "string", minLength: 1 },
-            },
-          },
-        ],
-      },
-    },
-  });
+  static readonly configurationSchema: JSONSchema = createKubernetesAuthenticationOptionsSchema();
 
   static validateConfiguration(configuration: unknown): void {
     const value = asRecord(configuration);
@@ -179,33 +153,10 @@ export class KubernetesSecretDriver implements SecretDriver {
         "Injected clients and unknown Kubernetes Secret options are not supported.",
       );
     }
-    const authentication = asRecord(value.authentication);
-    if (authentication === undefined) {
-      throw new SecretValidationError("Explicit Kubernetes authentication is required.");
-    }
-    if (authentication.mode === "inCluster") {
-      if (Object.keys(authentication).some((key) => key !== "mode")) {
-        throw new SecretValidationError(
-          "In-cluster authentication does not accept additional options.",
-        );
-      }
-      return;
-    }
-    if (authentication.mode !== "kubeconfig") {
-      throw new SecretValidationError("An explicit Kubernetes authentication mode is required.");
-    }
-    if (
-      Object.keys(authentication).some(
-        (key) => key !== "mode" && key !== "kubeconfigPath" && key !== "context",
-      )
-    ) {
-      throw new SecretValidationError("Unknown kubeconfig authentication options are forbidden.");
-    }
-    const path = required(authentication.kubeconfigPath, "Dedicated kubeconfig path");
-    if (!isAbsolute(path)) {
-      throw new SecretValidationError("Dedicated kubeconfig path must be absolute.");
-    }
-    required(authentication.context, "Explicit Kubernetes context");
+    validateKubernetesAuthentication(
+      value.authentication,
+      (message) => new SecretValidationError(message),
+    );
   }
 
   readonly id: string;

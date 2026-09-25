@@ -32,7 +32,7 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" get storageclasses
 ```
 
 Check that the node list shows both roles and that the expected StorageClasses
-exist. Allow capacity for overlapping revisions. Dedicated Codex also needs a node
+exist. Allow capacity for all running Agents. Dedicated Codex also needs a node
 syscall policy compatible with its command sandbox; review the
 [Compute requirements](../../reference/drivers/kubernetes-compute.md#requirements)
 before selecting node images.
@@ -45,7 +45,7 @@ Provide these cluster services before installing OCC:
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | Private gateway state     | An explicit block-backed filesystem StorageClass supporting `10Gi` RWO claims and reliable SQLite locking.         |
 | Bootstrap output          | A fresh `1Gi` RWO claim using a protected StorageClass; prepare it during shared installation.                     |
-| Dedicated Agent workspace | A default StorageClass supporting `40Gi` RWX claims. Embedded Agents do not need this shared claim.                |
+| Dedicated Agent workspace | A default StorageClass supporting `40Gi` RWO claims. Embedded Agents do not need this Harness claim.               |
 | PostgreSQL                | An external database with separate application and migrator roles and verified TLS.                                |
 | Container registry        | Push access for the image builder and pull access from every eligible node, including tenant workloads.            |
 | Operator access           | An approved HTTPS origin and access path matching `auth.baseUrl`; the chart does not create public TLS or Ingress. |
@@ -69,7 +69,7 @@ examples for your cluster:
   `drivers.compute.configuration.runtime.nodeSelector` to the reviewed control
   and runtime labels.
 - Replace the bootstrap and gateway StorageClass placeholders with the classes
-  prepared above. The dedicated shared workspace uses the cluster default.
+  prepared above. The dedicated Harness workspace uses the cluster default.
 - Replace sample image references, CIDRs, DNS/client selectors, cluster name,
   administrator email, and HTTPS origin.
 - The example sets `database.caSecretName: occ-rds-ca`. For a database whose CA

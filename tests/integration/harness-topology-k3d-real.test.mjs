@@ -9,7 +9,7 @@ import {
   assertDedicatedWorkspaceResources,
   assertDedicatedWorkspaceRuntime,
   assertDeniedConnection,
-  assertEmbeddedCreatesNoSharedWorkspaceClaim,
+  assertEmbeddedCreatesNoHarnessWorkspaceClaim,
   assertGatewayPodContinuity,
   assertGatewayPrivateResources,
   assertNativeReferenceNegativeControl,
@@ -144,7 +144,7 @@ test(
     assert.equal(topology.gatewayPod.spec.serviceAccountName, topology.agentServiceName);
     assert.equal((await resources("deployments", topology.placement)).length, 1);
     assertPrivateStateInitContainer(topology.gatewayPod);
-    await assertEmbeddedCreatesNoSharedWorkspaceClaim(topology);
+    await assertEmbeddedCreatesNoHarnessWorkspaceClaim(topology);
     const privateClaim = await assertGatewayPrivateResources(topology);
 
     const [environment, identity] = await Promise.all([
@@ -201,7 +201,7 @@ test(
     assert.equal(topology.gatewayPod.spec.serviceAccountName, topology.agentServiceName);
     assert.equal((await resources("deployments", topology.placement)).length, 1);
     assertPrivateStateInitContainer(topology.gatewayPod);
-    await assertEmbeddedCreatesNoSharedWorkspaceClaim(topology);
+    await assertEmbeddedCreatesNoHarnessWorkspaceClaim(topology);
     await assertGatewayPrivateResources(topology);
 
     const [environment, identity] = await Promise.all([

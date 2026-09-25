@@ -1,5 +1,9 @@
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
 
+// Match the pinned OpenClaw service stop budget: 315s drain, 10s cleanup,
+// and 5s supervisor margin. Idle Gateways exit as soon as their work settles.
+export const GATEWAY_STOP_TIMEOUT_MS = 330_000;
+
 export const PLUGIN_APP_SERVER_TOKEN_HMAC_DOMAIN = "openclaw-plugin-runtime/app-server-token/v1";
 
 const PLUGIN_APP_SERVER_TOKEN_DERIVATION_HELPER = String.raw`
@@ -1270,6 +1274,9 @@ const { mkdirSync, rmSync } = require("node:fs");
 const { join } = require("node:path");
 const { spawn } = require("node:child_process");
 
+// OCE upgrades this runtime by rolling out a selected image.
+process.env.OPENCLAW_NO_AUTO_UPDATE = "1";
+
 ${PLUGIN_RUNTIME_HELPERS}
 ${WORKSPACE_ASSET_HELPERS}
 ${OPENCLAW_AUTH_PROBE_HELPERS}
@@ -1282,7 +1289,7 @@ function forwardTermination(child) {
     if (terminating) return;
     terminating = true;
     child.kill(signal);
-    setTimeout(() => child.kill("SIGKILL"), 8_000).unref();
+    setTimeout(() => child.kill("SIGKILL"), ${GATEWAY_STOP_TIMEOUT_MS}).unref();
   };
   process.on("SIGTERM", () => forward("SIGTERM"));
   process.on("SIGINT", () => forward("SIGINT"));
@@ -1426,7 +1433,7 @@ if (pluginRuntime?.manifest?.kind === "codex" && hasEnabledPluginSelections(plug
     stoppingForChangedPeerStatus = true;
     publishPluginRuntimeStatus({ phase: "starting", ...pluginResult });
     child.kill("SIGTERM");
-    setTimeout(() => process.exit(1), 8_000).unref();
+    setTimeout(() => process.exit(1), ${GATEWAY_STOP_TIMEOUT_MS}).unref();
   };
   setInterval(async () => {
     if (pollInFlight) return;
@@ -1674,6 +1681,7 @@ const nodeEnv = {
   PATH: harnessPath,
   OPENCLAW_STATE_DIR: state,
   OPENCLAW_CONFIG_PATH: configPath,
+  OPENCLAW_NO_AUTO_UPDATE: "1",
 };
 if (process.env.OPENCLAW_NODE_CA_PEM) {
   const caPath = join(state, "gateway-ca.pem");

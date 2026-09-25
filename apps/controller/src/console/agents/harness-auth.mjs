@@ -16,7 +16,12 @@ export function harnessAuthDescription(binding) {
     : `ChatGPT service account · ${binding.serviceAccountId}`;
 }
 
-export function createHarnessAuthFields(context, binding = null, executionMode = "embedded") {
+export function createHarnessAuthFields(
+  context,
+  binding = null,
+  executionMode = "embedded",
+  draft,
+) {
   const method = element(
     "select",
     { id: "harness-auth-method" },
@@ -50,6 +55,14 @@ export function createHarnessAuthFields(context, binding = null, executionMode =
       element("option", { value: binding.serviceAccountId }, binding.serviceAccountId),
     );
     account.value = binding.serviceAccountId;
+  }
+  if (draft) {
+    method.value = draft.method;
+    secret.value = draft.secret;
+    if (draft.account && ![...account.options].some((option) => option.value === draft.account)) {
+      account.append(element("option", { value: draft.account }, draft.account));
+    }
+    account.value = draft.account;
   }
   let accountsLoaded = false;
   let disabled = false;
@@ -139,6 +152,7 @@ export function createHarnessAuthFields(context, binding = null, executionMode =
     });
   return {
     section,
+    capture: () => ({ method: method.value, secret: secret.value, account: account.value }),
     setDisabled(value) {
       disabled = value;
       method.disabled = value;

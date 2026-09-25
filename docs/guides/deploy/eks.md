@@ -23,7 +23,7 @@ installing OCE:
    an API endpoint reachable by the operator and controller Pods. Configure
    operator access to the Kubernetes API.
 2. EC2 managed node groups labeled `oce-role=control` and `oce-role=agents`.
-   Reserve capacity for overlapping Agent revisions. Check the
+   Reserve capacity for all running Agents and volume reattachment within their availability zones. Check the
    [Codex node requirements](../../reference/drivers/kubernetes-compute.md#requirements)
    when choosing the node image and syscall policy.
 3. NetworkPolicy enforcement, storage add-ons, and their narrowly scoped IAM
@@ -101,21 +101,19 @@ Keep sufficient eligible node capacity in that zone for gateway replacement.
 Use the explicit gateway class for SQLite state; see the
 [storage contract](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage).
 
-For dedicated Agents, provision an EFS filesystem, mount targets reachable from
-runtime nodes, and the
-[EFS CSI driver](https://docs.aws.amazon.com/eks/latest/userguide/efs-csi.html)
-with its required IAM permissions. Configure an EFS access-point StorageClass
-as the cluster default for the driver's `40Gi` RWX workspace claims. Review
-other workloads before changing a shared cluster's default class. Keep gateway
-and bootstrap claims explicitly on EBS; EFS is for the shared workspace.
-Use a separate access-point directory for each claim and verify read/write access
-from OCE's non-root UID/GID 1000 workloads. Review the driver's
-[access-point identity and directory parameters](https://github.com/kubernetes-sigs/aws-efs-csi-driver/blob/master/docs/parameters.md)
-instead of assuming filesystem permissions from a successful PVC bind.
+For dedicated Agents, configure a default StorageClass that supports `40Gi`
+RWO filesystem claims and OCE's non-root UID/GID 1000. An EBS CSI StorageClass
+can serve this requirement as well as the explicitly selected Gateway class.
+Review other workloads before changing the cluster default. The worker stops
+predecessors before preparing a replacement; allow for termination and disk
+reattachment downtime. EBS availability-zone constraints still apply. Existing
+owned RWX workspace claims retain their original storage and data; RWX is no
+longer required for new Harness workspaces. This local change does not establish
+EKS storage failover or node-fencing acceptance.
 
 ## Enable Console workspace files
 
-EFS provides workspace storage. For Console access, the browser sends HTTPS
+The Harness owns workspace storage. For Console access, the browser sends HTTPS
 requests to OCC API, which opens service-key-authenticated WSS connections
 through private Envoy to the Agent gateway.
 
@@ -214,6 +212,6 @@ Open the Agent's **Workspace files** tab in the signed-in Console. Read all four
 paths, save and reload a harmless temporary change, then restore the original
 state. Files absent before deployment should report `NOT_FOUND` with editable
 fields, not `DEPENDENCY_UNAVAILABLE`. Compare PVC identities and existing session
-IDs after cutover; a bound EFS claim or healthy OCC API alone does not prove
+IDs after cutover; a bound PVC or healthy OCC API alone does not prove
 workspace routing. Check configured channel health without sending messages
 unless message delivery is part of your approved verification.

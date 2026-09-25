@@ -4,7 +4,6 @@ import {
   numericErrorStatus,
   sha256Hex,
 } from "@openclaw-enterprise/utils";
-import { isAbsolute } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { CoreV1Api, V1ConfigMap } from "@kubernetes/client-node";
 import type {
@@ -17,10 +16,11 @@ import type {
 import { ConfigurationValidationError, validateModelCredentialReferences } from "../model-auth.ts";
 import { resolveKubernetesControlNamespace } from "../../compute/kubernetes/index.ts";
 import { ResourceConflictError } from "@openclaw-enterprise/occ";
-
-type KubernetesAuthentication =
-  | { readonly mode: "inCluster" }
-  | { readonly mode: "kubeconfig"; readonly kubeconfigPath: string; readonly context: string };
+import {
+  createKubernetesAuthenticationOptionsSchema,
+  validateKubernetesAuthentication,
+  type KubernetesAuthentication,
+} from "../../kubernetes/authentication.ts";
 
 export interface KubernetesConfigurationDriverOptions {
   readonly authentication: KubernetesAuthentication;
@@ -83,33 +83,7 @@ export function kubernetesConfigurationName(configurationId: string): string {
 }
 
 export class KubernetesConfigurationDriver implements ConfigurationDriver {
-  static readonly configurationSchema: JSONSchema = Object.freeze({
-    type: "object",
-    additionalProperties: false,
-    required: ["authentication"],
-    properties: {
-      authentication: {
-        oneOf: [
-          {
-            type: "object",
-            additionalProperties: false,
-            required: ["mode"],
-            properties: { mode: { const: "inCluster" } },
-          },
-          {
-            type: "object",
-            additionalProperties: false,
-            required: ["mode", "kubeconfigPath", "context"],
-            properties: {
-              mode: { const: "kubeconfig" },
-              kubeconfigPath: { type: "string", minLength: 1 },
-              context: { type: "string", minLength: 1 },
-            },
-          },
-        ],
-      },
-    },
-  });
+  static readonly configurationSchema: JSONSchema = createKubernetesAuthenticationOptionsSchema();
 
   static validateConfiguration(configuration: unknown): void {
     const value = asRecord(configuration);
@@ -121,37 +95,10 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
         "Injected clients and unknown Kubernetes configuration options are not supported.",
       );
     }
-    const authentication = asRecord(value.authentication);
-    if (authentication === undefined) {
-      throw new ConfigurationValidationError("Explicit Kubernetes authentication is required.");
-    }
-    if (authentication.mode === "inCluster") {
-      if (Object.keys(authentication).some((key) => key !== "mode")) {
-        throw new ConfigurationValidationError(
-          "In-cluster authentication does not accept additional options.",
-        );
-      }
-      return;
-    }
-    if (authentication.mode !== "kubeconfig") {
-      throw new ConfigurationValidationError(
-        "An explicit Kubernetes authentication mode is required.",
-      );
-    }
-    if (
-      Object.keys(authentication).some(
-        (key) => key !== "mode" && key !== "kubeconfigPath" && key !== "context",
-      )
-    ) {
-      throw new ConfigurationValidationError(
-        "Unknown kubeconfig authentication options are forbidden.",
-      );
-    }
-    const path = requiredString(authentication.kubeconfigPath, "Dedicated kubeconfig path");
-    if (!isAbsolute(path)) {
-      throw new ConfigurationValidationError("Dedicated kubeconfig path must be absolute.");
-    }
-    requiredString(authentication.context, "Explicit Kubernetes context");
+    validateKubernetesAuthentication(
+      value.authentication,
+      (message) => new ConfigurationValidationError(message),
+    );
   }
 
   readonly id: string;

@@ -21,7 +21,6 @@ import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mj
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   assertGatewayModelTurn,
-  configureExistingK3dLocalPathSharedFileSystem,
   createKubernetesInstallationConfiguration,
   createRealKubernetesFixture,
   kubernetesHash as hash,
@@ -95,7 +94,7 @@ const sharedSecretRotationProbe = "SECRET_ROTATION_SHARED_PROBE";
 const startupFailurePluginId = "codex-plugin:linear@openai-curated-remote";
 const deniedPort = 18791;
 const sharedWorkspaceVolumeName = "openclaw-workspace";
-const sharedWorkspaceClaimSize = "40Gi";
+const harnessWorkspaceClaimSize = "40Gi";
 const harnessWorkspaceSubPaths = Object.freeze(["generated-images", "workspace"]);
 const executeFile = promisify(execFile);
 const {
@@ -180,7 +179,6 @@ async function validatePrerequisites() {
     );
   }
   const kubeconfig = await validateKubernetesPrerequisites();
-  await configureExistingK3dLocalPathSharedFileSystem({ kubeconfigPath, kubernetesContext });
   return kubeconfig;
 }
 
@@ -2848,7 +2846,7 @@ async function assertKubernetesOtelLogs(topology) {
   });
 }
 
-function sharedWorkspaceClaimName(agentId) {
+function harnessWorkspaceClaimName(agentId) {
   return `workspace-${hash(agentId)}`;
 }
 
@@ -2927,12 +2925,12 @@ async function assertScopedTenantPvcAccess(topology) {
 
 async function assertDedicatedWorkspaceResources(topology) {
   await assertScopedTenantPvcAccess(topology);
-  const claimName = sharedWorkspaceClaimName(topology.agent.id);
+  const claimName = harnessWorkspaceClaimName(topology.agent.id);
   const claim = await resource("persistentvolumeclaim", claimName, topology.placement);
   assert.deepEqual(
     [claim.spec.accessModes, claim.spec.resources.requests.storage, claim.status.phase],
-    [["ReadWriteMany"], sharedWorkspaceClaimSize, "Bound"],
-    "the Agent-owned shared workspace PVC must be bound with the expected spec",
+    [["ReadWriteOnce"], harnessWorkspaceClaimSize, "Bound"],
+    "the Agent-owned Harness workspace PVC must be bound with the expected spec",
   );
   assert.deepEqual(
     [sharedVolumeClaimName(topology.gatewayPod), sharedVolumeClaimName(topology.harnessPod)],
@@ -3444,13 +3442,13 @@ async function assertGatewayPodContinuity(context, topology, privateClaim) {
   );
 }
 
-async function assertEmbeddedCreatesNoSharedWorkspaceClaim(topology) {
-  const claimName = sharedWorkspaceClaimName(topology.agent.id);
+async function assertEmbeddedCreatesNoHarnessWorkspaceClaim(topology) {
+  const claimName = harnessWorkspaceClaimName(topology.agent.id);
   const claims = await resources("persistentvolumeclaims", topology.placement);
   assert.equal(
     claims.some(({ metadata }) => metadata.name === claimName),
     false,
-    "embedded execution must not create an Agent shared workspace PVC",
+    "embedded execution must not create an Agent Harness workspace PVC",
   );
   assert.equal(sharedVolumeClaimName(topology.gatewayPod), undefined);
   assert.deepEqual(sharedVolumeSubPaths(topology.gatewayPod), []);
@@ -5149,7 +5147,7 @@ export {
   assertDedicatedWorkspaceResources,
   assertDedicatedWorkspaceRuntime,
   assertDeniedConnection,
-  assertEmbeddedCreatesNoSharedWorkspaceClaim,
+  assertEmbeddedCreatesNoHarnessWorkspaceClaim,
   assertGatewayPodContinuity,
   assertGatewayPrivateResources,
   assertKubernetesOtelLogs,

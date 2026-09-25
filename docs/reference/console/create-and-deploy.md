@@ -8,9 +8,8 @@ Secret creation permission. First-time provisioning grants access to accepted
 Secret references; ordinary draft creation also requires permission to grant
 Agent key access. After deployment, [verify this same
 Agent and revision](../../guides/deploy/production-agents.md#verify-production-workloads).
-If you are using [Local Setup](../../guides/quickstart.md) instead, the
-[local first-Agent walkthrough](../../guides/first-agent.md) creates a separate
-Agent; it does not verify an Agent you create in the console.
+The [local first-Agent walkthrough](../../guides/first-agent.md) creates a separate
+Agent; it does not verify your Console Agent.
 
 ## Create an Agent
 
@@ -40,11 +39,9 @@ Presets and edited Configuration JSON retain their settings.
    workspace, open **Service accounts**, and create a token with Codex scope.
    The fields show `sk-…` and `at-…` hints; prefixes do not select the method.
    Choose a model from the starter list or select **Enter model ID manually**.
-   The list appears before credential entry, with no preselected model.
-   It is intentionally hardcoded pending a future discovery iteration; confirm
-   your credential and runtime support your choice.
-   The form writes the corresponding native model configuration. Credentials
-   remain separate from Configuration JSON.
+   The hardcoded list has no preselected model and appears before credential entry;
+   confirm credential and runtime support. The form updates native model
+   configuration; credentials stay separate.
 4. Confirm your Installation has access to the chosen model. Primary and fallback
    models must use the same supported provider and Harness. For custom settings,
    open **Advanced settings**. Selection changes preserve unrelated JSON edits;
@@ -78,6 +75,13 @@ Presets and edited Configuration JSON retain their settings.
    without a workload. After deployment, use the
    [workspace editor](../console.md#edit-workspace-files). Pending inputs have no
    update API; see [workspace recovery](../../guides/topics/workspace-files.md#set-files-when-creating-an-agent).
+
+Before saving, Preset variables and one Agent draft per Namespace survive navigation,
+including Back/Forward. Reopen **Create Agent** to resume edits; reenter new
+credentials because password fields clear on navigation. **Start over** confirms
+discard. Reload, page exit, and sign-out clear local drafts. Once saving begins,
+navigation does not retain partial-save or uncertain-outcome form state; follow
+save recovery below.
 
 For Codex plugins, enter a **Service Accounts** token with **Codex** and open
 **Configure plugins**. **Previous page** and **Next page** fetch
@@ -163,13 +167,15 @@ all of them and always submits the chosen level explicitly. The server rechecks
 current Namespace policy when it creates the Agent and again when it admits a
 deployment.
 
-Only `503 REPOSITORY_OPTIONS_UNAVAILABLE` permits a fresh ordinary draft without
-repository bindings: Agent-create authorization succeeded, but optional discovery
-is unavailable. Even on a provisioning-capable Dedicated runtime, this exception
-saves only a draft; retry discovery before provisioning. Other failures, including generic
-`503`, throttling and connection errors, block **Create Agent** before either
-write and offer retry. Denial and Namespace lifecycle conflict remain distinct.
-This preflight does not replace authorization on either subsequent write.
+Failed rediscovery retains unsaved repository choices across navigation and retry.
+**Create Agent** stays blocked until discovery succeeds and filters choices against
+current policy. **Start over** discards selections.
+
+Only `503 REPOSITORY_OPTIONS_UNAVAILABLE` with no selected repositories permits
+saving a draft; provisioning requires successful discovery.
+Other failures, including generic `503`, throttling and connection errors, block
+both writes and offer retry. Denial and Namespace lifecycle conflict remain
+distinct. Each subsequent write rechecks authorization.
 
 If the Configuration saves but Agent creation fails, the form shows its ID and
 keeps its JSON and Secret bindings fixed. After a known rejection of an ordinary
@@ -205,25 +211,20 @@ Check that the returned revision belongs to this Agent and retains its repositor
 selections. An ordinary draft requires credential setup and **Deploy new revision**
 from its detail page.
 
-Outside the Console, an operator must prepare the
+Operators must prepare the
 [repository installation](../../guides/repository-credentials/installation.md),
-Namespace approvals, runtime images and networking; supply a managed model
-credential and its exact-Agent access grant; and install a Slack app with Socket
-Mode and the required channel membership. Slack also needs the configured
+Namespace approvals, runtime images, networking, model credential and exact-Agent
+grant, plus a Slack app with Socket Mode and channel membership. Slack requires a
 [channel proxy](../drivers/kubernetes-compute/networking-and-isolation.md).
-Deployment admission is not a live channel connection or repository operation.
-Verify this same Agent and revision before presenting the live demo.
-Repository write permission does not change the Harness's filesystem or approval
-policy. Review those settings separately before demonstrating code edits.
+Verify this Agent and revision: admission proves neither channel connectivity nor
+repository operations. Repository permissions do not change Harness filesystem or
+approval policy; review both before demonstrating edits.
 
 ## Initial runtime credentials
 
-First-time provisioning creates generated transport credentials automatically.
-For ordinary draft Agents, before the first deployment, provision generated transport credentials
-and, when Slack is enabled, store its app and bot tokens as Namespace Secrets
-bound through the Agent's Configuration. Model credentials are selected
-separately during Agent creation through `harnessAuth`; runtime credential
-provisioning does not change that key.
+Before deploying a draft Agent, provision transport credentials and bind Slack
+tokens as Namespace Secrets. This leaves the separately selected `harnessAuth`
+model credential unchanged.
 
 Select **Provision generated runtime credentials** to create the transport bundle.
 The Kubernetes Driver generates an app-server transport token and a local
@@ -234,25 +235,25 @@ the credential API. Provisioning checks for existing Agent runtime Deployments
 before writing credentials so it does not modify values after a runtime has
 started.
 
-The generated credential API uses `GET` and initial `POST {}` on
+The credential API uses `GET` and initial `POST {}` on
 `/namespaces/:namespaceId/agents/:agentId/runtime-credentials`. Reading requires
-exact Agent `read`; provisioning also requires `operate`. Returned status reports
-transport storage only. The server derives Kubernetes names from the admitted
-Namespace, Agent, and Installation driver configuration. Generated credential
-values never pass through the browser. Audit records contain the actor, target,
+exact Agent `read`; provisioning also requires `operate`. Status reports transport storage only. The server derives Kubernetes names from the admitted
+Namespace, Agent, and Installation driver configuration. The browser never receives generated credentials. Audit records contain the actor, target,
 action, and outcome, never the values.
 
 Provisioning creates missing whole Secrets before any AgentRevision exists. It
 never rotates or overwrites existing credentials. A retry may reuse complete,
-owned transport groups. The Kubernetes transport group must contain exactly
-`app-server-token` and `gateway-password`. Unexpected keys, foreign ownership,
+owned transport groups. For dedicated Agents, the CP transport Secret contains only `app-server-token`,
+and a separate CP Secret contains only `gateway-password`. Compute delivers the
+transport token to the Harness without copying the Gateway password. Embedded
+Agents use one tenant-local transport group with both keys. Unexpected keys, foreign ownership,
 or malformed values produce a conflict. If a response is lost or a dependency fails, refresh
 stored status before explicitly retrying. Already-created Secrets remain in place
 even when later storage or audit work fails; there is no automatic retry or
 rollback deletion.
 
 On the **Credentials** tab, bound Slack tokens appear as filled password fields using a synthetic mask.
-The browser never reads the saved token values. Focus a field to enter a
+The browser never reads saved tokens. Focus a field to enter a
 replacement; leave it empty to keep its existing binding. Missing tokens remain
 empty and must be supplied before saving. **Save channel Secrets** requires at
 least one new value and a saved binding or new value for each token.

@@ -31,6 +31,7 @@ function renderSecretOptions(secrets) {
 }
 
 export function createPresetFields(context, apply) {
+  let retained = context.drafts.get("preset");
   const selector = element(
     "select",
     { id: "agent-preset", disabled: true },
@@ -42,6 +43,31 @@ export function createPresetFields(context, apply) {
   let selected;
   let fields = [];
   let loadVersion = 0;
+  context.drafts.track("preset", () =>
+    selector.value
+      ? {
+          id: selector.value,
+          fields: fields.length
+            ? Object.fromEntries(
+                fields.map((field) => [
+                  field.name,
+                  {
+                    type: field.definition.type,
+                    ...(field.definition.type === "password"
+                      ? {}
+                      : {
+                          value: field.input.value,
+                          supplied: field.input.dataset.supplied,
+                        }),
+                    mode: field.mode?.value,
+                    secret: field.secretSelect?.value,
+                  },
+                ]),
+              )
+            : retained?.fields,
+        }
+      : retained,
+  );
 
   function currentSecrets(field) {
     return field.secrets.filter((secret) => sameNamespaceSecret(context, secret));
@@ -84,6 +110,8 @@ export function createPresetFields(context, apply) {
           : [];
         field.secretsLoading = false;
         field.secretSelect.replaceChildren(...renderSecretOptions(field.secrets));
+        field.secretSelect.value = field.restoredSecret ?? "";
+        delete field.restoredSecret;
         field.secretStatus.textContent = field.secrets.length
           ? "Existing Secrets in this Namespace are available. Secret values are never shown."
           : "No existing Secrets are available in this Namespace. Create a new Secret instead.";
@@ -195,6 +223,9 @@ export function createPresetFields(context, apply) {
   selector.addEventListener("change", async () => {
     const version = ++loadVersion;
     const selectedId = selector.value;
+    if (retained?.id !== selectedId) {
+      retained = undefined;
+    }
     selected = undefined;
     fields = [];
     inputs.replaceChildren();
@@ -237,6 +268,11 @@ export function createPresetFields(context, apply) {
               });
         input.dataset.supplied = String(Object.hasOwn(definition, "default"));
         input.value = definition.default === undefined ? "" : String(definition.default);
+        const saved = retained?.fields?.[name];
+        if (saved?.type === definition.type && definition.type !== "password") {
+          input.value = saved.value;
+          input.dataset.supplied = saved.supplied;
+        }
         input.addEventListener("input", () => {
           input.dataset.supplied = "true";
           feedback.textContent = "";
@@ -264,6 +300,9 @@ export function createPresetFields(context, apply) {
           element("option", { value: NEW_SECRET }, "Create new Secret"),
           element("option", { value: EXISTING_SECRET }, "Use existing Secret"),
         );
+        if (saved?.type === "password" && saved.mode) {
+          mode.value = saved.mode;
+        }
         const secretSelect = element(
           "select",
           { id: `preset-variable-${name}-existing-secret`, required: true, disabled: true },
@@ -299,6 +338,7 @@ export function createPresetFields(context, apply) {
           secretStatus,
           inputField,
           secretField,
+          restoredSecret: saved?.secret,
           secrets: [],
           secretsLoading: true,
           secretsError: null,
@@ -361,6 +401,10 @@ export function createPresetFields(context, apply) {
         ...presets.map((preset) => element("option", { value: preset.id }, preset.name)),
       );
       selector.disabled = false;
+      if (retained && presets.some((preset) => preset.id === retained.id)) {
+        selector.value = retained.id;
+        selector.dispatchEvent(new Event("change"));
+      }
       status.textContent = presets.length
         ? "Choose a Preset or start with the standard defaults."
         : "No Presets in this Namespace.";

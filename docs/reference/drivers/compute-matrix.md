@@ -30,9 +30,13 @@ The bundled Compute Drivers expose the current gateway authentication contracts:
 | [Docker/Podman](docker-compute.md#gateway-authentication)                           | Managed password by default; explicit trusted proxy remains supported by the underlying container code. Current Agent admission limits still apply. |
 | [SSH](ssh-compute.md#credentials-and-supported-boundaries)                          | Managed password by default; explicit trusted proxy remains supported.                                                                              |
 
-The detailed matrix retains its older source baseline. Its trusted-proxy row
-records that capability at the baseline; use the current contracts above for
-credential modes.
+Current Kubernetes storage uses a private Gateway RWO claim and a separate
+Harness-only RWO workspace. Replacements stop predecessors before starting the
+candidate. See the [current storage contract](kubernetes-compute/storage-and-credentials.md#harness-storage).
+
+The detailed matrix retains its older source baseline. Its shared-workspace/RWX
+and trusted-proxy rows are historical observations, not current storage or
+credential requirements. Use the current contracts above for those behaviors.
 For setup, see [Drivers quickstart](selection.md#choose-a-bundled-driver).
 The [Compute Driver contract](compute.md) owns requirements; the
 [platform design](../../design.md) owns the target architecture.

@@ -13,9 +13,9 @@ direct local `node --test` run, import approved gateway and Agent images first
 and export their immutable `image@sha256:<digest>` references as shown in
 [Kubernetes model turns and Secrets](kubernetes.md#kubernetes-model-turns-and-secrets).
 
-The test configures shared-filesystem provisioning in that disposable k3d
-cluster and grants its controller identities the production worker's volume
-and Pod observation permissions. The worker remains unable to read Secrets.
+The test uses stock local-path RWO storage in the disposable k3d cluster and
+grants its controller identities the production worker's volume and Pod
+observation permissions. The worker remains unable to read Secrets.
 
 The protected `provider-account` GitHub Actions lane builds the checked-in
 runtime image and imports it into the run-owned k3d cluster when either

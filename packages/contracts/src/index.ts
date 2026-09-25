@@ -944,6 +944,13 @@ export interface ComputeDriver extends Driver {
   readonly agentProvisioning?: ComputeAgentProvisioningCapabilities;
   readonly activationOrder?: "beforeCommit" | "afterCommit";
   readonly maintenanceIntervalMs?: number;
+  /**
+   * Opt into exclusive replacement: the worker stops all earlier revisions before
+   * preparation and supersedes their reconciliation once a newer exclusive
+   * revision is admitted. Recovery uses a new revision, never an older snapshot.
+   * Stop must wait for resource release; repeated calls must preserve durable data.
+   */
+  requiresStoppedPredecessors?(revision: AgentRevision): boolean;
   getRuntimeImages?(revision: AgentRevision): Promise<readonly RuntimeImage[]>;
   /** Read-only native model discovery; supplied credentials must never be persisted. */
   discoverHarnessModels?(input: {

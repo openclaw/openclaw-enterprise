@@ -37,6 +37,7 @@ const CONSOLE_ASSETS = new Map([
       "channels/shared-ui.mjs",
       "channels.mjs",
       "agents.mjs",
+      "drafts.mjs",
       "dom.mjs",
       "console.mjs",
     ],
