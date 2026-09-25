@@ -25,7 +25,10 @@ installing OCE:
 2. EC2 managed node groups labeled `oce-role=control` and `oce-role=agents`.
    Reserve capacity for overlapping Agent revisions. Check the
    [Codex node requirements](../../reference/drivers/kubernetes-compute.md#requirements)
-   when choosing the node image and syscall policy.
+   when choosing the node image and syscall policy. Install the reviewed
+   `runtime.codexSeccompProfile` through the node image or launch-template user
+   data before admitting Agent workloads. Validate it on a newly replaced node;
+   a manual installation on existing nodes does not cover node-group rotation.
 3. NetworkPolicy enforcement, storage add-ons, and their narrowly scoped IAM
    permissions, as described below.
 4. External PostgreSQL, such as private RDS PostgreSQL, with separate application
@@ -93,6 +96,13 @@ notes that enforcement can be unreliable for standalone Pods. The bootstrap
 volume helper creates such a Pod; if its isolation cannot be verified, use the
 storage-administrator preparation path in the shared installation guide.
 
+Allow the CSI controller to reach Kubernetes, DNS, and its AWS credential/API
+endpoints. The node plugin also needs Kubernetes and DNS when instance metadata
+is unavailable. Keep workload access to instance metadata disabled. Before
+preparing the bootstrap volume, require ready CSI controller and node Pods and
+check that each eligible node has the CSI topology labels. A PVC that remains
+Pending with a missing-topology event indicates an add-on prerequisite failure.
+
 Use the [EBS CSI driver](https://docs.aws.amazon.com/eks/latest/userguide/ebs-csi.html)
 for private gateway and bootstrap block volumes. Configure encrypted filesystem
 StorageClasses and appropriate topology binding, such as `WaitForFirstConsumer`.
@@ -136,7 +146,10 @@ before provisioning Namespaces and Agents:
    actual Kubernetes API destinations; permit API-server admission traffic to
    the controllers' webhook ports and Envoy data-plane traffic to the
    controller's xDS port. Match the installed manifests' labels and ports,
-   including both sides' policies. OCE's chart owns the separate API-to-Envoy
+   including both sides' policies. Include the private addresses of every EKS
+   control-plane network interface when allowing webhook callers; a single
+   Kubernetes Service endpoint or public DNS result may omit one. OCE's chart
+   owns the separate API-to-Envoy
    and Envoy-to-Agent rules; those rules do not provide controller bootstrap
    access. Require ready controllers before applying OCE's routing resources.
 3. Create the dedicated service-key Secret and set matching `gatewayRouting`
@@ -167,7 +180,7 @@ At **Configure the Installation**, apply these choices to the copied examples:
 
 | Input                                                                     | EKS setting                                                                                                                            |
 | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `values.yaml`: `controlPlane.nodeSelector`                                | Labels on the OCC managed node group.                                                                                                  |
+| `values.yaml`: `controlPlane.nodeSelector`                                | Labels on the OCC managed node group; also places the private Envoy proxy.                                                             |
 | `installation.yaml`: `drivers.compute.configuration.runtime.nodeSelector` | Labels on the Agent managed node group.                                                                                                |
 | `runtime.gatewayNodeSelector`                                             | Labels on the trusted OCC managed node group (`oce-role=control` in this guide). Keep its eligible nodes disjoint from the Agent pool. |
 | `runtime.gatewayStorageClassName`                                         | The EBS-backed gateway class.                                                                                                          |
@@ -176,6 +189,7 @@ At **Configure the Installation**, apply these choices to the copied examples:
 | `installation.yaml`: Compute `network`                                    | Actual DNS selectors; omit gateway clients with routing enabled. Keep API proxy sources when plugin status reporting is used.          |
 | Controller and runtime image references                                   | Published registry digests matching the node architecture.                                                                             |
 
+Install Envoy Gateway and cert-manager controllers on the trusted control pool.
 Configure both runtime selectors. `controlPlane.nodeSelector` places the OCC API
 and worker; it does not place dedicated Agent Gateways. Before provisioning an
 Agent, verify that `runtime.gatewayNodeSelector` and `runtime.nodeSelector` each

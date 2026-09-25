@@ -22,6 +22,10 @@ For caller permissions and file operations, see the
 | OCC API                   | Caller authorization, endpoint derivation through Compute, and native file RPCs using the mounted service key.                                                  |
 | OCC worker                | Native node enrollment through Compute, using the mounted service key and revision-owned enrollment Secrets.                                                    |
 
+The proxy Pods inherit `controlPlane.nodeSelector` from Helm values, keeping
+credential verification on the trusted OCC pool. Install the separately managed
+Envoy Gateway and cert-manager controllers on trusted nodes as well.
+
 The shared Gateway and certificate resources are in the Helm release namespace.
 Envoy's proxy Service and Pods are in `envoyNamespace`. Each Agent's HTTPRoute
 and gateway Service are in its Gateway runtime namespace for dedicated execution,

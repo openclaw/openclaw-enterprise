@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-09-21"
-last_updated_session: "authoring-run/fba2d7fa-6603-465e-a7c8-df0375ad202d"
+updated: "2026-09-24"
+last_updated_session: "01a0cf72-6985-7712-ba92-d8cc32470f24"
 ---
 
 # Production Startup Flow
@@ -161,7 +161,11 @@ When `controlPlane.nodeSelector` is non-empty, the chart places the API and
 worker Pods with that selector. The same selector applies to the initialization
 Job that runs the migration init container and bootstrap container, so production
 operators can keep migration, bootstrap, API, and worker Pods on a reviewed
-control-plane node pool. Empty chart defaults omit the field for clusters that do
+control-plane node pool.
+`deploy/helm/openclaw-enterprise/templates/gateway-routing.yaml` also projects
+that selector into `EnvoyProxy.spec.provider.kubernetes.envoyDeployment.pod`,
+so the credential-checking private proxy stays on the trusted pool.
+Empty chart defaults omit the field for clusters that do
 not label a dedicated control-plane pool. When `database.caSecretName` is set,
 API and worker also mount the CA Secret read-only at `database.caMountPath`.
 Tenant gateway and Agent placement remain in the selected Compute Driver
@@ -272,6 +276,8 @@ tenant deployment and TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-24 18:02: Trace private Envoy placement on the control-plane pool in the accompanying chart change. (01a0cf72-6985-7712-ba92-d8cc32470f24 - 92fb7cdfdf672fe476993e2cfd96a73a75c43ac2)
 
 - 2026-09-21 05:32: Reconcile accompanying platform credential documentation with current source history and native Git boundaries. (authoring-run/fba2d7fa-6603-465e-a7c8-df0375ad202d - a051a2406eec7cafde2e0dd5e2ec63dba6ce1581)
 

@@ -1235,7 +1235,9 @@ test(
     const serviceName = gatewayServiceName(gatewayNamespace, gatewayName);
     const hostname = defaultGatewayHostname(gatewayNamespace, gatewayName, envoyNamespace);
     const rootSecret = rootSecretName(gatewayNamespace, gatewayName);
-    const configured = await resources((await render(gatewayRoutingValues)).stdout);
+    const configured = await resources(
+      (await render({ ...gatewayRoutingValues, ...controlPlaneSelectorValues })).stdout,
+    );
     const alternateNamespace = "openclaw-alt";
     const alternateObjects = await resources(
       (await render(gatewayRoutingValues, { namespace: alternateNamespace })).stdout,
@@ -1297,6 +1299,10 @@ test(
     const envoyProxy = configured.find(({ kind }) => kind === "EnvoyProxy");
     assert.equal(envoyProxy.metadata.name, gatewayName);
     assert.equal(envoyProxy.metadata.namespace, gatewayNamespace);
+    // The credential-checking proxy must stay on the trusted control-plane pool.
+    assert.deepEqual(envoyProxy.spec.provider.kubernetes.envoyDeployment?.pod?.nodeSelector, {
+      "oce-role": "control",
+    });
     assert.deepEqual(envoyProxy.spec.provider.kubernetes.envoyService, {
       name: serviceName,
       type: "ClusterIP",
@@ -1566,6 +1572,7 @@ test(
       },
     });
     const envoyProxy = configured.find(({ kind }) => kind === "EnvoyProxy");
+    assert.equal(envoyProxy.spec.provider.kubernetes.envoyDeployment, undefined);
     assert.deepEqual(envoyProxy.spec.provider.kubernetes.envoyService, {
       name: serviceName,
       type: "ClusterIP",
