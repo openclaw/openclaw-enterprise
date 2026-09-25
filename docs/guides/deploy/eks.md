@@ -165,15 +165,23 @@ route-attachment label or old direct-API ingress rule.
 Follow [production installation](production-installation.md) in the same shell.
 At **Configure the Installation**, apply these choices to the copied examples:
 
-| Input                                                                     | EKS setting                                                                                                                   |
-| ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `values.yaml`: `controlPlane.nodeSelector`                                | Labels on the OCC managed node group.                                                                                         |
-| `installation.yaml`: `drivers.compute.configuration.runtime.nodeSelector` | Labels on the Agent managed node group.                                                                                       |
-| `runtime.gatewayStorageClassName`                                         | The EBS-backed gateway class.                                                                                                 |
-| `bootstrap-pvc.yaml`: `spec.storageClassName`                             | The protected EBS-backed bootstrap class.                                                                                     |
-| `values.yaml`: `database.cidrs`, `cluster.cidrs`                          | Exact database and API destination addresses observed from Pods, with reviewed ports in the corresponding values.             |
-| `installation.yaml`: Compute `network`                                    | Actual DNS selectors; omit gateway clients with routing enabled. Keep API proxy sources when plugin status reporting is used. |
-| Controller and runtime image references                                   | Published registry digests matching the node architecture.                                                                    |
+| Input                                                                     | EKS setting                                                                                                                            |
+| ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `values.yaml`: `controlPlane.nodeSelector`                                | Labels on the OCC managed node group.                                                                                                  |
+| `installation.yaml`: `drivers.compute.configuration.runtime.nodeSelector` | Labels on the Agent managed node group.                                                                                                |
+| `runtime.gatewayNodeSelector`                                             | Labels on the trusted OCC managed node group (`oce-role=control` in this guide). Keep its eligible nodes disjoint from the Agent pool. |
+| `runtime.gatewayStorageClassName`                                         | The EBS-backed gateway class.                                                                                                          |
+| `bootstrap-pvc.yaml`: `spec.storageClassName`                             | The protected EBS-backed bootstrap class.                                                                                              |
+| `values.yaml`: `database.cidrs`, `cluster.cidrs`                          | Exact database and API destination addresses observed from Pods, with reviewed ports in the corresponding values.                      |
+| `installation.yaml`: Compute `network`                                    | Actual DNS selectors; omit gateway clients with routing enabled. Keep API proxy sources when plugin status reporting is used.          |
+| Controller and runtime image references                                   | Published registry digests matching the node architecture.                                                                             |
+
+Configure both runtime selectors. `controlPlane.nodeSelector` places the OCC API
+and worker; it does not place dedicated Agent Gateways. Before provisioning an
+Agent, verify that `runtime.gatewayNodeSelector` and `runtime.nodeSelector` each
+match Ready nodes in their intended pools. A selector with no matching nodes
+leaves the corresponding workload Pending. For EBS-backed state, retain eligible
+capacity in the claim's availability zone when replacing nodes.
 
 EKS endpoint and RDS addresses can change. Maintain these exact egress rules
 through infrastructure updates and failover; VPC security groups do not replace

@@ -174,9 +174,11 @@ Edit the protected YAML copies before provisioning anything:
   Secret names and keys; otherwise update the Secret creation commands below.
 - `$OCC_INPUT_DIRECTORY/installation.yaml`: set `occ.cluster`, `logging.level`,
   `drivers.compute.configuration.images` digests, DNS selectors, matching
-  `gatewayRouting` settings, service-principal token settings, runtime selector, Secret
+  `gatewayRouting` settings, service-principal token settings, both runtime selectors, Secret
   prefixes, and `runtime.gatewayStorageClassName`. Keep
   `drivers.compute.configuration.images.requireImmutableDigest: true`.
+  Use disjoint Ready node pools for `runtime.gatewayNodeSelector` (trusted) and
+  `runtime.nodeSelector` (Harness). Helm's selector does not place runtimes.
   Do not set `network.gatewayClients` with routing enabled; Compute derives the
   Envoy peer from `gatewayRouting`.
   If enabling Agent plugins, set one compatible bundled `drivers.plugin` selector
@@ -191,8 +193,7 @@ Edit the protected YAML copies before provisioning anything:
 - `$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml`: set the bootstrap PVC name,
   namespace, size, and protected `storageClassName` for the cluster.
 
-Require all checks below, including Helm rendering, to pass before provisioning.
-API startup also validates shared-cookie domain compatibility:
+Require these checks before provisioning:
 
 ```bash
 yq e -e '.images.controller | test("@sha256:[a-f0-9]{64}$")' \
@@ -208,6 +209,7 @@ yq e -e '.drivers.compute.configuration.images.requireImmutableDigest == true an
   (.drivers.compute.configuration.images.gateway | test("@sha256:[a-f0-9]{64}$")) and
   (.drivers.compute.configuration.images.agent | test("@sha256:[a-f0-9]{64}$")) and
   .drivers.compute.configuration.runtime.gatewayStorageClassName != "" and
+  (.drivers.compute.configuration.runtime.gatewayNodeSelector | length > 0) and
   (.drivers.compute.configuration.runtime.nodeSelector | length > 0)' \
   "$OCC_INPUT_DIRECTORY/installation.yaml" >/dev/null
 yq e -e '.metadata.namespace == "openclaw-system" and .spec.storageClassName != ""' \

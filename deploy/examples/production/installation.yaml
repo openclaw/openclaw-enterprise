@@ -132,7 +132,7 @@ drivers:
         nodeSelector:
           oce-role: agents
         gatewayNodeSelector:
-          oce-role: control-plane
+          oce-role: control
         # Keep each Agent's transport tokens separate from its model API key.
         # See [Runtime credentials](../../../docs/reference/drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials).
         transportSecretPrefix: openclaw-agent-transport
