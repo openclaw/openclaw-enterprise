@@ -112,20 +112,22 @@ and clears token/model. API-key Harness changes preserve both. Credential edits
 preserve model selection. Select or enter a model before saving; the starter list
 does not prove runtime compatibility or provider acceptance.
 
-The model-discovery API remains available independently of Console model selection.
-It requires Namespace Agent `create`, sends credentials to the selected method's
-official API without saving them, and lists Codex models for `codex_pat`.
-For this API, OCC needs destination-scoped HTTPS egress to `api.openai.com:443`
-for OpenAI API keys, `api.anthropic.com:443` for Anthropic, or both
-`auth.openai.com:443` and `chatgpt.com:443` for service account tokens. Helm's
-default-deny policy does not grant these destinations. Operators must maintain
-provider IP CIDRs or use their cluster's FQDN policy support; standard NetworkPolicy
-does not accept DNS names. Console model selection does not require this discovery.
+The optional model-discovery API requires Namespace Agent `create`; it sends
+credentials upstream without saving them and lists Codex models for `codex_pat`.
+Console model selection does not require discovery.
 
-API failures distinguish rejected credentials/model-list permissions, rate limits,
-connectivity, and unsupported responses. Recovery guidance includes the request ID,
-never the raw provider response. A listing denial does not prove model execution
-is denied; manual entry remains available.
+Configure Helm `api.modelDiscoveryCidrs` with provider IPv4 `/32` hosts, then
+upgrade. This grants only API Pods TCP 443 egress; Harness rules are unchanged.
+Destinations: `api.openai.com` (OpenAI API key), `api.anthropic.com` (Anthropic),
+or `auth.openai.com` plus `chatgpt.com` (`codex_pat`). Defaults grant none.
+Operators must refresh addresses when DNS changes, or supply a cluster-specific
+FQDN policy. Standard NetworkPolicy cannot match DNS names or distinguish
+services sharing an IP.
+
+Failures distinguish credential/model-list rejection, rate limits, connectivity,
+and invalid responses. Errors include request IDs, never upstream response bodies.
+Listing rejection does not prove model execution is denied; manual entry remains
+available.
 
 These managed keys require a configured Secret Driver and compatible Compute.
 Kubernetes supports both providers; the current Docker development composition

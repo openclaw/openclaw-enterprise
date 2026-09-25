@@ -29,6 +29,8 @@ database:
     - 10.45.0.13/32
 
 api:
+  # Optional; see model discovery in docs/reference/console/create-and-deploy.md.
+  modelDiscoveryCidrs: []
   clients:
     - namespace: operator-tools
       podLabels:

@@ -1,6 +1,6 @@
 ---
 created: 2026-08-25
-updated: "2026-09-24"
+updated: "2026-09-25"
 last_updated_session: "01a0cf72-6985-7712-ba92-d8cc32470f24"
 ---
 
@@ -176,6 +176,13 @@ Kubernetes API egress to every `cluster.cidrs` host. Each entry must be an
 explicit IPv4 `/32`; operators must refresh the values when a managed database
 or API endpoint resolves to a different address set.
 
+`deploy/helm/openclaw-enterprise/templates/networkpolicies.yaml` also renders
+an API-only TCP 443 egress policy when `api.modelDiscoveryCidrs` contains
+provider IPv4 `/32` hosts. Empty defaults grant no provider egress. Operators
+maintain those addresses for the optional
+[model-discovery API](../reference/console/create-and-deploy.md#create-an-agent);
+Console model selection and Harness egress do not depend on this policy.
+
 The Kubernetes Compute Driver queries the API server version and verifies
 authenticated Namespace access. Kubernetes 1.35 or later is the supported
 baseline. An older server returns a structured preflight warning instead of
@@ -276,6 +283,8 @@ tenant deployment and TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-25 12:02: Document optional API model-discovery egress in the accompanying chart change. (01a0cf72-6985-7712-ba92-d8cc32470f24 - b2521074873ca46e1a5024248852a32b97cfc8a9)
 
 - 2026-09-24 18:02: Trace private Envoy placement on the control-plane pool in the accompanying chart change. (01a0cf72-6985-7712-ba92-d8cc32470f24 - 92fb7cdfdf672fe476993e2cfd96a73a75c43ac2)
 

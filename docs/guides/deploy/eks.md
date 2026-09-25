@@ -176,16 +176,17 @@ route-attachment label or old direct-API ingress rule.
 Follow [production installation](production-installation.md) in the same shell.
 At **Configure the Installation**, apply these choices to the copied examples:
 
-| Input                                                                     | EKS setting                                                                                                                            |
-| ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `values.yaml`: `controlPlane.nodeSelector`                                | Labels on the OCC managed node group; also places the private Envoy proxy.                                                             |
-| `installation.yaml`: `drivers.compute.configuration.runtime.nodeSelector` | Labels on the Agent managed node group.                                                                                                |
-| `runtime.gatewayNodeSelector`                                             | Labels on the trusted OCC managed node group (`oce-role=control` in this guide). Keep its eligible nodes disjoint from the Agent pool. |
-| `runtime.gatewayStorageClassName`                                         | The EBS-backed gateway class.                                                                                                          |
-| `bootstrap-pvc.yaml`: `spec.storageClassName`                             | The protected EBS-backed bootstrap class.                                                                                              |
-| `values.yaml`: `database.cidrs`, `cluster.cidrs`                          | Exact database and API destination addresses observed from Pods, with reviewed ports in the corresponding values.                      |
-| `installation.yaml`: Compute `network`                                    | Actual DNS selectors; omit gateway clients with routing enabled. Keep API proxy sources when plugin status reporting is used.          |
-| Controller and runtime image references                                   | Published registry digests matching the node architecture.                                                                             |
+| Input                                                                     | EKS setting                                                                                                                                                                         |
+| ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `values.yaml`: `controlPlane.nodeSelector`                                | Labels on the OCC managed node group; also places the private Envoy proxy.                                                                                                          |
+| `installation.yaml`: `drivers.compute.configuration.runtime.nodeSelector` | Labels on the Agent managed node group.                                                                                                                                             |
+| `runtime.gatewayNodeSelector`                                             | Labels on the trusted OCC managed node group (`oce-role=control` in this guide). Keep its eligible nodes disjoint from the Agent pool.                                              |
+| `runtime.gatewayStorageClassName`                                         | The EBS-backed gateway class.                                                                                                                                                       |
+| `bootstrap-pvc.yaml`: `spec.storageClassName`                             | The protected EBS-backed bootstrap class.                                                                                                                                           |
+| `values.yaml`: `database.cidrs`, `cluster.cidrs`                          | Exact database and API destination addresses observed from Pods, with reviewed ports in the corresponding values.                                                                   |
+| `values.yaml`: `api.modelDiscoveryCidrs`                                  | Optional provider IPv4 `/32` hosts for the [model-discovery API](../../reference/console/create-and-deploy.md#create-an-agent). Console model selection does not require discovery. |
+| `installation.yaml`: Compute `network`                                    | Actual DNS selectors; omit gateway clients with routing enabled. Keep API proxy sources when plugin status reporting is used.                                                       |
+| Controller and runtime image references                                   | Published registry digests matching the node architecture.                                                                                                                          |
 
 Install Envoy Gateway and cert-manager controllers on the trusted control pool.
 Configure both runtime selectors. `controlPlane.nodeSelector` places the OCC API
