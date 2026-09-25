@@ -5068,6 +5068,134 @@ test("Agent credentials finish Slack Secret grants after navigating away from sa
   );
 });
 
+test("Agent credentials retry outstanding Slack Secret grants after changing one token", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Runtime Slack retained grant", { ready: true });
+  const modelSecret = await fixture.createSecret(
+    namespace.id,
+    "Retained grant model credential",
+    "hidden-retained-model",
+  );
+  const firstAppSecret = await fixture.createSecret(
+    namespace.id,
+    "First retained Slack app token",
+    "hidden-retained-first-app",
+  );
+  const secondAppSecret = await fixture.createSecret(
+    namespace.id,
+    "Second retained Slack app token",
+    "hidden-retained-second-app",
+  );
+  const botSecret = await fixture.createSecret(
+    namespace.id,
+    "Retained Slack bot token",
+    "hidden-retained-bot",
+  );
+  const slack = {
+    enabled: true,
+    mode: "socket",
+    appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+    botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+    channels: { CRETRYGRANT123: { requireMention: true } },
+  };
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Runtime Slack Retained Grant Agent",
+    nativeValues("runtime-slack-retained-grant", { harnessId: "codex", channels: { slack } }),
+    { executionMode: "dedicated", harnessAuth: { method: "api_key", source: modelSecret.ref } },
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await routeRuntimeCredentials(page, fixture, namespace.id, agent.id, {
+    transportConfigured: true,
+  });
+  let denyGrant = true;
+  let rejectNextConfigurationPatch = false;
+  await page.route(
+    `**/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+    async (route, request) => {
+      if (request.method() === "PATCH" && rejectNextConfigurationPatch) {
+        rejectNextConfigurationPatch = false;
+        await route.fulfill({
+          status: 409,
+          contentType: "application/json",
+          body: JSON.stringify({
+            error: { code: "CONFLICT", message: "simulated stale configuration" },
+            meta: { requestId: "req_00000000-0000-4000-8000-000000000834" },
+          }),
+        });
+        return;
+      }
+      await route.continue();
+    },
+  );
+  await page.route(`**/namespaces/${namespace.id}/iam/access-bindings`, async (route, request) => {
+    if (request.method() !== "POST" || !denyGrant) {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 403,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "ACCESS_DENIED", message: "masked IAM denial" },
+        meta: { requestId: "req_00000000-0000-4000-8000-000000000833" },
+      }),
+    });
+  });
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "credentials");
+
+  await login(page, fixture, url.pathname + url.search);
+  await page.getByRole("heading", { name: "Runtime Slack Retained Grant Agent" }).waitFor();
+  requests.length = 0;
+  await page.getByLabel("Slack app token").selectOption(firstAppSecret.id);
+  await page.getByLabel("Slack bot token").selectOption(botSecret.id);
+  await page.getByRole("button", { name: "Save channel Secrets" }).click();
+  await page.getByText("Resolve the saved Secret access grant before deploying.").waitFor();
+  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), true);
+
+  const firstConfiguration = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+  );
+  assert.deepEqual(firstConfiguration.data.secretBindings, {
+    SLACK_APP_TOKEN: { source: firstAppSecret.ref, delivery: { type: "env" } },
+    SLACK_BOT_TOKEN: { source: botSecret.ref, delivery: { type: "env" } },
+  });
+
+  denyGrant = false;
+  rejectNextConfigurationPatch = true;
+  await page.getByLabel("Slack app token").selectOption(secondAppSecret.id);
+  await page.getByText("Resolve the saved Secret access grant before deploying.").waitFor();
+  await page.getByRole("button", { name: "Save channel Secrets" }).click();
+  await page.getByText("Resolve the saved Secret access grant before deploying.").waitFor();
+  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), true);
+
+  requests.length = 0;
+  await page.getByLabel("Slack app token").selectOption(secondAppSecret.id);
+  await page.getByRole("button", { name: "Save channel Secrets" }).click();
+  await page
+    .getByText("Channel Secret bindings saved. Deploy the new revision to deliver them.")
+    .waitFor();
+
+  const finalConfiguration = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+  );
+  assert.deepEqual(finalConfiguration.data.secretBindings, {
+    SLACK_APP_TOKEN: { source: secondAppSecret.ref, delivery: { type: "env" } },
+    SLACK_BOT_TOKEN: { source: botSecret.ref, delivery: { type: "env" } },
+  });
+  assert.deepEqual(
+    accessBindingPostRequests(requests, namespace.id)
+      .map((request) => request.body.resourceId)
+      .sort(),
+    [botSecret.id, secondAppSecret.id].sort(),
+  );
+  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), false);
+});
+
 // A persisted binding must remain blocked for both permission denials and retryable IAM failures.
 for (const grantStatus of [403, 429]) {
   test(`Agent credentials report partial Slack Secret grant failure (${grantStatus})`, async (t) => {
@@ -5136,7 +5264,7 @@ for (const grantStatus of [403, 429]) {
       .waitFor();
     assert.equal(
       await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(),
-      true,
+      false,
     );
     await page.getByText("Resolve the saved Secret access grant before deploying.").waitFor();
     assert.equal(

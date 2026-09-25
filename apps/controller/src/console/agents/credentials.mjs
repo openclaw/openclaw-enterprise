@@ -159,6 +159,7 @@ export function createRuntimeCredentialsPanel({
     saveError: null,
     saveMessage: "",
     saveGrantWarning: "",
+    pendingSecretGrants: {},
     outcomeUnknown: false,
   };
   const section = element("section", { className: "agent-card runtime-credentials" });
@@ -175,6 +176,51 @@ export function createRuntimeCredentialsPanel({
       slackEnabled(state.values) &&
       servicePrincipalId(state.agent) !== null
     );
+  }
+
+  function grantWarning() {
+    return "Configuration saved, but Secret access grants could not be confirmed. Ask a Namespace administrator to grant this Agent access to the saved Secret.";
+  }
+
+  function referencedSecretIds(secretBindings) {
+    return new Set(
+      SLACK_SECRET_BINDINGS.map((binding) =>
+        secretIdForBinding(secretBindings?.[binding.key]),
+      ).filter((id) => id !== null),
+    );
+  }
+
+  function pendingSecretGrants(secretBindings = state.configuration.secretBindings ?? {}) {
+    const referencedIds = referencedSecretIds(secretBindings);
+    return Object.values(state.pendingSecretGrants).filter((secret) =>
+      referencedIds.has(secret.id),
+    );
+  }
+
+  function prunePendingSecretGrants(secretBindings = state.configuration.secretBindings ?? {}) {
+    state.pendingSecretGrants = Object.fromEntries(
+      pendingSecretGrants(secretBindings).map((secret) => [secret.id, secret]),
+    );
+  }
+
+  function updateGrantWarning(secretBindings = state.configuration.secretBindings ?? {}) {
+    prunePendingSecretGrants(secretBindings);
+    state.saveGrantWarning = pendingSecretGrants(secretBindings).length ? grantWarning() : "";
+  }
+
+  function secretGrantTargets(secretBindings, changedSecrets) {
+    prunePendingSecretGrants(secretBindings);
+    for (const binding of SLACK_SECRET_BINDINGS) {
+      const secret = changedSecrets[binding.key];
+      if (secret?.id && secretIdForBinding(secretBindings?.[binding.key]) === secret.id) {
+        state.pendingSecretGrants[secret.id] = secret;
+      }
+    }
+    return Object.values(state.pendingSecretGrants);
+  }
+
+  function markSecretGrantConfirmed(secret) {
+    delete state.pendingSecretGrants[secret.id];
   }
 
   function canDeploy() {
@@ -324,8 +370,8 @@ export function createRuntimeCredentialsPanel({
           draft.changedSecrets = { ...draft.changedSecrets, [binding.key]: secret };
           state.saveError = null;
           state.saveMessage = "";
-          state.saveGrantWarning = "";
-          error.textContent = "";
+          updateGrantWarning();
+          error.textContent = state.saveGrantWarning;
           status.textContent = "";
           updateControls();
         },
@@ -345,6 +391,7 @@ export function createRuntimeCredentialsPanel({
     }
     const updateControls = () => {
       const changedSecrets = Object.values(draft.changedSecrets);
+      const pendingSecrets = pendingSecretGrants();
       const missing = SLACK_SECRET_BINDINGS.filter(
         (binding) =>
           slackBindingState({ secretBindings: draft.secretBindings }, binding) === "missing",
@@ -358,7 +405,7 @@ export function createRuntimeCredentialsPanel({
         !canEnterChannelCredentials() ||
         state.outcomeUnknown ||
         missing.length > 0 ||
-        changedSecrets.length === 0;
+        (changedSecrets.length === 0 && pendingSecrets.length === 0);
     };
     const form = element(
       "form",
@@ -381,7 +428,8 @@ export function createRuntimeCredentialsPanel({
           slackBindingState({ secretBindings: draft.secretBindings }, binding) === "missing",
       );
       const changedSecrets = Object.values(draft.changedSecrets);
-      if (missing.length > 0 || changedSecrets.length === 0) {
+      const pendingSecrets = pendingSecretGrants();
+      if (missing.length > 0 || (changedSecrets.length === 0 && pendingSecrets.length === 0)) {
         return;
       }
       state.saving = true;
@@ -407,8 +455,10 @@ export function createRuntimeCredentialsPanel({
         configurationSaved = true;
         state.values = state.configuration.values;
         onConfigurationChange?.(state.configuration);
-        for (const secret of changedSecrets) {
+        const grantTargets = secretGrantTargets(draft.secretBindings, draft.changedSecrets);
+        for (const secret of grantTargets) {
           await ensureSecretOperateBinding(context, state.agent, secret);
+          markSecretGrantConfirmed(secret);
         }
         if (!context.isCurrent()) {
           return;
@@ -429,11 +479,10 @@ export function createRuntimeCredentialsPanel({
         state.saveError = cause;
         state.saveMessage = "";
         state.outcomeUnknown =
-          (mutationStarted && ![400, 403, 404, 409, 429].includes(cause.status)) ||
-          configurationSaved;
-        state.saveGrantWarning = configurationSaved
-          ? "Configuration saved, but Secret access grants could not be confirmed. Ask a Namespace administrator to grant this Agent access to the saved Secret."
-          : "";
+          mutationStarted &&
+          !configurationSaved &&
+          ![400, 403, 404, 409, 429].includes(cause.status);
+        updateGrantWarning(state.configuration.secretBindings);
         status.textContent = "";
         error.textContent = state.saveGrantWarning || credentialError(cause, true);
       } finally {

@@ -56,15 +56,13 @@ graph TD
 
 `apps/controller/src/console/agents/detail.mjs:renderAgentDetail`
 
-The detail page reads the Agent, revision list, and either the current Configuration in **New revision** or the selected AgentRevision. `revision=draft` reads the current
-Configuration referenced by the Agent. `revision=<id>` reads that immutable
-snapshot. The Selected revision badge is derived from `activeRevisionId`; the
-newest revision and the viewed snapshot can both differ from that pointer.
-The revision view reads persisted deployment status and startup failures; it
-does not render a live serving-health indicator. Revision snapshots are read-only;
-**Edit current Configuration** navigates to the current draft without copying
-historical values. Snapshots do not expose rollback, deploy, or live-health controls.
-Stopping and deletion apply to the Agent itself, regardless of the viewed revision or tab.
+The detail page reads the Agent, revisions, and either its current Configuration
+(`revision=draft`) or an immutable AgentRevision (`revision=<id>`). The Selected
+revision badge uses `activeRevisionId`, which may differ from the newest or viewed
+revision. Snapshots show persisted deployment status and failures, not live health.
+They are read-only and offer no rollback or deployment controls. **Edit current
+Configuration** opens the current draft without copying historical values.
+Stop and deletion always target the Agent.
 
 In the draft Configuration tab, **Edit Configuration** opens the native JSON
 editor. It accepts an object and submits only `{ values }` to the existing exact
@@ -94,9 +92,8 @@ Configuration and authentication snapshots retain their original save baselines,
 so fresh reads on reentry cannot silently authorize overwriting concurrent edits.
 Channel snapshots retain their opening generation, raw controls, and staged Secret
 metadata; a changed baseline disables Save until Cancel discards the drawer.
-Successful saves forget their capture before navigation. Cancel and explicit
-editor reload discard edits; navigation during a pending save retains an
-unknown-outcome guard rather than replaying the request.
+Successful saves forget captures. Cancel and reload discard edits; pending-save
+navigation retains an unknown-outcome guard.
 
 `apps/controller/src/console/channels.mjs:renderChannels` renders supported
 Slack channel settings in **New revision** only. Slack uses fixed unresolved
@@ -215,14 +212,14 @@ Secrets, shows the current Secret reference by name when metadata is readable,
 falls back to the bound Secret ID when metadata is unavailable, and can create a
 new Namespace Secret without reading any existing value back.
 
-On explicit submission, the browser PATCHes the Configuration with the selected
-Secret references and then calls `ensureSecretOperateBinding` for the changed
-Secrets. The Configuration PATCH preserves other bindings. These are separate
-writes; an access-grant failure after the PATCH leaves the new binding saved,
-shows a partial-success warning, and blocks deployment from the current view
-until the operator repairs access or refreshes. Secret value rotation remains a
-separate Secret operation; changing the picker switches references rather than
-overwriting a shared Secret value.
+On explicit submission, the browser PATCHes selected Secret references while
+preserving other bindings, then calls `ensureSecretOperateBinding` for changed
+and pending Secrets. A post-PATCH grant failure leaves bindings saved and blocks
+deployment in the current view. Subsequent saves retry still-referenced pending
+grants. Picker edits and rejected PATCHes preserve that warning; only a confirmed
+grant or confirmed removal of its reference clears the pending Secret. Explicit
+refresh resets local outcome tracking; the API always enforces Secret access.
+Pickers switch references; shared Secret value rotation remains a separate operation.
 
 ### 6. Read and replace live workspace files
 
