@@ -162,7 +162,7 @@ yq -i '.drivers.compute.configuration.images.gateway = strenv(RUNTIME_IMAGE) |
   "$OCC_INPUT_DIRECTORY/installation.yaml"
 ```
 
-Edit the protected YAML copies before provisioning anything:
+Edit the protected YAML copies:
 
 - `$OCC_INPUT_DIRECTORY/values.yaml`: set `images.controller`,
   `auth.baseUrl`, `bootstrap.adminEmail`, `database.cidrs`, `cluster.cidrs`,
@@ -174,11 +174,11 @@ Edit the protected YAML copies before provisioning anything:
   Secret names and keys; otherwise update the Secret creation commands below.
 - `$OCC_INPUT_DIRECTORY/installation.yaml`: set `occ.cluster`, `logging.level`,
   `drivers.compute.configuration.images` digests, DNS selectors, matching
-  `gatewayRouting` settings, service-principal token settings, both runtime selectors, Secret
+  `gatewayRouting` settings, service-principal token settings, Secret
   prefixes, and `runtime.gatewayStorageClassName`. Keep
   `drivers.compute.configuration.images.requireImmutableDigest: true`.
-  Use disjoint Ready node pools for `runtime.gatewayNodeSelector` (trusted) and
-  `runtime.nodeSelector` (Harness). Helm's selector does not place runtimes.
+  Set `runtime.gatewayNodeSelector` (trusted) and `runtime.nodeSelector` (Harness)
+  to disjoint Ready pools; Helm does not place runtimes.
   Do not set `network.gatewayClients` with routing enabled; Compute derives the
   Envoy peer from `gatewayRouting`.
   If enabling Agent plugins, set one compatible bundled `drivers.plugin` selector
@@ -193,8 +193,8 @@ Edit the protected YAML copies before provisioning anything:
 - `$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml`: set the bootstrap PVC name,
   namespace, size, and protected `storageClassName` for the cluster.
 
-Require all checks below, including Helm rendering, to pass before provisioning.
-API startup also validates shared-cookie domain compatibility:
+Run every check below, including Helm rendering, before provisioning.
+API startup checks shared-cookie domain compatibility:
 
 ```bash
 yq e -e '.images.controller | test("@sha256:[a-f0-9]{64}$")' \
