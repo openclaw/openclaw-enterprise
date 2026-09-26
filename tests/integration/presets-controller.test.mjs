@@ -483,7 +483,7 @@ test("standard Codex Preset installs and creates a dedicated Agent with restrict
   const catalog = await fixture.request("GET", collection(namespace.id));
   assert.equal(catalog.status, 200);
   const preset = catalog.data.find(({ id }) => id === installed.data.id);
-  assert.equal(preset.name, "standard-codex");
+  assert.equal(preset.name, "Standard Codex");
   // PATCH accepts the same portable request and binds it to the route Namespace.
   const updated = await fixture.request("PATCH", `${collection(namespace.id)}/${preset.id}`, {
     body: { template: artifact.template },
@@ -605,7 +605,7 @@ test("standard OpenClaw Preset installs and creates an embedded Agent with nativ
   const catalog = await fixture.request("GET", collection(namespace.id));
   assert.equal(catalog.status, 200);
   const preset = catalog.data.find(({ id }) => id === installed.data.id);
-  assert.equal(preset.name, "standard-openclaw");
+  assert.equal(preset.name, "Standard OpenClaw");
   const rendered = renderPresetTemplate(preset.template, {
     name: "Native assistant",
     model: "gpt-6-sol",
@@ -819,9 +819,9 @@ test("Installation YAML seeds authorized default Presets for new and existing Na
   const namespace = await fixture.createNamespace("Default catalog", { ready: true });
   const list = await fixture.request("GET", collection(namespace.id));
   assert.equal(list.status, 200);
-  const defaultNames = [customPreset.name, "standard-codex", "standard-openclaw"].sort();
+  const defaultNames = [customPreset.name, "Standard Codex", "Standard OpenClaw"].sort();
   assert.deepEqual(list.data.map((preset) => preset.name).sort(), defaultNames);
-  const standardCodex = list.data.find((preset) => preset.name === "standard-codex");
+  const standardCodex = list.data.find((preset) => preset.name === "Standard Codex");
   assert.equal(standardCodex.template.variables.modelSecret.type, "password");
   const customDefault = list.data.find((preset) => preset.name === customPreset.name);
   assert.ok(customDefault, `missing ${customPreset.name}`);
@@ -833,7 +833,7 @@ test("Installation YAML seeds authorized default Presets for new and existing Na
     false,
   );
   assert.equal(customDefault.template.configuration.values.plugins.entries.slack.enabled, true);
-  const openclaw = list.data.find((preset) => preset.name === "standard-openclaw");
+  const openclaw = list.data.find((preset) => preset.name === "Standard OpenClaw");
   assert.equal(openclaw.template.agent.executionMode, "embedded");
   assert.equal(openclaw.template.agent.harnessAuth.method, "api_key");
   assert.equal(

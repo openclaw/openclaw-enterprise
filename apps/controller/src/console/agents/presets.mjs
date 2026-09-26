@@ -398,7 +398,11 @@ export function createPresetFields(context, apply) {
         return;
       }
       selector.append(
-        ...presets.map((preset) => element("option", { value: preset.id }, preset.name)),
+        ...presets
+          .toSorted((left, right) =>
+            left.name.localeCompare(right.name, undefined, { sensitivity: "base" }),
+          )
+          .map((preset) => element("option", { value: preset.id }, preset.name)),
       );
       selector.disabled = false;
       if (retained && presets.some((preset) => preset.id === retained.id)) {

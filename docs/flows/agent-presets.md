@@ -17,7 +17,7 @@ continues through [revision admission](configuration-driver/persistence-and-revi
 
 - [Installation loader](../../apps/controller/src/composition/installation-config.ts):
   `loadInstallationConfiguration` reads `presets.includeDefaults` and `presets.files`.
-  Bundled defaults are `standard-codex` and `standard-openclaw`; custom DevDay
+  Bundled defaults are **Standard Codex** and **Standard OpenClaw**; custom DevDay
   files are loaded only when explicitly listed. Production and PostgreSQL development composition pass generic
   name/template definitions to OCC and call `initializeDefaultPresets`.
 
@@ -138,6 +138,7 @@ keys, and preserves runtime placeholders and unresolved SecretRefs.
 Rendering makes no requests and fetches no credentials. On success, the chooser
 is replaced by the ordinary Agent form; the form keeps only the rendered
 settings and, when selected, ephemeral existing-Secret metadata for access grants.
+The chooser lists Presets alphabetically by display name.
 Password values move into the ordinary masked credential input; the
 chooser clears its detached password controls. Preset updates or deletion cannot alter them. Before saving,
 **Start over** discards the unsaved draft after confirmation and opens a fresh

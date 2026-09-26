@@ -22,7 +22,7 @@ presets:
     - presets/devday-partners.json
 ```
 
-`includeDefaults: true` seeds exactly `standard-codex` and `standard-openclaw`.
+`includeDefaults: true` seeds exactly **Standard Codex** and **Standard OpenClaw**.
 Omitting it or setting it to `false` disables both bundled Presets; explicit
 `files` still load. Each JSON file contains one
 `{ "name": "...", "template": { ... } }` object. Relative file paths resolve beside
@@ -54,19 +54,19 @@ Both bundled presets ask for an Agent name, model ID, and masked model API key.
 They share the gateway defaults and disabled browser, elevated tools, and web
 fetch settings.
 
-| Preset                                                             | Harness  | Execution mode | Model reference  |
-| ------------------------------------------------------------------ | -------- | -------------- | ---------------- |
-| `standard-codex`                                                   | Codex    | Dedicated      | `codex/<model>`  |
-| [`standard-openclaw`](../../deploy/presets/standard-openclaw.json) | OpenClaw | Embedded       | `openai/<model>` |
+| Preset                                                               | Harness  | Execution mode | Model reference  |
+| -------------------------------------------------------------------- | -------- | -------------- | ---------------- |
+| **Standard Codex**                                                   | Codex    | Dedicated      | `codex/<model>`  |
+| [**Standard OpenClaw**](../../deploy/presets/standard-openclaw.json) | OpenClaw | Embedded       | `openai/<model>` |
 
 OpenClaw uses the ordinary OpenAI provider endpoint and native harness. It does
 not load the Codex plugin, its app-server configuration, or its hosted cached-search override. The Codex-specific
-sandbox and network proxy settings therefore apply only to `standard-codex`.
+sandbox and network proxy settings therefore apply only to **Standard Codex**.
 
 ## DevDay custom presets
 
 [`SWE Agent`](../../deploy/presets/devday.json) copies
-`standard-codex` and adds Slack Socket Mode with four prefilled channels.
+**Standard Codex** and adds Slack Socket Mode with four prefilled channels.
 It uses the Codex harness with **Service Accounts** authentication (`codex_pat`).
 The `model` variable defaults to `gpt-6-astra` and remains editable; its rendered
 model reference is `codex/gpt-6-astra`. All four DevDay presets expose only `name`
