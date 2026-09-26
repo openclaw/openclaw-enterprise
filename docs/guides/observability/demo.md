@@ -367,19 +367,19 @@ failed reads or ambiguity. An install may leave objects without a release record
 or outside its latest manifest; account for those separately.
 
 Once OCC and external exporters no longer depend on the demo, if the release
-exists, a qualified operator must establish its ownership and revision, inspect
-its latest manifest, pre/post-delete hooks, their policies and effects, and
+exists, a qualified operator must establish ownership and revision, inspect
+its latest manifest, pre/post-delete hooks, policies and effects, and
 every live object Helm can delete. Confirm unchanged release and object UIDs and
-exclude other writers. Then run
-`helm uninstall demo -n oce-observability-demo --wait --timeout 5m` once. If it
-fails or is interrupted, reconcile without retrying. If the release is confirmed
-absent, skip uninstall. Verify the release and its resources are gone. Remove
-separately created or leftover resources only after
-proving creation, current UID and no references, using Kubernetes API deletion
-with a UID precondition. Check the namespace UID, contents, finalizers and
-dependencies before deleting it. Retain anything unproved. After verified cleanup,
-start again only with an owned, clean namespace and an unreserved release name.
-If either cannot be reconciled, use fresh names; keep the backup until verified.
+exclude other writers. Run `helm uninstall demo -n oce-observability-demo --wait
+--timeout 5m` once; if confirmed absent, skip uninstall.
+Reconcile failures or interruptions without retrying. Verify the release and
+resources are gone. For separately created or leftover resources, prove creation,
+current UID and no references before deleting through the Kubernetes API with a
+UID precondition. Check the namespace UID, contents, finalizers and dependencies
+before deleting it. Retain anything unproved. Start again only with an owned,
+clean namespace and an unreserved release name. If either cannot be reconciled,
+use fresh names and retain the backup. Otherwise, after verified cleanup, confirm
+`$OBS_FILES` names the setup directory, delete it, and unset it.
 
 ## Remove only the demo
 
