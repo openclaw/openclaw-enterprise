@@ -5,6 +5,8 @@ Compute fleet in the same k3d cluster. This procedure retains PostgreSQL,
 Namespaces, Agents, revision history, Secrets, and Agent workspace and gateway
 PersistentVolumeClaims (PVCs). Take verified backups first: retaining a volume is
 not a backup, and migrations or runtime changes can make rollback unsafe.
+Complete the [upgrade migration checklist](upgrade-checklist.md) before using
+this procedure.
 
 This path requires the production Helm chart, Kubernetes Compute, and a trusted
 HTTPS OCC endpoint. The [production image upgrade](production-upgrade.md) owns

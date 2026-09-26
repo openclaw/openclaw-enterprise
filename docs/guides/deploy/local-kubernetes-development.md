@@ -224,6 +224,14 @@ checkout:
 ./scripts/dev-up
 ```
 
+This cleanup path discards the owned Installation; it is not an in-place
+upgrade. For a persistent Helm-installed k3d environment, complete the
+[upgrade migration checklist](upgrade-checklist.md) and then follow the
+[local k3d image upgrade procedure](local-k3d-image-upgrade.md). A custom
+retained Compose or Compose-and-k3d profile has no supported in-place upgrade
+command. Use the checklist as its operator inventory and maintain a reviewed
+procedure for that topology.
+
 Use a different `OCC_DEVELOPMENT_STATE_DIRECTORY`, `OPENCLAW_DEV_PORT`,
 `OCC_DEVELOPMENT_KUBERNETES_API_PORT`, and
 `OCC_DEVELOPMENT_KUBERNETES_CLUSTER` for each concurrent environment. Startup

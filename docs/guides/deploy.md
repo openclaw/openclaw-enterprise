@@ -77,10 +77,12 @@ Follow these pages in order in the same operator shell:
    offers a TUI and an HTTP check using the optional loopback password on
    Kubernetes trusted-proxy gateways.
 
-For an installed production release, use [production image upgrades](deploy/production-upgrade.md)
-to release the control plane without replacing Agent revisions, or to update
-Agent runtimes and redeploy the running fleet. Runtime releases require an
-interruption window. For a persistent Helm installation on k3d, use
+Before upgrading a retained installation, complete the
+[upgrade migration checklist](deploy/upgrade-checklist.md). Then use
+[production image upgrades](deploy/production-upgrade.md) to release the
+control plane without replacing Agent revisions, or to update Agent runtimes
+and redeploy the running fleet. Runtime releases require an interruption
+window. For a persistent Helm installation on k3d, use
 [local k3d image upgrades](deploy/local-k3d-image-upgrade.md).
 
 For ongoing business operation, use [production handoff](deploy/production-handoff.md)

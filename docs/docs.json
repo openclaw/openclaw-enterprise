@@ -391,6 +391,10 @@
                     "label": "Control Plane Setup"
                   },
                   {
+                    "page": "guides/deploy/upgrade-checklist",
+                    "label": "Upgrade Checklist"
+                  },
+                  {
                     "page": "guides/deploy/production-upgrade",
                     "label": "Image Upgrades"
                   },

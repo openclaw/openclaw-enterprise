@@ -11,6 +11,9 @@ Use `scripts/upgrade-production-images` to release the OpenClaw Control Plane
 
 Runtime upgrades restart the fleet concurrently. Schedule an interruption
 window and provide enough capacity for old and replacement revisions to overlap.
+Before either kind of release, complete the
+[upgrade migration checklist](upgrade-checklist.md) so persisted control-plane,
+Driver, runtime, and cluster-owned state has an explicit disposition.
 
 The command supports the production Helm and Kubernetes Compute path. It does
 not build images, create backups, provision infrastructure, or prove model and
