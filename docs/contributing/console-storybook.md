@@ -157,7 +157,7 @@ Create Agent, Agent detail, and Settings during delayed reads. Exercise breadcru
 sidebar links, Back/Forward, Refresh, and refocus. First visits may load; returning
 pages should preserve content while revalidating. Namespace switches clear old rows.
 
-**Return access denied** and **Return session expired** must remove retained private
+**Return Backend access denied** checks Installation-wide denial. **Return access denied** and **Return session expired** must remove retained private
 content when the response arrives. These fixtures prove presentation; the
 [browser suite](../testing/local.md#console-browser-checks) owns authorization proof.
 Reset story clears retained state.

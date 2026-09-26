@@ -1,6 +1,6 @@
 ---
 created: 2026-09-01
-updated: 2026-09-25
+updated: 2026-09-26
 last_updated_session: 01a0d992-db83-7843-b40c-355c0f2c2b9a
 ---
 
@@ -258,16 +258,17 @@ preflight. Session expiry still clears the whole private view.
 `apps/controller/src/console/console.mjs:loadPage`, `logout`
 
 Page/revision navigation, Namespace changes, refocus, and logout invalidate prior
-reads. Generation checks reject late success and failure. Retained content stays
-visible while session, Namespace, and exact page reads run; successful reads
-replace the preview. The draft store restores ordinary edits with their original
-save baselines. Namespace selection never reuses another scope's rows.
+reads. Generation checks reject late responses. Previews remain during session,
+Namespace, and exact page reads until fresh results arrive. Drafts restore edits
+with their original save baselines. Namespace selection never reuses another
+scope's rows.
 
 Authorization and dependency failures clear affected content and expose recovery;
 a current protected `401` clears all private state immediately. `pagehide` clears
 private DOM, previews, and drafts even for BFCache; persisted `pageshow` performs
 a fresh load. Failure views show local reasons and bounded request IDs, never
-backend error text. Backends and Namespaces remain Installation-wide.
+backend error text. Backend authorization denial clears every retained preview,
+including other Namespace selections, because the permission is Installation-wide.
 
 The [detail action flow](platform-console/agent-editing.md#stop-agent) traces
 confirmed Stop and Delete requests and their exact permission checks. Acceptance

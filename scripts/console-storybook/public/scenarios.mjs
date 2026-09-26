@@ -409,6 +409,22 @@ export const scenarios = {
       "Observe the retained list while the response is pending, then the access-denied state. Retry must not restore the old rows.",
     ],
   },
+  navigationBackendDenied: {
+    group: "Pages/Navigation",
+    name: "Return Backend access denied",
+    path: "/console/backends?namespace=ns_00000000-0000-4000-8000-000000000001",
+    rules: [
+      { path: "/backends", skip: 2, delayMs: 1200, status: 403 },
+      { path: "/api/auth/session", skip: 3, delayMs: 1200 },
+    ],
+    description:
+      "An Installation-wide Backend denial invalidates previews under every Namespace selection.",
+    steps: [
+      "Wait for Backends, select Research, and wait for the Backend row again.",
+      "Select Refresh and wait for Access denied, then use browser Back to return to Engineering.",
+      "Confirm the previous Backend row stays absent while the session check runs and the denied state returns.",
+    ],
+  },
   navigationExpired: {
     group: "Pages/Navigation",
     name: "Return session expired",

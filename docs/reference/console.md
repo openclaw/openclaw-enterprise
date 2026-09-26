@@ -45,12 +45,12 @@ read. Model provider and API-key setup are part of Agent creation; the separate
 The console uses a light appearance. Its fonts are served by OCC;
 no external font service is required.
 
-Returning to a loaded page keeps its previous content visible while session,
-Namespace, and resource reads run. Navigation stays available; resource controls
-wait for fresh authorization. First visits still load. Previews stay only in this
-document, scoped to the account, session, route, and Namespace. Sign-out, session
-changes, and leaving the document clear them. Failed reads replace affected
-content with recovery rather than treating it as current data.
+Returning pages retain content during session, Namespace, and resource checks.
+Navigation remains available; resource controls await authorization. First visits
+still load. Previews are document-local and scoped to account, session, route,
+and Namespace. Sign-out, session changes, and leaving the document clear them.
+Failed reads show recovery. Backend access denial clears all previews because
+authorization is Installation-wide.
 
 Use the **Namespace** selector in the page header to switch scope on desktop or
 mobile. It lists readable Namespaces and shows the current selection. The

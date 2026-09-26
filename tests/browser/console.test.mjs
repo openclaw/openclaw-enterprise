@@ -670,6 +670,37 @@ test("known Namespace revocation invalidates a cached global collection with ano
   await expectNoText(page, /Removed from access/);
 });
 
+test("known Backend denial invalidates previews across Namespace selections", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const alpha = await fixture.createNamespace("Backend Alpha", { ready: true });
+  await fixture.createNamespace("Backend Beta", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/backends?namespace=${alpha.id}`);
+  await page.getByText("openai-primary", { exact: true }).waitFor();
+  await chooseNamespace(page, "Backend Beta");
+  await page.getByText("openai-primary", { exact: true }).waitFor();
+  fixture.policy.restrictions.push({
+    id: "deny-backend-administration",
+    resourceKind: "installation",
+    action: "administer",
+    effect: "deny",
+  });
+  // Backend authorization is global even though the two cached URLs select different Namespaces.
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.getByRole("heading", { name: "Access denied", exact: true }).waitFor();
+  const pending = await holdRoute(t, page, "**/api/auth/session", (route, response) =>
+    response ? route.fulfill({ response }) : route.continue(),
+  );
+  t.after(() => pending.release());
+  await page.goBack();
+  await pending.waitForRelease();
+  assert.equal(new URL(page.url()).searchParams.get("namespace"), alpha.id);
+  await expectNoText(page, /openai-primary/);
+  await releaseHeldRoute(page, "**/api/auth/session", pending);
+  await page.getByRole("heading", { name: "Access denied", exact: true }).waitFor();
+});
+
 test("pagehide clears private content before persisted pageshow revalidates", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();

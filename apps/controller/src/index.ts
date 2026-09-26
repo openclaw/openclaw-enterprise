@@ -3018,7 +3018,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           operationId: "getAuthSession",
           summary: "Inspect authentication without revealing session tokens",
           description:
-            "Returns only authenticated status and public account identity, or null without a valid session; session tokens and credentials are never returned.",
+            "Returns authenticated status, public account identity, and a noncredential sessionKey that stays stable across reads and changes for a new session, or null without a valid session; session tokens and credentials are never returned.",
           tags: ["Authentication"],
           security: [],
           response: {

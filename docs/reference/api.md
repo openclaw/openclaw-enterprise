@@ -223,7 +223,7 @@ Inspect authentication without revealing session tokens
 
 **Operation ID:** `getAuthSession`
 
-**Permissions:** Returns only authenticated status and public account identity, or null without a valid session; session tokens and credentials are never returned.
+**Permissions:** Returns authenticated status, public account identity, and a noncredential sessionKey that stays stable across reads and changes for a new session, or null without a valid session; session tokens and credentials are never returned.
 
 ##### Responses
 

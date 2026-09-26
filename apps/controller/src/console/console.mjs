@@ -538,7 +538,8 @@ async function loadPage({ fromNavigation = false } = {}) {
     mountedRouteKey = null;
     if ([400, 403, 404].includes(error.status)) {
       const selection = current.namespace ?? namespaceId;
-      if (selection === null) {
+      // Backend discovery is Installation-scoped, regardless of its Namespace query.
+      if (selection === null || current.feature === "backends") {
         clearRetainedViews();
       } else {
         clearRetainedViewsForNamespace(selection);
