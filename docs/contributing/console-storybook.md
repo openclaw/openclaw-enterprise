@@ -121,7 +121,7 @@ no Preset. Production discovery still requires an eligible Codex service-account
 The Standard OpenClaw preset story previews its native harness settings.
 Preset Secret stories cover existing selection, pending metadata, denied reads,
 and an empty catalog; each leaves new-token entry available explicitly.
-Partners Agent, Q&A Agent, and Oncall Agent remain disabled in the example
+Community Agent, Q&A Agent, and Oncall Agent remain disabled in the example
 Installation YAML.
 
 Use the [DevDay storyboard](../../scripts/console-storybook/devday-storyboard.md)

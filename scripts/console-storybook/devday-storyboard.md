@@ -9,7 +9,7 @@ prove repository grants, prove Slack delivery, or contact a native gateway.
 The **devday** Preset is loaded from `deploy/presets/devday.json`, a copy of the
 standard Codex Preset with Slack prefilled. Installation file loading is described
 in the [Preset reference](../../docs/reference/presets.md#installation-defaults).
-Segment 1 offers SWE Agent, Partners Agent, Q&A Agent, and Oncall Agent,
+Segment 1 offers SWE Agent, Community Agent, Q&A Agent, and Oncall Agent,
 alongside both standard presets. The walkthrough below uses SWE Agent.
 
 The DevDay plugin picker reuses the 26 curated connector names and IDs from

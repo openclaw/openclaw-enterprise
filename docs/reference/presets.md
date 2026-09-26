@@ -76,7 +76,7 @@ Load a copy beside your YAML as in the example above, or reference the shipped
 container file at `/app/deploy/presets/devday.json`. It is opt-in and is not added
 by `includeDefaults` alone.
 
-[`Partners Agent`](../../deploy/presets/devday-partners.json) copies the SWE
+[`Community Agent`](../../deploy/presets/devday-partners.json) copies the SWE
 Agent template and keeps Slack Socket Mode enabled without prefilled channels.
 Use **Edit Slack** to add channels before creating the Agent.
 
@@ -84,7 +84,7 @@ Use **Edit Slack** to add channels before creating the Agent.
 [`Oncall Agent`](../../deploy/presets/devday-oncall.json) copy the entire SWE Agent
 template, including its Slack and workspace instructions. Their separate file
 entries are commented out in the example Installation YAML, along with SWE Agent
-and Partners Agent. Uncomment only the custom presets you want to install.
+and Community Agent. Uncomment only the custom presets you want to install.
 
 In the Console, choose **SWE Agent**, fill its variables, then use **Edit Slack** to
 choose allowed senders and bind Slack app/bot Secrets. The preset allows channel members to mention the agent (`users: ["*"]`)
