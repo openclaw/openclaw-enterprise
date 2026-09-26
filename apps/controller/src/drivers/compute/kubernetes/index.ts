@@ -2550,12 +2550,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
           ? agentReadiness
           : incomplete();
       }
-      const workspaceNodeIsReady = await this.workspaceNodeReady(revision, namespace);
       if (existingGatewayRevisionId !== undefined && existingGatewayRevisionId !== revision.id) {
-        if (!workspaceNodeIsReady) {
-          if (!(await this.gatewayReady(gatewayOwnership, gatewayName, gatewayNamespace))) {
-            await reconcileGatewayDeployment({});
-          }
+        if (!(await this.gatewayReady(gatewayOwnership, gatewayName, gatewayNamespace))) {
+          await reconcileGatewayDeployment({});
+          return incomplete();
+        }
+        if (!(await this.workspaceNodeReady(revision, namespace))) {
           return incomplete();
         }
         return repositoryMaterial !== undefined &&
@@ -2563,6 +2563,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           ? incomplete()
           : agentReadiness;
       }
+      const workspaceNodeIsReady = await this.workspaceNodeReady(revision, namespace);
       const pluginWarnings = agentReadiness.warnings ?? [];
       await this.reconcile(
         this.service(

@@ -33,7 +33,9 @@ The timing fields are diagnostic; lane pass/fail and required-test accounting
 remain authoritative.
 
 Image transport records `image-archive-save` for Docker archive creation and
-`image-archive-import` for loading that archive into k3d. When an enclosing image
+`image-archive-import` for loading that archive into k3d. The import uses k3d's
+file-backed tools mode with a five-minute command deadline, then verifies the
+expected digest and CRI references on the owned nodes. When an enclosing image
 preparation phase is timed, its duration already includes these operations.
 
 The `checks-baseline` lane runs `pnpm docs:check`: pages above 1,500 visible words

@@ -714,6 +714,14 @@ test("dedicated replacement starts a candidate Gateway when the predecessor cann
           return { setupId: "setup-1", setupCode: "setup-code", expiresAtMs: Date.now() + 60000 };
         },
         async observeSetup() {
+          const activeGateway = read("Deployment", gatewayName, gatewayNamespace);
+          if (
+            !gatewayEndpointsReady &&
+            activeGateway.metadata.annotations?.["openclaw.dev/agent-revision-id"] ===
+              oldRevision.id
+          ) {
+            throw new Error("gateway connection unavailable");
+          }
           return connected ? { deviceId: "node-1", connected: true } : undefined;
         },
         async isConnected() {
