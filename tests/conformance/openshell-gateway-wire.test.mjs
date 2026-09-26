@@ -8,9 +8,9 @@ const require = createRequire(new URL("../../apps/controller/package.json", impo
 const grpc = require("@grpc/grpc-js");
 const loader = require("@grpc/proto-loader");
 
-test("OpenShell client serializes pre.7 create-time service exposure", async () => {
+test("OpenShell client serializes v0.1.0 create-time service exposure", async () => {
   const proto = await loader.load(
-    join(import.meta.dirname, "../fixtures/openshell-v0.1.0-pre.7-wire.proto"),
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.0-wire.proto"),
     { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
   );
   const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;

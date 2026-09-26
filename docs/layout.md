@@ -168,3 +168,8 @@ rendering. Review pages above 1,500 visible words and keep them within the
 
 When directories, package boundaries, or placement conventions change, update
 this guide and affected navigation in the same change.
+
+The optional `deploy/helm/openclaw-observability-demo/` chart owns disposable
+telemetry backends. Its `files/dashboard.json` is also the Compose metrics
+dashboard; Compose provisioning and scraper configurations remain under
+`deploy/metrics/development/`.

@@ -80,6 +80,9 @@ async function renderGatewayRoutingManifests({
       releaseNamespace,
       "--values",
       "deploy/examples/production/values.yaml",
+      // The disposable fixture has one node; production role isolation is verified separately.
+      "--set-json",
+      'controlPlane.nodeSelector={"kubernetes.io/os":"linux"}',
       "--show-only",
       "templates/gateway-routing.yaml",
       "--set",

@@ -86,8 +86,9 @@ references rather than values.
 
 ## Connect alerts to a response
 
-Use [platform observability](../observability.md) to configure collection and
-prove backend receipt. Then assign alert thresholds and a response owner for the
+Verify each private API/worker metrics target using [Pod discovery](../observability/metrics.md),
+and use [platform observability](../observability.md) to connect operational logs
+and prove backend receipt. Default local output does not prove remote delivery. Then assign alert thresholds and a response owner for the
 workload. Keep an alert route that does not depend on the affected Agent replying.
 
 | Signal                                                          | First operator response                                                                                                                                                                              |

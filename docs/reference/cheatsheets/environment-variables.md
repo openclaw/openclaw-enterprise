@@ -127,6 +127,7 @@ The application log level is the Installation YAML setting `logging.level`;
 there is no controller environment override. The variables below configure the
 Collector or local Docker log forwarding. See [Observability](../../guides/observability.md).
 
+- `OCC_METRICS_ENABLED`, `OCC_METRICS_HOST`, `OCC_METRICS_PORT` — Private API/worker metrics; the production Helm chart enables Pod-IP port 9464 by default. See [Metrics](../metrics.md).
 - `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` — Collector export endpoint; required by the logging Compose override.
 - `OTEL_COLLECTOR_PORT` — Local Collector Fluent Forward port; default: `24224`.
 - `OTEL_COLLECTOR_METRICS_PORT` — Local Collector metrics port; default: `8888`.

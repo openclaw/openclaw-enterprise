@@ -1154,6 +1154,8 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         request,
         agentName: () => name.value,
         secretBindings: configurationSecretBindings,
+        isCurrent: context.isCurrent,
+        onExpired: context.onExpired,
       },
       copy: {
         editableDescription:
@@ -1577,7 +1579,10 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       }
       // Grant retries reread exact bindings, so uncertain model or channel grants never recreate the Agent.
       mutationStarted = false;
-      const modelSecret = savedSecret ?? presetExistingSecret;
+      const modelSecret =
+        savedSecret ??
+        presetExistingSecret ??
+        (hasBoundModelCredential ? binding.source : undefined);
       if (modelSecret) {
         await ensureSecretOperateBinding(context, savedAgent, modelSecret);
       }

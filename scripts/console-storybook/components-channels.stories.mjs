@@ -46,3 +46,8 @@ export const ChannelsReadOnly = { ...story("channelsReadOnly"), name: "Revision 
 export const ChannelConflict = { ...story("channelConflict"), name: "Save conflict" };
 
 export const SlackNavigation = story("slackNavigation");
+
+export const RevisionSecretsDenied = story("revisionSecretsDenied");
+export const RevisionSecretsMissing = story("revisionSecretsMissing");
+export const RevisionSecretsLoading = story("revisionSecretsLoading");
+export const RevisionSecretsAbsent = story("revisionSecretsAbsent");

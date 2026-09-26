@@ -1,8 +1,7 @@
 # Kubernetes tests
 
-Verify Kubernetes resources with an HTTP fixture, then select real-runtime
-tests for gateway, Codex, model, and Secret behavior. Prepare the
-[shared requirements](README.md#requirements-and-credentials) first.
+Prepare [shared prerequisites](README.md#requirements-and-credentials) for
+Kubernetes HTTP fixtures or real-runtime gateway, Codex, model, and Secret tests.
 
 ## Kubernetes HTTP fixture
 
@@ -375,3 +374,7 @@ credential separation; it does not prove production node-pool isolation. Configu
 separate reviewed node pools for that proof. Current tests must still pass with
 the actual supported Gateway/Codex images and authenticated node reconnect;
 fixture readiness is not a substitute for model-backed acceptance.
+
+## Production observability
+
+See [smoke tests and model-log validation](metrics.md#kubernetes-observability-acceptance).

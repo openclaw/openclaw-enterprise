@@ -31,12 +31,12 @@ runs:
         (inputs.profile == 'full' || inputs.profile == 'images' || inputs.profile == 'k3d') &&
         inputs.lane != 'docker-model' && inputs.lane != 'logging-collector' &&
         inputs.lane != 'repository-credentials-platform' &&
-        !startsWith(inputs.lane, 'k3d-fixture-')
+        !startsWith(inputs.lane, 'k3d-fixture-') && !startsWith(inputs.lane, 'k3d-observability')
     - name: Set up CI tools
       shell: bash
       run: bash scripts/ci/setup-tools.sh "${{ inputs.profile }}"
     - name: Enable Kubernetes bridge packet filtering
-      if: startsWith(inputs.lane, 'k3d-fixture-')
+      if: startsWith(inputs.lane, 'k3d-fixture-') || startsWith(inputs.lane, 'k3d-observability')
       shell: bash
       run: |
         # k3d nodes share the runner kernel; K3s cannot load absent host modules.
@@ -95,7 +95,7 @@ runs:
       shell: bash
       run: pnpm cli:build
     - name: Prepare hosted platform disk capacity
-      if: inputs.lane == 'repository-credentials-platform' && runner.environment == 'github-hosted'
+      if: (inputs.lane == 'repository-credentials-platform' || startsWith(inputs.lane, 'k3d-observability')) && runner.environment == 'github-hosted'
       shell: bash
       env:
         OPENCLAW_CI_HEADROOM_LANE: ${{ inputs.lane }}

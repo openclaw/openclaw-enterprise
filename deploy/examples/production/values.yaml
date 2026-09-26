@@ -65,3 +65,9 @@ repositoryCredentials:
   # tlsSecretName: occ-repository-tls
   # publicCaSecretName: occ-repository-public-ca
   # upstreamCidrs: [198.51.100.0/24]
+
+# Metrics listeners are enabled privately. Set both selectors to admit your scraper.
+metrics:
+  enabled: true
+  scraperNamespaceLabels: {}
+  scraperPodLabels: {}

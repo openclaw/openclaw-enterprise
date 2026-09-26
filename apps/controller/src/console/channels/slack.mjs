@@ -417,6 +417,7 @@ export const slack = {
   description: "Socket Mode with channel and user settings.",
   setup: "Provide SLACK_APP_TOKEN and SLACK_BOT_TOKEN through Secret bindings before deployment.",
   plugin: "slack",
+  secretBindings: SLACK_SECRET_BINDINGS,
   support: supportSlack,
   validate(body) {
     const ids = uniqueList(body.querySelector("#slack-channel-ids").value.split(","));

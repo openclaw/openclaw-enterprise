@@ -1,5 +1,5 @@
 import { element, button } from "../dom.mjs";
-import { createHarnessAuthFields, harnessAuthDescription } from "./harness-auth.mjs";
+import { createHarnessAuthFields, renderHarnessAuthSummary } from "./harness-auth.mjs";
 import { renderNativeAdminAccess } from "./native-admin.mjs";
 import { createAgentDeletion } from "./deletion.mjs";
 import { createAgentStop } from "./stop.mjs";
@@ -661,6 +661,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           request,
           agentName: agent.name,
           secretBindings: snapshot.secretBindings,
+          isCurrent: context.isCurrent,
+          onExpired: context.onExpired,
           credentialsHref: context.pageUrl(
             `agents/${agent.id}?revision=draft&tab=credentials`,
             namespaceId,
@@ -900,7 +902,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         ],
         [
           "Harness authentication",
-          harnessAuthDescription(draft ? agent.harnessAuth : snapshot.harnessAuth),
+          renderHarnessAuthSummary(context, draft ? agent.harnessAuth : snapshot.harnessAuth),
         ],
         ["Created", displayDate(snapshot.createdAt)],
       ];

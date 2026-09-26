@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: 2026-09-26
-last_updated_session: 01a0d992-db83-7843-b40c-355c0f2c2b9a
+last_updated_session: 01a0db1e-7ab2-7bf1-936b-e71c9d6f9911
 ---
 
 # Platform console request flow
@@ -219,9 +219,9 @@ supports manual recovery. Failed Agent writes retain Configuration ID and lock
 JSON/Harness for explicit reuse. Writes never retry automatically. Drafts admit no
 revision, validate no plugin catalog, and start no runtime.
 
-`agents/harness-auth.mjs:createHarnessAuthFields` masks existing Secret IDs;
-`harnessAuthDescription` omits them from draft/revision summaries. Configuration
-shows unresolved references; these views never fetch Secret values.
+`agents/harness-auth.mjs` edits bindings and renders
+[Secret identity summaries](platform-console/agent-editing.md#4-render-draft-revision-or-channels)
+without fetching values.
 
 ### 4–6. Edit the Agent and access runtime files
 
@@ -325,6 +325,8 @@ uncertain response disables replay until refresh and inspection.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-26 00:37: Link Secret summary metadata flow. (01a0db1e-7ab2-7bf1-936b-e71c9d6f9911 - e387b38cc259ee4a55936ecb848bbce8210bcd68)
 
 - 2026-09-25 17:27: Trace scoped return previews and session-aware invalidation in accompanying changes. (01a0d992-db83-7843-b40c-355c0f2c2b9a - 64ab72aed5c4926e4a2080ade91d785e531801a2)
 

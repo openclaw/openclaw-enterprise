@@ -45,7 +45,8 @@ const openShellSandboxImage = process.env.OCC_TEST_OPENSHELL_SANDBOX_IMAGE;
 const openShellSupervisorImage = process.env.OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE;
 const openShellHelmPath = process.env.OCC_TEST_OPENSHELL_HELM;
 const openShellHelmChart = process.env.OCC_TEST_OPENSHELL_HELM_CHART;
-const openShellChartVersion = process.env.OCC_TEST_OPENSHELL_CHART_VERSION ?? "0.1.0-pre.7";
+const openShellWorkspaceHelmChart = process.env.OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART;
+const openShellChartVersion = process.env.OCC_TEST_OPENSHELL_CHART_VERSION ?? "0.1.0";
 const openShellRuntimeClass = process.env.OCC_TEST_OPENSHELL_RUNTIME_CLASS ?? "openshell-sandbox";
 const providerModel = (process.env.OCC_TEST_OPENAI_MODEL ?? defaultAgentModel).replace(
   /^(?:openai|codex)\//,
@@ -64,6 +65,7 @@ const selected =
     openShellSupervisorImage,
     openShellHelmPath,
     openShellHelmChart,
+    openShellWorkspaceHelmChart,
   ].some(Boolean);
 const requiresOpenShellK3d = {
   skip: selected
@@ -110,6 +112,7 @@ const fixture = createOpenShellKubernetesFixture({
   openShellRuntimeClass,
   openShellHelmPath,
   openShellHelmChart,
+  openShellWorkspaceHelmChart,
   openShellChartVersion,
 });
 const {
@@ -1442,17 +1445,15 @@ function createIntegrationSandboxDriverFactory(
               const container = cleaner.spec.template.spec.containers[0];
               container.name = "delete-openshell-bootstrap";
               container.env = [];
+              // Cleanup contexts intentionally omit provisioning requirements. The bridge mount is
+              // revision-scoped, so remove its bounded contents without reconstructing token paths.
               container.command = [
                 "sh",
                 "-ceu",
                 [
-                  "chmod 0700 /bootstrap/plugin-runtime /bootstrap/service-principal",
+                  "chmod -R u+w /bootstrap/plugin-runtime /bootstrap/service-principal",
                   "rm -f /bootstrap/app-server-token /bootstrap/openai-api-key /bootstrap/openclaw-node-setup-code /bootstrap/openclaw-node-ca.pem",
-                  "rm -f /bootstrap/plugin-runtime/runtime.json /bootstrap/plugin-runtime/config.toml",
-                  `rm -f /bootstrap/service-principal/${context.requirements.serviceAccountToken.path}`,
-                  "rm -rf /bootstrap/node-state /bootstrap/runtime-assets",
-                  "rmdir /bootstrap/plugin-runtime",
-                  "rmdir /bootstrap/service-principal",
+                  "rm -rf /bootstrap/plugin-runtime /bootstrap/service-principal /bootstrap/node-state /bootstrap/runtime-assets",
                 ].join("\n"),
               ];
               container.volumeMounts = container.volumeMounts.filter(
@@ -1967,6 +1968,7 @@ async function prepareProductionInstallation(
   const agentService = await resource("service", agentServiceName, placement);
   assert.deepEqual(agentService.spec.selector, {
     "openclaw.dev/agent": agent.data.id,
+    "openclaw.dev/namespace": namespaceId,
     "openclaw.dev/revision": deployed.data.id,
     "openclaw.dev/workload-role": "agent",
   });
@@ -2106,6 +2108,7 @@ async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology) 
   // provider resources themselves so the assertion stays at the supported lifecycle boundary.
   const expectedActiveSelector = {
     "openclaw.dev/agent": topology.agent.id,
+    "openclaw.dev/namespace": topology.namespaceId,
     "openclaw.dev/revision": redeployed.data.id,
     "openclaw.dev/workload-role": "agent",
   };
@@ -2251,7 +2254,7 @@ test(
         "OpenShell integration: checking create-time service exposure authentication boundary.\n",
       );
       assert.match(topology.harnessServiceUrl, /^https?:\/\//);
-      // OpenShell pre.7 consumes gateway Authorization and strips it before proxying. An
+      // OpenShell v0.1.0 consumes gateway Authorization and strips it before proxying. An
       // authentication rejection from the protected Codex endpoint proves the route reaches the
       // real app server without weakening its bearer-token requirement or accepting a gateway 5xx.
       let lastServiceObservation = "no response";

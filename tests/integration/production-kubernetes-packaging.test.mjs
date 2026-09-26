@@ -159,7 +159,39 @@ test(
   "metrics chart requires exact scraper selectors and isolates the extra Pod ports",
   tooling,
   async () => {
-    await assert.rejects(render({ "metrics.enabled": "true" }), /scraperNamespaceLabels/);
+    const defaults = await resources((await render()).stdout);
+    for (const component of ["api", "worker"]) {
+      const container = defaults.find(
+        (item) =>
+          item.kind === "Deployment" && item.metadata.name === `openclaw-enterprise-${component}`,
+      ).spec.template.spec.containers[0];
+      assert.equal(container.env.find(({ name }) => name === "OCC_METRICS_ENABLED")?.value, "true");
+      assert.ok(
+        container.ports.some(
+          ({ name, containerPort }) => name === "metrics" && containerPort === 9464,
+        ),
+      );
+    }
+    assert.ok(
+      !defaults.some(
+        (item) => item.kind === "NetworkPolicy" && item.metadata.name.endsWith("-metrics"),
+      ),
+    );
+    const disabled = await resources((await render({ "metrics.enabled": "false" })).stdout);
+    for (const item of disabled.filter((item) => item.kind === "Deployment")) {
+      assert.ok(
+        !item.spec.template.spec.containers[0].ports?.some(({ name }) => name === "metrics"),
+      );
+    }
+    for (const override of [
+      { "metrics.scraperNamespaceLabels.team": "monitoring" },
+      { "metrics.scraperPodLabels.app": "prometheus" },
+    ]) {
+      await assert.rejects(render(override), /scraperNamespaceLabels/);
+    }
+    for (const port of ["0", "65536", "8080", "9.5"]) {
+      await assert.rejects(render({ "metrics.port": port }), /metrics.port/);
+    }
     const selected = {
       "metrics.enabled": "true",
       "metrics.scraperNamespaceLabels.kubernetes\\.io/metadata\\.name": "monitoring",

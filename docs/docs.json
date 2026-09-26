@@ -467,6 +467,10 @@
                     "label": "Metrics Scraping"
                   },
                   {
+                    "page": "guides/observability/demo",
+                    "label": "Demo Stack"
+                  },
+                  {
                     "page": "reference/metrics",
                     "label": "Metrics Reference"
                   },

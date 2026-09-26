@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-09-25
-last_updated_session: 01a0d5e6-743e-7743-8a5e-2d8c24b78b81
+updated: 2026-09-26
+last_updated_session: 01a0db1e-7ab2-7bf1-936b-e71c9d6f9911
 ---
 
 # Console Agent editing and runtime requests
@@ -78,7 +78,6 @@ editor text. An uncertain mutation outcome blocks another save until successful
 readback. Unsaved or unresolved edits block deployment of the old saved values.
 Ordinary edits survive tab, revision, and page navigation; pending or unresolved
 Configuration saves still block tab and revision changes until readback.
-Saving and deploying remain separate explicit actions.
 
 `apps/controller/src/console/drafts.mjs:createDraftStore` owns document-local
 snapshots. `console.mjs:resetReads` and `detail.mjs:renderTab` flush registered
@@ -92,20 +91,24 @@ Configuration and authentication snapshots retain their original save baselines,
 so fresh reads on reentry cannot silently authorize overwriting concurrent edits.
 Channel snapshots retain their opening generation, raw controls, and staged Secret
 metadata; a changed baseline disables Save until Cancel discards the drawer.
-Successful saves forget captures. Cancel and reload discard edits; pending-save
-navigation retains an unknown-outcome guard.
+Saves clear captures; Cancel and reload discard edits. Pending saves retain
+recovery guards.
 
-`apps/controller/src/console/channels.mjs:renderChannels` renders supported
-Slack channel settings in **New revision** only. Slack uses fixed unresolved
-`SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN` environment references. Existing native
-Teams settings remain in Configuration JSON, with no card or editor. The
-deployment guard still refuses Teams-enabled drafts because Console credential
-readiness cannot be established for them. The Slack editor requires
-dedicated execution for enabled channels and may refuse native documents that it
-cannot round-trip, including non-Socket Slack settings, non-standard credential
-references, wildcard channel maps, mixed Slack mention settings, mixed channel
-sender lists, sender IDs that cannot be represented in a comma-separated field,
-and unsupported plugin shapes.
+`apps/controller/src/console/channels.mjs:renderChannels` renders Slack settings;
+only **New revision** permits editing. Slack uses unresolved `SLACK_APP_TOKEN`
+and `SLACK_BOT_TOKEN` environment references. Enabled channels require dedicated
+execution. The editor rejects [unsupported native shapes](../../reference/console.md#inspect-detail-revisions-and-channel-drafts).
+Teams remains visible only in native JSON; its unverified credential readiness
+blocks Console deployment.
+
+`agents/detail.mjs:renderConfigurationTab` reads draft Harness authentication
+from the Agent, or admitted authentication and channel `secretBindings` from the
+selected revision. `agents/secret-picker.mjs:renderSecretReference` checks the
+source Namespace, then requests `/namespaces/:namespaceId/secrets/:secretId`.
+Successful reads link names and IDs to metadata; absent, loading, and unavailable
+states remain distinct. Failures retain IDs;
+stale tab responses are ignored and current 401s expire the session. Summaries
+need neither collection permission nor Secret values.
 
 `apps/controller/src/console/channels/slack.mjs:appendFields` separates channel
 senders from DMs. Wildcard, empty, or omitted channel `users` selects **Allow
@@ -319,6 +322,8 @@ subsequent worker cleanup and the Namespace-owned resources it preserves.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-26 00:37: Trace exact Secret metadata reads for draft and immutable revision summaries in the accompanying change. (01a0db1e-7ab2-7bf1-936b-e71c9d6f9911 - e387b38cc259ee4a55936ecb848bbce8210bcd68)
 
 - 2026-09-25 01:15: Trace DM policy selection, sender validation, and organization-wide restrictions. (01a0d5e6-743e-7743-8a5e-2d8c24b78b81 - 919f92c3bb3ea63acf7042b138e9a0c6e1d97719)
 

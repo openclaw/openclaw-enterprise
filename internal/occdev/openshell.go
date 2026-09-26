@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	openShellVersion                = "0.1.0-pre.7"
+	openShellVersion                = "0.1.0"
 	openShellRuntimeClass           = "openshell-sandbox"
 	openShellGatewayService         = "openshell-gateway"
 	openShellGatewayNamespace       = "openshell-system"
@@ -35,12 +35,12 @@ const (
 	openShellBoundaryRoleLabel      = "openshell.ai/boundary-role"
 	openShellSupervisorRole         = "supervisor"
 	openShellNodePort               = 30051
-	openShellSourceSHA256           = "48b474ba93692331246acde00e8ca641503714c3250bbe50db5fe4f8f7a1e453"
+	openShellSourceSHA256           = "f2f85978af532511b9c6355e2baf3ce91a226e3badecc98578413d0ac7958cd7"
 	agentSandboxManifestSHA256      = "230ee446d6035f631577e1c6b857f6973a8f09a0a853675d3cc34ebfe47abd6b"
 	openShellK3sImage               = "docker.io/rancher/k3s:v1.36.4-k3s1@sha256:edad48e12bf81c3a09ac1c05c0c0ffaaa22145980b989d6fae84543a76b83657"
-	openShellGatewayImage           = "ghcr.io/nvidia/openshell/gateway:f8002d19ad2f948abf48bd2f5ca4f8ebd388e3c8@sha256:270f91a163ae3958803493a49c8a68bd5efb9ebca6aa33ca4730a1bcbd957929"
-	openShellSandboxImage           = "ghcr.io/nvidia/openshell/sandbox:f8002d19ad2f948abf48bd2f5ca4f8ebd388e3c8@sha256:4e6387d7073919dfb8b100fac810012e09413601313c163490ef42100364a155"
-	openShellSupervisorImage        = "ghcr.io/nvidia/openshell/supervisor:f8002d19ad2f948abf48bd2f5ca4f8ebd388e3c8@sha256:922d95e7ff7af1e643f01ed194d9ac265b0d342d9dc9d15ba8c4271d4373fc83"
+	openShellGatewayImage           = "ghcr.io/nvidia/openshell/gateway:496ebba293f5cc2bb2753444dddd534f0b4aeb6a@sha256:9be15b267390fb73353b8862dade4dc13476f13175cf709e174d74bdf5f08e39"
+	openShellSandboxImage           = "ghcr.io/nvidia/openshell/sandbox:496ebba293f5cc2bb2753444dddd534f0b4aeb6a@sha256:3d8723843b0e72b43aa42acc73db22b0f1c3fbbc7871bcac9ac711c8c213ba65"
+	openShellSupervisorImage        = "ghcr.io/nvidia/openshell/supervisor:496ebba293f5cc2bb2753444dddd534f0b4aeb6a@sha256:cda950db60c83a770c54bfeea5326de8a3345c100938cc843b4537ab67a4e62f"
 	openShellSourceArchiveURL       = "https://github.com/NVIDIA/OpenShell/archive/refs/tags/v" + openShellVersion + ".tar.gz"
 	agentSandboxManifestURL         = "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v0.5.2/sandbox.yaml"
 	openShellAdmissionContainerPath = "/etc/openclaw-development/openshell-pod-security-admission.yaml"
@@ -156,6 +156,7 @@ func (r *runner) renderOpenShellWorkspaceResources(ctx context.Context, chart, g
 		"--set-string=gateway.serviceAccount.name="+openShellGatewayService,
 		"--set-string=gateway.serviceAccount.namespace="+gatewayNamespace,
 		"--set-string=gateway.networkPolicy.podSelector.app\\.kubernetes\\.io/instance="+openShellGatewayService,
+		"--set=gateway.allowDriverConfig=true",
 		"--set-string=sandboxServiceAccount.name=openshell-sandbox",
 	)
 	if err != nil {
@@ -268,7 +269,15 @@ func (r *runner) importOpenShellImage(ctx context.Context, state *developmentSta
 	if imported == "" || !imageDigest.MatchString(digest) {
 		return "", fmt.Errorf("could not resolve imported OpenShell %s image digest", component)
 	}
-	return imported, nil
+	untagged, _, hasTag := strings.CutLast(imported, ":")
+	if !hasTag {
+		return "", fmt.Errorf("imported OpenShell %s image is missing its staging tag", component)
+	}
+	runtimeReference := untagged + "@" + digest
+	if err := r.run(ctx, r.engine, "exec", server, "ctr", "-n", "k8s.io", "images", "tag", imported, runtimeReference); err != nil {
+		return "", fmt.Errorf("register imported OpenShell %s image digest: %w", component, err)
+	}
+	return runtimeReference, nil
 }
 
 func (r *runner) openShellCharts(ctx context.Context, root string) (string, string, error) {
@@ -502,12 +511,13 @@ func (r *runner) installOpenShellGateway(ctx context.Context, state *development
 		"--set-string=serviceAccount.name=" + openShellGatewayService,
 		"--set-string=sandboxServiceAccount.name=openshell-sandbox",
 		"--set=workspaceResources.enabled=false",
+		"--set=server.drivers.kubernetes.allowDriverConfig=true",
+		"--set=server.drivers.kubernetes.resourceAdmission.enabled=false",
 		"--set-string=server.drivers.kubernetes.workspaceMode=operator",
 		"--set-string=server.drivers.kubernetes.operatorNamespaceLabel=" + openShellOperatorNamespaceLabel + "=" + openShellOperatorNamespaceValue,
 		"--set=podSecurityContext.seccompProfile.type=RuntimeDefault",
-		"--set=supervisor.sandboxRuntime.networkPolicyEnforced=true",
 		"--set-string=server.defaultRuntimeClassName=" + openShellRuntimeClass,
-		"--set=image.pullPolicy=Never",
+		"--set=gateway.image.pullPolicy=Never",
 		"--set=sandboxRuntime.image.pullPolicy=Never",
 		"--set=supervisor.image.pullPolicy=Never",
 	}
@@ -517,7 +527,7 @@ func (r *runner) installOpenShellGateway(ctx context.Context, state *development
 		values = append(values, "--set=service.type=NodePort", fmt.Sprintf("--set=service.nodePort=%d", openShellNodePort))
 	}
 	for _, selected := range []struct{ prefix, image string }{
-		{"image", assets.gatewayImage},
+		{"gateway.image", assets.gatewayImage},
 		{"sandboxRuntime.image", assets.sandboxImage},
 		{"supervisor.image", assets.supervisorImage},
 	} {
@@ -542,22 +552,22 @@ func (r *runner) installOpenShellGateway(ctx context.Context, state *development
 
 func openShellImageValues(prefix, image string) []string {
 	withoutDigest, digest, hasDigest := strings.Cut(image, "@")
-	lastSlash := strings.LastIndex(withoutDigest, "/")
-	tagSeparator := strings.LastIndex(withoutDigest, ":")
-	repository := withoutDigest
-	tag := openShellVersion
-	if tagSeparator > lastSlash {
-		repository = withoutDigest[:tagSeparator]
-		tag = withoutDigest[tagSeparator+1:]
+	registry, repository, hasRegistry := strings.Cut(withoutDigest, "/")
+	if !hasRegistry {
+		registry = ""
+		repository = withoutDigest
 	}
-	renderedTag := tag
-	if hasDigest {
-		renderedTag += "@" + digest
+	if untagged, _, hasTag := strings.CutLast(repository, ":"); hasTag {
+		repository = untagged
 	}
-	return []string{
+	values := []string{
+		"--set-string=" + prefix + ".registry=" + registry,
 		"--set-string=" + prefix + ".repository=" + repository,
-		"--set-string=" + prefix + ".tag=" + renderedTag,
 	}
+	if hasDigest {
+		values = append(values, "--set-string="+prefix+".digest="+digest)
+	}
+	return values
 }
 
 func (r *runner) ensureOpenShellJWTSecret(ctx context.Context, state *developmentState, namespace string) error {

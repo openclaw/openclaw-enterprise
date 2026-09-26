@@ -19,6 +19,11 @@ const runtimeOnlyRoots = [
   "/usr/share/swift",
 ];
 const minimumRuntimeAvailableBytes = 36 * 1024 ** 3;
+const largeImageLane = [
+  "container-runtime-build",
+  "k3d-observability",
+  "k3d-observability-demo",
+].includes(process.env.OPENCLAW_CI_HEADROOM_LANE);
 const receipt = {
   kind: "repository-platform-capacity",
   lane: process.env.OPENCLAW_CI_HEADROOM_LANE,
@@ -140,7 +145,11 @@ async function main() {
   assert(
     process.platform === "linux" &&
       process.env.RUNNER_OS === "Linux" &&
-      process.env.ImageOS === "ubuntu24",
+      (process.env.ImageOS === "ubuntu24" ||
+        (["k3d-observability", "k3d-observability-demo"].includes(
+          process.env.OPENCLAW_CI_HEADROOM_LANE,
+        ) &&
+          process.env.ImageOS === "ubuntu22")),
   );
   assert(
     receipt.sourceSha &&
@@ -148,12 +157,16 @@ async function main() {
       /^\d+$/.test(process.env.GITHUB_RUN_ATTEMPT ?? ""),
   );
   assert(
-    ["repository-credentials-platform", "container-runtime-build"].includes(
-      process.env.OPENCLAW_CI_HEADROOM_LANE,
-    ) && process.argv.length === 2,
+    [
+      "repository-credentials-platform",
+      "container-runtime-build",
+      "k3d-observability",
+      "k3d-observability-demo",
+    ].includes(process.env.OPENCLAW_CI_HEADROOM_LANE) && process.argv.length === 2,
   );
   const os = await readFile("/etc/os-release", "utf8");
-  assert(/^ID=ubuntu$/m.test(os) && /^VERSION_ID="24\.04"$/m.test(os));
+  const expectedVersion = process.env.ImageOS === "ubuntu22" ? "22.04" : "24.04";
+  assert(/^ID=ubuntu$/m.test(os) && os.split("\n").includes(`VERSION_ID="${expectedVersion}"`));
   receipt.before = await capacity();
   receipt.stage = "sdk-guard";
   assert(
@@ -164,7 +177,7 @@ async function main() {
   const mounts = await readFile("/proc/self/mountinfo", "utf8");
   const removalRoots = [androidRoot];
   assert(await guardRemovalRoot(androidRoot, rootInfo, mounts, true));
-  if (receipt.lane === "container-runtime-build") {
+  if (largeImageLane) {
     for (const root of runtimeOnlyRoots) {
       if (await guardRemovalRoot(root, rootInfo, mounts, false)) {
         removalRoots.push(root);
@@ -174,37 +187,57 @@ async function main() {
     }
   }
   receipt.stage = "sdk-removal";
-  // The privileged timeout can terminate root-owned rm; the runner cannot.
-  await execute(
-    "/usr/bin/sudo",
-    [
-      "-n",
-      "--",
-      "/usr/bin/timeout",
-      "--signal=TERM",
-      "--kill-after=5s",
-      "240s",
-      "/usr/bin/rm",
-      "--recursive",
-      "--force",
-      "--one-file-system",
-      "--preserve-root=all",
-      "--",
-      ...removalRoots,
-    ],
-    250_000,
+  const observability = ["k3d-observability", "k3d-observability-demo"].includes(receipt.lane);
+  const groups = observability ? removalRoots.map((root) => [root]) : [removalRoots];
+  const timeoutSeconds = observability ? 600 : 240;
+  receipt.removals = groups.map((roots) => ({ roots, status: "pending" }));
+  // All roots have passed the ownership/mount guards. The fixed, disjoint SDK
+  // roots can be removed together; settle every process before checking capacity.
+  const removals = await Promise.allSettled(
+    receipt.removals.map(async (removal) => {
+      const started = performance.now();
+      removal.status = "failed";
+      try {
+        // The privileged timeout can terminate root-owned rm; the runner cannot.
+        await execute(
+          "/usr/bin/sudo",
+          [
+            "-n",
+            "--",
+            "/usr/bin/timeout",
+            "--signal=TERM",
+            "--kill-after=5s",
+            `${timeoutSeconds}s`,
+            "/usr/bin/rm",
+            "--recursive",
+            "--force",
+            "--one-file-system",
+            "--preserve-root=all",
+            "--",
+            ...removal.roots,
+          ],
+          (timeoutSeconds + 10) * 1_000,
+        );
+        for (const root of removal.roots) {
+          try {
+            await lstat(root);
+            assert.fail("Runner cleanup incomplete.");
+          } catch (error) {
+            assert(error.code === "ENOENT");
+          }
+        }
+        removal.status = "passed";
+      } finally {
+        removal.durationMs = Math.round(performance.now() - started);
+      }
+    }),
   );
-  for (const root of removalRoots) {
-    try {
-      await lstat(root);
-      assert.fail("Runner cleanup incomplete.");
-    } catch (error) {
-      assert(error.code === "ENOENT");
-    }
-  }
+  receipt.rootsRemoved = receipt.removals
+    .filter(({ status }) => status === "passed")
+    .flatMap(({ roots }) => roots);
+  assert(removals.every(({ status }) => status === "fulfilled"));
   receipt.sdkRemoved = true;
-  receipt.rootsRemoved = removalRoots;
-  if (receipt.lane === "container-runtime-build") {
+  if (largeImageLane) {
     receipt.minimumAvailableBytes = minimumRuntimeAvailableBytes;
     receipt.stage = "capacity-guard";
     assert((await capacity()).availableBytes >= minimumRuntimeAvailableBytes);

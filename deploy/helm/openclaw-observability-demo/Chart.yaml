@@ -1,0 +1,5 @@
+apiVersion: v2
+name: openclaw-observability-demo
+description: Disposable Prometheus, Loki and Grafana demonstration; not recommended for production.
+type: application
+version: 0.1.0

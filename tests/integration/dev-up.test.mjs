@@ -884,6 +884,17 @@ test("Kubernetes dev-up prepares the selected OpenShell Sandbox Driver before re
     6,
     "OpenShell startup imports its three images plus the OCE runtime, controller, and PostgreSQL images",
   );
+  assert.equal(
+    commands.filter(
+      ({ command, args }) =>
+        command === "docker" &&
+        args[0] === "exec" &&
+        args.includes("tag") &&
+        args.some((arg) => arg.startsWith("docker.io/openclaw-development/openshell-")),
+    ).length,
+    3,
+    "OpenShell startup registers each imported platform digest inside k3s",
+  );
   const helmInstalls = commands.filter(
     ({ command, args }) => command === "helm" && args[0] === "upgrade",
   );
@@ -891,10 +902,29 @@ test("Kubernetes dev-up prepares the selected OpenShell Sandbox Driver before re
   const gatewayInstall = helmInstalls.find(({ args }) => args[2] === "openshell-gateway");
   assert.ok(gatewayInstall.args.includes("--namespace"));
   assert.ok(gatewayInstall.args.includes("oce-system"));
-  assert.ok(gatewayInstall.args.includes("--set=image.pullPolicy=Never"));
+  assert.ok(gatewayInstall.args.includes("--set=gateway.image.pullPolicy=Never"));
   assert.ok(gatewayInstall.args.includes("--set=sandboxRuntime.image.pullPolicy=Never"));
   assert.ok(gatewayInstall.args.includes("--set=supervisor.image.pullPolicy=Never"));
+  assert.ok(gatewayInstall.args.includes("--set-string=gateway.image.registry=docker.io"));
+  assert.ok(
+    gatewayInstall.args.includes(
+      "--set-string=gateway.image.repository=openclaw-development/openshell-gateway",
+    ),
+  );
+  assert.ok(
+    gatewayInstall.args.includes(
+      "--set-string=gateway.image.digest=sha256:9be15b267390fb73353b8862dade4dc13476f13175cf709e174d74bdf5f08e39",
+    ),
+  );
+  assert.equal(
+    gatewayInstall.args.includes("--set=supervisor.sandboxRuntime.networkPolicyEnforced=true"),
+    false,
+  );
   assert.ok(gatewayInstall.args.includes("--set=workspaceResources.enabled=false"));
+  assert.ok(gatewayInstall.args.includes("--set=server.drivers.kubernetes.allowDriverConfig=true"));
+  assert.ok(
+    gatewayInstall.args.includes("--set=server.drivers.kubernetes.resourceAdmission.enabled=false"),
+  );
   assert.ok(
     gatewayInstall.args.includes("--set-string=server.drivers.kubernetes.workspaceMode=operator"),
   );
@@ -918,6 +948,7 @@ test("Kubernetes dev-up prepares the selected OpenShell Sandbox Driver before re
   assert.ok(
     workspaceTemplate.args.includes("--set-string=gateway.serviceAccount.namespace=oce-system"),
   );
+  assert.ok(workspaceTemplate.args.includes("--set=gateway.allowDriverConfig=true"));
 
   const cleaned = runDevDown(fixture.env);
   assert.equal(cleaned.status, 0, cleaned.stderr);

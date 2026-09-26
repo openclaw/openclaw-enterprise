@@ -493,9 +493,9 @@ if (command === "docker") {
       "docker.io/library/openclaw-enterprise-runtime:kubernetes-quickstart application/vnd.oci.image.manifest.v1+json sha256:" + "a".repeat(64),
       "docker.io/library/openclaw-enterprise-controller:kubernetes-quickstart application/vnd.oci.image.manifest.v1+json sha256:" + "b".repeat(64),
       "docker.io/openclaw-development/import-b9b4e5950649:occ-dev-owned application/vnd.oci.image.manifest.v1+json sha256:" + "c".repeat(64),
-      "docker.io/openclaw-development/openshell-gateway:occ-dev-owned application/vnd.oci.image.manifest.v1+json sha256:270f91a163ae3958803493a49c8a68bd5efb9ebca6aa33ca4730a1bcbd957929",
-      "docker.io/openclaw-development/openshell-sandbox:occ-dev-owned application/vnd.oci.image.manifest.v1+json sha256:4e6387d7073919dfb8b100fac810012e09413601313c163490ef42100364a155",
-      "docker.io/openclaw-development/openshell-supervisor:occ-dev-owned application/vnd.oci.image.manifest.v1+json sha256:922d95e7ff7af1e643f01ed194d9ac265b0d342d9dc9d15ba8c4271d4373fc83",
+      "docker.io/openclaw-development/openshell-gateway:occ-dev-owned application/vnd.oci.image.manifest.v1+json sha256:9be15b267390fb73353b8862dade4dc13476f13175cf709e174d74bdf5f08e39",
+      "docker.io/openclaw-development/openshell-sandbox:occ-dev-owned application/vnd.oci.image.manifest.v1+json sha256:3d8723843b0e72b43aa42acc73db22b0f1c3fbbc7871bcac9ac711c8c213ba65",
+      "docker.io/openclaw-development/openshell-supervisor:occ-dev-owned application/vnd.oci.image.manifest.v1+json sha256:cda950db60c83a770c54bfeea5326de8a3345c100938cc843b4537ab67a4e62f",
     ].join("\\n"));
   } else if (args[0] === "cp") {
     fs.writeFileSync(args.at(-1), JSON.stringify({ data: { id: "key_fixture", key: ${JSON.stringify(serviceKey)} }, meta: { installationId: ${JSON.stringify(matchingInstallationId)} } }));

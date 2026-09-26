@@ -1,4 +1,5 @@
 import { element, button } from "../dom.mjs";
+import { renderSecretReference } from "../agents/secret-picker.mjs";
 
 const clone = (value) => (value === undefined ? undefined : structuredClone(value));
 export const isRecord = (value) =>
@@ -190,6 +191,21 @@ function renderCard(section, state, provider) {
       ),
     ),
   );
+  const credentials = element("dl", { className: "configuration-summary" });
+  for (const binding of provider.secretBindings ?? []) {
+    credentials.append(
+      element("dt", {}, `${binding.label} (${binding.key})`),
+      element(
+        "dd",
+        {},
+        renderSecretReference(
+          state.drawerContext,
+          state.drawerContext.secretBindings?.[binding.key]?.source,
+        ),
+      ),
+    );
+  }
+  card.append(credentials);
   if (state.readOnly) {
     card.append(
       element(

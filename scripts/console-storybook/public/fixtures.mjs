@@ -165,6 +165,7 @@ export function installFixture(scenario, evidence) {
       configurationGeneration: configuration.generation,
       createdAt,
       configuration: structuredClone(configuration.values),
+      secretBindings: structuredClone(configuration.secretBindings),
       harnessAuth: structuredClone(owner.harnessAuth),
       harness: { id: "codex", version: "demo", mode: owner.executionMode },
       compute: { id: "kubernetes-demo", implementation: "kubernetes" },

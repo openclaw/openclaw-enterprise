@@ -1,6 +1,6 @@
 import { element } from "../dom.mjs";
 import { message, namespacePath } from "./list.mjs";
-import { createSecretReferenceField } from "./secret-picker.mjs";
+import { createSecretReferenceField, renderSecretReference } from "./secret-picker.mjs";
 
 export function harnessAuthDescription(binding) {
   if (!binding) {
@@ -15,6 +15,18 @@ export function harnessAuthDescription(binding) {
   return binding.method === "api_key"
     ? "API key · Secret configured"
     : `ChatGPT service account · ${binding.serviceAccountId}`;
+}
+
+export function renderHarnessAuthSummary(context, binding) {
+  if (!["api_key", "codex_pat"].includes(binding?.method)) {
+    return harnessAuthDescription(binding);
+  }
+  return element(
+    "span",
+    {},
+    binding.method === "api_key" ? "API key · " : "Service Accounts · ",
+    renderSecretReference(context, binding.source),
+  );
 }
 
 export function createHarnessAuthFields(

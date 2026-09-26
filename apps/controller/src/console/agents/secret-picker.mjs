@@ -51,6 +51,59 @@ export function isSecretMetadata(secret, namespaceId) {
   );
 }
 
+// Resolve only the referenced resource: list permission is not required to read a binding.
+export function renderSecretReference(context, source) {
+  const node = element("span", { className: "secret-reference", role: "status" });
+  if (source == null) {
+    node.textContent = "No Secret bound";
+    return node;
+  }
+  const href = sameNamespaceSecretHref(source, context.namespaceId);
+  if (!href) {
+    node.textContent = "Bound Secret · reference unavailable in this Namespace";
+    return node;
+  }
+  const bound = `Bound Secret · ${source.id}`;
+  node.textContent = `${bound} · Loading metadata…`;
+  if (typeof context.request !== "function") {
+    node.textContent = `${bound} · Metadata unavailable`;
+    return node;
+  }
+  context
+    .request(href)
+    .then((secret) => {
+      if (context.isCurrent && !context.isCurrent()) {
+        return;
+      }
+      if (!isSecretMetadata(secret, context.namespaceId) || secret.id !== source.id) {
+        node.textContent = `${bound} · Metadata unavailable`;
+        return;
+      }
+      node.replaceChildren(
+        element(
+          "a",
+          {
+            href,
+            target: "_blank",
+            rel: "noopener",
+            title: "View Secret metadata (opens in new tab)",
+          },
+          secretOptionLabel(secret),
+        ),
+      );
+    })
+    .catch((error) => {
+      if (context.isCurrent && !context.isCurrent()) {
+        return;
+      }
+      node.textContent = `${bound} · Metadata unavailable${error.status === 403 ? " (access denied)" : ""}`;
+      if (error.status === 401) {
+        context.onExpired?.();
+      }
+    });
+  return node;
+}
+
 function credentialLink(href, label) {
   return element("a", { href, target: "_blank", rel: "noopener" }, `${label} (opens in new tab)`);
 }

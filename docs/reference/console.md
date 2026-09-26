@@ -127,6 +127,13 @@ access** without repeating the Agent update. Partial saves survive navigation.
 Deployment errors remain visible; confirmed grants do not establish runtime or
 provider readiness.
 
+Configuration and Slack summaries show Harness, app-token, and bot-token Secret
+names and IDs. Bindings belong to the viewed draft or revision; names require
+current, exact Secret `read` permission in the same Namespace. Denied, missing,
+or failed reads retain the bound ID with **Metadata unavailable**. **No Secret
+bound** means no binding exists. Summaries never read values or establish runtime
+credential validity.
+
 AgentRevision snapshots are read-only: they cannot be edited, rolled back, or
 redeployed. **Edit current Configuration** opens the draft without changing the
 snapshot. Activation means OCC admitted and selected a revision. Persisted
@@ -134,10 +141,9 @@ deployment and startup evidence does not establish live gateway health; see the
 [deployment guide](../guides/deploy/production-agents.md#configure-the-agent-runtime)
 and [deployment reference](agents/deployment.md#revisions-and-deployment).
 
-The Channels tab edits Slack settings on the saved Configuration draft.
-Microsoft Teams has no console editor: its credentials and Bot Framework ingress
-require operator setup, and the console cannot deploy a Teams-enabled draft.
-Existing Teams settings remain visible in the native Configuration JSON.
+Channels edits the saved Slack draft. Teams credentials and Bot Framework ingress
+require operator setup; Teams has no editor and blocks Console deployment.
+Its settings remain visible in native Configuration JSON.
 Saving Slack settings patches `values` and includes `secretBindings` when a
 token selection changed, preserving unrelated bindings. An existing plugin allowlist is
 extended; an omitted allowlist stays omitted. Because a Configuration can be
@@ -155,19 +161,16 @@ Refresh loads current saved state. The write may have succeeded; there is no
 automatic replay. **Disable Slack** edits only the draft. It does not disable
 access, stop execution, or change an admitted revision.
 
-Slack editing preserves untouched DM/channel policies and unrelated per-channel
-settings while replacing selected channels' sender lists.
-New Slack configurations use allowlist policies. **Allowed channel user IDs**
-edits each selected channel's `users` list. Selecting **Allow everyone in these
-channels to mention the agent** writes `users: ["*"]` on each selected channel
-and leaves direct-message `allowFrom` unchanged. The checkbox and user ID input
-are mutually exclusive: entering IDs disables the everyone option, clearing IDs
-makes everyone selectable, and turning everyone off re-enables ID entry.
-**Require a mention** is independent of sender access. Use **Direct-message policy** and **Allowed DM user IDs** to change DM access
-separately; see [Slack policies](configuration/secrets.md#native-channel-configuration).
-Channel sender edits leave DM and group policies unchanged. Slack Socket Mode uses fixed
-unresolved references to `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN`.
-Slack requires dedicated execution and Kubernetes runtime projection.
+Slack requires dedicated execution and Kubernetes runtime projection. Socket Mode
+uses unresolved `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN` references.
+New configurations use allowlist policies. **Allowed channel user IDs** replaces
+selected channels' `users` lists while preserving unrelated settings.
+**Allow everyone in these channels to mention the agent** writes `users: ["*"]`.
+Entering IDs disables that checkbox; clearing IDs enables it, and unchecking it
+restores ID entry. **Require a mention** is independent of sender access.
+Channel edits preserve DM and group policies. Change DM access separately with
+**Direct-message policy** and **Allowed DM user IDs**; see
+[Slack policies](configuration/secrets.md#native-channel-configuration).
 
 Each Slack token field is a menu containing the current binding, readable
 Secrets in the same Namespace, and **Create new Secret...**. The creation modal
