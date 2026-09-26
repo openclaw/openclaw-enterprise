@@ -70,8 +70,8 @@ sandbox and network proxy settings therefore apply only to **Standard Codex**.
 It uses the Codex harness with **Service Accounts** authentication (`codex_pat`).
 The `model` variable defaults to `gpt-6-astra` and remains editable; its rendered
 model reference is `codex/gpt-6-astra`. All four DevDay presets expose only `name`
-and `model` variables. After **Use Preset**, enter the service account token in
-the normal credential field before creating the Agent.
+and `model` variables. After **Use Preset**, choose an existing service account Secret or
+**Create new Secret...** before creating the Agent.
 Load a copy beside your YAML as in the example above, or reference the shipped
 container file at `/app/deploy/presets/devday.json`. It is opt-in and is not added
 by `includeDefaults` alone.
@@ -207,7 +207,7 @@ appear only as a whole token in `agent.harnessAuth.secret`, with method
 
 A method-only `agent.harnessAuth`, such as `{ "method": "codex_pat" }`,
 preselects authentication without supplying credentials. The creation form still
-requires a token; a concrete Agent requires a complete credential binding.
+requires a Secret selection; a concrete Agent requires a complete credential binding.
 
 For the password variable bound to authentication, the Console offers **Create new Secret**
 or **Use existing Secret**. Existing mode lists readable Secret metadata from the

@@ -3,6 +3,7 @@ import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../workspace-defaults
 import { harnessAuthDescription } from "./harness-auth.mjs";
 import { createRepositoryFields } from "./repositories.mjs";
 import { ensureSecretOperateBinding } from "./secret-access.mjs";
+import { createSecretReferenceField } from "./secret-picker.mjs";
 import { createPresetFields } from "./presets.mjs";
 import { createPluginFields } from "./plugin-fields.mjs";
 import { renderChannels } from "../channels.mjs";
@@ -381,7 +382,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   const apiKey = element("input", {
     id: "provider-api-key",
     type: "password",
-    required: !binding,
+    required: Boolean(passwordAuth),
     autocomplete: "off",
     spellcheck: "false",
   });
@@ -398,6 +399,8 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     // The retained template must not turn a cleared password into an invalid saved binding.
     delete agent.harnessAuth;
   }
+  let modelCredentialSource = draft.modelCredentialSource;
+  let modelCredentialSecret = draft.modelCredentialSecret;
   const authMethodField = field("Authentication method", authMethod);
   const credentialLabel = element("label", { for: apiKey.id }, "API key");
   const credentialHelp = element("p", { className: "hint", id: "provider-credential-help" });
@@ -448,6 +451,49 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       updateModelConfiguration();
     });
   }
+  const modelCredentialPicker = createSecretReferenceField({
+    context,
+    id: "provider-credential-secret",
+    label: "Model credential Secret",
+    getCurrentSource: () => modelCredentialSource,
+    onSecretSelected(secret) {
+      modelCredentialSource = secret.ref;
+      modelCredentialSecret = secret;
+      resetPluginDiscovery();
+      feedback.textContent = "";
+      updateControls();
+    },
+    createSecretName: () => {
+      const agentName = name.value.trim();
+      return `${agentName || "Agent"} model credential`;
+    },
+    createDialogTitle: "Create model credential Secret",
+    metadataLabel: "View model credential Secret metadata",
+    noSecretLabel: "Choose a model credential Secret",
+    required: !binding && !passwordAuth,
+    disabled: Boolean(binding || passwordAuth),
+  });
+  const modelCredentialField = modelCredentialPicker.field;
+  const transientCredentialField = element(
+    "div",
+    { className: "form-field" },
+    credentialLabel,
+    apiKey,
+    credentialHelp,
+    element(
+      "p",
+      { className: "hint" },
+      passwordAuth
+        ? "Stored as a Secret for this Agent. Credentials are never included in Configuration JSON."
+        : "Enter a service account token only to preview available plugins. Agent creation uses the selected Secret above; Secret values are never read back.",
+    ),
+  );
+  const pluginDiscoveryTokenDetails = element(
+    "details",
+    { id: "plugin-discovery-token", className: "form-field" },
+    element("summary", {}, "Plugin discovery token (optional)"),
+    transientCredentialField,
+  );
   const authSection = element(
     "fieldset",
     { className: "harness-auth-fields" },
@@ -466,18 +512,13 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
             ? "This Preset's saved credential and provider are fixed. Start without a Preset to use a different provider."
             : "This Preset's saved authentication source is preserved.",
         )
-      : element(
-          "div",
-          { className: "form-field" },
-          credentialLabel,
-          apiKey,
-          credentialHelp,
-          element(
-            "p",
-            { className: "hint" },
-            "Stored as a Secret for this Agent. Credentials are never included in Configuration JSON.",
-          ),
-        ),
+      : null,
+    ...(!binding
+      ? [
+          modelCredentialField,
+          passwordAuth ? transientCredentialField : pluginDiscoveryTokenDetails,
+        ]
+      : []),
     modelSection,
   );
   name.value = agent.name ?? "";
@@ -611,6 +652,9 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     mode.value = harness.value === "codex" ? "dedicated" : "embedded";
     // A provider change must not send the previous provider's key to a different service.
     apiKey.value = "";
+    modelCredentialSource = null;
+    modelCredentialSecret = undefined;
+    modelCredentialPicker.refresh();
     if (!binding) {
       authMethod.value = "api_key";
       resetModelChoices(true);
@@ -620,6 +664,9 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   });
   authMethod.addEventListener("change", () => {
     apiKey.value = "";
+    modelCredentialSource = null;
+    modelCredentialSecret = undefined;
+    modelCredentialPicker.refresh();
     resetModelChoices();
   });
   model.addEventListener("change", () => updateModelConfiguration());
@@ -629,6 +676,9 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     if (!binding && harness.value === "openclaw" && authMethod.value === "codex_pat") {
       authMethod.value = "api_key";
       apiKey.value = "";
+      modelCredentialSource = null;
+      modelCredentialSecret = undefined;
+      modelCredentialPicker.refresh();
       resetModelChoices(true);
     } else {
       updateModelConfiguration(true);
@@ -649,6 +699,9 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         if (selectedProvider !== nativeProvider.value && !binding) {
           apiKey.value = "";
           authMethod.value = "api_key";
+          modelCredentialSource = null;
+          modelCredentialSecret = undefined;
+          modelCredentialPicker.refresh();
         }
         nativeProvider.value = selectedProvider;
         if (selectedProvider === "anthropic") {
@@ -702,7 +755,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         pluginCatalog.message ??
         (canDiscoverPlugins()
           ? "Load plugins available to this service account token. Your plugin selections stay unchanged."
-          : "To discover plugins, choose Service Accounts with the Codex harness and enter a token. Saved Preset credentials cannot be used for discovery here."),
+          : "For discovery, choose Service Accounts with the Codex harness and enter a token under Plugin discovery token (optional). Saved Secret values cannot be read here."),
     });
   }
   function resetPluginDiscovery() {
@@ -1073,6 +1126,8 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     pendingProviderModel,
     configurationSecretBindings,
     stagedChannelSecrets,
+    modelCredentialSource,
+    modelCredentialSecret,
     repositoryBindings: repositories.draftBindings(),
   }));
   function parseObject(input, reportInvalid = false) {
@@ -1260,7 +1315,27 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     const patOption = authMethod.querySelector('[value="codex_pat"]');
     patOption.hidden = harness.value !== "codex";
     patOption.disabled = harness.value !== "codex";
-    credentialLabel.textContent = usesPat ? "Service account token" : "API key";
+    credentialLabel.textContent = passwordAuth
+      ? usesPat
+        ? "Service account token"
+        : "API key"
+      : "Token for plugin discovery";
+    modelCredentialField.hidden = Boolean(binding || passwordAuth);
+    pluginDiscoveryTokenDetails.hidden = Boolean(binding || passwordAuth || !usesPat);
+    if (pluginDiscoveryTokenDetails.hidden) {
+      pluginDiscoveryTokenDetails.open = false;
+    }
+    modelCredentialField.querySelector("label").textContent = usesPat
+      ? "Service account token Secret"
+      : "API key Secret";
+    modelCredentialPicker.setRequired(!binding && !passwordAuth);
+    modelCredentialPicker.setDisabled(
+      pending ||
+        Boolean(
+          binding || passwordAuth || savedConfiguration || savedAgent || provisioningAttempt,
+        ) ||
+        outcomeUnknown,
+    );
     if (usesPat) {
       apiKey.placeholder = "at-…";
       credentialHelp.replaceChildren(
@@ -1291,7 +1366,8 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       apiKey.placeholder = "sk-ant-…";
       credentialHelp.textContent = "Use an Anthropic API key for embedded OpenClaw.";
     }
-    apiKey.disabled ||= Boolean(savedSecret);
+    apiKey.required = Boolean(passwordAuth);
+    apiKey.disabled ||= Boolean(savedSecret || binding || (!passwordAuth && !usesPat));
     startOver.disabled = pending || outcomeUnknown || saved || Boolean(savedSecret);
     if (useModelChoices) {
       choiceField.hidden = manualModel;
@@ -1521,13 +1597,17 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       ...(Object.keys(desiredPlugins).length ? { plugins: desiredPlugins } : {}),
       ...(agent.backendId ? { backendId: agent.backendId } : {}),
     };
+    if (!binding && !passwordAuth && modelCredentialSource?.kind !== "secret") {
+      feedback.textContent = "Choose a model credential Secret before creating the Agent.";
+      return;
+    }
     context.setDraftCapture(null);
     pending = true;
     updateControls();
     feedback.textContent = "";
     let mutationStarted = false;
     try {
-      if (!binding && !savedSecret) {
+      if (passwordAuth && !savedSecret) {
         mutationStarted = true;
         savedSecret = await request(`${namespacePath(namespaceId)}/secrets`, {
           method: "POST",
@@ -1540,7 +1620,8 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         }
         showSavedStatus();
       }
-      body.harnessAuth = binding ?? { method: authMethod.value, source: savedSecret.ref };
+      const selectedCredentialSource = passwordAuth ? savedSecret?.ref : modelCredentialSource;
+      body.harnessAuth = binding ?? { method: authMethod.value, source: selectedCredentialSource };
       if (shouldProvision()) {
         provisioningAttempt = {
           acknowledged: false,
@@ -1588,6 +1669,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       mutationStarted = false;
       const modelSecret =
         savedSecret ??
+        modelCredentialSecret ??
         presetExistingSecret ??
         (hasBoundModelCredential ? binding.source : undefined);
       if (modelSecret) {

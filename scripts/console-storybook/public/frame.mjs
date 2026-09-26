@@ -44,28 +44,6 @@ if (scenario.component === "plugins") {
   await import("/console/console.mjs");
 }
 
-const defaultedFields = new WeakSet();
-const applyFormDefaults = () => {
-  for (const [selector, value] of Object.entries(scenario.formDefaults ?? {})) {
-    const node = document.querySelector(selector);
-    if (!node || node.disabled || defaultedFields.has(node)) {
-      continue;
-    }
-    defaultedFields.add(node);
-    if (node.value) {
-      continue;
-    }
-    node.value = value;
-    node.dispatchEvent(new Event("input", { bubbles: true }));
-    node.dispatchEvent(new Event("change", { bubbles: true }));
-  }
-};
-if (scenario.formDefaults) {
-  const observer = new MutationObserver(applyFormDefaults);
-  observer.observe(document.body, { childList: true, subtree: true });
-  applyFormDefaults();
-}
-
 // Prepare open drawers and validation states by operating the real UI, not editing its markup.
 try {
   for (const action of scenario.actions ?? []) {

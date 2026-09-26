@@ -5,11 +5,16 @@ const revision =
 const create = "/console/agents/new?namespace=ns_00000000-0000-4000-8000-000000000001";
 const click = (text) => ({ click: text });
 const form = [click("Start without Preset")];
+const createModelSecret = (value) => [
+  { selector: "#provider-credential-secret", value: "__openclaw_create_secret__" },
+  { selector: "#create-provider-credential-secret-value", value },
+  click("Create Secret"),
+];
 const readyForm = [
   ...form,
   { selector: "#agent-name", value: "Research assistant" },
-  { selector: "#provider-api-key", value: "storybook-model-api-key" },
   { selector: "#agent-model", value: "gpt-5.6-sol" },
+  ...createModelSecret("storybook-model-api-key"),
 ];
 const passwordPresetForm = [
   { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
@@ -256,6 +261,7 @@ const devdayPluginDiscovery = {
 const pluginDiscoveryForm = [
   ...form,
   { selector: "#agent-auth-method", value: "codex_pat" },
+  { selector: "#plugin-discovery-token summary", click: true },
   { selector: "#provider-api-key", value: "at-storybook-pat" },
   click("Configure plugins"),
 ];
@@ -278,8 +284,8 @@ const createWorkspaceFields = [
   ...form,
   { selector: ".launch-advanced summary", click: true },
   { selector: "#agent-name", value: "Workspace seed demo" },
-  { selector: "#provider-api-key", value: "storybook-model-api-key" },
   { selector: "#agent-model", value: "gpt-5.6-sol" },
+  ...createModelSecret("storybook-model-api-key"),
   {
     selector: "#workspace-IDENTITY-md",
     value:
@@ -303,7 +309,7 @@ const devdayCreateCheckpoint = [
   { selector: "#agent-preset", value: "pre_devday_codex" },
   { selector: "#preset-variable-name", value: "devday claw" },
   click("Use Preset"),
-  { selector: "#provider-api-key", value: "at-demo-devday-service-account-token" },
+  { selector: "#provider-credential-secret", value: "sec_devday_model_token" },
   click("Configure plugins"),
   { selector: 'button[aria-label="Linear"]', click: true },
   click("Add Linear"),
@@ -1451,7 +1457,7 @@ export const scenarios = {
     actions: [
       ...form,
       { selector: "#model-provider", value: "anthropic" },
-      { selector: "#provider-api-key", value: "storybook-anthropic-key" },
+      ...createModelSecret("storybook-anthropic-key"),
     ],
     description:
       "Anthropic offers only the OpenClaw harness, with Embedded execution. Its fixed model list is available before credential entry and starts without a selection.",
@@ -1463,7 +1469,7 @@ export const scenarios = {
     actions: [
       ...form,
       { selector: "#agent-auth-method", value: "codex_pat" },
-      { selector: "#provider-api-key", value: "at-storybook-pat" },
+      ...createModelSecret("at-storybook-pat"),
     ],
     description:
       "Service Accounts authentication is available with the Codex harness and uses the same fixed OpenAI model list. Switching to OpenClaw selects API-key authentication and clears the credential and model selection.",
@@ -1475,12 +1481,12 @@ export const scenarios = {
     actions: [
       ...form,
       { selector: "#agent-auth-method", value: "codex_pat" },
-      { selector: "#provider-api-key", value: "at-storybook-pat" },
+      ...createModelSecret("at-storybook-pat"),
       { selector: "#agent-model", value: "gpt-5.6-sol" },
       { selector: "#agent-harness", value: "openclaw" },
     ],
     description:
-      "Switching an unsaved service account form to OpenClaw clears the token and model, selects API-key authentication, and uses Embedded execution. Enter a dummy API key to continue.",
+      "Switching an unsaved service account form to OpenClaw clears the token and model, selects API-key authentication, and uses Embedded execution. Choose or create a simulated API key Secret to continue.",
   },
   createBoundPatPreset: {
     group: "Pages/Create Agent",
@@ -1523,7 +1529,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "API key storage denied",
     path: create,
-    actions: [...readyForm, click("Create Agent")],
+    actions: readyForm,
     rules: [
       {
         path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets",
@@ -1532,7 +1538,7 @@ export const scenarios = {
       },
     ],
     description:
-      "A rejected Secret write keeps the form available and does not create a Configuration or Agent.",
+      "A rejected Secret write keeps the creation dialog open and does not create a Configuration or Agent.",
   },
   createGrantDenied: {
     unsupportedProvisioning: true,
@@ -2494,10 +2500,6 @@ export const scenarios = {
     nativeAdmin: "available",
     nativeAdminUrl: "/storybook-fixtures/devday-admin.html?agent=oceclaw&channel=openclaw-feedback",
     devdayPreset: true,
-    formDefaults: {
-      "#preset-variable-modelSecret": "at-demo-devday-service-account-token",
-      "#provider-api-key": "at-demo-devday-service-account-token",
-    },
     pluginDiscovery: devdayPluginDiscovery,
     pluginCapabilities,
     fixturePluginCatalog: true,
@@ -2535,7 +2537,7 @@ export const scenarios = {
     steps: [
       "Start on the Agents list with the already deployed oceclaw seed, then click Create Agent.",
       "The picker includes SWE Agent, Community Agent, Q&A Agent, and Oncall Agent. Select SWE Agent and enter devday claw for its name.",
-      "Keep the default gpt-6-astra model and click Use Preset. Storybook then fills the normal credential field with a fake service-account token for rehearsal only. Review AGENTS.md: its opening sentence now says You are devday claw. Workspace defaults remain editable.",
+      "Keep the default gpt-6-astra model and click Use Preset. Choose the existing DevDay Codex service account (simulated) Secret, or explicitly create a new simulated Secret. No credential is preselected. Review AGENTS.md: its opening sentence now says You are devday claw. Workspace defaults remain editable.",
       "Open Configure plugins. The simulated curated catalog is available for every Preset and Secret choice in this Storybook flow; add Linear, set Linear default reviewer to Automatic review, and set Create issue approval to Ask for approval.",
       "Repository access offers openclaw/openclaw-enterprise and openclaw/openclaw. Select either or both with Contributor access.",
       "Open Edit Slack. Confirm the four prefilled channels: oce-feedback (C0C49E7CS4A), oce-team (C0C43A2QA11), oce-feedback-test (C0C569NN9ME), and oce-team-test (C0C4A0JH2BG); mentions are not required. Allow simulated user UDEMO123, then bind the existing simulated DevDay Slack Secrets and apply settings.",
@@ -2555,10 +2557,6 @@ export const scenarios = {
     nativeAdmin: "available",
     nativeAdminUrl: "/storybook-fixtures/devday-admin.html?agent=oceclaw&channel=openclaw-feedback",
     devdayPreset: true,
-    formDefaults: {
-      "#preset-variable-modelSecret": "at-demo-devday-service-account-token",
-      "#provider-api-key": "at-demo-devday-service-account-token",
-    },
     pluginDiscovery: devdayPluginDiscovery,
     pluginCapabilities,
     fixturePluginCatalog: true,
