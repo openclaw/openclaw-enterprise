@@ -969,6 +969,7 @@
                           "additionalProperties": false,
                           "properties": {
                             "authenticated": { "const": true, "type": "boolean" },
+                            "sessionKey": { "type": "string" },
                             "user": {
                               "additionalProperties": false,
                               "properties": {
@@ -980,7 +981,7 @@
                               "type": "object"
                             }
                           },
-                          "required": ["authenticated", "user"],
+                          "required": ["authenticated", "sessionKey", "user"],
                           "type": "object"
                         }
                       ]

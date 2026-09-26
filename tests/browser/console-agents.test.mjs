@@ -895,7 +895,11 @@ test("Agent creation selects approved repositories with one common explicit prof
     for (let navigation = 0; navigation < 2; navigation += 1) {
       await page.getByRole("link", { name: "← Agents" }).click();
       await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-      await page.getByRole("button", { name: "Retry repository choices" }).waitFor();
+      // Wait for fresh discovery to fail; the retained preview has a disabled Retry button.
+      await page
+        .getByRole("button", { name: "Retry repository choices" })
+        .and(page.locator(":enabled"))
+        .waitFor();
       assert.equal(await page.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
     }
     await page.unroute(optionsUrl);

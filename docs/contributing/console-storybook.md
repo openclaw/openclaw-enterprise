@@ -150,6 +150,18 @@ requires a current nonempty repository selection before retrying. GitHub App
 setup, Namespace approvals, runtime images, and credential-service networking
 remain operator prerequisites; the fixture does not verify them.
 
+### Return to loaded pages
+
+Use **Pages/Navigation → Return to loaded pages** to revisit collections,
+Create Agent, Agent detail, and Settings during delayed reads. Exercise breadcrumbs,
+sidebar links, Back/Forward, Refresh, and refocus. First visits may load; returning
+pages should preserve content while revalidating. Namespace switches clear old rows.
+
+**Return access denied** and **Return session expired** must remove retained private
+content when the response arrives. These fixtures prove presentation; the
+[browser suite](../testing/local.md#console-browser-checks) owns authorization proof.
+Reset story clears retained state.
+
 ### Keep edits while navigating
 
 Use **Pages/Agent detail → Keep Configuration edits**, **Components/Workspace →

@@ -157,10 +157,10 @@ function createDeploymentStatusPanel(context, path, revisionId) {
   return section;
 }
 
-export async function renderAgentDetail(context) {
+export async function renderAgentDetail(context, { agent: preloadedAgent = null } = {}) {
   const { view, namespaceId, agentId, request, url } = context;
   const path = `${namespacePath(namespaceId)}/agents/${encodeURIComponent(agentId)}`;
-  const agent = await request(path);
+  const agent = preloadedAgent ?? (await request(path));
   if (!context.isCurrent()) {
     return;
   }

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-09-01
-last_updated_session: codex/01a05f95-dd80-7011-990f-d1c46b5bb3cc
+updated: 2026-09-25
+last_updated_session: 01a0d992-db83-7843-b40c-355c0f2c2b9a
 ---
 
 # Bootstrap and Local Password Authentication Flow
@@ -122,7 +122,10 @@ retains its non-secret IDs. Lost output does not trigger regeneration; normal
 `apps/controller/src/auth/index.ts:createControllerAuth` configures Better Auth
 email/password authentication, protected session cookies, and durable PostgreSQL
 storage. Sign-in returns only `{ authenticated: true }`; the session token stays
-in its HttpOnly cookie and is omitted from session-inspection responses. Sign-out
+in its HttpOnly cookie and is omitted from session-inspection responses.
+`safeSessionResponse` projects the noncredential session record ID as `sessionKey`
+alongside public user identity. Console compares it to invalidate retained views
+and drafts after a new session, including for the same user. Sign-out
 revokes the session, and public signup is disabled.
 
 ### 4. Admit and authorize protected API calls
@@ -187,6 +190,8 @@ implicit permissions.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-25 17:27: Trace noncredential session identity for Console lifetime invalidation in accompanying changes. (01a0d992-db83-7843-b40c-355c0f2c2b9a - 64ab72aed5c4926e4a2080ade91d785e531801a2)
 
 - 2026-09-01 19:09: Update links to consolidated runtime flows. (01a05f95-dd80-7011-990f-d1c46b5bb3cc - aa366c49c44834d59f74994c5fd37fb8096f169f)
 - 2026-08-31 22:29: Remove automatic bootstrap recovery; preserve artifacts after any error and require manual repair. (01a05a3d-526f-7553-8cd8-070bd1847acb - 94a5440898bf331987148d7733f0075506af64a6)

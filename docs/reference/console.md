@@ -1,19 +1,13 @@
 # Platform console
 
-Use the browser console at `/console/` on your OCC address to sign in, choose a
-Namespace, create, deploy, and delete Agents, and edit supported Slack
-draft settings. You can also set initial workspace contents and runtime credentials,
-read or replace supported live workspace files, and list the Agents and Namespaces
-you can access. When the pilot is enabled, trusted operators can open an Agent's
-[native admin UI](#open-the-native-admin-ui). The console does not offer rollback,
-live runtime health, or browser chat through OCE.
+Open `/console/` on your OCC address to manage Agents and supported Slack settings,
+workspace files, and credentials. Authorized operators can also open an Agent's
+[native admin UI](#open-the-native-admin-ui). The console has no rollback, live
+runtime health, or browser chat through OCE.
 
-For a component-by-component tour, see
-[Understand the Agent detail page](../guides/console/agent-details.md).
-
-For browser deployment instructions, follow [Create and deploy Agents](console/create-and-deploy.md).
-See the [deployment guide](../guides/deploy.md) for operator procedures and
-runtime checks, and the [API reference](api.md) for management operations.
+Start with [Create and deploy Agents](console/create-and-deploy.md) or
+[Understand Agent detail](../guides/console/agent-details.md). Operator setup and
+runtime checks belong to the [deployment guide](../guides/deploy.md).
 
 ## Start and sign in
 
@@ -50,6 +44,13 @@ read. Model provider and API-key setup are part of Agent creation; the separate
 
 The console uses a light appearance. Its fonts are served by OCC;
 no external font service is required.
+
+Returning to a loaded page keeps its previous content visible while session,
+Namespace, and resource reads run. Navigation stays available; resource controls
+wait for fresh authorization. First visits still load. Previews stay only in this
+document, scoped to the account, session, route, and Namespace. Sign-out, session
+changes, and leaving the document clear them. Failed reads replace affected
+content with recovery rather than treating it as current data.
 
 Use the **Namespace** selector in the page header to switch scope on desktop or
 mobile. It lists readable Namespaces and shows the current selection. The

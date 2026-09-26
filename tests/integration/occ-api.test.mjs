@@ -2310,6 +2310,24 @@ test("session inspection stays optional and never exposes session or credential 
   const exposed = JSON.stringify(authenticated.data);
   assert.doesNotMatch(exposed, /token|password|credential/i);
   assert.equal(exposed.includes(fixture.app.defaultSession.cookie), false);
+  assert.match(authenticated.data.sessionKey, /^[A-Za-z0-9_-]+$/);
+
+  const repeated = await injectedRequest(fixture.app, "GET", "/api/auth/session");
+  assert.equal(repeated.status, 200);
+  assert.equal(repeated.data.sessionKey, authenticated.data.sessionKey);
+  assert.deepEqual(repeated.data.user, authenticated.data.user);
+
+  const nextSession = await signInWithEmailPassword({
+    fetch: fixture.app.fetch.bind(fixture.app),
+    email: fixture.authFixture.email,
+    password: fixture.authFixture.password,
+  });
+  const nextAuthenticated = await injectedRequest(fixture.app, "GET", "/api/auth/session", {
+    session: nextSession,
+  });
+  assert.equal(nextAuthenticated.status, 200);
+  assert.notEqual(nextAuthenticated.data.sessionKey, authenticated.data.sessionKey);
+  assert.deepEqual(nextAuthenticated.data.user, authenticated.data.user);
 });
 
 test("administrator-created auth accounts sign in and receive only provisioned IAM access", async () => {

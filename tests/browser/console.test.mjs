@@ -326,13 +326,18 @@ test("console ignores stale collection successes and errors while switching Name
   await fixture.createAgent(current.id, "Current agent");
   const { page } = await newPage(t, fixture);
   const slowAgents = `**/namespaces/${slow.id}/agents`;
+  await login(page, fixture, `/console/agents?namespace=${slow.id}`);
+  await page.getByText("Slow agent").waitFor();
+  await chooseNamespace(page, "Current");
+  await page.getByText("Current agent").waitFor();
   const slowSuccess = await holdRoute(t, page, slowAgents, (route, response) =>
     response ? route.fulfill({ response }) : route.continue(),
   );
   t.after(() => slowSuccess.release());
 
-  await login(page, fixture, `/console/agents?namespace=${slow.id}`);
+  await chooseNamespace(page, "Slow");
   await slowSuccess.waitForRelease();
+  await expectRetainedPreview(page, "Slow agent");
   await chooseNamespace(page, "Current");
   await page.getByText("Current agent").waitFor();
   slowSuccess.release();
@@ -350,6 +355,349 @@ test("console ignores stale collection successes and errors while switching Name
   await slowError.waitForCompletion();
   await page.waitForTimeout(100);
   await expectNoText(page, /Slow agent|unavailable|failed/i);
+});
+
+async function releaseHeldRoute(page, pattern, hold) {
+  hold.release();
+  await hold.waitForCompletion();
+  await page.unroute(pattern);
+}
+
+async function expectRetainedPreview(page, visibleText) {
+  if (visibleText) {
+    await page.getByText(visibleText, { exact: true }).waitFor();
+  }
+  assert.equal(await page.locator('.content [aria-live="polite"][inert]').count(), 1);
+  assert.equal(await page.locator(".shell[inert]").count(), 0);
+  await expectNoText(page, /Checking your session|Checking your session and Namespace access/);
+}
+
+test("console keeps loaded route families visible while return reads refresh", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Retained routes", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Retained route Agent");
+  const { page } = await newPage(t, fixture);
+
+  await login(page, fixture, "/console/agents?namespace=" + namespace.id);
+  await page.getByText("Retained route Agent", { exact: true }).waitFor();
+
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  const agentsPattern = "**/namespaces/" + namespace.id + "/agents";
+  const agentsHold = await holdRoute(t, page, agentsPattern, (route, response) =>
+    response ? route.fulfill({ response }) : route.continue(),
+  );
+  t.after(() => agentsHold.release());
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
+  await agentsHold.waitForRelease();
+  await expectRetainedPreview(page, "Retained route Agent");
+  await releaseHeldRoute(page, agentsPattern, agentsHold);
+  await page.getByRole("button", { name: "Create Agent", exact: true }).waitFor();
+
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
+  await page.getByText("Retained route Agent", { exact: true }).waitFor();
+  const namespacesPattern = "**/namespaces";
+  const namespacesHold = await holdRoute(t, page, namespacesPattern, (route, response) =>
+    response ? route.fulfill({ response }) : route.continue(),
+  );
+  t.after(() => namespacesHold.release());
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await namespacesHold.waitForRelease();
+  await expectRetainedPreview(page, "Retained routes");
+  await releaseHeldRoute(page, namespacesPattern, namespacesHold);
+  await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+
+  await page.goto(fixture.origin + "/console/backends?namespace=" + namespace.id);
+  await page.getByText("openai-primary", { exact: true }).waitFor();
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
+  await page.getByText("Retained route Agent", { exact: true }).waitFor();
+  const backendsPattern = "**/backends";
+  const backendsHold = await holdRoute(t, page, backendsPattern, (route, response) =>
+    response ? route.fulfill({ response }) : route.continue(),
+  );
+  t.after(() => backendsHold.release());
+  await page.goBack();
+  await backendsHold.waitForRelease();
+  await expectRetainedPreview(page, "openai-primary");
+  await releaseHeldRoute(page, backendsPattern, backendsHold);
+  await page.getByRole("heading", { name: "Backends", exact: true }).waitFor();
+
+  await openShellMenu(page);
+  await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
+  await page.getByText(fixture.credentials.email.toLowerCase(), { exact: true }).waitFor();
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
+  await page.getByText("Retained route Agent", { exact: true }).waitFor();
+  const sessionPattern = "**/api/auth/session";
+  const sessionHold = await holdRoute(t, page, sessionPattern, (route, response) =>
+    response ? route.fulfill({ response }) : route.continue(),
+  );
+  t.after(() => sessionHold.release());
+  await openShellMenu(page);
+  await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
+  await sessionHold.waitForRelease();
+  await expectRetainedPreview(page, fixture.credentials.email.toLowerCase());
+  await releaseHeldRoute(page, sessionPattern, sessionHold);
+  await page.getByRole("heading", { name: "Settings", exact: true }).waitFor();
+
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
+  await page.getByRole("link", { name: "Retained route Agent", exact: true }).click();
+  await page.getByRole("heading", { name: "Retained route Agent", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Workspace files", exact: true }).click();
+  const workspaceNotice =
+    "Workspace files require a deployed Agent with an active revision and a reachable gateway.";
+  await page.getByText(workspaceNotice, { exact: true }).waitFor();
+  await page.getByRole("link", { name: "← Agents", exact: true }).click();
+  await page.getByText("Retained route Agent", { exact: true }).waitFor();
+  const detailPattern = "**/namespaces/" + namespace.id + "/agents/" + agent.id;
+  const detailHold = await holdRoute(t, page, detailPattern, (route, response) =>
+    response ? route.fulfill({ response }) : route.continue(),
+  );
+  t.after(() => detailHold.release());
+  await page.goBack();
+  await detailHold.waitForRelease();
+  await expectRetainedPreview(page, workspaceNotice);
+  assert.equal(new URL(page.url()).searchParams.get("tab"), "workspace");
+  await releaseHeldRoute(page, detailPattern, detailHold);
+  await page.getByRole("heading", { name: "Retained route Agent", exact: true }).waitFor();
+
+  await page.getByRole("link", { name: "← Agents", exact: true }).click();
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page.getByRole("heading", { name: "Create Agent", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Start without Preset", exact: true }).click();
+  await page.getByLabel("Agent name", { exact: true }).fill("Retained draft Agent");
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  const createSessionHold = await holdRoute(t, page, sessionPattern, (route, response) =>
+    response ? route.fulfill({ response }) : route.continue(),
+  );
+  t.after(() => createSessionHold.release());
+  await page.goBack();
+  await createSessionHold.waitForRelease();
+  await expectRetainedPreview(page);
+  assert.equal(await page.locator("#agent-name").inputValue(), "Retained draft Agent");
+  await releaseHeldRoute(page, sessionPattern, createSessionHold);
+  await page.getByRole("heading", { name: "Create Agent", exact: true }).waitFor();
+  assert.equal(
+    await page.getByLabel("Agent name", { exact: true }).inputValue(),
+    "Retained draft Agent",
+  );
+});
+
+test("Refresh and focus restoration retain rows until fresh data arrives", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Background reads", { ready: true });
+  await fixture.createAgent(namespace.id, "Existing background Agent");
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await page.getByText("Existing background Agent").waitFor();
+  for (const trigger of ["Refresh", "focus", "visibilitychange"]) {
+    const pending = await holdRoute(t, page, "**/api/auth/session", (route, response) =>
+      response ? route.fulfill({ response }) : route.continue(),
+    );
+    t.after(() => pending.release());
+    await fixture.createAgent(namespace.id, `Added during ${trigger}`);
+    if (trigger === "Refresh") {
+      await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    } else {
+      // Invoke the production event handlers without relying on window-manager focus timing.
+      await page.evaluate((name) => {
+        const target = name === "focus" ? globalThis : globalThis.document;
+        target.dispatchEvent(new Event(name));
+      }, trigger);
+    }
+    await pending.waitForRelease();
+    await expectRetainedPreview(page, "Existing background Agent");
+    await releaseHeldRoute(page, "**/api/auth/session", pending);
+    await page.getByText(`Added during ${trigger}`, { exact: true }).waitFor();
+  }
+});
+
+test("console retained views clear after session expiry and exact Agent denial", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Retained invalidation", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Denied retained Agent");
+  const { page } = await newPage(t, fixture);
+
+  await login(page, fixture, "/console/agents?namespace=" + namespace.id);
+  await page.getByText("Denied retained Agent", { exact: true }).waitFor();
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  for (const session of fixture.memoryDatabase.session) {
+    session.expiresAt = new Date(Date.now() - 1000);
+  }
+  const sessionPattern = "**/api/auth/session";
+  const expiredSession = await holdRoute(t, page, sessionPattern, (route, response) =>
+    response ? route.fulfill({ response }) : route.continue(),
+  );
+  t.after(() => expiredSession.release());
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
+  await expiredSession.waitForRelease();
+  await expectRetainedPreview(page, "Denied retained Agent");
+  await releaseHeldRoute(page, sessionPattern, expiredSession);
+  await page.getByText("Your session has expired").waitFor();
+  await expectNoText(page, /Denied retained Agent/);
+
+  fixture.memoryDatabase.session.length = 0;
+  await login(page, fixture, "/console/agents/" + agent.id + "?namespace=" + namespace.id);
+  await page.getByRole("heading", { name: "Denied retained Agent", exact: true }).waitFor();
+  await page.getByRole("link", { name: "← Agents", exact: true }).click();
+  await page.getByText("Denied retained Agent", { exact: true }).waitFor();
+  fixture.policy.restrictions.push({
+    id: "deny-retained-agent-read",
+    namespaceId: namespace.id,
+    resourceKind: "agent",
+    resourceId: agent.id,
+    action: "read",
+    effect: "deny",
+  });
+  const detailPattern = "**/namespaces/" + namespace.id + "/agents/" + agent.id;
+  const deniedAgent = await holdRoute(t, page, detailPattern, (route, response) =>
+    response ? route.fulfill({ response }) : route.continue(),
+  );
+  t.after(() => deniedAgent.release());
+  await page.goBack();
+  await deniedAgent.waitForRelease();
+  await expectRetainedPreview(page, "Denied retained Agent");
+  await releaseHeldRoute(page, detailPattern, deniedAgent);
+  await page.getByRole("heading", { name: "Access denied", exact: true }).waitFor();
+  await expectNoText(page, /Configuration draft|Selected revision/);
+});
+
+// Both shared admission reads must revoke every preview when their outcome is unknown.
+for (const gate of ["/api/auth/session", "/namespaces"]) {
+  test(`console clears all retained pages after ${gate} fails`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Admission failure", { ready: true });
+    await fixture.createAgent(namespace.id, "Private cached Agent");
+    const { page } = await newPage(t, fixture);
+    await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+    await page.getByText("Private cached Agent").waitFor();
+    await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+    await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+
+    await page.route(`**${gate}`, (route) => route.abort("failed"));
+    await page.getByRole("link", { name: "Agents", exact: true }).click();
+    await page
+      .getByRole("heading", {
+        name: gate === "/api/auth/session" ? "Session unavailable" : "Namespace access unavailable",
+        exact: true,
+      })
+      .waitFor();
+    await expectNoText(page, /Private cached Agent|Admission failure/);
+    await page.unroute(`**${gate}`);
+
+    // Returning to the other cached route cannot resurrect it while admission is pending.
+    const pending = await holdRoute(t, page, "**/api/auth/session", (route, response) =>
+      response ? route.fulfill({ response }) : route.continue(),
+    );
+    t.after(() => pending.release());
+    await page.goBack();
+    await pending.waitForRelease();
+    assert.equal(await page.locator(".content [inert]").count(), 0);
+    await expectNoText(page, /Private cached Agent|Admission failure/);
+    await releaseHeldRoute(page, "**/api/auth/session", pending);
+    await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  });
+}
+
+test("a replacement session for the same user discards retained creation drafts", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Session replacement", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset", exact: true }).click();
+  await page.getByLabel("Agent name", { exact: true }).fill("Old session draft");
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+
+  // APIRequestContext shares the browser cookie jar: this models a login in another tab.
+  const response = await page.context().request.post(`${fixture.origin}/api/auth/sign-in/email`, {
+    headers: { origin: fixture.origin },
+    data: { email: fixture.credentials.email, password: fixture.credentials.password },
+  });
+  assert.equal(response.status(), 200);
+  const pending = await holdRoute(t, page, "**/namespaces", (route, read) =>
+    read ? route.fulfill({ response: read }) : route.continue(),
+  );
+  t.after(() => pending.release());
+  await page.goBack();
+  await pending.waitForRelease();
+  // The new session has been checked; the old preview must already be gone.
+  assert.equal(await page.locator("#agent-name").count(), 0);
+  assert.equal(await page.locator(".content [inert]").count(), 0);
+  await releaseHeldRoute(page, "**/namespaces", pending);
+  await page.getByRole("button", { name: "Start without Preset", exact: true }).click();
+  assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "");
+});
+
+test("known Namespace revocation invalidates a cached global collection with another selection", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const allowed = await fixture.createNamespace("Still readable", { ready: true });
+  const revoked = await fixture.createNamespace("Removed from access", { ready: true });
+  await fixture.createAgent(allowed.id, "Allowed Agent");
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/namespaces?namespace=${allowed.id}`);
+  await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
+  await page.getByText("Allowed Agent", { exact: true }).waitFor();
+  fixture.policy.restrictions.push({
+    id: "deny-cached-namespace",
+    namespaceId: revoked.id,
+    resourceKind: "namespace",
+    action: "read",
+    effect: "deny",
+  });
+  // Refresh learns the revocation while the selected Namespace remains readable.
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
+  const pending = await holdRoute(t, page, "**/api/auth/session", (route, response) =>
+    response ? route.fulfill({ response }) : route.continue(),
+  );
+  t.after(() => pending.release());
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await pending.waitForRelease();
+  await expectNoText(page, /Removed from access/);
+  await releaseHeldRoute(page, "**/api/auth/session", pending);
+  await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  await expectNoText(page, /Removed from access/);
+});
+
+test("pagehide clears private content before persisted pageshow revalidates", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Page lifecycle", { ready: true });
+  await fixture.createAgent(namespace.id, "Before pagehide Agent");
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await page.getByText("Before pagehide Agent").waitFor();
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  // Exercise the actual registered lifecycle handlers; this does not prove browser BFCache eligibility.
+  await page.evaluate(() =>
+    globalThis.dispatchEvent(new globalThis.PageTransitionEvent("pagehide", { persisted: true })),
+  );
+  assert.equal(await page.locator("#app").textContent(), "");
+  const pending = await holdRoute(t, page, "**/api/auth/session", (route, response) =>
+    response ? route.fulfill({ response }) : route.continue(),
+  );
+  t.after(() => pending.release());
+  await page.evaluate(() =>
+    globalThis.dispatchEvent(new globalThis.PageTransitionEvent("pageshow", { persisted: true })),
+  );
+  await pending.waitForRelease();
+  await expectNoText(page, /Before pagehide Agent|Page lifecycle/);
+  await releaseHeldRoute(page, "**/api/auth/session", pending);
+  await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  await page.goBack();
+  await page.getByText("Before pagehide Agent").waitFor();
 });
 
 test("mobile header switches Namespace without opening the navigation drawer", async (t) => {
@@ -438,6 +786,17 @@ test("console clears private content after session expiry, access revocation, an
   );
   assert.equal(await page.getByRole("option", { name: "Revoked", exact: true }).count(), 0);
   await expectNoText(page, /Revoked agent/);
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
+  const revokedReturn = await holdRoute(t, page, "**/api/auth/session", (route, response) =>
+    response ? route.fulfill({ response }) : route.continue(),
+  );
+  t.after(() => revokedReturn.release());
+  await page.goBack();
+  await revokedReturn.waitForRelease();
+  await expectNoText(page, /Revoked agent/);
+  await releaseHeldRoute(page, "**/api/auth/session", revokedReturn);
+  await page.getByRole("heading", { name: "Namespace unavailable", exact: true }).waitFor();
   fixture.policy.restrictions.length = 0;
 
   await page.reload();

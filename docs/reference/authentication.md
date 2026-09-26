@@ -99,8 +99,13 @@ header keep the documented sign-in/sign-out flow.
 | Operation                      | Supported behavior                                                                                                                                          |
 | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `POST /api/auth/sign-in/email` | Verifies an existing account's email and password and issues a session cookie. The JSON response confirms authentication without returning a session token. |
-| `GET /api/auth/session`        | Returns safe account identity for a valid session or `data: null` without one. Inspecting the session is optional.                                          |
+| `GET /api/auth/session`        | Returns safe account identity and a noncredential `sessionKey`, or `data: null` without a valid session.                                                    |
 | `POST /api/auth/sign-out`      | Revokes the current session. Protected API requests using that session subsequently return `401`.                                                           |
+
+The `sessionKey` identifies the current session record, stays stable across reads,
+and changes on a new sign-in, including for the same account. It cannot authenticate
+requests; the session token remains in its HttpOnly cookie. Console uses this key
+to discard retained content and drafts when the session changes.
 
 For example, the sign-in body is:
 

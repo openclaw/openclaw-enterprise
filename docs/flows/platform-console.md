@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: 2026-09-25
-last_updated_session: 01a0d5e6-743e-7743-8a5e-2d8c24b78b81
+last_updated_session: 01a0d992-db83-7843-b40c-355c0f2c2b9a
 ---
 
 # Platform console request flow
@@ -34,9 +34,10 @@ API and IAM authorize resources.
 ```mermaid
 graph TD
   subgraph Browser["Browser"]
-    A["Open console or change page"] --> B["Clear old rows and check session"]
-    B -->|no session| C["Login"]
-    B -->|authenticated| D["Read readable Namespaces and validate selection"]
+    A["Open console or change page"] --> B["Restore scoped preview or show first-load state"]
+    B --> B1["Recheck session and Namespace access"]
+    B1 -->|no session| C["Login"]
+    B1 -->|authenticated| D["Read readable Namespaces and validate selection"]
     D -->|debug=true| DBG["Read accessible Agents and runtime image metadata"]
     DBG --> F
     D --> E["Request current page resource"]
@@ -121,8 +122,14 @@ these reads. Missing provenance and failures remain explicit. The
 
 `apps/controller/src/console/console.mjs:loadPage`
 
-The browser clears the view, advances generation, and requests
-`GET /api/auth/session`. Missing sessions open login; failed reads offer Retry.
+`loadPage` advances the request generation and requests `GET /api/auth/session`.
+First loads show loading. Return navigation and Refresh can restore one of at most
+16 document-local previews keyed by route, Namespace, and session owner while reads
+run. Password fields clear before retention. Preview resource controls cannot
+issue operations; the navigation shell remains available.
+
+A changed user or session key clears retained views and drafts before further
+private reads. Missing sessions open login; failed reads offer Retry.
 Login submits credentials.
 `apps/controller/src/auth/index.ts:requireTrustedBrowserOrigin` checks browser
 Origin before sign-in/out, including SDK calls that bypass Better Auth middleware.
@@ -152,21 +159,11 @@ Installation `administer` precedes the safe startup-summary response. Explicit
 empty configuration is a successful empty list; absent wiring and dependency
 failure return errors.
 
-`apps/controller/src/console/agents/create.mjs:renderCreateAgent` selects Provider,
-then Harness: OpenAI defaults to Dedicated Codex and offers Embedded OpenClaw;
-Anthropic offers OpenClaw. Provider/Harness changes reset incompatible credentials
-and model choices. The [creation reference](../reference/console/create-and-deploy.md)
-defines authentication combinations and token handling.
-
-Presets reject cross-provider JSON: credentials fix Provider; PATs fix
-Codex; operator-managed credentials fix OpenClaw. Installation Backend
-discovery is hidden. The [creation reference](../reference/console/create-and-deploy.md)
-owns permissions and recovery.
-
-Advanced settings holds Configuration JSON and initial workspace files; no model
-is selected initially. Preset Secret bindings stay in form state. Applying Slack
-preserves unrelated bindings. Preset workspace files prefill editors before
-submission.
+`apps/controller/src/console/agents/create.mjs:renderCreateAgent` composes Provider,
+Harness, Preset, Configuration, and workspace inputs. Provider/Harness changes
+reset incompatible credentials and model choices. The
+[creation reference](../reference/console/create-and-deploy.md) owns combinations,
+Preset constraints, token handling, permissions, and recovery.
 
 `agents/plugin-fields.mjs:createPluginFields` edits Agent-owned `plugins` through
 `#agent-plugins`, separately from Configuration. Invalid JSON and untouched fields
@@ -189,13 +186,10 @@ Model edits preserve transport and Codex plugin settings. Provider/Harness chang
 regenerate them, retaining unrelated JSON; reset restores the starter.
 
 `configurationTemplate` enables Control UI with loopback origins on port 18789.
-Compute supplies gateway authentication from Installation trust; Presets replace
-the starter unchanged. [Native admin access](agent-native-admin.md) requires isolated
-HTTPS origins. [Agent editing](platform-console/agent-editing.md#4-render-draft-revision-or-channels)
-traces Slack Secret selection/creation. **Apply channel settings** copies values
-and bindings; grants accumulate across applications. Sender access belongs to each
-selected channel, leaving direct-message `allowFrom` unchanged. Cancellation discards
-selections but retains created Namespace Secrets.
+Compute supplies gateway authentication; Presets replace the starter unchanged.
+[Native admin access](agent-native-admin.md) owns HTTPS isolation.
+[Agent editing](platform-console/agent-editing.md#4-render-draft-revision-or-channels)
+traces Slack settings, staged bindings, grants, and cancellation effects.
 
 `GET /namespaces/:namespaceId/agents/repository-options` discovers approved choices.
 Console submits opaque references and an explicit common profile. Read-only and
@@ -263,14 +257,17 @@ preflight. Session expiry still clears the whole private view.
 
 `apps/controller/src/console/console.mjs:loadPage`, `logout`
 
-Page or revision navigation, Namespace changes, refocus, and logout invalidate
-prior reads. The client cancels requests and checks generation before accepting
-success or failure. Late responses cannot restore rows, change selection, or
-redirect a newer session. Current authorization and dependency errors clear rows
-and expose recovery; a current protected `401` clears private state and opens
-login immediately. Failure views include only local reason messages and bounded
-request IDs, not backend error text.
-Global Backends and Namespaces pages remain visibly Installation-wide.
+Page/revision navigation, Namespace changes, refocus, and logout invalidate prior
+reads. Generation checks reject late success and failure. Retained content stays
+visible while session, Namespace, and exact page reads run; successful reads
+replace the preview. The draft store restores ordinary edits with their original
+save baselines. Namespace selection never reuses another scope's rows.
+
+Authorization and dependency failures clear affected content and expose recovery;
+a current protected `401` clears all private state immediately. `pagehide` clears
+private DOM, previews, and drafts even for BFCache; persisted `pageshow` performs
+a fresh load. Failure views show local reasons and bounded request IDs, never
+backend error text. Backends and Namespaces remain Installation-wide.
 
 The [detail action flow](platform-console/agent-editing.md#stop-agent) traces
 confirmed Stop and Delete requests and their exact permission checks. Acceptance
@@ -327,6 +324,8 @@ uncertain response disables replay until refresh and inspection.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-25 17:27: Trace scoped return previews and session-aware invalidation in accompanying changes. (01a0d992-db83-7843-b40c-355c0f2c2b9a - 64ab72aed5c4926e4a2080ade91d785e531801a2)
 
 - 2026-09-25 01:15: Trace channel-only Slack reply defaults and explicit DM policy editing. (01a0d5e6-743e-7743-8a5e-2d8c24b78b81 - 919f92c3bb3ea63acf7042b138e9a0c6e1d97719)
 

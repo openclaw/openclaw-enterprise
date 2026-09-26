@@ -66,7 +66,11 @@ export function installFixture(scenario, evidence) {
   const roles = [];
   const bindings = [];
   const deleted = new Set();
-  const session = { user: { name: "Demo Operator", email: "operator@example.com" } };
+  const session = {
+    authenticated: true,
+    sessionKey: "storybook-session",
+    user: { id: "storybook-operator", name: "Demo Operator", email: "operator@example.com" },
+  };
   const namespaces = scenario.emptyNamespaces
     ? []
     : [
@@ -304,6 +308,24 @@ export function installFixture(scenario, evidence) {
         continue;
       }
       rule.used = rule.once === true;
+      if (rule.delayMs) {
+        await new Promise((resolve, reject) => {
+          const finish = () => {
+            options.signal?.removeEventListener("abort", abort);
+            resolve();
+          };
+          const timer = setTimeout(finish, rule.delayMs);
+          const abort = () => {
+            clearTimeout(timer);
+            reject(options.signal?.reason ?? new DOMException("Aborted", "AbortError"));
+          };
+          if (options.signal?.aborted) {
+            abort();
+          } else {
+            options.signal?.addEventListener("abort", abort, { once: true });
+          }
+        });
+      }
       if (rule.hold) {
         return new Promise((_resolve, reject) => {
           const abort = () =>
@@ -315,7 +337,9 @@ export function installFixture(scenario, evidence) {
           }
         });
       }
-      return error(rule.status, rule.code);
+      if (rule.status) {
+        return error(rule.status, rule.code);
+      }
     }
     const body = options.body ? JSON.parse(options.body) : {};
     if (path === "/api/auth/session") {

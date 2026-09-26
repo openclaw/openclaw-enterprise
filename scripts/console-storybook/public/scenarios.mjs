@@ -370,6 +370,56 @@ export const scenarios = {
       "At a narrow viewport, use Open navigation and choose a page; the drawer must close and return focus to the page.",
     ],
   },
+  navigationRetained: {
+    group: "Pages/Navigation",
+    name: "Return to loaded pages",
+    rules: [
+      { path: "/api/auth/session", skip: 1, delayMs: 1200 },
+      { path: "/namespaces", skip: 1, delayMs: 1200 },
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents",
+        skip: 1,
+        delayMs: 1200,
+      },
+    ],
+    description:
+      "Return navigation and Refresh retain previously loaded content during slow reads. Responses are simulated; this story does not prove backend authorization or persistence.",
+    steps: [
+      "Wait for Agents, enter a search, open Create Agent, then return using the Agents breadcrumb. The loaded list and search remain visible while reads are pending.",
+      "Visit Namespaces and Settings, then repeat with browser Back and Forward. First visits may load; returning pages retain their content.",
+      "Open an Agent, visit its tabs, return to Agents, and use Back. Check the selected revision and tab. Refresh and refocus the preview to check pending-read behavior.",
+      "Switch Namespace to confirm the previous scope's rows disappear. Reset the story to clear retained state.",
+    ],
+  },
+  navigationDenied: {
+    group: "Pages/Navigation",
+    name: "Return access denied",
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents",
+        skip: 1,
+        delayMs: 1200,
+        status: 403,
+      },
+    ],
+    description:
+      "A previously readable collection becomes denied on its next read. Retained content must clear when the denial arrives.",
+    steps: [
+      "Wait for the populated Agents list, open Create Agent, and return to Agents.",
+      "Observe the retained list while the response is pending, then the access-denied state. Retry must not restore the old rows.",
+    ],
+  },
+  navigationExpired: {
+    group: "Pages/Navigation",
+    name: "Return session expired",
+    rules: [{ path: "/api/auth/session", skip: 1, delayMs: 1200, status: 401 }],
+    description:
+      "Session expiry clears private content and retained navigation state. The fixture supplies a delayed unauthorized response.",
+    steps: [
+      "Wait for Agents, then select Refresh or navigate to Namespaces.",
+      "When the session check fails, confirm the sign-in form replaces all private content. Browser Back must not restore the collection.",
+    ],
+  },
   agentsEmpty: {
     group: "Pages/Agents",
     name: "Empty",

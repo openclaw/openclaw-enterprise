@@ -3030,9 +3030,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                   {
                     type: "object",
                     additionalProperties: false,
-                    required: ["authenticated", "user"],
+                    required: ["authenticated", "sessionKey", "user"],
                     properties: {
                       authenticated: { type: "boolean", const: true },
+                      sessionKey: { type: "string" },
                       user: {
                         type: "object",
                         additionalProperties: false,
