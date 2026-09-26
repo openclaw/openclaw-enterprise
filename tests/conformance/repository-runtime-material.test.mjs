@@ -1005,13 +1005,11 @@ test("Dedicated retirement preserves the successor gateway, Agent and repository
 
 test("Dedicated Codex repository bindings receive broker network policy centrally", async () => {
   const f = await fixture("dedicated", undefined, {
-    repositoryNamespace: "custom-control",
+    repositoryNamespace: "123-control",
   });
   await f.driver.prepareRevision(
     f.revision,
-    f.context([
-      runtimeBinding("session_custom_control", undefined, "https://git.custom-control.svc"),
-    ]),
+    f.context([runtimeBinding("session_custom_control", undefined, "https://git.123-control.svc")]),
   );
   const config = preparedCodexConfig(f);
   assert.match(config, /^\[features\]$/m);
@@ -1019,11 +1017,11 @@ test("Dedicated Codex repository bindings receive broker network policy centrall
   assert.doesNotMatch(config, /^\[\[network\.private_endpoints\]\]$/m);
   assert.doesNotMatch(config, /privateEndpoints|private_endpoints|default_permissions/);
   assert.deepEqual(preparedCodexManifest(f).repositoryBrokerNetworkPolicy, {
-    host: "git.custom-control.svc",
+    host: "git.123-control.svc",
     port: 443,
     allowMethods: ["POST"],
     domains: {},
-    privateEndpoints: [{ host: "git.custom-control.svc", port: 443, allowMethods: ["POST"] }],
+    privateEndpoints: [{ host: "git.123-control.svc", port: 443, allowMethods: ["POST"] }],
   });
 });
 
@@ -1212,7 +1210,7 @@ test("Dedicated Codex without repository bindings does not receive broker policy
   assert.equal(preparedCodexManifest(f).repositoryBrokerNetworkPolicy, undefined);
 });
 
-test("Dedicated Codex repository material projects broker CA into the Codex process environment", async () => {
+test("Dedicated Codex repository material projects a combined broker CA bundle", async () => {
   const f = await fixture("dedicated");
   const publicCa = Buffer.from("-----BEGIN CERTIFICATE-----\nfixture\n-----END CERTIFICATE-----\n");
   await f.driver.prepareRevision(
@@ -1224,7 +1222,7 @@ test("Dedicated Codex repository material projects broker CA into the Codex proc
   );
   assert.match(
     environment.SSL_CERT_FILE,
-    /^\/run\/oce\/repository-credentials\/sessions\/[a-f0-9]{64}\/ca\.pem$/,
+    /^\/run\/oce\/repository-credentials\/sessions\/[a-f0-9]{64}\/ca-bundle\.pem$/,
   );
   assert.equal(environment.GIT_SSL_CAINFO, environment.SSL_CERT_FILE);
   assert.equal(environment.NODE_EXTRA_CA_CERTS, environment.SSL_CERT_FILE);

@@ -390,7 +390,6 @@ function installedRepositoryJourney(mode) {
         namespace: f.system,
         podLabels: workerLabels,
         port: 8443,
-        origin,
       };
       await f.upgrade({
         enabled: true,

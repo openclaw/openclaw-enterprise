@@ -7,6 +7,7 @@ const { createHash } = require("node:crypto");
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const clientKeys = ["gatewayOrigin", "gitRemote", "gitUsername", "canonicalApiHost", "apiHost", "repository"];
 const limits = { bearer: 256, "client.json": 16384, gitconfig: 16384, "gh/hosts.yml": 16384, "gh/config.yml": 16384, "ca.pem": 65536 };
+const systemCaBundleCandidates = ["/etc/ssl/certs/ca-certificates.crt", "/etc/ssl/cert.pem", "/etc/pki/tls/certs/ca-bundle.crt"];
 const runtimeRoot = "/run/oce/repository-credentials/sessions/";
 const uid = process.getuid();
 let normalizePushRefAllowlist;
@@ -161,6 +162,29 @@ function validateProjection(sourceRoot, binding) {
   return { binding, files };
 }
 
+function readSystemCaBundle() {
+  for (const candidate of systemCaBundleCandidates) {
+    try {
+      const contents = fs.readFileSync(candidate);
+      requireValid(contents.length > 0 && contents.length <= 1024 * 1024 && !contents.includes(0));
+      return contents;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
+  throw new Error("system-ca-bundle-missing");
+}
+
+function repositoryCaBundle(files) {
+  if (!Object.hasOwn(files, "ca.pem")) return undefined;
+  const system = readSystemCaBundle();
+  return Buffer.concat([
+    system,
+    system[system.length - 1] === 10 ? Buffer.alloc(0) : Buffer.from("\n"),
+    files["ca.pem"].contents,
+  ]);
+}
+
 function requireDirectoriesWithoutSymlinks(directory) {
   for (let cursor = directory; ; cursor = path.dirname(cursor)) {
     requireValid(metadata(cursor).isDirectory());
@@ -227,6 +251,8 @@ async function materialize(descriptor) {
       privateDirectory(directory);
       privateDirectory(path.join(directory, "gh"));
       for (const [name, file] of Object.entries(files)) writePrivate(path.join(directory, name), file.contents);
+      const caBundle = repositoryCaBundle(files);
+      if (caBundle !== undefined) writePrivate(path.join(directory, "ca-bundle.pem"), caBundle);
     }
     writePrivate(path.join(staging, "manifest.json"), JSON.stringify(manifest) + "\n");
     requireValid(manifest.bindings.every((binding) => binding.deadlineWallMs > Date.now()));

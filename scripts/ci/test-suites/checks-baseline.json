@@ -335,6 +335,9 @@
       "path": "tests/conformance/repository-credentials-registry.test.mjs"
     },
     {
+      "path": "tests/conformance/repository-client-environment.test.mjs"
+    },
+    {
       "path": "tests/conformance/repository-runtime-material.test.mjs"
     },
     {

@@ -351,6 +351,7 @@ const REPOSITORY_BROKER_CA_ENVIRONMENT = [
   "GIT_SSL_CAINFO",
   "NODE_EXTRA_CA_CERTS",
 ] as const;
+const REPOSITORY_BROKER_CA_BUNDLE = "ca-bundle.pem";
 
 function repositoryBrokerPublicCaPath(
   material: ResolvedRepositoryMaterialSpec,
@@ -367,7 +368,7 @@ function repositoryBrokerPublicCaPath(
       "Repository credential broker CA material must be present and identical for every binding.",
     );
   }
-  return `${withCa[0]?.directory}/ca.pem`;
+  return `${withCa[0]?.directory}/${REPOSITORY_BROKER_CA_BUNDLE}`;
 }
 
 interface RuntimeCredentialSecretSpec {
@@ -562,7 +563,7 @@ function repositoryCredentialBrokerOrigin(origin: string): URL {
     url.search !== "" ||
     url.hash !== "" ||
     url.hostname !== url.hostname.toLowerCase() ||
-    !/^[a-z]([-a-z0-9]*[a-z0-9])?(?:\.[a-z]([-a-z0-9]*[a-z0-9])?)*$/.test(url.hostname) ||
+    !/^[a-z0-9]([-a-z0-9]*[a-z0-9])?(?:\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/.test(url.hostname) ||
     (url.port !== "" && url.port !== "443")
   ) {
     throw new ConfigurationFailure("Repository credential gateway origin must be an HTTPS origin.");
@@ -2248,9 +2249,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const revisionName = `${agentName}-rev-${sha256Hex(revision.id, 12)}`;
     const revisionOwnership = { ...agentOwnership, revisionId: revision.id };
     const pluginOwnership = this.pluginRuntimeOwnership(revision);
-    let pluginRuntime: PluginRuntimeSnapshot | undefined;
-    let pluginStatusContainer: "agent" | "gateway" | undefined;
-    let repositoryMaterial: ResolvedRepositoryMaterialSpec | undefined;
     const incomplete = async (): Promise<ComputeReadiness> => {
       const runtimeFailure = await this.safeRuntimeFailureObservation(
         revision,
@@ -2280,8 +2278,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
       if (
         status !== undefined &&
-        repositoryMaterial !== undefined &&
-        !(await this.repositoryMaterialReady(revision, namespace, repositoryMaterial))
+        material?.kind === "ready" &&
+        !(await this.repositoryMaterialReady(revision, namespace, material.spec))
       ) {
         return incomplete();
       }
@@ -2373,8 +2371,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (material?.kind === "missing") {
       return { ...result, repositoryCredentialMaterialMissing: material.missing };
     }
-    repositoryMaterial = material?.spec;
-    pluginRuntime = this.pluginRuntimeSnapshot(
+    const repositoryMaterial = material?.spec;
+    const pluginRuntime = this.pluginRuntimeSnapshot(
       admittedRevision,
       this.codexRepositoryBrokerNetworkPolicy(
         admittedRevision,
@@ -2385,7 +2383,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const hasEnabledPluginSelections =
       pluginRuntime !== undefined &&
       Object.values(pluginRuntime.runtime.selections).some((selection) => selection.enabled);
-    pluginStatusContainer =
+    const pluginStatusContainer =
       sandboxDriver?.provisionHarness === undefined &&
       pluginRuntime !== undefined &&
       hasEnabledPluginSelections
