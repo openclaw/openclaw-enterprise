@@ -290,6 +290,112 @@ function annotateRuntimeImageStockBrokerFailure(error) {
   return error;
 }
 
+async function removeDockerVolumes(volumeNames) {
+  const removals = await Promise.allSettled(
+    volumeNames.map((volumeName) => runDocker(["volume", "rm", "-f", volumeName])),
+  );
+  const failures = removals
+    .filter(({ status }) => status === "rejected")
+    .map(({ reason }) => reason);
+  if (failures.length > 0) {
+    throw new AggregateError(
+      failures,
+      "failed to remove runtime image repository material volumes",
+    );
+  }
+}
+
+async function removeDockerContainer(containerName, priorFailure) {
+  try {
+    await runDocker(["rm", "-f", containerName]);
+  } catch (cleanupError) {
+    if (priorFailure !== undefined) {
+      priorFailure.cleanupError = cleanupError;
+      return;
+    }
+    throw cleanupError;
+  }
+}
+
+async function populateRepositoryProjectionVolume(sourceRoot, volumeName, ownership) {
+  const helperName = `${volumeName}-populate`;
+  const script = [
+    "set -eu",
+    `find /projection -type d -exec chmod ${ownership.directoryMode} {} +`,
+    `find /projection -type f -exec chmod ${ownership.fileMode} {} +`,
+    `chown -R ${ownership.uid}:${ownership.gid} /projection`,
+  ].join("\n");
+  let failure;
+  try {
+    await runDocker([
+      "create",
+      "--name",
+      helperName,
+      "--user",
+      "0:0",
+      "--network",
+      "none",
+      "--read-only",
+      "--cap-drop",
+      "ALL",
+      "--cap-add",
+      "CHOWN",
+      "--cap-add",
+      "DAC_OVERRIDE",
+      "--cap-add",
+      "FOWNER",
+      "--security-opt",
+      "no-new-privileges",
+      "-v",
+      `${volumeName}:/projection`,
+      "--entrypoint",
+      "/bin/sh",
+      image,
+      "-c",
+      script,
+    ]);
+    await runDocker(["cp", `${sourceRoot}/.`, `${helperName}:/projection/`]);
+    await runDocker(["start", "-a", helperName]);
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    await removeDockerContainer(helperName, failure);
+  }
+}
+
+async function runRepositoryMaterialInitProbe(volumeName, descriptor) {
+  const probe = `
+const cp = require("node:child_process");
+const material = cp.spawnSync(process.execPath, ["-e", ${JSON.stringify(REPOSITORY_MATERIAL_INIT_ENTRYPOINT)}, ${JSON.stringify(JSON.stringify(descriptor))}], {
+  stdio: "inherit",
+});
+process.exit(material.status ?? 1);
+`;
+  await runDocker([
+    "run",
+    "--rm",
+    "--network",
+    "none",
+    "--read-only",
+    "--user",
+    "1000:1000",
+    "--cap-drop",
+    "ALL",
+    "--security-opt",
+    "no-new-privileges",
+    "--tmpfs",
+    "/run/oce:size=16m,uid=1000,gid=1000,mode=700",
+    "-v",
+    `${volumeName}:/source-repository-credentials:ro`,
+    "--entrypoint",
+    "node",
+    image,
+    "-e",
+    probe,
+  ]);
+}
+
 async function reserveTcpPort() {
   const server = createTcpServer();
   await new Promise((resolve, reject) => {
@@ -1191,6 +1297,8 @@ test(
     const suffix = randomBytes(6).toString("hex");
     const networkName = `oce-runtime-broker-${suffix}`;
     const proxyName = `oce-runtime-broker-proxy-${suffix}`;
+    const materialVolumeName = `oce-runtime-broker-material-${suffix}`;
+    const deniedMaterialVolumeName = `oce-runtime-broker-material-denied-${suffix}`;
     const workspaceBranch = "native-feature";
     const tls = await createRuntimeBrokerTlsMaterial(t);
     const listenPort = await reserveTcpPort();
@@ -1245,7 +1353,59 @@ test(
     t.after(async () => {
       await runDocker(["rm", "-f", proxyName]).catch(() => {});
       await runDocker(["network", "rm", networkName]).catch(() => {});
+      await removeDockerVolumes([materialVolumeName, deniedMaterialVolumeName]);
     });
+
+    const descriptor = {
+      sourceRoot: "/source-repository-credentials/sessions",
+      targetRoot: "/run/oce/repository-credentials",
+      manifest: JSON.parse(await readFile(join(materialRoot, "manifest.json"), "utf8")),
+    };
+    await runDocker(["volume", "create", materialVolumeName]);
+    await runDocker(["volume", "create", deniedMaterialVolumeName]);
+    await populateRepositoryProjectionVolume(materialRoot, deniedMaterialVolumeName, {
+      uid: 1001,
+      gid: 1001,
+      directoryMode: "700",
+      fileMode: "600",
+    });
+    await populateRepositoryProjectionVolume(materialRoot, materialVolumeName, {
+      uid: 0,
+      gid: 1000,
+      directoryMode: "550",
+      fileMode: "440",
+    });
+    const deniedReadProbe = String.raw`
+const fs = require("node:fs");
+try {
+  fs.readdirSync("/source-repository-credentials/sessions");
+  process.exit(42);
+} catch (error) {
+  if (error.code !== "EACCES") throw error;
+}
+`;
+    await runDocker([
+      "run",
+      "--rm",
+      "--network",
+      "none",
+      "--read-only",
+      "--user",
+      "1000:1000",
+      "--cap-drop",
+      "ALL",
+      "--security-opt",
+      "no-new-privileges",
+      "-v",
+      `${deniedMaterialVolumeName}:/source-repository-credentials:ro`,
+      "--entrypoint",
+      "node",
+      image,
+      "-e",
+      deniedReadProbe,
+    ]);
+    await assert.rejects(runRepositoryMaterialInitProbe(deniedMaterialVolumeName, descriptor));
+    await runRepositoryMaterialInitProbe(materialVolumeName, descriptor);
 
     await runDocker(["network", "create", "--driver", "bridge", networkName]);
     const forwarder = String.raw`
@@ -1303,11 +1463,6 @@ server.listen(443, "0.0.0.0", () => console.log("broker-forwarder-ready"));
     const pluginRuntime = {
       manifest: { kind: "codex", selections: {} },
       brokerCodexConfiguration,
-    };
-    const descriptor = {
-      sourceRoot: "/source-repository-credentials/sessions",
-      targetRoot: "/run/oce/repository-credentials",
-      manifest: JSON.parse(await readFile(join(materialRoot, "manifest.json"), "utf8")),
     };
     const proxyEnvironmentProbe = [
       "node <<'NODE'",
@@ -1649,7 +1804,7 @@ const timeout = setTimeout(() => {
           "--tmpfs",
           "/run/oce:size=16m,uid=1000,gid=1000,mode=700",
           "-v",
-          `${materialRoot}:/source-repository-credentials:ro`,
+          `${materialVolumeName}:/source-repository-credentials:ro`,
           "-v",
           `${tls.certFile}:/certs/broker-ca.pem:ro`,
           "--entrypoint",
