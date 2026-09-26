@@ -700,6 +700,251 @@ test("dedicated startup initializes Harness plugins before enrolling its workspa
   assert.equal(setupCalls, 1);
 });
 
+test("dedicated replacement starts a candidate Gateway when the predecessor cannot enroll its workspace node", async () => {
+  let setupCalls = 0;
+  let connected = false;
+  const driver = new KubernetesComputeDriver(
+    routedOptions({
+      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+    }),
+    {
+      nodeEnrollment: {
+        async createSetup() {
+          setupCalls++;
+          return { setupId: "setup-1", setupCode: "setup-code", expiresAtMs: Date.now() + 60000 };
+        },
+        async observeSetup() {
+          const activeGateway = read("Deployment", gatewayName, gatewayNamespace);
+          if (
+            !gatewayEndpointsReady &&
+            activeGateway.metadata.annotations?.["openclaw.dev/agent-revision-id"] ===
+              oldRevision.id
+          ) {
+            throw new Error("gateway connection unavailable");
+          }
+          return connected ? { deviceId: "node-1", connected: true } : undefined;
+        },
+        async isConnected() {
+          return connected;
+        },
+      },
+    },
+  );
+  const oldRevision = routedRevision(driver, { id: "revision-routed-1", revision: 1 });
+  const replacement = routedRevision(driver, { id: "revision-routed-2", revision: 2 });
+  const namespace = kubernetesNamespaceName(tenant.id);
+  const gatewayNamespace = kubernetesGatewayNamespaceName(tenant.id);
+  const gatewayName = `gateway-${digest(replacement.agentId)}`;
+  const agentName = `agent-${digest(replacement.agentId)}-rev-${digest(replacement.id)}`;
+  const gatewayOwnership = { namespaceId: tenant.id, agentId: replacement.agentId };
+  const objects = new Map();
+  const key = (kind, name, target = namespace) =>
+    `${kind}:${kind === "Namespace" ? "" : target}:${name}`;
+  const save = (object) =>
+    objects.set(
+      key(object.kind, object.metadata.name, object.metadata.namespace),
+      structuredClone(object),
+    );
+  const read = (kind, name, target = namespace) => {
+    const value = objects.get(key(kind, name, target));
+    if (!value) {
+      throw Object.assign(new Error("not found"), { statusCode: 404 });
+    }
+    return structuredClone(value);
+  };
+  save({
+    ...driver.manifest("v1", "Namespace", namespace, { namespaceId: tenant.id }),
+    status: { phase: "Active" },
+  });
+  save({
+    ...driver.gatewayNamespaceManifest({ namespaceId: tenant.id }),
+    status: { phase: "Active" },
+  });
+  save({
+    ...driver.manifest(
+      "v1",
+      "Secret",
+      `transport-${digest(replacement.agentId)}`,
+      gatewayOwnership,
+      gatewayNamespace,
+    ),
+    type: "Opaque",
+    metadata: {
+      ...driver.manifest(
+        "v1",
+        "Secret",
+        `transport-${digest(replacement.agentId)}`,
+        gatewayOwnership,
+        gatewayNamespace,
+      ).metadata,
+      uid: "transport-uid",
+      resourceVersion: "1",
+    },
+    data: {
+      "app-server-token": Buffer.from("test-transport").toString("base64"),
+    },
+  });
+  save({
+    apiVersion: "v1",
+    kind: "Secret",
+    metadata: {
+      name: "occ-model-key",
+      namespace: gatewayNamespace,
+      uid: "model-secret-uid",
+    },
+    data: { value: Buffer.from("fixture-model-key").toString("base64") },
+  });
+  for (const policy of driver.networkPolicies({ namespaceId: tenant.id }, namespace)) {
+    save(policy);
+  }
+  const predecessor = driver.deployment(
+    gatewayName,
+    gatewayOwnership,
+    gatewayNamespace,
+    options().images.gateway,
+    gatewayName,
+    "gateway",
+    {},
+    "info",
+    driver.gatewayConfiguration(oldRevision, "previous-node", namespace),
+  );
+  predecessor.metadata.annotations["openclaw.dev/agent-revision"] = String(oldRevision.revision);
+  predecessor.metadata.annotations["openclaw.dev/agent-revision-id"] = oldRevision.id;
+  predecessor.metadata.generation = 1;
+  predecessor.metadata.uid = `${gatewayName}-uid`;
+  predecessor.status = { observedGeneration: 1, readyReplicas: 1 };
+  save(predecessor);
+
+  let candidateGatewayStarted = false;
+  let gatewayEndpointsReady = true;
+  const clients = { core: {}, apps: {}, networking: {}, objects: {}, discovery: {} };
+  for (const [api, kinds] of [
+    [clients.core, ["ConfigMap", "Secret", "Service", "ServiceAccount", "PersistentVolumeClaim"]],
+    [clients.apps, ["Deployment"]],
+    [clients.networking, ["NetworkPolicy"]],
+  ]) {
+    for (const kind of kinds) {
+      api[`readNamespaced${kind}`] = async ({ name, namespace: target }) =>
+        read(kind, name, target);
+      const write = async ({ body }) => {
+        const previous = objects.get(key(kind, body.metadata.name, body.metadata.namespace));
+        const changed =
+          kind === "Deployment" && JSON.stringify(previous?.spec) !== JSON.stringify(body.spec);
+        const value = {
+          ...previous,
+          ...structuredClone(body),
+          metadata: {
+            ...previous?.metadata,
+            ...body.metadata,
+            uid: `${body.metadata.name}-uid`,
+            resourceVersion: "1",
+          },
+        };
+        if (kind === "Deployment") {
+          value.metadata.generation = (previous?.metadata.generation ?? 0) + Number(changed);
+          if (changed) {
+            delete value.status;
+          }
+          if (
+            body.metadata.name === gatewayName &&
+            body.metadata.annotations?.["openclaw.dev/agent-revision-id"] === replacement.id
+          ) {
+            candidateGatewayStarted = true;
+          }
+        }
+        if (body.stringData) {
+          value.data = Object.fromEntries(
+            Object.entries(body.stringData).map(([name, value]) => [
+              name,
+              Buffer.from(value).toString("base64"),
+            ]),
+          );
+        }
+        save(value);
+        return value;
+      };
+      api[`patchNamespaced${kind}`] = write;
+      api[`createNamespaced${kind}`] = write;
+      api[`replaceNamespaced${kind}`] = write;
+    }
+  }
+  clients.core.listNamespace = async () => ({ items: [] });
+  clients.core.readNamespace = async ({ name }) => read("Namespace", name);
+  clients.objects.read = async (object) =>
+    read(object.kind, object.metadata.name, object.metadata.namespace);
+  clients.objects.patch = async (object) => {
+    save(object);
+    return object;
+  };
+  clients.discovery.listNamespacedEndpointSlice = async () => ({
+    items: gatewayEndpointsReady
+      ? [
+          {
+            metadata: {
+              labels: { "kubernetes.io/service-name": gatewayName },
+              ownerReferences: [{ kind: "Service", name: gatewayName, uid: `${gatewayName}-uid` }],
+            },
+            endpoints: [{ conditions: { ready: true } }],
+          },
+        ]
+      : [],
+  });
+  driver.apiClients = Promise.resolve(clients);
+
+  const prepare = () => driver.prepareRevision(replacement, authContext(replacement));
+  const markReady = (name) => {
+    const target = name === gatewayName ? gatewayNamespace : namespace;
+    const object = read("Deployment", name, target);
+    object.status = { observedGeneration: object.metadata.generation, readyReplicas: 1 };
+    save(object);
+  };
+
+  assert.equal((await prepare()).ready, false);
+  assert.equal(candidateGatewayStarted, false);
+  assert.equal(setupCalls, 1);
+  const initiallyPreparedAgent = read("Deployment", agentName);
+  assert.ok(
+    initiallyPreparedAgent.spec.template.spec.containers[0].env.some(
+      (variable) => variable.name === "OPENCLAW_NODE_SETUP_CODE",
+    ),
+  );
+  markReady(agentName);
+
+  assert.equal((await prepare()).ready, false);
+  assert.equal(
+    read("Deployment", gatewayName, gatewayNamespace).metadata.annotations[
+      "openclaw.dev/agent-revision-id"
+    ],
+    oldRevision.id,
+    "healthy predecessor keeps serving workspace-node enrollment while setup is pending",
+  );
+  assert.equal(candidateGatewayStarted, false);
+
+  gatewayEndpointsReady = false;
+  assert.equal((await prepare()).ready, false);
+  assert.equal(
+    read("Deployment", gatewayName, gatewayNamespace).metadata.annotations[
+      "openclaw.dev/agent-revision-id"
+    ],
+    replacement.id,
+  );
+  markReady(gatewayName);
+  gatewayEndpointsReady = true;
+
+  assert.equal((await prepare()).ready, false);
+  assert.equal(setupCalls, 1);
+  const agentWithSetup = read("Deployment", agentName);
+  assert.ok(
+    agentWithSetup.spec.template.spec.containers[0].env.some(
+      (variable) => variable.name === "OPENCLAW_NODE_SETUP_CODE",
+    ),
+  );
+  markReady(agentName);
+  connected = true;
+  assert.equal((await prepare()).ready, true);
+  assert.equal(setupCalls, 1);
+});
+
 test("namespace resolver selects exact, secure external ownership using a transport-only fixture", async () => {
   const external = {
     apiVersion: "v1",

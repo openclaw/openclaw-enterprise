@@ -23,32 +23,42 @@ lane owner:
 node scripts/ci/run-tests.mjs audit
 ```
 
-CI workflows reuse the [run-ci-lane action](../../.github/actions/run-ci-lane/action.yml) for setup, tests and cleanup; each job retains its own environment and credentials.
+CI workflows reuse the [run-ci-lane action](../../.github/actions/run-ci-lane/action.yml) for setup, tests, cleanup, and per-job environment isolation.
 
 Compare per-file `wallDurationMs`, preparation `[ci-timing]` phases, and Actions
-step timestamps to identify slow setup or tests. Enclosing preparation timings
-include image archive save/import times; do not add them twice.
+step timestamps to find slow setup or tests. Enclosing preparation timings
+already include image archive save/import times.
+k3d imports use file-backed tools mode with a ten-minute deadline.
+Preparation serializes imports that target the same cluster to avoid shared
+importer races, then verifies digest and CRI references on owned
+nodes.
 
-The `checks-baseline` lane runs `pnpm docs:check`: pages above 1,500 visible words
-are flagged for review and pages above 2,500 fail, except the approved single-page
-[API reference](../reference/api.md) and `AGENTS.md` instruction files (see the
-[length policy](../../AGENTS.md#documentation-length-budget)). The generated API, site build, navigation,
-and links must pass. Run `pnpm docs:check-length` for the word-count
-check alone.
+The `checks-baseline` lane runs `pnpm docs:check`: pages above 1,500 visible
+words are flagged for review and pages above 2,500 fail, except the approved
+[API reference](../reference/api.md) and `AGENTS.md` instruction files. The
+generated API, site build, navigation, and links must pass. Run
+`pnpm docs:check-length` for the word-count check alone.
 
 Suite Audit and the eleven PR lanes start independently on ephemeral runners.
-Kubernetes fixture and observability lanes use `ubuntu-22.04` for bridge netfilter support; other lanes
-and the audit use `blacksmith-8vcpu-ubuntu-2404`. `CI Required` uses `ubuntu-22.04` and
-still requires both the audit and every lane to pass, including result-artifact
-accounting. This avoids serial runner allocation before the test lanes without
-changing test selection or failure handling.
+Kubernetes fixture and observability lanes use `ubuntu-22.04` for bridge
+netfilter support; other lanes and the audit use `blacksmith-8vcpu-ubuntu-2404`.
+`CI Required` uses `ubuntu-22.04` and still requires the audit and every lane to
+pass, including result-artifact accounting. This avoids serial runner allocation
+before test lanes without changing selection or failure handling.
 
 The repository credential platform lane uses Blacksmith and its full delivered
 runtime image. Its proof covers HTTP, PostgreSQL, Unix control and credential
 material inside Kubernetes; NetworkPolicy enforcement is proved separately by
 the Kubernetes fixture lanes on the compatible GitHub runner kernel.
 
-Full Integration runs through manual dispatch using the immutable event commit. All lanes require `main` except `k3d-model`, which also accepts a branch explicitly allowed by the `integration-model` environment. Environment gates apply only to lanes that declare an environment; `helper-timeout` and standalone `logging-collector` declare none. The ChatGPT `provider-account` lane keeps its main-only credential environment without per-run approval. Other model, routing, Slack, OpenShell, and additional OpenTelemetry lanes require separately approved environments. A missing environment or selected prerequisite fails the run. A PR aggregate is not full credentialed coverage; targeted protected runs also report only their selected lanes.
+Full Integration is manual and uses the immutable event commit. All lanes
+require `main` except `k3d-model`, which also accepts an `integration-model`
+branch allowlist. Environment gates apply only to lanes that declare one;
+`helper-timeout` and standalone `logging-collector` declare none. The ChatGPT
+`provider-account` lane stays main-only without per-run approval. Other model,
+routing, Slack, OpenShell, and additional OpenTelemetry lanes require approval.
+Missing selected prerequisites fail. A PR aggregate is not full credentialed
+coverage; targeted protected runs also report only their selected lanes.
 
 The `postgres` lane owns migration compatibility tests; `postgres-application`
 owns the remaining PostgreSQL files. Each has its own disposable PostgreSQL
@@ -132,9 +142,10 @@ and preserves the supplied source image.
 On GitHub-hosted runners, both observability lanes remove unused SDKs and require
 36 GiB free before building and importing images. SDK removals run concurrently
 with a ten-minute deadline and per-directory timing receipts. Local runs do not invoke this
-guarded cleanup. Both use single-node clusters and overlap independent preparation, with at most
-two image imports in flight. The demo lane imports only its three services and
-a Node image for protocol fixtures; it does not build OCC. State writes remain
+guarded cleanup. Both use single-node clusters and overlap independent pulls,
+builds, and cluster setup, then serialize k3d imports for each cluster to avoid
+shared importer races. The demo lane imports only its three services and a Node
+image for protocol fixtures; it does not build OCC. State writes remain
 serialized, and all in-flight operations settle before failure cleanup.
 
 Image imports time out after ten minutes. Preparation verifies each immutable

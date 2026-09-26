@@ -1383,10 +1383,10 @@ async function registerImageInK3d(statePath, state, cluster, image, envName) {
       ]),
     );
     await timedPreparation(state.lane, "image-archive-import", () =>
-      // Bound a stalled stream so failed preparation can reach owned cleanup.
+      // Bound a stalled import so failed preparation can reach owned cleanup.
       execFile(
         process.env.OPENCLAW_CI_K3D_BIN ?? "k3d",
-        ["image", "import", "--mode", "direct", archive, "-c", cluster.name],
+        ["image", "import", "--mode", "tools-node", archive, "-c", cluster.name],
         { timeoutMs: 600_000 },
       ),
     );
@@ -1733,9 +1733,10 @@ async function prepareLane({ lane, statePath }) {
       );
       env.OCC_TEST_KUBERNETES_KUBECONFIG = cluster.kubeconfig;
       env.OCC_TEST_KUBERNETES_CONTEXT = cluster.context;
-      // Bound archive/import concurrency to keep disk and containerd pressure
-      // predictable while overlapping independent transfers. Each import still
-      // verifies the immutable reference through CRI on every node.
+      // k3d tools-mode imports use a shared per-cluster helper container.
+      // Serialize imports for this cluster while the pulls and builds above
+      // continue to overlap. Each import still verifies the immutable reference
+      // through CRI on every node.
       await timedPreparation(name, "workload-image-imports", () =>
         prepareTogether(
           [
@@ -1755,7 +1756,7 @@ async function prepareLane({ lane, statePath }) {
               ).reference;
             }),
           ],
-          2,
+          1,
         ),
       );
       break;
@@ -1772,7 +1773,7 @@ async function prepareLane({ lane, statePath }) {
         ),
       );
       const images = {
-        // Start the largest image first so smaller imports can overlap it.
+        // Start the larger service first; pulls still overlap before imports run serially.
         OCC_TEST_OBSERVABILITY_GRAFANA_IMAGE: demo.images.grafana,
         OCC_TEST_OBSERVABILITY_PROMETHEUS_IMAGE: demo.images.prometheus,
         OCC_TEST_OBSERVABILITY_LOKI_IMAGE: demo.images.loki,
@@ -1794,6 +1795,8 @@ async function prepareLane({ lane, statePath }) {
       );
       env.OCC_TEST_KUBERNETES_KUBECONFIG = cluster.kubeconfig;
       env.OCC_TEST_KUBERNETES_CONTEXT = cluster.context;
+      // k3d tools-mode imports share one helper container per cluster, so keep
+      // this phase serial even though source-image pulls above can overlap.
       await timedPreparation(name, "demo-image-imports", () =>
         prepareTogether(
           Object.entries(images).map(([variable, image]) => async () => {
@@ -1802,7 +1805,7 @@ async function prepareLane({ lane, statePath }) {
               await registerImageInK3d(resolvedStatePath, state, cluster, image, variable)
             ).reference;
           }),
-          2,
+          1,
         ),
       );
       break;
