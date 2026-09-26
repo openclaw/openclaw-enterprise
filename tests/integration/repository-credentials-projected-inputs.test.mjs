@@ -7,6 +7,7 @@ import {
   mkdir,
   readFile,
   readdir,
+  realpath,
   rename,
   symlink,
   unlink,
@@ -42,11 +43,12 @@ async function project(directory, generation, values) {
 }
 
 async function fixture(t) {
-  const directory = await temporaryDirectory(t, "repository-projections-");
+  // Canonicalize macOS's /var alias and leave room for the 104-character socket limit.
+  const directory = await realpath(await temporaryDirectory(t, "rp-"));
   const inputsDirectory = join(directory, "inputs");
   const registryDirectory = join(directory, "registry");
   const privateVolume = join(directory, "private-volume");
-  const controlVolume = join(directory, "control-volume");
+  const controlVolume = join(directory, "control");
   for (const path of [inputsDirectory, registryDirectory, privateVolume, controlVolume]) {
     await mkdir(path, { mode: 0o755 });
   }
@@ -163,6 +165,30 @@ test("projected service inputs become owned private files accepted by the real l
   const restarted = await f.prepare();
   assert.equal(restarted.config.sessionPolicy.maximumDurationSeconds, 1800);
   restarted.close();
+});
+
+test("projection startup derives the broker origin from the trusted deployment argument", async (t) => {
+  const f = await fixture(t);
+  const gateway = { ...f.config.gateway };
+  delete gateway.publicOrigin;
+  await project(f.options.inputsDirectory, "..derived-origin", {
+    ...f.values,
+    "config.json": JSON.stringify({ ...f.config, gateway }),
+  });
+  const loaded = await f.prepare();
+  assert.equal(loaded.config.gateway.publicOrigin, f.options.expectedOrigin);
+  loaded.close();
+});
+
+test("projection startup rejects a serving certificate without the broker host", async (t) => {
+  const f = await fixture(t);
+  f.options.expectedOrigin = "https://git.example.test";
+  const gateway = { ...f.config.gateway, publicOrigin: f.options.expectedOrigin };
+  await project(f.options.inputsDirectory, "..wrong-cert-host", {
+    ...f.values,
+    "config.json": JSON.stringify({ ...f.config, gateway }),
+  });
+  await assert.rejects(f.prepare(), { message: "invalid-projected-inputs" });
 });
 
 test("projection startup rejects a writable ancestor above its private snapshot", async (t) => {

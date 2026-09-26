@@ -217,19 +217,20 @@ preserves workspace-node enrollment and its revision-private state mount.
 asynchronous plugin status, then after dedicated gateway and workspace-node
 observations, including successor preparation while the prior gateway serves.
 A changed generation or lost readiness returns incomplete.
-The separate gateway receives neither repository material nor repository-gateway
-egress. Compute grants consumer egress; Helm admits embedded and dedicated
-consumers through the
+The gateway receives neither repository material nor repository-gateway egress.
+Compute grants consumer egress; Helm admits consumers through the
 [credential-sidecar ingress selectors](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking). Native preparation
 writes aggregate `gitconfig` without reading bearers. The runtime image adds the
 `/run/oce/repository-credentials/gitconfig` include to system Git configuration,
-preserving normal HOME/global configuration and routing for `gh` child Git.
+preserving normal HOME/global configuration.
 Embedded `repositoryNativeConfiguration` keeps the `gh` router first in
-`tools.exec.pathPrepend`, preserving other paths and per-agent settings. Dedicated
-`AGENT_RUNTIME_ENTRYPOINT` sets Codex's `allow_login_shell=false` and
-`shell_environment_policy.set.PATH` so tool shells retain the repository router.
-The Harness's model environment remains intact. App keys, JWTs, installation
-tokens and the control socket never enter this material set.
+`tools.exec.pathPrepend`. `AGENT_RUNTIME_ENTRYPOINT` sets Codex's
+`allow_login_shell=false` and `shell_environment_policy.set.PATH`. The Harness
+model environment remains intact. App keys, JWTs, installation tokens and the
+control socket never enter this material set. Dedicated Codex additionally
+receives the exact broker host on port 443 and Git `POST` method exception only
+when the runtime declares `private-endpoints-v1` support. Older Codex runtimes
+such as `0.156.0` remain blocked before broker authorization.
 
 ### 5. Authenticate native Git and route GitHub CLI commands
 
@@ -241,7 +242,6 @@ bindings, not connection destinations. Local identity, hooks, aliases, native
 overrides and additional helpers remain available; there is no whole-command
 preflight or egress confinement.
 See the [routing limits](../reference/repository-credentials.md#client-routing-and-limits).
-
 `pushRefAllowlist` selects image-owned hooks.
 `apps/controller/src/drivers/repo/github/credentials/client/hook-dispatch.ts:checkPush`
 matches the actual destination, normalizing trailing slashes and validating
@@ -274,13 +274,13 @@ fresh installation tokens under the same grant until the revision deadline.
 `apps/controller/src/worker.ts:ControllerWorker.completeActivatedRevision`
 commits completion and maintenance together, preserving the original actor.
 Repository revisions use the Driver's 30-second interval or a shorter Compute
-interval. Worker restart resumes queued work without inventing actors; existing
-open sessions and Compute material can survive it. After service restart, a
-missing known session is invalidated with cleanup Work retained.
+interval. Worker restart resumes queued work without inventing actors. After
+service restart, a missing known session is invalidated with cleanup Work
+retained.
 `REPOSITORY_SESSION_RECOVERY_UNSAFE` permanently fails observation and queues
-exact runtime retirement; later workers cannot remint for that revision. An
-authorized user can deploy a new revision without settling old cleanup or
-replaying commands.
+runtime retirement; later workers cannot remint for that revision. An authorized
+user can deploy a new revision without settling old cleanup or replaying
+commands.
 
 `apps/controller/src/worker.ts:ControllerWorker.finalizeActiveRevision`
 can atomically fail one bounded observation and enqueue its successor while the

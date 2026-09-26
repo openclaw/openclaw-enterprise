@@ -101,7 +101,11 @@ function readGatewayPluginRuntime() {
   const runtime = readRuntimePayload();
   if (runtime === undefined) return undefined;
   if (runtime.manifest?.kind === "openclaw") return runtime;
-  if (runtime.manifest?.kind === "codex" && Object.keys(runtime.manifest.selections ?? {}).length > 0) {
+  if (
+    runtime.manifest?.kind === "codex" &&
+    (Object.keys(runtime.manifest.selections ?? {}).length > 0 ||
+      runtime.manifest.repositoryBrokerNetworkPolicy !== undefined)
+  ) {
     return runtime;
   }
   if (runtime.manifest?.kind === "codex") return undefined;
@@ -521,7 +525,11 @@ function openClawPluginConfiguration(runtime, failures = []) {
     return pluginRuntimeTranslator.openClawRuntimeArtifact(runtime.manifest.selections ?? {}, failures).configuration;
   }
   if (runtime.manifest?.kind === "codex") {
-    return pluginRuntimeTranslator.codexOpenClawConfiguration(runtime.manifest.selections ?? {}, failures);
+    return pluginRuntimeTranslator.codexOpenClawConfiguration(
+      runtime.manifest.selections ?? {},
+      failures,
+      runtime.manifest.repositoryBrokerNetworkPolicy,
+    );
   }
   return undefined;
 }

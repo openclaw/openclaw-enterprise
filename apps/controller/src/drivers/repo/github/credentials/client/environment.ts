@@ -4,6 +4,18 @@ import type { ClientFiles } from "./config.ts";
 export const repositoryClientPath =
   "/opt/oce/repository-credentials/bin:/usr/local/bin:/usr/bin:/bin";
 
+const inheritedRuntimeEnvironment = [
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "ALL_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "all_proxy",
+  "SSL_CERT_FILE",
+  "GIT_SSL_CAINFO",
+  "NODE_EXTRA_CA_CERTS",
+] as const;
+
 export function createClientEnvironment(
   configuration: ClientFiles,
   sessionDirectory: string,
@@ -32,9 +44,16 @@ export function createClientEnvironment(
     GH_PAGER: "cat",
     PAGER: "cat",
   };
+  for (const name of inheritedRuntimeEnvironment) {
+    if (process.env[name] !== undefined) {
+      env[name] = process.env[name];
+    }
+  }
   if (configuration.hasPublicCa) {
-    env.SSL_CERT_FILE = join(sessionDirectory, "ca.pem");
-    env.NODE_EXTRA_CA_CERTS = join(sessionDirectory, "ca.pem");
+    const ca = join(sessionDirectory, "ca.pem");
+    env.SSL_CERT_FILE ??= ca;
+    env.GIT_SSL_CAINFO ??= ca;
+    env.NODE_EXTRA_CA_CERTS ??= ca;
   }
   return env;
 }

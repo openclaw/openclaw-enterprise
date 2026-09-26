@@ -294,7 +294,8 @@ function installedRepositoryJourney(mode) {
       const backendId = "repository-proof";
       const repositoryRef = "authorized-repository";
       const driverId = "repository-proof-driver";
-      const origin = `https://openclaw-enterprise-repository-credentials.${f.system}.svc`;
+      const serviceName = "git";
+      const origin = `https://${serviceName}.${f.system}.svc`;
       const registry = {
         version: 1,
         backendId,
@@ -345,7 +346,6 @@ function installedRepositoryJourney(mode) {
       await f.createSecret("repository-service-config", {
         "config.json": JSON.stringify({
           gateway: {
-            publicOrigin: origin,
             listen: "0.0.0.0:8443",
             controlSocket: socket,
             tlsCertFile: "/etc/openclaw/repository-inputs/tls.crt",
@@ -390,10 +390,12 @@ function installedRepositoryJourney(mode) {
         namespace: f.system,
         podLabels: workerLabels,
         port: 8443,
+        origin,
       };
       await f.upgrade({
         enabled: true,
         image: images.credentials,
+        serviceName,
         backendId,
         registryConfigMapName: "repository-registry-v1",
         registryKey: "registry.json",
@@ -783,7 +785,7 @@ function installedRepositoryJourney(mode) {
         ).trim();
         assert.match(versions.codex, /^codex-cli \d+\.\d+\.\d+/);
       }
-      const service = await f.get("service", "openclaw-enterprise-repository-credentials");
+      const service = await f.get("service", serviceName);
       const probe = `const net=require('node:net'); const socket=net.createConnection({host:process.argv[1],port:443}); let done=false; function finish(result){if(done)return;done=true;console.log(result);socket.destroy()}socket.setTimeout(3000);socket.on('connect',()=>finish('connected'));socket.on('timeout',()=>finish('timeout'));socket.on('error',error=>finish(error.code));`;
       assert.equal((await consumerExec(probe, [service.spec.clusterIP])).trim(), "connected");
       if (dedicated) {

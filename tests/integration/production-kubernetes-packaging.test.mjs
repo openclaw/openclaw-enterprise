@@ -79,6 +79,9 @@ async function render(overrides = {}, options = {}) {
     "--namespace",
     options.namespace ?? "openclaw-system",
   ];
+  if (options.isUpgrade) {
+    args.push("--is-upgrade");
+  }
   for (const [key, value] of Object.entries({ ...values, ...overrides })) {
     args.push("--set", `${key}=${value}`);
   }
@@ -578,7 +581,7 @@ test(
     ]);
     assert.deepEqual(service.args, [
       "--public-origin",
-      "https://openclaw-enterprise-repository-credentials.openclaw-system.svc",
+      "https://git.openclaw-system.svc",
       "--backend-id",
       "github-primary",
     ]);
@@ -588,7 +591,7 @@ test(
     ]);
 
     // Service and CNI policy use different ports: authorization traffic reaches endpoint TCP 8443.
-    const endpoint = named("Service", "openclaw-enterprise-repository-credentials");
+    const endpoint = named("Service", "git");
     assert.equal(endpoint.spec.type, "ClusterIP");
     assert.deepEqual(endpoint.spec.selector, worker.spec.selector.matchLabels);
     assert.deepEqual(endpoint.spec.ports, [
@@ -617,6 +620,49 @@ test(
           roleRef.name === tenantWorker.metadata.name,
       ),
     );
+  },
+);
+
+test(
+  "repository credential Helm packaging derives the broker origin from Service settings",
+  tooling,
+  async () => {
+    for (const [namespace, serviceName, expectedOrigin] of [
+      ["tenant-control", undefined, "https://git.tenant-control.svc"],
+      ["tenant-control", "git", "https://git.tenant-control.svc"],
+      [
+        "openclaw-system",
+        "openclaw-enterprise-repository-credentials",
+        "https://openclaw-enterprise-repository-credentials.openclaw-system.svc",
+      ],
+    ]) {
+      const overrides =
+        serviceName === undefined
+          ? repositoryCredentialValues
+          : { ...repositoryCredentialValues, "repositoryCredentials.serviceName": serviceName };
+      const objects = await resources(
+        (await render(overrides, { namespace, isUpgrade: serviceName !== undefined })).stdout,
+      );
+      const endpointName = serviceName ?? "git";
+      assert.ok(
+        objects.some(
+          (object) => object.kind === "Service" && object.metadata.name === endpointName,
+        ),
+      );
+      const worker = objects.find(
+        ({ kind, metadata }) =>
+          kind === "Deployment" && metadata.name === "openclaw-enterprise-worker",
+      );
+      const broker = worker.spec.template.spec.containers.find(
+        ({ name }) => name === "repository-credentials",
+      );
+      assert.deepEqual(broker.args, [
+        "--public-origin",
+        expectedOrigin,
+        "--backend-id",
+        "github-primary",
+      ]);
+    }
   },
 );
 
@@ -701,9 +747,16 @@ test(
       [{ "repositoryCredentials.tlsSecretName": "repository-config" }, /dedicated Secret/],
       [{ "repositoryCredentials.upstreamCidrs[0]": "0.0.0.0/0" }, /explicit IPv4 CIDRs/],
       [{ "repositoryCredentials.upstreamCidrs[0]": "999.1.1.1/32" }, /invalid IPv4 address/],
+      [{ "repositoryCredentials.serviceName": "1git" }, /DNS-1035/],
+      [{ "repositoryCredentials.serviceName": "git.openclaw-system.svc" }, /DNS-1035/],
+      [{ "repositoryCredentials.serviceName": "a".repeat(64) }, /DNS-1035/],
     ]) {
       await assert.rejects(render({ ...repositoryCredentialValues, ...overrides }), message);
     }
+    await assert.rejects(
+      render(repositoryCredentialValues, { isUpgrade: true }),
+      /repositoryCredentials.serviceName must be explicit during upgrades/,
+    );
   },
 );
 

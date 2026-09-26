@@ -16,6 +16,13 @@ Slack tokens stay in the gateway. Repository profiles and model authentication
 are independent. [Kubernetes policies](drivers/kubernetes-compute/networking-and-isolation.md#networking)
 allow consumer access to the credential sidecar.
 
+Dedicated Codex depends on tool proxy policy. OCE projects the broker host
+only for repository-bound Agents when the Installation opts into
+`runtime.codexRepositoryCredentials.networkPolicy: private-endpoints-v1`; older
+Codex runtimes such as `0.156.0` lack that scoped private-endpoint capability.
+Do not use global private access, `full` mode or unrestricted methods to make
+Git reach the broker.
+
 Trusted startup loads protected configuration into the separate service process;
 backend construction and sender callbacks remain private. Session controls are
 `open`, `status`, `close`, and `shutdown`. Separate service and Git/gh artifacts
@@ -284,9 +291,7 @@ other informational links remain data.
 
 Ordinary Git uses `/usr/bin/git` and native configuration. Git owns commands,
 identity, hooks, aliases, remotes, push URLs, worktrees, and user settings.
-The client does not parse Git arguments or create a temporary HOME. The operator's
-single-session launcher remains available and adds the same scoped defaults to
-stock Git.
+The client does not parse Git arguments or create a temporary HOME.
 
 For each generation, native preparation validates public manifest/session metadata,
 identities, paths and file custody, then writes private aggregate `gitconfig`.
@@ -322,9 +327,8 @@ pinning does not promise a command-wide snapshot across arbitrary subprocesses.
 Native user configuration can override these defaults, and caller-added helpers
 or credential stores can retain credentials. The feature installs no cache/store
 helper; its `store` and `erase` operations are inert. There is no whole-command
-preflight or guarantee that every request in a multi-request command fails before
-any allowed request executes. An uncertain mutation is never retried by the
-client to obtain a successful result.
+preflight across multi-request commands. An uncertain mutation is never retried
+by the client to obtain a successful result.
 
 The API launcher requires GitHub CLI **2.100.0**, `GH_HOST=github.com`, a gateway
 hostname with verified TLS, and HTTPS port 443. Its private `hosts.yml` uses the

@@ -309,6 +309,7 @@ qualification image and rendered Compose check.
 | Rendered Compose              | Declared paths and mount separation.                                                                               |
 | Separate running containers   | Delivered image identity and observed client/service custody for the exercised commands.                           |
 | Authorized live smoke         | Real provider behavior and cleanup for the selected repository, grant and client version.                          |
+| Installed Agent turn          | The configured Agent executes Git through its own Harness, tool policy, network path and repository authorization. |
 
 Retain selectors, versions, source/artifact/image identities, pass/fail/skip counts
 and cleanup results. Missing selectors leave evidence unavailable; they do not
@@ -317,6 +318,15 @@ bound to their original artifacts. After changes, record justified equivalence
 for each affected assertion or rerun its owning check. These packaging checks do
 not establish OCC/worker/Compute integration, an installed ordinary-Agent model
 contribution, a real-time thirteen-hour soak or release readiness.
+
+For dedicated Codex, do not substitute operator `kubectl exec`, direct container
+Git commands, or runtime-image smoke tests for the installed Agent turn. Those
+checks can prove material delivery, Git configuration and broker authorization
+outside Codex. They do not exercise Codex's tool network proxy or the
+`private-endpoints-v1` runtime capability required for broker Git `POST`.
+Codex `0.156.0` lacks that scoped internal-broker exception.
+For Slack-enabled Agents, start the installed-Agent proof from Slack and verify
+the threaded Agent response instead of using a direct native UI prompt.
 
 ## Run an authorized live smoke
 

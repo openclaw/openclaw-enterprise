@@ -124,7 +124,7 @@ async function repositoryInstallation(t) {
   configuration.drivers.repo = {
     id: "repository-credentials",
     configuration: {
-      controlSocket: join(directory, "absent-control", "control.sock"),
+      controlSocket: "/run/openclaw/repository-control/private/control.sock",
       sessionDurationSeconds: 600,
       publicCaPath,
     },

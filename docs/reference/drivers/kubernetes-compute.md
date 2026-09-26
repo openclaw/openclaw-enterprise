@@ -153,6 +153,9 @@ drivers:
         nodeSelector: { oce-role: agents }
         gatewayNodeSelector: { oce-role: control-plane }
         transportSecretPrefix: openclaw-agent-transport
+        # Required before repository-bound dedicated Codex Agents are admitted.
+        codexRepositoryCredentials:
+          networkPolicy: private-endpoints-v1
         # Optional; first install this reviewed profile on every eligible node.
         codexSeccompProfile: profiles/codex-0.156.0.json
 ```

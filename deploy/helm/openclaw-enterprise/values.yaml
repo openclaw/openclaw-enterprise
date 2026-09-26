@@ -72,6 +72,10 @@ backend:
 repositoryCredentials:
   enabled: false
   image: ""
+  # Internal HTTPS Service name. Fresh installs default to git. Upgrades must
+  # set this explicitly to the current Service name until repository sessions
+  # drain, then switch it deliberately to git.
+  serviceName: ""
   backendId: ""
   # Operator-created immutable, versioned ConfigMap shared by all three consumers.
   registryConfigMapName: ""

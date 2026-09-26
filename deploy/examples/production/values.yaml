@@ -64,6 +64,7 @@ repositoryCredentials:
   # appKeySecretName: occ-repository-app-key
   # tlsSecretName: occ-repository-tls
   # publicCaSecretName: occ-repository-public-ca
+  # serviceName: git
   # upstreamCidrs: [198.51.100.0/24]
 
 # Metrics listeners are enabled privately. Set both selectors to admit your scraper.

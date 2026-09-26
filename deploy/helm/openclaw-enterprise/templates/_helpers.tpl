@@ -78,6 +78,13 @@
 {{- if not (regexMatch "^[^[:space:]@]+@sha256:[a-fA-F0-9]{64}$" $credentials.image) -}}
 {{- fail "repositoryCredentials.image must be an approved immutable SHA-256 image reference" -}}
 {{- end -}}
+{{- $serviceName := include "openclaw.repositoryCredentials.serviceName" . -}}
+{{- if and .Release.IsUpgrade (not $credentials.serviceName) -}}
+{{- fail "repositoryCredentials.serviceName must be explicit during upgrades; keep the current Service name until active repository sessions drain, then switch deliberately" -}}
+{{- end -}}
+{{- if or (gt (len $serviceName) 63) (not (regexMatch "^[a-z]([-a-z0-9]*[a-z0-9])?$" $serviceName)) -}}
+{{- fail "repositoryCredentials.serviceName must be a valid Kubernetes Service DNS-1035 label" -}}
+{{- end -}}
 {{- range $name := list "backendId" "registryConfigMapName" "registryKey" "serviceConfigSecretName" "serviceConfigKey" "appKeySecretName" "appKeyKey" "tlsSecretName" "publicCaSecretName" "publicCaKey" -}}
 {{- if not (index $credentials $name) -}}{{- fail (printf "repositoryCredentials.%s is required when enabled" $name) -}}{{- end -}}
 {{- end -}}
@@ -202,7 +209,17 @@ capabilities:
 {{- printf "%s-root" (include "openclaw.gatewayRouting.serviceName" .) -}}
 {{- end -}}
 
+{{- define "openclaw.repositoryCredentials.serviceName" -}}
+{{- default "git" .Values.repositoryCredentials.serviceName -}}
+{{- end -}}
 
+{{- define "openclaw.repositoryCredentials.hostname" -}}
+{{- printf "%s.%s.svc" (include "openclaw.repositoryCredentials.serviceName" .) .Release.Namespace -}}
+{{- end -}}
+
+{{- define "openclaw.repositoryCredentials.origin" -}}
+{{- printf "https://%s" (include "openclaw.repositoryCredentials.hostname" .) -}}
+{{- end -}}
 
 {{- define "openclaw.gatewayRouting.envoyNetworkPolicyName" -}}
 {{- printf "%s-%s-envoy-dataplane" (.Release.Name | trunc 34 | trimSuffix "-") (include "openclaw.gatewayRouting.routeNamespaceLabel" .) -}}

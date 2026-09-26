@@ -33,7 +33,7 @@ services:
     security_opt: [no-new-privileges:true]
     tmpfs: ["/tmp:mode=1777,size=16m"]
     extra_hosts:
-      - "${CREDENTIAL_GATEWAY_HOSTNAME:?Set the hostname from gateway.publicOrigin}=${CREDENTIAL_SERVICE_PRIVATE_ADDRESS:?Set a private host IPv4 address reachable by the client container}"
+      - "${CREDENTIAL_GATEWAY_HOSTNAME:?Set the broker hostname from the Helm-derived origin, or standalone gateway.publicOrigin}=${CREDENTIAL_SERVICE_PRIVATE_ADDRESS:?Set a private host IPv4 address reachable by the client container}"
     volumes:
       - type: bind
         source: ${CREDENTIAL_CLIENT_SESSION:?Set the selected private session directory}

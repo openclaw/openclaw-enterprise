@@ -1,7 +1,7 @@
 ---
 created: 2026-09-18
-updated: "2026-09-19"
-last_updated_session: "authoring-run/73c80a5e-4d0c-4e72-b989-0cf9963c6593"
+updated: "2026-09-25"
+last_updated_session: "authoring-run/656293f4-5523-4894-8d65-6c69b3bc5dee"
 ---
 
 # Repository credential configuration flow
@@ -10,14 +10,17 @@ last_updated_session: "authoring-run/73c80a5e-4d0c-4e72-b989-0cf9963c6593"
 
 The repository credential composition loader validates operator-selected
 configuration, GitHub App key material, and TLS files before returning a frozen
-configuration owner. Its `--check-config` entry point reports a nonsecret
-summary and closes that owner. This flow stops before provider requests or
-listener startup.
+configuration owner. In Kubernetes projection mode, the sidecar derives the
+broker origin from its trusted deployment argument before protected loading. The
+standalone `--check-config` entry point still requires an explicit origin,
+reports a nonsecret summary, and closes that owner. This flow stops before
+provider requests or listener startup.
 
 ## Entry Points
 
 - Trigger: `pnpm credentials:check-config /absolute/path/service.json`.
-- Source: `apps/controller/src/composition/repository-credentials/check-config.ts:checkConfiguration`
+- Source: `apps/controller/src/composition/repository-credentials/projected-inputs.ts:prepareProjectedInputs`,
+  `apps/controller/src/composition/repository-credentials/check-config.ts:checkConfiguration`,
   and `apps/controller/src/composition/repository-credentials/config.ts:loadConfiguration`.
 - Assumptions: Node 24, prepared build output, operator-selected absolute paths,
   and the ownership and permission policy in the [reference](../reference/repository-credentials.md#configuration).
@@ -28,6 +31,7 @@ listener startup.
 graph TD
   Input["<b>Operator configuration</b><br/>Absolute protected path"] --> Ancestors["<b>Validate ancestors</b><br/>Root to immediate parent"]
   Projection["<b>Kubernetes inputs</b><br/>Selected generations"] --> Snapshot["<b>Check and copy inputs</b><br/>Private regular files"]
+  Expected["<b>Deployment origin</b><br/>Trusted sidecar argument"] --> Snapshot
   Snapshot -->|invalid projection or identity| Reject
   Snapshot -->|protected snapshot| Ancestors
   Ancestors -->|unsafe owner, mode or symlink| Reject["<b>Reject configuration</b><br/>No provider call"]
@@ -41,7 +45,7 @@ graph TD
   classDef input fill:#F1EEF5,stroke:#A091AD,color:#3A3243,stroke-width:1px
   classDef operation fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
   classDef blocked fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
-  class Input,Projection input
+  class Input,Projection,Expected input
   class Snapshot,Ancestors,File,Material,Owner,Summary,Service operation
   class Reject blocked
 ```
@@ -50,9 +54,18 @@ graph TD
 
 ### 1. Snapshot Kubernetes inputs when selected
 
-`apps/controller/src/composition/repository-credentials/protected-file.ts:readProtectedFile`
+`apps/controller/src/composition/repository-credentials/projected-inputs.ts:prepareProjectedInputs`
+and `apps/controller/src/composition/repository-credentials/protected-file.ts:readProtectedFile`
 
-The loader requires a normalized absolute path and validates its directory
+Kubernetes startup reads `config.json`, App key, TLS files and registry from the
+currently selected projected-volume generation. The projection layer fills an
+absent `gateway.publicOrigin` from the trusted `--public-origin` deployment
+argument. If operators provide `gateway.publicOrigin`, it must match that
+argument exactly. The same projection check verifies that the serving certificate
+covers the derived origin host before copying any projected input into the
+private runtime directory.
+
+The protected loader requires a normalized absolute path and validates its directory
 ancestors in root-to-leaf order. Each accepted prefix therefore protects the
 next path component against replacement by another local user. Ancestors must
 be directories owned by root or the service user. Group/other writes fail except
@@ -126,6 +139,8 @@ startup validation, not live GitHub behavior or platform integration.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-25 23:47: Derive the Kubernetes broker origin from the sidecar deployment argument and validate the projected TLS host. (public authoring-run/656293f4-5523-4894-8d65-6c69b3bc5dee - 7e310b74)
 
 - 2026-09-19 23:54: Reconcile RepoDriver ownership, private status projection, and separate emitted service/client paths. (public authoring-run/73c80a5e-4d0c-4e72-b989-0cf9963c6593 - e5b5a5489f078d08272523476bdbcd0b9162c946)
 

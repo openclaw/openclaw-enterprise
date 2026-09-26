@@ -295,7 +295,7 @@ spec:
           command: [node, /app/dist/composition/repository-credentials/projected-inputs.js]
           args:
             - --public-origin
-            - {{ printf "https://openclaw-enterprise-repository-credentials.%s.svc" $.Release.Namespace | quote }}
+            - {{ include "openclaw.repositoryCredentials.origin" $ | quote }}
             - --backend-id
             - {{ $.Values.repositoryCredentials.backendId | quote }}
           securityContext:

@@ -2,6 +2,7 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, readdir, readlink, realpath, unlink } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { X509Certificate } from "node:crypto";
 import type { Clock } from "../../drivers/repo/credentials/backend-contracts.ts";
 import type { LoadedConfiguration } from "./contracts.ts";
 import { record } from "../../drivers/repo/credentials/configuration.ts";
@@ -150,6 +151,19 @@ async function writePrivate(path: string, value: Buffer): Promise<void> {
   }
 }
 
+function validateProjectedTlsHost(cert: Buffer, origin: string): void {
+  const hostname = new URL(origin).hostname;
+  const matched = new X509Certificate(cert).checkHost(hostname, {
+    subject: "never",
+    wildcards: false,
+    partialWildcards: false,
+    multiLabelWildcards: false,
+  });
+  if (matched !== hostname) {
+    throw new Error("invalid-projected-inputs");
+  }
+}
+
 /** Kubernetes process composition: snapshot projections before the protected loader. */
 export async function prepareProjectedInputs(
   options: ProjectedInputs,
@@ -169,6 +183,9 @@ export async function prepareProjectedInputs(
     const root = record(JSON.parse(contents.get("config.json")!.toString("utf8")));
     const gateway = record(root.gateway);
     const backend = record(root.backend);
+    if (gateway.publicOrigin === undefined) {
+      gateway.publicOrigin = options.expectedOrigin;
+    }
     if (
       gateway.publicOrigin !== options.expectedOrigin ||
       gateway.listen !== "0.0.0.0:8443" ||
@@ -178,6 +195,7 @@ export async function prepareProjectedInputs(
     ) {
       throw new Error("invalid-projected-inputs");
     }
+    validateProjectedTlsHost(contents.get("tls.crt")!, options.expectedOrigin);
     gateway.tlsCertFile = join(options.privateDirectory, "tls.crt");
     gateway.tlsKeyFile = join(options.privateDirectory, "tls.key");
     backend.privateKeyFile = join(options.privateDirectory, "private-key.pem");

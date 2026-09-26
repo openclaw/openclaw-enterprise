@@ -2543,6 +2543,132 @@ test("Codex gateway supervisor exits when the peer Agent plugin failure set chan
   }
 });
 
+test("Codex gateway supervisor applies broker-only bridge runtime without selected plugins", async () => {
+  const revisionId = "revision-plugin-compute-1";
+  const runtime = pluginRuntimeSpecForRevision(revision({ plugins: codexNoPluginState() }), {
+    host: "git.oce.svc",
+    port: 443,
+    allowMethods: ["POST"],
+    domains: { "github.com": "allow" },
+    privateEndpoints: [
+      { host: "metrics.internal", port: 9443, allowMethods: ["GET"] },
+      { host: "git.oce.svc", port: 443, allowMethods: ["POST"] },
+    ],
+  });
+  const files = new Map([
+    [
+      "/etc/openclaw/openclaw.json",
+      JSON.stringify({
+        gateway: { port: 8080 },
+        plugins: { entries: { codex: { enabled: true, config: { keep: true } } } },
+      }),
+    ],
+  ]);
+  const intervals = [];
+  let statusHandler;
+  let child;
+  const sandbox = {
+    AbortSignal,
+    Buffer,
+    JSON,
+    URL,
+    console: { error() {} },
+    fetch,
+    process: {
+      env: {
+        APP_SERVER_TOKEN: "base-app-server-token",
+        HOME: "/home/node",
+        OPENCLAW_AGENT_REVISION_ID: revisionId,
+        OPENCLAW_CONFIG_PATH: "/etc/openclaw/openclaw.json",
+        OPENCLAW_GATEWAY_PORT: "8080",
+        OPENCLAW_PLUGIN_RUNTIME_JSON: JSON.stringify({ manifest: runtime }),
+        OPENCLAW_PLUGIN_STATUS_CONTAINER: "gateway",
+        OPENCLAW_PLUGIN_STATUS_PORT: "18791",
+        OPENCLAW_POD_UID: "gateway-pod-1",
+      },
+      on() {},
+      exit() {},
+    },
+    setInterval(callback) {
+      intervals.push(callback);
+      return { unref() {} };
+    },
+    setTimeout() {
+      return { unref() {} };
+    },
+    clearTimeout() {},
+    require(specifier) {
+      if (specifier === "node:http") {
+        return {
+          createServer(handler) {
+            statusHandler = handler;
+            return { listen() {} };
+          },
+        };
+      }
+      if (specifier === "node:fs") {
+        return {
+          existsSync(path) {
+            return files.has(path);
+          },
+          mkdirSync() {},
+          readFileSync(path) {
+            if (!files.has(path)) {
+              throw new Error(`Missing mocked file: ${path}`);
+            }
+            return files.get(path);
+          },
+          writeFileSync(path, data) {
+            files.set(path, String(data));
+          },
+        };
+      }
+      if (specifier === "node:child_process") {
+        return {
+          spawn(command, args) {
+            assert.equal(command, "node");
+            assert.deepEqual(plain(args), ["/app/openclaw.mjs", "gateway", "--port", "8080"]);
+            child = { kill() {}, on() {} };
+            return child;
+          },
+          spawnSync() {
+            throw new Error("broker-only bridge must not run native plugin installers");
+          },
+        };
+      }
+      return nodeRequire(specifier);
+    },
+  };
+
+  vm.runInNewContext(GATEWAY_RUNTIME_ENTRYPOINT, sandbox);
+  await waitForCondition("gateway supervisor start", () => child);
+  assert.equal(intervals.length, 0);
+
+  const effective = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
+  assert.equal(effective.plugins.entries.codex.config.keep, true);
+  assert.equal(effective.plugins.entries.codex.config.codexPlugins, undefined);
+  assert.deepEqual(effective.plugins.entries.codex.config.appServer.networkProxy, {
+    enabled: true,
+    mode: "limited",
+    allowLocalBinding: false,
+    domains: { "github.com": "allow", "git.oce.svc": "allow" },
+    privateEndpoints: [
+      { host: "metrics.internal", port: 9443, allowMethods: ["GET"] },
+      { host: "git.oce.svc", port: 443, allowMethods: ["POST"] },
+    ],
+  });
+  const status = readStatusFromHandler(statusHandler);
+  assert.deepEqual(status, {
+    revisionId,
+    container: "gateway",
+    startupId: status.startupId,
+    podUid: "gateway-pod-1",
+    phase: "ready",
+    successfulPluginIds: [],
+    failures: [],
+  });
+});
+
 test("Kubernetes dedicated Codex agent mounts plugin-free runtime without plugin status auth", async () => {
   const driver = createKubernetesComputeDriver(kubernetesOptions());
   const candidate = revision({ plugins: codexNoPluginState() });
@@ -2615,6 +2741,63 @@ test("Kubernetes dedicated Codex agent mounts plugin-free runtime without plugin
       ["websocket", 18790],
       ["plugin-status", 18791],
     ],
+  );
+});
+
+test("Kubernetes dedicated Codex gateway mounts broker-only runtime without plugin selections", async () => {
+  const driver = createKubernetesComputeDriver(kubernetesOptions());
+  const runtime = pluginRuntimeSpecForRevision(revision({ plugins: codexNoPluginState() }), {
+    host: "git.oce.svc",
+    port: 443,
+    allowMethods: ["POST"],
+    domains: {},
+    privateEndpoints: [{ host: "git.oce.svc", port: 443, allowMethods: ["POST"] }],
+  });
+  const deployment = driver.deployment(
+    "gateway-plugin-compute-rev",
+    {
+      namespaceId: tenant.id,
+      agentId: agent.id,
+      revisionId: "revision-plugin-compute-1",
+    },
+    "oce-plugin-compute",
+    "openclaw-enterprise/gateway-fixture:local",
+    "gateway-plugin-compute",
+    "gateway",
+    {},
+    "info",
+    driver.gatewayConfiguration(revision(), undefined, "oce-plugin-compute"),
+    false,
+    undefined,
+    undefined,
+    [],
+    [],
+    { name: "plugin-runtime-gateway-plugin-compute", runtime },
+  );
+
+  const pod = deployment.spec.template.spec;
+  assert.equal(
+    pod.volumes.some(
+      (volume) => volume.configMap?.name === "plugin-runtime-gateway-plugin-compute",
+    ),
+    true,
+  );
+  const container = pod.containers[0];
+  assert.equal(
+    container.env.some((variable) => variable.name === PLUGIN_RUNTIME_MANIFEST_ENVIRONMENT),
+    true,
+  );
+  assert.equal(
+    container.env.some((variable) => variable.name === PLUGIN_RUNTIME_CODEX_CONFIG_ENVIRONMENT),
+    false,
+  );
+  assert.equal(
+    container.env.some((variable) => variable.name === PLUGIN_RUNTIME_READY_MARKER_ENVIRONMENT),
+    false,
+  );
+  assert.equal(
+    container.env.some((variable) => variable.name === "OPENCLAW_PLUGIN_STATUS_CONTAINER"),
+    false,
   );
 });
 

@@ -74,6 +74,19 @@ label. These selectors permit transport; the credential service still validates
 the session and repository grant. Verify the effective policies in the installed
 cluster; rendered rules alone do not prove traffic enforcement.
 
+For dedicated Codex, Kubernetes NetworkPolicy is necessary but not sufficient.
+Codex's tool network proxy also evaluates the outbound destination and HTTP
+method. Compute projects a broker allowance only when the Agent has repository
+bindings and the Installation declares
+`runtime.codexRepositoryCredentials.networkPolicy: private-endpoints-v1`. The
+projected Codex policy allows the exact broker host on port 443, keeps normal
+domain allowlisting for that host, and grants the Git `POST` method exception
+without broad private-network or full-method access. Agents without repository
+bindings receive no broker private-endpoint allowance, and an explicit Codex
+network-proxy deny for the broker host fails closed. Older Codex runtimes that
+lack `network.private_endpoints` support remain blocked; do not widen
+Installation-level proxy settings to make repository traffic work.
+
 Production currently permits public TCP/443 egress for model access; a
 restricted model proxy is not yet available. Channels require an approved
 literal-IP HTTP(S) proxy configured through `runtime.channels`; direct public

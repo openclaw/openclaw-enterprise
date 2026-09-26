@@ -83,6 +83,7 @@ const reviewedImports = {
     "node:tls": ["createSecureContext"],
   },
   "composition/repository-credentials/projected-inputs.ts": {
+    "node:crypto": ["X509Certificate"],
     "node:fs": ["constants"],
     "node:fs/promises": ["lstat", "mkdir", "open", "readdir", "readlink", "realpath", "unlink"],
   },

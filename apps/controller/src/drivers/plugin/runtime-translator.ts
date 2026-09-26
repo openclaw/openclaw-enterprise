@@ -33,6 +33,18 @@ export type PluginRuntimeResolvedArtifacts =
 
 type PluginRuntimeFailureInput = readonly { readonly pluginId: string }[];
 
+export interface CodexRepositoryBrokerNetworkPolicy {
+  readonly host: string;
+  readonly port: number;
+  readonly allowMethods: readonly ["POST"];
+  readonly domains: Readonly<Record<string, "allow" | "deny">>;
+  readonly privateEndpoints: readonly {
+    readonly host: string;
+    readonly port: number;
+    readonly allowMethods: readonly string[];
+  }[];
+}
+
 export type CodexPluginCatalogReader = {
   listCatalog(signal?: AbortSignal): Promise<readonly PluginCatalogEntry[]>;
 };
@@ -611,13 +623,78 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     };
   }
 
+  function codexBrokerOpenClawConfiguration(policy: unknown): Record<string, unknown> | undefined {
+    if (!isRecord(policy)) {
+      return undefined;
+    }
+    const host = requiredString(policy.host, "Repository credential broker host");
+    const port = policy.port;
+    if (typeof port !== "number" || !Number.isSafeInteger(port) || port < 1 || port > 65535) {
+      throw new Error("Repository credential broker port is invalid.");
+    }
+    const allowMethods = requiredArray(policy.allowMethods, "Repository credential broker methods");
+    if (allowMethods.length !== 1 || allowMethods[0] !== "POST") {
+      throw new Error("Repository credential broker methods are invalid.");
+    }
+    const domains = isRecord(policy.domains) ? policy.domains : {};
+    for (const decision of Object.values(domains)) {
+      if (decision !== "allow" && decision !== "deny") {
+        throw new Error("Repository credential broker domains are invalid.");
+      }
+    }
+    const privateEndpoints = Array.isArray(policy.privateEndpoints)
+      ? policy.privateEndpoints.map((value) => {
+          if (!isRecord(value)) {
+            throw new Error("Repository credential broker private endpoint is invalid.");
+          }
+          const endpointHost = requiredString(
+            value.host,
+            "Repository credential broker private endpoint host",
+          );
+          const endpointPort = value.port;
+          if (
+            typeof endpointPort !== "number" ||
+            !Number.isSafeInteger(endpointPort) ||
+            endpointPort < 1 ||
+            endpointPort > 65535
+          ) {
+            throw new Error("Repository credential broker private endpoint port is invalid.");
+          }
+          const endpointMethods = requiredArray(
+            value.allowMethods,
+            "Repository credential broker private endpoint methods",
+          );
+          if (
+            endpointMethods.length === 0 ||
+            endpointMethods.some((method) => typeof method !== "string" || method.length === 0)
+          ) {
+            throw new Error("Repository credential broker private endpoint methods are invalid.");
+          }
+          return { host: endpointHost, port: endpointPort, allowMethods: endpointMethods };
+        })
+      : [{ host, port, allowMethods }];
+    return {
+      appServer: {
+        networkProxy: {
+          enabled: true,
+          mode: "limited",
+          allowLocalBinding: false,
+          domains: { ...domains, [host]: "allow" },
+          privateEndpoints,
+        },
+      },
+    };
+  }
+
   function codexOpenClawConfiguration(
     selections: unknown,
     failures: unknown = [],
+    repositoryBrokerNetworkPolicy: unknown = undefined,
   ): Record<string, unknown> | undefined {
     validatePolicies("codex", selections);
     const selected = selectionEntries(selections);
-    if (selected.length === 0) {
+    const brokerConfiguration = codexBrokerOpenClawConfiguration(repositoryBrokerNetworkPolicy);
+    if (selected.length === 0 && brokerConfiguration === undefined) {
       return undefined;
     }
     const failedPluginIds = failedPluginIdSet(failures);
@@ -627,19 +704,24 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
           codex: {
             enabled: true,
             config: {
-              codexPlugins: {
-                enabled: true,
-                allow_all_plugins: false,
-                plugins: Object.fromEntries(
-                  selected.map(([pluginId, selection]) => {
-                    const slug = codexSlugFromNativeId(codexNativeIdFromPluginId(pluginId));
-                    return [
-                      slug,
-                      codexOpenClawPluginEntry(pluginId, selection, slug, failedPluginIds),
-                    ];
+              ...brokerConfiguration,
+              ...(selected.length === 0
+                ? {}
+                : {
+                    codexPlugins: {
+                      enabled: true,
+                      allow_all_plugins: false,
+                      plugins: Object.fromEntries(
+                        selected.map(([pluginId, selection]) => {
+                          const slug = codexSlugFromNativeId(codexNativeIdFromPluginId(pluginId));
+                          return [
+                            slug,
+                            codexOpenClawPluginEntry(pluginId, selection, slug, failedPluginIds),
+                          ];
+                        }),
+                      ),
+                    },
                   }),
-                ),
-              },
             },
           },
         },
@@ -831,9 +913,13 @@ export function codexRuntimeArtifact(
 export function codexOpenClawConfiguration(
   selections: PluginDesiredState,
   failures: PluginRuntimeFailureInput = [],
+  repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy,
 ): OpenClawConfigurationDocument | undefined {
-  return pluginRuntimeTranslator.codexOpenClawConfiguration(selections, failures) as
-    OpenClawConfigurationDocument | undefined;
+  return pluginRuntimeTranslator.codexOpenClawConfiguration(
+    selections,
+    failures,
+    repositoryBrokerNetworkPolicy,
+  ) as OpenClawConfigurationDocument | undefined;
 }
 
 export function openClawRuntimeArtifact(
