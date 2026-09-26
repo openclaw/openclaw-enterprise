@@ -105,8 +105,10 @@ node, system Pod, event and redacted node-container diagnostics before cleanup;
 k3d rollback is disabled long enough to keep those logs. Inspect the
 `diagnostics-<artifact-prefix>-<lane>` artifact or local
 `<state-file>.diagnostics.json`. Failed diagnostic commands are marked
-unavailable or timed out, raw kubeconfig, environment values and Pod specs are
-excluded, and diagnostics explain setup failures without establishing coverage.
+unavailable or timed out, and collection preserves the original failure. Raw
+kubeconfig, environment values and Pod specs are excluded. Local callers must
+run `node scripts/ci/cleanup.mjs --state <state-file>` after failed prepared
+runs. Diagnostics explain setup failures without establishing coverage.
 
 The `k3d-model`, `gateway-routing`, `slack`, and `k3d-otel` lanes prepare the controller image and workspace routing for dedicated Harness node enrollment. Supply an immutable `NODE_BASE_IMAGE` for the controller build. Preparation supplies the imported controller digest and private routing CA paths; the Slack lane still requires approved runtime images and credentials.
 
@@ -114,14 +116,20 @@ Implementation status: routing, OpenShell, and logging have concrete CI
 preparation contracts. Routing installs pinned Gateway API, cert-manager v1.18.4
 and Envoy Gateway v1.6.7 manifests, then generates a private test CA. OpenShell
 creates an owned K3s v1.36.4 cluster, installs a matched kubectl, configures and
-smoke-tests the selected RuntimeClass, installs CLI/chart and Agent Sandbox
-assets, and imports gateway and supervisor images. Only that disposable cluster
-exempts the selected RuntimeClass from Pod Security Admission. Logging
+smoke-tests the selected RuntimeClass with the cluster's `runc` handler,
+installs CLI/chart and Agent Sandbox assets, and imports gateway and supervisor
+images. Only that disposable cluster exempts the selected RuntimeClass from Pod
+Security Admission; preparation proves an ordinary violating Pod is rejected and
+the same Pod is admitted with the selected class. The full OpenShell suite
+proves provider-owned supervisor filesystem, endpoint/L7 network, and process
+enforcement while the sidecar policy remains binary-unaware. Logging
 preparation owns a real OpenTelemetry Collector backend with JSONL evidence, so
 `OCC_TEST_OTEL_LOGS_URL` is no longer an external input. The Collector and
 Docker-model jobs use the shared [setup-test-docker action](../../.github/actions/setup-test-docker/action.yml)
-to pin Docker 29.4.0 for the production `fluentd-write-timeout` option; other
-jobs keep the runner daemon. Full-suite acceptance still requires main-only
+to pin Docker 29.4.0 for the production `fluentd-write-timeout` option. The
+action replaces the preinstalled daemon and shares `/var/run/docker.sock` across
+the CLI, Compose, and Driver; other jobs keep the runner daemon. Full-suite
+acceptance still requires main-only
 protected hosted execution of every selected lane. See the
 [delivery status](../../specs/19-github-actions-test-coverage/delivery-status.md#delivery-status)
 for proof boundaries and live gaps.
@@ -139,6 +147,7 @@ exist. On Docker Desktop or similar VM-backed hosts, run one Kubernetes lane at 
 time when measured disk or network pressure has caused instability. Model/service
 tests still require the approved credentials and spend policy in the
 [implementation specification](../../specs/19-github-actions-test-coverage.md).
+The GitHub matrix remains parallel.
 
 See the [execution flow](../flows/github-actions-testing.md) for entrypoints, result accounting, cleanup and failure interpretation. Use the [suite-specific guides](README.md#integration-tests) to reproduce a run locally.
 
