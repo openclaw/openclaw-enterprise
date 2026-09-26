@@ -74,18 +74,32 @@ label. These selectors permit transport; the credential service still validates
 the session and repository grant. Verify the effective policies in the installed
 cluster; rendered rules alone do not prove traffic enforcement.
 
-For dedicated Codex, Kubernetes NetworkPolicy is necessary but not sufficient.
-Codex's tool network proxy also evaluates the outbound destination and HTTP
-method. Compute projects a broker allowance only when the Agent has repository
-bindings and the Installation declares
-`runtime.codexRepositoryCredentials.networkPolicy: private-endpoints-v1`. The
-projected Codex policy allows the exact broker host on port 443, keeps normal
-domain allowlisting for that host, and grants the Git `POST` method exception
-without broad private-network or full-method access. Agents without repository
-bindings receive no broker private-endpoint allowance, and an explicit Codex
-network-proxy deny for the broker host fails closed. Older Codex runtimes that
-lack `network.private_endpoints` support remain blocked; do not widen
-Installation-level proxy settings to make repository traffic work.
+Compute projects repository broker policy to the actual Codex consumer: the
+Agent Pod for dedicated Codex, or the gateway for embedded OpenClaw with
+`plugins.driver.implementation: occ/codex-plugin`. Embedded OpenClaw using
+`occ/openclaw-plugin` or no PluginDriver selection receives no Codex projection.
+
+For those consumers with repository bindings, Compute adds the exact broker
+hostname from admitted session material to the tool proxy's domain allowlist and
+sets stock Codex `allow_local_binding = true` and `mode = "full"`. An explicit
+deny matching the broker hostname fails closed. Unbound Agents receive none of
+these generated changes; their existing policy remains in effect.
+
+These settings apply to the Agent's whole tool proxy: local binding is allowed,
+Codex's additional private-address guard is disabled, and every HTTP method is
+allowed at otherwise allowed destinations. Domain rules match hostnames, not
+ports: an allowed host is reachable on any port permitted by the lower network
+layers. This is not a broker-only port or method exception. Managed requirements
+that forbid local binding or require limited mode reject the conflicting
+configuration. Domain allowlisting, explicit denies, Kubernetes NetworkPolicy,
+TLS verification, and broker session/repository authorization remain separate
+boundaries. The workspace sandbox remains enabled.
+
+Compute supplies the broker's public CA to that consumer before Codex starts. Stock full mode
+normally tunnels HTTPS, so Git verifies the broker certificate directly. If
+Codex separately requires HTTPS interception, it retains platform and startup
+roots upstream and supplies child tools with its managed CA bundle. Preserve
+inherited `GIT_SSL_CAINFO`; TLS verification remains enabled in both paths.
 
 Production currently permits public TCP/443 egress for model access; a
 restricted model proxy is not yet available. Channels require an approved

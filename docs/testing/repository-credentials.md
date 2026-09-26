@@ -319,12 +319,14 @@ for each affected assertion or rerun its owning check. These packaging checks do
 not establish OCC/worker/Compute integration, an installed ordinary-Agent model
 contribution, a real-time thirteen-hour soak or release readiness.
 
-For dedicated Codex, do not substitute operator `kubectl exec`, direct container
+For Codex consumers, do not substitute operator `kubectl exec`, direct container
 Git commands, or runtime-image smoke tests for the installed Agent turn. Those
 checks can prove material delivery, Git configuration and broker authorization
-outside Codex. They do not exercise Codex's tool network proxy or the
-`private-endpoints-v1` runtime capability required for broker Git `POST`.
-Codex `0.156.0` lacks that scoped internal-broker exception.
+outside Codex. Exercise stock Codex's generated broker allowance,
+`allow_local_binding = true`, and `mode = "full"` separately. Cover bound/unbound
+dedicated/embedded consumers, broker-host denies, and unallowed hosts. Otherwise allowed private
+addresses are permitted. Require real reads, an authorized temporary write, and
+an unauthorized operation denied by broker authorization.
 For Slack-enabled Agents, start the installed-Agent proof from Slack and verify
 the threaded Agent response instead of using a direct native UI prompt.
 

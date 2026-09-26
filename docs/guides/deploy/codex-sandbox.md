@@ -8,14 +8,14 @@ container; [security](../../reference/security.md#pod-and-container-hardening) d
 the remaining containment requirements.
 
 This guide covers syscall containment. Codex network proxy policy is a separate
-boundary. Repository-bound dedicated Codex Agents require a runtime that supports
-OCE's `private-endpoints-v1` broker policy contract; Codex `0.156.0` does not
-expose that scoped private-destination or per-destination Git `POST` allowance.
-Do not treat a working seccomp profile, an operator shell, or a Ready Pod as
-proof that repository Git access works through Codex. This capability check comes
-from reviewed Codex `0.156.0` source (`config.rs`, `runtime.rs`,
-`connect_policy.rs`, and `mitm.rs`) at upstream commit
-`fe74a774532af67b5a4a3dec03ce9469e17f89af`.
+boundary. Repository-bound Codex consumers use stock Codex `0.156.0` with
+`allow_local_binding = true`, `mode = "full"`, and the exact broker hostname
+allowed. These settings permit local binding, disable Codex's additional
+private-address guard, and allow every HTTP method at otherwise allowed
+destinations. Explicit denies and the remaining
+[network boundaries](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking)
+still apply. A working seccomp profile, an operator shell, or a Ready Pod does
+not prove repository access through Codex tools.
 
 Profile installation belongs to your node provisioning process. OCE does not
 install host files, change node sysctls, or provide a privileged installer

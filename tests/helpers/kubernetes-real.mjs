@@ -141,7 +141,6 @@ export function createKubernetesInstallationConfiguration({
   compute.runtime.gatewayNodeSelector = JSON.parse(
     process.env.OCC_TEST_KUBERNETES_GATEWAY_NODE_SELECTOR ?? '{"kubernetes.io/os":"linux"}',
   );
-  compute.runtime.codexRepositoryCredentials = { networkPolicy: "private-endpoints-v1" };
   if (codexSeccompProfile !== undefined) {
     compute.runtime.codexSeccompProfile = codexSeccompProfile;
   }

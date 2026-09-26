@@ -121,15 +121,10 @@ repositoryCredentials:
 ```
 
 The broker origin comes from admitted repository session material; fresh Helm
-installs mint sessions for `git.<release-namespace>.svc`. Dedicated Codex Agents
-with repository bindings also require the runtime image and Installation to opt
-into the narrow broker network policy contract:
-
-```yaml
-runtime:
-  codexRepositoryCredentials:
-    networkPolicy: private-endpoints-v1
-```
+installs mint sessions for `git.<release-namespace>.svc`. Use the runtime image
+with the OpenClaw bridge that forwards stock Codex network settings. No custom
+Codex binary or Installation capability declaration is required. Compute derives
+the bound Agent's broker hostname and policy from admitted session material.
 
 Use the actual Helm release name for `app.kubernetes.io/instance`. Grant the
 chart's tenant-worker RoleBinding in each tenant namespace as described in the
@@ -163,13 +158,14 @@ adds worker-Pod egress on port 443 and ingress from tenant embedded gateways and
 dedicated Agent Pods on port 8443. Compute grants corresponding egress only to
 the repository consumer; see the
 [network selectors](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking). Existing model/network
-rules still apply. Compute additionally projects the matching Codex tool-proxy
-allowance only for repository-bound dedicated Codex Agents when
-`runtime.codexRepositoryCredentials.networkPolicy` is
-`private-endpoints-v1`; Agents without repository bindings receive no broker
-private-endpoint allowance. Explicit Codex network-proxy denies for the broker
-host fail closed instead of being overridden. Because worker and sidecar share a
-Pod network namespace, these rules are not a per-container isolation boundary.
+rules still apply. For repository-bound dedicated Codex or embedded OpenClaw
+using `occ/codex-plugin`, Compute allows the exact broker hostname and sets stock Codex `allow_local_binding = true` and
+`mode = "full"`. This permits local binding, disables Codex's additional
+private-address guard, and permits all HTTP methods at otherwise allowed
+destinations. Explicit denies, TLS verification, and broker authorization remain
+in effect. Unbound Agents receive no generated policy change. Because worker and
+sidecar share a Pod network namespace, these rules do not isolate containers
+within that Pod.
 
 For an existing installation with active repository sessions, keep
 `repositoryCredentials.serviceName` set to the old Service name until those

@@ -10,7 +10,8 @@ entrypoints:
 The Dockerfile builds OpenClaw from a verified public source archive, using its
 pinned package manager, frozen dependency lockfile, and upstream Docker assembly.
 The reviewed `codex-0.156.0.patch` updates only Codex dependency versions and package
-integrities before the frozen install. Both Codex entrypoints share that installation.
+integrities before the frozen install; it does not modify the Codex binary. Both
+Codex entrypoints use the same stock `0.156.0` installation.
 Codex and Slack come from that same source. The selected commit contains
 the restricted workspace-node commands and saved-token-first pairing required by
 split storage; published `2026.9.5` packages do not contain that complete contract.
@@ -24,16 +25,16 @@ checksum below identify this source build; it is not a published OpenClaw releas
 | Input                                        | Selection                                                                                                    |
 | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | Build base                                   | `docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584` |
-| OpenClaw source commit                       | `5f402bf7a8b510aa7489737c35621e9ad947469c`                                                                   |
-| Source archive SHA-256                       | `800e96a619db7fa2714be4432f705b72da823e75724a51b61bbb3482561145d6`                                           |
+| OpenClaw source commit                       | `e3c7304f01ed4c7d9aa7d3aed1d27dc1e2a630f3`                                                                   |
+| Source archive SHA-256                       | `947682ca9c92e8f6f274c1af771c3c180ab92921b06c52878c59837fef2095d0`                                           |
 | Dedicated Codex CLI (`OPENAI_CODEX_VERSION`) | `0.156.0`                                                                                                    |
 
 The source's package version is `2026.9.6`; it does not identify this custom
 build. `/opt/oce/runtime/provenance.json` records the source commit, verified archive
 hash, lockfile hash, pinned package manager, selected plugins, architecture, and
-Codex patch hash and version, and the SHA-256 of `contents.json`, which inventories
-packaged files, modes, hashes, and symlinks after final-stage Codex binary
-replacement and permission normalization. The final stage copies the assembled
+Codex dependency-patch hash and version, and the SHA-256 of `contents.json`, which inventories
+packaged files, modes, hashes, and symlinks after final-stage permission
+normalization. The final stage copies the assembled
 directory directly, without an intermediate compressed archive. Its pinned
 `node:24-bookworm-slim` base retains required runtime libraries, Git/SSH, GitHub CLI,
 Python, and process utilities. Build compilers stay in the full Bookworm stages.
@@ -71,7 +72,7 @@ installing packages at gateway startup. Slack credentials remain operator-owned
 runtime Secrets; do not put them in the image.
 
 Keep the source commit and archive checksum together when updating OpenClaw.
-Follow the [pinned upstream Docker assembly](https://github.com/openclaw/openclaw/blob/5f402bf7a8b510aa7489737c35621e9ad947469c/Dockerfile)
+Follow the [pinned upstream Docker assembly](https://github.com/openclaw/openclaw/blob/e3c7304f01ed4c7d9aa7d3aed1d27dc1e2a630f3/Dockerfile)
 to keep plugin dependencies and runtime assets consistent. Its plugin-local
 dependency layout preserves dependencies that differ from core versions.
 Plugin chunks emitted directly under `dist` also need package-root resolution.
@@ -82,17 +83,17 @@ one shared dependency version. Alternate
 `NODE_BASE_IMAGE` values must provide Node.js 24.16 or newer within the 24 series.
 The Dedicated command and bundled plugin both resolve the same
 [Codex 0.156.0](https://github.com/openai/codex/releases/tag/rust-v0.156.0) installation.
-For multi-architecture builds, the Dockerfile maps `TARGETARCH=amd64` to
-`@openai/codex-linux-x64` and `TARGETARCH=arm64` to
-`@openai/codex-linux-arm64`, replacing the matching platform binary with the
-patched CLI built for that image architecture. The patched CLI is built with the
-native GNU target used by the Rust base image and installed into the matching npm
-platform package path in the Debian runtime image. The image then rebuilds
-`/opt/oce/runtime/contents.json` from `/app/node_modules/openclaw` and updates
-`/opt/oce/runtime/provenance.json#runtimeContentsSha256` after the final runtime
-permission pass. The provenance file also records `codexBrokerPolicy` with the
-Codex source commit, patch digest, binary digest, target architecture, package
-name, and installed binary path.
+For multi-architecture builds, the frozen npm install selects the stock
+`@openai/codex-linux-x64` or `@openai/codex-linux-arm64` package for the target
+architecture. The image rebuilds `/opt/oce/runtime/contents.json` from
+`/app/node_modules/openclaw` and updates
+`/opt/oce/runtime/provenance.json#runtimeContentsSha256` after final permission
+normalization. Its `codex` provenance records the stock package source, version,
+lockfile integrities, platform package, and installed binary path and digest.
+The OpenClaw bridge forwards the repository-bound Agent's stock
+`allow_local_binding = true` and `mode = "full"` settings; the
+[networking contract](../../docs/reference/drivers/kubernetes-compute/networking-and-isolation.md#networking)
+defines their scope and remaining controls.
 Update the reviewed dependency patch and compatibility assertion together when
 changing that version. Run the compatibility
 check below against the resulting image. Provider model availability still

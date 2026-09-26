@@ -277,9 +277,6 @@ export interface KubernetesComputeDriverOptions {
     readonly channels?: {
       readonly proxyUrl: string;
     };
-    readonly codexRepositoryCredentials?: {
-      readonly networkPolicy: "private-endpoints-v1";
-    };
   };
   readonly gatewayRouting?: KubernetesGatewayRoutingOptions;
 }
@@ -598,15 +595,6 @@ function normalizedNetworkHost(value: string, description: string): string {
   return host;
 }
 
-function normalizedNetworkMethod(value: unknown): string {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new ConfigurationFailure(
-      "Repository credential broker private endpoint methods are invalid.",
-    );
-  }
-  return value.trim().toUpperCase();
-}
-
 function mergeDomainDecision(
   domains: Record<string, "allow" | "deny">,
   host: string,
@@ -617,14 +605,6 @@ function mergeDomainDecision(
     return;
   }
   domains[host] = "allow";
-}
-
-function codexPrivateEndpointKey(endpoint: {
-  readonly host: string;
-  readonly port: number;
-  readonly allowMethods: readonly string[];
-}): string {
-  return `${endpoint.host}\u0000${endpoint.port}\u0000${endpoint.allowMethods.join("\u0000")}`;
 }
 
 function validateResources(value: V1ResourceRequirements, description: string): void {
@@ -1073,14 +1053,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
               proxyUrl: { type: "string" },
             },
           },
-          codexRepositoryCredentials: {
-            type: "object",
-            required: ["networkPolicy"],
-            additionalProperties: false,
-            properties: {
-              networkPolicy: { enum: ["private-endpoints-v1"] },
-            },
-          },
         },
       },
       gatewayRouting: {
@@ -1275,19 +1247,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
           throw new ConfigurationFailure("Channel runtime proxy must be explicitly configured.");
         }
         channelProxy(channels.proxyUrl);
-      }
-      const repositoryCodexPolicy = options.runtime.codexRepositoryCredentials;
-      if (repositoryCodexPolicy !== undefined) {
-        if (asRecord(repositoryCodexPolicy) === undefined) {
-          throw new ConfigurationFailure(
-            "Codex repository credential network policy must be explicitly configured.",
-          );
-        }
-        if (repositoryCodexPolicy.networkPolicy !== "private-endpoints-v1") {
-          throw new ConfigurationFailure(
-            "Codex repository credential network policy support is invalid.",
-          );
-        }
       }
     }
     if (options.gatewayRouting !== undefined) {
@@ -6342,22 +6301,21 @@ export class KubernetesComputeDriver implements ComputeDriver {
     repositoryConsumer: { readonly role: "gateway" | "agent" } | undefined,
     repositoryMaterial: ResolvedRepositoryMaterialSpec | undefined,
   ): CodexRepositoryBrokerNetworkPolicy | undefined {
-    if (repositoryConsumer?.role !== "agent") {
-      return undefined;
-    }
-    if (revision.harness.id !== "codex" || revision.harness.mode !== "dedicated") {
+    const dedicatedCodex =
+      revision.harness.id === "codex" &&
+      revision.harness.mode === "dedicated" &&
+      repositoryConsumer?.role === "agent";
+    const embeddedCodex =
+      revision.harness.id === "openclaw" &&
+      revision.harness.mode === "embedded" &&
+      repositoryConsumer?.role === "gateway" &&
+      revision.plugins?.driver.implementation === "occ/codex-plugin";
+    if (!dedicatedCodex && !embeddedCodex) {
       return undefined;
     }
     if (this.options.network.repositoryCredentials === undefined) {
       throw new ConfigurationFailure(
         "Repository credentials require a configured credential endpoint.",
-      );
-    }
-    if (
-      this.options.runtime?.codexRepositoryCredentials?.networkPolicy !== "private-endpoints-v1"
-    ) {
-      throw new ConfigurationFailure(
-        "Dedicated Codex repository credentials require runtime.codexRepositoryCredentials.networkPolicy private-endpoints-v1 support.",
       );
     }
     if (repositoryMaterial === undefined) {
@@ -6376,14 +6334,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
         "Repository credential broker host is blocked by an explicitly disabled Codex network proxy.",
       );
     }
-    if (policy?.mode !== undefined && policy.mode !== "limited") {
+    if (policy?.mode !== undefined && policy.mode !== "limited" && policy.mode !== "full") {
       throw new ConfigurationFailure(
-        "Repository credential broker network policy cannot require broad Codex network mode.",
+        "Repository credential broker network policy has an unsupported Codex network mode.",
       );
     }
-    if (policy?.allowLocalBinding === true) {
+    if (policy?.allowLocalBinding !== undefined && typeof policy.allowLocalBinding !== "boolean") {
       throw new ConfigurationFailure(
-        "Repository credential broker network policy cannot enable broad private-network access.",
+        "Repository credential broker network policy has an unsupported local binding policy.",
       );
     }
     const domainsInput = policy?.domains === undefined ? undefined : asRecord(policy.domains);
@@ -6410,73 +6368,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
         "Repository credential broker host is explicitly denied by Codex network proxy policy.",
       );
     }
-    const privateEndpoints: {
-      host: string;
-      port: number;
-      allowMethods: string[];
-    }[] = [];
-    const seenEndpoints = new Set<string>();
-    if (policy?.privateEndpoints !== undefined && !Array.isArray(policy.privateEndpoints)) {
-      throw new ConfigurationFailure(
-        "Repository credential broker network policy private endpoints must be an array.",
-      );
-    }
-    for (const input of policy?.privateEndpoints ?? []) {
-      const endpoint = asRecord(input);
-      if (endpoint === undefined) {
-        throw new ConfigurationFailure(
-          "Repository credential broker network policy has an unsupported private endpoint.",
-        );
-      }
-      const port = endpoint.port;
-      if (typeof port !== "number" || !Number.isSafeInteger(port) || port < 1 || port > 65535) {
-        throw new ConfigurationFailure(
-          "Repository credential broker network policy has an unsupported private endpoint.",
-        );
-      }
-      const methods = Array.isArray(endpoint.allowMethods)
-        ? [...new Set(endpoint.allowMethods.map(normalizedNetworkMethod))].sort()
-        : undefined;
-      if (methods === undefined || methods.length === 0) {
-        throw new ConfigurationFailure(
-          "Repository credential broker network policy has an unsupported private endpoint.",
-        );
-      }
-      if (typeof endpoint.host !== "string") {
-        throw new ConfigurationFailure(
-          "Repository credential broker network policy has an unsupported private endpoint.",
-        );
-      }
-      const normalized = {
-        host: normalizedNetworkHost(
-          endpoint.host,
-          "Repository credential broker private endpoint host",
-        ),
-        port,
-        allowMethods: methods,
-      };
-      const key = codexPrivateEndpointKey(normalized);
-      if (seenEndpoints.has(key)) {
-        continue;
-      }
-      seenEndpoints.add(key);
-      privateEndpoints.push(normalized);
-    }
-    const brokerEndpoint = {
-      host: brokerHost,
-      port: 443,
-      allowMethods: ["POST"],
-    };
-    const brokerKey = codexPrivateEndpointKey(brokerEndpoint);
-    if (!seenEndpoints.has(brokerKey)) {
-      privateEndpoints.push(brokerEndpoint);
-    }
     return {
       host: brokerHost,
-      port: 443,
-      allowMethods: ["POST"],
       domains,
-      privateEndpoints,
     };
   }
   private pluginRuntimeSnapshot(
@@ -7614,6 +7508,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const needsPluginRuntime =
       pluginRuntime !== undefined &&
       ((pluginRuntime.runtime.kind === "openclaw" && role === "gateway" && embedded) ||
+        (pluginRuntime.runtime.kind === "codex" &&
+          role === "gateway" &&
+          embedded &&
+          (Object.keys(pluginRuntime.runtime.selections).length > 0 ||
+            pluginRuntime.runtime.repositoryBrokerNetworkPolicy !== undefined)) ||
         (pluginRuntime.runtime.kind === "codex" && role === "agent" && runtime !== undefined) ||
         (pluginRuntime.runtime.kind === "codex" &&
           role === "gateway" &&

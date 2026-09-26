@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
-updated: "2026-09-23"
-last_updated_session: "public-pr/295"
+updated: 2026-09-26
+last_updated_session: authoring-run/c29b3860-d1f0-4a14-a264-49090586cb20
 ---
 
 # Agent repository credential flow
@@ -209,28 +209,27 @@ with unchanged private-file checks. Retry removes only a validated private
 material read-only. Public metadata and gateway bearers remain separate files.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.activateRevision`
-replaces the embedded gateway or revision-specific Dedicated Agent when material
-changes, including within one revision. Readiness requires that role, revision
-and generation; an older Ready Pod is insufficient. Dedicated replacement
-preserves workspace-node enrollment and its revision-private state mount.
-`KubernetesComputeDriver.prepareRevision` rechecks material readiness after
-asynchronous plugin status, then after dedicated gateway and workspace-node
-observations, including successor preparation while the prior gateway serves.
-A changed generation or lost readiness returns incomplete.
+replaces the consumer when material changes, including within one revision.
+Readiness requires its role, revision and generation. Dedicated replacement
+preserves workspace-node enrollment and revision-private storage.
+`KubernetesComputeDriver.prepareRevision` rechecks material after plugin status,
+gateway and node observations, including during successor preparation. A changed
+generation or lost readiness returns incomplete.
 The gateway receives neither repository material nor repository-gateway egress.
 Compute grants consumer egress; Helm admits consumers through the
 [credential-sidecar ingress selectors](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking). Native preparation
-writes aggregate `gitconfig` without reading bearers. The runtime image adds the
-`/run/oce/repository-credentials/gitconfig` include to system Git configuration,
-preserving normal HOME/global configuration.
+writes aggregate `gitconfig` without reading bearers. System Git includes
+`/run/oce/repository-credentials/gitconfig`, preserving HOME/global configuration.
 Embedded `repositoryNativeConfiguration` keeps the `gh` router first in
 `tools.exec.pathPrepend`. `AGENT_RUNTIME_ENTRYPOINT` sets Codex's
 `allow_login_shell=false` and `shell_environment_policy.set.PATH`. The Harness
 model environment remains intact. App keys, JWTs, installation tokens and the
-control socket never enter this material set. Dedicated Codex additionally
-receives the exact broker host on port 443 and Git `POST` method exception only
-when the runtime declares `private-endpoints-v1` support. Older Codex runtimes
-such as `0.156.0` remain blocked before broker authorization.
+control socket never enter this material set. Repository-bound Codex consumers
+receive stock Codex `allow_local_binding = true`, `mode = "full"`, and the exact
+broker hostname allowance; explicit denies prevail. The
+[networking contract](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking)
+defines dedicated/embedded eligibility. Unbound policy and broker authorization remain unchanged.
+Compute supplies CA trust; TLS verification remains enabled.
 
 ### 5. Authenticate native Git and route GitHub CLI commands
 
@@ -357,6 +356,9 @@ Slack or GitHub execution; Ready Pods and local commands do not prove live write
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-26 09:07: Replace the custom private-endpoint capability with stock Codex network settings and retain independent authorization boundaries. (authoring-run/c29b3860-d1f0-4a14-a264-49090586cb20 - 20123a3aa96021391616e918deee0ce60b009fa3)
+  Removed the custom Codex private-endpoint requirement. (NOT_IN_SPEC)
 
 - 2026-09-23 08:33: Condense the combined flow without changing its contracts. (public-pr/295 - acd86266)
 

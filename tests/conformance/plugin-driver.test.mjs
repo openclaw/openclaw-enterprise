@@ -304,26 +304,16 @@ test("Codex startup default-denies plugins", () => {
 test("Codex bridge configuration carries repository broker network policy without plugins", () => {
   const bridgeConfiguration = codexOpenClawConfiguration({}, [], {
     host: "git.tenant.svc",
-    port: 443,
-    allowMethods: ["POST"],
     domains: { "github.com": "allow" },
-    privateEndpoints: [
-      { host: "git.tenant.svc", port: 443, allowMethods: ["POST"] },
-      { host: "existing.internal", port: 8443, allowMethods: ["GET"] },
-    ],
   });
 
   assert.deepEqual(bridgeConfiguration.plugins.entries.codex.config, {
     appServer: {
       networkProxy: {
         enabled: true,
-        mode: "limited",
-        allowLocalBinding: false,
+        mode: "full",
+        allowLocalBinding: true,
         domains: { "github.com": "allow", "git.tenant.svc": "allow" },
-        privateEndpoints: [
-          { host: "git.tenant.svc", port: 443, allowMethods: ["POST"] },
-          { host: "existing.internal", port: 8443, allowMethods: ["GET"] },
-        ],
       },
     },
   });

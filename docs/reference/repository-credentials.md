@@ -16,12 +16,13 @@ Slack tokens stay in the gateway. Repository profiles and model authentication
 are independent. [Kubernetes policies](drivers/kubernetes-compute/networking-and-isolation.md#networking)
 allow consumer access to the credential sidecar.
 
-Dedicated Codex depends on tool proxy policy. OCE projects the broker host
-only for repository-bound Agents when the Installation opts into
-`runtime.codexRepositoryCredentials.networkPolicy: private-endpoints-v1`; older
-Codex runtimes such as `0.156.0` lack that scoped private-endpoint capability.
-Do not use global private access, `full` mode or unrestricted methods to make
-Git reach the broker.
+For repository-bound Codex consumers, Compute configures stock Codex with the
+exact broker hostname allowed, `allow_local_binding = true`, and `mode = "full"`.
+This permits local binding, disables Codex's additional private-address guard,
+and allows every HTTP method at otherwise allowed destinations. Explicit denies,
+Kubernetes NetworkPolicy, TLS verification, and broker repository authorization
+still apply. Unbound Agents retain their existing policy. See the
+[networking contract](drivers/kubernetes-compute/networking-and-isolation.md#networking).
 
 Trusted startup loads protected configuration into the separate service process;
 backend construction and sender callbacks remain private. Session controls are

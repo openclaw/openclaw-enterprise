@@ -33,14 +33,7 @@ enabled = false
 
 export interface CodexRepositoryBrokerNetworkPolicy {
   readonly host: string;
-  readonly port: number;
-  readonly allowMethods: readonly ["POST"];
   readonly domains: Readonly<Record<string, "allow" | "deny">>;
-  readonly privateEndpoints: readonly {
-    readonly host: string;
-    readonly port: number;
-    readonly allowMethods: readonly string[];
-  }[];
 }
 
 export type PluginRuntimeSpec =
@@ -56,8 +49,13 @@ function validateDriverMatchesRuntime(
   runtime: PluginRuntimeSpec,
 ): void {
   if (runtime.kind === "codex") {
-    if (revision.harness.id !== "codex" || revision.harness.mode !== "dedicated") {
-      throw new Error("Codex plugin runtime artifacts require a dedicated Codex Harness.");
+    if (!(
+      (revision.harness.id === "codex" && revision.harness.mode === "dedicated") ||
+      (revision.harness.id === "openclaw" && revision.harness.mode === "embedded")
+    )) {
+      throw new Error(
+        "Codex plugin runtime artifacts require a dedicated Codex Harness or embedded OpenClaw Harness.",
+      );
     }
     if (revision.plugins?.driver.implementation !== "occ/codex-plugin") {
       throw new Error("Codex plugin runtime artifacts require the Codex PluginDriver.");
@@ -82,7 +80,7 @@ function pluginFreeRuntimeForRevision(
       : { kind: "codex", selections: {}, repositoryBrokerNetworkPolicy };
   }
   if (repositoryBrokerNetworkPolicy !== undefined) {
-    throw new Error("Repository credential broker network policy requires dedicated Codex.");
+    throw new Error("Repository credential broker network policy requires Codex plugin runtime.");
   }
   return undefined;
 }

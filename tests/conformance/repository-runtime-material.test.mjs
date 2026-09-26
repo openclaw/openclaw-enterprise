@@ -23,6 +23,20 @@ function repositoryClient(gatewayOrigin = "https://git.credentials.svc") {
 
 const client = repositoryClient();
 
+function codexPluginState() {
+  return {
+    driver: { id: "codex-plugin", implementation: "occ/codex-plugin" },
+    plugins: {},
+  };
+}
+
+function openClawPluginState() {
+  return {
+    driver: { id: "openclaw-plugin", implementation: "occ/openclaw-plugin" },
+    plugins: { "openclaw-plugin:example": { enabled: true, toolDefaults: { approval: "native" } } },
+  };
+}
+
 function runtimeBinding(sessionId = "session_material_original", publicCa, gatewayOrigin) {
   return {
     kind: "new",
@@ -109,9 +123,6 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
         gatewayNodeSelector: { "oce-role": "control-plane" },
-        ...(options.codexRepositoryNetworkPolicy === false
-          ? {}
-          : { codexRepositoryCredentials: { networkPolicy: "private-endpoints-v1" } }),
       },
     },
     { nodeEnrollment },
@@ -1018,10 +1029,7 @@ test("Dedicated Codex repository bindings receive broker network policy centrall
   assert.doesNotMatch(config, /privateEndpoints|private_endpoints|default_permissions/);
   assert.deepEqual(preparedCodexManifest(f).repositoryBrokerNetworkPolicy, {
     host: "git.123-control.svc",
-    port: 443,
-    allowMethods: ["POST"],
     domains: {},
-    privateEndpoints: [{ host: "git.123-control.svc", port: 443, allowMethods: ["POST"] }],
   });
 });
 
@@ -1051,11 +1059,6 @@ test("Dedicated Codex repository policy is independent of preset shape", async (
       await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
       const policy = preparedCodexManifest(f).repositoryBrokerNetworkPolicy;
       assert.equal(policy.host, "git.credentials.svc");
-      assert.equal(policy.port, 443);
-      assert.deepEqual(policy.allowMethods, ["POST"]);
-      assert.deepEqual(policy.privateEndpoints, [
-        { host: "git.credentials.svc", port: 443, allowMethods: ["POST"] },
-      ]);
       if (name === "custom") {
         assert.deepEqual(policy.domains, { "github.com": "allow" });
       }
@@ -1063,42 +1066,18 @@ test("Dedicated Codex repository policy is independent of preset shape", async (
   }
 });
 
-test("Dedicated Codex repository policy preserves compatible private endpoints", async () => {
+test("Dedicated Codex repository policy preserves compatible domain decisions", async () => {
   const f = await fixture("dedicated");
   f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy = {
     enabled: true,
     mode: "limited",
-    domains: { "GitHub.COM ": "allow" },
-    privateEndpoints: [
-      { host: "metrics.internal ", port: 9443, allowMethods: ["get"] },
-      { host: "metrics.internal", port: 9443, allowMethods: ["GET"] },
-      { host: "git.credentials.svc", port: 443, allowMethods: ["POST"] },
-    ],
+    domains: { "GitHub.COM ": "allow", "*.credentials.svc": "deny" },
   };
   await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
   assert.deepEqual(preparedCodexManifest(f).repositoryBrokerNetworkPolicy, {
     host: "git.credentials.svc",
-    port: 443,
-    allowMethods: ["POST"],
-    domains: { "github.com": "allow" },
-    privateEndpoints: [
-      { host: "metrics.internal", port: 9443, allowMethods: ["GET"] },
-      { host: "git.credentials.svc", port: 443, allowMethods: ["POST"] },
-    ],
+    domains: { "github.com": "allow", "*.credentials.svc": "deny" },
   });
-});
-
-test("Dedicated Codex repository policy requires runtime capability opt in", async () => {
-  const f = await fixture("dedicated", undefined, { codexRepositoryNetworkPolicy: false });
-  await assert.rejects(
-    f.driver.prepareRevision(f.revision, f.context([runtimeBinding()])),
-    /runtime\.codexRepositoryCredentials\.networkPolicy private-endpoints-v1/,
-  );
-  assert.deepEqual(
-    runtimeWrites(f.calls),
-    [],
-    "unsupported runtime capability must fail before runtime configuration or workload writes",
-  );
 });
 
 test("Dedicated Codex repository policy preserves an explicitly disabled network proxy", async () => {
@@ -1133,32 +1112,24 @@ test("Dedicated Codex repository policy preserves explicit broker host denies", 
   );
 });
 
-test("Dedicated Codex repository policy rejects explicit broad private-network settings", async (t) => {
-  for (const [name, networkProxy, reason] of [
-    ["full mode", { enabled: true, mode: "full" }, /broad Codex network mode/],
-    [
-      "local binding",
-      { enabled: true, mode: "limited", allowLocalBinding: true },
-      /broad private-network access/,
-    ],
+test("Dedicated Codex repository policy accepts stock private-network settings", async (t) => {
+  for (const [name, networkProxy] of [
+    ["full mode", { enabled: true, mode: "full" }],
+    ["local binding", { enabled: true, mode: "limited", allowLocalBinding: true }],
   ]) {
     await t.test(name, async () => {
       const f = await fixture("dedicated");
       f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy = networkProxy;
-      await assert.rejects(
-        f.driver.prepareRevision(f.revision, f.context([runtimeBinding()])),
-        reason,
-      );
-      assert.deepEqual(
-        runtimeWrites(f.calls),
-        [],
-        "explicit broad network settings must fail before runtime configuration or workload writes",
-      );
+      await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
+      assert.deepEqual(preparedCodexManifest(f).repositoryBrokerNetworkPolicy, {
+        host: "git.credentials.svc",
+        domains: {},
+      });
     });
   }
 });
 
-test("Dedicated Codex repository policy rejects malformed policy containers", async (t) => {
+test("Dedicated Codex repository policy rejects malformed domain policy containers", async (t) => {
   for (const [name, networkProxy, reason] of [
     [
       "domains array",
@@ -1170,20 +1141,6 @@ test("Dedicated Codex repository policy rejects malformed policy containers", as
       { enabled: true, mode: "limited", domains: "github.com" },
       /network policy domains must be an object/,
     ],
-    [
-      "private endpoints object",
-      {
-        enabled: true,
-        mode: "limited",
-        privateEndpoints: { host: "metrics.internal", port: 9443, allowMethods: ["GET"] },
-      },
-      /network policy private endpoints must be an array/,
-    ],
-    [
-      "private endpoints scalar",
-      { enabled: true, mode: "limited", privateEndpoints: "metrics.internal" },
-      /network policy private endpoints must be an array/,
-    ],
   ]) {
     await t.test(name, async () => {
       const f = await fixture("dedicated");
@@ -1195,7 +1152,7 @@ test("Dedicated Codex repository policy rejects malformed policy containers", as
       assert.deepEqual(
         runtimeWrites(f.calls),
         [],
-        "malformed explicit network policy containers must fail before runtime configuration or workload writes",
+        "malformed explicit domain policy containers must fail before runtime configuration or workload writes",
       );
     });
   }
@@ -1208,6 +1165,37 @@ test("Dedicated Codex without repository bindings does not receive broker policy
   const config = preparedCodexConfig(f);
   assert.doesNotMatch(config, /private_endpoints/);
   assert.equal(preparedCodexManifest(f).repositoryBrokerNetworkPolicy, undefined);
+});
+
+test("Embedded OpenClaw repository bindings without Codex plugins do not receive broker policy", async () => {
+  const f = await fixture("embedded");
+  await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
+  const codexRuntimeManifests = [...f.objects.values()].filter(
+    (object) =>
+      object.kind === "ConfigMap" &&
+      object.metadata.namespace === f.namespace &&
+      typeof object.data?.["runtime.json"] === "string",
+  );
+  assert.deepEqual(codexRuntimeManifests, []);
+});
+
+test("Embedded OpenClaw plugin runtime does not receive Codex broker policy", async () => {
+  const f = await fixture("embedded");
+  f.revision.plugins = openClawPluginState();
+  await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
+  const manifest = preparedCodexManifest(f);
+  assert.equal(manifest.kind, "openclaw");
+  assert.equal(manifest.repositoryBrokerNetworkPolicy, undefined);
+});
+
+test("Embedded Codex plugin runtime receives broker network policy centrally", async () => {
+  const f = await fixture("embedded");
+  f.revision.plugins = codexPluginState();
+  await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
+  assert.deepEqual(preparedCodexManifest(f).repositoryBrokerNetworkPolicy, {
+    host: "git.credentials.svc",
+    domains: {},
+  });
 });
 
 test("Dedicated Codex repository material projects a combined broker CA bundle", async () => {

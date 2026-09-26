@@ -71,8 +71,6 @@ test("serialized Agent startup ignores template metadata and configures only con
 test("serialized Agent startup carries repository broker policy into bridge config", () => {
   const overlay = translator.codexOpenClawConfiguration({}, [], {
     host: "git.openclaw-system.svc",
-    port: 443,
-    allowMethods: ["POST"],
     domains: { "github.com": "allow" },
   });
 
@@ -80,10 +78,9 @@ test("serialized Agent startup carries repository broker policy into bridge conf
     appServer: {
       networkProxy: {
         enabled: true,
-        mode: "limited",
-        allowLocalBinding: false,
+        mode: "full",
+        allowLocalBinding: true,
         domains: { "github.com": "allow", "git.openclaw-system.svc": "allow" },
-        privateEndpoints: [{ host: "git.openclaw-system.svc", port: 443, allowMethods: ["POST"] }],
       },
     },
   });

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer as createTcpServer } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import test from "node:test";
@@ -15,8 +16,14 @@ import {
   GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
   GATEWAY_STOP_TIMEOUT_MS,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import {
+  REPOSITORY_MATERIAL_INIT_ENTRYPOINT,
+  REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT,
+} from "../../apps/controller/src/drivers/compute/kubernetes/repository-material-init.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
+import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.mjs";
 
 const execute = promisify(execFile);
 const docker = process.env.OCC_DOCKER_BIN ?? "docker";
@@ -251,6 +258,79 @@ async function runDocker(args, options = {}) {
     maxBuffer: 1_000_000,
     ...options,
   });
+}
+
+async function reserveTcpPort() {
+  const server = createTcpServer();
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "0.0.0.0", resolve);
+  });
+  const { port } = server.address();
+  await new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+  return port;
+}
+
+async function createRuntimeBrokerTlsMaterial(t) {
+  const directory = await mkdtemp(join(tmpdir(), "oce-runtime-broker-tls-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await execute("openssl", [
+    "req",
+    "-x509",
+    "-newkey",
+    "rsa:2048",
+    "-nodes",
+    "-days",
+    "2",
+    "-subj",
+    "/CN=git.oce.svc",
+    "-addext",
+    "subjectAltName=DNS:git.oce.svc,DNS:unrelated.oce.svc,DNS:localhost,IP:127.0.0.1",
+    "-keyout",
+    join(directory, "key.pem"),
+    "-out",
+    join(directory, "cert.pem"),
+  ]);
+  await chmod(directory, 0o755);
+  await chmod(join(directory, "key.pem"), 0o600);
+  await chmod(join(directory, "cert.pem"), 0o644);
+  const cert = await readFile(join(directory, "cert.pem"));
+  return {
+    key: await readFile(join(directory, "key.pem")),
+    cert,
+    ca: cert,
+    keyFile: join(directory, "key.pem"),
+    certFile: join(directory, "cert.pem"),
+  };
+}
+
+function runtimeRepositorySessionDirectory(repositoryRef, sessionId) {
+  return `/run/oce/repository-credentials/sessions/${createHash("sha256")
+    .update(JSON.stringify([repositoryRef, sessionId]))
+    .digest("hex")}`;
+}
+
+async function createRuntimeRepositoryMaterial(t, fixture) {
+  const material = await createNativeClientMaterial(
+    t,
+    fixture.repositories
+      .filter((entry) => entry.opened)
+      .map((entry) => ({
+        opened: entry.opened,
+        repositoryRef: entry.repositoryRef,
+        publicCa: fixture.tls.ca,
+      })),
+  );
+  const manifestPath = join(material.root, "manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.bindings = manifest.bindings.map((binding) => ({
+    ...binding,
+    directory: runtimeRepositorySessionDirectory(binding.repositoryRef, binding.sessionId),
+  }));
+  await writeFile(manifestPath, JSON.stringify(manifest), { mode: 0o600 });
+  return material.root;
 }
 
 async function ciPreparedCodexSeccompProfile(ciStatePath) {
@@ -1075,110 +1155,96 @@ test(
 );
 
 test(
-  "runtime image enforces Codex broker private endpoint policy in native command execution",
+  "runtime image routes sandboxed Git through stock Codex and the repository broker",
   imageTestOptions,
   async (t) => {
     const suffix = randomBytes(6).toString("hex");
     const networkName = `oce-runtime-broker-${suffix}`;
-    const brokerName = `oce-runtime-broker-${suffix}`;
-    const directory = await mkdtemp(join(tmpdir(), "oce-runtime-broker-certs-"));
+    const proxyName = `oce-runtime-broker-proxy-${suffix}`;
+    const workspaceBranch = "native-feature";
+    const tls = await createRuntimeBrokerTlsMaterial(t);
+    const listenPort = await reserveTcpPort();
+    const fixture = await startRegistryCredentialServiceFixture(t, {
+      tls,
+      autoOpen: false,
+      gateway: { publicOrigin: "https://git.oce.svc", listen: `0.0.0.0:${listenPort}` },
+      repositories: [
+        {
+          repositoryRef: "guarded",
+          repositoryId: "73",
+          repository: "fixture/repository",
+          pushRefAllowlist: [`refs/heads/${workspaceBranch}`],
+        },
+        {
+          repositoryRef: "read-only",
+          repositoryId: "74",
+          repository: "fixture/read-only",
+          profile: "git-read",
+        },
+        {
+          repositoryRef: "unadmitted",
+          repositoryId: "75",
+          repository: "fixture/unadmitted",
+        },
+      ],
+    });
+    await fixture.open("guarded");
+    await fixture.open("read-only");
+    const unadmitted = fixture.byRef.get("unadmitted");
+    // The fixture counts attempts before authorization, including rejected
+    // provider tokens; confirm the target is reachable before asserting none.
+    const reachability = await execute("curl", [
+      "--silent",
+      "--show-error",
+      "--noproxy",
+      "*",
+      "--cacert",
+      tls.certFile,
+      "--output",
+      "/dev/null",
+      "--write-out",
+      "%{http_code}",
+      `${unadmitted.git.origin}/fixture/unadmitted.git/info/refs?service=git-upload-pack`,
+    ]);
+    assert.equal(reachability.stdout, "401");
+    const unadmittedAttempts = unadmitted.github.authenticationAttempts.filter(
+      ({ boundary }) => boundary === "git",
+    ).length;
+    assert.equal(unadmittedAttempts, 1);
+    const materialRoot = await createRuntimeRepositoryMaterial(t, fixture);
     t.after(async () => {
-      await runDocker(["rm", "-f", brokerName]).catch(() => {});
+      await runDocker(["rm", "-f", proxyName]).catch(() => {});
       await runDocker(["network", "rm", networkName]).catch(() => {});
-      await rm(directory, { recursive: true, force: true });
     });
 
-    await execute("openssl", [
-      "req",
-      "-x509",
-      "-newkey",
-      "rsa:2048",
-      "-nodes",
-      "-days",
-      "1",
-      "-subj",
-      "/CN=OCE Runtime Broker Test CA",
-      "-keyout",
-      join(directory, "ca.key"),
-      "-out",
-      join(directory, "ca.pem"),
-    ]);
-    await writeFile(
-      join(directory, "server.ext"),
-      [
-        "subjectAltName=DNS:git.oce.svc,DNS:unrelated.oce.svc",
-        "extendedKeyUsage=serverAuth",
-        "",
-      ].join("\n"),
-    );
-    await execute("openssl", [
-      "req",
-      "-newkey",
-      "rsa:2048",
-      "-nodes",
-      "-subj",
-      "/CN=git.oce.svc",
-      "-keyout",
-      join(directory, "server.key"),
-      "-out",
-      join(directory, "server.csr"),
-    ]);
-    await execute("openssl", [
-      "x509",
-      "-req",
-      "-days",
-      "1",
-      "-in",
-      join(directory, "server.csr"),
-      "-CA",
-      join(directory, "ca.pem"),
-      "-CAkey",
-      join(directory, "ca.key"),
-      "-CAcreateserial",
-      "-out",
-      join(directory, "server.pem"),
-      "-extfile",
-      join(directory, "server.ext"),
-    ]);
-    await chmod(directory, 0o755);
-    await chmod(join(directory, "server.key"), 0o444);
-    await chmod(join(directory, "server.pem"), 0o444);
-
     await runDocker(["network", "create", "--driver", "bridge", networkName]);
-    const broker = String.raw`
-const https = require("node:https");
-const { readFileSync } = require("node:fs");
-const options = {
-  key: readFileSync("/certs/server.key"),
-  cert: readFileSync("/certs/server.pem"),
-};
-let ready = 0;
-const handler = (request, response) => {
-  request.resume();
-  request.on("end", () => {
-    console.log(request.method + " " + request.headers.host + " " + request.socket.localPort + " " + request.url);
-    response.writeHead(200, { "content-type": "text/plain" });
-    response.end(request.method + " " + request.url + "\\n");
-  });
-};
-for (const port of [443, 444]) {
-  https.createServer(options, handler).listen(port, "0.0.0.0", () => {
-    ready += 1;
-    if (ready === 2) console.log("broker-ready");
-  });
-}
+    const forwarder = String.raw`
+const net = require("node:net");
+const targetHost = process.argv[1];
+const targetPort = Number(process.argv[2]);
+const server = net.createServer((client) => {
+  const upstream = net.connect(targetPort, targetHost);
+  client.on("error", () => upstream.destroy());
+  client.on("close", () => upstream.destroy());
+  upstream.on("error", () => client.destroy());
+  upstream.on("close", () => client.destroy());
+  client.pipe(upstream).pipe(client);
+});
+server.listen(443, "0.0.0.0", () => console.log("broker-forwarder-ready"));
 `;
     await runDocker([
       "run",
       "-d",
       "--name",
-      brokerName,
+      proxyName,
       "--network",
       networkName,
       "--network-alias",
       "git.oce.svc",
       "--network-alias",
       "unrelated.oce.svc",
+      "--add-host",
+      "host.docker.internal:host-gateway",
       "--user",
       "0:0",
       "--read-only",
@@ -1190,15 +1256,15 @@ for (const port of [443, 444]) {
       "no-new-privileges",
       "--tmpfs",
       "/tmp:size=32m,mode=1777",
-      "-v",
-      `${directory}:/certs:ro`,
       "--entrypoint",
       "node",
       image,
       "-e",
-      broker,
+      forwarder,
+      "host.docker.internal",
+      String(listenPort),
     ]);
-    await waitForDockerLog(brokerName, /broker-ready/);
+    await waitForDockerLog(proxyName, /broker-forwarder-ready/);
 
     const codexConfigurationToml = String.raw`
 default_permissions = "repository-broker"
@@ -1214,37 +1280,126 @@ extends = ":workspace"
 
 [permissions.repository-broker.network]
 enabled = true
-mode = "limited"
-allow_local_binding = false
+mode = "full"
+allow_local_binding = true
 
 [permissions.repository-broker.network.domains]
 "git.oce.svc" = "allow"
-"unrelated.oce.svc" = "allow"
 
-[[permissions.repository-broker.network.private_endpoints]]
-host = "git.oce.svc"
-port = 443
-allow_methods = ["POST"]
+[permissions.repository-broker-denied]
+extends = ":workspace"
+
+[permissions.repository-broker-denied.network]
+enabled = true
+mode = "full"
+allow_local_binding = true
+
+[permissions.repository-broker-denied.network.domains]
+"git.oce.svc" = "deny"
 `;
     const pluginRuntime = {
-      manifest: {
-        kind: "codex",
-        selections: {},
-        repositoryBrokerNetworkPolicy: {
-          host: "git.oce.svc",
-          port: 443,
-          allowMethods: ["POST"],
-          domains: {},
-        },
-      },
+      manifest: { kind: "codex", selections: {} },
       codexConfigurationToml,
     };
+    const descriptor = {
+      sourceRoot: "/source-repository-credentials/sessions",
+      targetRoot: "/run/oce/repository-credentials",
+      manifest: JSON.parse(await readFile(join(materialRoot, "manifest.json"), "utf8")),
+    };
+    const proxyEnvironmentProbe = [
+      "node <<'NODE'",
+      'const assert = require("node:assert/strict");',
+      "const env = process.env;",
+      'assert.equal(env.CODEX_NETWORK_PROXY_ACTIVE, "1");',
+      'assert.equal(env.CODEX_NETWORK_ALLOW_LOCAL_BINDING, "1");',
+      "assert.ok(env.HTTP_PROXY || env.HTTPS_PROXY || env.ALL_PROXY || env.http_proxy || env.https_proxy || env.all_proxy);",
+      'const noProxy = [env.NO_PROXY, env.no_proxy].filter(Boolean).join(",");',
+      'assert.equal(noProxy.split(",").map((item) => item.trim()).includes("git.oce.svc"), false);',
+      'console.log("proxy-env-ok");',
+      "NODE",
+    ].join("\n");
+    const gitProofScript = [
+      "mkdir -p /home/node/workspace",
+      "cd /home/node/workspace",
+      "git clone https://github.com/fixture/repository.git guarded",
+      "git -C guarded fetch origin refs/heads/existing-branch:refs/remotes/origin/fetched-fixture",
+      "git -C guarded rev-parse --verify refs/remotes/origin/fetched-fixture",
+      `git -C guarded switch -c ${workspaceBranch}`,
+      "printf 'stock runtime broker proof\n' > guarded/stock-proof.txt",
+      "git -C guarded add stock-proof.txt",
+      "git -C guarded -c user.name='Runtime Fixture' -c user.email='fixture@example.test' commit -m 'Stock runtime broker proof'",
+      "commit=$(git -C guarded rev-parse HEAD)",
+      `git -C guarded push origin HEAD:refs/heads/${workspaceBranch}`,
+      // A push outside the admitted ref must be rejected by the installed hook.
+      "set +e",
+      "disallowed_output=$(git -C guarded push origin HEAD:refs/heads/disallowed 2>&1)",
+      "disallowed_status=$?",
+      "set -e",
+      'test "$disallowed_status" -ne 0',
+      "printf '%s\\n' \"$disallowed_output\" | grep -Fq 'repository-push-ref-not-allowed'",
+      "git clone https://github.com/fixture/read-only.git read-only",
+      "git -C read-only switch -c denied",
+      "printf 'denied proof\n' > read-only/denied-proof.txt",
+      "git -C read-only add denied-proof.txt",
+      "git -C read-only -c user.name='Runtime Fixture' -c user.email='fixture@example.test' commit -m 'Denied runtime broker proof'",
+      "set +e",
+      "readonly_output=$(git -C read-only push origin HEAD:refs/heads/denied 2>&1)",
+      "readonly_status=$?",
+      "set -e",
+      "printf '%s\\n' \"$readonly_output\"",
+      'test "$readonly_status" -ne 0',
+      "printf '%s\\n' \"$readonly_output\" | grep -Fq 'requested URL returned error: 400'",
+      "set +e",
+      "unadmitted_output=$(git ls-remote https://github.com/fixture/unadmitted.git HEAD 2>&1)",
+      "unadmitted_status=$?",
+      "set -e",
+      "printf '%s\\n' \"$unadmitted_output\"",
+      'test "$unadmitted_status" -ne 0',
+      "printf '%s\\n' \"$unadmitted_output\" | grep -Fq 'credential-helper-failed'",
+      "printf 'commit=%s\\n' \"$commit\"",
+    ].join("\n");
+    // Ask the real broker for its service-owned denial codes without printing
+    // the session credential returned by the installed Git helper.
+    const brokerDenialProbe = String.raw`node <<'NODE'
+const assert = require("node:assert/strict");
+const cp = require("node:child_process");
+const credentials = cp.spawnSync("git", ["credential", "fill"], {
+  input: "protocol=https\nhost=git.oce.svc\npath=fixture/read-only.git\n\n",
+  encoding: "utf8",
+});
+assert.equal(credentials.status, 0, "native credential helper failed");
+const username = credentials.stdout.match(/^username=([^\n]+)$/m)?.[1];
+const password = credentials.stdout.match(/^password=([^\n]+)$/m)?.[1];
+assert.equal(/^[A-Za-z0-9_-]+$/.test(username ?? ""), true, "invalid fixture username");
+assert.equal(/^[A-Za-z0-9_-]+$/.test(password ?? ""), true, "invalid fixture credential");
+function request(path, auth) {
+  const config = auth ? 'user = "' + username + ':' + password + '"\n' : "";
+  const result = cp.spawnSync("curl", ["--silent", "--show-error", "--config", "-", "--write-out", "\n%{http_code}", "https://git.oce.svc/" + path], { input: config, encoding: "utf8" });
+  assert.equal(result.status, 0, "broker request failed");
+  return result.stdout;
+}
+const allowed = request("fixture/read-only.git/info/refs?service=git-upload-pack", true);
+assert.equal(allowed.endsWith("\n200") && allowed.includes("# service=git-upload-pack"), true, "admitted discovery did not succeed");
+assert.equal(request("fixture/read-only.git/info/refs?service=git-receive-pack", true) === '{"error":{"code":"unsupported-request"}}\n400', true, "read-only broker denial did not match");
+assert.equal(request("fixture/unadmitted.git/info/refs?service=git-upload-pack", true) === '{"error":{"code":"unsupported-request"}}\n400', true, "unadmitted broker denial did not match");
+console.log("broker-denial-codes-confirmed");
+NODE`;
     const probeSecurityOptions = await reviewedCodexSeccompSecurityOptions();
     const probe = `
 const assert = require("node:assert/strict");
 const cp = require("node:child_process");
+const fs = require("node:fs");
 const vm = require("node:vm");
 const { createInterface } = require("node:readline");
+const material = cp.spawnSync(process.execPath, ["-e", ${JSON.stringify(REPOSITORY_MATERIAL_INIT_ENTRYPOINT)}, ${JSON.stringify(JSON.stringify(descriptor))}], {
+  stdio: "inherit",
+});
+assert.equal(material.status, 0, "repository material initialization failed");
+const preparation = cp.spawnSync(process.execPath, ["-e", ${JSON.stringify(REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT)}, "/run/oce/repository-credentials"], {
+  stdio: "inherit",
+});
+assert.equal(preparation.status, 0, "repository native Git initialization failed");
+assert.ok(fs.readFileSync("/run/oce/repository-credentials/gitconfig", "utf8").includes("/opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/git-helper.js"));
 const environment = {
   PATH: "/opt/oce/repository-credentials/bin:" + process.env.PATH,
   HOME: "/home/node", CODEX_HOME: "/home/node/.codex",
@@ -1252,11 +1407,10 @@ const environment = {
   OPENCLAW_HARNESS_MODEL: "codex/gpt-5",
   APP_SERVER_TOKEN: "synthetic-transport-token", APP_SERVER_PORT: "4500",
   OPENCLAW_PLUGIN_RUNTIME_JSON: ${JSON.stringify(JSON.stringify(pluginRuntime))},
-  SSL_CERT_FILE: "/certs/ca.pem",
-  REQUESTS_CA_BUNDLE: "/certs/ca.pem",
-  CURL_CA_BUNDLE: "/certs/ca.pem",
-  NODE_EXTRA_CA_CERTS: "/certs/ca.pem",
-  GIT_SSL_CAINFO: "/certs/ca.pem",
+  SSL_CERT_FILE: "/certs/broker-ca.pem",
+  REQUESTS_CA_BUNDLE: "/certs/broker-ca.pem",
+  CURL_CA_BUNDLE: "/certs/broker-ca.pem",
+  NODE_EXTRA_CA_CERTS: "/certs/broker-ca.pem",
 };
 let native;
 vm.runInNewContext(${JSON.stringify(AGENT_RUNTIME_ENTRYPOINT)}, {
@@ -1305,48 +1459,60 @@ const rpc = (method, params) => new Promise((resolve, reject) => {
   pending.set(id, { resolve, reject });
   native.stdin.write(JSON.stringify({ id, method, params }) + "\\n");
 });
-async function execShell(script) {
+async function execShell(script, permissionProfile = "repository-broker", timeoutMs = 30000) {
   return await rpc("command/exec", {
     command: ["/bin/bash", "-euo", "pipefail", "-c", script],
-    permissionProfile: "repository-broker",
-    timeoutMs: 10000,
+    permissionProfile,
+    timeoutMs,
   });
 }
-async function expectProxyDenied(name, script) {
-  const denied = await execShell([
+async function expectFailure(name, script, pattern, permissionProfile = "repository-broker") {
+  const failureProbe = [
     "set +e",
     "output=$(" + script + " 2>&1)",
     "status=$?",
     "set -e",
-    "printf '%s\\n' \\"$output\\"",
-    "if [ \\"$status\\" -eq 0 ]; then exit 42; fi",
-    "printf '%s\\n' \\"$output\\" | grep -Eiq '403|[Ff]orbidden|[Dd]enied|[Bb]locked|policy|private|CONNECT|proxy'",
-    "if printf '%s\\n' \\"$output\\" | grep -Eiq 'timed out|Connection refused|certificate|Could not resolve|No route'; then exit 43; fi",
-  ].join("\\n"));
-  assert.equal(denied.exitCode, 0, name + " did not fail with a proxy policy denial: " + denied.stdout + denied.stderr);
+    ${JSON.stringify("printf '%s\n' \"$output\"")},
+    ${JSON.stringify('if [ "$status" -eq 0 ]; then exit 42; fi')},
+    ${JSON.stringify("printf '%s\n' \"$output\" | grep -Eiq ")} + JSON.stringify(pattern),
+  ].join("\\n");
+  const denied = await execShell(failureProbe, permissionProfile);
+  assert.equal(denied.exitCode, 0, name + " did not fail for the expected reason: " + denied.stdout + denied.stderr);
 }
 const timeout = setTimeout(() => {
   console.error(stderr);
   native.kill("SIGKILL");
   process.exitCode = 1;
-}, 40000);
+}, 90000);
 (async () => {
   try {
-    await rpc("initialize", { clientInfo: { name: "repository-broker-network-policy-smoke", version: "1.0.0" }, capabilities: { experimentalApi: true } });
+    // Resolve and reach the fixture outside Codex first, so the direct-bypass
+    // assertion cannot pass merely because sandboxed DNS is unavailable.
+    const unrelatedAddress = (await require("node:dns/promises").lookup("unrelated.oce.svc", { family: 4 })).address;
+    assert.equal(require("node:net").isIP(unrelatedAddress), 4);
+    const directRoute = cp.spawnSync("curl", ["--noproxy", "*", "-ksS", "--connect-timeout", "5", "--max-time", "10", "--resolve", "unrelated.oce.svc:443:" + unrelatedAddress, "https://unrelated.oce.svc/"], { encoding: "utf8" });
+    assert.equal(directRoute.status, 0, "fixture must be reachable outside the sandbox: " + directRoute.stderr);
+    await rpc("initialize", { clientInfo: { name: "repository-broker-stock-codex-smoke", version: "1.0.0" }, capabilities: { experimentalApi: true } });
     native.stdin.write(JSON.stringify({ method: "initialized" }) + "\\n");
 
-    const allowed = await execShell([
-      "curl -fsS --connect-timeout 5 --max-time 10 -X GET https://git.oce.svc/info/refs",
-      "curl -fsS --connect-timeout 5 --max-time 10 -X POST https://git.oce.svc/git-upload-pack",
-    ].join("\\n"));
-    assert.equal(allowed.exitCode, 0, allowed.stderr || allowed.stdout);
-    assert.match(allowed.stdout, /GET \\/info\\/refs/);
-    assert.match(allowed.stdout, /POST \\/git-upload-pack/);
+    const proxyState = await execShell(${JSON.stringify(proxyEnvironmentProbe)});
+    assert.equal(proxyState.exitCode, 0, proxyState.stderr || proxyState.stdout);
+    assert.match(proxyState.stdout, /proxy-env-ok/);
 
-    await expectProxyDenied("put-same-broker", "curl -fsS --connect-timeout 5 --max-time 10 -X PUT https://git.oce.svc/git-upload-pack");
-    await expectProxyDenied("unrelated-private-host", "curl -fsS --connect-timeout 5 --max-time 10 -X GET https://unrelated.oce.svc/info/refs");
-    await expectProxyDenied("wrong-private-port", "curl -fsS --connect-timeout 5 --max-time 10 -X GET https://git.oce.svc:444/info/refs");
-    process.stdout.write("native-broker-private-endpoint-policy-ready\\n");
+    const brokerDenials = await execShell(${JSON.stringify(brokerDenialProbe)});
+    assert.equal(brokerDenials.exitCode, 0, "broker denial code probe failed: " + brokerDenials.stderr);
+    assert.match(brokerDenials.stdout, /broker-denial-codes-confirmed/);
+
+    const gitProof = await execShell(${JSON.stringify(gitProofScript)}, "repository-broker", 60000);
+    assert.equal(gitProof.exitCode, 0, gitProof.stderr + "\\n" + gitProof.stdout);
+    const commit = gitProof.stdout.match(/commit=([a-f0-9]{40})/)?.[1];
+    assert.ok(commit, gitProof.stdout);
+
+    await expectFailure("explicit-deny-broker", "git ls-remote https://github.com/fixture/repository.git HEAD", "CONNECT tunnel failed, response 403|Received HTTP code 403 from proxy after CONNECT", "repository-broker-denied");
+    await expectFailure("proxy-unrelated-private-host", "curl -ksS --connect-timeout 5 --max-time 10 https://unrelated.oce.svc/", "CONNECT tunnel failed, response 403|Received HTTP code 403 from proxy after CONNECT");
+    const directProbe = "node -e " + JSON.stringify('const socket = require("node:net").connect(443, process.argv[1]); socket.on("connect", () => { console.error("UNEXPECTED_CONNECTION"); process.exit(42); }); socket.on("error", (error) => { console.error(error.code); process.exit(1); }); setTimeout(() => { console.error("TIMEOUT"); process.exit(43); }, 5000);') + " " + unrelatedAddress;
+    await expectFailure("direct-unrelated-private-host", directProbe, "EPERM|EACCES|ENETUNREACH|EHOSTUNREACH");
+    process.stdout.write("stock-codex-repository-broker-ready " + JSON.stringify({ commit }) + "\\n");
   } finally {
     clearTimeout(timeout);
     lines.close();
@@ -1367,27 +1533,51 @@ const timeout = setTimeout(() => {
         "ALL",
         ...probeSecurityOptions,
         "--tmpfs",
-        "/home/node:size=128m,uid=1000,gid=1000,mode=700",
+        "/home/node:size=192m,uid=1000,gid=1000,mode=700",
         "--tmpfs",
-        "/tmp:size=64m,uid=1000,gid=1000,mode=1777",
+        "/tmp:size=128m,uid=1000,gid=1000,mode=1777",
+        "--tmpfs",
+        "/run/oce:size=16m,uid=1000,gid=1000,mode=700",
         "-v",
-        `${join(directory, "ca.pem")}:/certs/ca.pem:ro`,
+        `${materialRoot}:/source-repository-credentials:ro`,
+        "-v",
+        `${tls.certFile}:/certs/broker-ca.pem:ro`,
         "--entrypoint",
         "node",
         image,
         "-e",
         probe,
       ],
-      { timeout: 90_000 * imageSmokeTimeoutMultiplier },
+      { timeout: 150_000 * imageSmokeTimeoutMultiplier, maxBuffer: 2_000_000 },
     );
-    assert.match(stdout, /native-broker-private-endpoint-policy-ready/);
+    const match = stdout.match(/stock-codex-repository-broker-ready (\{[^\n]+\})/);
+    assert.ok(match, stdout);
+    const proof = JSON.parse(match[1]);
 
-    const logs = await waitForDockerLog(brokerName, /POST git\.oce\.svc/);
-    assert.match(logs, /GET git\.oce\.svc 443 \/info\/refs/);
-    assert.match(logs, /POST git\.oce\.svc 443 \/git-upload-pack/);
-    assert.doesNotMatch(logs, /PUT git\.oce\.svc/);
-    assert.doesNotMatch(logs, /unrelated\.oce\.svc/);
-    assert.doesNotMatch(logs, /git\.oce\.svc:444/);
+    const guarded = fixture.byRef.get("guarded");
+    const readOnly = fixture.byRef.get("read-only");
+    assert.equal(
+      unadmitted.github.authenticationAttempts.filter(({ boundary }) => boundary === "git").length,
+      unadmittedAttempts,
+      "unadmitted requests must not reach the upstream even with a rejected provider token",
+    );
+    assert.equal(unadmitted.git.trace.length, 0, "unadmitted requests must not reach the upstream");
+    assert.equal(await guarded.git.ref(`refs/heads/${workspaceBranch}`), proof.commit);
+    await assert.rejects(guarded.git.ref("refs/heads/disallowed"));
+    await assert.rejects(readOnly.git.ref("refs/heads/denied"));
+    assert.equal(
+      readOnly.git.trace.some(({ path }) => path.endsWith("/git-receive-pack")),
+      false,
+      "read-only broker denial must happen before the upstream receive-pack route",
+    );
+    assert.ok(
+      guarded.git.trace.some(({ path }) => path.endsWith("/git-upload-pack")),
+      "authorized Git fetch must reach the real upstream through the broker",
+    );
+    assert.ok(
+      guarded.git.trace.some(({ path }) => path.endsWith("/git-receive-pack")),
+      "authorized Git push must reach the real upstream through the broker",
+    );
   },
 );
 
@@ -1411,64 +1601,64 @@ assert.equal(execFileSync("codex", ["--version"], {encoding: "utf8"}).trim(), "c
 assert.equal(execFileSync(process.execPath, [bundledCommand, "--version"], {encoding: "utf8"}).trim(), "codex-cli 0.156.0");
 const provenance = JSON.parse(readFileSync("/opt/oce/runtime/provenance.json", "utf8"));
 assert.equal(provenance.source, "https://github.com/openclaw/openclaw");
-assert.equal(provenance.commit, "5f402bf7a8b510aa7489737c35621e9ad947469c");
-assert.equal(provenance.sourceArchiveSha256, "800e96a619db7fa2714be4432f705b72da823e75724a51b61bbb3482561145d6");
+assert.equal(provenance.commit, "e3c7304f01ed4c7d9aa7d3aed1d27dc1e2a630f3");
+assert.equal(provenance.sourceArchiveSha256, "947682ca9c92e8f6f274c1af771c3c180ab92921b06c52878c59837fef2095d0");
 assert.equal(provenance.codexVersion, "0.156.0");
 const contents = readFileSync("/opt/oce/runtime/contents.json");
 const inventory = JSON.parse(contents);
 assert.equal(createHash("sha256").update(contents).digest("hex"), provenance.runtimeContentsSha256);
+function readPnpmIntegrity(lockfile, packageName, version) {
+  const key = "  '" + packageName + "@" + version + "':";
+  const start = lockfile.indexOf(key);
+  assert.notEqual(start, -1, "missing lockfile entry for " + packageName + "@" + version);
+  const rest = lockfile.slice(start + key.length);
+  const nextPackage = rest.search(/\n {2}'[^']+@[^']+':/);
+  const block = nextPackage === -1 ? rest : rest.slice(0, nextPackage);
+  const match = block.match(/\n\s+resolution: \{integrity: ([^}]+)\}/);
+  assert.ok(match, "missing lockfile integrity for " + packageName + "@" + version);
+  return match[1];
+}
 const platformByArchitecture = {
   x64: {
     packageName: "@openai/codex-linux-x64",
     packageDirectory: "codex-linux-x64",
     binaryPath: "vendor/x86_64-unknown-linux-musl/bin/codex",
     targetArch: "amd64",
-    buildTarget: "x86_64-unknown-linux-gnu",
   },
   arm64: {
     packageName: "@openai/codex-linux-arm64",
     packageDirectory: "codex-linux-arm64",
     binaryPath: "vendor/aarch64-unknown-linux-musl/bin/codex",
     targetArch: "arm64",
-    buildTarget: "aarch64-unknown-linux-gnu",
   },
 };
 const platform = platformByArchitecture[process.arch];
 assert.ok(platform, "Unsupported runtime test architecture: " + process.arch);
-assert.deepEqual(
-  {
-    source: provenance.codexBrokerPolicy.source,
-    sourceCommit: provenance.codexBrokerPolicy.sourceCommit,
-    patchedCommit: provenance.codexBrokerPolicy.patchedCommit,
-    sourceArchiveSha256: provenance.codexBrokerPolicy.sourceArchiveSha256,
-    patchSha256: provenance.codexBrokerPolicy.patchSha256,
-    architecture: provenance.codexBrokerPolicy.architecture,
-    package: provenance.codexBrokerPolicy.package,
-    buildTarget: provenance.codexBrokerPolicy.buildTarget,
-    version: provenance.codexBrokerPolicy.version,
-  },
-  {
-    source: "https://github.com/openai/codex",
-    sourceCommit: "fe74a774532af67b5a4a3dec03ce9469e17f89af",
-    patchedCommit: "6b469b0afb0daa131b4d2caf4ee487feed6a9983",
-    sourceArchiveSha256: "aec40816bf320ff9f7666ca262222992c9617b2ecb60319f8b411dd8eba5c824",
-    patchSha256: "3158a00e50cafeef1910ad201676bdeb041657da38052c393ceb31d50f8725b8",
-    architecture: platform.targetArch,
-    package: platform.packageName,
-    buildTarget: platform.buildTarget,
-    version: "0.156.0",
-  },
-);
+assert.equal(Object.hasOwn(provenance, "codexBrokerPolicy"), false, "stock runtime must not carry patched Codex provenance");
 const codexPackageRoot = dirname(plugin.resolve("@openai/codex/package.json"));
-const platformBinary = resolve(codexPackageRoot, "..", platform.packageDirectory, platform.binaryPath);
-assert.equal(provenance.codexBrokerPolicy.installedBinary, platformBinary);
+const codexPackage = JSON.parse(readFileSync(resolve(codexPackageRoot, "package.json"), "utf8"));
+const platformPackageRoot = resolve(codexPackageRoot, "..", platform.packageDirectory);
+const platformPackage = JSON.parse(readFileSync(resolve(platformPackageRoot, "package.json"), "utf8"));
+const platformBinary = resolve(platformPackageRoot, platform.binaryPath);
 const platformBinarySha256 = createHash("sha256").update(readFileSync(platformBinary)).digest("hex");
-assert.equal(platformBinarySha256, provenance.codexBrokerPolicy.binarySha256);
 const platformInventoryPath = relative("/app/node_modules/openclaw", realpathSync(platformBinary));
 assert.ok(!platformInventoryPath.startsWith(".."), "Codex platform binary must live under the inventoried OpenClaw package root.");
+const lockfile = readFileSync("/app/node_modules/openclaw/pnpm-lock.yaml", "utf8");
+assert.deepEqual(provenance.codex, {
+  source: "npm:@openai/codex",
+  version: codexPackage.version,
+  packageIntegrity: readPnpmIntegrity(lockfile, "@openai/codex", codexPackage.version),
+  package: platform.packageName,
+  packageVersion: platformPackage.version,
+  platformPackageIntegrity: readPnpmIntegrity(lockfile, "@openai/codex", platformPackage.version),
+  architecture: platform.targetArch,
+  installedBinary: relative("/app/node_modules/openclaw", platformBinary),
+  resolvedBinary: platformInventoryPath,
+  binarySha256: platformBinarySha256,
+});
 const platformInventoryEntry = inventory.find((entry) => entry.path === platformInventoryPath);
-assert.ok(platformInventoryEntry, "The final runtime inventory must include the replaced Codex platform binary.");
-assert.equal(platformInventoryEntry.mode, 0o555);
+assert.ok(platformInventoryEntry, "The final runtime inventory must include the stock Codex platform binary.");
+assert.equal((platformInventoryEntry.mode & 0o111) !== 0, true, "Codex platform binary must stay executable.");
 assert.equal(platformInventoryEntry.sha256, platformBinarySha256);
 process.stdout.write("shared-codex-0.156.0-ready\n");
 `;
