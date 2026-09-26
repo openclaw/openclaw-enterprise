@@ -89,10 +89,11 @@ In the Console, choose **SWE Agent**, fill its variables, then use **Edit Slack*
 choose allowed senders and bind Slack app/bot Secrets. The preset allows channel members to mention the agent (`users: ["*"]`)
 in this channel and requires a mention. Narrow the sender list in the drawer if
 needed. No credentials are stored in the file.
-The preset includes the supplied Ocalot instructions in
+The preset includes the supplied instructions in
 `template.agent.initialWorkspaceFiles.AGENTS.md`, including their draft decisions.
-Its opening sentence uses `You are {{vars.name}}`, filled from the entered `name`
-when applying the Preset. Later name edits do not re-render the copied file.
+All DevDay copies use `{{vars.name}}` in the heading, opening sentence, and other
+self-references, filled from the entered `name` when applying the Preset. Later
+name edits do not re-render the copied file.
 To revise them, update that content and the existing Namespace Preset through the API. Restarting with a changed
 JSON file preserves already-installed same-name copies.
 

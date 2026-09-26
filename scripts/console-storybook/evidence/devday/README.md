@@ -2,6 +2,13 @@
 
 ## Plugin configuration in the DevDay create flow
 
+Current source serves a Storybook-only curated plugin catalog in the DevDay
+create flow. It includes the 26 curated plugin suggestions, including Linear,
+Slack, GitHub, Figma, Notion, and Sentry, plus the existing simulated Calendar
+entry. The checkpoint now adds Linear, sets automatic review by default, and
+requires approval for Create issue. This remains simulated UI evidence, not live
+plugin access, credential readiness, or runtime policy enforcement.
+
 Verified source `a27ec9ad9d032cba731b4703621a1dd44008f867`, rebased onto
 `fbbc0e42`, in headed Chromium on macOS on September 24, 2026. The manual
 segment 1 walkthrough selects SWE Agent with a fake newly entered service-account

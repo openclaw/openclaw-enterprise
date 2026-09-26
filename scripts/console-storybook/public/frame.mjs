@@ -44,6 +44,23 @@ if (scenario.component === "plugins") {
   await import("/console/console.mjs");
 }
 
+const applyPresetVariableDefaults = () => {
+  for (const [selector, value] of Object.entries(scenario.presetVariableDefaults ?? {})) {
+    const node = document.querySelector(selector);
+    if (!node || node.disabled || node.value) {
+      continue;
+    }
+    node.value = value;
+    node.dispatchEvent(new Event("input", { bubbles: true }));
+    node.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+};
+if (scenario.presetVariableDefaults) {
+  const observer = new MutationObserver(applyPresetVariableDefaults);
+  observer.observe(document.body, { childList: true, subtree: true });
+  applyPresetVariableDefaults();
+}
+
 // Prepare open drawers and validation states by operating the real UI, not editing its markup.
 try {
   for (const action of scenario.actions ?? []) {
