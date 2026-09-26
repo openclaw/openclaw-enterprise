@@ -261,6 +261,35 @@ async function runDocker(args, options = {}) {
   });
 }
 
+const runtimeImageStockBrokerDiagnosticStages = new Set([
+  "material-init",
+  "native-git-init",
+  "config-patch",
+  "fixture-reachability",
+  "initialize",
+  "proxy-env",
+  "broker-denial",
+  "outside-home-read",
+  "outside-home-shadow-write",
+  "outside-home-read-after-shadow-write",
+  "git-proof",
+  "explicit-deny",
+  "unrelated-private-host",
+  "direct-private-host",
+]);
+
+function annotateRuntimeImageStockBrokerFailure(error) {
+  const output = [error?.stderr, error?.stdout, error?.message]
+    .filter((item) => typeof item === "string")
+    .join("\n");
+  const matches = [...output.matchAll(/^openclaw-ci-stock-broker-stage=([a-z-]+)$/gm)];
+  const stage = matches.at(-1)?.[1];
+  if (runtimeImageStockBrokerDiagnosticStages.has(stage)) {
+    error.openclawCiDiagnostic = { kind: "runtime-image-stock-broker", stage };
+  }
+  return error;
+}
+
 async function reserveTcpPort() {
   const server = createTcpServer();
   await new Promise((resolve, reject) => {
@@ -1365,10 +1394,15 @@ const cp = require("node:child_process");
 const fs = require("node:fs");
 const vm = require("node:vm");
 const { createInterface } = require("node:readline");
+function markStockBrokerStage(stage) {
+  console.error("openclaw-ci-stock-broker-stage=" + stage);
+}
+markStockBrokerStage("material-init");
 const material = cp.spawnSync(process.execPath, ["-e", ${JSON.stringify(REPOSITORY_MATERIAL_INIT_ENTRYPOINT)}, ${JSON.stringify(JSON.stringify(descriptor))}], {
   stdio: "inherit",
 });
 assert.equal(material.status, 0, "repository material initialization failed");
+markStockBrokerStage("native-git-init");
 const preparation = cp.spawnSync(process.execPath, ["-e", ${JSON.stringify(REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT)}, "/run/oce/repository-credentials"], {
   stdio: "inherit",
 });
@@ -1409,6 +1443,7 @@ const configPatchProbe = [
   'process.stdout.write(JSON.stringify({ allowPatch }));',
 ].join("\\n");
 const runtimeForConfig = ${JSON.stringify(pluginRuntime)};
+markStockBrokerStage("config-patch");
 const configPatchResult = cp.spawnSync(process.execPath, ["--input-type=module", "-e", configPatchProbe], {
   input: JSON.stringify(runtimeForConfig),
   encoding: "utf8",
@@ -1542,37 +1577,48 @@ const timeout = setTimeout(() => {
   try {
     // Resolve and reach the fixture outside Codex first, so the direct-bypass
     // assertion cannot pass merely because sandboxed DNS is unavailable.
+    markStockBrokerStage("fixture-reachability");
     const unrelatedAddress = (await require("node:dns/promises").lookup("unrelated.oce.svc", { family: 4 })).address;
     assert.equal(require("node:net").isIP(unrelatedAddress), 4);
     const directRoute = cp.spawnSync("curl", ["--noproxy", "*", "-ksS", "--connect-timeout", "5", "--max-time", "10", "--resolve", "unrelated.oce.svc:443:" + unrelatedAddress, "https://unrelated.oce.svc/"], { encoding: "utf8" });
     assert.equal(directRoute.status, 0, "fixture must be reachable outside the sandbox: " + directRoute.stderr);
+    markStockBrokerStage("initialize");
     await rpc("initialize", { clientInfo: { name: "repository-broker-stock-codex-smoke", version: "1.0.0" }, capabilities: { experimentalApi: true } });
     native.stdin.write(JSON.stringify({ method: "initialized" }) + "\\n");
 
+    markStockBrokerStage("proxy-env");
     const proxyState = await execShell(${JSON.stringify(proxyEnvironmentProbe)});
     assert.equal(proxyState.exitCode, 0, "proxy-env subprobe failed: " + proxyState.stderr + proxyState.stdout);
     assert.match(proxyState.stdout, /proxy-env-ok/);
 
+    markStockBrokerStage("broker-denial");
     const brokerDenials = await execShell(${JSON.stringify(brokerDenialProbe)});
     assert.equal(brokerDenials.exitCode, 0, "broker denial code probe failed: " + brokerDenials.stderr);
     assert.match(brokerDenials.stdout, /broker-denial-codes-confirmed/);
 
+    markStockBrokerStage("outside-home-read");
     await expectFailure("outside-workspace-home-read-denied", "cat " + homeControlSentinelPath, "No such file|Permission denied|Operation not permitted|EACCES|ENOENT");
     const sentinelBeforeSandboxWrite = fs.readFileSync(homeControlSentinelPath, "utf8");
+    markStockBrokerStage("outside-home-shadow-write");
     const shadowWrite = await execShell("printf shadowed > " + homeControlSentinelPath + " && printf sandbox-write-exit0", brokerPermissionProfile);
     assert.equal(shadowWrite.exitCode, 0, shadowWrite.stderr + shadowWrite.stdout);
     assert.match(shadowWrite.stdout, /sandbox-write-exit0/);
     assert.equal(fs.readFileSync(homeControlSentinelPath, "utf8"), sentinelBeforeSandboxWrite, "sandbox writes must not modify the parent home sentinel");
+    markStockBrokerStage("outside-home-read-after-shadow-write");
     await expectFailure("outside-workspace-home-read-still-denied-after-shadow-write", "cat " + homeControlSentinelPath, "No such file|Permission denied|Operation not permitted|EACCES|ENOENT");
 
+    markStockBrokerStage("git-proof");
     const gitProof = await execShell(${JSON.stringify(gitProofScript)}, brokerPermissionProfile, 60000);
     assert.equal(gitProof.exitCode, 0, gitProof.stderr + "\\n" + gitProof.stdout);
     const commit = gitProof.stdout.match(/commit=([a-f0-9]{40})/)?.[1];
     assert.ok(commit, gitProof.stdout);
 
+    markStockBrokerStage("explicit-deny");
     await expectFailure("explicit-deny-broker", "git ls-remote https://github.com/fixture/repository.git HEAD", "CONNECT tunnel failed, response 403|Received HTTP code 403 from proxy after CONNECT", deniedPermissionProfile);
+    markStockBrokerStage("unrelated-private-host");
     await expectFailure("proxy-unrelated-private-host", "curl -ksS --connect-timeout 5 --max-time 10 https://unrelated.oce.svc/", "CONNECT tunnel failed, response 403|Received HTTP code 403 from proxy after CONNECT");
     const directProbe = "node -e " + JSON.stringify('const socket = require("node:net").connect(443, process.argv[1]); socket.on("connect", () => { console.error("UNEXPECTED_CONNECTION"); process.exit(42); }); socket.on("error", (error) => { console.error(error.code); process.exit(1); }); setTimeout(() => { console.error("TIMEOUT"); process.exit(43); }, 5000);') + " " + unrelatedAddress;
+    markStockBrokerStage("direct-private-host");
     await expectFailure("direct-unrelated-private-host", directProbe, "EPERM|EACCES|ENETUNREACH|EHOSTUNREACH");
     process.stdout.write("stock-codex-repository-broker-ready " + JSON.stringify({ commit }) + "\\n");
   } finally {
@@ -1582,36 +1628,41 @@ const timeout = setTimeout(() => {
   }
 })().catch((error) => { console.error(error); console.error(stderr); process.exitCode = 1; });
 `;
-    const { stdout } = await runDocker(
-      [
-        "run",
-        "--rm",
-        "--network",
-        networkName,
-        "--read-only",
-        "--user",
-        "1000:1000",
-        "--cap-drop",
-        "ALL",
-        ...probeSecurityOptions,
-        "--tmpfs",
-        "/home/node:size=192m,uid=1000,gid=1000,mode=700",
-        "--tmpfs",
-        "/tmp:size=128m,uid=1000,gid=1000,mode=1777",
-        "--tmpfs",
-        "/run/oce:size=16m,uid=1000,gid=1000,mode=700",
-        "-v",
-        `${materialRoot}:/source-repository-credentials:ro`,
-        "-v",
-        `${tls.certFile}:/certs/broker-ca.pem:ro`,
-        "--entrypoint",
-        "node",
-        image,
-        "-e",
-        probe,
-      ],
-      { timeout: 150_000 * imageSmokeTimeoutMultiplier, maxBuffer: 2_000_000 },
-    );
+    let stdout;
+    try {
+      ({ stdout } = await runDocker(
+        [
+          "run",
+          "--rm",
+          "--network",
+          networkName,
+          "--read-only",
+          "--user",
+          "1000:1000",
+          "--cap-drop",
+          "ALL",
+          ...probeSecurityOptions,
+          "--tmpfs",
+          "/home/node:size=192m,uid=1000,gid=1000,mode=700",
+          "--tmpfs",
+          "/tmp:size=128m,uid=1000,gid=1000,mode=1777",
+          "--tmpfs",
+          "/run/oce:size=16m,uid=1000,gid=1000,mode=700",
+          "-v",
+          `${materialRoot}:/source-repository-credentials:ro`,
+          "-v",
+          `${tls.certFile}:/certs/broker-ca.pem:ro`,
+          "--entrypoint",
+          "node",
+          image,
+          "-e",
+          probe,
+        ],
+        { timeout: 150_000 * imageSmokeTimeoutMultiplier, maxBuffer: 2_000_000 },
+      ));
+    } catch (error) {
+      throw annotateRuntimeImageStockBrokerFailure(error);
+    }
     const match = stdout.match(/stock-codex-repository-broker-ready (\{[^\n]+\})/);
     assert.ok(match, stdout);
     const proof = JSON.parse(match[1]);

@@ -38,6 +38,23 @@ const safeRepositoryPlatformSetupStages = new Set([
   "controller-restart",
 ]);
 
+const safeRuntimeImageStockBrokerStages = new Set([
+  "material-init",
+  "native-git-init",
+  "config-patch",
+  "fixture-reachability",
+  "initialize",
+  "proxy-env",
+  "broker-denial",
+  "outside-home-read",
+  "outside-home-shadow-write",
+  "outside-home-read-after-shadow-write",
+  "git-proof",
+  "explicit-deny",
+  "unrelated-private-host",
+  "direct-private-host",
+]);
+
 function isRecord(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -302,6 +319,12 @@ function failureDiagnostic(error) {
           relayNode:
             stage === "relay-readiness" ? relayNodeDiagnostic(diagnostic.relayNode) : undefined,
         }
+      : undefined;
+  }
+  if (diagnostic.kind === "runtime-image-stock-broker") {
+    const stage = diagnostic.stage;
+    return typeof stage === "string" && safeRuntimeImageStockBrokerStages.has(stage)
+      ? { kind: "runtime-image-stock-broker", stage }
       : undefined;
   }
   if (diagnostic.kind !== "controller-http") {

@@ -854,6 +854,19 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
           diagnostic: { kind: "network-policy", stage: secret },
         },
         {
+          name: "allowlisted runtime stock broker diagnostic",
+          diagnostic: {
+            kind: "runtime-image-stock-broker",
+            stage: "broker-denial",
+            command: [secret],
+            stderr: `${secret}-stderr`,
+          },
+        },
+        {
+          name: "rejects unsafe runtime stock broker stage",
+          diagnostic: { kind: "runtime-image-stock-broker", stage: `${secret}-stage` },
+        },
+        {
           name: "allowlisted repository platform setup diagnostic",
           diagnostic: {
             kind: "repository-platform-setup",
@@ -997,6 +1010,17 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     (entry) => entry.name === "rejects unsafe denied traffic diagnostic",
   );
   assert.equal(unsafeTraffic.error.diagnostic, undefined);
+  const stockBrokerFailure = summary.files[0].tests.find(
+    (entry) => entry.name === "allowlisted runtime stock broker diagnostic",
+  );
+  assert.deepEqual(stockBrokerFailure.error.diagnostic, {
+    kind: "runtime-image-stock-broker",
+    stage: "broker-denial",
+  });
+  const unsafeStockBroker = summary.files[0].tests.find(
+    (entry) => entry.name === "rejects unsafe runtime stock broker stage",
+  );
+  assert.equal(unsafeStockBroker.error.diagnostic, undefined);
   const setupFailure = summary.files[0].tests.find(
     (entry) => entry.name === "allowlisted repository platform setup diagnostic",
   );
