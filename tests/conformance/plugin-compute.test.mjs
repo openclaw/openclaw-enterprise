@@ -2681,6 +2681,11 @@ test("Codex gateway supervisor applies broker-only bridge runtime without select
     enabled: true,
     mode: "full",
     allowLocalBinding: true,
+    readOnlyPaths: [
+      "/app/node_modules/openclaw",
+      "/opt/oce/repository-credentials",
+      "/run/oce/repository-credentials",
+    ],
     domains: { "github.com": "allow", "*.oce.svc": "deny", "git.oce.svc": "allow" },
   });
   const status = readStatusFromHandler(statusHandler);

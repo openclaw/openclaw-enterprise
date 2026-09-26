@@ -24,6 +24,7 @@ import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
 import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.mjs";
+import { codexOpenClawConfiguration } from "../../apps/controller/src/drivers/plugin/runtime-translator.ts";
 
 const execute = promisify(execFile);
 const docker = process.env.OCC_DOCKER_BIN ?? "docker";
@@ -1266,40 +1267,13 @@ server.listen(443, "0.0.0.0", () => console.log("broker-forwarder-ready"));
     ]);
     await waitForDockerLog(proxyName, /broker-forwarder-ready/);
 
-    const codexConfigurationToml = String.raw`
-default_permissions = "repository-broker"
-
-[features]
-apps = false
-plugins = false
-remote_plugin = false
-network_proxy = true
-
-[permissions.repository-broker]
-extends = ":workspace"
-
-[permissions.repository-broker.network]
-enabled = true
-mode = "full"
-allow_local_binding = true
-
-[permissions.repository-broker.network.domains]
-"git.oce.svc" = "allow"
-
-[permissions.repository-broker-denied]
-extends = ":workspace"
-
-[permissions.repository-broker-denied.network]
-enabled = true
-mode = "full"
-allow_local_binding = true
-
-[permissions.repository-broker-denied.network.domains]
-"git.oce.svc" = "deny"
-`;
+    const brokerCodexConfiguration = codexOpenClawConfiguration({}, [], {
+      host: "git.oce.svc",
+      domains: {},
+    }).plugins.entries.codex.config;
     const pluginRuntime = {
       manifest: { kind: "codex", selections: {} },
-      codexConfigurationToml,
+      brokerCodexConfiguration,
     };
     const descriptor = {
       sourceRoot: "/source-repository-credentials/sessions",
@@ -1406,12 +1380,80 @@ const environment = {
   CODEX_LOGIN_MODE: "api_key", OPENAI_API_KEY: "synthetic-offline-key",
   OPENCLAW_HARNESS_MODEL: "codex/gpt-5",
   APP_SERVER_TOKEN: "synthetic-transport-token", APP_SERVER_PORT: "4500",
-  OPENCLAW_PLUGIN_RUNTIME_JSON: ${JSON.stringify(JSON.stringify(pluginRuntime))},
   SSL_CERT_FILE: "/certs/broker-ca.pem",
   REQUESTS_CA_BUNDLE: "/certs/broker-ca.pem",
   CURL_CA_BUNDLE: "/certs/broker-ca.pem",
   NODE_EXTRA_CA_CERTS: "/certs/broker-ca.pem",
 };
+const configPatchProbe = [
+  'import { readFileSync, readdirSync } from "node:fs";',
+  'import { join } from "node:path";',
+  'import { pathToFileURL } from "node:url";',
+  'const runtime = JSON.parse(readFileSync(0, "utf8"));',
+  'const pluginDist = "/app/node_modules/openclaw/dist";',
+  'const configChunk = readdirSync(pluginDist).find((name) => /^config-options-.*\\.mjs$/.test(name));',
+  'if (configChunk === undefined) throw new Error("Bundled Codex config chunk was not found under " + pluginDist);',
+  'const configExports = await import(pathToFileURL(join(pluginDist, configChunk)));',
+  'const createCodexAppServerConfig = Object.values(configExports).find((value) => typeof value === "function" && value.name === "createCodexAppServerConfig");',
+  'if (createCodexAppServerConfig === undefined) throw new Error("Bundled Codex config export did not expose createCodexAppServerConfig.");',
+  'const { resolveProviderIdForAuth } = await import("openclaw/plugin-sdk/provider-auth-aliases");',
+  'const { resolveCodexAppServerRuntimeOptions } = createCodexAppServerConfig({ resolveProviderIdForAuth });',
+  'const allowPatch = resolveCodexAppServerRuntimeOptions({ pluginConfig: runtime.brokerCodexConfiguration }).networkProxy?.configPatch;',
+  'if (allowPatch === undefined) throw new Error("Codex network proxy config patch was not generated.");',
+  'process.stdout.write(JSON.stringify({ allowPatch }));',
+].join("\\n");
+const runtimeForConfig = ${JSON.stringify(pluginRuntime)};
+const configPatchResult = cp.spawnSync(process.execPath, ["--input-type=module", "-e", configPatchProbe], {
+  input: JSON.stringify(runtimeForConfig),
+  encoding: "utf8",
+});
+assert.equal(configPatchResult.status, 0, configPatchResult.stderr);
+const { allowPatch } = JSON.parse(configPatchResult.stdout);
+const brokerPermissionProfile = allowPatch.default_permissions;
+const deniedPermissionProfile = brokerPermissionProfile + "-denied";
+const configPatch = JSON.parse(JSON.stringify(allowPatch));
+configPatch.permissions[deniedPermissionProfile] = JSON.parse(JSON.stringify(configPatch.permissions[brokerPermissionProfile]));
+configPatch.permissions[deniedPermissionProfile].network.domains = { "git.oce.svc": "deny" };
+function tomlValue(value) {
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (Array.isArray(value)) return "[" + value.map(tomlValue).join(", ") + "]";
+  return JSON.stringify(value);
+}
+function isTomlTable(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function tomlPathKey(key) {
+  return /^[A-Za-z0-9_-]+$/.test(key) ? key : JSON.stringify(key);
+}
+function tomlAssignmentKey(key, topLevel) {
+  return topLevel && /^[A-Za-z0-9_.-]+$/.test(key) ? key : tomlPathKey(key);
+}
+function renderTomlTable(path, value) {
+  const entries = Object.entries(value).sort(([left], [right]) => left.localeCompare(right));
+  const scalarEntries = entries.filter(([, item]) => !isTomlTable(item));
+  const tableEntries = entries.filter(([, item]) => isTomlTable(item));
+  const lines = [];
+  if (path.length > 0 && scalarEntries.length > 0) lines.push("[" + path.map(tomlPathKey).join(".") + "]");
+  for (const [key, item] of scalarEntries) {
+    lines.push(tomlAssignmentKey(key, path.length === 0) + " = " + tomlValue(item));
+  }
+  for (const [key, item] of tableEntries) {
+    if (lines.length > 0) lines.push("");
+    lines.push(renderTomlTable([...path, key], item));
+  }
+  return lines.join("\\n");
+}
+function codexConfigPatchToml(patch) {
+  return renderTomlTable([], patch) + "\\n";
+}
+environment.OPENCLAW_PLUGIN_RUNTIME_JSON = JSON.stringify({
+  manifest: runtimeForConfig.manifest,
+  codexConfigurationToml: codexConfigPatchToml(configPatch),
+});
+const homeControlSentinelPath = "/home/node/openclaw-stock-codex-control-sentinel.txt";
+const homeControlSentinel = "synthetic-openclaw-control-sentinel\n";
+fs.writeFileSync(homeControlSentinelPath, homeControlSentinel, { mode: 0o600 });
+assert.equal(fs.readFileSync(homeControlSentinelPath, "utf8"), homeControlSentinel);
 let native;
 vm.runInNewContext(${JSON.stringify(AGENT_RUNTIME_ENTRYPOINT)}, {
   URL, console, setTimeout, setInterval,
@@ -1459,14 +1501,18 @@ const rpc = (method, params) => new Promise((resolve, reject) => {
   pending.set(id, { resolve, reject });
   native.stdin.write(JSON.stringify({ id, method, params }) + "\\n");
 });
-async function execShell(script, permissionProfile = "repository-broker", timeoutMs = 30000) {
-  return await rpc("command/exec", {
-    command: ["/bin/bash", "-euo", "pipefail", "-c", script],
-    permissionProfile,
-    timeoutMs,
-  });
+async function execShell(script, permissionProfile = brokerPermissionProfile, timeoutMs = 30000) {
+  try {
+    return await rpc("command/exec", {
+      command: ["/bin/bash", "-euo", "pipefail", "-c", script],
+      permissionProfile,
+      timeoutMs,
+    });
+  } catch (error) {
+    throw new Error("subprobe " + permissionProfile + " failed for script: " + script.slice(0, 240) + "\\n" + error.message + "\\napp-server stderr:\\n" + stderr.slice(-4000), { cause: error });
+  }
 }
-async function expectFailure(name, script, pattern, permissionProfile = "repository-broker") {
+async function expectFailure(name, script, pattern, permissionProfile = brokerPermissionProfile) {
   const failureProbe = [
     "set +e",
     "output=$(" + script + " 2>&1)",
@@ -1496,19 +1542,22 @@ const timeout = setTimeout(() => {
     native.stdin.write(JSON.stringify({ method: "initialized" }) + "\\n");
 
     const proxyState = await execShell(${JSON.stringify(proxyEnvironmentProbe)});
-    assert.equal(proxyState.exitCode, 0, proxyState.stderr || proxyState.stdout);
+    assert.equal(proxyState.exitCode, 0, "proxy-env subprobe failed: " + proxyState.stderr + proxyState.stdout);
     assert.match(proxyState.stdout, /proxy-env-ok/);
 
     const brokerDenials = await execShell(${JSON.stringify(brokerDenialProbe)});
     assert.equal(brokerDenials.exitCode, 0, "broker denial code probe failed: " + brokerDenials.stderr);
     assert.match(brokerDenials.stdout, /broker-denial-codes-confirmed/);
 
-    const gitProof = await execShell(${JSON.stringify(gitProofScript)}, "repository-broker", 60000);
+    await expectFailure("outside-workspace-home-read-denied", "cat " + homeControlSentinelPath, "No such file|Permission denied|Operation not permitted|EACCES|ENOENT");
+    await expectFailure("outside-workspace-write-denied", "printf blocked > /tmp/openclaw-stock-codex-denied", "Read-only file system|Permission denied|Operation not permitted|EACCES|EROFS");
+
+    const gitProof = await execShell(${JSON.stringify(gitProofScript)}, brokerPermissionProfile, 60000);
     assert.equal(gitProof.exitCode, 0, gitProof.stderr + "\\n" + gitProof.stdout);
     const commit = gitProof.stdout.match(/commit=([a-f0-9]{40})/)?.[1];
     assert.ok(commit, gitProof.stdout);
 
-    await expectFailure("explicit-deny-broker", "git ls-remote https://github.com/fixture/repository.git HEAD", "CONNECT tunnel failed, response 403|Received HTTP code 403 from proxy after CONNECT", "repository-broker-denied");
+    await expectFailure("explicit-deny-broker", "git ls-remote https://github.com/fixture/repository.git HEAD", "CONNECT tunnel failed, response 403|Received HTTP code 403 from proxy after CONNECT", deniedPermissionProfile);
     await expectFailure("proxy-unrelated-private-host", "curl -ksS --connect-timeout 5 --max-time 10 https://unrelated.oce.svc/", "CONNECT tunnel failed, response 403|Received HTTP code 403 from proxy after CONNECT");
     const directProbe = "node -e " + JSON.stringify('const socket = require("node:net").connect(443, process.argv[1]); socket.on("connect", () => { console.error("UNEXPECTED_CONNECTION"); process.exit(42); }); socket.on("error", (error) => { console.error(error.code); process.exit(1); }); setTimeout(() => { console.error("TIMEOUT"); process.exit(43); }, 5000);') + " " + unrelatedAddress;
     await expectFailure("direct-unrelated-private-host", directProbe, "EPERM|EACCES|ENETUNREACH|EHOSTUNREACH");
@@ -1601,8 +1650,8 @@ assert.equal(execFileSync("codex", ["--version"], {encoding: "utf8"}).trim(), "c
 assert.equal(execFileSync(process.execPath, [bundledCommand, "--version"], {encoding: "utf8"}).trim(), "codex-cli 0.156.0");
 const provenance = JSON.parse(readFileSync("/opt/oce/runtime/provenance.json", "utf8"));
 assert.equal(provenance.source, "https://github.com/openclaw/openclaw");
-assert.equal(provenance.commit, "e3c7304f01ed4c7d9aa7d3aed1d27dc1e2a630f3");
-assert.equal(provenance.sourceArchiveSha256, "947682ca9c92e8f6f274c1af771c3c180ab92921b06c52878c59837fef2095d0");
+assert.equal(provenance.commit, "29fe7bd8da2c5cce125c8b21b0238673c81feeb2");
+assert.equal(provenance.sourceArchiveSha256, "baca838f3cb122771477ca18726ec934428082c76f77323c310ae960eb8e0e27");
 assert.equal(provenance.codex.version, "0.156.0");
 assert.equal(Object.hasOwn(provenance, "codexPatchSha256"), false);
 assert.equal(Object.hasOwn(provenance, "codexVersion"), false);

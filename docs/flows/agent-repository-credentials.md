@@ -8,9 +8,9 @@ last_updated_session: authoring-run/c29b3860-d1f0-4a14-a264-49090586cb20
 
 ## Overview
 
-The Console lists approved repositories; admission saves selections; deployment
+The Console lists approved repositories, admission saves selections, and deployment
 freezes grants. The worker delivers sessions to Kubernetes-owned embedded OpenClaw
-or dedicated Codex, with compatible Harness authentication and no Sandbox Driver.
+or dedicated Codex workloads that use compatible Harness authentication and no Sandbox Driver.
 See [service forwarding and retirement](repository-credentials.md) and
 [runtime qualification](../testing/repository-credentials.md).
 
@@ -103,12 +103,11 @@ code permits ordinary creation. Transport, malformed, throttled and generic fail
 block both writes; denial and lifecycle conflict remain distinct. Model selection
 is independent; toggles preserve focus.
 
-The form saves Configuration first. Known Agent rejections (400, 403, 404, 409, 429) preserve it. Ordinary retries reuse it; repository-scoped retries require
-successful reload, which clears stale selections, then nonempty reselection and
-an explicit profile. Empty selections cannot downgrade the attempt. Recovery
-stays visible; starting a new draft preserves the Configuration. Failed reloads
-block creation, expiry signs out, and obsolete completions cannot mutate the view.
-Unknown outcomes require stored Agent and Configuration reads.
+The form saves Configuration first. Known Agent rejections preserve it. Ordinary
+retries reuse it; repository-scoped retries require a successful reload, nonempty
+reselection, and an explicit profile. Empty selections cannot downgrade the
+attempt. Failed reloads block creation, expiry signs out, and obsolete completions
+cannot mutate the view. Unknown outcomes require stored Agent and Configuration reads.
 
 `packages/occ/src/index.ts:OpenClawController.repositoryBindingSelections`
 uses `resolveRepositoryBindings` after existing authorization. The public input
@@ -147,9 +146,9 @@ sidecar launch; the service validates protected inputs before listening.
 `apps/controller/src/worker/repository-credentials.ts:RepositoryCredentialLifecycle.prepare`
 rechecks the original actor, ready Namespace, running Agent, exact revision,
 selected Driver, unchanged grant and deadline. Each fresh attempt commits its
-request identity in State under the live work claim and Namespace/Agent locks
-before dispatch. State derives the immutable cleanup context from the admitted
-Driver and binding, and rejects new attempts for stopped or deleting owners.
+request identity in State under the live work claim and Namespace/Agent locks before
+dispatch. State derives immutable cleanup context from the admitted Driver and
+binding, and rejects new attempts for stopped or deleting owners.
 `RepositoryCredentialLifecycle.open` calls the Driver outside the transaction.
 State stores recovery identifiers and phases, never bearers or client files.
 
@@ -158,10 +157,10 @@ sends the bound request over the private socket. The service independently
 resolves and compares the grant through
 `apps/controller/src/drivers/repo/github/credentials/registry-factory.ts:createGitHubRegistryDriverFactory`.
 The client validates cleanup counts and terminal-state consistency before
-projecting the private response into four-field status and three-field binding
-objects. `DISPOSED` permits historical revoked/expired counts, but no active uses,
-active/pending/uncertain credentials or pending auxiliary work. Created-open,
-recovered-open, status and close all require validation before projection.
+projecting private status and binding objects. `DISPOSED` permits historical
+revoked or expired counts, but no active uses, active/pending/uncertain
+credentials, or pending auxiliary work. Created-open, recovered-open, status and
+close all require validation before projection.
 
 Only a created control response contains the bearer. The concrete Driver encodes
 transient files with
@@ -172,9 +171,9 @@ session ID before passing files through
 
 A confirmed open session yields a `retained` binding without files. Unfinished
 openings use `recoverOnly` to find or fence admission and close recovered sessions.
-Fresh material requires confirmed disposal or a missing opening without a
-recorded session ID, which never delivered material. Invalidated known sessions
-block automatic same-revision replacement. Closing sessions raise retryable
+Fresh material requires confirmed disposal or a missing opening without a recorded
+session ID. Invalidated known sessions block automatic same-revision replacement.
+Closing sessions raise retryable
 `REPOSITORY_CLEANUP_PENDING`; replacement awaits disposal within Work bounds and
 the revision deadline. The admission transaction rechecks retained attempts under
 Namespace/Agent locks. Validated `DISPOSED` observations persist without another
@@ -216,7 +215,7 @@ preserves workspace-node enrollment and revision-private storage.
 gateway and node observations, including during successor preparation. A changed
 generation or lost readiness returns incomplete.
 The gateway receives neither repository material nor repository-gateway egress.
-Compute grants consumer egress; Helm admits consumers through the
+Compute grants consumer egress; Helm admits consumers through
 [credential-sidecar ingress selectors](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking). Native preparation
 writes aggregate `gitconfig` without reading bearers. System Git includes
 `/run/oce/repository-credentials/gitconfig`, preserving HOME/global configuration.
@@ -224,12 +223,16 @@ Embedded `repositoryNativeConfiguration` keeps the `gh` router first in
 `tools.exec.pathPrepend`. `AGENT_RUNTIME_ENTRYPOINT` sets Codex's
 `allow_login_shell=false` and `shell_environment_policy.set.PATH`. The Harness
 model environment remains intact. App keys, JWTs, installation tokens and the
-control socket never enter this material set. Repository-bound Codex consumers
-receive stock Codex `allow_local_binding = true`, `mode = "full"`, and the exact
-broker hostname allowance; explicit denies prevail. The
+control socket never enter this material set. Repository-bound Codex consumers receive
+stock Codex `allow_local_binding = true`, `mode = "full"`, and the exact broker
+hostname allowance; explicit denies prevail. The generated stock profile also
+grants read-only access to `/app/node_modules/openclaw`,
+`/opt/oce/repository-credentials`, and `/run/oce/repository-credentials` so the
+stock app-server package, native binary, Git helper, and generated session
+material remain reachable inside sandboxed Codex tools. The
 [networking contract](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking)
 defines dedicated/embedded eligibility. Unbound policy and broker authorization remain unchanged.
-Compute supplies CA trust; TLS verification remains enabled.
+Compute supplies CA trust; TLS verification stays enabled.
 
 ### 5. Authenticate native Git and route GitHub CLI commands
 
@@ -273,13 +276,11 @@ fresh installation tokens under the same grant until the revision deadline.
 `apps/controller/src/worker.ts:ControllerWorker.completeActivatedRevision`
 commits completion and maintenance together, preserving the original actor.
 Repository revisions use the Driver's 30-second interval or a shorter Compute
-interval. Worker restart resumes queued work without inventing actors. After
-service restart, a missing known session is invalidated with cleanup Work
-retained.
+interval. Restart resumes queued work without inventing actors. After service
+restart, a missing known session is invalidated and cleanup Work remains.
 `REPOSITORY_SESSION_RECOVERY_UNSAFE` permanently fails observation and queues
-runtime retirement; later workers cannot remint for that revision. An authorized
-user can deploy a new revision without settling old cleanup or replaying
-commands.
+runtime retirement; later workers cannot remint for that revision. An authorized user can
+deploy a new revision without settling old cleanup.
 
 `apps/controller/src/worker.ts:ControllerWorker.finalizeActiveRevision`
 can atomically fail one bounded observation and enqueue its successor while the
@@ -287,41 +288,34 @@ same active revision remains authorized. Stop, policy drift, expiry and revoked
 authority cannot use that continuation to reopen sessions.
 
 `packages/occ/src/state/postgres-work-queue.ts:PostgresWorkQueue.enqueueRepositoryCleanup`
-and terminal queue transitions persist exact revision-owned obligations. Terminal
-revision work records the `terminal-runtime` purpose with its terminal transition,
-even when sessions are settled or no admission attempt exists.
+and terminal queue transitions persist exact revision-owned obligations.
 `RepositoryCredentialLifecycle.closeRevision` records session-only cleanup with
-the attempts it marks closing. Cleanup retries at the Driver interval without
-consuming Work retries.
+the attempts it marks closing. Cleanup retries at the Driver interval without consuming Work retries.
 
 `ControllerWorker.processRepositoryCleanup` consumes validated owner-bound Work
 without policy resolution, admission or material delivery, even after the actor
 loses ordinary permissions. Terminal-runtime Work fences attempts, closes sessions
-and calls Compute's `stopRevision` for that revision despite pending session
-cleanup. Compute mismatch or stop failure remains retryable beyond foreground
-limits. Completion requires settled sessions and runtime retirement. Session-only
-repair/rotation never stops healthy workloads. `CLOSED` denies local use but awaits
-disposal; missing inventory or invalidation does not prove provider settlement.
+and calls Compute's `stopRevision` for that revision. Compute mismatch or stop
+failure remains retryable beyond foreground limits. Completion requires settled
+sessions and runtime retirement. Session-only repair/rotation never stops healthy
+workloads. `CLOSED` denies local use but awaits disposal; missing inventory or
+invalidation does not prove provider settlement.
 
 `ControllerWorker.processAgentDeletion` closes and registers each revision's
 attempts, then retires Compute even while service cleanup is pending. Deleted-Agent
-Work covers only its exact owner and revisions admitted before that Work was created;
-the same boundary governs failed and stale Work transfer.
+Work covers only its exact owner and admitted revisions; the same boundary governs failed and stale Work transfer.
 `PostgresWorkQueue.completeAgentDeletion` calls `occ.finalize_agent_deletion` under
 the current claim. The function locks Namespace, Agent and attempts and returns a
 distinct pending outcome unless every attempt is disposed. The worker defers that
 outcome without consuming its retry budget. Once settled, the finalizer detaches
-live revision pointers, removes live rows and records deletion atomically. Original
-IDs and non-secret cleanup context remain immutable, with no pruning policy.
+live revision pointers, removes live rows and records deletion atomically.
 
 Compute retirement waits for owned Pods to stop before removing their material.
 It preserves Secrets referenced by actual Pods and current Deployments, and
 limits deletion to exact ownership with UID preconditions. Stop removes only
-the stopped revision's route and preserves a newer gateway Deployment and its
-shared resources. Route deletion and the stopped revision's Deployment deletion
-also require the observed resourceVersion. Under the single-worker topology,
-Deployment deletion precedes shared cleanup, which remains retryable after a
-partial failure. Service restart cannot prove remote token revocation.
+the stopped revision's route and preserves newer shared resources. Route and
+Deployment deletion require the observed resourceVersion. Shared cleanup remains
+retryable after partial failure. Service restart cannot prove remote token revocation.
 
 ## Debugging and Verification
 

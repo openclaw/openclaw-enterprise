@@ -85,6 +85,13 @@ sets stock Codex `allow_local_binding = true` and `mode = "full"`. An explicit
 deny matching the broker hostname fails closed. Unbound Agents receive none of
 these generated changes; their existing policy remains in effect.
 
+The generated filesystem profile also grants read-only access to the stock
+runtime package at `/app/node_modules/openclaw`, the repository client at
+`/opt/oce/repository-credentials`, and admitted session material at
+`/run/oce/repository-credentials`. These paths let sandboxed Git use the installed
+runtime and broker helper without granting whole-filesystem reads or changing
+project write permissions.
+
 These settings apply to the Agent's whole tool proxy: local binding is allowed,
 Codex's additional private-address guard is disabled, and every HTTP method is
 allowed at otherwise allowed destinations. Domain rules match hostnames, not

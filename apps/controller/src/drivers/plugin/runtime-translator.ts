@@ -69,6 +69,11 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
   const OCC_DRIVER_ID = "occ-plugin";
   const CODEX_DRIVER_ID = "codex-plugin";
   const CODEX_MARKETPLACE = "openai-curated-remote";
+  const CODEX_REPOSITORY_BROKER_READ_ONLY_PATHS = [
+    "/app/node_modules/openclaw",
+    "/opt/oce/repository-credentials",
+    "/run/oce/repository-credentials",
+  ];
 
   // Native policy names are global: aliases/families can target core tools,
   // and another plugin's ID targets its entire tool inventory.
@@ -633,6 +638,7 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
           enabled: true,
           mode: "full",
           allowLocalBinding: true,
+          readOnlyPaths: CODEX_REPOSITORY_BROKER_READ_ONLY_PATHS,
           domains: { ...domains, [host]: "allow" },
         },
       },

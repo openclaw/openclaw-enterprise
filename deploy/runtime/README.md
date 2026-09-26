@@ -25,8 +25,8 @@ checksum below identify this source build; it is not a published OpenClaw releas
 | Input                                        | Selection                                                                                                    |
 | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | Build base                                   | `docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584` |
-| OpenClaw source commit                       | `e3c7304f01ed4c7d9aa7d3aed1d27dc1e2a630f3`                                                                   |
-| Source archive SHA-256                       | `947682ca9c92e8f6f274c1af771c3c180ab92921b06c52878c59837fef2095d0`                                           |
+| OpenClaw source commit                       | `29fe7bd8da2c5cce125c8b21b0238673c81feeb2`                                                                   |
+| Source archive SHA-256                       | `baca838f3cb122771477ca18726ec934428082c76f77323c310ae960eb8e0e27`                                           |
 | Dedicated Codex CLI (`OPENAI_CODEX_VERSION`) | `0.156.0`                                                                                                    |
 
 The source's package version is `2026.9.6`; it does not identify this custom
@@ -72,7 +72,7 @@ installing packages at gateway startup. Slack credentials remain operator-owned
 runtime Secrets; do not put them in the image.
 
 Keep the source commit and archive checksum together when updating OpenClaw.
-Follow the [pinned upstream Docker assembly](https://github.com/openclaw/openclaw/blob/e3c7304f01ed4c7d9aa7d3aed1d27dc1e2a630f3/Dockerfile)
+Follow the [pinned upstream Docker assembly](https://github.com/openclaw/openclaw/blob/29fe7bd8da2c5cce125c8b21b0238673c81feeb2/Dockerfile)
 to keep plugin dependencies and runtime assets consistent. Its plugin-local
 dependency layout preserves dependencies that differ from core versions.
 Plugin chunks emitted directly under `dist` also need package-root resolution.

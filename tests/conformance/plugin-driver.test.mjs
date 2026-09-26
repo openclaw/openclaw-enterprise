@@ -313,6 +313,11 @@ test("Codex bridge configuration carries repository broker network policy withou
         enabled: true,
         mode: "full",
         allowLocalBinding: true,
+        readOnlyPaths: [
+          "/app/node_modules/openclaw",
+          "/opt/oce/repository-credentials",
+          "/run/oce/repository-credentials",
+        ],
         domains: { "github.com": "allow", "git.tenant.svc": "allow" },
       },
     },
