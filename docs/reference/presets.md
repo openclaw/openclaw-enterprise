@@ -66,7 +66,7 @@ sandbox and network proxy settings therefore apply only to `standard-codex`.
 ## DevDay custom presets
 
 [`SWE Agent`](../../deploy/presets/devday.json) copies
-`standard-codex` and adds Slack Socket Mode with channel `C0C43A2QA11` prefilled.
+`standard-codex` and adds Slack Socket Mode with four prefilled channels.
 It uses the Codex harness with **Service Accounts** authentication (`codex_pat`).
 The `model` variable defaults to `gpt-6-astra` and remains editable; its rendered
 model reference is `codex/gpt-6-astra`. All four DevDay presets expose only `name`
@@ -77,14 +77,22 @@ container file at `/app/deploy/presets/devday.json`. It is opt-in and is not add
 by `includeDefaults` alone.
 
 [`Community Agent`](../../deploy/presets/devday-partners.json) copies the SWE
-Agent template and keeps Slack Socket Mode enabled without prefilled channels.
-Use **Edit Slack** to add channels before creating the Agent.
+Agent template, including its prefilled Slack channels.
 
 [`Q&A Agent`](../../deploy/presets/devday-qa.json) and
 [`Oncall Agent`](../../deploy/presets/devday-oncall.json) copy the entire SWE Agent
 template, including its Slack and workspace instructions. Their separate file
 entries are commented out in the example Installation YAML, along with SWE Agent
 and Community Agent. Uncomment only the custom presets you want to install.
+
+All four DevDay presets prefill these channels:
+
+| Channel           | ID            |
+| ----------------- | ------------- |
+| oce-feedback      | `C0C49E7CS4A` |
+| oce-team          | `C0C43A2QA11` |
+| oce-feedback-test | `C0C569NN9ME` |
+| oce-team-test     | `C0C4A0JH2BG` |
 
 In the Console, choose **SWE Agent**, fill its variables, then use **Edit Slack** to
 choose allowed senders and bind Slack app/bot Secrets. The preset allows channel members to mention the agent (`users: ["*"]`)

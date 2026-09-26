@@ -51,8 +51,9 @@ all retained `gpt-6-astra`, Codex service-account authentication, and the render
 Agent name in `AGENTS.md`. No browser errors or unhandled fixture requests occurred.
 The Installation example still comments out custom presets; Storybook includes
 all three for rehearsal.
-Current source also includes Community Agent, which copies SWE Agent and starts
-with no Slack channels selected.
+Current source also includes Community Agent. All four presets now prefill
+`oce-feedback`, `oce-team`, `oce-feedback-test`, and `oce-team-test`; the older
+captures below predate those channel defaults.
 
 - [SWE Agent](presets/11-swe-choice.png)
 - [Q&A Agent](presets/12-qa-choice.png)
