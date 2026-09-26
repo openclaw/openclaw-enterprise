@@ -61,7 +61,7 @@ test("runtime image seccomp option requires the CI-prepared profile record", asy
   ]);
 
   await assert.rejects(
-    reviewedCodexSeccompSecurityOptions({ profile }),
+    reviewedCodexSeccompSecurityOptions({ profile, ciStatePath: "" }),
     /must be prepared by images-packaging CI state/,
   );
 
