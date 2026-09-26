@@ -1,9 +1,9 @@
 # Console Storybook
 
-Browse the console's pages, component states, and Agent workflows without starting
-OCC or a cluster. Storybook uses the production console modules and styles with
-an isolated, in-memory API fixture for each preview. It does not deploy workloads,
-contact external services, or verify runtime behavior. Use only dummy credentials.
+Browse console pages, component states, and Agent workflows without starting OCC
+or a cluster. Each preview uses production console modules and styles with an
+isolated, in-memory API fixture. Storybook does not deploy workloads, contact
+external services, or verify runtime behavior. Use only dummy credentials.
 
 ## Run locally
 
@@ -14,9 +14,9 @@ npm run storybook:install
 npm run storybook
 ```
 
-Open `http://127.0.0.1:6006`. Use **Reset story** to discard changes. Selecting a
-new story starts an independent fixture. Installations and browser sessions in
-other tabs are not used.
+Open `http://127.0.0.1:6006`. **Reset story** discards changes; each selected story
+starts an independent fixture. Installations and browser sessions in other tabs
+are not used.
 
 To build and serve a static copy:
 
@@ -47,18 +47,18 @@ the reference's decorative dividers to keep controls distinguishable. The
 self-hosted Instrument Sans subset retains its SIL Open Font License beside
 the font; unsupported glyphs use the system fallback.
 
-The styling comparison includes [before](../assets/console-style/agents-before.png),
+Compare [before](../assets/console-style/agents-before.png),
 [after](../assets/console-style/agents-1440-light.png),
-[mobile](../assets/console-style/mobile-390-light.png), and a
+[mobile](../assets/console-style/mobile-390-light.png), and the
 [walkthrough](../assets/console-style/walkthrough.mp4). These are simulated
 Storybook UI evidence, not live backend or deployment proof. The
-[reference screen](../assets/console-style/openclaw-reference-light.png) is the
-actual OpenClaw disconnected gateway screen at the revision above.
+[reference screen](../assets/console-style/openclaw-reference-light.png) shows
+OpenClaw's disconnected gateway screen at the revision above.
 
 ## Pages and components
 
-The sidebar contains these groups. Stories with open dialogs or errors reach
-those states by interacting with the real controls after loading fixture data.
+The sidebar contains these groups. Stories reach open-dialog and error states
+through real controls after loading fixture data.
 
 | Group                   | Coverage                                                                                                                                                                                                                                                                                                                                                                              |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -78,18 +78,17 @@ those states by interacting with the real controls after loading fixture data.
 | Deletion                | Confirmation, pending cleanup, permission denial, conflict, unknown outcome.                                                                                                                                                                                                                                                                                                          |
 
 The production UI supplies buttons, forms, tables, badges, notices, JSON views,
-revision controls, and dialogs inside these stories. Storybook does not duplicate
-those components. Pending-read stories use the real client's 15-second timeout;
-reset them to replay loading.
+revision controls, and dialogs in these stories; Storybook does not duplicate them.
+Pending-read stories use the real client's 15-second timeout; reset them to replay
+loading.
 
 ## Agent flows and UI gaps
 
 In **Components → Navigation → Namespace switcher**, use the header selector to
 switch between Engineering and Research. Check the URL, collection, and browser
-Back behavior, and confirm the Namespaces page omits the selector.
-**Mobile Namespace selector** covers the same control without
-opening the drawer. The existing no-readable, unavailable, loading, and denied
-Namespace stories cover the selector's restricted states.
+Back behavior; confirm the Namespaces page omits the selector. **Mobile Namespace
+selector** covers the same control without opening the drawer. Existing no-readable,
+unavailable, loading, and denied Namespace stories cover restricted selector states.
 
 Saved simulated UI examples show the [desktop selector](../assets/console-namespace-selector/desktop.png),
 [mobile empty collection](../assets/console-namespace-selector/mobile.png),
@@ -100,8 +99,8 @@ Each flow includes steps above an interactive console frame.
 
 ### Create and deploy
 
-Choose a Preset, fill its variables, review the seeded workspace files, and
-create an Agent with the Codex harness. The Console submits its inline Configuration
+Choose a Preset, fill its variables, review seeded workspace files, and create
+an Agent with the Codex harness. The Console submits its inline Configuration
 and saved Secret references, follows simulated provisioning and deployment
 activation, and opens Workspace files for the returned revision. A separate flow
 starts without a Preset, selects OpenAI with Codex, enters a dummy API key or service account
@@ -125,7 +124,7 @@ and an empty catalog; each leaves new-token entry available explicitly.
 Q&A Agent and Oncall Agent remain disabled in the example Installation YAML.
 
 Use the [DevDay storyboard](../../scripts/console-storybook/devday-storyboard.md)
-for the presenter actions, expected visible states, and fallbacks.
+for presenter actions, expected visible states, and fallbacks.
 
 **Choose provider and harness** walks through the OpenAI Codex default, OpenClaw
 selection, Anthropic's OpenClaw-only choice, and switching from an unsaved service account
@@ -168,12 +167,11 @@ not backend persistence or live gateway proof.
 
 ### Choose and switch revision Secrets
 
-Open **Components / Credentials / Slack tokens stored** to inspect the current
-model, app-token, and bot-token Secret references. Select **Create new Secret...**,
-then **Cancel** to preserve the selection without writing a Secret. Choosing an
-existing Secret stages a binding; the relevant Save button applies it. Switching
-the app token leaves the bot token unchanged. The API-key switch story provides a
-second model Secret.
+Open **Components / Credentials / Slack tokens stored** to inspect current model,
+app-token, and bot-token Secret references. Select **Create new Secret...**, then
+**Cancel** to preserve the selection without writing a Secret. Selecting an existing
+Secret stages a binding; the relevant Save button applies it. Switching the app token
+leaves the bot token unchanged. The API-key switch story provides a second model Secret.
 
 **Secret list denied** preserves existing references when metadata cannot be
 listed. **Slack grant denied** shows the saved reference and explains that the
@@ -191,14 +189,13 @@ validity, or deployment.
 ### Discover and configure plugins
 
 **Create Agent / Discover plugins with a service account token** uses a dummy
-token and simulated OCC discovery routes. Open **Configure plugins**, browse the
-pages, and select Calendar to load its details. **Add Calendar** exposes plugin
-policies; expand a tool row to edit an override. **Done** returns to the form,
-where **Plugin selections JSON** shows the draft. **Filter this page** searches
-only the current page. Replacing the token or switching authentication, provider,
-or Harness clears the catalog while preserving selections. Companion stories
-cover empty results, pending reads, rejected tokens, service failures, tool lookup
-errors, and the next page.
+token and simulated OCC discovery routes. Open **Configure plugins**, browse, and
+select Calendar to load its details. **Add Calendar** exposes plugin policies;
+expand a tool row to edit an override. **Done** returns to the form, where **Plugin
+selections JSON** shows the draft. **Filter this page** searches only the current
+page. Replacing the token or switching authentication, provider, or Harness clears
+the catalog while preserving selections. Companion stories cover empty results,
+pending reads, rejected tokens, service failures, tool lookup errors, and the next page.
 
 Discovery requires an entered Service Accounts token with the Codex Harness;
 saved Preset credentials and API keys do not enable it. Fixtures provide the
@@ -214,9 +211,9 @@ Harness reviewer, and automatic review can deny a call. The Codex fixture offers
 reviewer selection at the plugin default scope only. **Unsupported saved tool
 reviewer** keeps an unsupported override visible and lets you clear it to inherit.
 
-**Create Agent / Edit existing plugin policies** exercises that editor in the
-actual form with simulated policy capabilities. These previews do not verify live
-plugin-service access, installation, or policy enforcement by a runtime.
+**Create Agent / Edit existing plugin policies** exercises the editor in the form
+with simulated policy capabilities. These previews do not verify live plugin-service
+access, installation, or runtime policy enforcement.
 
 ### Update
 
@@ -240,9 +237,9 @@ connect to a gateway, Slack, credentials, or a model.
 ### Stop
 
 Open **Stop Agent**, inspect or cancel the confirmation, and confirm the stop.
-The fixture records the requested stopped state. **Refresh stop status** rereads
-that metadata. The story demonstrates the controls and request handling; it does
-not run a Compute Driver or prove live shutdown.
+The fixture records the requested stopped state; **Refresh stop status** rereads
+it. This demonstrates the controls and request handling; it does not run a Compute
+Driver or prove live shutdown.
 
 Resume with **New revision** → **Deploy new revision**, creating a new revision.
 Disabling Slack does not stop an Agent. See
@@ -262,9 +259,9 @@ model responses require runtime verification outside Storybook. The console disp
 
 ## Maintain coverage
 
-The isolated tool lives in `scripts/console-storybook/` and has its own manifest,
-lockfile, and dependency installation. It uses the same seven-day dependency
-release-age policy as the repository. Root workspace dependencies are unchanged.
+The isolated tool in `scripts/console-storybook/` has its own manifest, lockfile,
+and dependency installation. It uses the repository's seven-day dependency
+release-age policy. Root workspace dependencies are unchanged.
 
 - `prepare-assets.mjs` copies the current console assets and the shared contract
   modules served by the controller into ignored `dist/assets/`. Run the build
