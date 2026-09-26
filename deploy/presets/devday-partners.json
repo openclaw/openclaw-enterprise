@@ -135,7 +135,7 @@
           "slack": {
             "enabled": true,
             "mode": "socket",
-            "dmPolicy": "pairing",
+            "dmPolicy": "disabled",
             "groupPolicy": "allowlist",
             "appToken": {
               "source": "env",

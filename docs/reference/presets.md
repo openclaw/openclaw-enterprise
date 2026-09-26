@@ -78,7 +78,8 @@ by `includeDefaults` alone.
 
 [`Community Agent`](../../deploy/presets/devday-partners.json) copies the SWE
 Agent runtime and prefilled Slack channels, with community-focused workspace
-instructions for answering questions and discussing the roadmap. It checks Linear
+instructions for answering questions and discussing the roadmap. Direct messages
+are disabled. It checks Linear
 for relevant updates when available and continues with other sources if access fails.
 
 [`Q&A Agent`](../../deploy/presets/devday-qa.json) and
