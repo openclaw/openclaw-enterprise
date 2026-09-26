@@ -19,8 +19,9 @@ const passwordPresetForm = [
   click("Use Preset"),
 ];
 const existingPresetSecret = [
-  { selector: "#agent-preset", value: "pre_devday_codex" },
-  { selector: "#preset-variable-name", value: "SWE assistant" },
+  { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
+  { selector: "#preset-variable-name", value: "Codex assistant" },
+  { selector: "#preset-variable-model", value: "gpt-5.1" },
   { selector: "#preset-variable-modelSecret-secret-source", value: "existing" },
 ];
 const presetSecretsPath = "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets";
@@ -301,8 +302,8 @@ const devdayCreateCheckpoint = [
   click("Create Agent"),
   { selector: "#agent-preset", value: "pre_devday_codex" },
   { selector: "#preset-variable-name", value: "devday claw" },
-  { selector: "#preset-variable-modelSecret", value: "at-demo-devday-service-account-token" },
   click("Use Preset"),
+  { selector: "#provider-api-key", value: "at-demo-devday-service-account-token" },
   click("Configure plugins"),
   { selector: 'button[aria-label="Linear"]', click: true },
   click("Add Linear"),
@@ -1301,25 +1302,23 @@ export const scenarios = {
   },
   createPresetExistingSecret: {
     group: "Pages/Create Agent",
-    name: "SWE existing service account Secret",
+    name: "Standard Codex existing Secret",
     path: create,
-    devdayPreset: true,
-    extraSecrets: [
-      { id: "sec_devday_model_token", name: "DevDay Codex service account (simulated)" },
-    ],
+    standardCodexPreset: true,
+    extraSecrets: [{ id: "sec_devday_model_token", name: "Codex API key (simulated)" }],
     actions: [
       ...existingPresetSecret,
       { selector: "#preset-variable-modelSecret-existing-secret", value: "sec_devday_model_token" },
     ],
     description:
-      "SWE defaults to gpt-6-astra and Codex Service Accounts. Use Preset reuses this Namespace Secret without reading its value; Create Agent grants access.",
-    gap: "Secret metadata and API responses are simulated. This does not validate a real service account token.",
+      "The standard Codex Preset reuses this Namespace Secret without reading its value; Create Agent grants access.",
+    gap: "Secret metadata and API responses are simulated. This does not validate a real API key.",
   },
   createPresetSecretsLoading: {
     group: "Pages/Create Agent",
     name: "Preset Secrets loading",
     path: create,
-    devdayPreset: true,
+    standardCodexPreset: true,
     actions: existingPresetSecret,
     rules: [{ path: presetSecretsPath, hold: true }],
     description:
@@ -1329,7 +1328,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "Preset Secret metadata denied",
     path: create,
-    devdayPreset: true,
+    standardCodexPreset: true,
     actions: existingPresetSecret,
     rules: [{ path: presetSecretsPath, status: 403 }],
     description:
@@ -1339,7 +1338,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "No existing Preset Secrets",
     path: create,
-    devdayPreset: true,
+    standardCodexPreset: true,
     emptySecrets: true,
     actions: existingPresetSecret,
     description:
@@ -2495,9 +2494,9 @@ export const scenarios = {
     nativeAdmin: "available",
     nativeAdminUrl: "/storybook-fixtures/devday-admin.html?agent=oceclaw&channel=openclaw-feedback",
     devdayPreset: true,
-    presetVariableDefaults: {
-      "#preset-variable-modelSecret-secret-source": "new",
+    formDefaults: {
       "#preset-variable-modelSecret": "at-demo-devday-service-account-token",
+      "#provider-api-key": "at-demo-devday-service-account-token",
     },
     pluginDiscovery: devdayPluginDiscovery,
     pluginCapabilities,
@@ -2536,7 +2535,7 @@ export const scenarios = {
     steps: [
       "Start on the Agents list with the already deployed oceclaw seed, then click Create Agent.",
       "The picker includes SWE Agent, Partners Agent, Q&A Agent, and Oncall Agent. Select SWE Agent and enter devday claw for its name.",
-      "Keep the default gpt-6-astra model. Storybook fills the fake modelSecret at-demo-devday-service-account-token for rehearsal only; click Use Preset. Review AGENTS.md: its opening sentence now says You are devday claw. Workspace defaults remain editable.",
+      "Keep the default gpt-6-astra model and click Use Preset. Storybook then fills the normal credential field with a fake service-account token for rehearsal only. Review AGENTS.md: its opening sentence now says You are devday claw. Workspace defaults remain editable.",
       "Open Configure plugins. The simulated curated catalog is available for every Preset and Secret choice in this Storybook flow; add Linear, set Linear default reviewer to Automatic review, and set Create issue approval to Ask for approval.",
       "Repository access offers openclaw/openclaw-enterprise and openclaw/openclaw. Select either or both with Contributor access.",
       "Open Edit Slack. Confirm prefilled channel C0C43A2QA11, allow simulated user UDEMO123, then bind the existing simulated DevDay Slack Secrets and apply settings.",
@@ -2556,9 +2555,9 @@ export const scenarios = {
     nativeAdmin: "available",
     nativeAdminUrl: "/storybook-fixtures/devday-admin.html?agent=oceclaw&channel=openclaw-feedback",
     devdayPreset: true,
-    presetVariableDefaults: {
-      "#preset-variable-modelSecret-secret-source": "new",
+    formDefaults: {
       "#preset-variable-modelSecret": "at-demo-devday-service-account-token",
+      "#provider-api-key": "at-demo-devday-service-account-token",
     },
     pluginDiscovery: devdayPluginDiscovery,
     pluginCapabilities,

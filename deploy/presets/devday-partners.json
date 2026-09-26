@@ -10,18 +10,13 @@
         "type": "string",
         "description": "Codex model ID without the codex/ prefix",
         "default": "gpt-6-astra"
-      },
-      "modelSecret": {
-        "type": "password",
-        "description": "Codex service account token"
       }
     },
     "agent": {
       "name": "{{ vars.name }}",
       "executionMode": "dedicated",
       "harnessAuth": {
-        "method": "codex_pat",
-        "secret": "{{ vars.modelSecret }}"
+        "method": "codex_pat"
       },
       "plugins": {},
       "initialWorkspaceFiles": {
@@ -92,10 +87,7 @@
           }
         },
         "plugins": {
-          "allow": [
-            "codex",
-            "slack"
-          ],
+          "allow": ["codex", "slack"],
           "entries": {
             "codex": {
               "enabled": true,

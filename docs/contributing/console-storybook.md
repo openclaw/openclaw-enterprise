@@ -26,10 +26,9 @@ python3 -m http.server 6006 --bind 127.0.0.1 \
   --directory scripts/console-storybook/dist/site
 ```
 
-Serve this build at its own origin's root. The console uses absolute `/console/`
-URLs. Reload with **Reset story**, not the embedded frame's current console URL.
-The Storybook build workflow also uploads a static artifact; it does not publish
-or change access to the documentation site.
+Serve at the origin root for absolute `/console/` URLs. Build fingerprints version
+fixture pages and module imports to prevent stale cached UI. Use **Reset story**
+to restart. CI uploads a static artifact without publishing the documentation site.
 
 ## Appearance review
 

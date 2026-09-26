@@ -222,6 +222,14 @@ test("preset admission preserves credential structure and literal and default sc
   assert.deepEqual(normalizePresetTemplate(patTemplate, namespaceId), patTemplate);
   patTemplate.agent.harnessAuth.source.namespaceId = otherNamespaceId;
   assert.throws(() => normalizePresetTemplate(patTemplate, namespaceId), PresetValidationError);
+  assert.deepEqual(
+    normalizePresetTemplate({ agent: { harnessAuth: { method: "api_key" } } }, namespaceId),
+    { agent: { harnessAuth: { method: "api_key" } } },
+  );
+  assert.deepEqual(
+    normalizePresetTemplate({ agent: { harnessAuth: { method: "codex_pat" } } }, namespaceId),
+    { agent: { harnessAuth: { method: "codex_pat" } } },
+  );
 
   // User-chosen map keys must receive the same admission as ordinary names.
   for (const key of ["__proto__", "constructor", "toString"]) {

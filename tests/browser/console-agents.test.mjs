@@ -6798,6 +6798,78 @@ test("codex_pat password Preset creates one Secret and reuses it after an Agent 
   assert.equal(created.harnessAuth.method, "codex_pat");
 });
 
+test("method-only codex_pat Preset requires credential entry in the create form", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const root = await mkdtemp(join(tmpdir(), "occ-method-only-preset-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  fixture.controller.registerDriver(configurationDriver);
+  fixture.controller.selectDriver("configuration", configurationDriver.id);
+  const namespace = await fixture.createNamespace("Method-only preset", { ready: true });
+  const artifact = JSON.parse(
+    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+  );
+  artifact.name = "method-only-codex-pat";
+  delete artifact.template.variables.modelSecret;
+  artifact.template.agent.harnessAuth = { method: "codex_pat" };
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: artifact,
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { page } = await newPage(t, fixture);
+  await routeInstallationWithoutProvisioning(page, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByLabel("Variable: name", { exact: true }).fill("Method-only Codex Agent");
+  await page.getByLabel("Variable: model", { exact: true }).fill("gpt-6-astra");
+  assert.equal(await page.getByLabel("Variable: modelSecret", { exact: true }).count(), 0);
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  const token = page.getByLabel("Service account token", { exact: true });
+  await token.waitFor();
+  assert.equal(await token.inputValue(), "");
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page.getByLabel("Agent name", { exact: true }).waitFor();
+  await page.waitForFunction(
+    () => globalThis.document.querySelector("#agent-auth-method")?.disabled === false,
+  );
+  assert.equal(
+    await page.getByLabel("Agent name", { exact: true }).inputValue(),
+    "Method-only Codex Agent",
+  );
+  assert.equal(
+    await page.getByLabel("Authentication method", { exact: true }).inputValue(),
+    "codex_pat",
+  );
+  assert.equal(await page.getByLabel("Variable: modelSecret", { exact: true }).count(), 0);
+  assert.equal(await page.getByLabel("Service account token", { exact: true }).inputValue(), "");
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  assert.equal(await token.evaluate((input) => input.validity.valueMissing), true);
+  assert.equal(nonAuthWriteRequests(requests).length, 0);
+
+  await token.fill("at-method-only-preset-token");
+  const createdResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const created = (await (await createdResponse).json()).data;
+  await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
+  const secretWrites = secretPostRequests(requests, namespace.id);
+  assert.equal(secretWrites.length, 1);
+  assert.equal(secretWrites[0].body.value, "at-method-only-preset-token");
+  const agentWrites = agentPostRequests(requests, namespace.id);
+  assert.equal(agentWrites.length, 1);
+  assert.equal(agentWrites[0].body.harnessAuth.method, "codex_pat");
+  assert.equal(agentWrites[0].body.harnessAuth.source.kind, "secret");
+  assert.equal(agentWrites[0].body.harnessAuth.source.namespaceId, namespace.id);
+  assert.equal(created.harnessAuth.method, "codex_pat");
+  assert.equal(created.harnessAuth.source.id, agentWrites[0].body.harnessAuth.source.id);
+});
+
 test("Preset Secret picker preserves existing mode on catalog failure and can switch to new", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();

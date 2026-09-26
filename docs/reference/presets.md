@@ -69,8 +69,9 @@ sandbox and network proxy settings therefore apply only to `standard-codex`.
 `standard-codex` and adds Slack Socket Mode with channel `C0C43A2QA11` prefilled.
 It uses the Codex harness with **Service Accounts** authentication (`codex_pat`).
 The `model` variable defaults to `gpt-6-astra` and remains editable; its rendered
-model reference is `codex/gpt-6-astra`. Choose an existing Namespace Secret or
-enter a new service account token for `modelSecret`.
+model reference is `codex/gpt-6-astra`. All four DevDay presets expose only `name`
+and `model` variables. After **Use Preset**, enter the service account token in
+the normal credential field before creating the Agent.
 Load a copy beside your YAML as in the example above, or reference the shipped
 container file at `/app/deploy/presets/devday.json`. It is opt-in and is not added
 by `includeDefaults` alone.
@@ -103,17 +104,17 @@ A Preset has `id`, `namespaceId`, a Namespace-unique `name`, `template`, and
 `createdAt`. OCC assigns the ID, Namespace, and creation time. An empty template
 is valid. Its optional fields are:
 
-| Field                          | Purpose                                                                                              |
-| ------------------------------ | ---------------------------------------------------------------------------------------------------- |
-| `variables`                    | Named scalar inputs, their types, descriptions, and optional defaults.                               |
-| `agent.name`                   | Suggested Agent name; the saved Agent still needs a unique name.                                     |
-| `agent.executionMode`          | Embedded or dedicated execution.                                                                     |
-| `agent.backendId`              | Installation-configured Backend ID, or null.                                                         |
-| `agent.harnessAuth`            | Credential binding or password variable token, or null; never stored credential bytes.               |
-| `agent.initialWorkspaceFiles`  | Optional creation-time workspace contents keyed by supported filename.                               |
-| `agent.plugins`                | Desired plugin selections and policies.                                                              |
-| `configuration.values`         | Native Agent Configuration JSON, including models, Harness settings, channels, and sandbox settings. |
-| `configuration.secretBindings` | Bindings to Secrets in this Namespace.                                                               |
+| Field                          | Purpose                                                                                                   |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------- |
+| `variables`                    | Named scalar inputs, their types, descriptions, and optional defaults.                                    |
+| `agent.name`                   | Suggested Agent name; the saved Agent still needs a unique name.                                          |
+| `agent.executionMode`          | Embedded or dedicated execution.                                                                          |
+| `agent.backendId`              | Installation-configured Backend ID, or null.                                                              |
+| `agent.harnessAuth`            | Auth method default, credential binding, password variable token, or null; never stored credential bytes. |
+| `agent.initialWorkspaceFiles`  | Optional creation-time workspace contents keyed by supported filename.                                    |
+| `agent.plugins`                | Desired plugin selections and policies.                                                                   |
+| `configuration.values`         | Native Agent Configuration JSON, including models, Harness settings, channels, and sandbox settings.      |
+| `configuration.secretBindings` | Bindings to Secrets in this Namespace.                                                                    |
 
 These use the existing [Agent](agents.md) and [Configuration](configuration.md)
 contracts. Installation-owned Driver selection, generated identities, runtime
@@ -195,6 +196,10 @@ appear only as a whole token in `agent.harnessAuth.secret`, with method
   }
 }
 ```
+
+A method-only `agent.harnessAuth`, such as `{ "method": "codex_pat" }`,
+preselects authentication without supplying credentials. The creation form still
+requires a token; a concrete Agent requires a complete credential binding.
 
 For the password variable bound to authentication, the Console offers **Create new Secret**
 or **Use existing Secret**. Existing mode lists readable Secret metadata from the

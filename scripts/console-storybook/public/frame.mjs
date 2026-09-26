@@ -44,10 +44,15 @@ if (scenario.component === "plugins") {
   await import("/console/console.mjs");
 }
 
-const applyPresetVariableDefaults = () => {
-  for (const [selector, value] of Object.entries(scenario.presetVariableDefaults ?? {})) {
+const defaultedFields = new WeakSet();
+const applyFormDefaults = () => {
+  for (const [selector, value] of Object.entries(scenario.formDefaults ?? {})) {
     const node = document.querySelector(selector);
-    if (!node || node.disabled || node.value) {
+    if (!node || node.disabled || defaultedFields.has(node)) {
+      continue;
+    }
+    defaultedFields.add(node);
+    if (node.value) {
       continue;
     }
     node.value = value;
@@ -55,10 +60,10 @@ const applyPresetVariableDefaults = () => {
     node.dispatchEvent(new Event("change", { bubbles: true }));
   }
 };
-if (scenario.presetVariableDefaults) {
-  const observer = new MutationObserver(applyPresetVariableDefaults);
+if (scenario.formDefaults) {
+  const observer = new MutationObserver(applyFormDefaults);
   observer.observe(document.body, { childList: true, subtree: true });
-  applyPresetVariableDefaults();
+  applyFormDefaults();
 }
 
 // Prepare open drawers and validation states by operating the real UI, not editing its markup.

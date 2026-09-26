@@ -338,6 +338,76 @@ test("Preset admission rejects malformed templates and credential leaks while pr
   assert.ok(presetMutations.every((event) => !JSON.stringify(event).includes(secret.ref.id)));
 });
 
+test("method-only Preset authentication is a default, not an Agent credential", async (t) => {
+  const { renderPresetTemplate } = await import("../../packages/contracts/src/index.ts");
+  const fixture = await createFixture(t);
+  const namespace = await fixture.createNamespace("Method-only Preset", { ready: true });
+  const template = {
+    variables: {
+      name: { type: "string" },
+      model: { type: "string", default: "gpt-6-astra" },
+    },
+    agent: {
+      name: "{{ vars.name }}",
+      executionMode: "dedicated",
+      harnessAuth: { method: "codex_pat" },
+    },
+    configuration: {
+      values: {
+        agents: {
+          defaults: {
+            model: "codex/{{ vars.model }}",
+            models: {
+              "codex/{{ vars.model }}": { agentRuntime: { id: "codex" } },
+            },
+          },
+        },
+        gateway: { auth: { password: "${OPENCLAW_GATEWAY_PASSWORD}" } },
+        models: {
+          providers: {
+            codex: {
+              apiKey: { source: "env", provider: "default", id: "OPENAI_API_KEY" },
+              models: [{ id: "{{ vars.model }}", name: "{{ vars.model }}" }],
+            },
+          },
+        },
+      },
+    },
+  };
+  const preset = await createPreset(fixture, namespace.id, "Method default", template);
+  const rendered = renderPresetTemplate(preset.template, {
+    name: "Method-only Agent",
+    model: "gpt-6-astra",
+  });
+  assert.deepEqual(rendered.agent.harnessAuth, { method: "codex_pat" });
+  const configuration = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/configurations`,
+    {
+      body: { kind: "agent", ...rendered.configuration },
+    },
+  );
+  assert.equal(configuration.status, 201, JSON.stringify(configuration.body));
+  const rejected = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: { ...rendered.agent, configurationId: configuration.data.id },
+  });
+  assert.equal(rejected.status, 400, JSON.stringify(rejected.body));
+  const secret = await fixture.createSecret(
+    namespace.id,
+    "Service account token",
+    "synthetic-token",
+  );
+  const created = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      ...rendered.agent,
+      harnessAuth: { method: "codex_pat", source: secret.ref },
+      configurationId: configuration.data.id,
+    },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.deepEqual(created.data.harnessAuth, { method: "codex_pat", source: secret.ref });
+});
+
 test("Presets block Namespace deletion and deleting one removes only its managed resource bindings", async (t) => {
   const fixture = await createFixture(t);
   const emptyNamespace = await fixture.createNamespace("Preset-only namespace", { ready: true });
@@ -593,16 +663,18 @@ test("SWE Agent Preset defaults to Astra and reuses an existing service-account 
   const originalTemplate = structuredClone(artifact.template);
   validatePresetTemplate(originalTemplate);
   assert.equal(artifact.name, "SWE Agent");
+  assert.equal(Object.hasOwn(originalTemplate.variables, "modelSecret"), false);
   assert.equal(originalTemplate.variables.model.default, "gpt-6-astra");
   assert.equal(originalTemplate.agent.executionMode, "dedicated");
   assert.deepEqual(originalTemplate.agent.harnessAuth, {
     method: "codex_pat",
-    secret: "{{ vars.modelSecret }}",
   });
 
   const installed = await fixture.request("POST", collection(namespace.id), { body: artifact });
   assert.equal(installed.status, 201, JSON.stringify(installed.body));
   assert.deepEqual(installed.data.template, originalTemplate);
+  const defaultRendered = renderPresetTemplate(originalTemplate, { name: "SWE lifecycle" });
+  assert.deepEqual(defaultRendered.agent.harnessAuth, { method: "codex_pat" });
   const selectedTemplate = structuredClone(originalTemplate);
   selectedTemplate.agent.harnessAuth = { method: "codex_pat", source: serviceAccount.ref };
 
@@ -749,9 +821,11 @@ test("Installation YAML seeds authorized default Presets for new and existing Na
   assert.equal(list.status, 200);
   const defaultNames = [customPreset.name, "standard-codex", "standard-openclaw"].sort();
   assert.deepEqual(list.data.map((preset) => preset.name).sort(), defaultNames);
-  assert.equal(list.data[0].template.variables.modelSecret.type, "password");
+  const standardCodex = list.data.find((preset) => preset.name === "standard-codex");
+  assert.equal(standardCodex.template.variables.modelSecret.type, "password");
   const customDefault = list.data.find((preset) => preset.name === customPreset.name);
   assert.ok(customDefault, `missing ${customPreset.name}`);
+  assert.equal(Object.hasOwn(customDefault.template.variables, "modelSecret"), false);
   assert.equal(customDefault.template.variables.model.default, "gpt-6-astra");
   assert.equal(customDefault.template.agent.harnessAuth.method, "codex_pat");
   assert.equal(

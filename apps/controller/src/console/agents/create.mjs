@@ -294,7 +294,14 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   const presetModelSecret = presetOptions.modelSecret;
   const presetExistingSecret =
     presetModelSecret?.kind === "existing" ? presetModelSecret.secret : undefined;
-  const binding = passwordAuth ? undefined : agent.harnessAuth;
+  const authDefault =
+    !passwordAuth &&
+    isObject(agent.harnessAuth) &&
+    Object.keys(agent.harnessAuth).length === 1 &&
+    ["api_key", "codex_pat"].includes(agent.harnessAuth.method)
+      ? agent.harnessAuth.method
+      : undefined;
+  const binding = passwordAuth || authDefault ? undefined : agent.harnessAuth;
   const hasBoundModelCredential = ["api_key", "codex_pat"].includes(binding?.method);
   if (
     presetExistingSecret &&
@@ -384,7 +391,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     element("option", { value: "api_key" }, "OpenAI API key"),
     element("option", { value: "codex_pat" }, "Service Accounts"),
   );
-  authMethod.value = passwordAuth?.method ?? binding?.method ?? "api_key";
+  authMethod.value = passwordAuth?.method ?? authDefault ?? binding?.method ?? "api_key";
   if (passwordAuth) {
     apiKey.value = passwordAuth.secret;
     delete passwordAuth.secret;

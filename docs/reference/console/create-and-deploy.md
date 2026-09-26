@@ -101,7 +101,9 @@ Credentials are masked Namespace Secrets, excluded from Configuration JSON, Agen
 responses, and browser storage. Provisioning creates exact grants; ordinary drafts
 require IAM administration permission.
 
-Presets retain their authentication binding. API-key and Service Accounts Presets
+Presets with only an authentication method preselect that method and require a
+token in the normal credential field. Presets with saved authentication bindings
+retain them. Bound API-key and Service Accounts Presets
 fix the provider, including JSON edits; saved service account tokens also fix Codex.
 Operator-managed credentials fix OpenClaw across provider changes. Start without a
 Preset to change these choices, or edit authentication later in **Credentials**.

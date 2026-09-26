@@ -163,6 +163,9 @@ new Agent. Existing partial-save recovery remains local to its form.
 
 [The creation form](../../apps/controller/src/console/agents/create.mjs) copies
 rendered settings into editable fields and checks their form representation.
+A method-only Preset authentication default selects API key or Service Accounts
+without binding a Secret. The credential input stays required; final Agent
+admission still requires a complete authentication binding.
 Preset `agent.initialWorkspaceFiles` override matching workspace defaults,
 including explicit empty strings. The shared Preset validator checks supported
 filenames, Unicode, NUL, and byte limits before and after expansion; password
