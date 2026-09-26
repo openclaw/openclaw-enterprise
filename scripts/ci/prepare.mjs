@@ -1583,7 +1583,7 @@ export async function prepareRuntimeImageSmoke({ image, statePath }) {
     throw new Error(`CI state already exists at ${path}; run cleanup before runtime smoke.`);
   }
   const state = baseState("images-packaging", path);
-  const tag = `localhost/${state.prefix}/runtime-smoke-${randomSuffix()}:local`;
+  const tag = `localhost/${ownedName("openclaw-ci-image", state.prefix, { maxLength: 48 })}/runtime-smoke:local`;
   const env = { ...baseEnv(path, state), OCC_TEST_KUBERNETES_RUNTIME_IMAGE: tag };
   const resource = addResource(state, "image-tag", { name: tag });
   await writeState(path, state);
