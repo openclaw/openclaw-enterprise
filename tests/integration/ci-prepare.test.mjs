@@ -165,6 +165,15 @@ if (command === "docker" || command === "podman") {
   }
   if (equals(args, ["image", "rm", "-f", state.tag])) finish();
   if (state.runtime && equals(args, ["image", "rm", "-f", state.runtime])) finish();
+  if (args[0] === "cp" && args[1] === state.archive) {
+    assert.ok(existsSync(state.archive));
+    const [node, path] = args[2].split(":");
+    assert.ok(["server-0", "agent-0"].some((suffix) => node === "k3d-" + state.cluster + "-" + suffix));
+    assert.match(path, /^\/tmp\/openclaw-ci-image-import-[a-f0-9]+\.tar$/);
+    state.copiedArchives ??= {};
+    state.copiedArchives[node] = path;
+    finish();
+  }
   if (args[0] === "exec" && ["server-0", "agent-0"].some((suffix) =>
       args[1] === "k3d-" + state.cluster + "-" + suffix)) {
     const node = args[1];
@@ -182,8 +191,20 @@ if (command === "docker" || command === "podman") {
         : "10.42.7.0 via 10.42.7.0 dev flannel.1 src 10.42.3.0\n");
     }
     const ctr = ["ctr", "-n", "k8s.io", "images"];
+    if (equals(args.slice(2, 8), [...ctr, "import", "--all-platforms"]) && args.length === 9) {
+      assert.equal(args[8], state.copiedArchives?.[node]);
+      if (scenario === "nonzero-import") {
+        process.stderr.write("synthetic import command failure\n");
+        process.exit(17);
+      }
+      if (scenario !== "missing-tag") {
+        state.importedNodes ??= {};
+        state.importedNodes[node] = true;
+      }
+      finish();
+    }
     if (equals(args.slice(2), [...ctr, "list"])) {
-      const references = [state.imported && state.tag, alias].filter(Boolean);
+      const references = [state.importedNodes?.[node] && state.tag, alias].filter(Boolean);
       finish("REF TYPE DIGEST SIZE PLATFORMS LABELS\n" + references.map((ref) =>
         ref + " application/vnd.oci.image.manifest.v1+json " + manifestDigest + " 1 linux/amd64 -\n",
       ).join(""));
@@ -197,6 +218,10 @@ if (command === "docker" || command === "podman") {
     }
     if (equals(args.slice(2, 7), [...ctr, "rm"]) && args.length === 8 &&
         [state.tag, alias].includes(args[7])) finish();
+    if (equals(args.slice(2, 4), ["rm", "-f"]) && args.length === 5) {
+      assert.equal(args[4], state.copiedArchives?.[node]);
+      finish();
+    }
     if (equals(args.slice(2), ["crictl", "inspecti", alias]) && alias) {
       if (scenario === "missing-cri" ||
           (scenario === "missing-worker-cri" && node.endsWith("-agent-0"))) {
@@ -248,21 +273,6 @@ if (command === "k3d") {
   }
   if (equals(args, ["kubeconfig", "get", state.cluster])) finish("apiVersion: v1\n");
   if (equals(args, ["cluster", "delete", state.cluster])) finish();
-  if (equals(args.slice(0, 4), ["image", "import", "--mode", "tools-node"]) &&
-      equals(args.slice(5), ["-c", state.cluster])) {
-    assert.equal(args[4], state.archive);
-    assert.ok(existsSync(state.archive));
-    if (scenario === "nonzero-import") {
-      process.stderr.write("synthetic import command failure\n");
-      process.exit(17);
-    }
-    if (scenario === "missing-tag") {
-      process.stderr.write("failed to import images in node: synthetic missing content\n");
-      finish();
-    }
-    state.imported = true;
-    finish();
-  }
 }
 if (command === "kubectl") {
   if (equals(args, ["version", "--client=true"])) finish("{}\n");

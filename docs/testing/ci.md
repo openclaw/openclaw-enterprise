@@ -26,12 +26,11 @@ node scripts/ci/run-tests.mjs audit
 CI workflows reuse the [run-ci-lane action](../../.github/actions/run-ci-lane/action.yml) for setup, tests, cleanup, and per-job environment isolation.
 
 Compare per-file `wallDurationMs`, preparation `[ci-timing]` phases, and Actions
-step timestamps to find slow setup or tests. Enclosing preparation timings
-already include image archive save/import times.
-k3d imports use file-backed tools mode with a ten-minute deadline.
-Preparation serializes imports that target the same cluster to avoid shared
-importer races, then verifies digest and CRI references on owned
-nodes.
+step timestamps to find slow setup or tests. Preparation timings include image
+archive save/import times. Image imports copy the archive into each owned k3d
+node and run node-local `ctr image import`; k3d `tools-node` can hide per-node
+failures while exiting successfully. Imports targeting one cluster stay
+serialized, then preparation verifies digest and CRI references on owned nodes.
 
 The `checks-baseline` lane runs `pnpm docs:check`: pages above 1,500 visible
 words are flagged for review and pages above 2,500 fail, except the approved
@@ -49,10 +48,9 @@ the repository platform fixture in one job; other lanes and the audit use
 pass, including result-artifact accounting. This avoids serial runner allocation
 before test lanes without changing selection or failure handling.
 
-The repository credential platform lane uses Blacksmith and its full delivered
-runtime image. Its proof covers HTTP, PostgreSQL, Unix control and credential
-material inside Kubernetes; NetworkPolicy enforcement is proved separately by
-the Kubernetes fixture lanes on the compatible GitHub runner kernel. The images
+The repository credential platform lane uses Blacksmith and its delivered runtime
+image. It proves HTTP, PostgreSQL, Unix control and credential material inside
+Kubernetes; compatible fixture lanes prove NetworkPolicy enforcement. The images
 packaging lane uses the full tool profile so preparation can derive the reviewed
 Codex seccomp profile in an owned k3d cluster and export
 `OCC_TEST_CODEX_SECCOMP_PROFILE` before the native runtime image smoke tests run.
@@ -87,25 +85,23 @@ container isolation and authorized live proof. CI preparation and suite ownershi
 alone establish no result: inspect executed cases and skips at the exact tested
 commit, including whether a pull-request run tested a merge commit.
 
-The Kubernetes fixture lanes load the runner kernel's bridge netfilter module and enable
-IPv4 bridge packet filtering before cluster creation. This is required for
-K3s to enforce NetworkPolicies on bridged Pod traffic. Failure to enable it
-fails setup; deny-traffic assertions remain required.
+The Kubernetes fixture lanes load bridge netfilter and enable IPv4 bridge
+filtering before cluster creation so K3s enforces NetworkPolicies on bridged Pod
+traffic. Setup fails if this cannot be enabled; deny-traffic assertions remain
+required.
 
-Each Kubernetes fixture lane owns an independent cluster with a server and worker node with shared test-owned
-local-path storage. Preparation registers and verifies the fixture image's digest
-on both nodes and derives the API server's proxy source `/32` from its route to
+Each Kubernetes fixture lane owns an independent server/worker cluster with shared
+test-owned local-path storage. Preparation registers and verifies the fixture
+image's digest on both nodes and derives the API server's proxy source `/32` from its route to
 the worker Pod network. It supplies that address to the
 [plugin status tests](plugins.md#local-and-integration-suites), which exercise
 the private status endpoint across nodes with NetworkPolicy enforcement.
 
-Kubernetes fixture startup logs phase timings plus host CPU, memory, disk and
-pressure snapshots. On cluster or readiness failure, preparation collects bounded
+Kubernetes fixture startup logs phase timings plus host resource and pressure snapshots. On cluster or readiness failure, preparation collects bounded
 node, system Pod, event and redacted node-container diagnostics before cleanup;
 k3d rollback is disabled long enough to keep those logs. Inspect the
 `diagnostics-<artifact-prefix>-<lane>` artifact or local
-`<state-file>.diagnostics.json`. Failed diagnostic commands are marked
-unavailable or timed out, and collection preserves the original failure. Raw
+`<state-file>.diagnostics.json`. Failed diagnostic commands are marked unavailable or timed out; collection preserves the original failure. Raw
 kubeconfig, environment values and Pod specs are excluded. Local callers must
 run `node scripts/ci/cleanup.mjs --state <state-file>` after failed prepared
 runs. Diagnostics explain setup failures without establishing coverage.
