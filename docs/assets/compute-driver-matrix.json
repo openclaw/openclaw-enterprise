@@ -1996,7 +1996,7 @@
     {
       "id": "account-credential",
       "category": "Credentials",
-      "name": "Provider-issued dedicated Codex access token",
+      "name": "Backend-issued dedicated Codex access token",
       "requirement": "optional capability",
       "requirementEvidence": [
         {

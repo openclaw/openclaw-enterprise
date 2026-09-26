@@ -20,7 +20,7 @@ interface ProjectedInputs {
   readonly privateDirectory: string;
   readonly controlSocket: string;
   readonly expectedOrigin: string;
-  readonly providerId: string;
+  readonly backendId: string;
 }
 
 async function realDirectory(path: string): Promise<void> {
@@ -174,7 +174,7 @@ export async function prepareProjectedInputs(
       gateway.listen !== "0.0.0.0:8443" ||
       gateway.controlSocket !== options.controlSocket ||
       backend.kind !== "github-app-registry" ||
-      backend.providerId !== options.providerId
+      backend.backendId !== options.backendId
     ) {
       throw new Error("invalid-projected-inputs");
     }
@@ -215,7 +215,7 @@ async function main(args: readonly string[]): Promise<void> {
     values.length !== 4 ||
     values[0] !== "--public-origin" ||
     !values[1] ||
-    values[2] !== "--provider-id" ||
+    values[2] !== "--backend-id" ||
     !values[3]
   ) {
     throw new Error("invalid-arguments");
@@ -228,7 +228,7 @@ async function main(args: readonly string[]): Promise<void> {
       privateDirectory: "/run/openclaw/repository-private/private",
       controlSocket,
       expectedOrigin: values[1],
-      providerId: values[3],
+      backendId: values[3],
     },
     clock,
   );

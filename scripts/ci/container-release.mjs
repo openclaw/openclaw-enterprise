@@ -364,7 +364,15 @@ async function assemble(directory, env) {
     for (const layer of manifest.layers) {
       await retain(layer);
     }
-    manifests.push({ ...descriptor, platform: { os: "linux", architecture: arch } });
+    // BuildKit's one-platform index may add exporter annotations such as the
+    // current build time. They do not describe the tested manifest bytes and
+    // must not make the assembled image identity depend on the workflow run.
+    manifests.push({
+      mediaType: descriptor.mediaType,
+      digest: descriptor.digest,
+      size: descriptor.size,
+      platform: { os: "linux", architecture: arch },
+    });
   }
   const index = {
     schemaVersion: 2,

@@ -31,7 +31,7 @@ with its own manifest and lockfile. See [Console Storybook](contributing/console
 | `apps/controller/src/auth/`                               | Authentication integrations.                                                                                 |
 | `apps/controller/src/composition/`                        | Runtime assembly and wiring of selected implementations.                                                     |
 | `apps/controller/src/drivers/`                            | Bundled infrastructure Driver implementations, organized by capability.                                      |
-| `apps/controller/src/providers/`                          | Provider implementations.                                                                                    |
+| `apps/controller/src/backends/`                           | Backend implementations.                                                                                     |
 | `apps/controller/src/gateway/`                            | Agent gateway transport and workspace access.                                                                |
 | `apps/controller/src/console/`                            | Browser console modules, styles, and assets.                                                                 |
 | `apps/controller/src/drivers/repo/credentials/`           | Private repository credential contracts, sessions, custody, lifecycle, listeners, and transport.             |
@@ -49,7 +49,7 @@ with its own manifest and lockfile. See [Console Storybook](contributing/console
 
 Start from the existing primitive that owns a capability. Keep platform core
 behavior dependent on contracts; put implementation-specific behavior in the
-owning Driver or Provider and wire it through composition. See
+owning Driver or Backend and wire it through composition. See
 [current architecture](ARCHITECTURE.md) for component interactions and the
 [platform design](design.md) for the approved target and implementation status.
 
@@ -60,7 +60,7 @@ uses `RepoDriver` in `packages/contracts/src/repo.ts` and the bundled
 - `drivers/repo/credentials/`: private common sessions, custody, lifecycle,
   transport and contracts, including the private client-configuration type.
 - `drivers/repo/github/credentials/`: GitHub policy, backend and closed Git/gh client bundle.
-- `providers/repository-credentials/control-client.ts`: configured private-service
+- `backends/repository-credentials/control-client.ts`: configured private-service
   connection and complete response validation.
 - `composition/repository-credentials/`: registry and protected-file loading,
   platform wiring and separate-process assembly.
@@ -168,3 +168,8 @@ rendering. Review pages above 1,500 visible words and keep them within the
 
 When directories, package boundaries, or placement conventions change, update
 this guide and affected navigation in the same change.
+
+The optional `deploy/helm/openclaw-observability-demo/` chart owns disposable
+telemetry backends. Its `files/dashboard.json` is also the Compose metrics
+dashboard; Compose provisioning and scraper configurations remain under
+`deploy/metrics/development/`.

@@ -19,7 +19,7 @@ import { createResourceScope } from "../fixtures/repository-credentials/resource
 function registryInput() {
   return {
     version: 1,
-    providerId: "github-primary",
+    backendId: "github-primary",
     providerInstanceId: "github-com-primary",
     appId: "12345",
     githubInstallationId: "67890",
@@ -72,8 +72,8 @@ test("canonical registry fingerprints bind exact authority and the selected Name
   );
 
   for (const [name, mutate] of Object.entries({
-    "provider identity": (value) => {
-      value.providerId = "another-provider";
+    "backend identity": (value) => {
+      value.backendId = "another-backend";
     },
     "provider instance": (value) => {
       value.providerInstanceId = "another-instance";
@@ -297,7 +297,7 @@ test("registry refuses ambiguous repositories, wildcard policy, unsupported prof
     });
   }
   assert.throws(
-    () => validateGitHubRepositoryRegistry(registryInput(), "another-provider"),
+    () => validateGitHubRepositoryRegistry(registryInput(), "another-backend"),
     /invalid-repository-registry/,
   );
   const registry = validateGitHubRepositoryRegistry(registryInput());
@@ -337,7 +337,7 @@ test("registry loader accepts a bounded projected regular file and rejects unsaf
   await writeFile(file, JSON.stringify(registryInput()), { mode: 0o644 });
   await symlink(file, projected);
   assert.equal(
-    (await loadGitHubRepositoryRegistry(projected, "github-primary")).providerId,
+    (await loadGitHubRepositoryRegistry(projected, "github-primary")).backendId,
     "github-primary",
   );
   await assert.rejects(

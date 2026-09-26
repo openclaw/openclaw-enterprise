@@ -33,8 +33,8 @@ owns the complete bundled-Driver Installation example, including immutable
 images, workload isolation, and projected ServiceAccount credentials. The
 [Driver package installation guide](drivers/selection.md#select-the-installed-driver)
 owns the installed IAM, Compute, and Configuration selection contract. The
-[Provider reference](providers.md) defines the optional `provider` array and its
-required related Driver membership. Provider configuration never enters native
+[Backend reference](backends.md) defines the optional `backend` array and its
+required related Driver membership. Backend configuration never enters native
 Agent Configuration documents. The optional `presets.includeDefaults` boolean
 adds bundled Agent Presets to Namespaces; it defaults to `false`. See
 [Preset initialization](presets.md#installation-defaults) for permissions,

@@ -97,7 +97,7 @@ test(
       namespaceId,
       name: "Uninitialized agent",
       configurationId: `cfg_${randomUUID()}`,
-      providerId: null,
+      backendId: null,
       harnessAuth: null,
       draft_spec: {},
       executionMode: "embedded",
@@ -109,7 +109,7 @@ test(
       namespaceId,
       agentId,
       revision: 1,
-      providerId: null,
+      backendId: null,
       configurationId: `cfg_${randomUUID()}`,
       configurationKind: "agent",
       configurationGeneration: 1,
@@ -551,7 +551,7 @@ test(
         namespaceId,
         name: "Provisioning success",
         configurationId,
-        providerId: null,
+        backendId: null,
         harnessAuth: { method: "runtime" },
         executionMode: "embedded",
         servicePrincipalId: `service-agent-${agentId}`,
@@ -564,7 +564,7 @@ test(
         namespaceId,
         agentId,
         revision: 1,
-        providerId: null,
+        backendId: null,
         configurationId,
         configurationKind: "agent",
         configurationGeneration: 1,
@@ -778,9 +778,9 @@ test(
     await assert.rejects(
       pool.query(
         `INSERT INTO occ.agents
-           (id, namespace_id, name, configuration_id, provider_id, execution_mode,
+           (id, namespace_id, name, configuration_id, backend_id, execution_mode,
             service_principal_id, desired_runtime_state, created_at)
-         SELECT $1, namespace_id, $2, configuration_id, provider_id, execution_mode,
+         SELECT $1, namespace_id, $2, configuration_id, backend_id, execution_mode,
                 $3, 'running', clock_timestamp()
          FROM occ.agents WHERE namespace_id = $4 AND id = $5`,
         [
@@ -863,8 +863,8 @@ test(
       await assert.rejects(
         pool.query(
           `INSERT INTO occ.agent_revisions
-        (id, namespace_id, agent_id, revision_number, provider_id, admitted_spec, admitted_at)
-        SELECT $1, namespace_id, agent_id, $2, provider_id,
+        (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, admitted_at)
+        SELECT $1, namespace_id, agent_id, $2, backend_id,
           jsonb_set(admitted_spec, '{harness_auth}', $3::jsonb), admitted_at
         FROM occ.agent_revisions WHERE id = $4`,
           [`rev_${randomUUID()}`, 1000 + offset, JSON.stringify(invalid), fixture.revision.id],
@@ -1002,7 +1002,7 @@ test(
         namespaceId: fixture.namespace.id,
         name: `Sibling ${randomUUID()}`,
         configurationId: fixture.configuration.id,
-        providerId: null,
+        backendId: null,
         harnessAuth: null,
         executionMode: "embedded",
         servicePrincipalId: `service-agent-${siblingId}`,
@@ -1345,7 +1345,7 @@ test(
           namespaceId: namespace.id,
           name: `postgres-plugin-malformed-agent-${randomUUID()}`,
           configurationId: configuration.id,
-          providerId: null,
+          backendId: null,
           harnessAuth: null,
           executionMode: "embedded",
           servicePrincipalId: `service-agent-${malformedCreateAgentId}`,
@@ -1565,8 +1565,8 @@ test(
       await client.query("BEGIN");
       await client.query(
         `INSERT INTO occ.agent_revisions
-           (id, namespace_id, agent_id, revision_number, provider_id, admitted_spec, admitted_at)
-         SELECT $1, namespace_id, agent_id, revision_number + 1000, provider_id,
+           (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, admitted_at)
+         SELECT $1, namespace_id, agent_id, revision_number + 1000, backend_id,
                 jsonb_set(admitted_spec, '{plugins}', $2::jsonb, false), admitted_at
          FROM occ.agent_revisions WHERE id = $3`,
         [malformedRevisionId, JSON.stringify(malformedPlugins), revision.id],

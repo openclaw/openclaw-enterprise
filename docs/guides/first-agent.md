@@ -8,6 +8,9 @@ after the command exits.
 ## Before you start
 
 - Complete [Local setup](quickstart.md) and leave the installation running.
+- Start Local setup without the OpenShell Sandbox Driver. The first-Agent
+  workflow supports the Compose-backed Kubernetes profile with
+  `OCC_DEVELOPMENT_SANDBOX_DRIVER=none`.
 - Use the same checkout and development state directory. If you set
   `OCC_DEVELOPMENT_STATE_DIRECTORY` during setup, use the same value here.
 - Have an OpenAI API key that can use [`gpt-6-astra`](https://developers.openai.com/api/docs/models/gpt-6-astra), the default model. To use a
@@ -104,3 +107,6 @@ with `dev down` [deletes the installation and its Agents](quickstart.md#clean-up
   supply the new key when prompted. An active revision without
   `Model response verified` is not a successful model check. See
   [Troubleshoot Agents](topics/agent-troubleshoot.md).
+- **The selected setup uses OpenShell:** stop that development environment and
+  start [Local setup](quickstart.md) without OpenShell. The current OpenShell
+  development profile does not support this first-Agent model-turn workflow.

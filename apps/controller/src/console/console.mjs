@@ -4,6 +4,7 @@ import { createApiClient } from "./api-client.mjs";
 import { createViewLifetime } from "./view-lifetime.mjs";
 import { createNavigation, pages } from "./navigation.mjs";
 import { createShell, panel, sorted } from "./shell.mjs";
+import { createDraftStore } from "./drafts.mjs";
 import { renderRuntimeImages } from "./runtime-images.mjs";
 
 const app = document.querySelector("#app");
@@ -13,6 +14,8 @@ let namespaces = [];
 let namespaceId = null;
 let loggingOut = false;
 let navigateAgentTab = null;
+const drafts = createDraftStore();
+let draftUserId = null;
 const navigation = createNavigation({
   getNamespaceId: () => namespaceId,
   isLoggingOut: () => loggingOut,
@@ -26,10 +29,140 @@ const request = createApiClient({
   hasSession: () => session !== null,
   onExpired: () => showLogin("Your session has expired.", location.pathname + location.search),
 });
+const retainedViews = new Map();
+let mountedRouteKey = null;
 
-function resetReads() {
+function sessionOwnerKey(value) {
+  const userId = value?.user?.id;
+  const sessionKey = value?.sessionKey;
+  return typeof userId === "string" &&
+    userId.length > 0 &&
+    typeof sessionKey === "string" &&
+    sessionKey.length > 0
+    ? JSON.stringify([userId, sessionKey])
+    : null;
+}
+
+function routeKey(current, selection = current.namespace ?? namespaceId) {
+  if (!Object.hasOwn(pages, current.feature)) {
+    return null;
+  }
+  return pageUrl(current.target, selection);
+}
+
+function clearRetainedViews() {
+  retainedViews.clear();
+  mountedRouteKey = null;
+}
+
+function retainedViewNamespace(key) {
+  return new URL(key, location.origin).searchParams.get("namespace");
+}
+
+function clearRetainedViewsForNamespace(selection) {
+  if (selection === null) {
+    return;
+  }
+  for (const key of retainedViews.keys()) {
+    if (retainedViewNamespace(key) === selection) {
+      retainedViews.delete(key);
+    }
+  }
+  if (mountedRouteKey && retainedViewNamespace(mountedRouteKey) === selection) {
+    mountedRouteKey = null;
+  }
+}
+
+function clearRetainedViewsOutsideNamespaces(readable) {
+  const allowed = new Set(readable.map((item) => item.id));
+  const accessRemoved = namespaces.some((item) => !allowed.has(item.id));
+  for (const key of retainedViews.keys()) {
+    const selection = retainedViewNamespace(key);
+    // The global collection represents every readable Namespace, not just its URL selection.
+    const revokedCollection =
+      accessRemoved && new URL(key, location.origin).pathname === "/console/namespaces";
+    if (revokedCollection || (selection !== null && !allowed.has(selection))) {
+      retainedViews.delete(key);
+    }
+  }
+  if (mountedRouteKey) {
+    const selection = retainedViewNamespace(mountedRouteKey);
+    if (selection !== null && !allowed.has(selection)) {
+      mountedRouteKey = null;
+    }
+  }
+}
+
+function clearPasswordInputs() {
+  document.querySelectorAll('input[type="password"]').forEach((input) => {
+    input.value = "";
+  });
+}
+
+function retainMountedView() {
+  const owner = sessionOwnerKey(session);
+  const view = app.querySelector('.content [aria-live="polite"]');
+  if (!owner || mountedRouteKey === null || !view) {
+    return;
+  }
+  retainedViews.set(mountedRouteKey, {
+    owner,
+    snapshot: view.cloneNode(true),
+    title: app.querySelector(".content h1")?.textContent ?? null,
+    scope: app.querySelector(".content .scope")?.textContent ?? null,
+    scrollY: window.scrollY,
+  });
+  while (retainedViews.size > 16) {
+    retainedViews.delete(retainedViews.keys().next().value);
+  }
+  mountedRouteKey = null;
+}
+
+function restoreRetainedView(current) {
+  const owner = sessionOwnerKey(session);
+  const key = routeKey(current);
+  const retained = key && retainedViews.get(key);
+  if (!owner || !retained || retained.owner !== owner) {
+    return null;
+  }
+  retainedViews.delete(key);
+  const shell = renderShell(current.feature);
+  if (retained.title) {
+    app.querySelector(".content h1").textContent = retained.title;
+  }
+  if (retained.scope) {
+    app.querySelector(".content .scope").textContent = retained.scope;
+  }
+  shell.view.replaceChildren(...retained.snapshot.childNodes);
+  shell.view.setAttribute("aria-busy", "true");
+  shell.view.setAttribute("inert", "");
+  for (const control of shell.view.querySelectorAll("button, input, select, textarea")) {
+    control.disabled = true;
+  }
+  mountedRouteKey = key;
+  const active = lifetime.capture();
+  requestAnimationFrame(() => {
+    if (lifetime.isCurrent(active) && mountedRouteKey === key) {
+      window.scrollTo({ top: retained.scrollY, left: 0 });
+    }
+  });
+  return shell;
+}
+
+function markMountedRoute(current) {
+  mountedRouteKey = routeKey(current);
+}
+
+function resetReads({ retainView = false } = {}) {
+  drafts.flush();
   navigateAgentTab = null;
+  clearPasswordInputs();
   shellUI.reset();
+  if (retainView) {
+    retainMountedView();
+  } else {
+    mountedRouteKey = null;
+  }
   return lifetime.reset();
 }
 
@@ -50,9 +183,16 @@ function clearPrivate() {
   session = null;
   namespaces = [];
   namespaceId = null;
+  clearRetainedViews();
+}
+
+function clearDrafts() {
+  drafts.clear();
+  draftUserId = null;
 }
 
 function showLogin(message = "", returnPath = null) {
+  clearDrafts();
   resetReads();
   clearPrivate();
   const url = new URL("/console/login", location.origin);
@@ -131,7 +271,12 @@ function showLogin(message = "", returnPath = null) {
     element(
       "main",
       { className: "auth" },
-      element("p", { className: "brand" }, "OpenClaw Enterprise"),
+      element(
+        "p",
+        { className: "brand" },
+        element("img", { src: "/console/oce-mascot.png", alt: "", width: "40", height: "40" }),
+        "OpenClaw Enterprise",
+      ),
       element("h1", {}, "Welcome back"),
       element("p", { className: "muted" }, "Sign in to your Installation."),
       form,
@@ -145,27 +290,32 @@ async function loadPage({ fromNavigation = false } = {}) {
   }
   const current = route();
   if (fromNavigation && navigateAgentTab?.(current.url)) {
+    // The tab handler can reject navigation and restore the previous URL.
+    markMountedRoute(route());
     return;
   }
-  const active = resetReads();
-  clearPrivate();
-  document.querySelectorAll('input[type="password"]').forEach((input) => {
-    input.value = "";
-  });
-  publicPanel("Loading…", "Checking your session.");
+  const knownPrivateState = session !== null && Object.hasOwn(pages, current.feature);
+  namespaceId = current.namespace;
+  const active = resetReads({ retainView: knownPrivateState });
+  let shell = knownPrivateState ? restoreRetainedView(current) : null;
+  let retained = shell !== null;
+  if (!retained) {
+    publicPanel("Loading…", "Checking your session.");
+  }
   if (!Object.hasOwn(pages, current.feature) && current.feature !== "login") {
     publicPanel("Page not found", "This console page is unavailable.", "Go to Agents", () =>
       navigate("agents", current.namespace),
     );
     return;
   }
-  let shell;
-  if (current.feature !== "login") {
-    namespaceId = current.namespace;
+  if (current.feature !== "login" && !retained) {
     shell = renderShell(current.feature);
     panel(shell.view, "Loading…", "Checking your session and Namespace access.");
   }
+  let sessionResolved = false;
+  let accessResolved = false;
   try {
+    const previousOwner = sessionOwnerKey(session);
     const resolvedSession = await request("/api/auth/session");
     if (!lifetime.isCurrent(active)) {
       return;
@@ -186,6 +336,18 @@ async function loadPage({ fromNavigation = false } = {}) {
       );
       return;
     }
+    sessionResolved = true;
+    const owner = sessionOwnerKey(session);
+    if (!owner || previousOwner !== owner || draftUserId !== owner) {
+      clearDrafts();
+      clearRetainedViews();
+      draftUserId = owner;
+      if (retained) {
+        retained = false;
+        shell = null;
+        publicPanel("Loading…", "Checking your session.");
+      }
+    }
     if (current.feature === "login") {
       history.replaceState(
         null,
@@ -202,7 +364,9 @@ async function loadPage({ fromNavigation = false } = {}) {
     if (!Array.isArray(readable)) {
       throw new Error("Invalid collection response");
     }
+    clearRetainedViewsOutsideNamespaces(readable);
     namespaces = sorted(readable);
+    accessResolved = true;
     namespaceId =
       current.namespace ??
       (namespaces.find((item) => item.status === "ready") ?? namespaces[0])?.id ??
@@ -213,6 +377,34 @@ async function loadPage({ fromNavigation = false } = {}) {
       "",
       pageUrl(current.target),
     );
+    const agentsNamespaceUnavailable =
+      current.feature === "agents" && !namespaces.some((item) => item.id === namespaceId);
+    let retainedItems = null;
+    let retainedAgent = null;
+    if (
+      retained &&
+      !agentsNamespaceUnavailable &&
+      current.feature !== "settings" &&
+      !current.creating
+    ) {
+      if (current.agentId) {
+        retainedAgent = await request(
+          `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(current.agentId)}`,
+        );
+      } else {
+        retainedItems =
+          current.feature === "namespaces"
+            ? namespaces
+            : await request(
+                current.feature === "backends"
+                  ? "/backends"
+                  : `/namespaces/${encodeURIComponent(namespaceId)}/agents`,
+              );
+      }
+      if (!lifetime.isCurrent(active)) {
+        return;
+      }
+    }
     shell = renderShell(current.feature);
     if (current.feature === "settings") {
       shell.view.append(
@@ -232,14 +424,16 @@ async function loadPage({ fromNavigation = false } = {}) {
           button("Back", () => navigate(navigation.previousCollection)),
         ),
       );
+      markMountedRoute(current);
       return;
     }
-    if (current.feature === "agents" && !namespaces.some((item) => item.id === namespaceId)) {
+    if (agentsNamespaceUnavailable) {
+      clearRetainedViewsForNamespace(namespaceId);
       panel(
         shell.view,
         namespaceId === null ? "No readable Namespaces" : "Namespace unavailable",
         namespaceId === null
-          ? "Ask an administrator to provision a Namespace or grant access. Providers and Namespaces remain available in navigation."
+          ? "Ask an administrator to provision a Namespace or grant access. Namespaces remain available in navigation."
           : "This Namespace is missing or you no longer have access. Choose another Namespace.",
         namespaces.length ? "Switch Namespace" : "Refresh",
         () => (namespaces.length ? switchNamespace() : void loadPage()),
@@ -247,6 +441,8 @@ async function loadPage({ fromNavigation = false } = {}) {
       return;
     }
     const agentContext = {
+      drafts: drafts.scope(namespaceId, current.agentId ?? "create"),
+      flushDrafts: () => drafts.flush(),
       view: shell.view,
       namespaceId,
       request,
@@ -269,22 +465,41 @@ async function loadPage({ fromNavigation = false } = {}) {
       },
     };
     if (current.creating) {
-      renderCreateAgent(agentContext);
+      renderCreateAgent(
+        {
+          ...agentContext,
+          setDraftCapture(capture) {
+            agentContext.drafts.forget("create");
+            if (capture) {
+              agentContext.drafts.track("create", capture);
+            }
+          },
+        },
+        agentContext.drafts.get("create"),
+      );
+      markMountedRoute(current);
       return;
     }
     if (current.agentId) {
-      await renderAgentDetail({ ...agentContext, agentId: current.agentId });
+      await renderAgentDetail(
+        { ...agentContext, agentId: current.agentId },
+        { agent: retainedAgent },
+      );
+      if (lifetime.isCurrent(active)) {
+        markMountedRoute(current);
+      }
       return;
     }
     panel(shell.view, "Loading…", `Reading ${pages[current.feature].toLowerCase()}.`);
     const items =
-      current.feature === "namespaces"
+      retainedItems ??
+      (current.feature === "namespaces"
         ? namespaces
         : await request(
-            current.feature === "providers"
-              ? "/providers"
+            current.feature === "backends"
+              ? "/backends"
               : `/namespaces/${encodeURIComponent(namespaceId)}/agents`,
-          );
+          ));
     if (!lifetime.isCurrent(active)) {
       return;
     }
@@ -296,6 +511,7 @@ async function loadPage({ fromNavigation = false } = {}) {
     } else {
       renderRows(shell.view, current.feature, items);
     }
+    markMountedRoute(current);
   } catch (error) {
     if (!lifetime.isCurrent(active) || error.name === "AbortError") {
       return;
@@ -304,15 +520,30 @@ async function loadPage({ fromNavigation = false } = {}) {
       showLogin("Your session has expired.", pageUrl(current.target, current.namespace));
       return;
     }
-    if (!session) {
+    if (!accessResolved) {
+      // Uncertain shared admission invalidates every preview, not just this route.
+      clearDrafts();
+      resetReads();
       clearPrivate();
       publicPanel(
-        "Session unavailable",
-        "Could not check your session. Please retry.",
+        sessionResolved ? "Namespace access unavailable" : "Session unavailable",
+        sessionResolved
+          ? "Could not check Namespace access. Please retry."
+          : "Could not check your session. Please retry.",
         "Retry",
         () => void loadPage(),
       );
       return;
+    }
+    mountedRouteKey = null;
+    if ([400, 403, 404].includes(error.status)) {
+      const selection = current.namespace ?? namespaceId;
+      // Backend discovery is Installation-scoped, regardless of its Namespace query.
+      if (selection === null || current.feature === "backends") {
+        clearRetainedViews();
+      } else {
+        clearRetainedViewsForNamespace(selection);
+      }
     }
     shell = renderShell(current.feature);
     if (current.agentId && error.status === 404) {
@@ -335,8 +566,8 @@ async function loadPage({ fromNavigation = false } = {}) {
             ? "Namespace unavailable"
             : error.name === "TypeError" || error.name === "TimeoutError"
               ? "Request interrupted"
-              : current.feature === "providers"
-                ? "Provider discovery unavailable"
+              : current.feature === "backends"
+                ? "Backend discovery unavailable"
                 : "Request unavailable";
     panel(
       shell.view,
@@ -358,6 +589,7 @@ async function loadPage({ fromNavigation = false } = {}) {
 
 async function logout() {
   loggingOut = true;
+  clearDrafts();
   const active = resetReads();
   clearPrivate();
   publicPanel("Signing out…", "Confirming that your session has ended.");
@@ -405,6 +637,7 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 window.addEventListener("pagehide", () => {
+  clearDrafts();
   resetReads();
   clearPrivate();
   document.querySelectorAll('input[type="password"]').forEach((input) => {

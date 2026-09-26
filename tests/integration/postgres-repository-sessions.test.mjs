@@ -368,13 +368,13 @@ test(
             driver: { id: `${"é".repeat(256)}x`, implementation: "github" },
           }),
           "provider identity contains surrounding spaces": repositoryCredentials({
-            bindings: [repositoryBinding({ providerId: " provider " })],
+            bindings: [repositoryBinding({ backendId: " provider " })],
           }),
           "provider identity exceeds 200 UTF-16 code units": repositoryCredentials({
-            bindings: [repositoryBinding({ providerId: "😀".repeat(101) })],
+            bindings: [repositoryBinding({ backendId: "😀".repeat(101) })],
           }),
           "provider identity starts with a nonbreaking space": repositoryCredentials({
-            bindings: [repositoryBinding({ providerId: "\u00a0provider" })],
+            bindings: [repositoryBinding({ backendId: "\u00a0provider" })],
           }),
           "grant identity is empty": repositoryCredentials({
             bindings: [repositoryBinding({ grant: repositoryGrant({ grantId: "" }) })],

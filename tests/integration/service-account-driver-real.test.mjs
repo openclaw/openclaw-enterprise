@@ -11,7 +11,6 @@ import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mj
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   assertGatewayModelTurn,
-  configureExistingK3dLocalPathSharedFileSystem,
   createKubernetesInstallationConfiguration,
   createRealKubernetesFixture,
   kubernetesHash as hash,
@@ -81,7 +80,7 @@ function installationConfiguration(authentication, platformNamespace, adminKeyPa
     codexImage,
     cluster: "k3d-chatgpt-service-account-driver",
   });
-  configuration.provider = [
+  configuration.backend = [
     {
       id: "openai",
       type: "chatgpt",
@@ -171,7 +170,6 @@ test(
   },
   async (context) => {
     const kubeconfig = await prerequisites();
-    await configureExistingK3dLocalPathSharedFileSystem({ kubeconfigPath, kubernetesContext });
     const suffix = hash(randomUUID());
     const platformNamespace = `oce-service-account-driver-${suffix}`;
     const directory = await mkdtemp(join(tmpdir(), "oce-service-account-driver-real-"));
@@ -360,7 +358,7 @@ test(
       import("../../apps/controller/src/composition/production.ts"),
       import("../../apps/controller/src/worker.ts"),
       import("../../apps/controller/src/drivers/compute/kubernetes/index.ts"),
-      import("../../apps/controller/src/providers/chatgpt.ts"),
+      import("../../apps/controller/src/backends/chatgpt.ts"),
       import("../../apps/controller/src/drivers/service-account/chatgpt.ts"),
     ]);
 
@@ -379,15 +377,15 @@ test(
     client = new ChatGPTClient({
       workspaceId,
       adminKey: (await readFile(adminKeyPath, "utf8")).trim(),
-      credentialTtlSeconds: apiDrivers.installation.provider[0].configuration.credentialTtlSeconds,
+      credentialTtlSeconds: apiDrivers.installation.backend[0].configuration.credentialTtlSeconds,
     });
     const observedClient = observeChatGptClient(client, (diagnostic) => {
       lastChatGptDiagnostic = diagnostic;
     });
     const serviceAccountDriverFactory = createChatGPTServiceAccountDriverFactory(
       {
-        id: apiDrivers.installation.provider[0].id,
-        drivers: apiDrivers.installation.provider[0].drivers,
+        id: apiDrivers.installation.backend[0].id,
+        drivers: apiDrivers.installation.backend[0].drivers,
         client: observedClient,
       },
       apiDrivers.computeDriver,
@@ -542,14 +540,14 @@ test(
     assert.equal(account.data.credential, undefined);
     createdServiceAccountId = account.data.id;
     const bindingQuery =
-      "SELECT external_account_id, external_credential_id, workspace_id, provider_id, driver_id FROM occ.service_account_driver_bindings WHERE service_account_id = $1 AND namespace_id = $2";
+      "SELECT external_account_id, external_credential_id, workspace_id, backend_id, driver_id FROM occ.service_account_driver_bindings WHERE service_account_id = $1 AND namespace_id = $2";
     const createdBinding = await observerPool.query(bindingQuery, [account.data.id, namespaceId]);
     assert.equal(createdBinding.rowCount, 1, "the provider account binding must commit with OCC");
     externalAccountId = createdBinding.rows[0].external_account_id;
     assert.ok(externalAccountId);
     assert.equal(createdBinding.rows[0].external_credential_id, null);
     assert.equal(createdBinding.rows[0].workspace_id, workspaceId);
-    assert.equal(createdBinding.rows[0].provider_id, "openai");
+    assert.equal(createdBinding.rows[0].backend_id, "openai");
     assert.equal(createdBinding.rows[0].driver_id, "chatgpt-service-accounts");
     assert.equal(JSON.stringify(account.data).includes(externalAccountId), false);
     assert.equal(JSON.stringify(account.data).includes(workspaceId), false);
@@ -611,12 +609,12 @@ test(
     const agent = await request("POST", `/namespaces/${namespaceId}/agents`, {
       name: `chatgpt-codex-${suffix}`,
       configurationId: configuration.data.id,
-      providerId: "openai",
+      backendId: "openai",
       executionMode: "dedicated",
       harnessAuth: { method: "chatgpt_service_account", serviceAccountId: account.data.id },
     });
     assertControllerStatus(agent, 201);
-    assert.equal(agent.data.providerId, "openai");
+    assert.equal(agent.data.backendId, "openai");
     assert.deepEqual(agent.data.harnessAuth, {
       method: "chatgpt_service_account",
       serviceAccountId: account.data.id,
@@ -634,7 +632,7 @@ test(
     );
     assertControllerStatus(revision, 202);
     assert.deepEqual(revision.data.harnessAuth, agent.data.harnessAuth);
-    assert.equal(revision.data.providerId, "openai");
+    assert.equal(revision.data.backendId, "openai");
     assert.equal(JSON.stringify(revision.data).includes(externalAccountId), false);
     assert.equal(JSON.stringify(revision.data).includes(workspaceId), false);
     assert.equal(JSON.stringify(revision.data).includes(accessToken), false);

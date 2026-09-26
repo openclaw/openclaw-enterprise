@@ -290,6 +290,7 @@ const createProvisioningSecrets = [
   ...readyForm,
   { selector: "#agent-name", value: "Slack research assistant" },
   click("Configure Slack"),
+  { selector: "#slack-dm-policy", value: "disabled" },
   { selector: "#slack-secret-slack-app-token", value: "sec_demo_slack_app_token" },
   ...createSlackBotSecret,
   { selector: "#slack-channel-ids", value: "CDEMO123" },
@@ -378,7 +379,7 @@ export const scenarios = {
     path: "/console/agents",
     description:
       "Browse pages, component states, and guided Agent workflows. Every preview mounts the production console modules and styles in its own frame. Reset story discards all local changes.",
-    gap: "Stop Agent requests the stopped desired state; deployment resumes an Agent. Namespace provisioning, Preset management, and installed Provider setup require an API, CLI, or operator workflow. Serving health and model responses require separate runtime verification.",
+    gap: "Stop Agent requests the stopped desired state; deployment resumes an Agent. Namespace provisioning, Preset management, and experimental Backend setup require an API, CLI, or operator workflow. Serving health and model responses require separate runtime verification.",
   },
   login: {
     group: "Pages/Sign in",
@@ -441,6 +442,72 @@ export const scenarios = {
       "At a narrow viewport, use Open navigation and choose a page; the drawer must close and return focus to the page.",
     ],
   },
+  navigationRetained: {
+    group: "Pages/Navigation",
+    name: "Return to loaded pages",
+    rules: [
+      { path: "/api/auth/session", skip: 1, delayMs: 1200 },
+      { path: "/namespaces", skip: 1, delayMs: 1200 },
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents",
+        skip: 1,
+        delayMs: 1200,
+      },
+    ],
+    description:
+      "Return navigation and Refresh retain previously loaded content during slow reads. Responses are simulated; this story does not prove backend authorization or persistence.",
+    steps: [
+      "Wait for Agents, enter a search, open Create Agent, then return using the Agents breadcrumb. The loaded list and search remain visible while reads are pending.",
+      "Visit Namespaces and Settings, then repeat with browser Back and Forward. First visits may load; returning pages retain their content.",
+      "Open an Agent, visit its tabs, return to Agents, and use Back. Check the selected revision and tab. Refresh and refocus the preview to check pending-read behavior.",
+      "Switch Namespace to confirm the previous scope's rows disappear. Reset the story to clear retained state.",
+    ],
+  },
+  navigationDenied: {
+    group: "Pages/Navigation",
+    name: "Return access denied",
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents",
+        skip: 1,
+        delayMs: 1200,
+        status: 403,
+      },
+    ],
+    description:
+      "A previously readable collection becomes denied on its next read. Retained content must clear when the denial arrives.",
+    steps: [
+      "Wait for the populated Agents list, open Create Agent, and return to Agents.",
+      "Observe the retained list while the response is pending, then the access-denied state. Retry must not restore the old rows.",
+    ],
+  },
+  navigationBackendDenied: {
+    group: "Pages/Navigation",
+    name: "Return Backend access denied",
+    path: "/console/backends?namespace=ns_00000000-0000-4000-8000-000000000001",
+    rules: [
+      { path: "/backends", skip: 2, delayMs: 1200, status: 403 },
+      { path: "/api/auth/session", skip: 3, delayMs: 1200 },
+    ],
+    description:
+      "An Installation-wide Backend denial invalidates previews under every Namespace selection.",
+    steps: [
+      "Wait for Backends, select Research, and wait for the Backend row again.",
+      "Select Refresh and wait for Access denied, then use browser Back to return to Engineering.",
+      "Confirm the previous Backend row stays absent while the session check runs and the denied state returns.",
+    ],
+  },
+  navigationExpired: {
+    group: "Pages/Navigation",
+    name: "Return session expired",
+    rules: [{ path: "/api/auth/session", skip: 1, delayMs: 1200, status: 401 }],
+    description:
+      "Session expiry clears private content and retained navigation state. The fixture supplies a delayed unauthorized response.",
+    steps: [
+      "Wait for Agents, then select Refresh or navigate to Namespaces.",
+      "When the session check fails, confirm the sign-in form replaces all private content. Browser Back must not restore the collection.",
+    ],
+  },
   agentsEmpty: {
     group: "Pages/Agents",
     name: "Empty",
@@ -484,32 +551,34 @@ export const scenarios = {
     rules: [{ path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents", hold: true }],
     description: "The collection read remains pending until the real 15-second client timeout.",
   },
-  providers: {
-    group: "Pages/Providers",
+  backends: {
+    group: "Pages/Backends",
     name: "Configured",
-    path: "/console/providers",
-    description: "Installation-wide Provider discovery.",
-    gap: "This is a read-only page; configure Providers through installation configuration.",
+    path: "/console/backends",
+    description:
+      "Experimental Installation-wide Backend discovery, separate from model provider selection.",
+    gap: "This is a read-only page; configure experimental Backends through Installation configuration.",
   },
-  providersEmpty: {
-    group: "Pages/Providers",
+  backendsEmpty: {
+    group: "Pages/Backends",
     name: "Empty",
-    path: "/console/providers",
-    emptyProviders: true,
-    description: "No Providers are configured.",
+    path: "/console/backends",
+    emptyBackends: true,
+    description: "No experimental Backends are configured.",
   },
-  providersError: {
-    group: "Pages/Providers",
+  backendsError: {
+    group: "Pages/Backends",
     name: "Discovery unavailable",
-    path: "/console/providers",
-    rules: [{ path: "/providers", status: 503 }],
-    description: "Provider discovery fails and can be retried.",
+    path: "/console/backends",
+    rules: [{ path: "/backends", status: 503 }],
+    description: "Backend discovery fails and can be retried.",
   },
   namespaces: {
     group: "Pages/Namespaces",
     name: "Ready and provisioning",
     path: "/console/namespaces",
-    description: "Namespace identity and status cards. Selection is in the account menu.",
+    description:
+      "Installation-wide Namespace identity and status cards, without a Namespace selector.",
   },
   namespacesEmpty: {
     group: "Pages/Namespaces",
@@ -978,6 +1047,7 @@ export const scenarios = {
       ...form,
       { selector: "#agent-name", value: "Slack launch demo" },
       click("Configure Slack"),
+      { selector: "#slack-dm-policy", value: "disabled" },
     ],
     description:
       "A new Agent can choose existing simulated Namespace Secrets or create new Slack token Secrets before the Agent resource exists.",
@@ -990,6 +1060,7 @@ export const scenarios = {
       ...form,
       { selector: "#agent-name", value: "Slack launch demo" },
       click("Configure Slack"),
+      { selector: "#slack-dm-policy", value: "disabled" },
       { selector: "#slack-secret-slack-app-token", value: "__openclaw_create_secret__" },
     ],
     description:
@@ -1003,6 +1074,7 @@ export const scenarios = {
       ...form,
       { selector: "#agent-name", value: "Slack launch demo" },
       click("Configure Slack"),
+      { selector: "#slack-dm-policy", value: "disabled" },
       { selector: "#slack-secret-slack-app-token", value: "sec_demo_slack_app_token" },
       ...createSlackBotSecret,
       click("Apply channel settings"),
@@ -1018,6 +1090,7 @@ export const scenarios = {
       ...form,
       { selector: "#agent-name", value: "Slack launch demo" },
       click("Configure Slack"),
+      { selector: "#slack-dm-policy", value: "disabled" },
       { selector: "#slack-channel-ids", value: "CDEMO123" },
       click("Apply channel settings"),
     ],
@@ -1032,6 +1105,7 @@ export const scenarios = {
       ...form,
       { selector: "#agent-name", value: "Slack launch demo" },
       click("Configure Slack"),
+      { selector: "#slack-dm-policy", value: "disabled" },
       { selector: "#slack-channel-ids", value: "CDEMO123" },
       ...allowEveryoneInSlackChannels,
       click("Apply channel settings"),
@@ -1130,7 +1204,7 @@ export const scenarios = {
   },
   createRepositoriesUnavailable: {
     group: "Pages/Create Agent",
-    name: "Optional repository service unavailable",
+    name: "Repository choices unavailable",
     path: create,
     actions: repositoryForm,
     rules: [
@@ -1141,7 +1215,39 @@ export const scenarios = {
       },
     ],
     description:
-      "The endpoint-specific optional-unavailability response permits an ordinary Agent. The preview does not establish real authorization.",
+      "Unavailable repository choices show administrator setup guidance and allow a draft without repositories.",
+    steps: [
+      "Read the setup guidance and open Set up repository access to review the operator procedure.",
+      "Retry repository choices, or save a draft without repositories.",
+    ],
+    gap: "Simulated UI proof only; this preview does not configure a GitHub App or verify repository access.",
+  },
+  createRepositoryNavigationOutage: {
+    group: "Pages/Create Agent",
+    name: "Keep repository choices through an outage",
+    path: create,
+    actions: [
+      ...form,
+      { selector: "#agent-name", value: "Repository assistant" },
+      { selector: "#repository-application", click: true },
+      { selector: "#repository-profile-git-full", click: true },
+    ],
+    rules: [
+      {
+        path: repositoryOptionsPath,
+        skip: 1,
+        once: true,
+        status: 503,
+        code: "REPOSITORY_OPTIONS_UNAVAILABLE",
+      },
+    ],
+    description:
+      "A failed refresh retains repository selections while blocking Create until current choices can be checked.",
+    steps: [
+      "Open Agents, then Create Agent. Discovery fails and reports that selections are retained.",
+      "Retry repository choices. The application repository and Contributor access return selected.",
+    ],
+    gap: "Simulated UI proof only; this walkthrough does not create an Agent or contact GitHub.",
   },
   createRepositoriesDenied: {
     group: "Pages/Create Agent",
@@ -1279,6 +1385,36 @@ export const scenarios = {
     actions: passwordPresetForm,
     description:
       "The password remains masked in the editable draft; Configuration JSON contains no model key. There is no raw Secret bindings JSON editor.",
+  },
+  presetVariableNavigation: {
+    group: "Pages/Create Agent",
+    name: "Keep Preset variables",
+    path: create,
+    standardCodexPreset: true,
+    actions: passwordPresetForm.slice(0, -1),
+    description:
+      "Preset variable edits and Secret reference choices survive navigation. New token bytes clear.",
+    steps: [
+      "Open Agents, then Create Agent. Check the retained name/model and cleared token.",
+      "Reenter a dummy token, then Use Preset to continue.",
+    ],
+    gap: "Simulated UI proof only.",
+  },
+  createPresetNavigation: {
+    group: "Pages/Create Agent",
+    name: "Keep an unsaved Preset draft",
+    path: create,
+    standardCodexPreset: true,
+    actions: passwordPresetForm,
+    description:
+      "Unsaved settings remain in memory while navigating the Console. Password inputs clear when leaving the form. Start over explicitly discards the draft.",
+    steps: [
+      "Rename the Agent and edit a workspace file under Advanced settings.",
+      "Open Namespaces, then use browser Back and Forward to revisit both pages.",
+      "Open Agents and Create Agent: the edited draft returns with an empty API key field.",
+      "Select Start over, cancel once, then confirm. Navigate away and return to see the fresh Preset chooser.",
+    ],
+    gap: "Simulated UI proof only; this walkthrough does not save or deploy an Agent.",
   },
   createPasswordPresetDenied: {
     group: "Pages/Create Agent",
@@ -1467,6 +1603,22 @@ export const scenarios = {
     description:
       "Editable desired configuration, masked authentication summary, deployment gate, and Agent deletion.",
   },
+  configurationNavigation: {
+    group: "Pages/Agent detail",
+    name: "Keep Configuration edits",
+    path: draft,
+    actions: [
+      click("Edit Configuration"),
+      { selector: "#configuration-json", value: '{"unfinished":' },
+    ],
+    description:
+      "Unfinished JSON survives tabs, pages, and browser history. Unsaved edits continue to block deployment.",
+    steps: [
+      "Visit Channels, then Configuration and confirm the unfinished text remains.",
+      "Open Namespaces and return with Back. Cancel discards the edit without saving.",
+    ],
+    gap: "Simulated UI proof; no deployment or real persistence.",
+  },
   configurationEditor: {
     group: "Pages/Agent detail",
     name: "Edit Configuration",
@@ -1586,27 +1738,38 @@ export const scenarios = {
     path: "/console/agents?debug=true",
     buildRevision: "abcdef1234567890abcdef1234567890abcdef12",
     description:
-      "OCE branding with an adjacent eight-character OCC commit. Hover the version for the full hash. This revision is simulated.",
+      "Approved OpenClaw mech mascot beside OCE and an eight-character OCC commit. Check the mascot at desktop and mobile widths, then hover the version for the full hash. This revision is simulated.",
   },
   developmentBuild: {
     group: "Components/Navigation",
     name: "OCC development build",
     path: "/console/agents?debug=true",
     description:
-      "OCE branding with an adjacent dev label when OCC build metadata is unavailable. No checkout or gateway revision is inferred.",
+      "Approved OpenClaw mech mascot beside OCE with an adjacent dev label when OCC build metadata is unavailable. No checkout or gateway revision is inferred.",
   },
   menu: {
     group: "Components/Navigation",
     name: "Account menu",
     actions: account,
     description:
-      "Account, Namespace switching, Settings, and Logout. Keyboard navigation uses the production handlers.",
+      "Account Settings and Logout. Namespace selection is available directly in the page header.",
   },
   namespaceMenu: {
     group: "Components/Navigation",
     name: "Namespace switcher",
-    actions: [...account, { selector: '[aria-controls="namespace-menu"]', click: true }],
-    description: "Current Namespace and alternative scopes.",
+    description: "The header selector shows the current Namespace and readable alternatives.",
+    steps: [
+      "Choose Research in the Namespace selector; the URL changes and its empty Agents collection appears.",
+      "Choose Engineering to return to its Agents, then use browser Back to restore Research.",
+      "Open Namespaces; the Installation-wide list has no Namespace selector. Return to Agents to switch scope.",
+    ],
+  },
+  namespaceSelectorMobile: {
+    group: "Components/Navigation",
+    name: "Mobile Namespace selector",
+    mobile: true,
+    description:
+      "Choose a Namespace directly from the header at 390px, without opening navigation.",
   },
   mobile: {
     group: "Components/Navigation",
@@ -1623,6 +1786,73 @@ export const scenarios = {
     path: `${draft}&tab=channels`,
     slack: true,
     description: "Enabled Socket Mode with standard unresolved credential references.",
+  },
+  slackThreadedDefault: {
+    group: "Components/Channels",
+    name: "Slack threaded default",
+    path: `${draft}&tab=channels`,
+    description:
+      "New Slack setup threads channel replies without changing DM reply behavior. Missing credentials remain visible until Secrets are bound.",
+    steps: [
+      "Configure Slack, enter CDEMO123, allow everyone in the channel, and choose Disabled for direct messages.",
+      "Save configuration and open Configuration → View native Configuration: replyToModeByChatType.channel is all, with no global replyToMode.",
+    ],
+  },
+  slackDmPolicy: {
+    group: "Components/Channels",
+    name: "Slack direct-message policy",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    actions: [click("Edit Slack")],
+    description:
+      "Choose DM access independently of channel senders. Invalid allowlists stay in the drawer without saving.",
+    steps: [
+      "Select Allowlist, clear Allowed DM user IDs, and save to inspect the validation error.",
+      "Enter UDIRECT123, save, and reopen Slack to verify the saved selection.",
+      'Select Open and save: allowFrom becomes ["*"]. Switch to Allowlist: enter explicit IDs before saving.',
+      "Select Disabled for channel-only access; existing channel users and reply overrides stay unchanged.",
+    ],
+  },
+  slackEnterpriseDm: {
+    group: "Components/Channels",
+    name: "Slack organization-wide DM policy",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    slackPolicy: "disabled",
+    slackEnterpriseOrgInstall: true,
+    actions: [click("Edit Slack")],
+    description:
+      "Organization-wide installs recommend Disabled. Selecting Pairing or Allowlist fails before saving; Open is supported.",
+  },
+  slackReplyOverride: {
+    group: "Components/Channels",
+    name: "Slack non-threaded override",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    slackReplyToMode: "off",
+    description: "An existing explicit non-threaded setting survives Slack drawer edits.",
+    steps: [
+      "Edit Slack, change the channel IDs, and save configuration.",
+      "Open Configuration → View native Configuration: replyToMode remains off.",
+    ],
+  },
+  slackNavigation: {
+    group: "Components/Channels",
+    name: "Keep Slack edits",
+    path: `${draft}&tab=configuration`,
+    slack: true,
+    actions: [
+      click("Channels"),
+      click("Edit Slack"),
+      { selector: "#slack-channel-ids", value: "CNAVIGATION" },
+    ],
+    description:
+      "An open Slack drawer restores ordinary edits and staged Secret references after browser history navigation.",
+    steps: [
+      "Use Back to return to Configuration, then Forward to reopen the drawer.",
+      "Confirm CNAVIGATION remains. Cancel, reopen Slack, and check saved channel IDs.",
+    ],
+    gap: "Simulated UI proof, not Slack delivery or Secret propagation.",
   },
   slackDrawer: {
     group: "Components/Channels",
@@ -1658,6 +1888,7 @@ export const scenarios = {
     path: `${draft}&tab=channels`,
     actions: [
       click("Configure Slack"),
+      { selector: "#slack-dm-policy", value: "disabled" },
       { selector: "#slack-channel-ids", value: "CDEMO123" },
       click("Save configuration"),
     ],
@@ -1757,7 +1988,44 @@ export const scenarios = {
     path: `${revision}&tab=channels`,
     deployed: true,
     slack: true,
-    description: "Admitted channel settings are immutable. Switch to the new revision to edit.",
+    description:
+      "Inspect the app and bot token Secret names and IDs, then switch to Configuration to inspect the Harness Secret. This read-only snapshot retains its own bindings.",
+  },
+  revisionSecretsDenied: {
+    group: "Components/Channels",
+    name: "Revision Secret metadata denied",
+    path: `${revision}&tab=channels`,
+    deployed: true,
+    slack: true,
+    rules: [{ prefix: `${presetSecretsPath}/`, status: 403 }],
+    description:
+      "Bound IDs remain visible when exact Secret metadata reads are denied. Switch to Configuration to inspect the same state for Harness authentication.",
+  },
+  revisionSecretsMissing: {
+    group: "Components/Channels",
+    name: "Revision Secret metadata missing",
+    path: `${revision}&tab=channels`,
+    deployed: true,
+    slack: true,
+    rules: [{ prefix: `${presetSecretsPath}/`, status: 404 }],
+    description:
+      "Unavailable metadata does not erase the revision's bindings or claim credentials are unconfigured.",
+  },
+  revisionSecretsLoading: {
+    group: "Components/Channels",
+    name: "Revision Secret metadata loading",
+    path: `${revision}&tab=channels`,
+    deployed: true,
+    slack: true,
+    rules: [{ prefix: `${presetSecretsPath}/`, hold: true }],
+    description: "The bound IDs stay visible while metadata loads. Other tabs remain usable.",
+  },
+  revisionSecretsAbsent: {
+    group: "Components/Channels",
+    name: "Revision without Slack bindings",
+    path: `${revision}&tab=channels`,
+    deployed: true,
+    description: "A revision without Slack bindings shows No Secret bound for both token slots.",
   },
   channelConflict: {
     group: "Components/Channels",
@@ -1778,7 +2046,7 @@ export const scenarios = {
     group: "Components/Credentials",
     name: "Stored",
     path: `${draft}&tab=credentials`,
-    description: "Masked Secret reference and stored generated-runtime credential metadata.",
+    description: "Stored harness Secret reference and generated-runtime credential metadata.",
   },
   credentialsMissing: {
     group: "Components/Credentials",
@@ -1795,7 +2063,7 @@ export const scenarios = {
     slack: true,
     slackBindings: false,
     description:
-      "Both Slack token slots are empty and required before a Slack-enabled draft can deploy.",
+      "Both Slack token bindings are empty and required before a Slack-enabled draft can deploy.",
   },
   credentialsSlackStored: {
     group: "Components/Credentials",
@@ -1803,16 +2071,50 @@ export const scenarios = {
     path: `${draft}&tab=credentials`,
     slack: true,
     description:
-      "Synthetic masks show existing Secret bindings. The console does not retrieve stored token values.",
+      "Readable Secret names show existing bindings. The console does not retrieve stored token values.",
   },
   credentialsSlackReplacement: {
     group: "Components/Credentials",
-    name: "Slack token replacement",
+    name: "Slack token switch",
     path: `${draft}&tab=credentials`,
     slack: true,
-    actions: [{ selector: "#runtime-slack-app-token", value: "xapp-replacement-preview" }],
+    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
     description:
-      "Only fields with entered replacements are saved. Empty stored fields preserve their existing Secret binding.",
+      "The app token binding is staged to a different Secret while the bot token binding remains unchanged.",
+  },
+  credentialsSecretListDenied: {
+    group: "Components/Credentials",
+    name: "Secret list denied",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets",
+        method: "GET",
+        status: 403,
+      },
+    ],
+    description:
+      "Secret references remain preserved when Secret metadata cannot be listed in this Namespace.",
+  },
+  credentialsSlackGrantDenied: {
+    group: "Components/Credentials",
+    name: "Slack grant denied",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    actions: [
+      { selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" },
+      click("Save channel Secrets"),
+    ],
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/iam/access-bindings",
+        method: "POST",
+        status: 403,
+      },
+    ],
+    description:
+      "A saved Secret reference remains visible when the follow-up exact Secret access grant is denied.",
   },
   credentialsSlackPartial: {
     group: "Components/Credentials",
@@ -1821,7 +2123,7 @@ export const scenarios = {
     slack: true,
     slackBindings: "app",
     description:
-      "The app token is already bound and masked; the missing bot token remains empty and required.",
+      "The app token is already bound; the missing bot token remains empty and required.",
   },
   credentialsLocked: {
     group: "Components/Credentials",
@@ -1843,13 +2145,91 @@ export const scenarios = {
     ],
     description: "Metadata failure disables dependent provisioning and deployment controls.",
   },
+  authenticationNavigation: {
+    group: "Components/Credentials",
+    name: "Keep authentication choices",
+    path: `${draft}&tab=credentials`,
+    auth: null,
+    actions: [
+      { selector: "#harness-auth-method", value: "api_key" },
+      { selector: "#harness-auth-secret", value: "sec_demo_model" },
+    ],
+    description:
+      "Authentication method and existing source references survive navigation. Reload authentication source discards the choice.",
+    steps: [
+      "Switch to Configuration and back to Credentials.",
+      "Open Namespaces and return. Reload authentication source to restore saved settings.",
+    ],
+    gap: "Simulated Secret metadata, not provider authentication proof.",
+  },
   authMissing: {
     group: "Components/Credentials",
     name: "No authentication source",
     path: `${draft}&tab=credentials`,
     auth: null,
     description: "Select a source before deployment.",
-    gap: "The API-key field expects an existing Secret ID, not a raw model API key. Create that Secret outside this console.",
+    gap: "The API-key field expects an existing Secret or a Secret created through the picker. It never reads raw credential values back.",
+  },
+  authApiKeySwitch: {
+    group: "Components/Credentials",
+    name: "API key Secret switch",
+    path: `${draft}&tab=credentials`,
+    extraSecrets: [
+      { id: "sec_demo_model_replacement", name: "Replacement model API key (simulated)" },
+    ],
+    actions: [{ selector: "#harness-auth-secret", value: "sec_demo_model_replacement" }],
+    description:
+      "The authentication source uses the same Secret picker and stages a different API-key Secret.",
+  },
+  authSecretReplacement: {
+    group: "Components/Credentials",
+    name: "Replace model Secret",
+    path: `${draft}&tab=credentials`,
+    extraSecrets: [{ id: "sec_demo_replacement", name: "Replacement model token" }],
+    actions: [
+      { selector: "#harness-auth-method", value: "codex_pat" },
+      { selector: "#harness-auth-secret", value: "sec_demo_replacement" },
+    ],
+    description:
+      "Save the selected model Secret, then confirm the exact Agent grant through Namespace IAM. Saving does not establish model readiness.",
+    steps: [
+      "Click Save authentication source.",
+      "The refreshed form retains Service Accounts; the request log shows the Agent PATCH followed by exact Secret access creation.",
+    ],
+  },
+  authSecretGrantDenied: {
+    group: "Components/Credentials",
+    name: "Authentication saved, grant denied",
+    path: `${draft}&tab=credentials`,
+    rules: [{ suffix: "/iam/access-bindings", method: "POST", status: 403, once: true }],
+    actions: [click("Save authentication source")],
+    description:
+      "The Agent binding is saved, but granting its Secret access is denied. Deployment stays blocked in this view until access is confirmed.",
+    steps: [
+      "Read the partial-save message and disabled authentication controls.",
+      "Click Retry credential access. This fixture permits the next grant to simulate an administrator restoring authority.",
+      "The form refreshes without another Agent PATCH.",
+    ],
+  },
+  authSecretGrantLoading: {
+    group: "Components/Credentials",
+    name: "Checking model Secret access",
+    path: `${draft}&tab=credentials`,
+    rules: [{ suffix: "/iam/access-bindings", method: "POST", hold: true }],
+    actions: [click("Save authentication source")],
+    description:
+      "Authentication is saved while the grant is pending. Saving and deployment remain disabled; a timeout reports partial success.",
+  },
+  authSaveUnknown: {
+    group: "Components/Credentials",
+    name: "Authentication save unknown",
+    path: `${draft}&tab=credentials`,
+    rules: [
+      { suffix: "/agents/agt_00000000-0000-4000-8000-000000000001", method: "PATCH", status: 503 },
+    ],
+    actions: [click("Save authentication source")],
+    description:
+      "An unavailable save response requires Refresh to inspect persisted state before another save or grant attempt.",
   },
   authRuntime: {
     group: "Components/Credentials",
@@ -1899,6 +2279,25 @@ export const scenarios = {
     deployed: true,
     nativeAdmin: "denied",
     description: "Denied native-admin access hides the whole panel.",
+  },
+  workspaceNavigation: {
+    group: "Components/Workspace",
+    name: "Keep unsaved files",
+    path: `${revision}&tab=workspace`,
+    deployed: true,
+    actions: [
+      {
+        selector: '[id="workspace-AGENTS.md"]',
+        value: "# Unsaved guidance\nKeep these edits while navigating.\n",
+      },
+      { selector: '[id="workspace-USER.md"]', value: "" },
+    ],
+    description: "File edits, including empty text, survive tabs and pages until Save or Reload.",
+    steps: [
+      "Switch to Configuration and back to Workspace files.",
+      "Open Namespaces, return with Back, then save AGENTS.md and reload USER.md.",
+    ],
+    gap: "Simulated files; no live Agent gateway.",
   },
   workspace: {
     group: "Components/Workspace",
@@ -2069,6 +2468,7 @@ export const scenarios = {
       ...readyForm,
       { selector: "#agent-name", value: "Slack launch demo" },
       click("Configure Slack"),
+      { selector: "#slack-dm-policy", value: "disabled" },
       { selector: "#slack-channel-ids", value: "CDEMO123" },
       ...allowEveryoneInSlackChannels,
       { selector: "#slack-secret-slack-app-token", value: "sec_demo_slack_app_token" },

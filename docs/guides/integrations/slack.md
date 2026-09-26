@@ -31,7 +31,11 @@ go to the Agent's gateway; model credentials are configured separately.
 1. Open the Agent's new revision in the console and open **Channels**. Enable
    Slack, enter the channel IDs, then either enter **Allowed channel user IDs**
    or select **Allow everyone in these channels to mention the agent**. Leave
-   **Require mention** enabled for this setup. For each token menu, select a
+   **Require mention** enabled for this setup. New Slack setups use
+   [threaded channel replies](../../reference/configuration/secrets.md#native-channel-configuration).
+   Choose **Disabled** under **Direct-message policy** for channel-only access,
+   or keep **Allowlist** and enter **Allowed DM user IDs**.
+   For each token menu, select a
    Namespace Secret or **Create new Secret...**.
    The modal prefills the token key and accepts its value in a password field.
    **Create Secret** stores it immediately; **Save configuration** saves the
@@ -73,9 +77,12 @@ bot. To enable one-to-one messages:
    Reinstall the Slack app if the scope is new. In
    [App Home settings](https://docs.slack.dev/tools/python-slack-sdk/socket-mode/#using-socket-mode),
    enable sending messages from the **Messages** tab.
-2. Configure `allowFrom` in native Configuration JSON, save the channel draft,
-   and redeploy. The simple Slack drawer edits channel sender access; it does
-   not edit direct-message `allowFrom`.
+2. In **Channels → Edit Slack**, select **Allowlist** under **Direct-message
+   policy** and enter **Allowed DM user IDs**. Save and redeploy. Choose
+   **Disabled** to block DMs (recommended for organization-wide installs), or
+   use [Pairing or Open](../../reference/configuration/secrets.md#native-channel-configuration).
+   Channel user IDs do not grant DM access. If native `dm.enabled` is `false`,
+   enable it in native Configuration JSON before testing DMs.
 3. From an allowed user account, send the app a direct message with a new
    phrase and confirm a reply. A channel reply does not verify direct messages.
 

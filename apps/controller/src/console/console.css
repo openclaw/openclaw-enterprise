@@ -153,11 +153,18 @@ p {
   padding: 28px;
 }
 .brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 13px;
   text-transform: uppercase;
   letter-spacing: 1.5px;
   color: var(--accent);
   margin-bottom: 38px;
+}
+.brand img {
+  flex: none;
+  object-fit: contain;
 }
 .auth label {
   display: block;
@@ -213,7 +220,7 @@ p {
 }
 .sidebar .brand {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   padding: 10px 12px 0;
   margin-bottom: 28px;
@@ -330,14 +337,6 @@ p {
   color: var(--accent);
   font-weight: 600;
 }
-.namespace-submenu {
-  position: absolute;
-  left: calc(100% - 2px);
-  bottom: 0;
-  max-height: min(420px, 65vh);
-  max-width: 320px;
-  overflow-y: auto;
-}
 .menu .muted {
   margin: 12px;
   font-size: 13px;
@@ -349,10 +348,36 @@ p {
 }
 .page-header {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: start;
   gap: 20px;
   margin-bottom: 28px;
+}
+.page-actions {
+  display: flex;
+  align-items: end;
+  gap: 12px;
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+.namespace-selector {
+  display: grid;
+  gap: 6px;
+  max-width: 100%;
+  font-size: 14px;
+}
+.namespace-selector label {
+  font-weight: 550;
+}
+.namespace-selector select {
+  width: 240px;
+  max-width: 100%;
+  min-height: 42px;
+  padding: 10px 12px;
+  border: 1px solid #bbc7c0;
+  border-radius: 8px;
+  text-overflow: ellipsis;
 }
 .scope {
   margin: 0;
@@ -464,13 +489,6 @@ p {
     position: absolute;
     top: 15px;
     right: 14px;
-  }
-  .namespace-submenu {
-    position: static;
-    margin-top: 6px;
-    min-width: 0;
-    max-height: 35vh;
-    box-shadow: none;
   }
   .resource {
     padding: 20px;

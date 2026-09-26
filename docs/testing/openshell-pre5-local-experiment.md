@@ -9,10 +9,11 @@ run a production Agent.
 ## Result
 
 The experiment deployed the exact pre.5 OpenShell gateway, sandbox runtime, and
-supervisor images to a disposable k3d cluster. The CI-only compatibility case
-passed: **1 passed, 0 failed, 0 skipped** in about three minutes. OpenShell
-created a Sandbox custom resource and provider-owned Agent Pod, and the real
-Codex app server completed an authenticated model turn over its Pod-loopback
+supervisor images to a disposable k3d cluster. The verification-only
+compatibility case passed: **1 passed, 0 failed, 0 skipped** in about three
+minutes. OpenShell created a Sandbox custom resource and provider-owned Agent
+Pod, and the real Codex app server completed an authenticated model turn over
+its Pod-loopback
 WebSocket.
 
 The same test verified the staged workload token's identity claims, required
@@ -116,7 +117,8 @@ production Driver's fail-closed behavior.
 
 Follow the [OpenShell test guide](openshell.md) and use its CI-owned preparation
 path. Use `OCC_TEST_OPENSHELL_SECRET_PROJECTION=0` for unchanged production
-requirements and `1` for the documented CI compatibility bridge. Record:
+requirements and `1` for the documented verification-only compatibility bridge.
+Record:
 
 - exact OpenShell source tag and immutable gateway, sandbox, and supervisor
   image digests;

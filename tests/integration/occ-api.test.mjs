@@ -523,23 +523,23 @@ async function createInjectedFixture(options = {}) {
               controller = new OpenClawController(installation, {
                 state: platformState,
                 recordOperations: options.recordOperations ?? false,
-                ...(options.providers === undefined ? {} : { providers: options.providers }),
+                ...(options.backends === undefined ? {} : { backends: options.backends }),
               });
-              if (options.providers?.length) {
+              if (options.backends?.length) {
                 // Association alone must never provision an upstream account or credential.
-                const unexpectedProviderCall = async () => assert.fail("Unexpected Provider call");
+                const unexpectedBackendCall = async () => assert.fail("Unexpected Backend call");
                 controller.registerDriver({
-                  id: options.providers[0].drivers.service_account,
+                  id: options.backends[0].drivers.service_account,
                   implementation: "chatgpt",
                   capability: "service_account",
-                  providerId: options.providers[0].id,
-                  create: unexpectedProviderCall,
-                  createCredential: unexpectedProviderCall,
-                  delete: unexpectedProviderCall,
+                  backendId: options.backends[0].id,
+                  create: unexpectedBackendCall,
+                  createCredential: unexpectedBackendCall,
+                  delete: unexpectedBackendCall,
                 });
                 controller.selectDriver(
                   "service_account",
-                  options.providers[0].drivers.service_account,
+                  options.backends[0].drivers.service_account,
                 );
               }
               return controller;
@@ -551,8 +551,8 @@ async function createInjectedFixture(options = {}) {
       secretDriver,
       resolveHarness: resolveApprovedDevelopmentHarness,
       auditSink,
-      ...(Object.hasOwn(options, "providerSummaries")
-        ? { providerSummaries: options.providerSummaries }
+      ...(Object.hasOwn(options, "backendSummaries")
+        ? { backendSummaries: options.backendSummaries }
         : {}),
       development: {
         enabled: true,
@@ -1230,9 +1230,9 @@ test("Agent deletion closes every synchronous mutation boundary before teardown"
   assert.equal(revisions.data.length, 1, "no mutation may admit work after deletion starts");
 });
 
-test("Agent Provider API preserves nullable drafts and immutable revision associations", async () => {
+test("Agent Backend API preserves nullable drafts and immutable revision associations", async () => {
   const fixture = await createInjectedFixture({
-    providers: [
+    backends: [
       {
         id: "openai",
         type: "chatgpt",
@@ -1243,19 +1243,16 @@ test("Agent Provider API preserves nullable drafts and immutable revision associ
         drivers: { service_account: "chatgpt-service-accounts" },
       },
     ],
-    providerSummaries: [{ id: "openai", type: "chatgpt" }],
+    backendSummaries: [{ id: "openai", type: "chatgpt" }],
   });
   const controller = {
     request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
   };
   await bootstrap(controller);
-  const providers = await controller.request("GET", "/providers");
-  assert.equal(providers.status, 200);
-  assert.deepEqual(providers.data, [{ id: "openai", type: "chatgpt" }]);
-  assert.doesNotMatch(
-    JSON.stringify(providers.body),
-    /apiKey|workspaceId|credential|drivers|path/i,
-  );
+  const backends = await controller.request("GET", "/backends");
+  assert.equal(backends.status, 200);
+  assert.deepEqual(backends.data, [{ id: "openai", type: "chatgpt" }]);
+  assert.doesNotMatch(JSON.stringify(backends.body), /apiKey|workspaceId|credential|drivers|path/i);
   const namespace = await createNamespace(controller, "provider-api");
   const configuration = await createConfiguration(controller, namespace.id);
   const collection = `/namespaces/${namespace.id}/agents`;
@@ -1263,16 +1260,16 @@ test("Agent Provider API preserves nullable drafts and immutable revision associ
   // Exercise wire defaults and persistence through the real authenticated Fastify routes.
   for (const [name, association] of [
     ["omitted", {}],
-    ["null", { providerId: null }],
-    ["selected", { providerId: "openai" }],
+    ["null", { backendId: null }],
+    ["selected", { backendId: "openai" }],
   ]) {
     const result = await controller.request("POST", collection, {
       body: { name, configurationId: configuration.id, ...association },
     });
     assert.equal(result.status, 201, JSON.stringify(result.body));
-    assert.equal(result.data.providerId, association.providerId ?? null);
+    assert.equal(result.data.backendId, association.backendId ?? null);
     const read = await controller.request("GET", `${collection}/${result.data.id}`);
-    assert.equal(read.data.providerId, association.providerId ?? null);
+    assert.equal(read.data.backendId, association.backendId ?? null);
   }
 
   const agents = await controller.request("GET", collection);
@@ -1282,45 +1279,45 @@ test("Agent Provider API preserves nullable drafts and immutable revision associ
     body: { configurationId: configuration.id },
   });
   assert.equal(preserved.status, 200);
-  assert.equal(preserved.data.providerId, "openai");
+  assert.equal(preserved.data.backendId, "openai");
   await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
   await bindHarnessKey(fixture, namespace.id, selected);
   const revision = await controller.request("POST", `${target}/deploy`);
   assert.equal(revision.status, 202, JSON.stringify(revision.body));
-  assert.equal(revision.data.providerId, "openai");
+  assert.equal(revision.data.backendId, "openai");
 
   const cleared = await controller.request("PATCH", target, {
-    body: { configurationId: configuration.id, providerId: null },
+    body: { configurationId: configuration.id, backendId: null },
   });
   assert.equal(cleared.status, 200);
-  assert.equal(cleared.data.providerId, null);
+  assert.equal(cleared.data.backendId, null);
   const prior = await controller.request("GET", `${target}/revisions/${revision.data.id}`);
-  assert.equal(prior.data.providerId, "openai", "draft changes cannot rewrite admitted revisions");
+  assert.equal(prior.data.backendId, "openai", "draft changes cannot rewrite admitted revisions");
   const independent = await controller.request("POST", `${target}/deploy`);
   assert.equal(independent.status, 202);
-  assert.equal(independent.data.providerId, null);
+  assert.equal(independent.data.backendId, null);
 
-  for (const providerId of ["", " ", "unknown", 42, [], {}]) {
-    const expectedStatus = providerId === "unknown" ? 404 : 400;
+  for (const backendId of ["", " ", "unknown", 42, [], {}]) {
+    const expectedStatus = backendId === "unknown" ? 404 : 400;
     const invalid = await controller.request("POST", collection, {
-      body: { name: "invalid-provider", configurationId: configuration.id, providerId },
+      body: { name: "invalid-provider", configurationId: configuration.id, backendId },
     });
     assert.equal(invalid.status, expectedStatus, JSON.stringify(invalid.body));
     const invalidPatch = await controller.request("PATCH", target, {
-      body: { configurationId: configuration.id, providerId },
+      body: { configurationId: configuration.id, backendId },
     });
     assert.equal(invalidPatch.status, expectedStatus, JSON.stringify(invalidPatch.body));
   }
   const unchanged = await controller.request("GET", target);
-  assert.equal(unchanged.data.providerId, null);
+  assert.equal(unchanged.data.backendId, null);
   const replaced = await controller.request("PATCH", target, {
-    body: { configurationId: configuration.id, providerId: "openai" },
+    body: { configurationId: configuration.id, backendId: "openai" },
   });
   assert.equal(replaced.status, 200);
-  assert.equal(replaced.data.providerId, "openai");
+  assert.equal(replaced.data.backendId, "openai");
 });
 
-test("Installation API exposes Agent provisioning capabilities without configured Providers", async () => {
+test("Installation API exposes Agent provisioning capabilities without configured Backends", async () => {
   let ensureNamespaceCalls;
   let deleteNamespaceCalls;
   const computeDriver = {
@@ -1350,8 +1347,8 @@ test("Installation API exposes Agent provisioning capabilities without configure
     async retireRevision() {},
   };
   const fixture = await createInjectedFixture({
-    providers: [],
-    providerSummaries: [],
+    backends: [],
+    backendSummaries: [],
     computeDriver,
   });
   ensureNamespaceCalls = fixture.computeCalls.ensureNamespace;
@@ -1368,9 +1365,9 @@ test("Installation API exposes Agent provisioning capabilities without configure
   assert.equal(installation.status, 200);
   assert.deepEqual(installation.data.capabilities, bootstrapped.capabilities);
 
-  const providers = await controller.request("GET", "/providers");
-  assert.equal(providers.status, 200);
-  assert.deepEqual(providers.data, []);
+  const backends = await controller.request("GET", "/backends");
+  assert.equal(backends.status, 200);
+  assert.deepEqual(backends.data, []);
 });
 
 test("Agent deployment status polls the admitted revision work with exact read authorization", async () => {
@@ -1479,6 +1476,121 @@ test("Agent deployment status polls the admitted revision work with exact read a
   const deniedApp = fixture.createApp(revisionReader);
   const denied = await injectedRequest(deniedApp, "GET", path);
   assert.equal(denied.status, 403);
+});
+
+test("Installation deployment inventory fails closed on incomplete authorization and reports in-flight work", async () => {
+  const deploymentWorks = new Map();
+  const fixture = await createInjectedFixture({ deploymentWorks, recordOperations: true });
+  const controller = {
+    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
+  };
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, "deployment-inventory");
+  const agent = await createAgent(controller, namespace.id, "inventory-agent");
+  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  await bindHarnessKey(fixture, namespace.id, agent);
+  const admitted = await controller.request(
+    "POST",
+    `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
+  );
+  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+  const workKey = `agent_revision:${admitted.data.id}:reconcile`;
+  const completedWork = {
+    kind: "lifecycle",
+    idempotencyKey: workKey,
+    namespaceId: namespace.id,
+    agentId: agent.id,
+    revisionId: admitted.data.id,
+    actorId: fixture.principal.id,
+    state: "succeeded",
+    availableAt: new Date(0),
+    attemptCount: 1,
+    completedAt: new Date(1),
+    createdAt: new Date(0),
+    updatedAt: new Date(1),
+  };
+  deploymentWorks.set(workKey, completedWork);
+  await fixture.platformState.transact((unit) =>
+    unit.agents.compareAndSetActiveRevision(namespace.id, agent.id, undefined, admitted.data.id),
+  );
+
+  const inventoryPath = "/installation/deployment-inventory";
+  const inventory = await controller.request("GET", inventoryPath);
+  assert.equal(inventory.status, 200, JSON.stringify(inventory.body));
+  assert.equal(inventory.data.installationId, fixture.installationId);
+  assert.equal(inventory.data.namespaces.length, 2);
+  assert.deepEqual(
+    inventory.data.namespaces.find((candidate) => candidate.id === namespace.id),
+    {
+      id: namespace.id,
+      status: "ready",
+      agents: [
+        {
+          id: agent.id,
+          status: "active",
+          desiredRuntimeState: "running",
+          executionMode: "embedded",
+          activeRevisionId: admitted.data.id,
+          deploymentInProgress: false,
+        },
+      ],
+    },
+  );
+
+  // A complete fleet response must not turn any exact-resource denial into omission.
+  for (const restriction of [
+    {
+      id: "deny-inventory-namespace-read",
+      namespaceId: namespace.id,
+      resourceKind: "namespace",
+      resourceId: namespace.id,
+      action: "read",
+      effect: "deny",
+    },
+    {
+      id: "deny-inventory-agent-read",
+      namespaceId: namespace.id,
+      resourceKind: "agent",
+      resourceId: agent.id,
+      action: "read",
+      effect: "deny",
+    },
+    {
+      id: "deny-inventory-agent-deploy",
+      namespaceId: namespace.id,
+      resourceKind: "agent",
+      resourceId: agent.id,
+      action: "deploy",
+      effect: "deny",
+    },
+    {
+      id: "deny-inventory-revision-read",
+      namespaceId: namespace.id,
+      resourceKind: "agent_revision",
+      resourceId: admitted.data.id,
+      action: "read",
+      effect: "deny",
+    },
+  ]) {
+    fixture.state.restrictions.push(restriction);
+    const denied = await controller.request("GET", inventoryPath);
+    assert.equal(denied.status, 403, restriction.id);
+    fixture.state.restrictions.pop();
+  }
+
+  deploymentWorks.set(workKey, { ...completedWork, state: "claimed" });
+  const inProgress = await controller.request("GET", inventoryPath);
+  assert.equal(inProgress.status, 200, JSON.stringify(inProgress.body));
+  const inProgressAgent = inProgress.data.namespaces
+    .find((candidate) => candidate.id === namespace.id)
+    ?.agents.find((candidate) => candidate.id === agent.id);
+  assert.equal(inProgressAgent?.deploymentInProgress, true);
+
+  // Missing durable work makes completeness unknowable and must fail the whole operation.
+  deploymentWorks.set(workKey, undefined);
+  const incomplete = await controller.request("GET", inventoryPath);
+  assert.equal(incomplete.status, 503);
+  assert.equal(incomplete.body.error.code, "DEPENDENCY_UNAVAILABLE");
 });
 
 test("Agent create and update replace policy-only plugin maps and revisions freeze the requested snapshot", async () => {
@@ -2176,7 +2288,7 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
   assert.equal(accountList.status, 200);
   assert.deepEqual(accountList.data, [assigned.data]);
   assert.equal(JSON.stringify(accountList.data).includes(accountB.id), false);
-  assert.equal(Object.hasOwn(accountList.data[0], "providerId"), false);
+  assert.equal(Object.hasOwn(accountList.data[0], "backendId"), false);
 
   const denied = await injectedRequest(
     readerApp,
@@ -2313,6 +2425,24 @@ test("session inspection stays optional and never exposes session or credential 
   const exposed = JSON.stringify(authenticated.data);
   assert.doesNotMatch(exposed, /token|password|credential/i);
   assert.equal(exposed.includes(fixture.app.defaultSession.cookie), false);
+  assert.match(authenticated.data.sessionKey, /^[A-Za-z0-9_-]+$/);
+
+  const repeated = await injectedRequest(fixture.app, "GET", "/api/auth/session");
+  assert.equal(repeated.status, 200);
+  assert.equal(repeated.data.sessionKey, authenticated.data.sessionKey);
+  assert.deepEqual(repeated.data.user, authenticated.data.user);
+
+  const nextSession = await signInWithEmailPassword({
+    fetch: fixture.app.fetch.bind(fixture.app),
+    email: fixture.authFixture.email,
+    password: fixture.authFixture.password,
+  });
+  const nextAuthenticated = await injectedRequest(fixture.app, "GET", "/api/auth/session", {
+    session: nextSession,
+  });
+  assert.equal(nextAuthenticated.status, 200);
+  assert.notEqual(nextAuthenticated.data.sessionKey, authenticated.data.sessionKey);
+  assert.deepEqual(nextAuthenticated.data.user, authenticated.data.user);
 });
 
 test("administrator-created auth accounts sign in and receive only provisioned IAM access", async () => {
@@ -2569,11 +2699,22 @@ test("OCC Fastify enforces strict schemas, canonical errors, and its real 64 KiB
   assert.equal(oversized.status, 413);
   assert.equal(oversized.body.error.code, "PAYLOAD_TOO_LARGE");
 
-  const unsupportedMethod = await controller.request("DELETE", "/namespaces");
-  assert.equal(unsupportedMethod.status, 405);
-  assert.equal(unsupportedMethod.body.error.code, "METHOD_NOT_ALLOWED");
-  assert.match(unsupportedMethod.headers.get("allow") ?? "", /GET/);
-  assert.match(unsupportedMethod.headers.get("allow") ?? "", /POST/);
+  // Keep method order and overlapping literal/parameter paths in the public Allow header.
+  for (const [method, path, allowed] of [
+    ["DELETE", "/namespaces", "POST, GET"],
+    [
+      "OPTIONS",
+      `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+      "GET, PATCH, DELETE",
+    ],
+    ["OPTIONS", `/namespaces/${namespace.id}/agents/${agent.id}/deploy?ignored=true`, "POST"],
+    ["OPTIONS", `/namespaces/${namespace.id}/agents/provision`, "POST, PATCH, GET, DELETE"],
+  ]) {
+    const unsupportedMethod = await controller.request(method, path);
+    assert.equal(unsupportedMethod.status, 405);
+    assert.equal(unsupportedMethod.body.error.code, "METHOD_NOT_ALLOWED");
+    assert.equal(unsupportedMethod.headers.get("allow"), allowed);
+  }
 
   const fixture = await createInjectedFixture();
   const bootstrapped = await injectedRequest(fixture.app, "POST", "/installation/bootstrap", {
@@ -3141,6 +3282,7 @@ test("two Namespaces become independently ready and deletion tombstones only its
   assert.match(readyDeployment.data.id, identifier("rev"));
   assert.deepEqual(Object.keys(readyDeployment.data).sort(), [
     "agentId",
+    "backendId",
     "compute",
     "configuration",
     "configurationGeneration",
@@ -3151,7 +3293,6 @@ test("two Namespaces become independently ready and deletion tombstones only its
     "harnessAuth",
     "id",
     "namespaceId",
-    "providerId",
     "revision",
   ]);
   assert.equal(readyDeployment.data.configurationId, firstConfiguration.id);

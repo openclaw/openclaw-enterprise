@@ -1,4 +1,5 @@
 import { element, button } from "../dom.mjs";
+import { renderSecretReference } from "../agents/secret-picker.mjs";
 
 const clone = (value) => (value === undefined ? undefined : structuredClone(value));
 export const isRecord = (value) =>
@@ -190,6 +191,21 @@ function renderCard(section, state, provider) {
       ),
     ),
   );
+  const credentials = element("dl", { className: "configuration-summary" });
+  for (const binding of provider.secretBindings ?? []) {
+    credentials.append(
+      element("dt", {}, `${binding.label} (${binding.key})`),
+      element(
+        "dd",
+        {},
+        renderSecretReference(
+          state.drawerContext,
+          state.drawerContext.secretBindings?.[binding.key]?.source,
+        ),
+      ),
+    );
+  }
+  card.append(credentials);
   if (state.readOnly) {
     card.append(
       element(
@@ -249,6 +265,9 @@ async function save(state, values, dialog, targetError, secretBindingUpdate) {
   try {
     await state.onSave(values, secretBindingUpdate ?? {});
     succeeded = true;
+    if (state.section.isConnected) {
+      state.drawerContext.drafts?.forget("channels");
+    }
     dialog?.close();
     dialog?.remove();
   } catch (error) {
@@ -276,7 +295,7 @@ export function input(id, value, attrs = {}) {
   return element("input", { id, value: value ?? "", autocomplete: "off", ...attrs });
 }
 
-function openDrawer(section, state, provider) {
+function openDrawer(section, state, provider, retained) {
   if (state.pending || state.outcomeUnknown) {
     return;
   }
@@ -292,11 +311,18 @@ function openDrawer(section, state, provider) {
   const config = isRecord(support.config) ? support.config : {};
   const drawerContext = {
     ...state.drawerContext,
+    isConfigured: providerConfig(state.values, provider.id) !== undefined,
     secretBindings:
       state.drawerContext.secretBindings === undefined
         ? undefined
         : structuredClone(state.drawerContext.secretBindings),
   };
+  const stale = retained && retained.baseline !== state.drawerContext.baseline;
+  const unresolved = retained?.unresolved;
+  if (retained) {
+    drawerContext.draftSecretBindings = clone(retained.secretBindings);
+    drawerContext.draftChangedSecrets = clone(retained.changedSecrets);
+  }
   const enabled = checkbox(
     `${provider.id}-enabled`,
     `Enable ${provider.name}`,
@@ -304,10 +330,12 @@ function openDrawer(section, state, provider) {
   );
   const body = element("form", { method: "dialog", className: "channel-drawer-form" });
   const feedback = element("div", { "aria-live": "polite" });
-  const cancel = button("Cancel", () => {
+  const discard = () => {
+    state.drawerContext.drafts?.forget("channels");
     dialog.close();
     dialog.remove();
-  });
+  };
+  const cancel = button("Cancel", discard);
   const submit = element(
     "button",
     { type: "submit", className: "primary" },
@@ -322,10 +350,7 @@ function openDrawer(section, state, provider) {
         {},
         `${statusOf(providerConfig(state.values, provider.id)).label === "Not configured" ? "Configure" : "Edit"} ${provider.name}`,
       ),
-      button("Close", () => {
-        dialog.close();
-        dialog.remove();
-      }),
+      button("Close", discard),
     ),
     element(
       "p",
@@ -336,13 +361,48 @@ function openDrawer(section, state, provider) {
     enabled,
   );
   provider.appendFields(body, config, drawerContext);
+  // Only ordinary channel controls belong to this draft. New Secret dialogs own token bytes.
+  const fields = [
+    ...body.querySelectorAll("input[id]:not([type=password]), select[id], textarea[id]"),
+  ];
+  for (const field of fields) {
+    const saved = retained?.fields[field.id];
+    if (saved) {
+      field.value = saved.value;
+      field.checked = saved.checked;
+      field.dispatchEvent(new Event("input"));
+      field.dispatchEvent(new Event("change"));
+    }
+  }
+  state.drawerContext.drafts?.track("channels", () => ({
+    provider: provider.id,
+    baseline: retained?.baseline ?? state.drawerContext.baseline,
+    fields: Object.fromEntries(
+      fields.map((field) => [field.id, { value: field.value, checked: field.checked }]),
+    ),
+    secretBindings: clone(drawerContext.draftSecretBindings),
+    changedSecrets: clone(drawerContext.draftChangedSecrets),
+    unresolved: unresolved || state.pending || state.outcomeUnknown,
+  }));
+  if (stale || unresolved) {
+    submit.disabled = true;
+    feedback.append(
+      element(
+        "p",
+        { className: "error", role: "alert" },
+        unresolved
+          ? "Outcome unknown. Cancel this editor and reload the page to inspect saved settings before saving again."
+          : "The saved Configuration changed while you were editing. Cancel this editor to use current settings.",
+      ),
+    );
+  }
   if (state.copy.drawerFootnote) {
     body.append(element("p", { className: "muted" }, state.copy.drawerFootnote));
   }
   body.append(feedback, element("div", { className: "form-actions" }, cancel, submit));
   body.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (state.pending) {
+    if (state.pending || stale || unresolved) {
       return;
     }
     if (
@@ -372,6 +432,8 @@ function openDrawer(section, state, provider) {
   dialog.addEventListener("cancel", (event) => {
     if (state.pending) {
       event.preventDefault();
+    } else {
+      state.drawerContext.drafts?.forget("channels");
     }
   });
   dialog.append(body);
@@ -424,5 +486,14 @@ export function renderChannelSection(
     );
   }
   render();
+  const retained = drawerContext.drafts?.get("channels");
+  if (retained && !readOnly) {
+    queueMicrotask(() => {
+      const provider = providers.find((item) => item.id === retained.provider);
+      if (section.isConnected && provider) {
+        openDrawer(section, state, provider, retained);
+      }
+    });
+  }
   return section;
 }

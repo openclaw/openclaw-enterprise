@@ -508,9 +508,9 @@ for (const page of pages.values()) {
     "<title>" +
     escape(page.title) +
     " · OpenClaw Enterprise</title>" +
-    '<link rel="icon" href="/assets/lobster-mech-transparent.png"><link rel="stylesheet" href="/assets/site.css"><link rel="stylesheet" href="/pagefind/pagefind-ui.css">' +
+    '<link rel="icon" href="/assets/favicon.ico" sizes="16x16 32x32 48x48"><link rel="icon" type="image/png" sizes="16x16" href="/assets/favicon-16.png"><link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32.png"><link rel="apple-touch-icon" sizes="180x180" href="/assets/apple-touch-icon.png"><link rel="stylesheet" href="/assets/site.css"><link rel="stylesheet" href="/pagefind/pagefind-ui.css">' +
     '<script src="/pagefind/pagefind-ui.js" defer></script><script type="module" src="/assets/site.mjs"></script></head><body>' +
-    '<a class="skip" href="#content">Skip to content</a><header><div class="header-row"><a class="brand" href="/"><img src="/assets/lobster-mech-transparent.png" alt=""><span>OpenClaw Enterprise</span><small>DOCS</small></a>' +
+    '<a class="skip" href="#content">Skip to content</a><header><div class="header-row"><a class="brand" href="/"><img src="/assets/oce-mascot.png" alt=""><span>OpenClaw Enterprise</span><small>DOCS</small></a>' +
     '<button id="search-open" type="button">Search docs <kbd>⌘ K</kbd></button><a class="github" href="' +
     repository +
     '">GitHub</a><button id="theme" type="button" aria-label="Toggle theme">◐</button></div>' +

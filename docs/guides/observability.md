@@ -6,13 +6,19 @@ OpenTelemetry Collector also exposes metrics about its own delivery pipeline;
 it does not collect application metrics, traces, or audit records. Run commands
 from the repository root.
 
-| Signal              | Available path                                                                                                                                         |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Operational logs    | Local container output; optional OpenTelemetry Collector export over OTLP/HTTP to your log backend.                                                    |
-| Collector metrics   | Prometheus endpoint on port `8888` for the collection pipeline itself.                                                                                 |
-| Audit records       | Stored separately in PostgreSQL; the Collector does not export them. See [Audit Log](topics/audit-log.md).                                             |
-| Application metrics | Optional private OCC Prometheus endpoints; see [production scraping](observability/metrics.md) and the [development dashboard](../testing/metrics.md). |
-| Distributed traces  | No application tracing pipeline is installed.                                                                                                          |
+| Signal              | Available path                                                                                                                                                           |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Operational logs    | Local container output; optional OpenTelemetry Collector export over OTLP/HTTP to your log backend.                                                                      |
+| Collector metrics   | Prometheus endpoint on port `8888` for the collection pipeline itself.                                                                                                   |
+| Audit records       | Stored separately in PostgreSQL; the Collector does not export them. See [Audit Log](topics/audit-log.md).                                                               |
+| Application metrics | Private OCC Prometheus endpoints enabled by default in Helm; see [production scraping](observability/metrics.md) and the [development dashboard](../testing/metrics.md). |
+| Distributed traces  | No application tracing pipeline is installed.                                                                                                                            |
+
+The default Helm installation needs no telemetry backend: operational logs go to
+container output at `info`, and private metrics listeners run with no scraper
+ingress grant. Connect your collectors using this guide and the metrics guide.
+For disposable visualization, use the [demonstration stack](observability/demo.md),
+which is not recommended for production.
 
 The Collector exports predefined operational events and approved fields. It
 excludes arbitrary messages, prompts, responses, and Codex protocol output, even

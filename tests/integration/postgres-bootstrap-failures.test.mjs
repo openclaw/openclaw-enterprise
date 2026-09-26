@@ -456,7 +456,7 @@ test(
     assert.equal(counts.service_keys, loserCreatedServiceKey ? 2 : 1);
     assert.equal(counts.users, loserCreatedServiceKey ? 2 : 1);
 
-    const driverConfiguration = { ...createInstallationDriverConfiguration(), provider: [] };
+    const driverConfiguration = { ...createInstallationDriverConfiguration(), backend: [] };
     const reloaded = await composePostgresDevelopment(
       {
         mode: "development",

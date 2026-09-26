@@ -283,21 +283,34 @@ function accountName(input: ProvisionAuthAccountInput): string {
 
 function safeSessionResponse(response: unknown): {
   readonly authenticated: true;
+  readonly sessionKey: string;
   readonly user: { readonly id: string; readonly email: string; readonly name: string };
 } | null {
   if (typeof response !== "object" || response === null) {
     return null;
   }
   const { session, user } = response as { readonly session?: unknown; readonly user?: unknown };
-  if (!session || typeof user !== "object" || user === null) {
+  if (
+    typeof session !== "object" ||
+    session === null ||
+    typeof user !== "object" ||
+    user === null
+  ) {
     return null;
   }
+  const { id: sessionKey } = session as Record<string, unknown>;
   const { id, email, name } = user as Record<string, unknown>;
-  if (!isNonEmptyString(id) || !isNonEmptyString(email) || !isNonEmptyString(name)) {
+  if (
+    !isNonEmptyString(sessionKey) ||
+    !isNonEmptyString(id) ||
+    !isNonEmptyString(email) ||
+    !isNonEmptyString(name)
+  ) {
     return null;
   }
   return {
     authenticated: true,
+    sessionKey,
     user: { id, email, name },
   };
 }

@@ -211,9 +211,11 @@ def run_expect_failure(args: argparse.Namespace) -> int:
         denied = command.wait_for_pattern(denial, args.timeout)
         reply = assistant_reply_line(command.chunks, args.nonce, args.prompt)
         if reply is not None:
-            raise RuntimeError(f"invalid token TUI rendered an assistant reply: {reply}")
+            raise RuntimeError(f"denied TUI rendered an assistant reply: {reply}")
         if not denied:
-            raise TimeoutError(f"Timed out waiting for invalid-token denial.\n{transcript_tail(command.chunks)}")
+            raise TimeoutError(
+                f"Timed out waiting for authentication denial.\n{transcript_tail(command.chunks)}"
+            )
         if command.process.poll() is None:
             command.send_ctrl_d()
             command.wait_for_exit(args.exit_timeout)

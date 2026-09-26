@@ -87,7 +87,7 @@ function revision(overrides = {}) {
     namespaceId,
     agentId,
     revision: 1,
-    providerId: "provider-test",
+    backendId: "provider-test",
     configurationId: "cfg_00000000-0000-4000-8000-000000000001",
     configurationKind: "agent",
     configurationGeneration: 1,

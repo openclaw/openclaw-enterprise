@@ -9,7 +9,7 @@ environment variable. Use the path that matches the consumer:
 | ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
 | Model API key                             | [Agent `harnessAuth`](../../reference/agents.md#harness-authentication); the selected Harness receives it.                    |
 | Gateway credential, such as a Slack token | [Configuration `secretBindings`](../../reference/configuration/secrets.md#secret-bindings); the selected gateway receives it. |
-| Provider-issued model access token        | [Service accounts](../../reference/service-accounts.md); this follows its own credential lifecycle.                           |
+| Backend-issued model access token         | [Service accounts](../../reference/service-accounts.md); this follows its own credential lifecycle.                           |
 
 ## Create and bind a Secret
 

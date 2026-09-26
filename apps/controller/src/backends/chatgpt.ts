@@ -39,10 +39,10 @@ export class ChatGPTClient {
 
   constructor(options: ChatGPTClientOptions) {
     if (!WORKSPACE_ID.test(options.workspaceId)) {
-      throw new Error("The ChatGPT Provider requires a valid workspace ID.");
+      throw new Error("The ChatGPT Backend requires a valid workspace ID.");
     }
     if (!nonempty(options.adminKey) || /[\r\n]/.test(options.adminKey)) {
-      throw new Error("The ChatGPT Provider requires a valid mounted admin credential.");
+      throw new Error("The ChatGPT Backend requires a valid mounted admin credential.");
     }
     const ttl = options.credentialTtlSeconds ?? MAX_CREDENTIAL_TTL_SECONDS;
     if (!Number.isSafeInteger(ttl) || ttl < 1 || ttl > MAX_CREDENTIAL_TTL_SECONDS) {

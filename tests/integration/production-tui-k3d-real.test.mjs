@@ -3,7 +3,7 @@ import { defaultAgentModel } from "../../apps/controller/src/console/agents/star
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmod, mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, readdir, writeFile, rm } from "node:fs/promises";
 import https from "node:https";
 import net from "node:net";
 import { tmpdir } from "node:os";
@@ -56,6 +56,27 @@ test(
         return [name, value];
       }),
     );
+    const upgradeImageVariables = {
+      controller: "OCC_TEST_PRODUCTION_UPGRADE_CONTROLLER_IMAGE",
+      runtime: "OCC_TEST_PRODUCTION_UPGRADE_RUNTIME_IMAGE",
+    };
+    const upgradeImages = Object.fromEntries(
+      Object.entries(upgradeImageVariables).map(([name, variable]) => [
+        name,
+        process.env[variable],
+      ]),
+    );
+    const upgradeSelected = Object.values(upgradeImages).some(Boolean);
+    if (upgradeSelected) {
+      for (const [name, value] of Object.entries(upgradeImages)) {
+        assert.match(
+          value ?? "",
+          /^\S+@sha256:[a-f0-9]{64}$/,
+          `${upgradeImageVariables[name]} must select a real immutable image`,
+        );
+        assert.notEqual(value, images[name], `${name} upgrade image must change the digest`);
+      }
+    }
     assert.ok(process.env.OPENAI_API_KEY, "A real model credential is required");
     const model = process.env.OCC_TEST_OPENAI_MODEL ?? defaultAgentModel;
     const suffix = randomBytes(4).toString("hex");
@@ -224,6 +245,11 @@ test(
         gatewayImage: images.runtime,
         codexImage: images.runtime,
         cluster: `production-tui-${suffix}`,
+      });
+      // The native TUI runs as a second OpenClaw process inside the gateway container.
+      configuration.drivers.compute.configuration.resources.gateway.limits.memory = "4Gi";
+      await writeFile(join(directory, "installation.json"), JSON.stringify(configuration), {
+        mode: 0o600,
       });
       const port = await new Promise((resolve) => {
         const server = net.createServer();
@@ -473,6 +499,15 @@ test(
       assert.equal(stagedServiceKey.installationId, installation.data.id);
       const guideInstallation = await runGuideOcc(["installation", "get"]);
       assert.equal(guideInstallation.id, installation.data.id);
+      // Bind the cluster and OCC identities before either image workflow can mutate the release.
+      await kubectl(
+        "-n",
+        system,
+        "annotate",
+        "secret",
+        "occ-installation-startup",
+        `openclaw.dev/installation-id=${installation.data.id}`,
+      );
       const externalUnauthenticatedInstallation = await externalRequest(
         "GET",
         "/installation",
@@ -491,7 +526,7 @@ test(
         const result = await request(method, path, body, expected);
         return result.data;
       };
-      return { api, externalRequest, runGuideOcc };
+      return { api, baseURL, externalRequest, runGuideOcc };
     }
 
     async function provisionNamespaceAndAgent({ api, externalRequest, runGuideOcc }) {
@@ -601,6 +636,13 @@ test(
         { kind: "agent", values: nativeConfiguration },
         201,
       );
+      const modelSecret = await api(
+        "POST",
+        `/namespaces/${namespace.id}/secrets`,
+        { name: `model-${suffix}`, value: process.env.OPENAI_API_KEY },
+        201,
+      );
+      const harnessAuth = { method: "api_key", source: modelSecret.ref };
       const agent = await api(
         "POST",
         `/namespaces/${namespace.id}/agents`,
@@ -608,28 +650,117 @@ test(
           name: `tui-${suffix}`,
           configurationId: agentConfiguration.id,
           executionMode: "embedded",
+          harnessAuth,
         },
         201,
       );
+      const stoppedAgent = await api(
+        "POST",
+        `/namespaces/${namespace.id}/agents`,
+        {
+          name: `stopped-${suffix}`,
+          configurationId: agentConfiguration.id,
+          executionMode: "embedded",
+          harnessAuth,
+        },
+        201,
+      );
+      const secondaryAgent = await api(
+        "POST",
+        `/namespaces/${namespace.id}/agents`,
+        {
+          name: `secondary-${suffix}`,
+          configurationId: agentConfiguration.id,
+          executionMode: "embedded",
+          harnessAuth,
+        },
+        201,
+      );
+      const secretOperator = await api(
+        "POST",
+        `/namespaces/${namespace.id}/iam/roles`,
+        {
+          name: `Model Secret operator ${suffix}`,
+          permissions: [{ action: "operate", resourceKind: "secret" }],
+        },
+        201,
+      );
+      for (const target of [agent, stoppedAgent, secondaryAgent]) {
+        // Each Agent service principal needs exact authority over its selected model Secret.
+        await api(
+          "POST",
+          `/namespaces/${namespace.id}/iam/access-bindings`,
+          {
+            subjectKind: "identity",
+            subjectId: target.servicePrincipalId,
+            roleId: secretOperator.id,
+            resourceKind: "secret",
+            resourceId: modelSecret.id,
+          },
+          201,
+        );
+        // The Compute Driver, rather than this fixture, owns transport credential materialization.
+        assert.deepEqual(
+          await api(
+            "POST",
+            `/namespaces/${namespace.id}/agents/${target.id}/runtime-credentials`,
+            {},
+          ),
+          { transportConfigured: true },
+        );
+      }
       const agentHash = hash(agent.id);
-      const gatewayPassword = secret();
-      secrets.push(gatewayPassword);
-      await createSecret(
-        `openclaw-agent-transport-${agentHash}`,
-        { "app-server-token": secret(), "gateway-password": gatewayPassword },
-        tenant,
-      );
-      await createSecret(
-        `openclaw-agent-model-${agentHash}`,
-        { OPENAI_API_KEY: process.env.OPENAI_API_KEY },
-        tenant,
-      );
-      await record("API-created Namespace ready and embedded Agent provisioned", {
+      await record("API-created Namespace ready with authenticated embedded Agents", {
         namespaceId: namespace.id,
         tenant,
         agentId: agent.id,
+        secondaryAgentId: secondaryAgent.id,
+        stoppedAgentId: stoppedAgent.id,
       });
-      return { agent, agentHash, namespace, tenant };
+      return { agent, agentHash, namespace, secondaryAgent, stoppedAgent, tenant };
+    }
+
+    async function prepareFleetBaselines() {
+      const secondaryRevision = await api(
+        "POST",
+        `/namespaces/${namespace.id}/agents/${secondaryAgent.id}/deploy`,
+        undefined,
+        202,
+      );
+      const stoppedRevision = await api(
+        "POST",
+        `/namespaces/${namespace.id}/agents/${stoppedAgent.id}/deploy`,
+        undefined,
+        202,
+      );
+      await waitFor(
+        "secondary baseline Agent initial revision",
+        async () =>
+          (await api("GET", `/namespaces/${namespace.id}/agents/${secondaryAgent.id}`))
+            .activeRevisionId === secondaryRevision.id,
+        300_000,
+      );
+      await waitFor(
+        "stopped baseline Agent initial revision",
+        async () =>
+          (await api("GET", `/namespaces/${namespace.id}/agents/${stoppedAgent.id}`))
+            .activeRevisionId === stoppedRevision.id,
+        300_000,
+      );
+      await api(
+        "POST",
+        `/namespaces/${namespace.id}/agents/${stoppedAgent.id}/stop`,
+        undefined,
+        202,
+      );
+      await waitFor("stopped baseline Agent shutdown", async () => {
+        const current = await api("GET", `/namespaces/${namespace.id}/agents/${stoppedAgent.id}`);
+        return current.desiredRuntimeState === "stopped" && current.activeRevisionId === undefined;
+      });
+      return {
+        secondaryRevisionId: secondaryRevision.id,
+        stoppedRevisionId: stoppedRevision.id,
+      };
     }
 
     async function proveProductionApiNetworkPolicy() {
@@ -813,6 +944,8 @@ test(
           const output = await run("python3", [
             "tests/helpers/tui-pty.py",
             "expect-failure",
+            "--deny-pattern",
+            "gateway password mismatch",
             "--nonce",
             nonce,
             "--prompt",
@@ -1041,6 +1174,259 @@ test(
       context.diagnostic(`Evidence directory: ${directory}`);
     }
 
+    async function exerciseIndependentImageUpgrades(finalGateway) {
+      if (!upgradeSelected) {
+        context.diagnostic(
+          "SKIP independent image upgrades: set both OCC_TEST_PRODUCTION_UPGRADE_*_IMAGE values",
+        );
+        return finalGateway;
+      }
+
+      const sourceRevision = (await run("git", ["rev-parse", "HEAD"], { timeout: 30_000 })).trim();
+      const valuesPath = join(directory, "values.json");
+      const installationPath = join(directory, "installation.json");
+      const controllerEvidence = join(directory, "controller-upgrade");
+      const controllerOutput = await run(
+        "scripts/upgrade-production-images",
+        [
+          "--kubeconfig",
+          selection.kubeconfigPath,
+          "--context",
+          selection.kubernetesContext,
+          "--namespace",
+          system,
+          "--release",
+          release,
+          "--values",
+          valuesPath,
+          "--installation",
+          installationPath,
+          "--controller-image",
+          upgradeImages.controller,
+          "--source-revision",
+          sourceRevision,
+          "--evidence-dir",
+          controllerEvidence,
+          "--occ",
+          occCli,
+          "--timeout-seconds",
+          "600",
+        ],
+        {
+          timeout: 900_000,
+          env: {
+            OCC_URL: baseURL,
+            OCC_SERVICE_KEY_FILE: localServiceKeyFile,
+            OCC_CA_BUNDLE: join(directory, "tls.crt"),
+            OPENAI_API_KEY: undefined,
+          },
+        },
+      );
+      assert.match(controllerOutput, /no Agent deployments were requested/u);
+      for (const component of ["api", "worker"]) {
+        const deployment = `openclaw-enterprise-${component}`;
+        await kubectl("-n", system, "rollout", "status", `deployment/${deployment}`);
+        const observed = await kubectl(
+          "-n",
+          system,
+          "get",
+          `deployment/${deployment}`,
+          "-o",
+          `jsonpath={.spec.template.spec.containers[?(@.name=='${component}')].image}`,
+        );
+        assert.equal(observed, upgradeImages.controller);
+      }
+      const controllerInventory = await waitFor(
+        "fleet inventory after the independent controller upgrade",
+        async () => {
+          try {
+            return await runGuideOcc(["installation", "deployment-inventory"]);
+          } catch (error) {
+            if (String(error).includes("HTTP 502")) {
+              return false;
+            }
+            throw error;
+          }
+        },
+        30_000,
+      );
+      assert.ok(controllerInventory.namespaces.some((candidate) => candidate.id === namespace.id));
+      assert.equal(
+        (await api("GET", `/namespaces/${namespace.id}/agents/${agent.id}`)).activeRevisionId,
+        finalGateway.revisionId,
+      );
+      assert.equal(
+        (await api("GET", `/namespaces/${namespace.id}/agents/${secondaryAgent.id}`))
+          .activeRevisionId,
+        secondaryBaselineRevision,
+      );
+      await record("Independent controller upgrade retained Agent revisions", {
+        controllerImage: upgradeImages.controller,
+      });
+
+      const upgradeEvidence = join(directory, "runtime-upgrade");
+      const output = await run(
+        "scripts/upgrade-production-images",
+        [
+          "--kubeconfig",
+          selection.kubeconfigPath,
+          "--context",
+          selection.kubernetesContext,
+          "--namespace",
+          system,
+          "--release",
+          release,
+          "--values",
+          valuesPath,
+          "--installation",
+          installationPath,
+          "--runtime-image",
+          upgradeImages.runtime,
+          "--source-revision",
+          sourceRevision,
+          "--evidence-dir",
+          upgradeEvidence,
+          "--occ",
+          occCli,
+          "--timeout-seconds",
+          "600",
+        ],
+        {
+          timeout: 900_000,
+          env: {
+            OCC_URL: baseURL,
+            OCC_SERVICE_KEY_FILE: localServiceKeyFile,
+            OCC_CA_BUNDLE: join(directory, "tls.crt"),
+            OPENAI_API_KEY: undefined,
+          },
+        },
+      );
+      assert.match(
+        output,
+        /runtime image; controller image remained unchanged and 2 running Agents selected new revisions/u,
+      );
+      for (const component of ["api", "worker"]) {
+        const observed = await kubectl(
+          "-n",
+          system,
+          "get",
+          `deployment/openclaw-enterprise-${component}`,
+          "-o",
+          `jsonpath={.spec.template.spec.containers[?(@.name=='${component}')].image}`,
+        );
+        assert.equal(observed, upgradeImages.controller);
+      }
+      const deployments = (await readFile(join(upgradeEvidence, "deployments.jsonl"), "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      assert.equal(deployments.length, 2);
+      assert.ok(deployments.every((deployment) => deployment.namespaceId === namespace.id));
+      const primaryDeployment = deployments.find((deployment) => deployment.agentId === agent.id);
+      const secondaryDeployment = deployments.find(
+        (deployment) => deployment.agentId === secondaryAgent.id,
+      );
+      assert.ok(primaryDeployment);
+      assert.ok(secondaryDeployment);
+      assert.notEqual(primaryDeployment.deploymentId, finalGateway.revisionId);
+      assert.notEqual(secondaryDeployment.deploymentId, secondaryBaselineRevision);
+      const doctorEvidence = (await readdir(join(upgradeEvidence, "status"))).filter((name) =>
+        name.endsWith(".doctor.json"),
+      );
+      assert.equal(doctorEvidence.length, 2);
+      for (const name of doctorEvidence) {
+        assert.equal(
+          JSON.parse(await readFile(join(upgradeEvidence, "status", name), "utf8")).ok,
+          true,
+        );
+      }
+      const stoppedAfter = await api(
+        "GET",
+        `/namespaces/${namespace.id}/agents/${stoppedAgent.id}`,
+      );
+      assert.equal(stoppedAfter.desiredRuntimeState, "stopped");
+      assert.equal(stoppedAfter.activeRevisionId, undefined);
+      const stoppedRevisions = await api(
+        "GET",
+        `/namespaces/${namespace.id}/agents/${stoppedAgent.id}/revisions`,
+      );
+      assert.deepEqual(
+        stoppedRevisions.map((revision) => revision.id),
+        [stoppedBaselineRevision],
+      );
+
+      const upgradedRevision = primaryDeployment.deploymentId;
+      const gateway = await waitFor("upgraded gateway ready", async () => {
+        const pods = await resourcesFor(
+          "pods",
+          tenant,
+          "-l",
+          `openclaw.dev/agent=${agent.id},openclaw.dev/revision=${upgradedRevision},openclaw.dev/workload-role=gateway`,
+        );
+        const matches = pods.filter(
+          (pod) =>
+            !pod.metadata.deletionTimestamp &&
+            pod.status.phase === "Running" &&
+            pod.status.conditions?.some(
+              (condition) => condition.type === "Ready" && condition.status === "True",
+            ),
+        );
+        assert.ok(matches.length <= 1, "Ambiguous upgraded gateway Pod");
+        return matches[0];
+      });
+      assert.equal(
+        gateway.spec.containers.find((container) => container.name === "gateway")?.image,
+        upgradeImages.runtime,
+      );
+
+      const firstNonce = `UPGRADE_A_${randomBytes(8).toString("hex")}`;
+      const secondNonce = `UPGRADE_B_${randomBytes(8).toString("hex")}`;
+      const firstPrompt = `Reply exactly: ${firstNonce}`;
+      const secondPrompt = `Reply exactly: ${secondNonce}`;
+      const modelOutput = await run(
+        "python3",
+        [
+          "tests/helpers/tui-pty.py",
+          "conversation",
+          "--first-nonce",
+          firstNonce,
+          "--first-prompt",
+          firstPrompt,
+          "--second-nonce",
+          secondNonce,
+          "--second-prompt",
+          secondPrompt,
+          "--timeout",
+          "240",
+          "--",
+          "kubectl",
+          ...nativeTuiArgv({
+            pod: gateway.metadata.name,
+            state: `/tmp/occ-upgrade-${suffix}`,
+            session: `upgrade-${suffix}`,
+            message: firstPrompt,
+          }),
+        ],
+        { timeout: 300_000 },
+      );
+      for (const value of secrets) {
+        assert.ok(!modelOutput.includes(value), "Upgrade TUI output leaked a credential");
+      }
+      assert.equal(JSON.parse(modelOutput).exitCode, 0);
+      await record("Independent runtime image upgrade and fresh model reply", {
+        previousRevisionId: finalGateway.revisionId,
+        revisionId: upgradedRevision,
+        controllerImage: upgradeImages.controller,
+        runtimeImage: upgradeImages.runtime,
+        pod: gateway.metadata.name,
+      });
+      return {
+        pod: gateway.metadata.name,
+        revisionId: upgradedRevision,
+        successfulWorkerRevisionId: upgradedRevision,
+      };
+    }
+
     async function newestPod(component) {
       const pods = await resourcesFor(
         "pods",
@@ -1133,15 +1519,21 @@ test(
       });
     }
 
-    const { api, externalRequest, runGuideOcc } = await installProductionControlPlane();
-    const { agent, agentHash, namespace, tenant } = await provisionNamespaceAndAgent({
-      api,
-      externalRequest,
-      runGuideOcc,
-    });
+    const { api, baseURL, externalRequest, runGuideOcc } = await installProductionControlPlane();
+    const { agent, agentHash, namespace, secondaryAgent, stoppedAgent, tenant } =
+      await provisionNamespaceAndAgent({
+        api,
+        externalRequest,
+        runGuideOcc,
+      });
+    const {
+      secondaryRevisionId: secondaryBaselineRevision,
+      stoppedRevisionId: stoppedBaselineRevision,
+    } = await prepareFleetBaselines();
     const { foreignIP, probe } = await proveProductionApiNetworkPolicy();
     const finalGateway = await exerciseRevisionCutover();
     await assertProductionOtelLogs(finalGateway);
-    await verifyCredentialBoundariesAndPrepareHandoff(finalGateway);
+    const releaseGateway = await exerciseIndependentImageUpgrades(finalGateway);
+    await verifyCredentialBoundariesAndPrepareHandoff(releaseGateway);
   },
 );

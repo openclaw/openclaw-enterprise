@@ -4,7 +4,6 @@ import type { IncomingMessage } from "node:http";
 import type { Socket } from "node:net";
 import Fastify, {
   LogController,
-  type FastifyError,
   type FastifyInstance,
   type FastifyBaseLogger,
   type FastifyReply,
@@ -23,7 +22,6 @@ import {
   WORKSPACE_DEFAULTS_ID,
   normalizeInitialWorkspaceFiles,
   type InitialWorkspaceFiles,
-  PresetValidationError,
   ErrorResponse,
   AgentRuntimeCredentialResponse,
   JsonValue,
@@ -47,7 +45,7 @@ import {
   type Installation,
   type OccApiRoute,
   type PermissionAction,
-  type ProviderSummary,
+  type BackendSummary,
   type RepositoryBindingRequest,
   type ResourceKind,
   type ResourceRef,
@@ -57,19 +55,12 @@ import {
   type WorkspaceFileName,
 } from "@openclaw-enterprise/contracts";
 import {
-  AgentDeletingError,
   AuthorizationDeniedError,
   BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
   DependencyUnavailableError,
-  ModelDiscoveryError,
-  PluginDiscoveryError,
-  NamespaceNotEmptyError,
   NamespaceNotReadyError,
-  NotImplementedError,
-  PluginPolicyValidationError,
   RepositoryOptionsUnavailableError,
   ResourceConflictError,
-  ScopeViolationError,
   type DeploymentStatusResult,
   type AgentProvisioningProgress,
   type ProvisionAgentInput,
@@ -84,10 +75,6 @@ import {
   type ControllerAuth,
 } from "./auth/index.ts";
 import { CONSOLE_CONTENT_SECURITY_POLICY, readConsoleAsset } from "./console-assets.ts";
-import {
-  ConfigurationOwnershipError,
-  ConfigurationValidationError,
-} from "./drivers/configuration/kubernetes/index.ts";
 import {
   ControllerWorkspaceFileUnknownOutcomeError,
   isAllowedWorkspaceFileName,
@@ -111,6 +98,17 @@ import {
   type NativeAdminWebSocketCloseCause,
   type NativeAdminWebSocketCloseReason,
 } from "./gateway/native-admin-proxy.ts";
+import {
+  canonicalFailure,
+  failure,
+  isAuthorizationDenied,
+  isDependencyUnavailable,
+  jsonPointer,
+  RequestFailure,
+  requestFailure,
+  responseHeaders,
+  type ErrorDetail,
+} from "./http/errors.ts";
 import { configurationHandlers } from "./http/configurations.ts";
 import { presetHandlers } from "./http/presets.ts";
 import { secretHandlers } from "./http/secrets.ts";
@@ -135,7 +133,7 @@ export interface ControllerAppOptions {
   readonly sandboxDriver?: SandboxDriver;
   readonly resolveHarness: HarnessResolver;
   readonly auditSink: AuditSink;
-  readonly providerSummaries?: readonly ProviderSummary[];
+  readonly backendSummaries?: readonly BackendSummary[];
   readonly development: DevelopmentAdmission;
   readonly maxBodyBytes?: number;
   readonly auth: ControllerAuth;
@@ -185,18 +183,6 @@ interface NativeAdminProxyDenial {
 
 type NativeAdminProxyAdmission = NativeAdminProxyResolution | NativeAdminProxyDenial;
 
-interface ErrorDetail {
-  readonly path: string;
-  readonly code:
-    | "REQUIRED"
-    | "UNKNOWN_FIELD"
-    | "INVALID_TYPE"
-    | "INVALID_FORMAT"
-    | "INVALID_VALUE"
-    | "TOO_LONG"
-    | "TOO_DEEP";
-}
-
 interface RequiredPermission {
   readonly action: PermissionAction;
   readonly resourceKind: ResourceKind;
@@ -211,22 +197,6 @@ interface RequiredPermission {
 
 interface DocumentedFastifySchema extends FastifySchema {
   readonly "x-openclaw-permissions": readonly RequiredPermission[];
-}
-
-class RequestFailure extends Error {
-  readonly status: number;
-  readonly code: string;
-  readonly details?: readonly ErrorDetail[];
-
-  constructor(status: number, code: string, message: string, details?: readonly ErrorDetail[]) {
-    super(message);
-    this.name = "RequestFailure";
-    this.status = status;
-    this.code = code;
-    if (details !== undefined) {
-      this.details = details;
-    }
-  }
 }
 
 const resourceHandlers: ResourceHandlers = {
@@ -258,15 +228,6 @@ const RESOURCE_ID = {
 
 function formatsPlugin(ajv: Parameters<typeof ajvFormats.default>[0]) {
   return ajvFormats.default(ajv);
-}
-
-function failure(
-  status: number,
-  code: string,
-  message: string,
-  details?: readonly ErrorDetail[],
-): RequestFailure {
-  return new RequestFailure(status, code, message, details);
 }
 
 function ipv4(value: string): number | undefined {
@@ -346,10 +307,6 @@ function validAuthorizationEvidence(value: unknown): value is AuthorizationEvide
     candidate.roleIds,
     candidate.restrictionIds,
   ].every((entries) => Array.isArray(entries) && entries.every(isNonEmptyString));
-}
-
-function jsonPointer(segment: string): string {
-  return segment.replaceAll("~", "~0").replaceAll("/", "~1");
 }
 
 function validateConfiguration(value: unknown, depth = 0, path = ""): void {
@@ -718,7 +675,7 @@ function clientAgent(agent: Readonly<Agent>): Record<string, unknown> {
     name: agent.name,
     servicePrincipalId: agent.servicePrincipalId,
     configurationId: agent.configurationId,
-    providerId: agent.providerId,
+    backendId: agent.backendId,
     executionMode: agent.executionMode,
     ...(agent.plugins === undefined ? {} : { plugins: agent.plugins }),
     ...(agent.repositoryBindings === undefined
@@ -765,7 +722,7 @@ function clientRevision(revision: Readonly<AgentRevision>): Record<string, unkno
     configurationId: revision.configurationId,
     configurationKind: revision.configurationKind,
     configurationGeneration: revision.configurationGeneration,
-    providerId: revision.providerId,
+    backendId: revision.backendId,
     configuration: revision.configuration,
     harness: revision.harness,
     compute: revision.compute,
@@ -798,243 +755,6 @@ function clientDeploymentStatus(status: Readonly<DeploymentStatusResult>): Recor
     error: status.error,
     warnings: status.warnings,
   };
-}
-
-function responseHeaders(reply: FastifyReply, requestId: string): void {
-  reply.header("cache-control", "no-store");
-  reply.header("content-type", "application/json; charset=utf-8");
-  reply.header("x-content-type-options", "nosniff");
-  reply.header("x-request-id", requestId);
-}
-
-function canonicalFailure(reply: FastifyReply, error: RequestFailure): void {
-  responseHeaders(reply, reply.request.id);
-  reply.status(error.status).send({
-    error: {
-      code: error.code,
-      message: error.message,
-      ...(error.details === undefined ? {} : { details: error.details }),
-    },
-    meta: { requestId: reply.request.id },
-  });
-}
-
-function validationCode(keyword: string): ErrorDetail["code"] {
-  switch (keyword) {
-    case "required":
-      return "REQUIRED";
-    case "additionalProperties":
-      return "UNKNOWN_FIELD";
-    case "type":
-      return "INVALID_TYPE";
-    case "format":
-    case "pattern":
-      return "INVALID_FORMAT";
-    case "maxLength":
-      return "TOO_LONG";
-    default:
-      return "INVALID_VALUE";
-  }
-}
-
-function validationDetails(error: FastifyError): readonly ErrorDetail[] {
-  if (!Array.isArray(error.validation)) {
-    return [];
-  }
-  return error.validation.slice(0, 32).map((detail): ErrorDetail => {
-    const parameters = detail.params as Record<string, unknown>;
-    let path = typeof detail.instancePath === "string" ? detail.instancePath : "";
-    if (detail.keyword === "required" && typeof parameters.missingProperty === "string") {
-      path += `/${jsonPointer(parameters.missingProperty)}`;
-    }
-    if (
-      detail.keyword === "additionalProperties" &&
-      typeof parameters.additionalProperty === "string"
-    ) {
-      path += `/${jsonPointer(parameters.additionalProperty)}`;
-    }
-    return { path, code: validationCode(detail.keyword) };
-  });
-}
-
-function errorName(error: unknown): string | undefined {
-  return error instanceof Error ? error.name : undefined;
-}
-
-function isAuthorizationDenied(error: unknown): error is AuthorizationDeniedError {
-  return (
-    error instanceof AuthorizationDeniedError || errorName(error) === "AuthorizationDeniedError"
-  );
-}
-
-function isDependencyUnavailable(error: unknown): boolean {
-  return (
-    error instanceof DependencyUnavailableError || errorName(error) === "DependencyUnavailableError"
-  );
-}
-
-function requestFailure(error: unknown): RequestFailure {
-  if (error instanceof RequestFailure) {
-    return error;
-  }
-  if (error instanceof ModelDiscoveryError) {
-    switch (error.reason) {
-      case "credentials_rejected":
-        return failure(
-          400,
-          "MODEL_DISCOVERY_CREDENTIALS_REJECTED",
-          "The provider rejected model discovery. Check the selected credential and its permission to list models, then retry or enter a model ID manually.",
-        );
-      case "rate_limited":
-        return failure(
-          429,
-          "MODEL_DISCOVERY_RATE_LIMITED",
-          "The provider rate-limited model discovery. Wait and retry, or enter a model ID manually.",
-        );
-      case "invalid_response":
-        return failure(
-          503,
-          "MODEL_DISCOVERY_INVALID_RESPONSE",
-          "The provider returned an invalid model list. Retry or enter a model ID manually.",
-        );
-      case "unavailable":
-        return failure(
-          503,
-          "MODEL_DISCOVERY_UNAVAILABLE",
-          "The provider model service is unavailable. Retry or enter a model ID manually.",
-        );
-    }
-  }
-  if (error instanceof PluginDiscoveryError) {
-    switch (error.reason) {
-      case "credentials_rejected":
-        return failure(
-          400,
-          "PLUGIN_DISCOVERY_CREDENTIALS_REJECTED",
-          "The plugin service rejected this credential. Check its permission to list plugins, then retry.",
-        );
-      case "rate_limited":
-        return failure(
-          429,
-          "PLUGIN_DISCOVERY_RATE_LIMITED",
-          "The plugin service rate-limited discovery. Wait and retry.",
-        );
-      case "invalid_response":
-        return failure(
-          503,
-          "PLUGIN_DISCOVERY_INVALID_RESPONSE",
-          "The plugin service returned an invalid response. Retry discovery.",
-        );
-      case "unavailable":
-        return failure(
-          503,
-          "PLUGIN_DISCOVERY_UNAVAILABLE",
-          "The plugin service is unavailable. Retry discovery.",
-        );
-    }
-  }
-  if (error instanceof PluginPolicyValidationError) {
-    return failure(400, "INVALID_REQUEST", error.message);
-  }
-  if (error instanceof PresetValidationError) {
-    return failure(400, "INVALID_REQUEST", "The supplied Preset template is invalid.");
-  }
-  if (error instanceof ConfigurationValidationError) {
-    return failure(400, "INVALID_REQUEST", "The supplied configuration is invalid.");
-  }
-  if (error instanceof ConfigurationOwnershipError) {
-    return failure(503, "DEPENDENCY_UNAVAILABLE", "A required platform dependency is unavailable.");
-  }
-  if (error instanceof NamespaceNotReadyError) {
-    return failure(
-      409,
-      "NAMESPACE_NOT_READY",
-      "The requested Namespace is not ready for deployment.",
-    );
-  }
-  if (error instanceof NamespaceNotEmptyError) {
-    return failure(409, "NAMESPACE_NOT_EMPTY", "The requested Namespace is not empty.");
-  }
-  if (error instanceof AgentDeletingError) {
-    return failure(409, "AGENT_DELETING", "The requested Agent is being deleted.");
-  }
-  if (error instanceof NotImplementedError) {
-    return failure(501, "NOT_IMPLEMENTED", error.message);
-  }
-  if (isDependencyUnavailable(error)) {
-    return failure(503, "DEPENDENCY_UNAVAILABLE", "A required platform dependency is unavailable.");
-  }
-  if (error instanceof ResourceConflictError) {
-    return failure(409, "RESOURCE_CONFLICT", "The requested platform resource already exists.");
-  }
-  if (error instanceof ScopeViolationError) {
-    return failure(404, "NOT_FOUND", "The requested platform resource was not found.");
-  }
-  if (isAuthorizationDenied(error)) {
-    return failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
-  }
-  if (error instanceof Error) {
-    const candidate = error as FastifyError;
-    if (error.name === "APIError") {
-      const statusCode = (error as { readonly statusCode?: unknown }).statusCode;
-      const status = typeof statusCode === "number" ? statusCode : 500;
-      if (status === 409) {
-        return failure(409, "RESOURCE_CONFLICT", "The requested platform resource already exists.");
-      }
-      if (status === 400) {
-        return failure(
-          400,
-          "INVALID_REQUEST",
-          "The request does not match the operation contract.",
-        );
-      }
-      if (status === 401) {
-        return failure(401, "UNAUTHENTICATED", "The caller did not provide valid credentials.");
-      }
-      if (status === 403) {
-        return failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
-      }
-      return failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
-    }
-    if (candidate.code === "FST_ERR_CTP_BODY_TOO_LARGE") {
-      return failure(413, "PAYLOAD_TOO_LARGE", "The request body exceeds the permitted size.");
-    }
-    if (candidate.code === "FST_ERR_CTP_INVALID_MEDIA_TYPE") {
-      return failure(415, "UNSUPPORTED_MEDIA_TYPE", "Requests must use application/json.");
-    }
-    if (
-      candidate.code === "FST_ERR_CTP_EMPTY_JSON_BODY" ||
-      candidate.code === "FST_ERR_CTP_INVALID_CONTENT_LENGTH" ||
-      candidate.code === "FST_ERR_CTP_INVALID_JSON_BODY" ||
-      candidate.statusCode === 400
-    ) {
-      const details = validationDetails(candidate);
-      return failure(
-        400,
-        "INVALID_REQUEST",
-        "The request does not match the operation contract.",
-        details.length > 0 ? details : undefined,
-      );
-    }
-    if (error.name === "AdmissionFailure") {
-      const status =
-        candidate.statusCode === 403 || (candidate as { status?: number }).status === 403
-          ? 403
-          : 401;
-      return failure(
-        status,
-        status === 403 ? "FORBIDDEN" : "UNAUTHENTICATED",
-        status === 403
-          ? "The request did not satisfy the configured admission boundary."
-          : "The caller did not provide valid admission evidence.",
-      );
-    }
-  }
-  return failure(500, "INTERNAL_ERROR", "The platform request could not be completed.");
 }
 
 export function createFastifyApp(options: ControllerAppOptions): FastifyInstance {
@@ -2142,14 +1862,22 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
-    if (operation.operationId === "listProviders") {
+    if (operation.operationId === "getInstallationDeploymentInventory") {
+      reply.send({
+        data: await controller.getInstallationDeploymentInventory(context.actorId),
+        meta: { requestId: request.id },
+      });
+      return;
+    }
+
+    if (operation.operationId === "listBackends") {
       await requireInstallationAdmin(request, operation, context);
-      const providers = options.providerSummaries;
-      if (providers === undefined) {
+      const backends = options.backendSummaries;
+      if (backends === undefined) {
         throw dependencyUnavailable();
       }
       reply.send({
-        data: providers.map((provider) => ({ id: provider.id, type: provider.type })),
+        data: backends.map((backend) => ({ id: backend.id, type: backend.type })),
         meta: { requestId: request.id },
       });
       return;
@@ -2298,9 +2026,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           ...(provisionBody.workspaceDefaultsId === undefined
             ? {}
             : { workspaceDefaultsId: provisionBody.workspaceDefaultsId }),
-          ...(provisionBody.providerId === undefined
-            ? {}
-            : { providerId: provisionBody.providerId }),
+          ...(provisionBody.backendId === undefined ? {} : { backendId: provisionBody.backendId }),
           ...(provisionBody.executionMode === undefined
             ? {}
             : { executionMode: provisionBody.executionMode as HarnessExecutionMode }),
@@ -2397,9 +2123,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             : { workspaceDefaultsId: body.workspaceDefaultsId as string }),
           name: body?.name as string,
           configurationId: body?.configurationId as string,
-          ...(body?.providerId === undefined
-            ? {}
-            : { providerId: body.providerId as string | null }),
+          ...(body?.backendId === undefined ? {} : { backendId: body.backendId as string | null }),
           ...(body?.executionMode === undefined
             ? {}
             : { executionMode: body.executionMode as HarnessExecutionMode }),
@@ -2502,9 +2226,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           namespaceId,
           agentId,
           configurationId: body?.configurationId as string,
-          ...(body?.providerId === undefined
-            ? {}
-            : { providerId: body.providerId as string | null }),
+          ...(body?.backendId === undefined ? {} : { backendId: body.backendId as string | null }),
           ...(body?.executionMode === undefined
             ? {}
             : { executionMode: body.executionMode as HarnessExecutionMode }),
@@ -3304,7 +3026,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           operationId: "getAuthSession",
           summary: "Inspect authentication without revealing session tokens",
           description:
-            "Returns only authenticated status and public account identity, or null without a valid session; session tokens and credentials are never returned.",
+            "Returns authenticated status, public account identity, and a noncredential sessionKey that stays stable across reads and changes for a new session, or null without a valid session; session tokens and credentials are never returned.",
           tags: ["Authentication"],
           security: [],
           response: {
@@ -3316,9 +3038,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                   {
                     type: "object",
                     additionalProperties: false,
-                    required: ["authenticated", "user"],
+                    required: ["authenticated", "sessionKey", "user"],
                     properties: {
                       authenticated: { type: "boolean", const: true },
+                      sessionKey: { type: "string" },
                       user: {
                         type: "object",
                         additionalProperties: false,
@@ -3803,14 +3526,16 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     reply.status(asset.statusCode).send(request.method === "HEAD" ? undefined : asset.body);
   }
 
+  // Route patterns are fixed for this app; retain contract order for the Allow header.
+  const methodRoutes = occApiRoutes.map(({ method, path }) => ({
+    method,
+    pattern: new RegExp(`^${path.replace(/:[^/]+/g, "[^/]+")}$`),
+  }));
   app.setNotFoundHandler(async (request, reply) => {
     const pathname = request.url.split("?", 1)[0] ?? "";
-    const allowed = occApiRoutes
-      .filter((operation) => {
-        const pattern = operation.path.replace(/:[^/]+/g, "[^/]+");
-        return new RegExp(`^${pattern}$`).test(pathname);
-      })
-      .map((operation) => operation.method);
+    const allowed = methodRoutes
+      .filter(({ pattern }) => pattern.test(pathname))
+      .map(({ method }) => method);
     if (allowed.length > 0) {
       reply.header("allow", [...new Set(allowed)].join(", "));
       canonicalFailure(

@@ -1,40 +1,37 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createConsoleAppFixture, providerFixtures } from "../helpers/console-app.mjs";
+import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { cookieHeaderFromSetCookie, setCookieHeaders } from "../helpers/auth-session.mjs";
 
-function noSecretProviderFields(provider) {
-  assert.deepEqual(Object.keys(provider).sort(), ["id", "type"]);
-  assert.equal(typeof provider.id, "string");
-  assert.equal(provider.type, "chatgpt");
+function noSecretProviderFields(backend) {
+  assert.deepEqual(Object.keys(backend).sort(), ["id", "type"]);
+  assert.equal(typeof backend.id, "string");
+  assert.equal(backend.type, "chatgpt");
 }
 
-test("console Provider API returns only safe Installation-admin summaries", async (t) => {
+test("console Backend API returns only safe Installation-admin summaries", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
 
-  const providers = await fixture.request("GET", "/providers");
-  assert.equal(providers.status, 200);
-  assert.deepEqual(providers.data, [{ id: providerFixtures[0].id, type: "chatgpt" }]);
-  providers.data.forEach(noSecretProviderFields);
-  assert.doesNotMatch(
-    JSON.stringify(providers.body),
-    /apiKey|workspaceId|credential|drivers|path/i,
-  );
+  const backends = await fixture.request("GET", "/backends");
+  assert.equal(backends.status, 200);
+  assert.deepEqual(backends.data, [{ id: backendFixtures[0].id, type: "chatgpt" }]);
+  backends.data.forEach(noSecretProviderFields);
+  assert.doesNotMatch(JSON.stringify(backends.body), /apiKey|workspaceId|credential|drivers|path/i);
 
-  const emptyFixture = await createConsoleAppFixture(t, { providers: [] });
-  await emptyFixture.bootstrap("Console empty Provider Installation");
-  const emptyProviders = await emptyFixture.request("GET", "/providers");
+  const emptyFixture = await createConsoleAppFixture(t, { backends: [] });
+  await emptyFixture.bootstrap("Console empty Backend Installation");
+  const emptyProviders = await emptyFixture.request("GET", "/backends");
   assert.equal(emptyProviders.status, 200);
   assert.deepEqual(emptyProviders.data, []);
 
   const unavailableFixture = await createConsoleAppFixture(t, {
-    providerSummaries: undefined,
+    backendSummaries: undefined,
   });
-  await unavailableFixture.bootstrap("Console unavailable Provider Installation");
-  const unavailable = await unavailableFixture.request("GET", "/providers");
+  await unavailableFixture.bootstrap("Console unavailable Backend Installation");
+  const unavailable = await unavailableFixture.request("GET", "/backends");
   assert.equal(unavailable.status, 503);
   assert.equal(unavailable.body.error.code, "DEPENDENCY_UNAVAILABLE");
 });
@@ -109,7 +106,7 @@ test("console collection APIs keep exact Namespace and Agent IAM boundaries", as
   );
   assert.equal(wrongNamespace.status, 404);
 
-  const providerDenied = await fixture.request("GET", "/providers", { session: limitedSession });
+  const providerDenied = await fixture.request("GET", "/backends", { session: limitedSession });
   assert.equal(providerDenied.status, 403);
   assert.equal(providerDenied.body.error.code, "FORBIDDEN");
 
@@ -148,6 +145,10 @@ test("console static routes expose only public assets and preserve API JSON fail
   }
 
   for (const [path, mime] of [
+    ["/console/oce-mascot.png", /image\/png/i],
+    ["/console/favicon.ico", /image\/vnd\.microsoft\.icon/i],
+    ["/console/workspace-defaults.mjs", /javascript/i],
+    ["/console/preset-variables.mjs", /javascript/i],
     ["/console/console.css", /text\/css/i],
     ["/console/fonts/instrument-sans-latin.woff2", /font\/woff2/i],
     ["/console/console.mjs", /javascript/i],
@@ -174,7 +175,7 @@ test("console static routes expose only public assets and preserve API JSON fail
   assert.match(apiMiss.response.headers.get("content-type") ?? "", /application\/json/i);
   assert.equal(JSON.parse(apiMiss.text).error.code, "NOT_FOUND");
 
-  const methodMiss = await fixture.rawRequest("POST", "/providers");
+  const methodMiss = await fixture.rawRequest("POST", "/backends");
   assert.equal(methodMiss.response.status, 405);
   assert.equal(JSON.parse(methodMiss.text).error.code, "METHOD_NOT_ALLOWED");
 });

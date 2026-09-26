@@ -4,10 +4,7 @@ import type {
   ResponseContext,
 } from "@kubernetes/client-node";
 import { currentComputeAbortSignal } from "../compute/operation-context.ts";
-
-type KubernetesAuthentication =
-  | { readonly mode: "inCluster" }
-  | { readonly mode: "kubeconfig"; readonly kubeconfigPath: string; readonly context: string };
+import type { KubernetesAuthentication } from "./authentication.ts";
 
 type KubernetesSdk = typeof import("@kubernetes/client-node");
 

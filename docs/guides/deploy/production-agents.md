@@ -1,10 +1,10 @@
 # Deploy and verify production Agents
 
-Deploy an Agent into a ready Namespace and verify that its model answers. Complete
+Deploy an Agent into a ready Namespace and verify model execution. Complete
 [control-plane installation](production-installation.md) and its authenticated
-API check first. Run commands from the repository root in the same operator shell,
-retaining its credentials and Kubernetes context. For an OpenAI API key, you or
-an Installation administrator must also [grant the Agent access to the model
+API check first. Run commands from the repository root,
+retaining its credentials and Kubernetes context. For Secret-backed authentication,
+you or an Installation administrator must also [grant the Agent access to the model
 Secret](#grant-the-agent-access-to-its-model-secret) before deployment.
 
 ## Prepare each Namespace
@@ -271,18 +271,20 @@ export CONFIGURATION_ID
 Create the Agent with the captured Configuration ID and the matching execution
 mode. Mismatched Harness and mode pairs fail before deployment. Create a
 [Namespace-owned OCC Secret](../../reference/drivers/kubernetes-secret.md#create-a-namespace-owned-secret)
-containing the protected OpenAI key first, then set `HARNESS_SECRET_ID` to its
-returned `data.id`. That example uses this shell's `OCC_URL` and protected
-`OCC_SERVICE_KEY_FILE`. The caller needs exact Secret `operate` to bind it.
-For the alternative ChatGPT method, select an already issued same-Namespace
-account and matching Provider as described in [Agent harness authentication](../../reference/agents.md#harness-authentication).
+containing the credential; set `HARNESS_SECRET_ID` to its `data.id`. Choose
+`api_key`, or `codex_pat` for Dedicated Codex with an externally issued
+[Codex service-account token](../../reference/console/create-and-deploy.md#create-an-agent).
+Neither requires a Backend. The caller needs exact Secret `operate`.
+For OCE-managed accounts, use the account/Backend binding in
+[Harness authentication](../../reference/agents.md#harness-authentication).
 
 ```bash
 : "${AGENT_EXECUTION_MODE:?choose embedded or dedicated above}"
-: "${HARNESS_SECRET_ID:?set the OCC Secret ID containing the key}"
+: "${HARNESS_SECRET_ID:?set the OCC Secret ID containing the credential}"
 export HARNESS_SECRET_ID
-printf '{"name":"production-agent","configurationId":"%s","executionMode":"%s","harnessAuth":{"method":"api_key","source":{"kind":"secret","namespaceId":"%s","id":"%s"}}}\n' \
-  "$CONFIGURATION_ID" "$AGENT_EXECUTION_MODE" "$NAMESPACE_ID" "$HARNESS_SECRET_ID" > agent.json
+export HARNESS_AUTH_METHOD='api_key' # Or codex_pat for Dedicated Codex.
+printf '{"name":"production-agent","configurationId":"%s","executionMode":"%s","harnessAuth":{"method":"%s","source":{"kind":"secret","namespaceId":"%s","id":"%s"}}}\n' \
+  "$CONFIGURATION_ID" "$AGENT_EXECUTION_MODE" "$HARNESS_AUTH_METHOD" "$NAMESPACE_ID" "$HARNESS_SECRET_ID" > agent.json
 AGENT_RESPONSE="$(occ agent create --file agent.json --output json)" &&
 AGENT_ID="$(printf '%s' "$AGENT_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')" &&
 AGENT_SERVICE_PRINCIPAL_ID="$(printf '%s' "$AGENT_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["servicePrincipalId"])')" &&
@@ -354,46 +356,49 @@ override a matching Restriction. See [Namespace IAM policy](../../reference/auth
 
 ### Prepare transport credentials and deploy
 
-For an Agent without any revisions, the console can generate initial transport
-credentials through the exact-Agent API. It stores Slack tokens separately as
-Namespace Secrets and binds them to the Agent; see [initial runtime
-credentials](../../reference/console/create-and-deploy.md#initial-runtime-credentials)
-and the [Slack setup guide](../integrations/slack.md). The operator commands
-below can supply transport credentials externally. Do not use both paths to
-replace an existing transport bundle.
-
-Create the tenant transport Secret using the Agent ID suffix. Kubernetes
-gateways use trusted-proxy authentication; dedicated Codex separately requires
-`app-server-token`. Compute renders the gateway authentication from trusted
-Installation settings. To verify model responses through an
-operator's local Kubernetes connection, configure the `gateway-password` Secret
-reference and enable the native HTTP endpoint as described in
-[Model response verification](../operate/model-verification.md). The initial
-credential API generates this password too; it never returns it in an API response.
+For an Agent without revisions, use **Provision generated runtime credentials**
+in the Console, or call the same exact-Agent API below. Keep `OCC_URL` and
+`OCC_SERVICE_KEY_FILE` from Installation bootstrap. The API derives the correct
+Secret placement for the Agent's execution mode and never returns credential
+values. It does not rotate existing credentials.
 
 ```bash
-umask 077
-AGENT_SUFFIX="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:12])' "${AGENT_ID:?}")" &&
-SECRET_DIRECTORY="$(mktemp -d /tmp/occ-agent-transport.XXXXXXXX)" &&
-python3 -c 'import secrets,sys; sys.stdout.write(secrets.token_hex(32))' > "$SECRET_DIRECTORY/app-server-token" &&
-python3 -c 'import secrets,sys; sys.stdout.write(secrets.token_hex(32))' > "$SECRET_DIRECTORY/gateway-password" &&
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  -n "$TENANT_NAMESPACE" create secret generic "openclaw-agent-transport-$AGENT_SUFFIX" \
-  --from-file=app-server-token="$SECRET_DIRECTORY/app-server-token" \
-  --from-file=gateway-password="$SECRET_DIRECTORY/gateway-password"
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n "$TENANT_NAMESPACE" \
-  label secret "openclaw-agent-transport-$AGENT_SUFFIX" \
-  app.kubernetes.io/managed-by=openclaw-enterprise "openclaw.dev/namespace=$NAMESPACE_ID" "openclaw.dev/agent=$AGENT_ID"
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n "$TENANT_NAMESPACE" \
-  annotate secret "openclaw-agent-transport-$AGENT_SUFFIX" \
-  "openclaw.dev/namespace-id=$NAMESPACE_ID" "openclaw.dev/agent-id=$AGENT_ID"
+node --input-type=module <<'NODE'
+import { readFile } from "node:fs/promises";
+const { OCC_URL, OCC_SERVICE_KEY_FILE, NAMESPACE_ID, AGENT_ID } = process.env;
+if (![OCC_URL, OCC_SERVICE_KEY_FILE, NAMESPACE_ID, AGENT_ID].every(Boolean)) {
+  throw new Error("Set OCC_URL, OCC_SERVICE_KEY_FILE, NAMESPACE_ID, and AGENT_ID.");
+}
+const { data: { key } } = JSON.parse(await readFile(OCC_SERVICE_KEY_FILE, "utf8"));
+const response = await fetch(new URL(
+  `/namespaces/${encodeURIComponent(NAMESPACE_ID)}/agents/${encodeURIComponent(AGENT_ID)}/runtime-credentials`,
+  OCC_URL,
+), {
+  method: "POST",
+  redirect: "error",
+  headers: { "x-api-key": key, "content-type": "application/json" },
+  body: "{}",
+});
+if (!response.ok) throw new Error(`Credential provisioning failed: HTTP ${response.status}`);
+const { data } = await response.json();
+if (data.transportConfigured !== true) throw new Error("Transport credentials are not configured.");
+console.log("Agent transport credentials are configured.");
+NODE
 ```
 
-The gateway password enables the optional direct loopback checks below; the
-app-server token authenticates dedicated Codex transport. Model authentication comes
-from the saved `harnessAuth` binding.
-Kubernetes projects its source only into the model-executing workload; initial
-transport/channel provisioning does not accept model keys. Keep credential values
+If the request fails after creating a Secret, inspect the Agent's credential
+status before retrying; the API reuses complete, owned credential groups.
+See [initial runtime credentials](../../reference/console/create-and-deploy.md#initial-runtime-credentials)
+for permissions and conflicts. Dedicated Agents keep the canonical transport
+token and Gateway password in separate CP Secrets. Compute projects only the
+app-server token to the Harness. Embedded Agents use their tenant-local bundle.
+
+Kubernetes gateways use trusted-proxy authentication. For direct operator
+loopback checks, explicitly select the generated Gateway password and native HTTP
+endpoint as described in [Model response verification](../operate/model-verification.md).
+Model authentication comes from the saved `harnessAuth` binding and is projected
+only into the model-executing workload. Slack tokens use separate Namespace
+Secrets; follow [Slack setup](../integrations/slack.md). Keep credential values
 out of Helm values, Installation YAML, Configurations, shell history, and this
 repository.
 
@@ -411,7 +416,9 @@ AgentRevision for structured output. If `configuration.json` includes OCC
 `secretBindings`, the caller and Agent service principal must have `operate` on
 every selected Secret before deploy. Binding changes are authorized by OCC IAM;
 Kubernetes RoleBindings only allow the API to materialize backing tenant
-Secrets.
+Secrets. Wait for this revision's [deployment status](../../reference/agents.md#deployment-status)
+to become `succeeded` before the checks below; admission and an active revision
+alone do not prove workspace connectivity.
 
 ## Verify workspace access
 

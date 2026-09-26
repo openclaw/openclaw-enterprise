@@ -17,7 +17,7 @@ SSH, or installed Compute combinations. See [Driver selection](selection.md).
 ### Driver interface
 
 The [shared interface](../../../packages/contracts/src/index.ts) exposes the
-required `facets` property and `cleanup` method, plus three optional methods.
+required `facets` and `cleanup` members, plus three optional methods.
 
 | Member                          | Contract                                                                                                                                                                         |
 | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -25,7 +25,7 @@ required `facets` property and `cleanup` method, plus three optional methods.
 | `configureAgent(configuration)` | Optional synchronous transform. OCC passes a read-only native configuration and validates and freezes the returned configuration. If absent, the original configuration is used. |
 | `ensureNamespace(context)`      | Optional backend preparation after Compute has prepared baseline Namespace isolation. If absent, Compute continues without a Sandbox setup call.                                 |
 | `provisionHarness(context)`     | Optional creation of the dedicated Harness; returns a stable Sandbox resource reference. If absent, Compute creates the ordinary Harness workload.                               |
-| `cleanup(context)`              | Required for revision stop/retirement and Namespace deletion, even when Compute owns or has already removed the workload. No revision means cleanup of Namespace resources.      |
+| `cleanup(context)`              | Required for revision stop, retirement, and Namespace cleanup. Revision cleanup receives the immutable revision; Namespace cleanup omits it.                                     |
 
 ### Containment facets
 
@@ -68,7 +68,7 @@ configuration, revision metadata, logs, or provider requests. See
 
 Startup validates the selected Sandbox and its declared facets. The shared
 interface has no initializer or destructor; workload and Namespace removal use
-`cleanup` explicitly.
+the same cleanup operation with or without a revision.
 
 1. Before deployment, OCC calls optional `configureAgent`, then validates and
    freezes the resulting Configuration. The revision records the selected
@@ -78,10 +78,12 @@ interface has no initializer or destructor; workload and Namespace removal use
 3. The Sandbox provisions the dedicated Harness if it implements
    `provisionHarness`; otherwise Compute creates it. Compute waits for the exact
    revision workload before activating traffic.
-4. Stop and retirement call Sandbox `cleanup`. If Compute owns the workload,
-   it stops that workload first; its absence does not skip Sandbox cleanup. If
-   Sandbox owns it, `cleanup` removes it. Namespace deletion calls `cleanup`
-   without a revision to remove backend bootstrap resources.
+4. Stop and retirement call `cleanup` with the revision. If Compute owns the
+   workload, it stops that workload first; its absence does not skip Sandbox
+   cleanup. If Sandbox owns it, the method removes it.
+5. Namespace deletion calls `cleanup` without a revision after revision cleanup
+   and before Compute releases the Namespace. A failure prevents Compute from
+   deleting the Namespace so provider cleanup can be retried safely.
 
 Namespace setup, provisioning, and cleanup must be safe to repeat. Failed
 revision cleanup remains retryable. Unsupported topology, missing prerequisites,

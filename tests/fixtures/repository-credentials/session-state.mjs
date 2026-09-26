@@ -11,7 +11,7 @@ export function repositoryBinding(overrides = {}) {
   return {
     repositoryRef: "source",
     profile: "git-read",
-    providerId: "source-provider",
+    backendId: "source-provider",
     grant: repositoryGrant(),
     ...overrides,
   };

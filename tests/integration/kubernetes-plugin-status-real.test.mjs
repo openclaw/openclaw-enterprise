@@ -13,7 +13,6 @@ import {
   kubernetesNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import {
-  configureExistingK3dLocalPathSharedFileSystem,
   createKubernetesClient,
   validateExplicitK3dLoopbackContext,
 } from "../helpers/kubernetes-real.mjs";
@@ -176,7 +175,7 @@ function revision(driver, owner, agentId, number, harnessAuth) {
     namespaceId: owner.id,
     agentId,
     revision: number,
-    providerId: null,
+    backendId: null,
     configurationId: `cfg_${randomUUID()}`,
     configurationKind: "agent",
     configurationGeneration: number,
@@ -537,7 +536,6 @@ test(
   { ...requiresKubernetes, timeout: 360_000 },
   async (context) => {
     await assertPrerequisites();
-    await configureExistingK3dLocalPathSharedFileSystem({ kubeconfigPath, kubernetesContext });
     const fixture = await createStatusCandidate("plugin-status", context);
     await scheduleGatewayOnNonServerNode(fixture);
 
@@ -581,7 +579,6 @@ test(
   { ...requiresKubernetes, timeout: 360_000 },
   async (context) => {
     await assertPrerequisites();
-    await configureExistingK3dLocalPathSharedFileSystem({ kubeconfigPath, kubernetesContext });
     const fixture = await createStatusCandidate("plugin-status-warning", context);
     await scheduleGatewayOnNonServerNode(fixture);
     const ready = await waitForReadyPluginStatus(fixture);

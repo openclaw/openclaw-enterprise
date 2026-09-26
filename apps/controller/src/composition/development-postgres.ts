@@ -25,7 +25,7 @@ import type {
 } from "./installation-config.ts";
 import {
   initializeInstallationPresets,
-  providerSummariesFromDefinitions,
+  backendSummariesFromDefinitions,
 } from "./installation-config.ts";
 import type { LoggingConfiguration, OccLogger } from "../logging.ts";
 import { resolveApprovedHarness } from "./production-harness.ts";
@@ -146,50 +146,35 @@ export async function composePostgresDevelopment(
       recordOperations: true,
       defaultPresets: drivers?.defaultPresets ?? [],
       ...(loggingLevel === undefined ? {} : { loggingLevel }),
-      ...(drivers === undefined ? {} : { providers: drivers.installation.provider }),
+      ...(drivers === undefined ? {} : { backends: drivers.installation.backend }),
     });
     controller.registerDriver(iamDriver);
-    const selected = controller.selectDriver("iam", driverId);
-    if (selected !== iamDriver || selected.capability !== "iam" || selected.id !== driverId) {
-      throw new Error("The server-owned IAM Driver was not selected correctly.");
-    }
+    controller.selectDriver("iam", driverId);
     controller.registerDriver(computeDriver);
     controller.selectDriver("compute", computeDriver.id);
     if (sandboxDriver !== undefined) {
       controller.registerDriver(sandboxDriver);
-      if (controller.selectDriver("sandbox", sandboxDriver.id) !== sandboxDriver) {
-        throw new Error("The configured Sandbox Driver was not selected correctly.");
-      }
+      controller.selectDriver("sandbox", sandboxDriver.id);
     }
     if (configurationDriver !== undefined) {
       controller.registerDriver(configurationDriver);
-      if (
-        controller.selectDriver("configuration", configurationDriver.id) !== configurationDriver
-      ) {
-        throw new Error("The selected Configuration Driver was not selected correctly.");
-      }
+      controller.selectDriver("configuration", configurationDriver.id);
     }
     if (drivers?.secretDriver !== undefined) {
       controller.registerDriver(drivers.secretDriver);
-      if (controller.selectDriver("secret", drivers.secretDriver.id) !== drivers.secretDriver) {
-        throw new Error("The selected Secret Driver was not selected correctly.");
-      }
+      controller.selectDriver("secret", drivers.secretDriver.id);
     }
     if (drivers?.pluginDriver !== undefined) {
       controller.registerDriver(drivers.pluginDriver);
-      if (controller.selectDriver("plugin", drivers.pluginDriver.id) !== drivers.pluginDriver) {
-        throw new Error("The configured Plugin Driver was not selected correctly.");
-      }
+      controller.selectDriver("plugin", drivers.pluginDriver.id);
     }
     if (drivers?.repoDriver !== undefined) {
       const driver = drivers.repoDriver;
       controller.registerDriver(driver);
-      if (controller.selectDriver("repo", driver.id) !== driver) {
-        throw new Error("The configured repository credential Driver was not selected correctly.");
-      }
+      controller.selectDriver("repo", driver.id);
     }
     serviceAccountDriverFactory?.(controller, state);
-    await controller.validateProviderConfiguration();
+    await controller.validateBackendConfiguration();
     await initializeInstallationPresets(
       controller,
       iamDriver,
@@ -223,7 +208,7 @@ export async function composePostgresDevelopment(
       auditSink: state.auditSink,
       ...(drivers === undefined
         ? {}
-        : { providerSummaries: providerSummariesFromDefinitions(drivers.installation.provider) }),
+        : { backendSummaries: backendSummariesFromDefinitions(drivers.installation.backend) }),
       auth,
       ...(config.logger === undefined ? {} : { logger: config.logger }),
       provisionAuthAccount,

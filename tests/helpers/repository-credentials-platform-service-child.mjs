@@ -105,5 +105,5 @@ async function stop(code) {
 }
 
 process.once("SIGTERM", () => void stop(0));
-// Provider inventory belongs to the parent; a lost parent cannot support cleanup.
+// Backend inventory belongs to the parent; a lost parent cannot support cleanup.
 process.once("disconnect", () => process.exit(1));

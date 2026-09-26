@@ -81,11 +81,11 @@ The sample allows all three profiles for that Namespace and sets a 24-hour
 maximum. Reduce its allowed profiles when the team needs less access.
 
 Merge the [Installation fragment](../../../deploy/examples/repository-credentials/installation.fragment.yaml)
-into the existing Installation YAML. Preserve the existing Provider list and
+into the existing Installation YAML. Preserve the existing Backend list and
 Driver settings, including Compute images and network rules: the fragment is not
-a complete Installation. Its Provider ID, registry Provider ID, and service
-`backend.providerId` must all be `repository-provider`. The repo Driver ID must
-match its Provider member. Adjust the release label `oce` if your release differs.
+a complete Installation. Its Backend ID, registry Backend ID, and service
+`backend.backendId` must all be `repository-backend`. The repo Driver ID must
+match its Backend member. Adjust the release label `oce` if your release differs.
 
 The [service config](../../../deploy/examples/repository-credentials/service-config.json)
 is a Kubernetes projection input. The sidecar supplies protected App-key,
@@ -161,7 +161,7 @@ repeat the installed check after changing controller/runtime images.
 
 | Symptom                                                 | First check and recovery                                                                                                                                                 |
 | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Admission rejected                                      | Compare the actual OCC Namespace ID, repository reference, selected profile, Provider IDs, and immutable registry across API, worker, and service.                       |
+| Admission rejected                                      | Compare the actual OCC Namespace ID, repository reference, selected profile, Backend IDs, and immutable registry across API, worker, and service.                        |
 | TLS error or connection timeout                         | Check DNS, certificate SAN/public CA, Service 443 → 8443, and effective DNS/HTTPS NetworkPolicies. Keep certificate verification enabled.                                |
 | GitHub access denied                                    | Check repository selection, approved App permissions, numeric repository identity, repository rules and the selected access level. Use Contributor for this PR workflow. |
 | Push or PR response uncertain                           | Inspect GitHub's branch/PR state before retrying; do not blindly repeat a possible write.                                                                                |

@@ -63,8 +63,8 @@ suitably named class does not establish platform integration.
 Deliver capabilities with callers in the regular Agent workflow. Defer
 speculative components; test-only callers do not satisfy this requirement.
 
-For example, GitHub App token issuance implemented as a Provider must follow the
-[Provider contract](docs/reference/providers.md) and participate in composition.
+For example, GitHub App token issuance implemented as a Backend must follow the
+[Backend contract](docs/reference/backends.md) and participate in composition.
 Token minting and revocation alone are insufficient; see
 [PR #136](https://github.com/openclaw/openclaw-enterprise/pull/136).
 
@@ -385,12 +385,18 @@ controls:
   feature in use. Show the relevant user actions and visible result, not only a
   static screen or terminal output. Keep the walkthrough within the requested
   behavior; do not invent additional acceptance criteria.
-- Include the screenshots, video, and Storybook story names or links in **both
-  the task conversation and the PR's Verification section**. Embed media where
-  supported; otherwise provide direct, reviewer-accessible links with captions.
-  A local path or a claim that evidence exists is not a usable PR attachment.
-  When no PR exists yet, deliver the evidence in the conversation and carry it
-  into the PR when opened.
+- Do not commit PR evidence, including screenshots, recordings, or generated
+  evidence reports, to the repository. Keep local captures outside the checkout.
+  Media uploads are optional and are not a merge prerequisite. If media is
+  uploaded, use native GitHub attachments in the PR's Verification section.
+- Include the screenshots, video, and Storybook story names or links in the task
+  conversation. Include the story names or links and any uploaded media in the
+  PR's Verification section. Embed media where supported; otherwise provide
+  direct, reviewer-accessible links with captions. A local path or a claim that
+  evidence exists is not a usable PR attachment. If media is not uploaded, state
+  that in the PR; this does not prohibit merging or require a waiver.
+  When no PR exists yet, deliver the evidence in the conversation and carry the
+  verification details into the PR when opened.
 - Identify the tested revision and environment, what the evidence demonstrates,
   and what remains unverified. Label Storybook fixtures as simulated UI proof;
   they do not establish backend persistence, credential propagation, deployment,
@@ -398,8 +404,8 @@ controls:
   the real supported workflow and report its actual outcome.
 - Check that the media opens and shows the final UI. Refresh evidence after
   material UI changes and exclude credentials, tokens, and private data. If
-  recording, upload, or runtime proof is blocked, state the missing evidence and
-  blocker in both places; do not claim the requested verification is complete.
+  recording or runtime proof is blocked, state the missing evidence and blocker
+  in both places; do not claim the requested verification is complete.
 
 ## TypeScript style and verification
 

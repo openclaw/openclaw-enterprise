@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-grafana
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: OCC Prometheus
+        uid: occ-prometheus
+        type: prometheus
+        access: proxy
+        url: http://{{ .Release.Name }}-prometheus:9090
+        isDefault: true
+        editable: false
+      - name: OCC operational logs
+        uid: occ-loki
+        type: loki
+        access: proxy
+        url: http://{{ .Release.Name }}-loki:3100
+        editable: false
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: OCC demonstration
+        folder: OCC
+        type: file
+        options:
+          path: /etc/occ-dashboard
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-dashboards
+data:
+  metrics.json: |
+    {{- .Files.Get "files/dashboard.json" | nindent 4 }}
+  logs.json: |
+    {"uid":"occ-logs","title":"OCC operational logs (demonstration)","schemaVersion":39,"version":1,"refresh":"5s","time":{"from":"now-15m","to":"now"},"panels":[{"id":1,"type":"logs","title":"Filtered operational events","datasource":{"type":"loki","uid":"occ-loki"},"gridPos":{"h":20,"w":24,"x":0,"y":0},"targets":[{"refId":"A","expr":"{service_name=~\"occ-api|occ-worker|openclaw-gateway|codex-app-server\"}"}]}]}

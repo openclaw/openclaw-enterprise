@@ -291,13 +291,13 @@ function installedRepositoryJourney(mode) {
     let remoteEvidence;
     const cleanupFailures = [];
     try {
-      const providerId = "repository-proof";
+      const backendId = "repository-proof";
       const repositoryRef = "authorized-repository";
       const driverId = "repository-proof-driver";
       const origin = `https://openclaw-enterprise-repository-credentials.${f.system}.svc`;
       const registry = {
         version: 1,
-        providerId,
+        backendId,
         providerInstanceId: "github-public",
         ...app,
         maximumDurationSeconds: 3600,
@@ -359,15 +359,15 @@ function installedRepositoryJourney(mode) {
           limits: {},
           backend: {
             kind: "github-app-registry",
-            providerId,
+            backendId,
             registryFile: "/etc/openclaw/repository-registry/registry.json",
             privateKeyFile: "/etc/openclaw/repository-inputs/private-key.pem",
           },
         }),
       });
-      f.configuration.provider = [
+      f.configuration.backend = [
         {
-          id: providerId,
+          id: backendId,
           type: "github",
           configuration: { registryPath: "/etc/openclaw/repository-registry/registry.json" },
           drivers: { repo: driverId },
@@ -394,7 +394,7 @@ function installedRepositoryJourney(mode) {
       await f.upgrade({
         enabled: true,
         image: images.credentials,
-        providerId,
+        backendId,
         registryConfigMapName: "repository-registry-v1",
         registryKey: "registry.json",
         serviceConfigSecretName: "repository-service-config",

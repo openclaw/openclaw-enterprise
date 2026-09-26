@@ -467,7 +467,7 @@ test("metadata GET transport retries are bounded, diagnostic and do not retry de
 test("separate platform exports assemble into a digest-bound archive and reject corrupt inputs", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "container-platform-assembly-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  async function prepare(name, fault) {
+  async function prepare(name, fault, created = "2026-09-25T07:23:02Z") {
     const output = join(directory, name);
     const env = {
       ...process.env,
@@ -514,14 +514,21 @@ test("separate platform exports assemble into a digest-bound archive and reject 
         configDigest: config.digest,
       });
       // BuildKit may export a manifest directly or wrap it in a one-platform index.
+      const platformDescriptor = {
+        ...manifest,
+        annotations: {
+          "org.opencontainers.image.created": created,
+          "org.opencontainers.image.ref.name": "latest",
+        },
+      };
       const descriptor =
         arch === "amd64"
-          ? manifest
+          ? platformDescriptor
           : await blob(
               {
                 schemaVersion: 2,
                 mediaType: "application/vnd.oci.image.index.v1+json",
-                manifests: [manifest],
+                manifests: [platformDescriptor],
               },
               "application/vnd.oci.image.index.v1+json",
             );
@@ -570,6 +577,26 @@ test("separate platform exports assemble into a digest-bound archive and reject 
   run(valid);
   const digest = (await readFile(valid.env.GITHUB_OUTPUT, "utf8")).trim().slice("digest=".length);
   assert.deepEqual(readArchivePlatforms(join(valid.output, "image.tar"), digest), valid.expected);
+  const index = JSON.parse(
+    execFileSync("tar", [
+      "-xOf",
+      join(valid.output, "image.tar"),
+      `blobs/sha256/${digest.slice(7)}`,
+    ]),
+  );
+  assert.deepEqual(
+    index.manifests.map((descriptor) => Object.keys(descriptor)),
+    [
+      ["mediaType", "digest", "size", "platform"],
+      ["mediaType", "digest", "size", "platform"],
+    ],
+  );
+  const repeated = await prepare("repeated", undefined, "2026-09-25T07:39:43Z");
+  run(repeated);
+  const repeatedDigest = (await readFile(repeated.env.GITHUB_OUTPUT, "utf8"))
+    .trim()
+    .slice("digest=".length);
+  assert.equal(repeatedDigest, digest);
   for (const path of ["amd64", "arm64", "combined"]) {
     await assert.rejects(readFile(join(valid.output, path, "index.json")), { code: "ENOENT" });
   }

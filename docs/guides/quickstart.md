@@ -72,8 +72,8 @@ command prints the API URL, Installation ID, local service-key file, kubeconfig,
 Kubernetes context, and cleanup command. Keep this output; the service-key file
 is an administrator credential and must remain on your machine.
 
-Before deploying a dedicated Agent, [configure single-node RWX workspace storage](deploy/local-kubernetes-development.md#configure-workspace-storage-on-single-node-k3d).
-The stock local-path StorageClass cannot provision its shared workspace claim.
+Before deploying a dedicated Agent, [check local RWO workspace storage](deploy/local-kubernetes-development.md#configure-workspace-storage-on-single-node-k3d).
+The stock local-path StorageClass supports the Harness-only RWO claim; no provisioner patch is required.
 
 ## Open the platform console
 

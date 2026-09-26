@@ -31,7 +31,7 @@ function workloadPeer(namespace, labels) {
 function productionInstallation(adminKeyPath) {
   return {
     occ: { cluster: "production-image-smoke" },
-    provider: [
+    backend: [
       {
         id: "openai",
         type: "chatgpt",
@@ -104,6 +104,7 @@ function productionInstallation(adminKeyPath) {
         id: "sandbox-openshell",
         configuration: {
           gateway: {
+            workspaceMode: "operator",
             endpoint: "127.0.0.1:9",
             auth: { mode: "unauthenticated" },
           },

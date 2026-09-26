@@ -9,7 +9,7 @@ import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 async function setup(t) {
   const audit = new InMemoryAuditSink();
   const state = new InMemoryPlatformState({ auditSink: audit });
-  const fixture = await createConsoleAppFixture(t, { state, providers: [] });
+  const fixture = await createConsoleAppFixture(t, { state, backends: [] });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Workspace setup", { ready: true });
   const configuration = await fixture.createConfiguration(namespace.id);

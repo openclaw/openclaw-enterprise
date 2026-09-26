@@ -21,7 +21,7 @@ overrides a grant.
   [Agent permissions](../../reference/authorization.md#principals).
 
 [Service accounts](../../reference/service-accounts.md) are a separate feature:
-Agents can use them for upstream credentials, such as a Provider-issued model
+Agents can use them for upstream credentials, such as a Backend-issued model
 credential. A service account is not an IAM ServicePrincipal.
 
 ## Grant and check access

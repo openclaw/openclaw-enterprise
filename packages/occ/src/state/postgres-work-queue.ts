@@ -787,18 +787,26 @@ export class PostgresWorkQueue {
     return "completed";
   }
 
-  async defer(claim: WorkClaim, pending: RetryableFailure): Promise<void> {
+  async defer(
+    claim: WorkClaim,
+    pending: RetryableFailure,
+    options: { readonly delayMs?: number } = {},
+  ): Promise<void> {
     validateClaim(claim);
+    if (options.delayMs !== undefined && !isPositiveSafeInteger(options.delayMs)) {
+      throw new ScopeViolationError("The deferred Work delay is invalid.");
+    }
     const deferred = await this.client.query(
       `WITH transitioned AS (
          UPDATE occ.controller_work
          SET state = 'queued',
              attempt_count = GREATEST(attempt_count - 1, 0),
              available_at = clock_timestamp() +
-               LEAST($5::double precision,
-                 $6::double precision * POWER(2::double precision,
-                   LEAST(GREATEST(attempt_count - 1, 0), 30))) *
-                 $7::double precision * interval '1 millisecond',
+               COALESCE($8::double precision,
+                 LEAST($5::double precision,
+                   $6::double precision * POWER(2::double precision,
+                     LEAST(GREATEST(attempt_count - 1, 0), 30))) *
+                   $7::double precision) * interval '1 millisecond',
              claim_token = NULL,
              lease_expires_at = NULL,
              updated_at = clock_timestamp()
@@ -816,6 +824,7 @@ export class PostgresWorkQueue {
         MAX_BACKOFF_MS,
         INITIAL_BACKOFF_MS,
         this.nextRandom(),
+        options.delayMs ?? null,
       ],
     );
     if (deferred.rows.length === 0) {

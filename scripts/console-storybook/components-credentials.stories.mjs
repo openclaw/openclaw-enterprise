@@ -14,7 +14,15 @@ export const CredentialsSlackStored = {
 };
 export const CredentialsSlackReplacement = {
   ...story("credentialsSlackReplacement"),
-  name: "Slack token replacement",
+  name: "Slack token switch",
+};
+export const CredentialsSecretListDenied = {
+  ...story("credentialsSecretListDenied"),
+  name: "Secret list denied",
+};
+export const CredentialsSlackGrantDenied = {
+  ...story("credentialsSlackGrantDenied"),
+  name: "Slack grant denied",
 };
 export const CredentialsSlackPartial = {
   ...story("credentialsSlackPartial"),
@@ -26,5 +34,24 @@ export const CredentialsLocked = {
 };
 export const CredentialsError = { ...story("credentialsError"), name: "Metadata unavailable" };
 export const AuthMissing = { ...story("authMissing"), name: "No authentication source" };
+export const AuthApiKeySwitch = {
+  ...story("authApiKeySwitch"),
+  name: "API key Secret switch",
+};
 export const AuthRuntime = { ...story("authRuntime"), name: "Operator-managed authentication" };
 export const AuthService = { ...story("authService"), name: "ChatGPT service account" };
+
+export const AuthSecretReplacement = {
+  ...story("authSecretReplacement"),
+  name: "Replace model Secret",
+};
+export const AuthSecretGrantDenied = {
+  ...story("authSecretGrantDenied"),
+  name: "Authentication saved, grant denied",
+};
+export const AuthSecretGrantLoading = {
+  ...story("authSecretGrantLoading"),
+  name: "Checking model Secret access",
+};
+export const AuthSaveUnknown = { ...story("authSaveUnknown"), name: "Authentication save unknown" };
+export const AuthenticationNavigation = story("authenticationNavigation");

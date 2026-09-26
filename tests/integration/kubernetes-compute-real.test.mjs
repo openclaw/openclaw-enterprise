@@ -26,7 +26,6 @@ import { createGatewayNodeEnrollment } from "../../apps/controller/src/gateway/n
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import {
-  configureExistingK3dLocalPathSharedFileSystem,
   createKubernetesFixtureHarnessAuth,
   validateExplicitK3dLoopbackContext,
 } from "../helpers/kubernetes-real.mjs";
@@ -145,7 +144,7 @@ function runtimeDrivers({ computeDriver, configurationDriver, secretDriver }) {
     installation: {
       occ: { cluster: "kubernetes-agent-provisioning" },
       logging: {},
-      provider: [],
+      backend: [],
       drivers: {
         iam: { id: "native-iam", implementation: "native", configuration: {} },
         compute: {
@@ -362,7 +361,7 @@ function gatewayName(agentId) {
   return `gateway-${hash(agentId)}`;
 }
 
-function sharedWorkspaceClaimName(agentId) {
+function harnessWorkspaceClaimName(agentId) {
   return `workspace-${hash(agentId)}`;
 }
 
@@ -537,10 +536,10 @@ async function assertReadyGateway(namespaceName, agentId, namespaceId, snapshot)
   return deployment;
 }
 
-async function assertSharedWorkspaceClaim(namespaceName, namespaceId, agentId, expectedUid) {
+async function assertHarnessWorkspaceClaim(namespaceName, namespaceId, agentId, expectedUid) {
   const claim = await resource(
     "persistentvolumeclaim",
-    sharedWorkspaceClaimName(agentId),
+    harnessWorkspaceClaimName(agentId),
     namespaceName,
   );
   assert.equal(claim.metadata.namespace, namespaceName);
@@ -549,7 +548,7 @@ async function assertSharedWorkspaceClaim(namespaceName, namespaceId, agentId, e
   assert.equal(claim.metadata.labels["openclaw.dev/agent"], agentId);
   assert.equal(claim.metadata.annotations["openclaw.dev/namespace-id"], namespaceId);
   assert.equal(claim.metadata.annotations["openclaw.dev/agent-id"], agentId);
-  assert.deepEqual(claim.spec.accessModes, ["ReadWriteMany"]);
+  assert.deepEqual(claim.spec.accessModes, ["ReadWriteOnce"]);
   assert.equal(claim.spec.resources.requests.storage, sharedWorkspaceSize);
   assert.equal(claim.spec.storageClassName, "local-path");
   assert.equal(claim.status.phase, "Bound");
@@ -558,7 +557,7 @@ async function assertSharedWorkspaceClaim(namespaceName, namespaceId, agentId, e
     assert.equal(
       claim.metadata.uid,
       expectedUid,
-      "Agent-owned shared workspace claim must be reused",
+      "Agent-owned Harness workspace claim must be reused",
     );
   }
   return claim;
@@ -822,7 +821,6 @@ test(
   { ...requiresKubernetes, timeout: 300_000 },
   async (context) => {
     await assertKubernetesFixtureAvailable();
-    await configureExistingK3dLocalPathSharedFileSystem({ kubeconfigPath, kubernetesContext });
     const installationId = `ins_${randomUUID()}`;
     const platformNamespace = `oce-platform-${hash(installationId)}`;
     await kubectl("create", "namespace", platformNamespace);
@@ -996,7 +994,7 @@ test(
         apiVersion: "v1",
         kind: "PersistentVolumeClaim",
         metadata: {
-          name: sharedWorkspaceClaimName(primaryAgent),
+          name: harnessWorkspaceClaimName(primaryAgent),
           namespace: owned[0],
           labels: {
             "app.kubernetes.io/managed-by": "openclaw-enterprise",
@@ -1025,7 +1023,7 @@ test(
       assert.equal(await missing("deployment", revisionName(firstRevision), owned[0]), true);
       const rejectedClaim = await resource(
         "persistentvolumeclaim",
-        sharedWorkspaceClaimName(primaryAgent),
+        harnessWorkspaceClaimName(primaryAgent),
         owned[0],
       );
       assert.deepEqual(rejectedClaim.spec.accessModes, ["ReadWriteOnce"]);
@@ -1035,7 +1033,7 @@ test(
       await kubectl(
         "delete",
         "persistentvolumeclaim",
-        sharedWorkspaceClaimName(primaryAgent),
+        harnessWorkspaceClaimName(primaryAgent),
         "--namespace",
         owned[0],
         "--wait=true",
@@ -1045,6 +1043,14 @@ test(
     const gatewayIdentities = new Map();
     const sharedWorkspaceIdentities = new Map();
     for (const candidate of candidates) {
+      if (driver.requiresStoppedPredecessors(candidate)) {
+        for (const previous of candidates.filter(
+          (entry) => entry.agentId === candidate.agentId && entry.revision < candidate.revision,
+        )) {
+          await driver.stopRevision(previous);
+          assert.equal(await missing("deployment", revisionName(previous), owned[0]), true);
+        }
+      }
       await waitFor(`AgentRevision ${candidate.id} to become ready`, async () => {
         const observation = await driver.prepareRevision(candidate, revisionContext(candidate));
         assert.deepEqual(
@@ -1070,26 +1076,26 @@ test(
       );
       const identityKey = `${candidate.namespaceId}:${candidate.agentId}`;
       if (gatewayIdentities.has(identityKey)) {
-        assert.equal(
+        assert.notEqual(
           gateway.metadata.uid,
           gatewayIdentities.get(identityKey),
-          "replacement revisions must reuse their Agent's existing gateway",
+          "exclusive replacement stops the predecessor before creating its successor",
         );
       } else {
         gatewayIdentities.set(identityKey, gateway.metadata.uid);
       }
       const deployment = await resource("deployment", revisionName(candidate), placement);
-      const sharedClaim = await assertSharedWorkspaceClaim(
+      const harnessClaim = await assertHarnessWorkspaceClaim(
         placement,
         candidate.namespaceId,
         candidate.agentId,
         sharedWorkspaceIdentities.get(identityKey),
       );
-      sharedWorkspaceIdentities.set(identityKey, sharedClaim.metadata.uid);
+      sharedWorkspaceIdentities.set(identityKey, harnessClaim.metadata.uid);
       assert.equal(
         gateway.spec.template.spec.volumes.some(
           ({ persistentVolumeClaim }) =>
-            persistentVolumeClaim?.claimName === sharedClaim.metadata.name,
+            persistentVolumeClaim?.claimName === harnessClaim.metadata.name,
         ),
         false,
         "Gateway must not mount the Harness workspace claim",
@@ -1098,7 +1104,7 @@ test(
         deployment.spec.template.spec.volumes.find(({ name }) => name === "openclaw-workspace"),
         {
           name: "openclaw-workspace",
-          persistentVolumeClaim: { claimName: sharedClaim.metadata.name },
+          persistentVolumeClaim: { claimName: harnessClaim.metadata.name },
         },
       );
       assert.equal(deployment.spec.template.spec.serviceAccountName, agentName(candidate.agentId));
@@ -1205,7 +1211,7 @@ test(
 
     const firstPod = await workloadPod(
       owned[0],
-      `app.kubernetes.io/name=${revisionName(firstRevision)}`,
+      `app.kubernetes.io/name=${revisionName(secondRevision)}`,
     );
     const siblingPod = await workloadPod(
       owned[0],
@@ -1361,8 +1367,8 @@ test(
       (await resources("deployments", owned[0])).filter(
         ({ spec }) => spec.template.spec.serviceAccountName === agentName(primaryAgent),
       ).length,
-      2,
-      "revisions of the same Agent share its identity but retain independent Deployments",
+      1,
+      "only one revision of an Agent may hold its durable workspace",
     );
 
     const siblingGatewayService = await resource(
@@ -1428,11 +1434,11 @@ test(
       driver.retireRevision({ ...firstRevision, compute: foreignCompute }),
       /another Compute Driver/i,
     );
-    await resource("deployment", revisionName(firstRevision), owned[0]);
+    await resource("deployment", revisionName(secondRevision), owned[0]);
 
     await driver.retireRevision(firstRevision);
     assert.equal(await missing("deployment", revisionName(firstRevision), owned[0]), true);
-    await assertSharedWorkspaceClaim(
+    await assertHarnessWorkspaceClaim(
       owned[0],
       first.id,
       primaryAgent,
@@ -1460,13 +1466,13 @@ test(
     });
     await assertReadyGateway(owned[0], embeddedAgent, first.id, embeddedRevision);
     assert.equal(
-      await missing("persistentvolumeclaim", sharedWorkspaceClaimName(embeddedAgent), owned[0]),
+      await missing("persistentvolumeclaim", harnessWorkspaceClaimName(embeddedAgent), owned[0]),
       true,
-      "embedded Agents must remain unchanged and create no shared workspace claim",
+      "embedded Agents must remain unchanged and create no Harness workspace claim",
     );
 
     await driver.retireRevision(secondRevision);
-    await assertSharedWorkspaceClaim(
+    await assertHarnessWorkspaceClaim(
       owned[0],
       first.id,
       primaryAgent,
@@ -1478,10 +1484,10 @@ test(
       agent: { id: primaryAgent, namespaceId: first.id },
     });
     await waitFor(
-      `shared workspace claim ${sharedWorkspaceClaimName(primaryAgent)} to be deleted`,
-      () => missing("persistentvolumeclaim", sharedWorkspaceClaimName(primaryAgent), owned[0]),
+      `Harness workspace claim ${harnessWorkspaceClaimName(primaryAgent)} to be deleted`,
+      () => missing("persistentvolumeclaim", harnessWorkspaceClaimName(primaryAgent), owned[0]),
     );
-    await assertSharedWorkspaceClaim(
+    await assertHarnessWorkspaceClaim(
       owned[0],
       first.id,
       secondaryAgent,
@@ -1509,7 +1515,6 @@ test(
   { ...requiresKubernetes, timeout: 300_000 },
   async (context) => {
     await assertKubernetesFixtureAvailable();
-    await configureExistingK3dLocalPathSharedFileSystem({ kubeconfigPath, kubernetesContext });
     const installationId = `ins_${randomUUID()}`;
     const platformNamespace = `oce-platform-${hash(installationId)}`;
     const directory = await mkdtemp(join(tmpdir(), "openclaw-existing-namespace-"));
@@ -1787,11 +1792,11 @@ test(
     });
     const gateway = await assertReadyGateway(existingName, agentId, owner.id, candidate);
     const workload = await resource("deployment", revisionName(candidate), existingName);
-    const sharedClaim = await assertSharedWorkspaceClaim(existingName, owner.id, agentId);
+    const harnessClaim = await assertHarnessWorkspaceClaim(existingName, owner.id, agentId);
     assert.equal(
       gateway.spec.template.spec.volumes.some(
         ({ persistentVolumeClaim }) =>
-          persistentVolumeClaim?.claimName === sharedClaim.metadata.name,
+          persistentVolumeClaim?.claimName === harnessClaim.metadata.name,
       ),
       false,
       "Gateway must not mount the Harness workspace claim",
@@ -1800,7 +1805,7 @@ test(
       workload.spec.template.spec.volumes.find(({ name }) => name === "openclaw-workspace"),
       {
         name: "openclaw-workspace",
-        persistentVolumeClaim: { claimName: sharedClaim.metadata.name },
+        persistentVolumeClaim: { claimName: harnessClaim.metadata.name },
       },
     );
     await driver.stopRevision(candidate);
@@ -1819,10 +1824,10 @@ test(
       "stop must not return while an exact revision Pod can still execute",
     );
     assert.equal(
-      (await resource("persistentvolumeclaim", sharedClaim.metadata.name, existingName)).metadata
+      (await resource("persistentvolumeclaim", harnessClaim.metadata.name, existingName)).metadata
         .uid,
-      sharedClaim.metadata.uid,
-      "stop must preserve the Agent-owned shared workspace claim",
+      harnessClaim.metadata.uid,
+      "stop must preserve the Agent-owned Harness workspace claim",
     );
 
     // Namespace deletion is legal only for an owner with no Agents or Configurations.
@@ -1895,7 +1900,6 @@ test(
   { ...requiresKubernetesAndPostgres, timeout: 360_000 },
   async (context) => {
     await assertKubernetesFixtureAvailable();
-    await configureExistingK3dLocalPathSharedFileSystem({ kubeconfigPath, kubernetesContext });
     const installationId = `ins_${randomUUID()}`;
     const platformNamespace = `oce-provisioning-${hash(installationId)}`;
     await kubectl("create", "namespace", platformNamespace);
@@ -2299,7 +2303,7 @@ test(
       return { status: response.statusCode, ...response.json() };
     }
 
-    async function startWorker() {
+    async function startWorker({ convergenceTimeoutMs } = {}) {
       workerPool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
       if (workerStarts > 0) {
         workerDrivers = await loadInstallationConfiguration({
@@ -2316,6 +2320,7 @@ test(
         pollIntervalMs: 25,
         leaseDurationMs: 30_000,
         maxAttempts: 20,
+        ...(convergenceTimeoutMs === undefined ? {} : { convergenceTimeoutMs }),
         emit: () => {},
       });
       await worker.start();
@@ -2940,7 +2945,7 @@ test(
       assert.equal(await missing("secret", name, embeddedPlacement), true);
     }
     await assertReadyGateway(embeddedPlacement, separateTenant.id, namespaceIds[1]);
-    const adoptedWorkspace = await assertSharedWorkspaceClaim(
+    const adoptedWorkspace = await assertHarnessWorkspaceClaim(
       existingName,
       adopted.data.id,
       adoptedTenant.id,
@@ -3085,7 +3090,7 @@ test(
       "redeployment must mount the exact persistent data retained by stop",
     );
     assert.equal(
-      (await assertSharedWorkspaceClaim(existingName, adopted.data.id, adoptedTenant.id)).metadata
+      (await assertHarnessWorkspaceClaim(existingName, adopted.data.id, adoptedTenant.id)).metadata
         .uid,
       adoptedWorkspace.metadata.uid,
     );
@@ -3093,6 +3098,24 @@ test(
     await worker.stop();
     worker = undefined;
     workerPool = undefined;
+    const replacementPlacement = kubernetesNamespaceName(namespaceIds[0]);
+    const replacementClaim = await assertHarnessWorkspaceClaim(
+      replacementPlacement,
+      namespaceIds[0],
+      first.id,
+    );
+    await kubectl(
+      "exec",
+      `deployment/${revisionName(admitted[0])}`,
+      "-n",
+      replacementPlacement,
+      "-c",
+      "agent",
+      "--",
+      "node",
+      "-e",
+      "require('node:fs').writeFileSync('/home/node/workspace/replacement-proof.txt', 'retain across replacement')",
+    );
     const replacement = await deploy(namespaceIds[0], first.id);
     await startWorker();
     await waitForActive(namespaceIds[0], first.id, replacement.id);
@@ -3101,6 +3124,27 @@ test(
       missing("deployment", revisionName(admitted[0]), placement),
     );
     await resource("deployment", revisionName(replacement), placement);
+    await assertHarnessWorkspaceClaim(
+      placement,
+      namespaceIds[0],
+      first.id,
+      replacementClaim.metadata.uid,
+    );
+    assert.equal(
+      await kubectl(
+        "exec",
+        `deployment/${revisionName(replacement)}`,
+        "-n",
+        placement,
+        "-c",
+        "agent",
+        "--",
+        "node",
+        "-e",
+        "process.stdout.write(require('node:fs').readFileSync('/home/node/workspace/replacement-proof.txt', 'utf8'))",
+      ),
+      "retain across replacement",
+    );
     await resource("deployment", revisionName(admitted[1]), placement);
     await resource("deployment", revisionName(admitted[5]), placement);
     await resource("serviceaccount", agentName(first.id), placement);
@@ -3114,6 +3158,85 @@ test(
       3,
       "worker restart and replacement revisions must preserve one gateway for each running Agent",
     );
+
+    if (runtimeImage === undefined) {
+      // Block the fixture's native readiness using the retained workspace, then
+      // prove a failed candidate and recovery both keep the same volume and data.
+      await worker.stop();
+      worker = undefined;
+      workerPool = undefined;
+      await kubectl(
+        "exec",
+        `deployment/${revisionName(replacement)}`,
+        "-n",
+        placement,
+        "-c",
+        "agent",
+        "--",
+        "node",
+        "-e",
+        "require('node:fs').writeFileSync('/home/node/workspace/.fixture-unready', 'blocked')",
+      );
+      const failed = await deploy(namespaceIds[0], first.id);
+      await startWorker({ convergenceTimeoutMs: 20_000 });
+      const failedWork = await waitFor(
+        "replacement to fail native readiness",
+        async () => {
+          const work = await observerPool.query(
+            "SELECT state, reason_code FROM occ.controller_work WHERE idempotency_key = $1",
+            [`agent_revision:${failed.id}:reconcile`],
+          );
+          return work.rows[0]?.state === "failed_permanent" ? work.rows[0] : undefined;
+        },
+        60_000,
+      );
+      assert.equal(failedWork.reason_code, "CONVERGENCE_DEADLINE_EXCEEDED");
+      assert.equal(await missing("deployment", revisionName(replacement), placement), true);
+      await assertHarnessWorkspaceClaim(
+        placement,
+        namespaceIds[0],
+        first.id,
+        replacementClaim.metadata.uid,
+      );
+      await kubectl(
+        "exec",
+        `deployment/${revisionName(failed)}`,
+        "-n",
+        placement,
+        "-c",
+        "agent",
+        "--",
+        "node",
+        "-e",
+        "const fs=require('node:fs'); fs.writeFileSync('/home/node/workspace/failed-candidate.txt', 'preserved'); fs.unlinkSync('/home/node/workspace/.fixture-unready')",
+      );
+      const recovered = await deploy(namespaceIds[0], first.id);
+      await waitForActive(namespaceIds[0], first.id, recovered.id);
+      await waitFor("failed candidate to release its workspace", () =>
+        missing("deployment", revisionName(failed), placement),
+      );
+      await assertHarnessWorkspaceClaim(
+        placement,
+        namespaceIds[0],
+        first.id,
+        replacementClaim.metadata.uid,
+      );
+      assert.equal(
+        await kubectl(
+          "exec",
+          `deployment/${revisionName(recovered)}`,
+          "-n",
+          placement,
+          "-c",
+          "agent",
+          "--",
+          "node",
+          "-e",
+          "const fs=require('node:fs'); process.stdout.write(fs.readFileSync('/home/node/workspace/replacement-proof.txt', 'utf8') + ':' + fs.readFileSync('/home/node/workspace/failed-candidate.txt', 'utf8'))",
+        ),
+        "retain across replacement:preserved",
+      );
+    }
 
     const adoptedOwned = await ownedComputeResources(
       existingName,

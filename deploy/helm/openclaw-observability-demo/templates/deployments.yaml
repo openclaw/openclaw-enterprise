@@ -1,0 +1,108 @@
+{{- range $component := list "prometheus" "loki" "grafana" }}
+{{- $port := index (dict "prometheus" 9090 "loki" 3100 "grafana" 3000) $component }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $.Release.Name }}-{{ $component }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "demo.labels" (dict "root" $ "component" $component) | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $port }}
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $.Release.Name }}-{{ $component }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "demo.labels" (dict "root" $ "component" $component) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "demo.labels" (dict "root" $ "component" $component) | nindent 8 }}
+      annotations:
+        checksum/config: {{ print (include (print $.Template.BasePath "/prometheus.yaml") $) (include (print $.Template.BasePath "/loki.yaml") $) (include (print $.Template.BasePath "/grafana.yaml") $) | sha256sum }}
+    spec:
+      {{- if eq $component "prometheus" }}
+      serviceAccountName: {{ $.Release.Name }}-prometheus
+      {{- else }}
+      automountServiceAccountToken: false
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: {{ $component }}
+          image: {{ index $.Values.images $component | quote }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml $.Values.resources | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ $port }}
+          readinessProbe:
+            httpGet:
+              path: {{ index (dict "prometheus" "/-/ready" "loki" "/ready" "grafana" "/api/health") $component }}
+              port: http
+            periodSeconds: 2
+          {{- if eq $component "prometheus" }}
+          args: ["--config.file=/etc/demo/prometheus.yaml", "--storage.tsdb.path=/data", "--storage.tsdb.retention.time=24h", "--storage.tsdb.retention.size=256MB"]
+          {{- else if eq $component "loki" }}
+          args: ["-config.file=/etc/demo/loki.yaml"]
+          {{- else }}
+          env:
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.grafana.adminSecretName }}
+                  key: {{ $.Values.grafana.adminSecretKey }}
+            - { name: GF_PATHS_DATA, value: /data }
+            - { name: GF_USERS_ALLOW_SIGN_UP, value: "false" }
+            - { name: GF_ANALYTICS_REPORTING_ENABLED, value: "false" }
+            - { name: GF_ANALYTICS_CHECK_FOR_UPDATES, value: "false" }
+            - { name: GF_PLUGINS_PREINSTALL_DISABLED, value: "true" }
+          {{- end }}
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: tmp, mountPath: /tmp }
+            {{- if eq $component "grafana" }}
+            - { name: config, mountPath: /etc/grafana/provisioning/datasources/datasources.yaml, subPath: datasources.yaml, readOnly: true }
+            - { name: config, mountPath: /etc/grafana/provisioning/dashboards/dashboards.yaml, subPath: dashboards.yaml, readOnly: true }
+            - { name: dashboards, mountPath: /etc/occ-dashboard, readOnly: true }
+            {{- else }}
+            - { name: config, mountPath: /etc/demo, readOnly: true }
+            {{- end }}
+      volumes:
+        - name: data
+          emptyDir:
+            sizeLimit: {{ $.Values.storage.sizeLimit }}
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: config
+          configMap:
+            name: {{ $.Release.Name }}-{{ $component }}
+        {{- if eq $component "grafana" }}
+        - name: dashboards
+          configMap:
+            name: {{ $.Release.Name }}-dashboards
+        {{- end }}
+{{- end }}

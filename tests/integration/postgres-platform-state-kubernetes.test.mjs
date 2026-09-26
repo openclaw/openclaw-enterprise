@@ -641,6 +641,7 @@ test(
     const firstRevision = firstDeployment.data;
     assert.deepEqual(Object.keys(firstRevision).sort(), [
       "agentId",
+      "backendId",
       "compute",
       "configuration",
       "configurationGeneration",
@@ -651,7 +652,6 @@ test(
       "harnessAuth",
       "id",
       "namespaceId",
-      "providerId",
       "revision",
     ]);
     assert.equal(firstRevision.namespaceId, namespaceA);

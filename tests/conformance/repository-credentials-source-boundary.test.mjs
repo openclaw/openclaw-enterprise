@@ -81,7 +81,7 @@ test("credential source boundary rejects new raw capabilities in the real source
     "composition/repository-credentials",
     "drivers/repo/credentials",
     "drivers/repo/github",
-    "providers/repository-credentials",
+    "backends/repository-credentials",
     "repository-credentials.ts",
     "repository-credentials.mjs",
   ]) {
@@ -155,10 +155,10 @@ test("credential source boundary rejects new raw capabilities in the real source
       "composition/repository-credentials/boundary-regression.ts",
     ],
     [
-      "new Provider source is scanned",
+      "new Backend source is scanned",
       'import { request } from "node:https";',
       /unreviewed runtime import from node:https/,
-      "providers/repository-credentials/boundary-regression.ts",
+      "backends/repository-credentials/boundary-regression.ts",
     ],
     [
       "the process entrypoint cannot use a raw network global",
@@ -344,12 +344,12 @@ test("credential source boundary rejects new raw capabilities in the real source
       "the control client cannot send HTTPS traffic",
       'import { request as sendHttps } from "node:https";',
       /unreviewed runtime import from node:https/,
-      "providers/repository-credentials/control-client.ts",
+      "backends/repository-credentials/control-client.ts",
     ],
     [
       "the control client is available only to its reviewed consumers",
-      'import { UnixRepositoryCredentialControlClient } from "../../../providers/repository-credentials/control-client.ts";',
-      /raw sender providers\/repository-credentials\/control-client.ts/,
+      'import { UnixRepositoryCredentialControlClient } from "../../../backends/repository-credentials/control-client.ts";',
+      /raw sender backends\/repository-credentials\/control-client.ts/,
     ],
     [
       "registry loading cannot write files",
@@ -407,7 +407,7 @@ test("credential source boundary rejects new raw capabilities in the real source
     ],
     [
       "an emitted-extension alias cannot hide a restricted default export",
-      'import { UnixRepositoryCredentialControlClient as Control } from "../../providers/repository-credentials/control-client.js"; export default Control satisfies typeof Control;',
+      'import { UnixRepositoryCredentialControlClient as Control } from "../../backends/repository-credentials/control-client.js"; export default Control satisfies typeof Control;',
       /raw I\/O binding cannot be re-exported/,
       "composition/repository-credentials/platform.ts",
     ],

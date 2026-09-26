@@ -123,7 +123,7 @@ export interface AgentRepository extends AgentReadRepository {
     configurationId: string,
     executionMode?: HarnessExecutionMode,
     harnessAuth?: HarnessAuthBinding | null,
-    providerId?: string | null,
+    backendId?: string | null,
     plugins?: PluginDesiredState,
     repositoryBindings?: readonly RepositoryBindingSelection[],
   ): Promise<Readonly<Agent> | undefined>;
@@ -240,12 +240,12 @@ export interface ServiceAccountReadRepository {
     serviceAccountId: string,
   ): Promise<Readonly<ServiceAccount> | undefined>;
   listServiceAccounts(namespaceId: string): Promise<readonly Readonly<ServiceAccount>[]>;
-  findServiceAccountProviderBinding(
+  findServiceAccountBackendBinding(
     namespaceId: string,
     serviceAccountId: string,
   ): Promise<
     | Readonly<{
-        readonly providerId: string;
+        readonly backendId: string;
         readonly driverId: string;
         readonly workspaceId: string;
         readonly credentialIssued: boolean;
@@ -273,7 +273,7 @@ const serviceAccountIdentifier =
   /^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const secretName = /^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?(?:\.[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)*$/;
 const secretKey = /^[-._a-zA-Z0-9]+$/;
-const providerIdentifier = /^(?!\s)(?!.*\s$)(?!.*[\x00-\x1f\x7f]).{1,200}$/;
+const backendIdentifier = /^(?!\s)(?!.*\s$)(?!.*[\x00-\x1f\x7f]).{1,200}$/;
 
 function validCredential(credential: unknown): credential is ServiceAccountCredential {
   if (
@@ -346,16 +346,16 @@ export function validHarnessAuthSnapshot(value: HarnessAuthSnapshot, namespaceId
     ) {
       return false;
     }
-    const provider = value.providerBinding;
+    const backend = value.backendBinding;
     return (
-      provider !== null &&
-      typeof provider === "object" &&
-      !Array.isArray(provider) &&
-      Object.keys(provider).length === 4 &&
-      isNonEmptyString(provider.providerId) &&
-      isNonEmptyString(provider.driverId) &&
-      isNonEmptyString(provider.workspaceId) &&
-      provider.credentialIssued === true
+      backend !== null &&
+      typeof backend === "object" &&
+      !Array.isArray(backend) &&
+      Object.keys(backend).length === 4 &&
+      isNonEmptyString(backend.backendId) &&
+      isNonEmptyString(backend.driverId) &&
+      isNonEmptyString(backend.workspaceId) &&
+      backend.credentialIssued === true
     );
   } catch {
     return false;
@@ -437,8 +437,8 @@ export async function assertHarnessAuthAvailable(
 
 function assertAdmittedAgentRevision(revision: AgentRevision): void {
   if (
-    (revision.providerId !== null &&
-      (typeof revision.providerId !== "string" || !providerIdentifier.test(revision.providerId))) ||
+    (revision.backendId !== null &&
+      (typeof revision.backendId !== "string" || !backendIdentifier.test(revision.backendId))) ||
     !/^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
       revision.configurationId,
     ) ||
@@ -651,12 +651,9 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     workspaceSetups: new Map(
       Array.from(snapshot.workspaceSetups, ([key, setup]) => [key, immutableCopy(setup)]),
     ),
-    revisions: new Map(
-      Array.from(snapshot.revisions, ([key, revisions]) => [
-        key,
-        Object.freeze(revisions.map((revision) => immutableCopy(revision))),
-      ]),
-    ),
+    // Revisions are copied on ingress/egress; appends replace frozen history arrays.
+    // A separate Map isolates this snapshot's future appends without copying history.
+    revisions: new Map(snapshot.revisions),
     roles: new Map(Array.from(snapshot.roles, ([key, role]) => [key, immutableCopy(role)])),
     bindings: new Map(
       Array.from(snapshot.bindings, ([key, binding]) => [key, immutableCopy(binding)]),
@@ -1242,7 +1239,7 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
           .map((account) => immutableCopy(account)),
       );
     },
-    findServiceAccountProviderBinding: async () => undefined,
+    findServiceAccountBackendBinding: async () => undefined,
     createServiceAccount: async (account) => {
       assertInitialized(snapshot);
       if (
@@ -1417,10 +1414,10 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
         throw new ScopeViolationError("The Agent execution mode is invalid.");
       }
       if (
-        agent.providerId !== null &&
-        (typeof agent.providerId !== "string" || !providerIdentifier.test(agent.providerId))
+        agent.backendId !== null &&
+        (typeof agent.backendId !== "string" || !backendIdentifier.test(agent.backendId))
       ) {
-        throw new ScopeViolationError("The Agent Provider identity is invalid.");
+        throw new ScopeViolationError("The Agent Backend identity is invalid.");
       }
       const plugins = normalizedPlugins(agent.plugins);
       const repositoryBindings = normalizedRepositoryBindings(agent.repositoryBindings);
@@ -1522,7 +1519,7 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
       configurationId,
       executionMode,
       harnessAuth,
-      providerId,
+      backendId,
       nextPlugins,
       nextRepositoryBindings,
     ) => {
@@ -1530,8 +1527,8 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
       if (!current) {
         return undefined;
       }
-      if (providerId !== undefined && providerId !== null && !providerIdentifier.test(providerId)) {
-        throw new ScopeViolationError("The Agent Provider identity is invalid.");
+      if (backendId !== undefined && backendId !== null && !backendIdentifier.test(backendId)) {
+        throw new ScopeViolationError("The Agent Backend identity is invalid.");
       }
       if (
         executionMode !== undefined &&
@@ -1546,7 +1543,7 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
       await assertConfigurationUsableByAgent(configurations, secrets, namespaceId, configurationId);
       const association = harnessAuth === undefined ? current.harnessAuth : harnessAuth;
       await assertHarnessAuthAvailable({ secrets, serviceAccounts }, namespaceId, association);
-      const nextProviderId = providerId === undefined ? current.providerId : providerId;
+      const nextBackendId = backendId === undefined ? current.backendId : backendId;
       const plugins = nextPlugins === undefined ? current.plugins : normalizedPlugins(nextPlugins);
       const repositoryBindings =
         nextRepositoryBindings === undefined
@@ -1560,7 +1557,7 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
       const updated = immutableCopy({
         ...withoutPlugins,
         configurationId,
-        providerId: nextProviderId,
+        backendId: nextBackendId,
         executionMode: executionMode ?? current.executionMode,
         harnessAuth: association,
         ...(plugins === undefined ? {} : { plugins }),
@@ -1628,7 +1625,7 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
       if (
         owner === undefined ||
         owner.servicePrincipalId !== revision.servicePrincipalId ||
-        owner.providerId !== revision.providerId ||
+        owner.backendId !== revision.backendId ||
         !harnessAuthMatches(owner.harnessAuth, revision.harnessAuth)
       ) {
         throw new ScopeViolationError("The AgentRevision belongs to an unavailable Agent.");

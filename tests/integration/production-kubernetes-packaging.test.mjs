@@ -32,13 +32,13 @@ const values = {
   "cluster.cidrs[1]": "10.43.0.2/32",
 };
 const chatgptValues = {
-  "provider.chatgpt.enabled": "true",
-  "provider.chatgpt.providerCidr": "198.51.100.25/32",
+  "backend.chatgpt.enabled": "true",
+  "backend.chatgpt.providerCidr": "198.51.100.25/32",
 };
 const repositoryCredentialValues = {
   "repositoryCredentials.enabled": "true",
   "repositoryCredentials.image": `registry.example.invalid/repository-credentials@sha256:${"b".repeat(64)}`,
-  "repositoryCredentials.providerId": "github-primary",
+  "repositoryCredentials.backendId": "github-primary",
   "repositoryCredentials.registryConfigMapName": "repository-registry-v1",
   "repositoryCredentials.serviceConfigSecretName": "repository-config",
   "repositoryCredentials.appKeySecretName": "repository-app-key",
@@ -159,7 +159,39 @@ test(
   "metrics chart requires exact scraper selectors and isolates the extra Pod ports",
   tooling,
   async () => {
-    await assert.rejects(render({ "metrics.enabled": "true" }), /scraperNamespaceLabels/);
+    const defaults = await resources((await render()).stdout);
+    for (const component of ["api", "worker"]) {
+      const container = defaults.find(
+        (item) =>
+          item.kind === "Deployment" && item.metadata.name === `openclaw-enterprise-${component}`,
+      ).spec.template.spec.containers[0];
+      assert.equal(container.env.find(({ name }) => name === "OCC_METRICS_ENABLED")?.value, "true");
+      assert.ok(
+        container.ports.some(
+          ({ name, containerPort }) => name === "metrics" && containerPort === 9464,
+        ),
+      );
+    }
+    assert.ok(
+      !defaults.some(
+        (item) => item.kind === "NetworkPolicy" && item.metadata.name.endsWith("-metrics"),
+      ),
+    );
+    const disabled = await resources((await render({ "metrics.enabled": "false" })).stdout);
+    for (const item of disabled.filter((item) => item.kind === "Deployment")) {
+      assert.ok(
+        !item.spec.template.spec.containers[0].ports?.some(({ name }) => name === "metrics"),
+      );
+    }
+    for (const override of [
+      { "metrics.scraperNamespaceLabels.team": "monitoring" },
+      { "metrics.scraperPodLabels.app": "prometheus" },
+    ]) {
+      await assert.rejects(render(override), /scraperNamespaceLabels/);
+    }
+    for (const port of ["0", "65536", "8080", "9.5"]) {
+      await assert.rejects(render({ "metrics.port": port }), /metrics.port/);
+    }
     const selected = {
       "metrics.enabled": "true",
       "metrics.scraperNamespaceLabels.kubernetes\\.io/metadata\\.name": "monitoring",
@@ -238,7 +270,7 @@ test("production native examples satisfy the current Helm, Installation, and PVC
     environment: { OCC_CONFIG_PATH: installationPath },
   });
   assert.equal(drivers.installation.occ.cluster, "production-west");
-  assert.deepEqual(drivers.installation.provider, []);
+  assert.deepEqual(drivers.installation.backend, []);
   assert.equal(drivers.computeDriver.id, "compute-kubernetes");
   const compute = drivers.installation.drivers.compute.configuration;
   assert.equal(compute.network.gatewayClients, undefined);
@@ -260,7 +292,7 @@ test("production native examples satisfy the current Helm, Installation, and PVC
   assert.equal(bootstrapClaim.spec.resources.requests.storage, "1Gi");
 });
 
-test("production Helm values example renders the providerless default chart", tooling, async () => {
+test("production Helm values example renders the backendless default chart", tooling, async () => {
   const { stdout } = await execute(
     helm,
     [
@@ -317,6 +349,25 @@ test("control-plane node selectors are optional unless configured", tooling, asy
   for (const component of ["api", "worker"]) {
     assert.equal(selected("Deployment", component).spec.template.spec.nodeSelector, undefined);
   }
+});
+
+test("Installation checksum rolls both control-plane Deployments", tooling, async () => {
+  const checksum = "c".repeat(64);
+  const objects = await resources(
+    (await render({ "controlPlane.installationChecksum": checksum })).stdout,
+  );
+  const deployments = objects.filter(({ kind }) => kind === "Deployment");
+  assert.equal(deployments.length, 2);
+  for (const deployment of deployments) {
+    assert.equal(
+      deployment.spec.template.metadata.annotations["openclaw.dev/installation-checksum"],
+      checksum,
+    );
+  }
+  await assert.rejects(
+    render({ "controlPlane.installationChecksum": "not-a-checksum" }),
+    /must be an empty string or a lowercase SHA-256 digest/,
+  );
 });
 
 test(
@@ -528,7 +579,7 @@ test(
     assert.deepEqual(service.args, [
       "--public-origin",
       "https://openclaw-enterprise-repository-credentials.openclaw-system.svc",
-      "--provider-id",
+      "--backend-id",
       "github-primary",
     ]);
     assert.deepEqual(service.readinessProbe.exec.command, [
@@ -643,7 +694,7 @@ test(
   async () => {
     for (const [overrides, message] of [
       [{ "repositoryCredentials.image": "repository-credentials:latest" }, /immutable SHA-256/],
-      [{ "repositoryCredentials.providerId": "" }, /providerId is required/],
+      [{ "repositoryCredentials.backendId": "" }, /backendId is required/],
       [{ "repositoryCredentials.registryConfigMapName": "" }, /registryConfigMapName is required/],
       [{ "repositoryCredentials.publicCaSecretName": "repository-tls" }, /dedicated Secret/],
       [{ "repositoryCredentials.appKeySecretName": "occ-auth" }, /dedicated Secret/],
@@ -940,6 +991,57 @@ test(
 );
 
 test(
+  "optional model discovery grants only API HTTPS egress to configured hosts",
+  tooling,
+  async () => {
+    const name = "openclaw-enterprise-api-model-discovery-egress";
+    const defaults = await resources((await render()).stdout);
+    assert.ok(!defaults.some(({ metadata }) => metadata.name === name));
+    const objects = await resources(
+      (
+        await render({
+          "api.modelDiscoveryCidrs[0]": "198.51.100.25/32",
+          "api.modelDiscoveryCidrs[1]": "198.51.100.26/32",
+        })
+      ).stdout,
+    );
+    const policy = objects.find(
+      ({ kind, metadata }) => kind === "NetworkPolicy" && metadata.name === name,
+    );
+    assert.ok(policy, "configured discovery destinations must render an egress policy");
+    assert.deepEqual(policy.spec, {
+      podSelector: {
+        matchLabels: {
+          "app.kubernetes.io/name": "openclaw-enterprise",
+          "app.kubernetes.io/instance": "oce",
+          "app.kubernetes.io/component": "api",
+        },
+      },
+      policyTypes: ["Egress"],
+      egress: [
+        {
+          to: [
+            { ipBlock: { cidr: "198.51.100.25/32" } },
+            { ipBlock: { cidr: "198.51.100.26/32" } },
+          ],
+          ports: [{ protocol: "TCP", port: 443 }],
+        },
+      ],
+    });
+    for (const cidr of ["0.0.0.0/0", "198.51.100.0/24", "api.openai.com", "999.1.1.1/32"]) {
+      await assert.rejects(
+        render({ "api.modelDiscoveryCidrs[0]": cidr }),
+        /api.modelDiscoveryCidrs/,
+      );
+    }
+    await assert.rejects(
+      render({ "api.modelDiscoveryCidrs": "198.51.100.25/32" }),
+      /api.modelDiscoveryCidrs/,
+    );
+  },
+);
+
+test(
   "optional database CA Secret mounts into every production database client",
   tooling,
   async () => {
@@ -985,7 +1087,7 @@ test(
 );
 
 test(
-  "the optional ChatGPT Provider isolates admin credentials, tenant Secrets, and provider egress to the API",
+  "the optional ChatGPT Backend isolates admin credentials, tenant Secrets, and provider egress to the API",
   tooling,
   async () => {
     const { stdout } = await render(chatgptValues);
@@ -1102,19 +1204,19 @@ test(
       ],
       [
         "unrestricted ChatGPT provider egress",
-        { ...chatgptValues, "provider.chatgpt.providerCidr": "0.0.0.0/0" },
+        { ...chatgptValues, "backend.chatgpt.providerCidr": "0.0.0.0/0" },
       ],
       [
-        "ChatGPT Provider without an approved provider host",
-        { ...chatgptValues, "provider.chatgpt.providerCidr": "" },
+        "ChatGPT Backend without an approved provider host",
+        { ...chatgptValues, "backend.chatgpt.providerCidr": "" },
       ],
       [
         "ChatGPT admin key shared with installation configuration",
-        { ...chatgptValues, "provider.chatgpt.secretName": "occ-installation-startup" },
+        { ...chatgptValues, "backend.chatgpt.secretName": "occ-installation-startup" },
       ],
       [
-        "ChatGPT Provider without an admin Secret key",
-        { ...chatgptValues, "provider.chatgpt.key": "" },
+        "ChatGPT Backend without an admin Secret key",
+        { ...chatgptValues, "backend.chatgpt.key": "" },
       ],
       [
         "Agent native admin enabled without a public DNS suffix",
@@ -1235,7 +1337,9 @@ test(
     const serviceName = gatewayServiceName(gatewayNamespace, gatewayName);
     const hostname = defaultGatewayHostname(gatewayNamespace, gatewayName, envoyNamespace);
     const rootSecret = rootSecretName(gatewayNamespace, gatewayName);
-    const configured = await resources((await render(gatewayRoutingValues)).stdout);
+    const configured = await resources(
+      (await render({ ...gatewayRoutingValues, ...controlPlaneSelectorValues })).stdout,
+    );
     const alternateNamespace = "openclaw-alt";
     const alternateObjects = await resources(
       (await render(gatewayRoutingValues, { namespace: alternateNamespace })).stdout,
@@ -1297,6 +1401,10 @@ test(
     const envoyProxy = configured.find(({ kind }) => kind === "EnvoyProxy");
     assert.equal(envoyProxy.metadata.name, gatewayName);
     assert.equal(envoyProxy.metadata.namespace, gatewayNamespace);
+    // The credential-checking proxy must stay on the trusted control-plane pool.
+    assert.deepEqual(envoyProxy.spec.provider.kubernetes.envoyDeployment?.pod?.nodeSelector, {
+      "oce-role": "control",
+    });
     assert.deepEqual(envoyProxy.spec.provider.kubernetes.envoyService, {
       name: serviceName,
       type: "ClusterIP",
@@ -1414,6 +1522,10 @@ test(
           {
             namespaceSelector: { matchLabels: { "openclaw-enterprise.io/gateway": label } },
             podSelector: { matchLabels: { "openclaw.dev/workload-role": "agent" } },
+          },
+          {
+            namespaceSelector: { matchLabels: { "openclaw-enterprise.io/gateway": label } },
+            podSelector: { matchLabels: { "openshell.ai/boundary-role": "supervisor" } },
           },
         ],
         ports: [{ protocol: "TCP", port: 10443 }],
@@ -1566,6 +1678,7 @@ test(
       },
     });
     const envoyProxy = configured.find(({ kind }) => kind === "EnvoyProxy");
+    assert.equal(envoyProxy.spec.provider.kubernetes.envoyDeployment, undefined);
     assert.deepEqual(envoyProxy.spec.provider.kubernetes.envoyService, {
       name: serviceName,
       type: "ClusterIP",

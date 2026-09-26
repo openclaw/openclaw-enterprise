@@ -34,7 +34,9 @@ graph TD
     F -->|prepared| G["Prepare file prerequisites"]
     G --> H["Node tests and structured reporter"]
     H --> I["Case and skip validation"]
-    F -->|preparation fails| J["Owned-resource cleanup"]
+    F -->|fixture cluster startup fails| P["Save bounded setup diagnostics"]
+    P --> J["Owned-resource cleanup"]
+    F -->|other preparation fails| J
     I --> J
   end
   subgraph Results["Check results"]
@@ -71,9 +73,17 @@ The provider job selects the shared `blacksmith-8vcpu-ubuntu-2404` runner for di
 
 ### 2. Prepare resources under the job owner
 
-`scripts/ci/prepare.mjs:main`
+`scripts/ci/prepare.mjs:main` and `scripts/ci/prepare.mjs:ensureK3dCluster`
 
 [CI resource preparation](github-actions-testing/preparation.md) traces tool setup, image and cluster preparation, protected credentials, and resource ownership. Continue below when preparation has produced the lane state.
+
+For the three Kubernetes fixture lanes, cluster startup records phase timings
+and host snapshots. On failure, bounded diagnostic reads save
+`<state-file>.diagnostics.json` outside the cluster directory before cleanup.
+Creation uses `--no-rollback` for these lanes so the workflow owns teardown after
+capture; local callers still invoke cleanup with their failed run's state file.
+Collection preserves the original error, including when an observation fails or
+times out. The [CI guide](../testing/ci.md) describes the retained evidence.
 
 Dedicated Codex preparation and the operator's offline profile generator share
 `scripts/lib/codex-seccomp-profile.mjs:deriveCodexBwrapProfile`. Preparation
@@ -99,6 +109,11 @@ per lane and workflow run. A job retry replaces that lane's earlier artifact;
 other lanes retain their results. This prevents aggregation from selecting a
 stale failed result after a successful retry. The earlier job logs remain the
 failure record; retain a result separately before retrying when needed.
+
+Fixture bootstrap failures also upload `diagnostics-<artifact-prefix>-<lane>`
+separately from test results. Cleanup removes the cluster and its private state;
+the diagnostic file remains available for upload and does not satisfy the
+aggregate's required test results.
 
 Per-file cleanup releases its disposable database. Job cleanup removes only the state-owned resources. A whole owned `k3d-cluster` resource owns Kubernetes API object deletion for its Collector Namespace and RBAC. Logging cleanup cleans the local Docker backend container and JSONL/config directory independently, so a dead Kubernetes API does not block local log backend teardown. Cleanup failure fails the check and keeps the private state file usable only while that runner host and path remain available. User databases, contexts, unrelated containers and global images remain outside that ownership.
 
@@ -129,6 +144,7 @@ The aggregate runs after success or failure and checks expected job outcomes plu
 - 2026-09-24 13:09: Document the shared offline seccomp generator and meaningful outside-workspace denial probe in the accompanying changes. (01a0d502-6efc-7063-a88c-4f1739da163c - b4b6a0e0d8700930f21d58b3724c055f8249c486)
 
 - 2026-09-23 23:07: Document lane-owned suite definitions and the shared loader; retain workflow selection, preparation, and result accounting. (01a0d075-a358-7620-8c16-fd4290acddf1 - 4df9f9800836dc1c2b57afd5f8af4d91f55088d5)
+- 2026-09-24: Trace fixture-cluster startup metrics and bounded failure diagnostics saved before cleanup.
 
 - 2026-09-23 06:35: Start the audit and required lanes independently on the existing ephemeral Blacksmith pool; split PostgreSQL and Kubernetes fixtures across owned runners and retain the final coverage gate. (01a0ccf5-96e4-7541-9845-c9a6443fa7b2 - 3ac9d07a4d7ede8c4e1c010f598ef67673f97b74)
 

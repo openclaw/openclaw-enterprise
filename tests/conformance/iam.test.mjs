@@ -780,6 +780,7 @@ test("every applicable deny-only Restriction overrides direct and Group grants",
 test("invalid loaded IAM state fails closed", async () => {
   const invalidStates = [
     { ...state, groups: undefined },
+    { ...state, roles: [...roles, { ...roles[0], permissions: [] }] },
     {
       ...state,
       bindings: [{ ...bindings[0], subjectKind: undefined }],
@@ -942,6 +943,15 @@ test("the Driver uses current IAM state for every lookup and authorization", asy
 
   assert.equal((await driver.authorize(request)).allowed, true);
   assert.equal((await driver.lookupIdentity(identity))?.id, "principal-reader-a");
+
+  // A replacement Role with the same ID must take effect on the next decision.
+  const readerRole = mutable.roles[0];
+  mutable.roles[0] = { ...readerRole, permissions: [] };
+  const revoked = await driver.authorize(request);
+  assert.equal(revoked.allowed, false);
+  assert.deepEqual(revoked.evidence.roleIds, []);
+  mutable.roles[0] = readerRole;
+  assert.equal((await driver.authorize(request)).allowed, true);
 
   mutable.roles[0].permissions.length = 0;
   mutable.bindings[0].subjectId = "principal-unbound";

@@ -257,7 +257,7 @@ and [feature references](README.md) describe implementation and supported behavi
 - [Resources and tenant boundaries](design/resources.md): Installation, Namespace lifecycle, and platform resource contracts.
 - [Access and authorization](design/access.md): admission, identities, authority selection, and exact-resource decisions.
 - [Agent gateways and deployment](design/workloads.md): runtime ownership, execution topologies, and immutable revision activation.
-- [Drivers and Providers](design/drivers.md): capability contracts, external integration ownership, and target repository layout.
+- [Drivers and Backends](design/drivers.md): capability contracts, external integration ownership, and target repository layout.
 - [Platform safeguards](design/safeguards.md): secret delivery, failure behavior, audit, and platform invariants.
 
 ## Near Term Future work

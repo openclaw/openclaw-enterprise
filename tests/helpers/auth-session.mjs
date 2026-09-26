@@ -142,13 +142,21 @@ export async function signInToControllerApp(app, credentials) {
   });
 }
 
-export async function createAuthenticatedControllerRequest(app, credentials) {
+export async function createAuthenticatedControllerRequest(
+  app,
+  credentials,
+  requestOrigin = "http://127.0.0.1",
+) {
   const session = await signInToControllerApp(app, credentials);
   return async (method, url, payload) => {
     const response = await app.inject({
       method,
       url,
-      headers: { ...authenticatedHeaders(session), host: "127.0.0.1" },
+      headers: {
+        ...authenticatedHeaders(session),
+        host: "127.0.0.1",
+        origin: requestOrigin,
+      },
       ...(payload === undefined ? {} : { payload }),
     });
     return {

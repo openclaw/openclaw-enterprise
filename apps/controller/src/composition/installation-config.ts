@@ -11,9 +11,9 @@ import type {
   DriverImplementation,
   IAMDriver,
   Identity,
-  ProviderDefinition,
+  BackendDefinition,
   Preset,
-  ProviderSummary,
+  BackendSummary,
   RepoDriver,
   PluginDriver,
   SandboxDriver,
@@ -21,7 +21,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { NativeIAMDriver, type NativeIAMStateStore } from "@openclaw-enterprise/iam";
 import {
-  validateProviderDefinitions,
+  validateBackendDefinitions,
   type OpenClawController,
   type PostgresPlatformState,
 } from "@openclaw-enterprise/occ";
@@ -67,7 +67,7 @@ export interface InstallationStartupConfiguration {
   readonly occ: { readonly cluster: string };
   readonly logging: LoggingConfiguration;
   readonly presets?: { readonly includeDefaults: boolean; readonly files?: readonly string[] };
-  readonly provider: readonly ProviderDefinition[];
+  readonly backend: readonly BackendDefinition[];
   readonly drivers: {
     readonly configuration: SelectedDriverConfiguration;
     readonly iam: SelectedDriverConfiguration<ConfigurationRecord>;
@@ -170,12 +170,12 @@ async function startupConfiguration(
   safe(configuration, "Installation startup configuration");
   if (Object.hasOwn(configuration, "integrations")) {
     throw new Error(
-      "integrations is retired; configure ChatGPT with provider[].configuration.apiKeyPath.",
+      "integrations is retired; configure ChatGPT with backend[].configuration.apiKeyPath.",
     );
   }
   closed(
     configuration,
-    ["occ", "drivers", "provider", "logging", "presets"],
+    ["occ", "drivers", "backend", "logging", "presets"],
     "Installation startup configuration",
   );
   return { configuration, path };
@@ -278,42 +278,42 @@ function safe(value: unknown, path: string): void {
   }
 }
 
-function providerConfiguration(
+function backendConfiguration(
   value: unknown,
   serviceAccount: InstallationStartupConfiguration["drivers"]["service_account"],
   repoSelection: InstallationStartupConfiguration["drivers"]["repo"],
-): readonly ProviderDefinition[] {
-  const providers = validateProviderDefinitions(value ?? []);
-  if (serviceAccount !== undefined && !providers.some((provider) => provider.type === "chatgpt")) {
-    throw new Error("drivers.service_account requires an owning provider entry with type chatgpt.");
+): readonly BackendDefinition[] {
+  const backends = validateBackendDefinitions(value ?? []);
+  if (serviceAccount !== undefined && !backends.some((backend) => backend.type === "chatgpt")) {
+    throw new Error("drivers.service_account requires an owning backend entry with type chatgpt.");
   }
-  if (repoSelection !== undefined && !providers.some((provider) => provider.type === "github")) {
-    throw new Error("drivers.repo requires an owning provider entry with type github.");
+  if (repoSelection !== undefined && !backends.some((backend) => backend.type === "github")) {
+    throw new Error("drivers.repo requires an owning backend entry with type github.");
   }
-  for (const provider of providers) {
-    if (provider.type === "github") {
+  for (const backend of backends) {
+    if (backend.type === "github") {
       if (repoSelection === undefined) {
-        throw new Error(`provider[${provider.id}].drivers.repo requires drivers.repo.`);
+        throw new Error(`backend[${backend.id}].drivers.repo requires drivers.repo.`);
       }
-      if (provider.drivers.repo !== repoSelection.id) {
+      if (backend.drivers.repo !== repoSelection.id) {
         throw new Error(
-          `provider[${provider.id}].drivers.repo must match the selected drivers.repo.id.`,
+          `backend[${backend.id}].drivers.repo must match the selected drivers.repo.id.`,
         );
       }
       continue;
     }
     if (serviceAccount === undefined) {
       throw new Error(
-        `provider[${provider.id}].drivers.service_account requires drivers.service_account.`,
+        `backend[${backend.id}].drivers.service_account requires drivers.service_account.`,
       );
     }
-    if (provider.drivers.service_account !== serviceAccount.id) {
+    if (backend.drivers.service_account !== serviceAccount.id) {
       throw new Error(
-        `provider[${provider.id}].drivers.service_account must match the selected drivers.service_account.id.`,
+        `backend[${backend.id}].drivers.service_account must match the selected drivers.service_account.id.`,
       );
     }
   }
-  return providers;
+  return backends;
 }
 
 function presetDefinition(value: unknown, path: string): Pick<Preset, "name" | "template"> {
@@ -355,14 +355,14 @@ function appendDefaultPreset(
   presets.push(preset);
 }
 
-export function providerSummariesFromDefinitions(
-  providers: readonly ProviderDefinition[],
-): readonly ProviderSummary[] {
+export function backendSummariesFromDefinitions(
+  backends: readonly BackendDefinition[],
+): readonly BackendSummary[] {
   return Object.freeze(
-    providers.map((provider) =>
+    backends.map((backend) =>
       Object.freeze({
-        id: provider.id,
-        type: provider.type,
+        id: backend.id,
+        type: backend.type,
       }),
     ),
   );
@@ -567,7 +567,7 @@ export async function loadInstallationConfiguration(options: {
     options.mode === "development" &&
     configuration.occ === undefined &&
     configuration.drivers === undefined &&
-    configuration.provider === undefined &&
+    configuration.backend === undefined &&
     configuration.presets === undefined
   ) {
     return undefined;
@@ -645,7 +645,7 @@ export async function loadInstallationConfiguration(options: {
     closed(selection, ["id", "configuration"], "drivers.repo");
     repoSelection = selected(selection, "repo", "github", GitHubRepoDriver);
   }
-  const providers = providerConfiguration(configuration.provider, serviceAccount, repoSelection);
+  const backends = backendConfiguration(configuration.backend, serviceAccount, repoSelection);
 
   const configurationSelection = object(drivers.configuration, "drivers.configuration");
   const iamSelection = object(drivers.iam, "drivers.iam");
@@ -802,7 +802,7 @@ export async function loadInstallationConfiguration(options: {
     occ: Object.freeze({ cluster }),
     presets: Object.freeze({ includeDefaults }),
     logging,
-    provider: providers,
+    backend: backends,
     drivers: Object.freeze({
       configuration: configured,
       iam,
@@ -896,12 +896,12 @@ export async function loadInstallationConfiguration(options: {
       ? new NativeIAMDriver(state, { id: iam.id, implementation: iam.implementation })
       : (createExternalDriver(iamPackage.module, iam, "iam", state) as IAMDriver);
   };
-  const repositoryProvider = providers.find((provider) => provider.type === "github");
+  const repositoryBackend = backends.find((backend) => backend.type === "github");
   const repositoryRuntime =
-    repoSelection === undefined || repositoryProvider === undefined
+    repoSelection === undefined || repositoryBackend === undefined
       ? undefined
       : await composeRepoDriver({
-          provider: repositoryProvider,
+          backend: repositoryBackend,
           selection: repoSelection,
         });
   if (

@@ -28,7 +28,7 @@ export const AgentProvisioningWorkId = Type.String({
   maxLength: 200,
   pattern: "^[A-Za-z0-9._~:@/-]{1,200}$",
 });
-export const ProviderId = Type.String({
+export const BackendId = Type.String({
   minLength: 1,
   maxLength: 200,
   pattern: /^(?!\s)(?!.*\s$)(?!.*[\u0000-\u001f\u007f]).+$/.source,
@@ -409,7 +409,7 @@ export const CreateAgentBody = Type.Object(
     workspaceDefaultsId: Type.Optional(Type.String({ pattern: "^[a-f0-9]{64}$" })),
     name: Name,
     configurationId: ConfigurationId,
-    providerId: Type.Optional(Type.Union([ProviderId, Type.Null()])),
+    backendId: Type.Optional(Type.Union([BackendId, Type.Null()])),
     harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
@@ -434,7 +434,7 @@ export const ProvisionAgentBody = Type.Object(
     workspaceDefaultsId: Type.Optional(CreateAgentBody.properties.workspaceDefaultsId),
     name: Name,
     configuration: ProvisionAgentConfigurationBody,
-    providerId: Type.Optional(Type.Union([ProviderId, Type.Null()])),
+    backendId: Type.Optional(Type.Union([BackendId, Type.Null()])),
     harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
@@ -446,7 +446,7 @@ export const ProvisionAgentBody = Type.Object(
 export const UpdateAgentBody = Type.Object(
   {
     configurationId: ConfigurationId,
-    providerId: Type.Optional(Type.Union([ProviderId, Type.Null()])),
+    backendId: Type.Optional(Type.Union([BackendId, Type.Null()])),
     harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
@@ -588,7 +588,7 @@ export type AgentId = Type.Static<typeof AgentId>;
 export type RevisionId = Type.Static<typeof RevisionId>;
 export type AuditId = Type.Static<typeof AuditId>;
 export type RequestId = Type.Static<typeof RequestId>;
-export type ProviderId = Type.Static<typeof ProviderId>;
+export type BackendId = Type.Static<typeof BackendId>;
 export type Timestamp = Type.Static<typeof Timestamp>;
 export type Name = Type.Static<typeof Name>;
 export type Meta = Type.Static<typeof Meta>;
@@ -657,7 +657,7 @@ export const PresetTemplateSchema = Type.Object(
       Type.Object(
         {
           ...Object.fromEntries(
-            ["name", "executionMode", "providerId", "harnessAuth", "plugins"].map((key) => [
+            ["name", "executionMode", "backendId", "harnessAuth", "plugins"].map((key) => [
               key,
               Type.Optional(Type.Ref("SafeJsonValue")),
             ]),

@@ -111,7 +111,7 @@ async function fixture(mode = "embedded", nodeEnrollment) {
     namespaceId: "namespace-repository-material",
     agentId: "agent-repository-material",
     revision: 1,
-    providerId: null,
+    backendId: null,
     configurationId: "configuration-repository-material",
     configurationKind: "agent",
     configurationGeneration: 1,
@@ -145,7 +145,7 @@ async function fixture(mode = "embedded", nodeEnrollment) {
         {
           repositoryRef: "project",
           profile: "read",
-          providerId: "github",
+          backendId: "github",
           grant: { providerInstanceId: "github-main", repositoryId: "project", grantId: "read" },
         },
       ],
@@ -419,7 +419,7 @@ async function fixture(mode = "embedded", nodeEnrollment) {
             namespaceId: revision.namespaceId,
             name: "Repository material Agent",
             configurationId: revision.configurationId,
-            providerId: revision.providerId,
+            backendId: revision.backendId,
             executionMode: mode,
             servicePrincipalId: revision.servicePrincipalId,
             createdAt: revision.createdAt,
@@ -1103,6 +1103,28 @@ test("Kubernetes rejects malformed repository exec configuration before any API 
       await assert.rejects(f.driver.activateRevision(f.revision, f.context([runtimeBinding()])));
       assert.deepEqual(f.apiCalls, [], "activation must reject before Kubernetes reads or writes");
       assert.deepEqual(f.revision.configuration, before);
+    });
+  }
+});
+
+test("Kubernetes rejects invalid repository text before any API access", async (t) => {
+  for (const [name, content] of [
+    ["unpaired high surrogate", "\ud800"],
+    ["unpaired low surrogate", "\udfff"],
+    ["UTF-8 byte limit", "\u00e9".repeat(32 * 1024) + "a"],
+  ]) {
+    await t.test(name, async () => {
+      const f = await fixture();
+      const binding = runtimeBinding();
+      binding.files["ca.pem"] = content;
+      const document = JSON.parse(binding.files["client.json"]);
+      document.hasPublicCa = true;
+      binding.files["client.json"] = JSON.stringify(document);
+      // No Secret or workload may observe text that cannot be stored losslessly.
+      await assert.rejects(f.driver.prepareRevision(f.revision, f.context([binding])), {
+        message: "Repository credential material is invalid.",
+      });
+      assert.deepEqual(f.apiCalls, []);
     });
   }
 });

@@ -10,7 +10,7 @@ last_updated_session: codex/01a05f95-dd80-7011-990f-d1c46b5bb3cc
 
 The API and worker independently load trusted Installation YAML and construct
 their selected IAM, Compute, Configuration, Secret, and optional Sandbox
-capabilities. Only the API constructs the optional Provider client and
+capabilities. Only the API constructs the optional Backend client and
 ServiceAccount Driver. This trace follows package resolution through process
 composition and stops at request serving or worker reconciliation. Development
 without startup YAML uses the defaults traced in [platform startup](platform-startup.md).
@@ -42,7 +42,7 @@ graph TD
 
   subgraph OCC["Control-plane ownership"]
     F --> P{"API with ServiceAccount selection?"}
-    P -->|yes| Q["Build Provider client and ServiceAccount Driver factory"]
+    P -->|yes| Q["Build Backend client and ServiceAccount Driver factory"]
     P -->|no| G["Construct IAM with platform state"]
     Q --> G
     G --> H["Select exact Drivers and attach lifecycle owners"]
@@ -60,7 +60,7 @@ Each process reads the same trusted startup YAML. Configuration, IAM, Compute,
 and optional Sandbox selections may name an operator-installed package;
 implementation identity comes from its installed metadata. Secret selection is
 required in this YAML path and accepts only bundled Kubernetes Secrets.
-Optional `service_account` selection identifies the bundled Provider member;
+Optional `service_account` selection identifies the bundled Backend member;
 it has no package-loading path. The
 [operator installation guide](../reference/drivers/selection.md) defines the package,
 pinning, registry, and configuration contract. TypeBox checks each selected
@@ -101,14 +101,14 @@ each configured host. Startup enforces the
 before returning any production runtime; development can use a four-operation
 Driver, and the worker still fails closed if a required stage becomes unavailable.
 
-### 3. Construct the API-only Provider branch
+### 3. Construct the API-only Backend branch
 
 [`server.mjs:start`](../../apps/controller/src/server.mjs) handles a selected
 ServiceAccount Driver after loading the common bundle. It requires PostgreSQL,
-Compute credential-storage methods, and an owning Provider definition. It reads
-that Provider's `apiKeyPath`, constructs `ChatGPTClient`, and supplies the
+Compute credential-storage methods, and an owning Backend definition. It reads
+that Backend's `apiKeyPath`, constructs `ChatGPTClient`, and supplies the
 ServiceAccount Driver factory to controller composition. The worker keeps only
-nonsecret Provider metadata; it constructs neither the client nor this Driver.
+nonsecret Backend metadata; it constructs neither the client nor this Driver.
 The [managed credential flow](service-account-driver-credential-delivery.md)
 continues through account creation, issuance, and deployment checks.
 

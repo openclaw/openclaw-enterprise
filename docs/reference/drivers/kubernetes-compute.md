@@ -7,6 +7,17 @@ runtime namespace; embedded OpenClaw remains in the data plane.
 Kubernetes supports a managed model API key for both modes and a managed
 ChatGPT service-account credential for dedicated Codex only.
 
+New managed tenant namespaces use the opaque physical name `oce-` plus the first
+15 hexadecimal characters of the Namespace ID's SHA-256 digest. This is stable,
+DNS-safe, and short enough to serve as an OpenShell pre.5 operator Workspace
+name. A previously created managed namespace that uses the earlier
+`oce-<slug>-<hash12>` canonical name remains valid only when Kubernetes
+discovery finds its exact tenant label, matching `namespace-id` annotation, and
+OpenClaw manager label. The Driver does not create new namespaces with the
+previous name form, and wrong names or duplicate tenant claims fail closed. An
+explicitly adopted existing namespace retains its operator-selected name;
+OpenShell selection rejects it if it exceeds that Workspace limit.
+
 The optional [OpenShell Sandbox Driver](openshell-sandbox.md) is designed to
 own the dedicated Codex Harness Pod while Compute keeps the other resources.
 Stock OpenShell cannot provide required credential and workload-identity
@@ -41,7 +52,7 @@ For detailed operator contracts, see:
   suite; see the [gateway disk requirements](kubernetes-compute/storage-and-credentials.md#gateway-storage) before
   selecting a production StorageClass.
 - For dedicated Agents, a default StorageClass that supports `40Gi`
-  `ReadWriteMany` PersistentVolumeClaims.
+  `ReadWriteOnce` PersistentVolumeClaims.
 - If `runtime.codexSeccompProfile` is configured, install that relative
   localhost seccomp profile on every eligible node before Agent startup.
   Kubernetes fails the Codex Pod when the configured profile is missing.
@@ -57,12 +68,15 @@ credentials, or permission to create or escalate RoleBindings.
 
 If OpenShell sandboxing is enabled, the Compute Driver's Kubernetes access is
 also used directly by the optional `SandboxDriver.ensureNamespace` hook to
-apply approved namespace-scoped OpenShell NetworkPolicy resources
-and check gateway readiness. The selected driver's optional `provisionHarness`
-hook creates the provider-owned Harness Sandbox; without that hook, Compute
-creates the ordinary Harness Deployment. Stop and retirement delete that
-ordinary Deployment when present and then always invoke the selected provider's
-required revision cleanup. An absent Deployment does not skip cleanup.
+apply approved namespace-scoped OpenShell labels and NetworkPolicy resources,
+check Gateway readiness, and create or adopt the Namespace Workspace. The
+selected driver's optional `provisionHarness` hook creates the provider-owned
+Harness Sandbox; without that hook, Compute creates the ordinary Harness
+Deployment. Stop and retirement delete that ordinary Deployment when present
+and then always invoke the selected provider's required revision cleanup. An
+absent Deployment does not skip cleanup. Namespace deletion calls the selected
+provider's Namespace cleanup first and does not delete Kubernetes infrastructure
+when that provider cleanup fails.
 Provider-owned Harness removal remains delegated to the provider, so Compute
 does not need Sandbox custom-resource permissions. No separate SandboxDriver
 Kubernetes access adapter is introduced. The privileged
@@ -192,6 +206,11 @@ The Agent's Harness configuration determines its execution topology:
   Agent-scoped model API key or a managed ChatGPT service-account credential,
   and permits `openai/` or `codex/` models.
 
+Dedicated replacement opts into the [exclusive preparation contract](compute.md#production-revision-stages):
+the worker stops predecessors before starting the new Harness. This permits RWO
+workspace storage and introduces deployment downtime; restore a previous
+configuration through a new revision instead of restarting its old snapshot.
+
 Enabled external channels require dedicated execution. Unsupported Harness and
 execution-mode combinations fail deployment. OpenShell is designed for
 dedicated Codex only, but stock OpenShell currently blocks that deployment;
@@ -262,7 +281,7 @@ for additional execution details.
   data when resolving an incompatible or foreign claim; the driver does not
   adopt or convert it.
 - **Dedicated Harness cannot start:** Verify that the default StorageClass can
-  provision a `40Gi` `ReadWriteMany` claim and that the worker can manage
+  provision a `40Gi` `ReadWriteOnce` claim and that the worker can manage
   PersistentVolumeClaims in the tenant namespace.
 - **Agent configuration is rejected:** Confirm the selected Harness supports
   its execution mode; external channels and provider-issued access tokens

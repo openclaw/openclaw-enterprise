@@ -1,13 +1,12 @@
 import { element, button } from "../dom.mjs";
 import { namespacePath } from "./list.mjs";
 import { ensureSecretOperateBinding } from "./secret-access.mjs";
+import { createSecretReferenceField, secretBinding, secretIdForBinding } from "./secret-picker.mjs";
 
 export const SLACK_SECRET_BINDINGS = [
   { key: "SLACK_APP_TOKEN", label: "Slack app token", secretName: "Slack app token" },
   { key: "SLACK_BOT_TOKEN", label: "Slack bot token", secretName: "Slack bot token" },
 ];
-const SECRET_MASK = "••••••••";
-
 function slackEnabled(values) {
   const slack = values?.channels?.slack;
   return (
@@ -28,21 +27,7 @@ function servicePrincipalId(agent) {
     : null;
 }
 
-export function secretIdForBinding(binding) {
-  const source = binding?.source;
-  return source?.kind === "secret" &&
-    typeof source.namespaceId === "string" &&
-    typeof source.id === "string"
-    ? source.id
-    : null;
-}
-
-export function secretBinding(secret) {
-  return {
-    source: secret.ref,
-    delivery: { type: "env" },
-  };
-}
+export { secretBinding, secretIdForBinding };
 
 function hasSlackBindings(configuration) {
   return SLACK_SECRET_BINDINGS.every((binding) =>
@@ -115,20 +100,6 @@ function credentialError(error, mutation = false) {
   return text + (error.requestId ? ` Request ID: ${error.requestId}` : "");
 }
 
-async function storeChannelSecret(context, state, binding, value) {
-  const currentSecretId = secretIdForBinding(state.configuration.secretBindings?.[binding.key]);
-  if (currentSecretId) {
-    return context.request(`${namespacePath(context.namespaceId)}/secrets/${currentSecretId}`, {
-      method: "PATCH",
-      body: { value },
-    });
-  }
-  return context.request(`${namespacePath(context.namespaceId)}/secrets`, {
-    method: "POST",
-    body: { name: `${state.agent.name} ${binding.secretName}`, value },
-  });
-}
-
 function renderRuntimeMetadata(state) {
   const list = element("dl", { className: "credential-status-list" });
   const transportStored = state.status?.transportConfigured === true;
@@ -187,6 +158,8 @@ export function createRuntimeCredentialsPanel({
     saving: false,
     saveError: null,
     saveMessage: "",
+    saveGrantWarning: "",
+    pendingSecretGrants: {},
     outcomeUnknown: false,
   };
   const section = element("section", { className: "agent-card runtime-credentials" });
@@ -205,11 +178,57 @@ export function createRuntimeCredentialsPanel({
     );
   }
 
+  function grantWarning() {
+    return "Configuration saved, but Secret access grants could not be confirmed. Ask a Namespace administrator to grant this Agent access to the saved Secret.";
+  }
+
+  function referencedSecretIds(secretBindings) {
+    return new Set(
+      SLACK_SECRET_BINDINGS.map((binding) =>
+        secretIdForBinding(secretBindings?.[binding.key]),
+      ).filter((id) => id !== null),
+    );
+  }
+
+  function pendingSecretGrants(secretBindings = state.configuration.secretBindings ?? {}) {
+    const referencedIds = referencedSecretIds(secretBindings);
+    return Object.values(state.pendingSecretGrants).filter((secret) =>
+      referencedIds.has(secret.id),
+    );
+  }
+
+  function prunePendingSecretGrants(secretBindings = state.configuration.secretBindings ?? {}) {
+    state.pendingSecretGrants = Object.fromEntries(
+      pendingSecretGrants(secretBindings).map((secret) => [secret.id, secret]),
+    );
+  }
+
+  function updateGrantWarning(secretBindings = state.configuration.secretBindings ?? {}) {
+    prunePendingSecretGrants(secretBindings);
+    state.saveGrantWarning = pendingSecretGrants(secretBindings).length ? grantWarning() : "";
+  }
+
+  function secretGrantTargets(secretBindings, changedSecrets) {
+    prunePendingSecretGrants(secretBindings);
+    for (const binding of SLACK_SECRET_BINDINGS) {
+      const secret = changedSecrets[binding.key];
+      if (secret?.id && secretIdForBinding(secretBindings?.[binding.key]) === secret.id) {
+        state.pendingSecretGrants[secret.id] = secret;
+      }
+    }
+    return Object.values(state.pendingSecretGrants);
+  }
+
+  function markSecretGrantConfirmed(secret) {
+    delete state.pendingSecretGrants[secret.id];
+  }
+
   function canDeploy() {
     return (
       revisionsLoaded &&
       state.loaded &&
       state.error === null &&
+      !state.saveGrantWarning &&
       hasRequiredRuntimeCredentials(state.status, state.values, state.configuration)
     );
   }
@@ -223,6 +242,9 @@ export function createRuntimeCredentialsPanel({
     }
     if (state.error !== null) {
       return "Credential metadata unavailable. Refresh status before deploying.";
+    }
+    if (state.saveGrantWarning) {
+      return "Resolve the saved Secret access grant before deploying.";
     }
     const blockReason = runtimeCredentialBlockReason(state.values);
     if (blockReason !== null) {
@@ -316,118 +338,79 @@ export function createRuntimeCredentialsPanel({
       return null;
     }
     const formId = "runtime-channel-secrets-form";
-    const fields = new Map();
+    const draft = {
+      secretBindings: { ...(state.configuration.secretBindings ?? {}) },
+      changedSecrets: {},
+    };
+    const pickers = [];
     const status = element("p", { className: "hint", role: "status" });
     const error = element(
       "p",
       { className: "error", role: "alert" },
-      state.saveError === null ? "" : credentialError(state.saveError, true),
+      state.saveError === null || state.saveGrantWarning
+        ? ""
+        : credentialError(state.saveError, true),
     );
     const save = element(
       "button",
       { type: "submit", form: formId, className: "primary" },
       "Save channel Secrets",
     );
-    function createTokenField(binding) {
-      const initial = slackBindingState(state.configuration, binding);
-      const input = element("input", {
+    function createTokenPicker(binding) {
+      const picker = createSecretReferenceField({
+        context,
         id: `runtime-${binding.key.toLowerCase().replaceAll("_", "-")}`,
-        name: `runtime-${binding.key.toLowerCase().replaceAll("_", "-")}`,
-        type: "password",
-        autocomplete: "off",
+        label: binding.label,
+        getCurrentSource: () => draft.secretBindings[binding.key]?.source,
+        onSecretSelected(secret) {
+          draft.secretBindings = {
+            ...draft.secretBindings,
+            [binding.key]: secretBinding(secret),
+          };
+          draft.changedSecrets = { ...draft.changedSecrets, [binding.key]: secret };
+          state.saveError = null;
+          state.saveMessage = "";
+          updateGrantWarning();
+          error.textContent = state.saveGrantWarning;
+          status.textContent = "";
+          updateControls();
+        },
+        createSecretName: () => `${state.agent.name} ${binding.secretName}`,
+        createDialogTitle: `Create ${binding.label} Secret`,
+        createFixedKey: {
+          label: "Binding key",
+          value: binding.key,
+          hint: "This environment key is fixed for Slack Socket Mode.",
+        },
+        metadataLabel: `View ${binding.label.replace("Slack ", "")} Secret metadata`,
+        required: true,
         disabled: !canEnterChannelCredentials(),
-        "aria-describedby": `runtime-${binding.key.toLowerCase().replaceAll("_", "-")}-hint`,
-        ...(initial === "missing" ? { required: "" } : {}),
       });
-      const hint = element("p", {
-        id: `runtime-${binding.key.toLowerCase().replaceAll("_", "-")}-hint`,
-        className: "hint",
-      });
-      const field = { binding, input, hint, initial, mode: initial };
-      fields.set(binding.key, field);
-
-      function renderField() {
-        if (field.mode === "bound") {
-          input.value = SECRET_MASK;
-          input.required = false;
-          hint.textContent =
-            "Stored Secret binding is present. Focus to enter a replacement; leaving it empty preserves the stored Secret.";
-        } else if (field.mode === "editing-bound") {
-          input.required = false;
-          hint.textContent =
-            "Enter a replacement token, or leave this field empty to keep the stored Secret.";
-        } else if (field.mode === "replacement") {
-          input.required = true;
-          hint.textContent =
-            field.initial === "bound"
-              ? "Replacement token will update the stored Secret. The current value is never read."
-              : "Replacement token will be stored as a Namespace Secret.";
-        } else {
-          input.required = true;
-          hint.textContent = "Required before Slack-enabled drafts can deploy.";
-        }
-      }
-
-      input.addEventListener("focus", () => {
-        if (field.mode === "bound") {
-          field.mode = "editing-bound";
-          input.value = "";
-          renderField();
-          updateControls();
-        }
-      });
-      input.addEventListener("input", () => {
-        state.saveError = null;
-        state.saveMessage = "";
-        error.textContent = "";
-        status.textContent = "";
-        if (input.value.length > 0 && input.value !== SECRET_MASK) {
-          field.mode = "replacement";
-        } else if (field.initial === "bound") {
-          field.mode = input.value === SECRET_MASK ? "bound" : "editing-bound";
-        } else {
-          field.mode = "missing";
-        }
-        renderField();
-        updateControls();
-      });
-      input.addEventListener("blur", () => {
-        if (field.initial === "bound" && input.value.length === 0) {
-          field.mode = "bound";
-          renderField();
-          updateControls();
-        }
-      });
-      renderField();
-      return element(
-        "div",
-        { className: "form-field" },
-        element("label", { for: input.id }, binding.label),
-        input,
-        hint,
-      );
+      pickers.push({ binding, picker });
+      return picker.field;
     }
     const updateControls = () => {
-      const fieldList = [...fields.values()];
-      const replacements = fieldList.filter((field) => field.mode === "replacement");
-      const missing = fieldList.filter((field) => field.mode === "missing");
-      for (const field of fieldList) {
-        field.input.disabled = state.saving || !canEnterChannelCredentials();
-        field.input.setCustomValidity(
-          field.mode === "missing" ? `${field.binding.label} is required.` : "",
-        );
+      const changedSecrets = Object.values(draft.changedSecrets);
+      const pendingSecrets = pendingSecretGrants();
+      const missing = SLACK_SECRET_BINDINGS.filter(
+        (binding) =>
+          slackBindingState({ secretBindings: draft.secretBindings }, binding) === "missing",
+      );
+      for (const { picker } of pickers) {
+        picker.setDisabled(state.saving || !canEnterChannelCredentials());
+        picker.setRequired(true);
       }
       save.disabled =
         state.saving ||
         !canEnterChannelCredentials() ||
         state.outcomeUnknown ||
         missing.length > 0 ||
-        replacements.length === 0;
+        (changedSecrets.length === 0 && pendingSecrets.length === 0);
     };
     const form = element(
       "form",
       { id: formId, className: "credential-form" },
-      ...SLACK_SECRET_BINDINGS.map((binding) => createTokenField(binding)),
+      ...SLACK_SECRET_BINDINGS.map((binding) => createTokenPicker(binding)),
       status,
       error,
       element("div", { className: "form-actions" }, save),
@@ -440,47 +423,50 @@ export function createRuntimeCredentialsPanel({
       if (!form.reportValidity()) {
         return;
       }
-      const replacements = [...fields.values()].filter((field) => field.mode === "replacement");
-      const missing = [...fields.values()].filter((field) => field.mode === "missing");
-      if (missing.length > 0 || replacements.length === 0) {
+      const missing = SLACK_SECRET_BINDINGS.filter(
+        (binding) =>
+          slackBindingState({ secretBindings: draft.secretBindings }, binding) === "missing",
+      );
+      const changedSecrets = Object.values(draft.changedSecrets);
+      const pendingSecrets = pendingSecretGrants();
+      if (missing.length > 0 || (changedSecrets.length === 0 && pendingSecrets.length === 0)) {
         return;
       }
-      const replacementWrites = replacements.map(({ binding, input }) => ({
-        binding,
-        value: input.value,
-      }));
       state.saving = true;
       state.saveError = null;
       state.saveMessage = "";
-      status.textContent = "Saving channel Secrets...";
+      state.saveGrantWarning = "";
+      status.textContent = "Saving channel Secret bindings...";
       error.textContent = "";
       updateControls();
       let mutationStarted = false;
+      let configurationSaved = false;
       try {
-        const bindings = { ...(state.configuration.secretBindings ?? {}) };
-        for (const { binding, value } of replacementWrites) {
-          mutationStarted = true;
-          const secret = await storeChannelSecret(context, state, binding, value);
-          await ensureSecretOperateBinding(context, state.agent, secret);
-          bindings[binding.key] = secretBinding(secret);
-        }
+        mutationStarted = true;
         state.configuration = await context.request(
           `${namespacePath(context.namespaceId)}/configurations/${encodeURIComponent(
             state.configuration.id,
           )}`,
           {
             method: "PATCH",
-            body: { values: state.values, secretBindings: bindings },
+            body: { values: state.values, secretBindings: draft.secretBindings },
           },
         );
+        configurationSaved = true;
+        state.values = state.configuration.values;
+        onConfigurationChange?.(state.configuration);
+        const grantTargets = secretGrantTargets(draft.secretBindings, draft.changedSecrets);
+        for (const secret of grantTargets) {
+          await ensureSecretOperateBinding(context, state.agent, secret);
+          markSecretGrantConfirmed(secret);
+        }
         if (!context.isCurrent()) {
           return;
         }
-        state.values = state.configuration.values;
-        onConfigurationChange?.(state.configuration);
         state.outcomeUnknown = false;
+        state.saveGrantWarning = "";
         state.saveMessage =
-          "Channel Secrets saved. Deploy the new revision to deliver the new bindings.";
+          "Channel Secret bindings saved. Deploy the new revision to deliver them.";
         status.textContent = state.saveMessage;
       } catch (cause) {
         if (!context.isCurrent()) {
@@ -492,13 +478,14 @@ export function createRuntimeCredentialsPanel({
         }
         state.saveError = cause;
         state.saveMessage = "";
-        state.outcomeUnknown = mutationStarted && ![400, 403, 404, 409, 429].includes(cause.status);
+        state.outcomeUnknown =
+          mutationStarted &&
+          !configurationSaved &&
+          ![400, 403, 404, 409, 429].includes(cause.status);
+        updateGrantWarning(state.configuration.secretBindings);
         status.textContent = "";
-        error.textContent = credentialError(cause, true);
+        error.textContent = state.saveGrantWarning || credentialError(cause, true);
       } finally {
-        for (const field of fields.values()) {
-          field.input.value = "";
-        }
         if (context.isCurrent()) {
           state.saving = false;
           updateControls();
@@ -560,7 +547,7 @@ export function createRuntimeCredentialsPanel({
           ? element(
               "p",
               { className: "error", role: "alert" },
-              credentialError(state.saveError, true),
+              state.saveGrantWarning || credentialError(state.saveError, true),
             )
           : null,
         element(

@@ -1,19 +1,19 @@
 # OpenShell SandboxDriver
 
-The bundled OpenShell SandboxDriver integrates a Namespace-local OpenShell
-gateway with a dedicated Codex Harness and the bundled
+The bundled OpenShell SandboxDriver integrates a deployment-paired OpenShell
+Gateway with a dedicated Codex Harness and the bundled
 [Kubernetes Compute Driver](kubernetes-compute.md). OCC retains ownership of
 Agents, revisions, Namespaces, routing, credentials, and authorization.
 
 **OpenShell is not supported for production Agent deployment.** The stock
 OpenShell version this integration targets,
-[`v0.1.0-pre.7`](https://github.com/NVIDIA/OpenShell/tree/v0.1.0-pre.7), cannot accept the
+[`v0.1.0`](https://github.com/NVIDIA/OpenShell/tree/v0.1.0), cannot accept the
 Kubernetes Secret-backed environment entries or projected workload identity a
 dedicated Codex Agent requires. The Enterprise Driver rejects deployment rather
 than starting an incorrectly credentialed Harness. The real integration keeps
-that rejection proof and has a separate CI-only compatibility bridge for a real
-in-Sandbox model turn. That bridge is not a supported deployment path. Use
-Kubernetes Compute without OpenShell when you need to run Agents.
+that rejection proof and has a separate verification-only compatibility bridge
+for a real in-Sandbox model turn. That bridge is not a supported deployment
+path. Use Kubernetes Compute without OpenShell when you need to run Agents.
 
 Embedded OpenClaw also fails when OpenShell is selected; the integration is
 designed only for dedicated Codex. See the [upstream requirements](#current-upstream-preconditions)
@@ -41,18 +41,24 @@ The OpenShell SandboxDriver owns only the provider sandboxing delegation:
 
 - `configureAgent` contributes provider-specific gateway configuration before
   OCC validates and freezes the immutable Agent revision.
-- `ensureNamespace` applies configured NetworkPolicy resources,
-  waits for the namespace-local OpenShell gateway when readiness is configured,
-  and checks gateway health. These operations are idempotent so multiple
-  workers converge on one gateway.
+- `ensureNamespace` requires the configured workspace mode. In `operator` mode,
+  it applies configured operator labels and rendered workspace-chart resources,
+  then provider NetworkPolicies, before checking Gateway health and creating or
+  adopting the exact OpenShell Workspace corresponding to the Kubernetes
+  namespace. Adoption requires OCC's exact ownership labels and an active
+  Workspace.
 - `provisionHarness` asks the OpenShell gateway to create one OpenShell Sandbox
-  and expose its loopback Codex app-server port in the same request. It validates
-  the returned service route and returns the stable Sandbox reference.
+  in that Workspace for the dedicated Codex Harness and expose its loopback Codex
+  app-server port in the same request. It validates the returned service route
+  and returns the stable Sandbox reference.
 - OpenShell's controller creates and owns the provider Harness Pod behind that
   Sandbox.
-- `cleanup` receives the immutable Agent revision and derives the stable
-  provider Sandbox identity, so retirement works even when its Pod is gone.
-  Namespace cleanup also removes the configured NetworkPolicy resources.
+- `cleanup` receives the immutable Agent revision during revision retirement and
+  derives the stable provider Sandbox identity, so retirement works even when its
+  Pod is gone. During Namespace deletion it receives no revision, verifies
+  Workspace ownership, deletes the OpenShell Workspace, and removes configured
+  workspace-chart and NetworkPolicy resources. Kubernetes Compute deletes the
+  Kubernetes namespace only after that succeeds.
 
 The returned provider-owned Pod is not re-verified as an OCC-owned workload.
 Compute trusts OpenShell to enforce the Sandbox it provisions, while OCC still
@@ -95,13 +101,11 @@ drivers:
     id: openshell-sandbox
     configuration:
       gateway:
-        serviceName: openshell-gateway
-        port: 8080
-        workspace: default
-        readiness:
-          serviceName: openshell-gateway
-          podSelector:
-            app.kubernetes.io/name: openshell
+        workspaceMode: operator
+        endpoint: http://openshell-gateway.openshell-system.svc:8080
+        operatorNamespaceLabels:
+          openshell.ai/openclaw-workspace: "true"
+        operatorWorkspaceResources: []
         networkPolicyResources: []
       kubernetes:
         runtimeClassName: openshell-sandbox
@@ -126,21 +130,55 @@ drivers:
                 tls: skip
 ```
 
-Each pre.7 network policy requires at least one binary identity with a nonempty
+Each v0.1.0 network policy requires at least one binary identity with a nonempty
 executable path. OpenShell applies the endpoints only to those
 binaries. The optional endpoint fields use OpenShell's configuration spellings: `tls`
 accepts `skip` or `terminate`; `enforcement` accepts `enforce` or `audit`; and
-`access` accepts `read_only`, `read_write`, or `full`. OpenShell pre.7 treats
+`access` accepts `read_only`, `read_write`, or `full`. OpenShell v0.1.0 treats
 `terminate` as a deprecated alias for automatic TLS detection and termination.
 It also changed the old `passthrough` spelling to that behavior, so the Driver
 rejects `passthrough` at startup. Replace `tls: passthrough` with `tls: skip` to
 retain uninspected TLS relay.
-`gatewayConfigured` is the only ServiceAccount mode for `v0.1.0-pre.7`; the
+`gatewayConfigured` is the only ServiceAccount mode for `v0.1.0`; the
 gateway's configured sandbox ServiceAccount applies to every Sandbox it creates
 and does not satisfy the per-Agent production requirement below.
 
-The OpenShell gateway must be installed separately before this driver's
-`ensureNamespace` runs. The bundled driver does not install the gateway.
+When readiness is configured, it observes a Service and Pods in the OCC
+namespace. A deployment-paired Gateway normally uses an explicit `endpoint`
+instead. A configured timeout and polling interval must be positive safe
+integers, and cancellation stops the wait.
+
+The OpenShell gateway must be installed separately. The bundled driver does not
+install it. `gateway.workspaceMode` is required and accepts `operator` or
+`managed`. Managed mode is reserved for the future and currently fails before
+the Driver mutates Kubernetes or calls the Gateway. Configure the Gateway's
+Kubernetes driver with `workspaceMode: operator` and a namespace selector
+matching `operatorNamespaceLabels`. In this mode the OpenShell Workspace name
+must equal its pre-provisioned Kubernetes namespace, so OCC uses a stable
+`oce-` name with a 15-character digest to stay within OpenShell v0.1.0's
+19-character Workspace limit.
+
+The Kubernetes development profile acts as the operator for its disposable
+cluster. `OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell` installs one pinned Gateway
+beside the OCE control plane in `oce-system`, with workspace resources disabled.
+The upstream Agent Sandbox controller remains in `agent-sandbox-system`. The helper renders the
+pinned `openshell-workspace` chart once and stores its namespace-agnostic
+resources in the trusted Installation configuration. For every OCC Namespace,
+the Driver applies those resources before creating its Workspace through the
+Gateway API. There is no per-Namespace Helm release.
+
+The disposable profile enables OpenShell's unauthenticated development mode.
+Its Gateway ingress policy admits only the OCE worker in `oce-system` and
+OpenShell supervisor Pods from OCE-owned tenant Namespaces. The per-tenant
+callback egress policy selects only Pods labeled as OpenShell-managed
+supervisors. Other tenant Pods cannot reach the Gateway administrative API.
+
+`gateway.operatorWorkspaceResources` accepts the namespace-scoped
+ServiceAccount, Role, RoleBinding, and NetworkPolicy objects rendered from the
+workspace chart. The Driver injects the current Compute-owned namespace and OCC
+ownership metadata before server-side apply. Configure this field only for
+`operator` mode; managed mode never applies it. Do not include Secrets or
+cluster-scoped objects.
 
 `gateway.networkPolicyResources` accepts namespace-scoped Kubernetes resource
 objects for provider networking. They are applied into the OpenClaw Namespace
@@ -185,7 +223,7 @@ so retries receive the same service URL. The Driver accepts only an HTTP or HTTP
 origin, rewrites its port to the configured gateway endpoint for local
 port-forwards, and requires a valid route before provisioning succeeds.
 
-OpenShell pre.7 strips `Authorization` before proxying, while Codex accepts only
+OpenShell v0.1.0 strips `Authorization` before proxying, while Codex accepts only
 bearer authorization. The positive integration therefore expects the protected
 app server's `401` through this route and runs its real model turn on Pod
 loopback. It does not treat the test bridge as supported or replace Compute's
@@ -210,7 +248,7 @@ required by Compute plus the OpenShell-specific ability to apply configured
 namespace-scoped NetworkPolicy resources and read gateway
 readiness. OpenShell creates and deletes its Sandboxes through its own gateway;
 the Enterprise worker needs no Sandbox custom-resource permissions.
-Namespace-local RBAC must enforce the tenant boundary on the shared client.
+Namespace-scoped RBAC must enforce the tenant boundary on the shared client.
 
 Kubernetes NetworkPolicies are additive. The Kubernetes Compute Driver still
 installs default-deny and Agent routing policies; OpenShell bootstrap policies
@@ -227,7 +265,7 @@ require upstream OpenShell to satisfy all of these conditions:
   creates for the Harness.
 - OpenShell must preserve the Harness's exact audience-bound, short-lived
   projected ServiceAccount token and read-only mount. Its gateway bootstrap
-  token is not a substitute. Stock OpenShell `v0.1.0-pre.7` does not support
+  token is not a substitute. Stock OpenShell `v0.1.0` does not support
   projected volumes in gateway driver configuration. An operator-created
   template bridge is not a supported workaround.
 - OpenShell must preserve all approved Agent workspace PVC subpath mounts
@@ -237,13 +275,13 @@ require upstream OpenShell to satisfy all of these conditions:
   entrypoint reads these files even when the Agent selects no optional plugins.
 - OpenShell must support exact environment entries backed by Kubernetes
   `secretKeyRef`, including the startup app-server token Secret. Stock
-  OpenShell `v0.1.0-pre.7` cannot receive those entries through the current gateway
+  OpenShell `v0.1.0` cannot receive those entries through the current gateway
   API, and the Enterprise Driver rejects them. A credential bridge is not a
   supported workaround.
 - OpenShell gateway authentication must be bound to the trusted caller and the
   requested Sandbox or Pod identity.
 - OpenShell service routing must securely carry Codex bearer authorization
-  without exposing gateway credentials. Stock pre.7 strips it before proxying.
+  without exposing gateway credentials. Stock v0.1.0 strips it before proxying.
 
 If any of these conditions are unavailable, OpenShell-selected deployments must
 fail closed instead of launching an unsandboxed or incorrectly credentialed
@@ -257,7 +295,7 @@ Common fail-closed errors include:
 - `OpenShell gateway Service is unavailable.`
 - `OpenShell gateway Pod is not ready.`
 - `OpenShell SandboxDriver only supports dedicated Codex Harness revisions.`
-- `OpenShell v0.1.0-pre.7 cannot receive secretKeyRef environment ...`
+- `OpenShell v0.1.0 cannot receive secretKeyRef environment ...`
 
 ## Related documentation
 

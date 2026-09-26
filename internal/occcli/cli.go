@@ -3,18 +3,14 @@ package occcli
 import (
 	"cmp"
 	"encoding/json/jsontext"
-	"encoding/json/v2"
 	"fmt"
 	"io"
 	"os"
 	"strconv"
-	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/openclaw/openclaw-enterprise/internal/occclient"
 	"github.com/spf13/cobra"
-	"go.yaml.in/yaml/v3"
 )
 
 const defaultTimeoutSeconds = "30"
@@ -31,11 +27,6 @@ type application struct {
 	namespace      string
 	output         string
 	parsedTimeout  time.Duration
-}
-
-type column struct {
-	title string
-	key   string
 }
 
 // New builds the OCC domain command tree.
@@ -98,7 +89,7 @@ func New(out, errOut io.Writer) *cobra.Command {
 
 func (app *application) installationCommand() *cobra.Command {
 	command := commandGroup("installation", "Inspect the singleton Installation")
-	command.AddCommand(&cobra.Command{
+	get := &cobra.Command{
 		Use:   "get",
 		Short: "Show the Installation",
 		Args:  cobra.NoArgs,
@@ -117,7 +108,27 @@ func (app *application) installationCommand() *cobra.Command {
 				{title: "CREATED", key: "createdAt"},
 			})
 		},
-	})
+	}
+	deploymentInventory := &cobra.Command{
+		Use:   "deployment-inventory",
+		Short: "Show the complete authorized Agent deployment inventory",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			client, err := app.client()
+			if err != nil {
+				return err
+			}
+			result, err := client.GetInstallationDeploymentInventory()
+			if err != nil {
+				return err
+			}
+			return app.printItems(result, false, []column{
+				{title: "INSTALLATION", key: "installationId"},
+				{title: "NAMESPACES", key: "namespaces"},
+			})
+		},
+	}
+	command.AddCommand(get, deploymentInventory)
 	return command
 }
 
@@ -737,6 +748,31 @@ func (app *application) agentCommand() *cobra.Command {
 			})
 		},
 	}
+	deploymentStatus := &cobra.Command{
+		Use:   "deployment-status AGENT_ID DEPLOYMENT_ID",
+		Short: "Show durable status for one Agent deployment",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(_ *cobra.Command, args []string) error {
+			namespace, err := app.requiredNamespace()
+			if err != nil {
+				return err
+			}
+			client, err := app.client()
+			if err != nil {
+				return err
+			}
+			deployment, err := client.GetAgentDeployment(namespace, args[0], args[1])
+			if err != nil {
+				return err
+			}
+			return app.printItems(deployment, false, []column{
+				{title: "ID", key: "deploymentId"},
+				{title: "AGENT", key: "agentId"},
+				{title: "STATUS", key: "status"},
+				{title: "ERROR", key: "error"},
+			})
+		},
+	}
 	stop := &cobra.Command{
 		Use:   "stop ID",
 		Short: "Stop an Agent while retaining its revision history and persistent state",
@@ -778,7 +814,7 @@ func (app *application) agentCommand() *cobra.Command {
 		},
 	}
 
-	command.AddCommand(create, list, get, update, deploy, stop, deleteAgent)
+	command.AddCommand(create, list, get, update, deploy, deploymentStatus, stop, deleteAgent)
 	return command
 }
 
@@ -827,150 +863,6 @@ func (app *application) requiredNamespace() (string, error) {
 		return "", fmt.Errorf("set OCC_NAMESPACE or pass --namespace")
 	}
 	return app.namespace, nil
-}
-
-func (app *application) printNamespace(value any, collection bool) error {
-	return app.printItems(value, collection, []column{
-		{title: "ID", key: "id"},
-		{title: "NAME", key: "name"},
-		{title: "STATUS", key: "status"},
-		{title: "KUBERNETES NAMESPACE", key: "existingNamespace"},
-	})
-}
-
-func (app *application) printConfiguration(value any) error {
-	return app.printItems(value, false, []column{
-		{title: "ID", key: "id"},
-		{title: "KIND", key: "kind"},
-		{title: "GENERATION", key: "generation"},
-		{title: "CREATED", key: "createdAt"},
-	})
-}
-
-func (app *application) printSecret(value any) error {
-	return app.printItems(value, false, []column{
-		{title: "ID", key: "id"},
-		{title: "NAME", key: "name"},
-	})
-}
-
-func (app *application) printIAMRole(value any, collection bool) error {
-	return app.printItems(value, collection, []column{
-		{title: "ID", key: "id"},
-		{title: "NAME", key: "name"},
-		{title: "PERMISSIONS", key: "permissions"},
-	})
-}
-
-func (app *application) printIAMAccessBinding(value any, collection bool) error {
-	return app.printItems(value, collection, []column{
-		{title: "ID", key: "id"},
-		{title: "SUBJECT", key: "subjectId"},
-		{title: "ROLE", key: "roleId"},
-		{title: "RESOURCE KIND", key: "resourceKind"},
-		{title: "RESOURCE", key: "resourceId"},
-	})
-}
-
-func (app *application) printAgent(value any, collection bool) error {
-	return app.printItems(value, collection, []column{
-		{title: "ID", key: "id"},
-		{title: "NAME", key: "name"},
-		{title: "SERVICE PRINCIPAL", key: "servicePrincipalId"},
-		{title: "CONFIGURATION", key: "configurationId"},
-		{title: "MODE", key: "executionMode"},
-		{title: "DESIRED STATE", key: "desiredRuntimeState"},
-		{title: "STATUS", key: "status"},
-		{title: "ACTIVE REVISION", key: "activeRevisionId"},
-	})
-}
-
-func (app *application) printDeletion(kind, id string) error {
-	value := map[string]any{"deleted": true, "kind": kind, "id": id}
-	if app.output == "table" {
-		_, err := fmt.Fprintf(app.out, "Deleted %s %s.\n", kind, id)
-		return err
-	}
-	return app.printStructured(value)
-}
-
-func (app *application) printItems(value any, collection bool, columns []column) error {
-	if app.output != "table" {
-		return app.printStructured(value)
-	}
-	items := []any{value}
-	if collection {
-		var ok bool
-		items, ok = value.([]any)
-		if !ok {
-			return fmt.Errorf("OCC returned an invalid resource collection")
-		}
-	}
-	return printTable(app.out, items, columns)
-}
-
-func (app *application) printStructured(value any) error {
-	switch app.output {
-	case "json":
-		if err := json.MarshalWrite(app.out, value, jsontext.WithIndent("  ")); err != nil {
-			return err
-		}
-		_, err := fmt.Fprintln(app.out)
-		return err
-	case "yaml":
-		encoded, err := yaml.Marshal(value)
-		if err != nil {
-			return err
-		}
-		_, err = app.out.Write(encoded)
-		return err
-	default:
-		return fmt.Errorf("unsupported structured output format %q", app.output)
-	}
-}
-
-func printTable(out io.Writer, items []any, columns []column) error {
-	if len(items) == 0 {
-		_, err := fmt.Fprintln(out, "No resources found.")
-		return err
-	}
-
-	writer := tabwriter.NewWriter(out, 0, 8, 2, ' ', 0)
-	headings := make([]string, len(columns))
-	for index, column := range columns {
-		headings[index] = column.title
-	}
-	if _, err := fmt.Fprintln(writer, strings.Join(headings, "\t")); err != nil {
-		return err
-	}
-	for _, item := range items {
-		resource, ok := item.(map[string]any)
-		if !ok {
-			return fmt.Errorf("OCC returned an invalid resource")
-		}
-		row := make([]string, len(columns))
-		for index, column := range columns {
-			row[index] = displayValue(resource[column.key])
-		}
-		if _, err := fmt.Fprintln(writer, strings.Join(row, "\t")); err != nil {
-			return err
-		}
-	}
-	return writer.Flush()
-}
-
-func displayValue(value any) string {
-	if value == nil {
-		return "-"
-	}
-	if text, ok := value.(string); ok {
-		return text
-	}
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		return "-"
-	}
-	return string(encoded)
 }
 
 func readJSON(path string) (jsontext.Value, error) {

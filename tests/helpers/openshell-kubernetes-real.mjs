@@ -1,7 +1,6 @@
 import { sha256Hex } from "../../packages/utils/src/index.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { randomBytes } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -107,8 +106,8 @@ export function createOpenShellInstallationConfiguration({
     id: "sandbox-openshell-kubernetes",
     configuration: {
       gateway: {
+        workspaceMode: "operator",
         endpoint: "http://127.0.0.1:1",
-        workspace: "default",
         readiness: {
           serviceName: "openshell-gateway",
           podSelector: { "app.kubernetes.io/name": "openshell" },
@@ -173,7 +172,7 @@ export function createOpenShellInstallationConfiguration({
             endpoints: [{ host: "api.openai.com", ports: [443], tls: "skip" }],
             binaries: [
               {
-                path: "/app/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex",
+                path: "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.156.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
               },
             ],
           },
@@ -185,35 +184,35 @@ export function createOpenShellInstallationConfiguration({
   return configuration;
 }
 
-export function openShellChartImageValues(prefix, image, defaultTag) {
+export function openShellChartImageValues(prefix, image) {
   assert.ok(image, `${prefix}.repository requires an explicit OpenShell image.`);
   const digest = image.match(/@sha256:[a-f0-9]{64}$/i)?.[0];
-  assert.ok(digest, `${prefix}.tag requires an immutable OpenShell image digest.`);
+  assert.ok(digest, `${prefix}.digest requires an immutable OpenShell image digest.`);
   const withoutDigest = image.slice(0, -digest.length);
-  const lastSlash = withoutDigest.lastIndexOf("/");
-  const tagSeparator = withoutDigest.lastIndexOf(":");
-  if (tagSeparator > lastSlash) {
-    return [
-      `--set-string=${prefix}.repository=${withoutDigest.slice(0, tagSeparator)}`,
-      `--set-string=${prefix}.tag=${withoutDigest.slice(tagSeparator + 1)}${digest}`,
-    ];
-  }
+  const firstSlash = withoutDigest.indexOf("/");
+  assert.ok(firstSlash > 0, `${prefix}.registry requires a qualified OpenShell image.`);
+  const registry = withoutDigest.slice(0, firstSlash);
+  const repositoryWithTag = withoutDigest.slice(firstSlash + 1);
+  const tagSeparator = repositoryWithTag.lastIndexOf(":");
+  const repository =
+    tagSeparator === -1 ? repositoryWithTag : repositoryWithTag.slice(0, tagSeparator);
   return [
-    `--set-string=${prefix}.repository=${withoutDigest}`,
-    `--set-string=${prefix}.tag=${defaultTag}${digest}`,
+    `--set-string=${prefix}.registry=${registry}`,
+    `--set-string=${prefix}.repository=${repository}`,
+    `--set-string=${prefix}.digest=${digest.slice(1)}`,
   ];
 }
 
-function renderedOpenShellImage(image, defaultTag) {
+function renderedOpenShellImage(image) {
   const digest = image.match(/@sha256:[a-f0-9]{64}$/i)?.[0];
   assert.ok(digest, "OpenShell image reference must include an immutable digest.");
   const withoutDigest = image.slice(0, -digest.length);
   const lastSlash = withoutDigest.lastIndexOf("/");
   const tagSeparator = withoutDigest.lastIndexOf(":");
   if (tagSeparator > lastSlash) {
-    return image;
+    return `${withoutDigest.slice(0, tagSeparator)}${digest}`;
   }
-  return `${withoutDigest}:${defaultTag}${digest}`;
+  return `${withoutDigest}${digest}`;
 }
 
 function regexpEscape(value) {
@@ -229,9 +228,14 @@ function assertRenderedOpenShellImages({
   supervisorImage,
   defaultTag,
 }) {
-  const expectedGatewayImage = renderedOpenShellImage(gatewayImage, defaultTag);
-  const expectedSandboxImage = renderedOpenShellImage(sandboxImage, defaultTag);
-  const expectedSupervisorImage = renderedOpenShellImage(supervisorImage, defaultTag);
+  const expectedGatewayImage = renderedOpenShellImage(gatewayImage);
+  const expectedSandboxImage = renderedOpenShellImage(sandboxImage);
+  const expectedSupervisorImage = renderedOpenShellImage(supervisorImage);
+  assert.equal(
+    statefulSet.metadata?.labels?.["app.kubernetes.io/version"],
+    defaultTag,
+    "OpenShell gateway StatefulSet must retain the pinned chart application version.",
+  );
   assert.equal(
     statefulSet.spec?.template?.spec?.containers?.find(({ name }) => name === "openshell-gateway")
       ?.image,
@@ -269,7 +273,8 @@ export function createOpenShellKubernetesFixture({
   openShellRuntimeClass = "openshell-sandbox",
   openShellHelmPath,
   openShellHelmChart,
-  openShellChartVersion = "0.1.0-pre.7",
+  openShellWorkspaceHelmChart,
+  openShellChartVersion = "0.1.0",
 }) {
   const base = createRealKubernetesFixture({
     kubeconfigPath,
@@ -301,6 +306,10 @@ export function createOpenShellKubernetesFixture({
       openShellHelmChart,
       "OCC_TEST_OPENSHELL_HELM_CHART must point at the OpenShell Helm chart or chart archive.",
     );
+    assert.ok(
+      openShellWorkspaceHelmChart,
+      "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART must point at the OpenShell workspace Helm chart or chart archive.",
+    );
     for (const [name, image] of [
       ["OCC_TEST_OPENSHELL_GATEWAY_IMAGE", openShellGatewayImage],
       ["OCC_TEST_OPENSHELL_SANDBOX_IMAGE", openShellSandboxImage],
@@ -314,6 +323,9 @@ export function createOpenShellKubernetesFixture({
     }
     await execute("openssl", ["version"], { maxBuffer: 1024 * 1024 });
     await execute(openShellHelmPath, ["show", "chart", openShellHelmChart], {
+      maxBuffer: 1024 * 1024,
+    });
+    await execute(openShellHelmPath, ["show", "chart", openShellWorkspaceHelmChart], {
       maxBuffer: 1024 * 1024,
     });
     const kubeconfig = await base.validatePrerequisites();
@@ -374,7 +386,7 @@ export function createOpenShellKubernetesFixture({
   }
 
   function chartImageValues(prefix, image) {
-    return openShellChartImageValues(prefix, image, openShellChartVersion);
+    return openShellChartImageValues(prefix, image);
   }
 
   async function ensureOpenShellJwtSecret(namespace) {
@@ -530,17 +542,58 @@ export function createOpenShellKubernetesFixture({
   }
 
   async function installOpenShellGateway(namespace, { sandboxServiceAccountName } = {}) {
+    await kubectl(
+      "label",
+      "namespace",
+      namespace,
+      "openshell.ai/openclaw-workspace=true",
+      "--overwrite",
+    );
     await applyOpenShellGatewayNetworkPolicies(namespace);
     await ensureOpenShellJwtSecret(namespace);
+    const instance = openShellGatewayServiceName(namespace);
+    const workspaceValues = [
+      `--set-string=fullnameOverride=${instance}-workspace`,
+      "--set=gateway.allowDriverConfig=true",
+      `--set-string=gateway.serviceAccount.name=${instance}`,
+      `--set-string=gateway.serviceAccount.namespace=${namespace}`,
+      `--set-string=gateway.networkPolicy.podSelector.app\\.kubernetes\\.io/instance=${instance}`,
+      "--set=sandboxServiceAccount.create=false",
+      `--set-string=sandboxServiceAccount.name=${sandboxServiceAccountName ?? "openshell-sandbox"}`,
+    ];
+    await execute(
+      openShellHelmPath,
+      [
+        "upgrade",
+        "--install",
+        `${instance}-workspace`,
+        openShellWorkspaceHelmChart,
+        "--namespace",
+        namespace,
+        "--kubeconfig",
+        kubeconfigPath,
+        "--kube-context",
+        kubernetesContext,
+        "--wait",
+        "--timeout",
+        "240s",
+        ...workspaceValues,
+      ],
+      { maxBuffer: 8 * 1024 * 1024 },
+    );
     const values = [
-      `--set-string=fullnameOverride=${openShellGatewayServiceName(namespace)}`,
+      `--set-string=fullnameOverride=${instance}`,
       "--set=pkiInitJob.enabled=false",
       "--set=server.disableTls=true",
       "--set=server.auth.allowUnauthenticatedUsers=true",
+      "--set=server.drivers.kubernetes.allowDriverConfig=true",
+      "--set=server.drivers.kubernetes.resourceAdmission.enabled=false",
+      "--set-string=server.drivers.kubernetes.workspaceMode=operator",
+      "--set-string=server.drivers.kubernetes.operatorNamespaceLabel=openshell.ai/openclaw-workspace=true",
+      "--set=workspaceResources.enabled=false",
       "--set=podSecurityContext.seccompProfile.type=RuntimeDefault",
-      "--set=supervisor.sandboxRuntime.networkPolicyEnforced=true",
       `--set-string=server.defaultRuntimeClassName=${openShellRuntimeClass}`,
-      ...chartImageValues("image", openShellGatewayImage),
+      ...chartImageValues("gateway.image", openShellGatewayImage),
       ...chartImageValues("sandboxRuntime.image", openShellSandboxImage),
       ...chartImageValues("supervisor.image", openShellSupervisorImage),
     ];
@@ -570,7 +623,6 @@ export function createOpenShellKubernetesFixture({
       { maxBuffer: 8 * 1024 * 1024 },
     );
     const gateway = await waitForOpenShellGateway(namespace);
-    const instance = openShellGatewayServiceName(namespace);
     assertRenderedOpenShellImages({
       gatewayPod: gateway,
       statefulSet: await base.resource("statefulset", instance, namespace),
@@ -587,32 +639,12 @@ export function createOpenShellKubernetesFixture({
     return await base.startPortForward(namespace, openShellGatewayServiceName(namespace));
   }
 
-  async function provisionAgentTransportCredentials(directory, namespace, agentId) {
+  async function readAgentTransportCredentials(namespace, agentId) {
     const suffix = openshellHash(agentId);
-    const tokenDirectory = await mkdtemp(join(directory, `openshell-transport-${suffix}-`));
-    const appServerToken = randomBytes(32).toString("hex");
-    const gatewayPassword = randomBytes(32).toString("base64url");
-    try {
-      const appServerTokenPath = join(tokenDirectory, "app-server-token");
-      const gatewayPasswordPath = join(tokenDirectory, "gateway-password");
-      await Promise.all([
-        writeFile(appServerTokenPath, appServerToken, { mode: 0o600 }),
-        writeFile(gatewayPasswordPath, gatewayPassword, { mode: 0o600 }),
-      ]);
-      await kubectl(
-        "create",
-        "secret",
-        "generic",
-        `${transportSecretPrefix}-${suffix}`,
-        "--namespace",
-        namespace,
-        `--from-file=app-server-token=${appServerTokenPath}`,
-        `--from-file=gateway-password=${gatewayPasswordPath}`,
-      );
-    } finally {
-      await rm(tokenDirectory, { recursive: true, force: true });
-    }
-    return { appServerToken, gatewayPassword };
+    const secret = await base.resource("secret", `${transportSecretPrefix}-${suffix}`, namespace);
+    const encodedToken = secret.data?.["app-server-token"];
+    assert.equal(typeof encodedToken, "string", "the generated transport token must exist");
+    return { appServerToken: Buffer.from(encodedToken, "base64").toString() };
   }
 
   async function waitForOpenShellGateway(namespace) {
@@ -813,7 +845,7 @@ export function createOpenShellKubernetesFixture({
     assert.deepEqual(
       [...initCapabilities],
       [],
-      "OpenShell pre.7 must not add capabilities to workload Pod init containers.",
+      "OpenShell v0.1.0 must not add capabilities to workload Pod init containers.",
     );
     const networkSidecar = pod.spec.containers.find(({ name }) =>
       ["openshell-network", "openshell-supervisor-network"].includes(name),
@@ -821,7 +853,7 @@ export function createOpenShellKubernetesFixture({
     assert.equal(
       networkSidecar,
       undefined,
-      "OpenShell pre.7 must keep its network supervisor outside the workload Pod.",
+      "OpenShell v0.1.0 must keep its network supervisor outside the workload Pod.",
     );
     const container = compatibilityBridge
       ? pod.spec.containers.find(({ name }) => name === "agent")
@@ -1003,7 +1035,7 @@ export function createOpenShellKubernetesFixture({
     validateOpenShellPrerequisites: validatePrerequisites,
     customResources,
     maybeResource,
-    provisionAgentTransportCredentials,
+    readAgentTransportCredentials,
     waitForOpenShellGateway,
     installOpenShellGateway,
     startOpenShellGatewayPortForward,

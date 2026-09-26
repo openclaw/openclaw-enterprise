@@ -71,12 +71,12 @@ Creation omission stores `null`; PATCH omission preserves the binding and explic
 `null` clears it. API-key and `codex_pat` sources use stable OCC Secret references; the method remains distinct even for the same Secret. The actor
 needs exact Secret `operate`; a ChatGPT binding needs exact account `read`.
 Namespace locks serialize source reference changes against deletion. Missing or
-foreign sources fail closed. Binding never selects a different model, Provider,
+foreign sources fail closed. Binding never selects a different model, Backend,
 Harness, or execution mode and cannot issue an account credential.
 
 The [Secret storage flow](secret-storage-and-delivery.md) owns value storage;
 [account issuance](service-account-driver-credential-delivery.md) owns upstream
-credentials and their private Provider binding. Initial runtime provisioning
+credentials and their private Backend binding. Initial runtime provisioning
 creates only transport/channel groups and cannot supply model authentication.
 
 ### 2. Freeze the admitted source and compatibility
@@ -87,7 +87,7 @@ Deployment requires a nonnull binding, exact Agent `deploy`, and Configuration
 `read`. For a key or service account token, OCC checks the actor and Agent principal's Secret `operate`,
 resolves the backend through the selected Secret Driver, and freezes the stable
 reference and Driver identity. For a ChatGPT account, it verifies the issued
-access-token reference and private Provider, member Driver, and workspace
+access-token reference and private Backend, member Driver, and workspace
 ownership. `runtime` needs no source grant, lookup, or delivery metadata. The
 selected Compute validates the combination: SSH accepts only embedded OpenClaw
 with `runtime`; Kubernetes continues to require managed authentication.
@@ -103,12 +103,12 @@ the admitted reference; changing the draft affects the next explicit deployment.
 
 ### 3. Reauthorize the immutable revision before effects
 
-`apps/controller/src/worker.ts:ControllerWorker.resolveRevisionProvider`,
+`apps/controller/src/worker.ts:ControllerWorker.resolveRevisionBackend`,
 `resolveRevisionSecretContext`
 
 The worker authorizes the original deploying actor and required Agent Secret
 grants against the admitted revision. It verifies current source ownership and
-matches managed-account credential and Provider metadata against the frozen
+matches managed-account credential and Backend metadata against the frozen
 snapshot. Revocation or a changed source rejects work before provisioning.
 For `runtime`, worker Agent/Configuration authorization still runs but credential
 source authorization and lookup do not. The dispatch context carries only the

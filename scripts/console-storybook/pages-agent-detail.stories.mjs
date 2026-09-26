@@ -26,3 +26,5 @@ export const ConfigurationError = {
 };
 export const RevisionError = { ...story("revisionError"), name: "Revision history unavailable" };
 export const DeployDenied = { ...story("deployDenied"), name: "Deployment denied" };
+
+export const ConfigurationNavigation = story("configurationNavigation");

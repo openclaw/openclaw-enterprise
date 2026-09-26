@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-09-23
-last_updated_session: 01a0d150-104a-71a3-9e56-6c5e3ee510ea
+updated: 2026-09-26
+last_updated_session: 01a0db1e-7ab2-7bf1-936b-e71c9d6f9911
 ---
 
 # Console Agent editing and runtime requests
@@ -34,6 +34,10 @@ graph TD
   end
   subgraph API["Controller API"]
     C --> F["Authorize exact request"]
+    F -->|authentication saved| V["Confirm exact Agent Secret grant"]
+    V -->|confirmed| W["Reload saved draft"]
+    V -->|denied or interrupted| X["Show partial save and grant-only retry"]
+    X -->|binding unchanged| V
     D --> F
     E --> G["DELETE exact Agent"]
     S --> T["POST exact Agent stop"]
@@ -52,15 +56,13 @@ graph TD
 
 `apps/controller/src/console/agents/detail.mjs:renderAgentDetail`
 
-The detail page reads the Agent, revision list, and either the current Configuration in **New revision** or the selected AgentRevision. `revision=draft` reads the current
-Configuration referenced by the Agent. `revision=<id>` reads that immutable
-snapshot. The Selected revision badge is derived from `activeRevisionId`; the
-newest revision and the viewed snapshot can both differ from that pointer.
-The revision view reads persisted deployment status and startup failures; it
-does not render a live serving-health indicator. Revision snapshots are read-only;
-**Edit current Configuration** navigates to the current draft without copying
-historical values. Snapshots do not expose rollback, deploy, or live-health controls.
-Stopping and deletion apply to the Agent itself, regardless of the viewed revision or tab.
+The detail page reads the Agent, revisions, and either its current Configuration
+(`revision=draft`) or an immutable AgentRevision (`revision=<id>`). The Selected
+revision badge uses `activeRevisionId`, which may differ from the newest or viewed
+revision. Snapshots show persisted deployment status and failures, not live health.
+They are read-only and offer no rollback or deployment controls. **Edit current
+Configuration** opens the current draft without copying historical values.
+Stop and deletion always target the Agent.
 
 In the draft Configuration tab, **Edit Configuration** opens the native JSON
 editor. It accepts an object and submits only `{ values }` to the existing exact
@@ -73,32 +75,54 @@ Configuration authorization and generation ownership.
 A successful save reloads the draft; admitted snapshots and active revision
 selection remain unchanged. Invalid input, denied writes, and stale drafts retain
 editor text. An uncertain mutation outcome blocks another save until successful
-readback. Unsaved or unresolved edits block deployment of the old saved values and tab or revision
-navigation until save, cancel, or the required reload resolves them.
-Saving and deploying remain separate explicit actions.
+readback. Unsaved or unresolved edits block deployment of the old saved values.
+Ordinary edits survive tab, revision, and page navigation; pending or unresolved
+Configuration saves still block tab and revision changes until readback.
 
-`apps/controller/src/console/channels.mjs:renderChannels` renders supported
-Slack channel settings in **New revision** only. Slack uses fixed unresolved
-`SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN` environment references. Existing native
-Teams settings remain in Configuration JSON, with no card or editor. The
-deployment guard still refuses Teams-enabled drafts because Console credential
-readiness cannot be established for them. The Slack editor requires
-dedicated execution for enabled channels and may refuse native documents that it
-cannot round-trip, including non-Socket Slack settings, non-standard credential
-references, wildcard channel maps, mixed Slack mention settings, mixed channel
-sender lists, sender IDs that cannot be represented in a comma-separated field,
-and unsupported plugin shapes.
+`apps/controller/src/console/drafts.mjs:createDraftStore` owns document-local
+snapshots. `console.mjs:resetReads` and `detail.mjs:renderTab` flush registered
+editor captures before teardown. Each editor explicitly selects its retained
+fields; actual passwords are excluded. Namespace and Agent keys isolate editors,
+and session expiry, user changes, logout, and page exit clear both snapshots and
+captures. No browser storage or URL carries draft contents. Preset variables,
+Create Agent fields, and Agent search use the same store.
 
-`apps/controller/src/console/channels/slack.mjs:appendFields` renders channel
-sender access separately from direct-message access. Existing `users: ["*"]`,
-empty `users`, or omitted `users` on supported channel entries check **Allow
-everyone in these channels to mention the agent**; explicit Slack user IDs fill
-the **Allowed channel user IDs** input. The input disables the everyone checkbox
-while it contains IDs, and the checkbox disables the input while selected.
-**Require a mention** reads `requireMention` and stays independent.
-`updatedSlack` writes `users: ["*"]` or the explicit user ID list onto each
-selected channel entry while copying unrelated per-channel properties, `dmPolicy`,
-`groupPolicy`, `allowFrom`, token references, and unrelated Secret bindings.
+Configuration and authentication snapshots retain their original save baselines,
+so fresh reads on reentry cannot silently authorize overwriting concurrent edits.
+Channel snapshots retain their opening generation, raw controls, and staged Secret
+metadata; a changed baseline disables Save until Cancel discards the drawer.
+Saves clear captures; Cancel and reload discard edits. Pending saves retain
+recovery guards.
+
+`apps/controller/src/console/channels.mjs:renderChannels` renders Slack settings;
+only **New revision** permits editing. Slack uses unresolved `SLACK_APP_TOKEN`
+and `SLACK_BOT_TOKEN` environment references. Enabled channels require dedicated
+execution. The editor rejects [unsupported native shapes](../../reference/console.md#inspect-detail-revisions-and-channel-drafts).
+Teams remains visible only in native JSON; its unverified credential readiness
+blocks Console deployment.
+
+`agents/detail.mjs:renderConfigurationTab` reads draft Harness authentication
+from the Agent, or admitted authentication and channel `secretBindings` from the
+selected revision. `agents/secret-picker.mjs:renderSecretReference` checks the
+source Namespace, then requests `/namespaces/:namespaceId/secrets/:secretId`.
+Successful reads link names and IDs to metadata; absent, loading, and unavailable
+states remain distinct. Failures retain IDs;
+stale tab responses are ignored and current 401s expire the session. Summaries
+need neither collection permission nor Secret values.
+
+`apps/controller/src/console/channels/slack.mjs:appendFields` separates channel
+senders from DMs. Wildcard, empty, or omitted channel `users` selects **Allow
+everyone**; explicit IDs fill the mutually exclusive user input. Mention
+requirements remain independent. `updatedSlack` replaces selected channels'
+`users`, preserving unrelated settings and bindings.
+
+The DM selector preserves omitted policies on existing configurations; new setup
+starts with Allowlist. `validate` rejects empty/wildcard DM allowlists and
+unsupported organization-wide policies. Selecting Open writes `allowFrom: ["*"]`;
+leaving it for Allowlist or Pairing clears the wildcard input. Untouched lists
+and native `dm.enabled` remain unchanged. Configuration save persists the
+selection; redeployment applies it. See
+[Slack policies](../../reference/configuration/secrets.md#native-channel-configuration).
 
 `apps/controller/src/console/agents/detail.mjs:renderAgentDetail` passes the
 selected Namespace, saved Secret bindings, and draft Credentials URL to the
@@ -126,7 +150,7 @@ changed. It preserves unrelated bindings. If that PATCH is rejected, no new
 Secret grant is written for the staged channel selection.
 
 After the PATCH succeeds,
-`apps/controller/src/console/agents/credentials.mjs:ensureSecretOperateBinding` grants the Agent's service
+`apps/controller/src/console/agents/secret-access.mjs:ensureSecretOperateBinding` grants the Agent's service
 principal access to the final selected Secrets through the Namespace IAM API.
 Grants and Configuration updates are separate writes. If the grant write fails,
 the Configuration remains saved. The detail view drops its cached snapshot so
@@ -140,14 +164,35 @@ Configuration values; it does not stop a running Agent. The
 [console reference](../../reference/console.md#inspect-detail-revisions-and-channel-drafts)
 describes the supported edits and their deployment boundaries.
 
-### 5. Provision initial runtime credentials
+<span id="5-provision-initial-runtime-credentials"></span>
+
+### 5. Save authentication and provision initial runtime credentials
+
+`apps/controller/src/console/agents/detail.mjs:renderAgentDetail` rereads the
+Agent before saving authentication, rejecting a changed Configuration or binding.
+After the Agent PATCH succeeds, it drops the cached detail snapshot and calls
+`apps/controller/src/console/agents/secret-access.mjs:ensureSecretOperateBinding`
+for a direct Secret source (`api_key` or `codex_pat`). The helper reads or creates
+a role containing only Secret `operate`, then reads or creates an exact binding
+for the Agent service principal and selected Secret in the current Namespace.
+Grants use the signed-in actor's IAM authority. Issued accounts and runtime
+authentication skip this path.
+
+A failed grant preserves the saved authentication and freezes its controls.
+**Retry credential access** rereads the Agent, refuses changed bindings, and
+repeats only the grant check. A lost committed grant response is recovered by
+reading existing bindings. An unknown PATCH outcome blocks another save and
+requires **Reload authentication source** before any grant attempt. The saved
+binding and unresolved access survive navigation; deployment remains blocked
+until access is confirmed or the source is explicitly reloaded. Server admission
+remains authoritative. The deployment handler renders preflight and authorization
+errors separately from credential metadata so its final control update cannot
+erase the failure. Confirmed access does not establish provider readiness.
 
 `apps/controller/src/console/agents/credentials.mjs:createRuntimeCredentialsPanel`
 
 The **Operator-managed credentials** selection saves `{ "method": "runtime" }`
-without a source field. The console explains “Configured on the runtime host;
-not validated by OCC.” This mode does not request managed credential metadata
-or provisioning; it still requires readable revision history and unchanged draft
+without a source field. This mode skips managed credential metadata and provisioning; it still requires readable revision history and unchanged draft
 state before submitting deployment. API authorization and selected-driver
 compatibility checks remain authoritative.
 
@@ -165,18 +210,19 @@ nor the audit event receives credential bytes. External Secret creation cannot
 be rolled back by a failed database transaction, so errors require readback.
 
 Slack fields separately derive bound state from Configuration `secretBindings`.
-Each bound field renders a synthetic password mask, never a saved Secret value.
-Focusing the field clears the mask for replacement; an empty bound field keeps
-its existing binding. The save gate requires at least one entered replacement
-and either an existing binding or replacement for both token slots.
+Each field uses the shared Secret reference picker: it lists readable Namespace
+Secrets, shows the current Secret reference by name when metadata is readable,
+falls back to the bound Secret ID when metadata is unavailable, and can create a
+new Namespace Secret without reading any existing value back.
 
-On explicit submission, the browser skips unchanged slots. For each replacement,
-`storeChannelSecret` creates or updates the Namespace Secret and
-`ensureSecretOperateBinding` grants the Agent access. The Configuration PATCH
-preserves other bindings and incorporates the written Secret references. These
-are separate writes; uncertain outcomes block another save until refresh. The
-mask never enters the write set. Entered values clear after an attempt or panel
-teardown; masks are recreated from bound metadata.
+On explicit submission, the browser PATCHes selected Secret references while
+preserving other bindings, then calls `ensureSecretOperateBinding` for changed
+and pending Secrets. A post-PATCH grant failure leaves bindings saved and blocks
+deployment in the current view. Subsequent saves retry still-referenced pending
+grants. Picker edits and rejected PATCHes preserve that warning; only a confirmed
+grant or confirmed removal of its reference clears the pending Secret. Explicit
+refresh resets local outcome tracking; the API always enforces Secret access.
+Pickers switch references; shared Secret value rotation remains a separate operation.
 
 ### 6. Read and replace live workspace files
 
@@ -186,7 +232,9 @@ history reads, because workspace contents belong to the live Agent. An Agent
 without an active revision gets an unavailable explanation without file requests.
 
 The editor issues one GET for each supported filename. A successful response
-populates that file's editor; `404` permits an explicit create attempt, and other
+reauthorizes file access before restoring retained text, including empty edits.
+Retained drafts keep their original baseline; explicit Reload replaces them with
+the current file. `404` permits an explicit create attempt, and other
 failures leave it disabled. Save sends `{ content }` to the same exact-Agent PUT
 route. It neither patches Configuration nor admits a revision. The existing
 [workspace flow](../workspace-files.md) owns authorization and native file transport.
@@ -275,11 +323,19 @@ subsequent worker cleanup and the Namespace-owned resources it preserves.
 
 ## Changelog
 
+- 2026-09-26 00:37: Trace exact Secret metadata reads for draft and immutable revision summaries in the accompanying change. (01a0db1e-7ab2-7bf1-936b-e71c9d6f9911 - e387b38cc259ee4a55936ecb848bbce8210bcd68)
+
+- 2026-09-25 01:15: Trace DM policy selection, sender validation, and organization-wide restrictions. (01a0d5e6-743e-7743-8a5e-2d8c24b78b81 - 919f92c3bb3ea63acf7042b138e9a0c6e1d97719)
+
+- 2026-09-25 00:24: Trace authentication Secret grants, partial-save recovery, and persistent deployment errors in the accompanying change. (01a0d5ee-ab06-7571-8d4a-9ae0f33d5737 - 5f2f3a7448c7f5f0f4a5ed08be2395f2c5623ed7)
+- 2026-09-24 22:03: Trace shared document-local drafts, navigation capture, explicit discard, and retained save baselines. (01a0d557-f6e3-7da2-af52-993d05735554 - a91cbfdd37b64c88b7ee48647096ff6bfd993e02)
+
 - 2026-09-23 19:52: Record unsupported mixed Slack sender lists, unrepresentable sender IDs, and channel wildcard maps in the simple drawer. (01a0d150-104a-71a3-9e56-6c5e3ee510ea - 77aedc620f443056f9ee859050b8dc657a9c3133)
 
 - 2026-09-23 08:30: Trace Slack Secret menus, immediate creation, staged bindings, and explicit IAM grants before Configuration save. (01a0cd92-fd3f-7d83-a51e-f6264ef6be09 - 941edc9f6971a24ae29a74a6ca749b6375e6ec01)
 
 - 2026-09-23 02:26: Trace Slack credential navigation and preservation of unsaved channel edits; remove the generic drawer sharing footnote. (01a0cd92-fd3f-7d83-a51e-f6264ef6be09 - 380f7706e2856f1ac1e3bed7f5ddd9c71d133ba8)
+- 2026-09-24: Use shared Secret pickers for draft harness authentication and Slack runtime credential bindings; switching references no longer overwrites existing Secret values.
 
 - 2026-09-22 23:30: Trace native Configuration draft editing, save checks, and immutable snapshot navigation. (01a0ccc0-00fa-7173-ab45-f7a5fb55b3b6 - 0dabaafb97326254e5ae173491be014aaa6388c6)
 

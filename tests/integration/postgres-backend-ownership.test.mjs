@@ -9,19 +9,19 @@ import {
   alternateWorkspaceId,
   availablePort,
   createAccessTokenServiceAccount,
-  createBootstrappedProviderState,
-  createProviderController,
-  createProviderFixture,
-  providerDefinition,
-  providerId,
+  createBootstrappedBackendState,
+  createBackendController,
+  createBackendFixture,
+  backendDefinition,
+  backendId,
   requiresPostgres,
-  seedProviderBinding,
+  seedBackendBinding,
   serviceAccountDriverId,
-  startProviderlessDevelopmentServer,
+  startBackendlessDevelopmentServer,
   stopProcess,
   waitFor,
   workspaceId,
-} from "../helpers/postgres-provider-state.mjs";
+} from "../helpers/postgres-backend-state.mjs";
 
 async function request(origin, session, method, path, body) {
   const response = await fetch(`${origin}${path}`, {
@@ -39,7 +39,7 @@ async function request(origin, session, method, path, body) {
 async function createReadyNamespace(fixture, label) {
   const namespace = {
     id: `ns_${randomUUID()}`,
-    name: `provider-owner-${label}-${randomUUID()}`,
+    name: `backend-owner-${label}-${randomUUID()}`,
     status: "ready",
     createdAt: new Date().toISOString(),
   };
@@ -82,7 +82,7 @@ async function assertNoAgentNamed(pool, namespaceId, name, label) {
   assert.equal(result.rows[0].count, 0, label);
 }
 
-async function expectProviderConflict(operation, pattern) {
+async function expectBackendConflict(operation, pattern) {
   await assert.rejects(
     operation,
     (error) =>
@@ -92,22 +92,22 @@ async function expectProviderConflict(operation, pattern) {
 }
 
 test(
-  "development API starts with stale Provider references and permits repair through Agent update",
+  "development API starts with stale Backend references and permits repair through Agent update",
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
     const port = await availablePort();
     const origin = `http://127.0.0.1:${port}`;
     const email = "postgres-admin@openclaw.local";
     const password = "postgres-development-password";
-    const authSecret = "openclaw-provider-repair-auth-secret-minimum-32-bytes";
-    const fixture = await createBootstrappedProviderState(context, {
+    const authSecret = "openclaw-backend-repair-auth-secret-minimum-32-bytes";
+    const fixture = await createBootstrappedBackendState(context, {
       email,
       password,
       authSecret,
       origin,
-      installationName: "PostgreSQL Provider repair integration",
+      installationName: "PostgreSQL Backend repair integration",
     });
-    let server = await startProviderlessDevelopmentServer(context, {
+    let server = await startBackendlessDevelopmentServer(context, {
       port,
       origin,
       authSecret,
@@ -116,7 +116,7 @@ test(
     let session = await signInWithEmailPassword({ fetch, origin, email, password });
 
     const namespace = await request(origin, session, "POST", "/namespaces", {
-      name: `provider-repair-${randomUUID()}`,
+      name: `backend-repair-${randomUUID()}`,
     });
     assert.equal(namespace.response.status, 201);
     fixture.track(namespace.payload.data);
@@ -140,7 +140,7 @@ test(
       "POST",
       `/namespaces/${namespace.payload.data.id}/agents`,
       {
-        name: `provider-repair-${randomUUID()}`,
+        name: `backend-repair-${randomUUID()}`,
         configurationId: configuration.payload.data.id,
         executionMode: "dedicated",
       },
@@ -149,11 +149,11 @@ test(
 
     await stopProcess(server.child);
     await fixture.pool.query(
-      "UPDATE occ.agents SET provider_id = $1 WHERE namespace_id = $2 AND id = $3",
-      [providerId, namespace.payload.data.id, agent.payload.data.id],
+      "UPDATE occ.agents SET backend_id = $1 WHERE namespace_id = $2 AND id = $3",
+      [backendId, namespace.payload.data.id, agent.payload.data.id],
     );
 
-    server = await startProviderlessDevelopmentServer(context, {
+    server = await startBackendlessDevelopmentServer(context, {
       port,
       origin,
       authSecret,
@@ -167,9 +167,9 @@ test(
       `/namespaces/${namespace.payload.data.id}/agents/${agent.payload.data.id}`,
     );
     assert.equal(visible.response.status, 200, JSON.stringify(visible.payload));
-    assert.equal(visible.payload.data.providerId, providerId);
+    assert.equal(visible.payload.data.backendId, backendId);
 
-    // Startup must allow API repair. Deploying a stale Provider reference is rejected
+    // Startup must allow API repair. Deploying a stale Backend reference is rejected
     // through the API's canonical unknown-reference response before admission.
     const deploy = await request(
       origin,
@@ -183,7 +183,7 @@ test(
       fixture.pool,
       namespace.payload.data.id,
       agent.payload.data.id,
-      "stale Provider deployment must be rejected before an AgentRevision is persisted",
+      "stale Backend deployment must be rejected before an AgentRevision is persisted",
     );
 
     const repaired = await request(
@@ -193,56 +193,56 @@ test(
       `/namespaces/${namespace.payload.data.id}/agents/${agent.payload.data.id}`,
       {
         configurationId: configuration.payload.data.id,
-        providerId: null,
+        backendId: null,
         harnessAuth: null,
         executionMode: "dedicated",
       },
     );
     assert.equal(repaired.response.status, 200);
-    assert.equal(repaired.payload.data.providerId, null);
+    assert.equal(repaired.payload.data.backendId, null);
 
     const persisted = await fixture.pool.query(
-      "SELECT provider_id, harness_auth FROM occ.agents WHERE namespace_id = $1 AND id = $2",
+      "SELECT backend_id, harness_auth FROM occ.agents WHERE namespace_id = $1 AND id = $2",
       [namespace.payload.data.id, agent.payload.data.id],
     );
-    assert.deepEqual(persisted.rows, [{ provider_id: null, harness_auth: null }]);
+    assert.deepEqual(persisted.rows, [{ backend_id: null, harness_auth: null }]);
   },
 );
 
 test(
-  "PostgreSQL Provider ownership persists exact Agent associations and admits only matching managed bindings",
+  "PostgreSQL Backend ownership persists exact Agent associations and admits only matching managed bindings",
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
-    const fixture = await createProviderFixture(context);
-    const controller = createProviderController(fixture);
+    const fixture = await createBackendFixture(context);
+    const controller = createBackendController(fixture);
 
     const draftNamespace = await createReadyNamespace(fixture, "drafts");
     const draftConfiguration = await createConfiguration(fixture, controller, draftNamespace);
-    const providerless = await controller.createAgent(fixture.actor.id, {
+    const backendless = await controller.createAgent(fixture.actor.id, {
       namespaceId: draftNamespace.id,
-      name: `providerless-${randomUUID()}`,
+      name: `backendless-${randomUUID()}`,
       configurationId: draftConfiguration.id,
     });
-    assert.equal(providerless.providerId, null);
+    assert.equal(backendless.backendId, null);
     const selected = await controller.updateAgent(fixture.actor.id, {
       namespaceId: draftNamespace.id,
-      agentId: providerless.id,
+      agentId: backendless.id,
       configurationId: draftConfiguration.id,
-      providerId,
+      backendId,
     });
-    assert.equal(selected.providerId, providerId);
+    assert.equal(selected.backendId, backendId);
     const cleared = await controller.updateAgent(fixture.actor.id, {
       namespaceId: draftNamespace.id,
-      agentId: providerless.id,
+      agentId: backendless.id,
       configurationId: draftConfiguration.id,
-      providerId: null,
+      backendId: null,
     });
-    assert.equal(cleared.providerId, null);
+    assert.equal(cleared.backendId, null);
     const draftRows = await fixture.pool.query(
-      "SELECT provider_id FROM occ.agents WHERE namespace_id = $1 AND id = $2",
-      [draftNamespace.id, providerless.id],
+      "SELECT backend_id FROM occ.agents WHERE namespace_id = $1 AND id = $2",
+      [draftNamespace.id, backendless.id],
     );
-    assert.deepEqual(draftRows.rows, [{ provider_id: null }]);
+    assert.deepEqual(draftRows.rows, [{ backend_id: null }]);
 
     const exactNamespace = await createReadyNamespace(fixture, "exact");
     const dedicatedConfiguration = await createConfiguration(fixture, controller, exactNamespace);
@@ -257,13 +257,13 @@ test(
       exactNamespace.id,
       "exact",
     );
-    await seedProviderBinding(fixture.pool, account);
+    await seedBackendBinding(fixture.pool, account);
 
     const binding = await fixture.state.read((view) =>
-      view.serviceAccounts.findServiceAccountProviderBinding(exactNamespace.id, account.id),
+      view.serviceAccounts.findServiceAccountBackendBinding(exactNamespace.id, account.id),
     );
     assert.deepEqual(binding, {
-      providerId,
+      backendId,
       driverId: serviceAccountDriverId,
       workspaceId,
       credentialIssued: true,
@@ -273,7 +273,7 @@ test(
       namespaceId: exactNamespace.id,
       name: `dedicated-${randomUUID()}`,
       configurationId: dedicatedConfiguration.id,
-      providerId,
+      backendId,
       harnessAuth: { method: "chatgpt_service_account", serviceAccountId: account.id },
       executionMode: "dedicated",
     });
@@ -282,12 +282,12 @@ test(
       { namespaceId: exactNamespace.id, agentId: dedicated.id },
       resolveApprovedHarness,
     );
-    assert.equal(admitted.providerId, providerId);
+    assert.equal(admitted.backendId, backendId);
     assert.deepEqual(admitted.harnessAuth, {
       method: "chatgpt_service_account",
       serviceAccountId: account.id,
       credential: account.credential,
-      providerBinding: binding,
+      backendBinding: binding,
     });
 
     const secretDriver = createTestSecretDriver({ id: "secret-test" });
@@ -296,11 +296,11 @@ test(
     const { worker, calls } = fixture.startWorker({ secretDriver });
     await worker.start();
     await waitForWork(fixture.pool, admitted.id, "succeeded");
-    assert.deepEqual(calls, [{ action: "prepare", revisionId: admitted.id, providerId }]);
+    assert.deepEqual(calls, [{ action: "prepare", revisionId: admitted.id, backendId }]);
     const persistedRevision = await fixture.pool.query(
-      `SELECT a.provider_id AS agent_provider_id,
-              r.provider_id AS revision_provider_id,
-              r.admitted_spec ? 'provider_id' AS admitted_spec_has_provider_id
+      `SELECT a.backend_id AS agent_backend_id,
+              r.backend_id AS revision_backend_id,
+              r.admitted_spec ? 'backend_id' AS admitted_spec_has_backend_id
        FROM occ.agents AS a
        JOIN occ.agent_revisions AS r
          ON r.namespace_id = a.namespace_id AND r.agent_id = a.id
@@ -309,9 +309,9 @@ test(
     );
     assert.deepEqual(persistedRevision.rows, [
       {
-        agent_provider_id: providerId,
-        revision_provider_id: providerId,
-        admitted_spec_has_provider_id: false,
+        agent_backend_id: backendId,
+        revision_backend_id: backendId,
+        admitted_spec_has_backend_id: false,
       },
     ]);
 
@@ -319,11 +319,11 @@ test(
       namespaceId: exactNamespace.id,
       name: `embedded-${randomUUID()}`,
       configurationId: embeddedConfiguration.id,
-      providerId,
+      backendId,
       harnessAuth: { method: "chatgpt_service_account", serviceAccountId: account.id },
       executionMode: "embedded",
     });
-    await expectProviderConflict(
+    await expectBackendConflict(
       () =>
         controller.deployAgent(
           fixture.actor.id,
@@ -339,21 +339,21 @@ test(
       "embedded OpenClaw must be denied before a managed-account revision is persisted",
     );
 
-    const sameIdentity = createProviderController(fixture, {
-      providers: [
-        providerDefinition({
+    const sameIdentity = createBackendController(fixture, {
+      backends: [
+        backendDefinition({
           apiKeyPath: "/etc/openclaw/chatgpt/rotated-admin-key",
           credentialTtlSeconds: 60,
         }),
       ],
     });
-    await sameIdentity.validateProviderConfiguration();
+    await sameIdentity.validateBackendConfiguration();
 
     await controller.updateAgent(fixture.actor.id, {
       namespaceId: exactNamespace.id,
       agentId: embedded.id,
       configurationId: embeddedConfiguration.id,
-      providerId: null,
+      backendId: null,
       harnessAuth: null,
       executionMode: "embedded",
     });
@@ -361,7 +361,7 @@ test(
     const replacementSecret = await controller.createSecret(fixture.actor.id, {
       namespaceId: exactNamespace.id,
       name: `independent-key-${randomUUID()}`,
-      value: "synthetic-provider-independent-key",
+      value: "synthetic-backend-independent-key",
     });
     const replacementAuth = {
       method: "api_key",
@@ -394,27 +394,27 @@ test(
       namespaceId: exactNamespace.id,
       agentId: dedicated.id,
       configurationId: independentConfiguration.id,
-      providerId: null,
+      backendId: null,
       harnessAuth: replacementAuth,
       executionMode: "dedicated",
     });
-    assert.equal(independent.providerId, null);
+    assert.equal(independent.backendId, null);
     assert.deepEqual(independent.harnessAuth, replacementAuth);
     const replacement = await controller.deployAgent(
       fixture.actor.id,
       { namespaceId: exactNamespace.id, agentId: dedicated.id },
       resolveApprovedHarness,
     );
-    assert.equal(replacement.providerId, null);
+    assert.equal(replacement.backendId, null);
     assert.deepEqual(replacement.harnessAuth, {
       ...replacementAuth,
       secretDriverId: secretDriver.id,
     });
     await waitForWork(fixture.pool, replacement.id, "succeeded");
     assert.deepEqual(calls, [
-      { action: "prepare", revisionId: admitted.id, providerId },
-      { action: "prepare", revisionId: replacement.id, providerId: null },
-      { action: "retire", revisionId: admitted.id, providerId },
+      { action: "prepare", revisionId: admitted.id, backendId },
+      { action: "prepare", revisionId: replacement.id, backendId: null },
+      { action: "retire", revisionId: admitted.id, backendId },
     ]);
 
     const deletedAccount = await fixture.state.transact((unit) =>
@@ -424,47 +424,47 @@ test(
     const oldRevision = await fixture.state.read((view) =>
       view.revisions.findRevision(exactNamespace.id, dedicated.id, admitted.id),
     );
-    assert.equal(oldRevision?.providerId, providerId);
+    assert.equal(oldRevision?.backendId, backendId);
     assert.deepEqual(oldRevision?.harnessAuth, admitted.harnessAuth);
     const activeReplacement = await fixture.pool.query(
       "SELECT active_revision_id FROM occ.agents WHERE namespace_id = $1 AND id = $2",
       [exactNamespace.id, dedicated.id],
     );
     assert.deepEqual(activeReplacement.rows, [{ active_revision_id: replacement.id }]);
-    await createProviderController(fixture, { providers: [] }).validateProviderConfiguration();
+    await createBackendController(fixture, { backends: [] }).validateBackendConfiguration();
 
     await fixture.cleanup(draftNamespace, exactNamespace);
 
     for (const scenario of [
       {
-        label: "providerless",
-        agentProviderId: null,
+        label: "backendless",
+        agentBackendId: null,
         binding: {},
-        message: /no Provider binding/,
+        message: /no Backend binding/,
       },
       {
-        label: "provider-mismatch",
-        agentProviderId: providerId,
-        binding: { providerId: "other-provider" },
-        message: /does not match its Provider/,
+        label: "backend-mismatch",
+        agentBackendId: backendId,
+        binding: { backendId: "other-backend" },
+        message: /does not match its Backend/,
       },
       {
         label: "driver-mismatch",
-        agentProviderId: providerId,
+        agentBackendId: backendId,
         binding: { driverId: "other-service-account-driver" },
-        message: /does not match its Provider/,
+        message: /does not match its Backend/,
       },
       {
         label: "workspace-mismatch",
-        agentProviderId: providerId,
+        agentBackendId: backendId,
         binding: { workspaceId: alternateWorkspaceId },
-        message: /does not match its Provider/,
+        message: /does not match its Backend/,
       },
       {
         label: "credential-not-issued",
-        agentProviderId: providerId,
+        agentBackendId: backendId,
         binding: { credentialIssued: false },
-        message: /does not match its Provider/,
+        message: /does not match its Backend/,
       },
     ]) {
       const namespace = await createReadyNamespace(fixture, scenario.label);
@@ -474,16 +474,16 @@ test(
         namespace.id,
         scenario.label,
       );
-      await seedProviderBinding(fixture.pool, brokenAccount, scenario.binding);
+      await seedBackendBinding(fixture.pool, brokenAccount, scenario.binding);
       const agent = await controller.createAgent(fixture.actor.id, {
         namespaceId: namespace.id,
         name: `${scenario.label}-${randomUUID()}`,
         configurationId: configuration.id,
-        providerId: scenario.agentProviderId,
+        backendId: scenario.agentBackendId,
         harnessAuth: { method: "chatgpt_service_account", serviceAccountId: brokenAccount.id },
         executionMode: "dedicated",
       });
-      await expectProviderConflict(
+      await expectBackendConflict(
         () =>
           controller.deployAgent(
             fixture.actor.id,
@@ -507,16 +507,13 @@ test(
       createConfiguration(fixture, controller, targetNamespace),
       createAccessTokenServiceAccount(fixture.state, sourceNamespace.id, "cross-source"),
     ]);
-    await seedProviderBinding(fixture.pool, sourceAccount);
+    await seedBackendBinding(fixture.pool, sourceAccount);
     assert.equal(
       await fixture.state.read((view) =>
-        view.serviceAccounts.findServiceAccountProviderBinding(
-          targetNamespace.id,
-          sourceAccount.id,
-        ),
+        view.serviceAccounts.findServiceAccountBackendBinding(targetNamespace.id, sourceAccount.id),
       ),
       undefined,
-      "the private Provider binding view must not resolve bindings across Namespaces",
+      "the private Backend binding view must not resolve bindings across Namespaces",
     );
     const crossNamespaceAgentName = `cross-namespace-${randomUUID()}`;
     await assert.rejects(
@@ -525,7 +522,7 @@ test(
           namespaceId: targetNamespace.id,
           name: crossNamespaceAgentName,
           configurationId: targetConfiguration.id,
-          providerId,
+          backendId,
           harnessAuth: { method: "chatgpt_service_account", serviceAccountId: sourceAccount.id },
           executionMode: "dedicated",
         }),

@@ -45,7 +45,7 @@ own admission and dispatch authorization; the dedicated gateway gets no key.
 For a provider-managed account, API-side Kubernetes Compute stores the issued
 access token and pinned provider workspace in one account-owned Secret in the
 exact backing namespace. The revision snapshots only the OCC account identity,
-exact credential reference, and verified private Provider/workspace ownership. Kubernetes projects
+exact credential reference, and verified private Backend/workspace ownership. Kubernetes projects
 that account Secret directly into each associated dedicated Codex workload;
 there is no Agent-specific credential copy. Codex logs in with its access token
 under the forced provider workspace. Its separate gateway never receives the
@@ -155,11 +155,11 @@ The platform preserves:
   themselves permissions.
 - **Provider-neutral service accounts:** OCC owns each exact Namespace-scoped
   account and generic credential reference. Its selected service-account Driver
-  privately owns the exact Provider, Driver, upstream account, credential, and workspace binding;
+  privately owns the exact Backend, Driver, upstream account, credential, and workspace binding;
   upstream authority never replaces exact OCC authorization.
 - **Immutable deployment:** an `AgentRevision` captures the exact admitted
   Agent configuration, dependencies, sandbox policy, selected Harness identity
-  and version, explicit execution mode, nullable Provider reference, and runtime
+  and version, explicit execution mode, nullable Backend reference, and runtime
   integrations. Editing an
   Agent or changing runtime integrations affects only a later deployment.
 - **Stable workload identity:** each Agent has one OCC-owned runtime identity.

@@ -1,6 +1,7 @@
 # Scrape OCC metrics in Kubernetes
 
-Enable private Pod metrics on your existing Helm deployment. The
+The production Helm chart enables private API and worker metrics by default on
+Pod IP port 9464. Connect your scraper by supplying both selectors below. The
 [metrics reference](../../reference/metrics.md) defines families, labels,
 timeouts, and failure behavior. Supply these additional Helm values:
 
@@ -14,12 +15,14 @@ metrics:
     app: prometheus
 ```
 
-Both selectors must be nonempty and must identify your actual scraper. The
-chart requires them together in each allowed peer. It binds each process to
+Leaving both selectors empty grants no metrics ingress. Setting only one fails
+Helm rendering. When configured, both must identify your actual scraper in the
+same allowed peer. It binds each process to
 its Pod IP and allows only the metrics TCP port. NetworkPolicies are additive:
 review other installed policies before treating this as an exclusive boundary.
 Give the scraper matching egress permission when its namespace denies egress.
-There is no metrics Service, ServiceMonitor, or public Ingress.
+There is no metrics Service, ServiceMonitor, or public Ingress. Set
+`metrics.enabled: false` to remove both OCC listeners.
 
 ## Discover every replica
 
@@ -100,4 +103,19 @@ Worker HTTP 503 indicates collection failure: verify the application-role
 database connection and look for locks/slow aggregate queries. Recovery appears
 on the next scrape. API health and metrics health are separate signals.
 
-For a local Prometheus/Grafana walkthrough, use [development metrics](../../testing/metrics.md).
+For disposable Kubernetes visualization, use the [demonstration stack](demo.md).
+For the Compose walkthrough, use [development metrics](../../testing/metrics.md).
+
+## Monitor log collection
+
+When the optional chart Collector is enabled, its own Prometheus endpoint serves
+`/metrics` on Pod port 8888. Set both
+`logging.collector.metrics.scraperNamespaceLabels` and
+`logging.collector.metrics.scraperPodLabels` to admit your scraper. Empty maps
+admit none. `logging.collector.metrics.enabled: false` disables the chart's
+metrics port declaration and ingress grant; the operator-owned Collector config
+controls whether its telemetry listener runs.
+
+Use the Pod discovery example above with component `collector`, retaining each
+node's Collector Pod as an independent target. Monitor accepted, sent, failed,
+and queued log records; a healthy OCC metrics target does not prove log export.

@@ -11,14 +11,14 @@ import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { composePostgresDevelopment } from "../../apps/controller/src/composition/development-postgres.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
-import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/providers/repository-credentials/control-client.ts";
+import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
-import { waitFor } from "../helpers/postgres-provider-state.mjs";
+import { waitFor } from "../helpers/postgres-backend-state.mjs";
 
 const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const adminEmail = "postgres-agent-provisioning-v2@example.test";
@@ -204,7 +204,7 @@ function installationDrivers({ computeDriver, configurationDriver, secretDriver,
     installation: {
       occ: { cluster: "postgres-agent-provisioning" },
       logging: {},
-      provider:
+      backend:
         repoDriver === undefined
           ? []
           : [
@@ -553,7 +553,7 @@ test(
       },
       {
         version: 1,
-        providerId: "provisioning-repositories",
+        backendId: "provisioning-repositories",
         providerInstanceId: "provisioning-github",
         appId: "123",
         githubInstallationId: "456",

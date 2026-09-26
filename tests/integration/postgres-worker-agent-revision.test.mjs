@@ -9,18 +9,18 @@ import { PostgresMetricsSnapshot } from "../../packages/occ/src/index.ts";
 import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/credentials/client/config.ts";
 import {
   authorizedPrincipal,
-  cleanupProviderFixtures,
+  cleanupBackendFixtures,
   createAccessTokenServiceAccount,
-  createProviderWorkerDrivers,
-  createProviderController,
+  createBackendWorkerDrivers,
+  createBackendController,
   databaseUrl,
   ensureInstallation,
-  poolWithOneProviderBindingReadFault,
-  providerDefinition,
+  poolWithOneBackendBindingReadFault,
+  backendDefinition,
   requiresPostgres,
-  seedProviderBinding,
+  seedBackendBinding,
   waitFor,
-} from "../helpers/postgres-provider-state.mjs";
+} from "../helpers/postgres-backend-state.mjs";
 
 async function setup(
   context,
@@ -84,8 +84,8 @@ async function setup(
           },
         }),
   };
-  const secretDriver = createProviderWorkerDrivers(compute, []).secretDriver;
-  const controller = createProviderController({ installation, state }, { providers: [] });
+  const secretDriver = createBackendWorkerDrivers(compute, []).secretDriver;
+  const controller = createBackendController({ installation, state }, { backends: [] });
   controller.registerDriver(secretDriver);
   controller.selectDriver("secret", secretDriver.id);
   const secretRoleId = `role-${randomUUID()}`;
@@ -104,7 +104,7 @@ async function setup(
     label,
     executionMode = "embedded",
     serviceAccountId,
-    providerId = null,
+    backendId = null,
     grantHarnessSecret = true,
     runtimeAuth = false,
   ) {
@@ -148,7 +148,7 @@ async function setup(
         namespaceId: namespace.id,
         name: `${label}-${randomUUID()}`,
         configurationId,
-        providerId,
+        backendId,
         harnessAuth,
         executionMode,
         servicePrincipalId: `service-agent-${id}`,
@@ -190,10 +190,10 @@ async function setup(
       const account = await state.read((view) =>
         view.serviceAccounts.findServiceAccount(namespace.id, owner.harnessAuth.serviceAccountId),
       );
-      const providerBinding = await state.read((view) =>
-        view.serviceAccounts.findServiceAccountProviderBinding(namespace.id, account.id),
+      const backendBinding = await state.read((view) =>
+        view.serviceAccounts.findServiceAccountBackendBinding(namespace.id, account.id),
       );
-      harnessAuth = { ...owner.harnessAuth, credential: account.credential, providerBinding };
+      harnessAuth = { ...owner.harnessAuth, credential: account.credential, backendBinding };
     } else {
       harnessAuth = { ...owner.harnessAuth, secretDriverId: secretDriver.id };
     }
@@ -207,7 +207,7 @@ async function setup(
       namespaceId: namespace.id,
       agentId: owner.id,
       revision: number,
-      providerId: owner.providerId,
+      backendId: owner.backendId,
       configuration: { revision: String(number) },
       configurationId: owner.configurationId,
       configurationKind: "agent",
@@ -277,7 +277,7 @@ async function setup(
     pool = workerPool,
     transformDrivers = (drivers) => drivers,
   ) {
-    const configuredDrivers = createProviderWorkerDrivers(computeDriver, providers ?? []);
+    const configuredDrivers = createBackendWorkerDrivers(computeDriver, providers ?? []);
     const drivers = transformDrivers({
       ...configuredDrivers,
       secretDriver,
@@ -345,7 +345,7 @@ function repositoryBoundary({ count = 1, deadlineWallMs = Date.now() + 120_000 }
   const bindings = Array.from({ length: count }, (_, index) => ({
     repositoryRef: `repository-${index}-${randomUUID()}`,
     profile: "read",
-    providerId: "repository-provider",
+    backendId: "repository-provider",
     grant: {
       providerInstanceId: "repository-provider-instance",
       repositoryId: `repository-${index}`,
@@ -470,6 +470,82 @@ function repositoryAttempts(fixture, revision) {
 }
 
 test(
+  "exclusive replacement blocks overlap, supersedes old maintenance and recovers through a new revision",
+  { ...requiresPostgres, timeout: 30_000 },
+  async (context) => {
+    const fixture = await setup(context);
+    const owner = await fixture.agent("exclusive-workspace", "dedicated");
+    const running = new Set();
+    const prepared = [];
+    let rejectStop = true;
+    let stopFailures = 0;
+    const compute = {
+      ...fixture.compute,
+      requiresStoppedPredecessors: () => true,
+      async prepareRevision(revision) {
+        // This Driver boundary represents a resource which cannot be held by
+        // two revisions. PostgreSQL and the real worker own ordering and retries.
+        assert.deepEqual(
+          [...running].filter((id) => id !== revision.id),
+          [],
+        );
+        running.add(revision.id);
+        prepared.push(revision.id);
+        return {
+          ...(await fixture.compute.prepareRevision(revision)),
+          ready: revision.revision !== 2,
+        };
+      },
+      async stopRevision(revision) {
+        if (rejectStop && running.has(revision.id)) {
+          rejectStop = false;
+          stopFailures += 1;
+          throw new Error("resource release temporarily unavailable");
+        }
+        running.delete(revision.id);
+      },
+      async retireRevision(revision) {
+        running.delete(revision.id);
+      },
+    };
+    await fixture.start(compute, undefined, 3_000);
+    const first = await fixture.revision(owner, 1);
+    await fixture.work(first, "succeeded");
+    const replacement = await fixture.revision(owner, 2);
+    await waitFor("replacement preparation after predecessor release", async () =>
+      running.has(replacement.id) ? true : undefined,
+    );
+    assert.equal(stopFailures, 1);
+    const firstPreparations = prepared.filter((id) => id === first.id).length;
+    const maintenance = {
+      id: first.id,
+      idempotencyKey: `agent_revision:${first.id}:maintenance:${randomUUID()}`,
+    };
+    await fixture.state.transactWithQueue((_unit, queue) =>
+      queue.enqueue({
+        idempotencyKey: maintenance.idempotencyKey,
+        namespaceId: fixture.namespace.id,
+        agentId: owner.id,
+        revisionId: first.id,
+        actorId: fixture.actor.id,
+        availableAt: new Date(0),
+      }),
+    );
+    await fixture.work(maintenance, "succeeded");
+    assert.equal(prepared.filter((id) => id === first.id).length, firstPreparations);
+    await fixture.work(replacement, "failed_permanent");
+    assert.deepEqual([...running], [replacement.id]);
+    const recovery = await fixture.revision(owner, 3);
+    await fixture.work(recovery, "succeeded");
+    assert.deepEqual([...running], [recovery.id]);
+    const current = await fixture.state.read((view) =>
+      view.agents.findAgent(fixture.namespace.id, owner.id),
+    );
+    assert.equal(current.activeRevisionId, recovery.id);
+  },
+);
+
+test(
   "worker revalidates admitted repository selections through the concrete GitHub Driver and Unix control",
   { ...requiresPostgres, timeout: 30_000 },
   async (context) => {
@@ -481,7 +557,7 @@ test(
       { createServer },
     ] = await Promise.all([
       import("../../apps/controller/src/drivers/repo/github/driver.ts"),
-      import("../../apps/controller/src/providers/repository-credentials/control-client.ts"),
+      import("../../apps/controller/src/backends/repository-credentials/control-client.ts"),
       import("../fixtures/repository-credentials/registry.mjs"),
       import("node:net"),
     ]);
@@ -504,7 +580,7 @@ test(
     });
     const driver = new GitHubRepoDriver(
       {
-        id: credentials.providerId,
+        id: credentials.backendId,
         client: new UnixRepositoryCredentialControlClient({
           controlSocket: credentials.config.gateway.controlSocket,
         }),
@@ -515,7 +591,7 @@ test(
     );
     // The real resolver admits selection fields and returns the richer frozen
     // binding. Worker revalidation must project that snapshot back to selections;
-    // the strict registry parser rejects providerId/grant as caller input.
+    // the strict registry parser rejects backendId/grant as caller input.
     const resolution = driver.resolve({
       namespaceId: fixture.namespace.id,
       bindings: [{ repositoryRef: "repo-a", profile: "git-read" }],
@@ -1057,6 +1133,20 @@ for (const loss of ["missing", "closed-repair"]) {
       await waitFor("unsafe revision runtime to retire", async () =>
         stopped.includes(candidate.id) ? true : undefined,
       );
+      if (loss === "missing") {
+        await waitFor("invalidated cleanup to wait for Driver maintenance", async () => {
+          const delayed = await fixture.observerPool.query(
+            `SELECT EXTRACT(EPOCH FROM (available_at - updated_at)) * 1000 AS delay_ms
+             FROM occ.controller_work
+             WHERE revision_id = $1 AND state = 'queued' AND idempotency_key LIKE $2`,
+            [candidate.id, `agent_revision:${candidate.id}:repository_cleanup:retire:%`],
+          );
+          return Number(delayed.rows[0]?.delay_ms) >=
+            repository.driver.maintenanceIntervalMs - 1_000
+            ? true
+            : undefined;
+        });
+      }
       await fixture.stop();
       const refusal = await fixture.observerPool.query(
         "SELECT reason_code FROM occ.controller_work WHERE idempotency_key = $1",
@@ -3460,7 +3550,7 @@ test(
           namespaceId: fixture.namespace.id,
           agentId: malformedAdmission.id,
           revision: 1,
-          providerId: null,
+          backendId: null,
           configuration: {},
           servicePrincipalId: malformedAdmission.servicePrincipalId,
           createdAt: new Date().toISOString(),
@@ -3592,13 +3682,13 @@ test(
   requiresPostgres,
   async (context) => {
     const fixture = await setup(context);
-    const provider = providerDefinition();
+    const provider = backendDefinition();
     const account = await createAccessTokenServiceAccount(
       fixture.state,
       fixture.namespace.id,
       "revoked-account",
     );
-    await seedProviderBinding(fixture.observerPool, account);
+    await seedBackendBinding(fixture.observerPool, account);
     const owner = await fixture.agent(
       "revoked-service-account",
       "dedicated",
@@ -3677,20 +3767,23 @@ test(
   requiresPostgres,
   async (context) => {
     const fixture = await setup(context);
-    const provider = providerDefinition();
+    // The shared worker must drain another Namespace without including its
+    // Compute effects in this Namespace's issuance-revocation assertions.
+    const foreign = await setup(context);
+    const foreignOwner = await foreign.agent("issuance-foreign");
+    const foreignRevision = await foreign.revision(foreignOwner, 1);
+    const provider = backendDefinition();
     const accounts = await Promise.all(
       ["valid", "issuance-revoked"].map((label) =>
         createAccessTokenServiceAccount(fixture.state, fixture.namespace.id, label),
       ),
     );
-    await Promise.all(
-      accounts.map((account) => seedProviderBinding(fixture.observerPool, account)),
-    );
+    await Promise.all(accounts.map((account) => seedBackendBinding(fixture.observerPool, account)));
     const owners = await Promise.all(
       accounts.map((account) => fixture.agent(account.name, "dedicated", account.id, provider.id)),
     );
     const candidates = await Promise.all(owners.map((owner) => fixture.revision(owner, 1)));
-    // Only issuance metadata is mutable; private Provider/account ownership
+    // Only issuance metadata is mutable; private Backend/account ownership
     // remains protected by PostgreSQL grants and the immutable snapshot.
     await fixture.observerPool.query(
       "UPDATE occ.service_account_driver_bindings SET external_credential_id = NULL WHERE namespace_id = $1 AND service_account_id = $2",
@@ -3701,10 +3794,14 @@ test(
       {
         ...fixture.compute,
         async bindAgent({ agent }) {
-          effects.push({ action: "bind", agentId: agent.id });
+          if (agent.namespaceId === fixture.namespace.id) {
+            effects.push({ action: "bind", agentId: agent.id });
+          }
         },
         async prepareRevision(revision) {
-          effects.push({ action: "prepare", revisionId: revision.id });
+          if (revision.namespaceId === fixture.namespace.id) {
+            effects.push({ action: "prepare", revisionId: revision.id });
+          }
           return fixture.compute.prepareRevision(revision);
         },
       },
@@ -3717,6 +3814,7 @@ test(
         fixture.work(candidate, index === 0 ? "succeeded" : "failed_permanent"),
       ),
     );
+    await foreign.work(foreignRevision, "succeeded");
     assert.deepEqual(effects, [
       { action: "bind", agentId: owners[0].id },
       { action: "prepare", revisionId: candidates[0].id },
@@ -3729,12 +3827,12 @@ test(
       "SELECT details->>'reasonCode' AS reason_code FROM occ.audit_events WHERE resource_id = $1 AND action = 'reconcile' AND outcome = 'failure'",
       [candidates[1].id],
     );
-    assert.deepEqual(failures.rows, [{ reason_code: "SERVICE_ACCOUNT_PROVIDER_MISMATCH" }]);
+    assert.deepEqual(failures.rows, [{ reason_code: "SERVICE_ACCOUNT_BACKEND_MISMATCH" }]);
   },
 );
 
 test(
-  "the revision worker retries transient Provider binding read failures without activating",
+  "the revision worker retries transient Backend binding read failures without activating",
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
     const events = [];
@@ -3755,7 +3853,7 @@ test(
         }
       },
     });
-    const provider = providerDefinition();
+    const provider = backendDefinition();
     const cleanup = { serviceAccountIds: [], agentIds: [], revisionIds: [] };
 
     const account = await createAccessTokenServiceAccount(
@@ -3764,7 +3862,7 @@ test(
       "transient-provider-read",
     );
     cleanup.serviceAccountIds.push(account.id);
-    await seedProviderBinding(fixture.observerPool, account);
+    await seedBackendBinding(fixture.observerPool, account);
     const owner = await fixture.agent(
       "transient-provider-read",
       "dedicated",
@@ -3786,7 +3884,7 @@ test(
         (event) => events.push(event),
         undefined,
         [provider],
-        poolWithOneProviderBindingReadFault(fixture.workerPool),
+        poolWithOneBackendBindingReadFault(fixture.workerPool),
       );
 
       const candidate = await fixture.revision(owner, 1);
@@ -3804,7 +3902,7 @@ test(
       );
       assert.equal(completion.outcome, "retry");
       const retried = await waitFor(
-        "transient Provider binding read failure retry evidence",
+        "transient Backend binding read failure retry evidence",
         async () => {
           const result = await fixture.observerPool.query(
             `SELECT work.state, work.attempt_count,
@@ -3845,7 +3943,7 @@ test(
     } finally {
       releaseRetry.resolve();
       await fixture.stop();
-      await cleanupProviderFixtures(fixture.observerPool, fixture.namespace.id, cleanup);
+      await cleanupBackendFixtures(fixture.observerPool, fixture.namespace.id, cleanup);
     }
   },
 );
@@ -4598,17 +4696,17 @@ test(
 );
 
 test(
-  "revision dispatch never substitutes a later ChatGPT credential or reconfigured Provider for its admitted snapshot",
+  "revision dispatch never substitutes a later ChatGPT credential or reconfigured Backend for its admitted snapshot",
   requiresPostgres,
   async (context) => {
     const fixture = await setup(context);
-    const provider = providerDefinition();
+    const provider = backendDefinition();
     const account = await createAccessTokenServiceAccount(
       fixture.state,
       fixture.namespace.id,
       "credential-replaced",
     );
-    await seedProviderBinding(fixture.observerPool, account);
+    await seedBackendBinding(fixture.observerPool, account);
     const owner = await fixture.agent("credential-replaced", "dedicated", account.id, provider.id);
     const candidate = await fixture.revision(owner, 1);
     await fixture.state.transact((unit) =>
@@ -4623,7 +4721,7 @@ test(
       fixture.namespace.id,
       "workspace-replaced",
     );
-    await seedProviderBinding(fixture.observerPool, workspaceAccount);
+    await seedBackendBinding(fixture.observerPool, workspaceAccount);
     const workspaceOwner = await fixture.agent(
       "workspace-replaced",
       "dedicated",
@@ -4631,7 +4729,7 @@ test(
       provider.id,
     );
     const workspaceCandidate = await fixture.revision(workspaceOwner, 1);
-    // Reconfiguring the selected Provider cannot move an admitted credential
+    // Reconfiguring the selected Backend cannot move an admitted credential
     // across workspaces; the private source owner remains unchanged.
     const effects = [];
     await fixture.start(
@@ -4644,7 +4742,7 @@ test(
       },
       () => {},
       undefined,
-      [providerDefinition({ workspaceId: changedWorkspace })],
+      [backendDefinition({ workspaceId: changedWorkspace })],
     );
     await fixture.work(candidate, "failed_permanent");
     await fixture.work(workspaceCandidate, "failed_permanent");

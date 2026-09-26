@@ -10,7 +10,7 @@ You need:
 - Envoy Gateway, Gateway API CRDs, cert-manager, and an existing Envoy GatewayClass. Complete the [workspace routing requirements](deploy/workspace-routing.md#requirements) before installing OCC; the OCC chart does not install these controllers.
 - Helm, a version-compatible `kubectl`, Python 3, `yq` v4, and the [OCC CLI](cli.md).
 - External PostgreSQL with separate application and migration roles, verified TLS, and a registry your cluster can pull controller and runtime images from.
-- Storage for the bootstrap and gateway volumes, and an approved internal HTTPS origin for OCC. Dedicated Agent workspaces also need a default StorageClass that supports `ReadWriteMany`. The chart does not create public Ingress or TLS.
+- Storage for the bootstrap and gateway volumes, and an approved internal HTTPS origin for OCC. Dedicated Agent workspaces also need a default StorageClass that supports `ReadWriteOnce`. The chart does not create public Ingress or TLS.
 - To run an Agent with an OpenAI API key: a model credential and OCC permissions to grant the Agent `operate` on its exact Secret. Fresh native-IAM bootstrap gives its administrator service key the required Installation `administer`, Namespace `read`, and Secret `read` permissions. If you use a limited credential, arrange for an Installation administrator to [create the grant](deploy/production-agents.md#grant-the-agent-access-to-its-model-secret). Kubernetes RBAC does not replace it.
 
 The [standard Kubernetes guide](deploy/kubernetes.md#prepare-the-cluster) covers node pools, storage, and network access in detail. For AWS, start with [Amazon EKS](deploy/eks.md); it uses the same Helm installation procedure.

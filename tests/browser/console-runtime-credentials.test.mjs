@@ -11,7 +11,6 @@ import { chromium } from "playwright";
 
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 
 async function artifactDirectory(t) {
   const configured = process.env.OCC_TEST_CONSOLE_ARTIFACT_DIR;
@@ -66,7 +65,7 @@ async function login(page, fixture, path) {
   await page.getByLabel("Username").fill(fixture.credentials.email);
   await page.getByLabel("Password").fill(fixture.credentials.password);
   await page.getByRole("button", { name: "Login" }).click();
-  await page.waitForURL(/\/console\/(agents|providers|namespaces|settings)/);
+  await page.waitForURL(/\/console\/(agents|backends|namespaces|settings)/);
 }
 
 function detailUrl(fixture, namespaceId, agentId, tab = "credentials") {
@@ -361,6 +360,27 @@ test("draft Agent deploy waits for generated runtime credentials", async (t) => 
     .waitFor();
   assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), false);
 
+  // Real admission must reject missing Agent Secret access even when runtime metadata is present.
+  const originalBindings = [...fixture.policy.bindings];
+  fixture.policy.bindings.splice(
+    0,
+    fixture.policy.bindings.length,
+    ...originalBindings.filter((binding) => binding.subjectId !== agent.servicePrincipalId),
+  );
+  const deniedDeployment = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/agents/${agent.id}/deploy`) &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Deploy new revision" }).click();
+  assert.equal((await deniedDeployment).status(), 403);
+  await page
+    .getByRole("alert")
+    .filter({ hasText: /Deployment denied.*Agent.*credential Secret/ })
+    .waitFor();
+  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), false);
+  fixture.policy.bindings.splice(0, fixture.policy.bindings.length, ...originalBindings);
+
   const deployResponse = page.waitForResponse(
     (response) =>
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deploy` &&
@@ -436,7 +456,7 @@ test("Teams-enabled drafts keep console deploy blocked", async (t) => {
   assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).count(), 0);
 });
 
-test("bound Slack credential fields show masks without reading or resaving stored values", async (t) => {
+test("bound Slack credential fields show Secret references without reading values", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Bound Slack credential gate", { ready: true });
@@ -487,31 +507,17 @@ test("bound Slack credential fields show masks without reading or resaving store
   const appToken = page.getByLabel("Slack app token");
   const botToken = page.getByLabel("Slack bot token");
   await appToken.waitFor();
-  assert.equal(await appToken.inputValue(), "••••••••");
-  assert.equal(await botToken.inputValue(), "••••••••");
+  assert.equal(await appToken.evaluate((node) => node.tagName), "SELECT");
+  assert.equal(await botToken.evaluate((node) => node.tagName), "SELECT");
+  assert.equal(await appToken.evaluate((node) => node.value), appSecret.id);
+  assert.equal(await botToken.evaluate((node) => node.value), botSecret.id);
   assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
-  await appToken.focus();
-  assert.equal(await appToken.inputValue(), "");
-  assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
-  await appToken.fill("••••••••");
-  assert.equal(await appToken.inputValue(), "••••••••");
-  assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
-  await botToken.focus();
-  assert.equal(await appToken.inputValue(), "••••••••");
-  await appToken.focus();
-  await appToken.fill("xapp-not-saved");
-  await appToken.fill("");
-  await botToken.focus();
-  assert.equal(await appToken.inputValue(), "••••••••");
-  assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
-  await expectNoText(page, /xapp-not-saved/);
   assert.deepEqual(channelApi.requests, []);
   assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), false);
 });
 
-test("Slack credential replacement updates only entered tokens and preserves stored bindings", async (t) => {
-  const secretDriver = createTestSecretDriver({ id: "console-secret" });
-  const fixture = await createConsoleAppFixture(t, { secretDriver });
+test("Slack credential replacement switches only selected Secret references", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Replacement Slack credential gate", {
     ready: true,
@@ -526,6 +532,11 @@ test("Slack credential replacement updates only entered tokens and preserves sto
     namespace.id,
     "Existing Slack bot token",
     "xoxb-old",
+  );
+  const replacementAppSecret = await fixture.createSecret(
+    namespace.id,
+    "Replacement Slack app token",
+    "xapp-replacement",
   );
   const secretBindings = {
     SLACK_APP_TOKEN: {
@@ -549,30 +560,69 @@ test("Slack credential replacement updates only entered tokens and preserves sto
       body: JSON.stringify(credentialEnvelope({ transportConfigured: true })),
     });
   });
+  const channelApi = await routeChannelSecretApis(
+    page,
+    fixture,
+    namespace.id,
+    agent.configurationId,
+    values,
+    secretBindings,
+  );
 
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id));
   await page.getByRole("heading", { name: "Runtime credentials" }).waitFor();
-  await page.getByLabel("Slack app token").fill("xapp-replacement");
+  await page.getByLabel("Slack app token").selectOption(replacementAppSecret.id);
   await expectNoText(page, /xapp-replacement/);
+  const saveResponse = page.waitForResponse(
+    (response) =>
+      response
+        .url()
+        .endsWith(`/namespaces/${namespace.id}/configurations/${agent.configurationId}`) &&
+      response.request().method() === "PATCH",
+  );
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
+  assert.equal((await saveResponse).status(), 200);
   await page
-    .getByText("Channel Secrets saved. Deploy the new revision to deliver the new bindings.")
+    .getByText("Channel Secret bindings saved. Deploy the new revision to deliver them.")
     .waitFor();
   await expectNoText(page, /xapp-replacement/);
-  assert.equal(secretDriver.valueFor(appSecret), "xapp-replacement");
-  assert.equal(secretDriver.valueFor(botSecret), "xoxb-old");
-  const updateCalls = secretDriver.calls.filter(({ operation }) => operation === "update");
+  const configurationPatch = channelApi.requests.find(
+    ({ operation }) => operation === "configuration-patch",
+  );
+  assert.deepEqual(configurationPatch.body.secretBindings, {
+    SLACK_APP_TOKEN: { source: replacementAppSecret.ref, delivery: { type: "env" } },
+    SLACK_BOT_TOKEN: secretBindings.SLACK_BOT_TOKEN,
+  });
   assert.deepEqual(
-    updateCalls.map(({ secret, value }) => ({ id: secret.id, value })),
-    [{ id: appSecret.id, value: "xapp-replacement" }],
+    channelApi.requests
+      .filter(({ operation }) => ["update-secret", "create-secret"].includes(operation))
+      .map(({ operation }) => operation),
+    [],
   );
-  const configuration = await fixture.request(
-    "GET",
-    `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+  assert.deepEqual(
+    channelApi.bindings.map(({ subjectId, roleId, resourceKind, resourceId }) => ({
+      subjectId,
+      roleId,
+      resourceKind,
+      resourceId,
+    })),
+    [
+      {
+        subjectId: agent.servicePrincipalId,
+        roleId: "role-secret-operate",
+        resourceKind: "secret",
+        resourceId: replacementAppSecret.id,
+      },
+    ],
   );
-  assert.deepEqual(configuration.data.secretBindings, secretBindings);
-  assert.equal(await page.getByLabel("Slack app token").inputValue(), "••••••••");
-  assert.equal(await page.getByLabel("Slack bot token").inputValue(), "••••••••");
+  assert.equal(
+    await page.getByLabel("Slack app token").evaluate((node) => node.value),
+    replacementAppSecret.id,
+  );
+  assert.equal(
+    await page.getByLabel("Slack bot token").evaluate((node) => node.value),
+    botSecret.id,
+  );
   assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), false);
 });
 
@@ -588,6 +638,7 @@ test("partially bound Slack credentials save only the missing token", async (t) 
     "Existing Slack app token",
     "xapp-old",
   );
+  const botSecret = await fixture.createSecret(namespace.id, "New Slack bot token", "xoxb-new-bot");
   const secretBindings = {
     SLACK_APP_TOKEN: {
       source: appSecret.ref,
@@ -617,25 +668,22 @@ test("partially bound Slack credentials save only the missing token", async (t) 
 
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id));
   await page.getByRole("heading", { name: "Runtime credentials" }).waitFor();
-  assert.equal(await page.getByLabel("Slack app token").inputValue(), "••••••••");
-  assert.equal(await page.getByLabel("Slack bot token").inputValue(), "");
+  assert.equal(
+    await page.getByLabel("Slack app token").evaluate((node) => node.value),
+    appSecret.id,
+  );
+  assert.equal(await page.getByLabel("Slack bot token").evaluate((node) => node.value), "");
   assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
-  await page.getByLabel("Slack bot token").fill("xoxb-new-bot");
+  await page.getByLabel("Slack bot token").selectOption(botSecret.id);
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
   await page
-    .getByText("Channel Secrets saved. Deploy the new revision to deliver the new bindings.")
+    .getByText("Channel Secret bindings saved. Deploy the new revision to deliver them.")
     .waitFor();
   assert.deepEqual(
     channelApi.requests
       .filter(({ operation }) => ["update-secret", "create-secret"].includes(operation))
-      .map(({ operation, body }) => ({ operation, name: body.name, value: body.value })),
-    [
-      {
-        operation: "create-secret",
-        name: "Partial Slack Agent Slack bot token",
-        value: "xoxb-new-bot",
-      },
-    ],
+      .map(({ operation }) => operation),
+    [],
   );
   const configurationPatch = channelApi.requests.find(
     ({ operation }) => operation === "configuration-patch",
@@ -644,19 +692,47 @@ test("partially bound Slack credentials save only the missing token", async (t) 
     configurationPatch.body.secretBindings.SLACK_APP_TOKEN,
     secretBindings.SLACK_APP_TOKEN,
   );
-  assert.equal(configurationPatch.body.secretBindings.SLACK_BOT_TOKEN.source.id, "sec_2");
+  assert.deepEqual(configurationPatch.body.secretBindings.SLACK_BOT_TOKEN, {
+    source: botSecret.ref,
+    delivery: { type: "env" },
+  });
+  assert.deepEqual(
+    channelApi.bindings.map(({ subjectId, roleId, resourceKind, resourceId }) => ({
+      subjectId,
+      roleId,
+      resourceKind,
+      resourceId,
+    })),
+    [
+      {
+        subjectId: agent.servicePrincipalId,
+        roleId: "role-secret-operate",
+        resourceKind: "secret",
+        resourceId: botSecret.id,
+      },
+    ],
+  );
   assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), false);
 });
 
-test("missing Slack credential fields require both tokens and clear replacements after errors", async (t) => {
+test("missing Slack credential fields require both Secret references before saving", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Slack credential gate", { ready: true });
   const values = nativeValues("slack", { slack: true });
+  const appSecret = await fixture.createSecret(
+    namespace.id,
+    "Slack Credential Agent Slack app token",
+    "xapp-console-secret",
+  );
+  const botSecret = await fixture.createSecret(
+    namespace.id,
+    "Slack Credential Agent Slack bot token",
+    "xoxb-console-secret",
+  );
   const agent = await fixture.createAgent(namespace.id, "Slack Credential Agent", values, {
     executionMode: "dedicated",
   });
-  const hostileBackendMessage = "sk-hostile-backend-error-sentinel";
   const { page } = await newPage(t, fixture);
   await routeRuntimeCredentials(page, fixture, namespace.id, agent.id, async (route) => {
     await route.fulfill({
@@ -672,87 +748,60 @@ test("missing Slack credential fields require both tokens and clear replacements
     agent.configurationId,
     values,
   );
-  channelApi.failNextSecretCreate(hostileBackendMessage);
 
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id));
   await page.getByRole("heading", { name: "Runtime credentials" }).waitFor();
   await page
     .getByText(/Deploy requires stored credential metadata: Slack Secret bindings/)
     .waitFor();
-  assert.equal(await page.getByLabel("Slack app token").inputValue(), "");
-  assert.equal(await page.getByLabel("Slack bot token").inputValue(), "");
+  assert.equal(await page.getByLabel("Slack app token").evaluate((node) => node.value), "");
+  assert.equal(await page.getByLabel("Slack bot token").evaluate((node) => node.value), "");
   assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
-  await page.getByLabel("Slack app token").fill("xapp-console-secret");
+  await page.getByLabel("Slack bot token").selectOption(botSecret.id);
   assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
-  await page.getByLabel("Slack app token").fill("");
-  await page.getByLabel("Slack bot token").fill("xoxb-console-secret");
-  assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
-  await page.getByLabel("Slack app token").fill("xapp-console-secret");
+  await page.getByLabel("Slack app token").selectOption(appSecret.id);
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
   await page
-    .locator(".runtime-credentials .error", { hasText: /Outcome unknown/ })
-    .first()
+    .getByText("Channel Secret bindings saved. Deploy the new revision to deliver them.")
     .waitFor();
-  await expectNoText(page, hostileBackendMessage);
-  assert.equal(await page.locator(".runtime-credentials .credential-status.missing").count(), 2);
-  assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
-  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), true);
-  await expectNoText(page, /xapp-console-secret|xoxb-console-secret/);
-  assert.equal(await page.getByLabel("Slack app token").inputValue(), "");
-  assert.equal(await page.getByLabel("Slack bot token").inputValue(), "");
 
-  await page.getByRole("button", { name: "Refresh status" }).click();
-  await page
-    .getByText(/Deploy requires stored credential metadata: Slack Secret bindings/)
-    .waitFor();
-  await page.getByLabel("Slack app token").fill("xapp-console-secret-2");
-  await page.getByLabel("Slack bot token").fill("xoxb-console-secret-2");
-  await page.getByRole("button", { name: "Save channel Secrets" }).click();
-  await page
-    .getByText("Channel Secrets saved. Deploy the new revision to deliver the new bindings.")
-    .waitFor();
-  await expectNoText(page, /xapp-console-secret-2|xoxb-console-secret-2/);
-
-  const secretCreates = channelApi.requests.filter(
-    ({ operation }) => operation === "create-secret",
+  assert.deepEqual(
+    channelApi.requests
+      .filter(({ operation }) => ["update-secret", "create-secret"].includes(operation))
+      .map(({ operation }) => operation),
+    [],
   );
   assert.deepEqual(
-    secretCreates.map(({ body }) => ({ name: body.name, value: body.value })),
-    [
-      { name: "Slack Credential Agent Slack app token", value: "xapp-console-secret" },
-      { name: "Slack Credential Agent Slack app token", value: "xapp-console-secret-2" },
-      { name: "Slack Credential Agent Slack bot token", value: "xoxb-console-secret-2" },
-    ],
-  );
-  assert.deepEqual(
-    channelApi.bindings.map(({ subjectId, roleId, resourceKind, resourceId }) => ({
-      subjectId,
-      roleId,
-      resourceKind,
-      resourceId,
-    })),
+    channelApi.bindings
+      .map(({ subjectId, roleId, resourceKind, resourceId }) => ({
+        subjectId,
+        roleId,
+        resourceKind,
+        resourceId,
+      }))
+      .sort((left, right) => left.resourceId.localeCompare(right.resourceId)),
     [
       {
         subjectId: agent.servicePrincipalId,
         roleId: "role-secret-operate",
         resourceKind: "secret",
-        resourceId: "sec_1",
+        resourceId: appSecret.id,
       },
       {
         subjectId: agent.servicePrincipalId,
         roleId: "role-secret-operate",
         resourceKind: "secret",
-        resourceId: "sec_2",
+        resourceId: botSecret.id,
       },
-    ],
+    ].sort((left, right) => left.resourceId.localeCompare(right.resourceId)),
   );
   const configurationPatch = channelApi.requests.find(
     ({ operation }) => operation === "configuration-patch",
   );
-  assert.deepEqual(Object.keys(configurationPatch.body.secretBindings).sort(), [
-    "SLACK_APP_TOKEN",
-    "SLACK_BOT_TOKEN",
-  ]);
+  assert.deepEqual(configurationPatch.body.secretBindings, {
+    SLACK_APP_TOKEN: { source: appSecret.ref, delivery: { type: "env" } },
+    SLACK_BOT_TOKEN: { source: botSecret.ref, delivery: { type: "env" } },
+  });
   assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), false);
 });
 
@@ -787,7 +836,7 @@ test("operator-managed console binding saves and deploys without a managed crede
   await page
     .getByText("Configured on the runtime host; not validated by OCC.", { exact: true })
     .waitFor();
-  assert.equal(await page.getByLabel("OpenAI API key Secret ID").isVisible(), false);
+  assert.equal(await page.getByLabel("API key Secret").isVisible(), false);
   const save = page.waitForResponse(
     (r) => r.url().endsWith(`/agents/${agent.id}`) && r.request().method() === "PATCH",
   );

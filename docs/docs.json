@@ -6,8 +6,8 @@
     "primary": "#e85d45"
   },
   "logo": {
-    "light": "/assets/lobster-mech-transparent.png",
-    "dark": "/assets/lobster-mech-transparent.png"
+    "light": "/assets/oce-mascot.png",
+    "dark": "/assets/oce-mascot.png"
   },
   "navigation": {
     "languages": [
@@ -344,10 +344,10 @@
                 ]
               },
               {
-                "group": "Providers",
+                "group": "Backends (Experimental)",
                 "pages": [
                   {
-                    "page": "reference/providers",
+                    "page": "reference/backends",
                     "label": "Overview"
                   },
                   {
@@ -389,6 +389,10 @@
                   {
                     "page": "guides/deploy/production-installation",
                     "label": "Control Plane Setup"
+                  },
+                  {
+                    "page": "guides/deploy/production-upgrade",
+                    "label": "Image Upgrades"
                   },
                   {
                     "page": "guides/deploy/kubernetes",
@@ -461,6 +465,10 @@
                   {
                     "page": "guides/observability/metrics",
                     "label": "Metrics Scraping"
+                  },
+                  {
+                    "page": "guides/observability/demo",
+                    "label": "Demo Stack"
                   },
                   {
                     "page": "reference/metrics",
@@ -734,6 +742,7 @@
               "reference/settings/programmatic",
               "flows/platform-startup",
               "flows/production-startup",
+              "flows/coordinated-production-upgrade",
               "flows/docker-compose-development/startup",
               "flows/docker-compose-development/agent-execution",
               "flows/common-logging",

@@ -25,7 +25,7 @@ bounded cleanup and disposal.
 ## Repo Driver contract
 
 The optional `repo` capability uses `RepoDriver extends Driver`, with the bundled
-`GitHubRepoDriver`. Trusted Installation `drivers.repo` and GitHub Provider
+`GitHubRepoDriver`. Trusted Installation `drivers.repo` and GitHub Backend
 `drivers.repo` select the same configured Driver ID. The
 [shared contract](../../packages/contracts/src/repo.ts) exposes five operations:
 
@@ -47,7 +47,7 @@ decoding remain private. Status cannot regenerate the closed-schema Git/gh files
 withdrawal bound. Configured IDs, `AgentRevision.repositoryCredentials` and
 persisted `admitted_spec.repository_credentials` retain their meaning.
 
-State derives immutable Driver, Provider, profile and grant context from the
+State derives immutable Driver, Backend, profile and grant context from the
 admitted revision. It retains original Namespace, Agent, revision, admission and
 session identities and deadlines after Agent deletion, without bearers or tokens.
 
@@ -72,7 +72,7 @@ does not establish their outcomes.
 
 ### Canonical platform registry
 
-The GitHub Provider selects one registry through `configuration.registryPath`;
+The GitHub Backend selects one registry through `configuration.registryPath`;
 its `drivers.repo` names the selected Driver. API, worker and
 service load the same immutable, versioned ConfigMap. The registry contains
 nonsecret identity and Namespace policy for one App installation and multiple
@@ -81,7 +81,7 @@ repositories:
 ```json
 {
   "version": 1,
-  "providerId": "repository-provider",
+  "backendId": "repository-backend",
   "providerInstanceId": "github-production",
   "appId": "123456",
   "githubInstallationId": "789012",
@@ -117,7 +117,7 @@ branch authorization.
 
 The selected Driver configuration supplies `controlSocket`,
 `sessionDurationSeconds` and `publicCaPath`; it contains no App key. See
-[Provider configuration](providers.md) and the
+[Backend configuration](backends.md) and the
 [installation procedure](../guides/deploy/production-installation.md) for wiring.
 
 ### Agent-create repository options
@@ -186,7 +186,7 @@ for validation and key ownership. For standalone single-repository operation:
 
 The identifiers are examples. Production upstream origins are fixed to
 `github.com` and `api.github.com`. Registry mode instead uses backend fields
-`kind: "github-app-registry"`, `providerId`, `registryFile` and `privateKeyFile`;
+`kind: "github-app-registry"`, `backendId`, `registryFile` and `privateKeyFile`;
 all repository policy comes from that registry, and unbound admission is refused.
 
 Kubernetes composition copies selected projection generations into service-owned

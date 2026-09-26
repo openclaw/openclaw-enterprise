@@ -134,7 +134,7 @@ gateway/channel configuration bindings remain separate.
 
 The revision freezes the admitted source reference, not historical Secret bytes.
 A managed account snapshot also retains its exact credential and verified private
-Provider/workspace ownership. Later reconciliation cannot substitute a newly
+Backend/workspace ownership. Later reconciliation cannot substitute a newly
 issued account credential. Source updates require explicit deployment and a real
 model turn to verify consumption; selected metadata does not establish readiness.
 See [renewal and revocation](../guides/deploy/credential-lifecycle.md).

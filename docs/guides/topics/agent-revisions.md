@@ -52,8 +52,9 @@ The commands below also use `jq`.
    ```
 
    `activeRevisionId` should match the revision ID from deployment. If it does
-   not, use that ID with the [deployment status API](../../reference/agents.md#deployment-status)
-   to see where work stopped. An active revision does not prove that the model
+   not, run `occ agent deployment-status "$AGENT_ID" '<revision-id>'` to see
+   where work stopped. The [deployment status reference](../../reference/agents.md#deployment-status)
+   defines each result. An active revision does not prove that the model
    responds; use the [runtime verification guide](../deploy/production-agents.md#verify-production-workloads).
 
 ## Inspect an earlier revision

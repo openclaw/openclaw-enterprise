@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,6 +9,11 @@ import { loadInstallationConfiguration } from "../../apps/controller/src/composi
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
+
+const controllerRequire = createRequire(
+  new URL("../../apps/controller/package.json", import.meta.url),
+);
+const { KubernetesObjectApi } = controllerRequire("@kubernetes/client-node");
 
 async function fixture(t, configuration) {
   const directory = await mkdtemp(join(tmpdir(), "occ-sandbox-startup-"));
@@ -22,7 +28,11 @@ function sandboxInstallation() {
   configuration.drivers.sandbox = {
     id: "openshell-sandbox",
     configuration: {
-      gateway: { serviceName: "openshell-gateway", port: 50051 },
+      gateway: {
+        workspaceMode: "operator",
+        serviceName: "openshell-gateway",
+        port: 50051,
+      },
       kubernetes: {
         runtimeClassName: "openshell-sandbox",
         serviceAccount: { mode: "gatewayConfigured" },
@@ -47,6 +57,78 @@ function sandboxInstallation() {
   return configuration;
 }
 
+function workspaceGatewayClient(seed = [], events = []) {
+  const workspaces = new Map(seed.map((workspace) => [workspace.name, structuredClone(workspace)]));
+  const calls = [];
+  return {
+    calls,
+    workspaces,
+    async health() {
+      calls.push(["health"]);
+      events.push(["gateway", "health"]);
+    },
+    async getWorkspace(name) {
+      calls.push(["getWorkspace", name]);
+      events.push(["gateway", "getWorkspace", name]);
+      return workspaces.get(name);
+    },
+    async createWorkspace(name, labels) {
+      calls.push(["createWorkspace", name, structuredClone(labels)]);
+      events.push(["gateway", "createWorkspace", name]);
+      const workspace = { name, labels: structuredClone(labels), phase: "WORKSPACE_PHASE_ACTIVE" };
+      workspaces.set(name, workspace);
+      return workspace;
+    },
+    async deleteWorkspace(name) {
+      calls.push(["deleteWorkspace", name]);
+      events.push(["gateway", "deleteWorkspace", name]);
+      workspaces.delete(name);
+    },
+    async createSandbox() {
+      throw new Error("Sandbox creation is outside this Namespace lifecycle scenario.");
+    },
+    async deleteSandbox() {},
+    close() {},
+  };
+}
+
+function kubernetesObjectClient(events) {
+  const client = Object.create(KubernetesObjectApi.prototype);
+  client.patch = async (resource) => {
+    events.push([
+      "kubernetes",
+      "patch",
+      resource.kind,
+      resource.metadata.name,
+      resource.metadata.namespace,
+    ]);
+    return resource;
+  };
+  client.delete = async (resource) => {
+    events.push([
+      "kubernetes",
+      "delete",
+      resource.kind,
+      resource.metadata.name,
+      resource.metadata.namespace,
+    ]);
+  };
+  return client;
+}
+
+function namespaceContext(name = "oce-123456789012345") {
+  return {
+    namespace: {
+      id: "ns_00000000-0000-4000-8000-000000000001",
+      name,
+      status: "ready",
+      createdAt: "2026-09-23T00:00:00.000Z",
+    },
+    kubernetes: {},
+    signal: new AbortController().signal,
+  };
+}
+
 test("startup constructs the bundled OpenShell SandboxDriver before constructing Kubernetes Compute", async (t) => {
   const createdDriver = await loadInstallationConfiguration({
     mode: "production",
@@ -68,6 +150,130 @@ test("startup constructs the bundled OpenShell SandboxDriver before constructing
       drivers: createdDriver,
       emit: () => {},
     }),
+  );
+});
+
+test("OpenShell Namespace lifecycle creates, adopts, and deletes its exact operator Workspace", async () => {
+  const gatewayClient = workspaceGatewayClient();
+  const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    gatewayClient,
+  });
+  const context = namespaceContext();
+
+  // A retry must adopt the same owned Workspace instead of creating a second boundary.
+  await driver.ensureNamespace(context);
+  await driver.ensureNamespace(context);
+  assert.deepEqual(gatewayClient.workspaces.get(context.namespace.name), {
+    name: context.namespace.name,
+    labels: {
+      "app.kubernetes.io/managed-by": "openclaw-enterprise",
+      "openclaw.dev/namespace-id": context.namespace.id,
+    },
+    phase: "WORKSPACE_PHASE_ACTIVE",
+  });
+  assert.equal(
+    gatewayClient.calls.filter(([operation]) => operation === "createWorkspace").length,
+    1,
+  );
+
+  // A lost delete response can leave an owned Workspace terminating; retry must converge.
+  gatewayClient.workspaces.get(context.namespace.name).phase = "WORKSPACE_PHASE_TERMINATING";
+  await driver.cleanup(context);
+  assert.equal(gatewayClient.workspaces.has(context.namespace.name), false);
+  assert.deepEqual(gatewayClient.calls.at(-1), ["deleteWorkspace", context.namespace.name]);
+});
+
+test("OpenShell operator mode owns workspace chart resources around the Workspace lifecycle", async () => {
+  const events = [];
+  const configuration = sandboxInstallation().drivers.sandbox.configuration;
+  configuration.gateway.operatorWorkspaceResources = [
+    {
+      apiVersion: "v1",
+      kind: "ServiceAccount",
+      metadata: { name: "openshell-sandbox" },
+    },
+  ];
+  const gatewayClient = workspaceGatewayClient([], events);
+  const driver = new OpenShellSandboxDriver(configuration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    gatewayClient,
+  });
+  const context = namespaceContext();
+  context.kubernetes = kubernetesObjectClient(events);
+
+  // The Gateway must not observe a Workspace until its operator-mode RBAC and
+  // ServiceAccount resources have converged in the Compute-owned namespace.
+  await driver.ensureNamespace(context);
+  assert.deepEqual(events, [
+    ["kubernetes", "patch", "ServiceAccount", "openshell-sandbox", context.namespace.name],
+    ["gateway", "health"],
+    ["gateway", "getWorkspace", context.namespace.name],
+    ["gateway", "createWorkspace", context.namespace.name],
+  ]);
+
+  events.length = 0;
+  await driver.cleanup(context);
+  assert.deepEqual(events, [
+    ["gateway", "getWorkspace", context.namespace.name],
+    ["gateway", "deleteWorkspace", context.namespace.name],
+    ["kubernetes", "delete", "ServiceAccount", "openshell-sandbox", context.namespace.name],
+  ]);
+});
+
+test("OpenShell managed mode fails before mutating Kubernetes or the Gateway", async () => {
+  const events = [];
+  const configuration = sandboxInstallation().drivers.sandbox.configuration;
+  configuration.gateway.workspaceMode = "managed";
+  configuration.gateway.operatorWorkspaceResources = [
+    {
+      apiVersion: "v1",
+      kind: "ServiceAccount",
+      metadata: { name: "must-not-be-applied" },
+    },
+  ];
+  const gatewayClient = workspaceGatewayClient();
+  const driver = new OpenShellSandboxDriver(configuration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    gatewayClient,
+  });
+  const context = namespaceContext();
+  context.kubernetes = kubernetesObjectClient(events);
+
+  await assert.rejects(
+    driver.ensureNamespace(context),
+    /managed workspace mode is not implemented; cannot ensure a Namespace/,
+  );
+  assert.deepEqual(events, []);
+  assert.deepEqual(gatewayClient.calls, []);
+});
+
+test("OpenShell Namespace cleanup refuses a same-name foreign Workspace", async () => {
+  const context = namespaceContext();
+  const gatewayClient = workspaceGatewayClient([
+    {
+      name: context.namespace.name,
+      labels: {
+        "app.kubernetes.io/managed-by": "openclaw-enterprise",
+        "openclaw.dev/namespace-id": "ns_foreign",
+      },
+      phase: "WORKSPACE_PHASE_ACTIVE",
+    },
+  ]);
+  const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    gatewayClient,
+  });
+
+  await assert.rejects(driver.cleanup(context), /without exact OCC Namespace ownership/);
+  assert.equal(gatewayClient.workspaces.has(context.namespace.name), true);
+  assert.equal(
+    gatewayClient.calls.some(([operation]) => operation === "deleteWorkspace"),
+    false,
   );
 });
 
@@ -162,5 +368,22 @@ test("startup rejects the removed per-Sandbox OpenShell ServiceAccount mode", as
       environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
     }),
     /OpenShell serviceAccount mode must be gatewayConfigured/,
+  );
+});
+
+test("startup rejects an invalid OpenShell gateway readiness wait", async (t) => {
+  const configuration = sandboxInstallation();
+  configuration.drivers.sandbox.configuration.gateway.readiness = {
+    serviceName: "openshell-gateway",
+    podSelector: { "app.kubernetes.io/name": "openshell" },
+    timeoutMs: 0,
+  };
+
+  await assert.rejects(
+    loadInstallationConfiguration({
+      mode: "production",
+      environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
+    }),
+    /OpenShell gateway readiness timeout must be a positive safe integer/,
   );
 });

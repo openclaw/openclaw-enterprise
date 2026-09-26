@@ -62,7 +62,7 @@
       "count": 2
     }
   },
-  "packages/occ/src/providers.ts": {
+  "packages/occ/src/backends.ts": {
     "@typescript-eslint/no-unused-vars": {
       "count": 1
     },
@@ -201,7 +201,7 @@
       "count": 1
     }
   },
-  "tests/integration/postgres-provider-ownership.test.mjs": {
+  "tests/integration/postgres-backend-ownership.test.mjs": {
     "no-useless-assignment": {
       "count": 1
     }

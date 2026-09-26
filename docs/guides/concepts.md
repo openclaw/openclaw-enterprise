@@ -72,16 +72,17 @@ An OCC [ServiceAccount](../reference/service-accounts.md) links Agents to a
 credential reference. It is separate from the Agent's ServicePrincipal and
 from the Kubernetes ServiceAccount used by a workload.
 
-## Drivers and Providers
+## Drivers and Backends
 
 [Drivers](integrations/drivers.md) implement platform operations
 against infrastructure. For example, the Kubernetes Compute Driver provisions
 workloads, while the Kubernetes Configuration Driver stores ConfigMaps.
 
-A [Provider](../reference/providers.md) supplies an authenticated client to
+An experimental [Backend](../reference/backends.md) supplies an authenticated client to
 related Drivers through Installation configuration. The bundled ChatGPT
-Provider manages upstream service accounts; it does not select an Agent's
-model or Harness.
+Backend manages upstream service accounts. This work-in-progress abstraction is
+separate from an Agent's **Provider → Model** selection: that choice identifies
+the model service and model, not an Installation Backend.
 
 ## Next steps
 

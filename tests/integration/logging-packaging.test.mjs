@@ -305,3 +305,63 @@ test(
     }
   },
 );
+
+test(
+  "production Collector requires paired private metrics and exporter selectors",
+  helmTooling,
+  async () => {
+    const selected = {
+      ...loggingValues,
+      "logging.collector.exporter.cidr": "",
+      "logging.collector.exporter.namespaceLabels.kubernetes\\.io/metadata\\.name": "monitoring",
+      "logging.collector.exporter.podLabels.app": "loki",
+      "logging.collector.exporter.port": "3100",
+      "logging.collector.metrics.scraperNamespaceLabels.kubernetes\\.io/metadata\\.name":
+        "monitoring",
+      "logging.collector.metrics.scraperPodLabels.app": "prometheus",
+    };
+    const rendered = await objects((await render(selected)).stdout);
+    const policy = (name) =>
+      rendered.find((object) => object.kind === "NetworkPolicy" && object.metadata.name === name);
+    assert.deepEqual(policy("openclaw-enterprise-collector-egress").spec.egress.at(-1), {
+      to: [
+        {
+          namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": "monitoring" } },
+          podSelector: { matchLabels: { app: "loki" } },
+        },
+      ],
+      ports: [{ protocol: "TCP", port: 3100 }],
+    });
+    assert.deepEqual(policy("openclaw-enterprise-collector-metrics").spec.ingress, [
+      {
+        from: [
+          {
+            namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": "monitoring" } },
+            podSelector: { matchLabels: { app: "prometheus" } },
+          },
+        ],
+        ports: [{ protocol: "TCP", port: 8888 }],
+      },
+    ]);
+    const closed = await objects((await render(loggingValues)).stdout);
+    assert.ok(
+      !closed.some((object) => object.metadata.name === "openclaw-enterprise-collector-metrics"),
+    );
+    const disabled = await objects(
+      (await render({ ...selected, "logging.collector.metrics.enabled": "false" })).stdout,
+    );
+    assert.ok(
+      !disabled.some((object) => object.metadata.name === "openclaw-enterprise-collector-metrics"),
+    );
+    for (const override of [
+      { "logging.collector.exporter.namespaceLabels": null },
+      { "logging.collector.exporter.podLabels": null },
+      { "logging.collector.exporter.cidr": "203.0.113.10/32" },
+      { "logging.collector.metrics.scraperNamespaceLabels": null },
+      { "logging.collector.metrics.scraperPodLabels": null },
+      ...["0", "65536", "9.5"].map((port) => ({ "logging.collector.exporter.port": port })),
+    ]) {
+      await assert.rejects(render({ ...selected, ...override }), /logging.collector/);
+    }
+  },
+);

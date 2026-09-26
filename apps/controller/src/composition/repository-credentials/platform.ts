@@ -2,15 +2,15 @@ import { constants } from "node:fs";
 import { open, stat } from "node:fs/promises";
 import { createSecureContext } from "node:tls";
 import type {
-  GitHubRepositoryCredentialProviderDefinition,
-  Provider,
+  GitHubRepositoryCredentialBackendDefinition,
+  Backend,
   RepoDriver,
 } from "@openclaw-enterprise/contracts";
 import { GitHubRepoDriver } from "../../drivers/repo/github/driver.ts";
 import {
   UnixRepositoryCredentialControlClient,
   type RepositoryCredentialControlClient,
-} from "../../providers/repository-credentials/control-client.ts";
+} from "../../backends/repository-credentials/control-client.ts";
 import { loadGitHubRepositoryRegistry } from "./registry.ts";
 import type { SelectedDriverConfiguration } from "../installation-config.ts";
 
@@ -65,16 +65,16 @@ async function loadPublicCa(path: string): Promise<Uint8Array> {
 }
 
 export async function composeRepoDriver(input: {
-  readonly provider: GitHubRepositoryCredentialProviderDefinition;
+  readonly backend: GitHubRepositoryCredentialBackendDefinition;
   readonly selection: SelectedDriverConfiguration;
 }): Promise<
   Readonly<{
     repoDriver: RepoDriver;
   }>
 > {
-  const { provider: definition, selection } = input;
+  const { backend: definition, selection } = input;
   if (selection.implementation !== "github" || selection.id !== definition.drivers.repo) {
-    throw new Error("The repository credential Driver must match its owning Provider.");
+    throw new Error("The repository credential Driver must match its owning Backend.");
   }
   GitHubRepoDriver.validateConfiguration(selection.configuration);
   const configuration = selection.configuration as Readonly<{
@@ -92,7 +92,7 @@ export async function composeRepoDriver(input: {
   } catch {
     throw new Error("The repository credential public CA file is unavailable or invalid.");
   }
-  const provider: Provider<RepositoryCredentialControlClient> = Object.freeze({
+  const backend: Backend<RepositoryCredentialControlClient> = Object.freeze({
     id: definition.id,
     drivers: Object.freeze({ repo: selection.id }),
     client: new UnixRepositoryCredentialControlClient({
@@ -100,7 +100,7 @@ export async function composeRepoDriver(input: {
     }),
   });
   return Object.freeze({
-    repoDriver: new GitHubRepoDriver(provider, registry, {
+    repoDriver: new GitHubRepoDriver(backend, registry, {
       sessionDurationSeconds: configuration.sessionDurationSeconds,
       publicCa,
     }),

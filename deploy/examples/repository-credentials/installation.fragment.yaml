@@ -1,7 +1,7 @@
-# Merge into an existing Installation; preserve its other Providers and Drivers.
+# Merge into an existing Installation; preserve its other Backends and Drivers.
 # Kubernetes Compute, embedded OpenClaw, api_key auth, and no Sandbox Driver.
-provider:
-  - id: repository-provider
+backend:
+  - id: repository-backend
     type: github
     configuration:
       registryPath: /etc/openclaw/repository-registry/registry.json

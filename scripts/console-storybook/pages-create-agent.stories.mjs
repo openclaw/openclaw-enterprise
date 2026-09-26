@@ -78,7 +78,7 @@ export const RepositoryLoading = {
 };
 export const RepositoryUnavailable = {
   ...story("createRepositoriesUnavailable"),
-  name: "Optional repository service unavailable",
+  name: "Repository choices unavailable",
 };
 export const RepositoryDenied = {
   ...story("createRepositoriesDenied"),
@@ -159,3 +159,9 @@ export const CreatePresetSecretsEmpty = {
   ...story("createPresetSecretsEmpty"),
   name: "No existing Preset Secrets",
 };
+
+export const CreatePresetNavigation = story("createPresetNavigation");
+
+export const PresetVariableNavigation = story("presetVariableNavigation");
+
+export const RepositoryNavigationOutage = story("createRepositoryNavigationOutage");

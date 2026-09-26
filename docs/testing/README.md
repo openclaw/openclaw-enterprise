@@ -118,3 +118,7 @@ databases, or unrelated clusters.
 - [Deployment guide](../guides/deploy.md)
 - [Runtime image recipe](../../deploy/runtime/README.md)
 - [Contributor integration boundaries](../../AGENTS.md#running-integration-tests)
+
+For production telemetry and the optional demo backends, select a
+[Kubernetes observability lane](metrics.md#kubernetes-observability-acceptance).
+Model-turn logs have separate prerequisites and protected execution.

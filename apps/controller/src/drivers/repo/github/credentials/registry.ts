@@ -22,7 +22,7 @@ export interface GitHubRepositoryRegistration {
 
 export interface GitHubRepositoryRegistry {
   readonly version: 1;
-  readonly providerId: string;
+  readonly backendId: string;
   readonly providerInstanceId: string;
   readonly appId: string;
   readonly githubInstallationId: string;
@@ -31,7 +31,7 @@ export interface GitHubRepositoryRegistry {
 }
 
 const selectorPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-const providerPattern = /^(?!\s)(?!.*\s$).{1,200}$/;
+const backendPattern = /^(?!\s)(?!.*\s$).{1,200}$/;
 const repositoryPattern = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 
 function invalid(): never {
@@ -93,22 +93,19 @@ function unique(values: readonly string[]): void {
 /** The same immutable nonsecret authority is loaded by API, worker, and service. */
 export function validateGitHubRepositoryRegistry(
   value: unknown,
-  expectedProviderId?: string,
+  expectedBackendId?: string,
 ): GitHubRepositoryRegistry {
   const root = object(value, [
     "version",
-    "providerId",
+    "backendId",
     "providerInstanceId",
     "appId",
     "githubInstallationId",
     "maximumDurationSeconds",
     "repositories",
   ]);
-  const providerId = text(root.providerId, providerPattern);
-  if (
-    root.version !== 1 ||
-    (expectedProviderId !== undefined && providerId !== expectedProviderId)
-  ) {
+  const backendId = text(root.backendId, backendPattern);
+  if (root.version !== 1 || (expectedBackendId !== undefined && backendId !== expectedBackendId)) {
     return invalid();
   }
   const maximumDurationSeconds = root.maximumDurationSeconds;
@@ -164,7 +161,7 @@ export function validateGitHubRepositoryRegistry(
   repositories.sort((a, b) => a.repositoryRef.localeCompare(b.repositoryRef, "en"));
   return Object.freeze({
     version: 1,
-    providerId,
+    backendId,
     providerInstanceId: text(root.providerInstanceId),
     appId: numericId(root.appId),
     githubInstallationId: numericId(root.githubInstallationId),
@@ -191,7 +188,7 @@ export function resolveGitHubRepositoryBinding(
     .update(
       JSON.stringify({
         version: registry.version,
-        providerId: registry.providerId,
+        backendId: registry.backendId,
         providerInstanceId: registry.providerInstanceId,
         appId: registry.appId,
         githubInstallationId: registry.githubInstallationId,
@@ -213,7 +210,7 @@ export function resolveGitHubRepositoryBinding(
   return Object.freeze({
     repositoryRef,
     profile: selectedProfile,
-    providerId: registry.providerId,
+    backendId: registry.backendId,
     grant: Object.freeze({
       providerInstanceId: registry.providerInstanceId,
       repositoryId: repository.repositoryId,

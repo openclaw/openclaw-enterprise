@@ -6,7 +6,7 @@ import { temporaryDirectory } from "../process.mjs";
 
 export async function createRegistryMaterial(
   resources,
-  { definitions, namespaceId, providerId, maximumDurationSeconds },
+  { definitions, namespaceId, backendId, maximumDurationSeconds },
 ) {
   const directory = await temporaryDirectory(resources, "rcs-registry-");
   await chmod(directory, 0o700);
@@ -20,7 +20,7 @@ export async function createRegistryMaterial(
     registryFile,
     JSON.stringify({
       version: 1,
-      providerId,
+      backendId,
       providerInstanceId: "github-fixture-instance",
       appId: fixtureAppId,
       githubInstallationId: fixtureInstallationId,

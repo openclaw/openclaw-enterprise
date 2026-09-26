@@ -61,6 +61,9 @@
       "path": "tests/conformance/secret-occ.test.mjs"
     },
     {
+      "path": "tests/conformance/slack-configuration.test.mjs"
+    },
+    {
       "path": "tests/conformance/service-account-driver.test.mjs"
     },
     {
@@ -118,6 +121,9 @@
       "path": "tests/integration/production-healthcheck.test.mjs"
     },
     {
+      "path": "tests/integration/production-image-upgrade.test.mjs"
+    },
+    {
       "path": "tests/integration/sandbox-driver-startup.test.mjs"
     },
     {
@@ -147,12 +153,21 @@
         "dev-up builds the default runtime only when real Compose leaves runtime images unselected",
         "dev-up preserves a selected custom runtime image and skips the quickstart build",
         "dev-up applies per-image overrides on top of the shared runtime image",
+        "Kubernetes dev-up can keep the OCC control plane in Compose with OpenShell",
+        "Kubernetes dev-up rejects an unsupported control-plane selection",
         "dev-up rejects a public controller port rendered by real Compose",
         "dev-up refuses an existing key destination before invoking Compose",
         "dev-up fails closed when bootstrap exits unsuccessfully",
         "dev-up fails closed when the worker exits before readiness",
         "dev-up preserves a copied key when the authenticated installation check is rejected",
         "dev-up rejects an authenticated installation response for a different Installation"
+      ]
+    },
+    {
+      "path": "tests/integration/first-agent-startup.test.mjs",
+      "expectedTests": [
+        "first-Agent accepts current Compose-backed Kubernetes development state",
+        "first-Agent rejects OpenShell development state before external calls"
       ]
     },
     {

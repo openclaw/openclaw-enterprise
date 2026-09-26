@@ -22,6 +22,10 @@ For caller permissions and file operations, see the
 | OCC API                   | Caller authorization, endpoint derivation through Compute, and native file RPCs using the mounted service key.                                                  |
 | OCC worker                | Native node enrollment through Compute, using the mounted service key and revision-owned enrollment Secrets.                                                    |
 
+The proxy Pods inherit `controlPlane.nodeSelector` from Helm values, keeping
+credential verification on the trusted OCC pool. Install the separately managed
+Envoy Gateway and cert-manager controllers on trusted nodes as well.
+
 The shared Gateway and certificate resources are in the Helm release namespace.
 Envoy's proxy Service and Pods are in `envoyNamespace`. Each Agent's HTTPRoute
 and gateway Service are in its Gateway runtime namespace for dedicated execution,
@@ -196,10 +200,13 @@ map or controller restart.
 ## Network enforcement and failures
 
 Envoy ingress permits the selected OCC API/worker Pods and Harness Pods in
-attached tenant namespaces. Its egress permits
-tenant gateway traffic, configured DNS, and the Envoy Gateway control-plane
-connection. Tenant gateway ingress permits the selected Envoy Pods. The Gateway
-accepts HTTPRoutes only from namespaces bearing its attachment label.
+attached tenant namespaces. It also permits OpenShell supervisor Pods from those
+namespaces because the supervisor opens policy-enforced Harness connections.
+The namespace attachment label limits both sources to this Gateway. Envoy egress
+permits tenant gateway traffic, configured DNS, and the Envoy Gateway
+control-plane connection. Tenant gateway ingress permits the selected Envoy
+Pods. The Gateway accepts HTTPRoutes only from namespaces bearing its attachment
+label.
 
 These restrictions require a Kubernetes network plugin that enforces
 NetworkPolicy. Only trusted actors can be allowed to change routes, policies,

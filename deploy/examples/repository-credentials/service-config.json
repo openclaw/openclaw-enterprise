@@ -11,6 +11,6 @@
   },
   "backend": {
     "kind": "github-app-registry",
-    "providerId": "repository-provider"
+    "backendId": "repository-backend"
   }
 }

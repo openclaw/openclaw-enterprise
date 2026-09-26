@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-09-24
-last_updated_session: 01a0d504-19bd-7833-9ef5-237750f5831a
+updated: 2026-09-25
+last_updated_session: authoring-run/9b15ee1e-3767-4dd0-8d9a-56ad2087dcb5
 ---
 
 # Harness Execution Topology Flow
@@ -32,13 +32,17 @@ graph TD
   C --> D["Claim and reauthorize revision work"]
   D --> E{"Approved topology"}
   E -->|embedded OpenClaw| F["Create gateway or stage replacement"]
-  E -->|dedicated Codex| G["Start control-plane Gateway and data-plane Codex in separate namespaces"]
+  E -->|dedicated Codex| G["Prepare candidate Harness"]
   E -->|unsupported or mismatched| H["Reject before workload creation"]
   F --> I["Activate shared gateway; Recreate on replacement"]
   I --> K{"Gateway ready after startup authentication?"}
   K -->|no| L["Stay unready; Agent may be unavailable until repair"]
   K -->|yes| J["Complete activation, retire predecessor, and commit audit"]
-  G --> M["Activate authenticated dedicated revision"]
+  G --> N{"Predecessor Gateway can enroll node?"}
+  N -->|yes| M["Activate authenticated dedicated revision"]
+  N -->|no| O["Start candidate Gateway as bootstrap endpoint"]
+  O --> P["Enroll and observe workspace node"]
+  P --> M
   M --> J
 ```
 
@@ -116,6 +120,11 @@ destination translation. Active Gateway Services carry the Namespace, Agent, and
 gateway workload-role labels, satisfying gateway policy selectors without tying
 the stable Gateway route to a revision. `runtime.gatewayNodeSelector`
 independently places the Gateway Pod and private-state initializer on trusted nodes.
+During a dedicated replacement, preparation keeps a healthy predecessor Gateway in place while
+the candidate Harness enrolls its workspace node. If the predecessor Gateway is the same Agent but
+cannot become ready, preparation starts the candidate Gateway after the candidate Harness is
+otherwise ready. That candidate Gateway provides the bootstrap endpoint; the revision remains
+not ready until the workspace node is enrolled and observed.
 
 Production dedicated workloads keep separate Agent-owned gateway/Codex
 ServiceAccounts, authenticated same-Agent transport, and default-deny network
@@ -143,9 +152,18 @@ for candidate rules and the limits of this observation.
 
 `apps/controller/src/worker.ts:ControllerWorker`
 
-The predecessor's Kubernetes Service selector remains intact while
-`prepareRevision` stages the replacement. Dedicated Codex must complete its
-bounded native authentication/model probe before its app-server becomes ready.
+For dedicated Kubernetes execution, Compute declares
+`requiresStoppedPredecessors`. `ControllerWorker.prepareRevision` stops every
+earlier runtime and waits for Pod termination before preparing the replacement.
+Old reconciliation and maintenance cannot restart a predecessor after a newer
+exclusive revision is admitted. Both PVCs survive this downtime window; a failed
+candidate is recovered by retry or a new revision, not automatic rollback.
+Dedicated Codex must complete its bounded native authentication/model probe
+before its app-server becomes ready. If the predecessor Gateway cannot serve node enrollment,
+Kubernetes Compute starts the candidate Gateway during preparation after the candidate Harness is
+otherwise ready, then keeps the revision incomplete until the node setup is redeemed and connected.
+This repair path does not change unrelated Gateways or activate a revision without its exact
+workspace node.
 Embedded preparation does not validate the replacement's credentials. See the
 [authentication flow](native-service-account-credential-delivery.md#5-authenticate-during-runtime-startup).
 
@@ -164,21 +182,26 @@ the worker requeues the revision with `REVISION_FINALIZATION_INCOMPLETE`; recove
 retries activation and retirement for the already-active revision. Lost claims
 and foreign/stale workloads fail closed.
 
+When stopping a revision, the Driver stops its Gateway while leaving the Harness
+available for active work. Gateway supervision and Pod termination allow the
+pinned runtime's 330-second service stop budget; the controller waits for Pod
+disappearance before stopping the Harness. Idle shutdown should complete promptly.
+Forced termination can delay the successor until the persistent owner lease expires.
+
 Kubernetes gateways in both modes mount their own persistent SQLite and media
 directories. Embedded gateways also retain their attested default workspace on
 the same private claim so continued turns survive Pod replacement. Dedicated
-Codex receives only the shared workspace claim; the gateway's nested Codex home
-remains ephemeral. The driver creates dedicated shared and private claims before
+Codex receives only the Harness workspace claim; the gateway's nested Codex home
+remains ephemeral. The driver creates separate Harness and gateway claims before
 their consuming Pods and relies on workload readiness instead of waiting for
 `Bound`, which would deadlock `WaitForFirstConsumer` storage classes. A nonroot
 gateway-image init container prepares private SQLite and media directories
 without credentials or elevated privileges.
 
-For dedicated execution, the gateway entrypoint publishes bundled and plugin
-skills into the shared runtime-assets tree before spawning OpenClaw, so Codex
-sees the directional shared workspace, session, skill, and generated-image
-mounts after the gateway has prepared them. Private gateway state, claim roots,
-`CODEX_HOME`, tokens, and credentials remain outside the dedicated Harness.
+Each image initializes its own bundled and plugin assets. Workspace-file access
+uses the enrolled Harness node; generated-image bytes return through the remote
+media reader. There are no shared workspace, session, skill, or image mounts
+between gateway and Harness. See the [storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage).
 For a selected Sandbox Driver, stopping or retiring a revision always runs its
 required cleanup after stopping a Compute-owned ordinary Harness, or delegates
 provider-owned Harness removal to that cleanup. An absent ordinary Deployment
@@ -201,6 +224,8 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 - Check guarded activation and recovery:
   `node --test tests/integration/postgres-worker-agent-revision.test.mjs` with its explicitly
   provisioned application-role PostgreSQL database.
+- Check dedicated Gateway repair after an unready predecessor:
+  `pnpm test:files --test-name-pattern='dedicated replacement starts a candidate Gateway' -- tests/conformance/kubernetes-compute.test.mjs`.
 - Run real disposable-k3d Kubernetes coverage for both production topologies, exact identity and
   model-key placement, authenticated dedicated transport, isolated networking, and active routing;
   an HTTP fixture or skipped cluster scenario is not model-turn proof.
@@ -233,6 +258,10 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-25 18:25: Document candidate Gateway bootstrap during dedicated recovery from an unready predecessor. (authoring-run/9b15ee1e-3767-4dd0-8d9a-56ad2087dcb5 - 7b2345a3cd6e78b9c7c8bae530f3379db56be443)
+
+- 2026-09-24 11:28: Document exclusive dedicated preparation and durable RWO workspaces in the accompanying change. (01a0cf72-6985-7712-ba92-d8cc32470f24 - 14a4508baad876d3eea4e6fe6388f8d8a91559b7)
 
 - 2026-09-24 13:08: Align the dedicated Harness Service selector trace with gateway-to-Harness NetworkPolicy matching. (01a0d504-19bd-7833-9ef5-237750f5831a - b4b6a0e0d8700930f21d58b3724c055f8249c486)
 

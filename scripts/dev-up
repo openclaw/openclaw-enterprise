@@ -13,6 +13,31 @@ occ_cli="$repo_root/bin/occ"
 cd "$repo_root"
 
 development_compute_driver="${OCC_DEVELOPMENT_COMPUTE_DRIVER:-docker}"
+development_sandbox_driver="${OCC_DEVELOPMENT_SANDBOX_DRIVER:-none}"
+development_control_plane="${OCC_DEVELOPMENT_CONTROL_PLANE:-}"
+case "$development_sandbox_driver" in
+  none | openshell) ;;
+  *)
+    echo "dev-up: configuration failed: OCC_DEVELOPMENT_SANDBOX_DRIVER must be none or openshell" >&2
+    exit 2
+    ;;
+esac
+case "$development_control_plane" in
+  "" | compose | kubernetes) ;;
+  *)
+    echo "dev-up: configuration failed: OCC_DEVELOPMENT_CONTROL_PLANE must be compose or kubernetes" >&2
+    exit 2
+    ;;
+esac
+if [ "$development_sandbox_driver" = openshell ] && [ "$development_compute_driver" != kubernetes ]; then
+  echo "dev-up: configuration failed: OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell requires OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes" >&2
+  exit 2
+fi
+if [ "$development_control_plane" = kubernetes ] &&
+  { [ "$development_compute_driver" != kubernetes ] || [ "$development_sandbox_driver" != openshell ]; }; then
+  echo "dev-up: configuration failed: OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes requires Kubernetes Compute with OpenShell" >&2
+  exit 2
+fi
 case "$development_compute_driver" in
   docker) ;;
   kubernetes)
@@ -105,7 +130,10 @@ fi
 temporary_directory="$(mktemp -d "${TMPDIR:-/tmp}/openclaw-dev-up.XXXXXXXXXX")"
 chmod 700 "$temporary_directory"
 cleanup() {
+  local status=$?
+  trap - EXIT
   rm -rf -- "$temporary_directory"
+  exit "$status"
 }
 trap cleanup EXIT
 
@@ -326,18 +354,27 @@ engine() {
 }
 
 compose() {
-  "${compose_command[@]}" "${compose_args[@]}" "$@"
+  if [ "${#compose_args[@]}" -eq 0 ]; then
+    "${compose_command[@]}" "$@"
+  else
+    "${compose_command[@]}" "${compose_args[@]}" "$@"
+  fi
 }
+
+compose_diagnostic=("${compose_command[@]}")
+if [ "${#compose_args[@]}" -gt 0 ]; then
+  compose_diagnostic+=("${compose_args[@]}")
+fi
 
 compose_config="$temporary_directory/compose-config.json"
 if [ "$container_engine" = "docker" ]; then
   if ! compose config --format json >"$compose_config" 2>"$temporary_directory/compose-config.err"; then
-    fail "configuration" "Docker Compose config failed" "${compose_command[@]}" "${compose_args[@]}" config --quiet
+    fail "configuration" "Docker Compose config failed" "${compose_diagnostic[@]}" config --quiet
   fi
 else
   compose_yaml="$temporary_directory/compose-config.yaml"
   if ! compose config >"$compose_yaml" 2>"$temporary_directory/compose-config.err"; then
-    fail "configuration" "Podman Compose config failed" "${compose_command[@]}" "${compose_args[@]}" config --quiet
+    fail "configuration" "Podman Compose config failed" "${compose_diagnostic[@]}" config --quiet
   fi
   if ! yq -o=json '.' <"$compose_yaml" >"$compose_config" 2>"$temporary_directory/compose-convert.err"; then
     fail "configuration" "could not convert the resolved Podman Compose configuration to JSON" yq --version
@@ -351,7 +388,7 @@ if ! "$occ_cli" dev analyze-compose --profile docker <"$compose_config" >"$compo
   if [ -z "$analysis_error" ]; then
     analysis_error="could not inspect Compose services"
   fi
-  fail "configuration" "$analysis_error" "${compose_command[@]}" "${compose_args[@]}" config --quiet
+  fail "configuration" "$analysis_error" "${compose_diagnostic[@]}" config --quiet
 fi
 
 api_url="$(sed -n '1p' "$compose_analysis")"
@@ -381,20 +418,20 @@ else
 fi
 
 if ! compose config --quiet >"$temporary_directory/compose-validated" 2>"$temporary_directory/compose-validate.err"; then
-  fail "configuration" "$container_engine_label Compose config validation failed" "${compose_command[@]}" "${compose_args[@]}" config --quiet
+  fail "configuration" "$container_engine_label Compose config validation failed" "${compose_diagnostic[@]}" config --quiet
 fi
 
 if [ "$container_engine" = "podman" ]; then
   # podman-compose builds once per service even when multiple services select
   # the same image, so build the shared application image once before startup.
   if ! compose build migrate; then
-    fail "startup" "Podman Compose application image build failed" "${compose_command[@]}" "${compose_args[@]}" build migrate
+    fail "startup" "Podman Compose application image build failed" "${compose_diagnostic[@]}" build migrate
   fi
   if ! compose up --no-build -d; then
-    fail "startup" "Podman Compose up failed" "${compose_command[@]}" "${compose_args[@]}" "${compose_ps_diagnostic_args[@]}"
+    fail "startup" "Podman Compose up failed" "${compose_diagnostic[@]}" "${compose_ps_diagnostic_args[@]}"
   fi
 elif ! compose up --build -d; then
-  fail "startup" "Docker Compose up failed" "${compose_command[@]}" "${compose_args[@]}" "${compose_ps_diagnostic_args[@]}"
+  fail "startup" "Docker Compose up failed" "${compose_diagnostic[@]}" "${compose_ps_diagnostic_args[@]}"
 fi
 
 poll_services() {
@@ -496,17 +533,17 @@ deadline=$((SECONDS + STARTUP_TIMEOUT_SECONDS))
 startup_ready=0
 while [ "$SECONDS" -le "$deadline" ]; do
   if ! service_report="$(poll_services)"; then
-    fail "startup" "could not inspect Compose services" "${compose_command[@]}" "${compose_args[@]}" "${compose_ps_diagnostic_args[@]}"
+    fail "startup" "could not inspect Compose services" "${compose_diagnostic[@]}" "${compose_ps_diagnostic_args[@]}"
   fi
   IFS=$'\t' read -r service_status service_stage service_message diagnostic_kind diagnostic_service <<<"$service_report"
   if [ "$service_status" = "fail" ]; then
     if [ "$diagnostic_kind" = "logs" ]; then
-      fail "$service_stage" "$service_message" "${compose_command[@]}" "${compose_args[@]}" logs "$diagnostic_service"
+      fail "$service_stage" "$service_message" "${compose_diagnostic[@]}" logs "$diagnostic_service"
     fi
     if [ "$container_engine" = "docker" ]; then
-      fail "$service_stage" "$service_message" "${compose_command[@]}" "${compose_args[@]}" "${compose_ps_diagnostic_args[@]}" "$diagnostic_service"
+      fail "$service_stage" "$service_message" "${compose_diagnostic[@]}" "${compose_ps_diagnostic_args[@]}" "$diagnostic_service"
     fi
-    fail "$service_stage" "$service_message" "${compose_command[@]}" "${compose_args[@]}" "${compose_ps_diagnostic_args[@]}"
+    fail "$service_stage" "$service_message" "${compose_diagnostic[@]}" "${compose_ps_diagnostic_args[@]}"
   fi
   if [ "$service_status" = "probe" ]; then
     if compose exec -T worker node scripts/production-healthcheck.mjs worker ready >/dev/null 2>"$temporary_directory/worker-readiness.err"; then
@@ -514,18 +551,18 @@ while [ "$SECONDS" -le "$deadline" ]; do
       break
     fi
     if ! service_report="$(poll_services)"; then
-      fail "readiness" "worker readiness probe did not pass" "${compose_command[@]}" "${compose_args[@]}" logs worker
+      fail "readiness" "worker readiness probe did not pass" "${compose_diagnostic[@]}" logs worker
     fi
     IFS=$'\t' read -r service_status service_stage service_message diagnostic_kind diagnostic_service <<<"$service_report"
     if [ "$service_status" = "fail" ]; then
-      fail "readiness" "worker readiness probe did not pass" "${compose_command[@]}" "${compose_args[@]}" logs worker
+      fail "readiness" "worker readiness probe did not pass" "${compose_diagnostic[@]}" logs worker
     fi
   fi
   sleep 2
 done
 
 if [ "$startup_ready" -ne 1 ]; then
-  fail "readiness" "worker readiness probe did not pass within ${STARTUP_TIMEOUT_SECONDS}s" "${compose_command[@]}" "${compose_args[@]}" logs worker
+  fail "readiness" "worker readiness probe did not pass within ${STARTUP_TIMEOUT_SECONDS}s" "${compose_diagnostic[@]}" logs worker
 fi
 
 if [ -e "$key_output" ] || [ -L "$key_output" ]; then
@@ -535,12 +572,12 @@ key_copy_temp="$(mktemp "$(dirname "$key_output")/.dev-up-service-key.XXXXXXXXXX
 chmod 600 "$key_copy_temp"
 if [ "$container_engine" = "docker" ]; then
   if ! compose cp "$BOOTSTRAP_SERVICE_KEY_SOURCE" "$key_copy_temp"; then
-    fail "key copy" "could not copy bootstrap service key from stopped bootstrap container" "${compose_command[@]}" "${compose_args[@]}" ps --all bootstrap
+    fail "key copy" "could not copy bootstrap service key from stopped bootstrap container" "${compose_diagnostic[@]}" ps --all bootstrap
   fi
 else
   podman_status="$temporary_directory/podman-services.json"
   if ! compose "${compose_ps_status_args[@]}" >"$podman_status" 2>"$temporary_directory/podman-services.err"; then
-    fail "key copy" "could not inspect the Podman bootstrap container" "${compose_command[@]}" "${compose_args[@]}" "${compose_ps_diagnostic_args[@]}"
+    fail "key copy" "could not inspect the Podman bootstrap container" "${compose_diagnostic[@]}" "${compose_ps_diagnostic_args[@]}"
   fi
   if ! bootstrap_container_id="$(python3 - "$podman_status" <<'PY'
 import json
@@ -577,7 +614,7 @@ if len(matches) != 1:
 print(matches[0])
 PY
 )"; then
-    fail "key copy" "could not identify exactly one Podman bootstrap container" "${compose_command[@]}" "${compose_args[@]}" "${compose_ps_diagnostic_args[@]}"
+    fail "key copy" "could not identify exactly one Podman bootstrap container" "${compose_diagnostic[@]}" "${compose_ps_diagnostic_args[@]}"
   fi
   if ! engine cp "$bootstrap_container_id:$BOOTSTRAP_SERVICE_KEY_PATH" "$key_copy_temp"; then
     fail "key copy" "could not copy bootstrap service key from stopped bootstrap container" "${engine_command[@]}" cp "$bootstrap_container_id:$BOOTSTRAP_SERVICE_KEY_PATH" "$key_copy_temp"
@@ -619,7 +656,7 @@ print(installation_id)
 PY
 )"; then
   key_error="$(cat "$temporary_directory/key-validation.err" 2>/dev/null || true)"
-  fail "key copy" "${key_error:-copied bootstrap service key is invalid}" "${compose_command[@]}" "${compose_args[@]}" "${compose_ps_diagnostic_args[@]}"
+  fail "key copy" "${key_error:-copied bootstrap service key is invalid}" "${compose_diagnostic[@]}" "${compose_ps_diagnostic_args[@]}"
 fi
 
 installation_response="$temporary_directory/installation-response.json"
@@ -649,7 +686,11 @@ cleanup_environment=("OCC_DEVELOPMENT_COMPUTE_DRIVER=docker" "OCC_DEVELOPMENT_CO
 if [ -n "${podman_connection_name:-}" ]; then
   cleanup_environment+=("CONTAINER_CONNECTION=$podman_connection_name")
 fi
-cleanup_command="$(quote_command env "${cleanup_environment[@]}" "$occ_cli" dev down -- "${compose_args[@]}")"
+cleanup_command_args=(env "${cleanup_environment[@]}" "$occ_cli" dev down --)
+if [ "${#compose_args[@]}" -gt 0 ]; then
+  cleanup_command_args+=("${compose_args[@]}")
+fi
+cleanup_command="$(quote_command "${cleanup_command_args[@]}")"
 next_check_command="$(quote_command "OCC_URL=$api_url" "OCC_SERVICE_KEY_FILE=$key_output" "$occ_cli" installation get)"
 
 cat <<EOF

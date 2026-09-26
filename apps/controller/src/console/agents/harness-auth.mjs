@@ -1,5 +1,6 @@
 import { element } from "../dom.mjs";
 import { message, namespacePath } from "./list.mjs";
+import { createSecretReferenceField, renderSecretReference } from "./secret-picker.mjs";
 
 export function harnessAuthDescription(binding) {
   if (!binding) {
@@ -16,7 +17,24 @@ export function harnessAuthDescription(binding) {
     : `ChatGPT service account · ${binding.serviceAccountId}`;
 }
 
-export function createHarnessAuthFields(context, binding = null, executionMode = "embedded") {
+export function renderHarnessAuthSummary(context, binding) {
+  if (!["api_key", "codex_pat"].includes(binding?.method)) {
+    return harnessAuthDescription(binding);
+  }
+  return element(
+    "span",
+    {},
+    binding.method === "api_key" ? "API key · " : "Service Accounts · ",
+    renderSecretReference(context, binding.source),
+  );
+}
+
+export function createHarnessAuthFields(
+  context,
+  binding = null,
+  executionMode = "embedded",
+  options = {},
+) {
   const method = element(
     "select",
     { id: "harness-auth-method" },
@@ -29,17 +47,12 @@ export function createHarnessAuthFields(context, binding = null, executionMode =
     element("option", { value: "chatgpt_service_account" }, "ChatGPT service account"),
   );
   method.value = binding?.method ?? "";
-  const secret = element("input", {
-    id: "harness-auth-secret",
-    type: "password",
-    spellcheck: "false",
-    autocomplete: "off",
-    placeholder: "sec_…",
-    value:
-      ["api_key", "codex_pat"].includes(binding?.method) && binding.source?.kind === "secret"
-        ? binding.source.id
-        : "",
-  });
+  const originalSecretSource =
+    ["api_key", "codex_pat"].includes(binding?.method) && binding.source?.kind === "secret"
+      ? binding.source
+      : null;
+  let selectedSecretSource = originalSecretSource;
+  let changedSecret = null;
   const account = element(
     "select",
     { id: "service-account-id", disabled: true },
@@ -51,21 +64,41 @@ export function createHarnessAuthFields(context, binding = null, executionMode =
     );
     account.value = binding.serviceAccountId;
   }
+  const draft = options.draft;
+  if (draft) {
+    method.value = draft.method;
+    selectedSecretSource = draft.secretSource ?? null;
+    changedSecret = draft.changedSecret ?? null;
+    if (draft.account && ![...account.options].some((option) => option.value === draft.account)) {
+      account.append(element("option", { value: draft.account }, draft.account));
+    }
+    account.value = draft.account;
+  }
+  let previousMethod = method.value;
   let accountsLoaded = false;
   let disabled = false;
   const feedback = element("p", { className: "hint", role: "status" });
-  const secretLabel = element("label", { for: secret.id }, "API key Secret ID");
-  const secretField = element(
-    "div",
-    { className: "form-field" },
-    secretLabel,
-    secret,
-    element(
-      "p",
-      { className: "hint" },
-      "Select an existing OCC Secret in this Namespace by its ID. Secret values are never shown.",
-    ),
-  );
+  const secretPicker = createSecretReferenceField({
+    context,
+    id: "harness-auth-secret",
+    label: "API key Secret",
+    getCurrentSource: () => selectedSecretSource,
+    onSecretSelected(secret) {
+      selectedSecretSource = secret.ref;
+      changedSecret = secret;
+    },
+    createSecretName: () => {
+      const agentName =
+        typeof options.agentName === "string" && options.agentName.trim()
+          ? options.agentName.trim()
+          : "Agent";
+      return `${agentName} harness authentication`;
+    },
+    createDialogTitle: "Create harness authentication Secret",
+    metadataLabel: "View harness authentication Secret metadata",
+    required: ["api_key", "codex_pat"].includes(method.value),
+  });
+  const secretField = secretPicker.field;
   const accountField = element(
     "div",
     { className: "form-field" },
@@ -97,10 +130,21 @@ export function createHarnessAuthFields(context, binding = null, executionMode =
     runtimeHint.hidden = method.value !== "runtime";
     const directSecret = ["api_key", "codex_pat"].includes(method.value);
     secretField.hidden = !directSecret;
-    secretLabel.textContent =
-      method.value === "codex_pat" ? "Service account token Secret ID" : "API key Secret ID";
+    secretField.querySelector("label").textContent =
+      method.value === "codex_pat" ? "Service account token Secret" : "API key Secret";
     accountField.hidden = method.value !== "chatgpt_service_account";
-    secret.required = directSecret;
+    const methodChanged = method.value !== previousMethod;
+    previousMethod = method.value;
+    if (methodChanged && directSecret && method.value === binding?.method) {
+      selectedSecretSource = originalSecretSource;
+      changedSecret = null;
+    } else if (methodChanged && (!directSecret || method.value !== binding?.method)) {
+      selectedSecretSource = null;
+      changedSecret = null;
+    }
+    secretPicker.setRequired(directSecret);
+    secretPicker.setDisabled(disabled || !directSecret);
+    secretPicker.refresh();
     account.required = method.value === "chatgpt_service_account";
   }
   method.addEventListener("change", update);
@@ -139,10 +183,16 @@ export function createHarnessAuthFields(context, binding = null, executionMode =
     });
   return {
     section,
+    capture: () => ({
+      method: method.value,
+      secretSource: selectedSecretSource,
+      changedSecret,
+      account: account.value,
+    }),
     setDisabled(value) {
       disabled = value;
       method.disabled = value;
-      secret.disabled = value;
+      secretPicker.setDisabled(value || !["api_key", "codex_pat"].includes(method.value));
       account.disabled = value || !accountsLoaded;
     },
     async readBinding() {
@@ -158,14 +208,16 @@ export function createHarnessAuthFields(context, binding = null, executionMode =
         }
         return { method: "chatgpt_service_account", serviceAccountId: account.value };
       }
-      const id = secret.value.trim();
-      if (!id) {
-        throw new Error("Enter an OCC Secret ID.");
+      if (!selectedSecretSource?.id) {
+        throw new Error("Choose an OCC Secret.");
       }
       return {
         method: method.value,
-        source: { kind: "secret", namespaceId: context.namespaceId, id },
+        source: selectedSecretSource,
       };
+    },
+    get changedSecret() {
+      return changedSecret;
     },
   };
 }

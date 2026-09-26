@@ -108,7 +108,7 @@ is valid. Its optional fields are:
 | `variables`                    | Named scalar inputs, their types, descriptions, and optional defaults.                               |
 | `agent.name`                   | Suggested Agent name; the saved Agent still needs a unique name.                                     |
 | `agent.executionMode`          | Embedded or dedicated execution.                                                                     |
-| `agent.providerId`             | Installation-configured Provider ID, or null.                                                        |
+| `agent.backendId`              | Installation-configured Backend ID, or null.                                                         |
 | `agent.harnessAuth`            | Credential binding or password variable token, or null; never stored credential bytes.               |
 | `agent.initialWorkspaceFiles`  | Optional creation-time workspace contents keyed by supported filename.                               |
 | `agent.plugins`                | Desired plugin selections and policies.                                                              |

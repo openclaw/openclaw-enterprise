@@ -10,7 +10,6 @@ import { isAbsolute, join } from "node:path";
 import {
   createKubernetesClient,
   createKubernetesInstallationConfiguration,
-  configureExistingK3dLocalPathSharedFileSystem,
   kubernetesHash,
   kubectlArguments,
 } from "./kubernetes-real.mjs";
@@ -243,7 +242,6 @@ export async function createInstalledRepositoryFixture(
       "Dedicated repository proof requires prepared private Gateway routing",
     );
     await ensureEnvoyGatewayControllers({ kubectl, waitFor });
-    await configureExistingK3dLocalPathSharedFileSystem(selection);
   }
   await apply({
     apiVersion: "v1",

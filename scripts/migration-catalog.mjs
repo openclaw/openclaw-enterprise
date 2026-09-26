@@ -151,14 +151,15 @@ export async function migrationCatalog(client, schema = "occ") {
       );
       rows.push(...defaults.rows);
     }
-    return rows.sort((left, right) => {
-      const a = JSON.stringify(left);
-      const b = JSON.stringify(right);
-      if (a === b) {
-        return 0;
-      }
-      return a < b ? -1 : 1;
-    });
+    return rows
+      .map((row) => [JSON.stringify(row), row])
+      .sort(([a], [b]) => {
+        if (a === b) {
+          return 0;
+        }
+        return a < b ? -1 : 1;
+      })
+      .map(([, row]) => row);
   } finally {
     await client.query("SELECT pg_catalog.set_config('search_path', $1, false)", [
       previous.rows[0].search_path,

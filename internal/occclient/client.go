@@ -85,6 +85,11 @@ func (client *Client) GetInstallation() (any, error) {
 	return client.get("installation")
 }
 
+// GetInstallationDeploymentInventory fetches the complete authorized Agent deployment inventory.
+func (client *Client) GetInstallationDeploymentInventory() (any, error) {
+	return client.get("installation", "deployment-inventory")
+}
+
 // CreateNamespace creates a Namespace.
 func (client *Client) CreateNamespace(name, existingNamespace string) (any, error) {
 	body := map[string]any{"name": name}
@@ -233,6 +238,18 @@ func (client *Client) DeployAgent(namespaceID, agentID string) (any, error) {
 		http.MethodPost,
 		[]string{"namespaces", namespaceID, "agents", agentID, "deploy"},
 		nil,
+	)
+}
+
+// GetAgentDeployment fetches durable deployment status for one Agent revision.
+func (client *Client) GetAgentDeployment(namespaceID, agentID, deploymentID string) (any, error) {
+	return client.get(
+		"namespaces",
+		namespaceID,
+		"agents",
+		agentID,
+		"deployments",
+		deploymentID,
 	)
 }
 

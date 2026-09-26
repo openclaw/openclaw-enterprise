@@ -1,4 +1,5 @@
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
@@ -44,8 +45,22 @@ export interface OpenShellSandboxResponse {
   readonly serviceUrls: Readonly<Record<string, string>>;
 }
 
+export interface OpenShellWorkspaceResponse {
+  readonly name: string;
+  readonly id?: string;
+  readonly labels: Readonly<Record<string, string>>;
+  readonly phase?: string | number;
+}
+
 export interface OpenShellGatewayClient {
   health(signal: AbortSignal): Promise<void>;
+  getWorkspace(name: string, signal: AbortSignal): Promise<OpenShellWorkspaceResponse | undefined>;
+  createWorkspace(
+    name: string,
+    labels: Readonly<Record<string, string>>,
+    signal: AbortSignal,
+  ): Promise<OpenShellWorkspaceResponse>;
+  deleteWorkspace(name: string, signal: AbortSignal): Promise<void>;
   createSandbox(
     request: OpenShellSandboxCreateRequest,
     signal: AbortSignal,
@@ -56,6 +71,24 @@ export interface OpenShellGatewayClient {
 
 interface OpenShellGrpcClient extends Client {
   Health(
+    request: RecordValue,
+    metadata: Metadata,
+    options: { deadline: Date },
+    callback: (error: Error | null, response?: RecordValue) => void,
+  ): ClientUnaryCall;
+  GetWorkspace(
+    request: RecordValue,
+    metadata: Metadata,
+    options: { deadline: Date },
+    callback: (error: Error | null, response?: RecordValue) => void,
+  ): ClientUnaryCall;
+  CreateWorkspace(
+    request: RecordValue,
+    metadata: Metadata,
+    options: { deadline: Date },
+    callback: (error: Error | null, response?: RecordValue) => void,
+  ): ClientUnaryCall;
+  DeleteWorkspace(
     request: RecordValue,
     metadata: Metadata,
     options: { deadline: Date },
@@ -86,6 +119,15 @@ export class OpenShellSandboxAlreadyExistsError extends Error {
   }
 }
 
+export class OpenShellWorkspaceAlreadyExistsError extends Error {
+  readonly workspaceName: string;
+
+  constructor(workspaceName: string) {
+    super(`OpenShell Workspace ${workspaceName} already exists.`);
+    this.workspaceName = workspaceName;
+  }
+}
+
 const CLIENT_MODULE = "@grpc/grpc-js";
 const LOADER_MODULE = "@grpc/proto-loader";
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
@@ -104,6 +146,27 @@ function deadline(timeoutMs: number): Date {
 function statusCode(error: unknown): number | undefined {
   const candidate = asRecord(error)?.code;
   return typeof candidate === "number" ? candidate : undefined;
+}
+
+function workspaceResponse(response: RecordValue, operation: string): OpenShellWorkspaceResponse {
+  const workspace = asRecord(response.workspace);
+  const metadata = asRecord(workspace?.metadata);
+  const name = metadata?.name;
+  if (typeof name !== "string" || name.trim().length === 0) {
+    throw new OpenShellGatewayFailure(`OpenShell ${operation} returned no stable Workspace name.`);
+  }
+  const workspaceLabels = asRecord(metadata?.labels) ?? {};
+  if (Object.values(workspaceLabels).some((value) => typeof value !== "string")) {
+    throw new OpenShellGatewayFailure(`OpenShell ${operation} returned invalid Workspace labels.`);
+  }
+  return Object.freeze({
+    name,
+    ...(typeof metadata?.id === "string" && metadata.id.length > 0 ? { id: metadata.id } : {}),
+    labels: Object.freeze({ ...(workspaceLabels as Record<string, string>) }),
+    ...(asRecord(workspace?.status)?.phase === undefined
+      ? {}
+      : { phase: asRecord(workspace?.status)?.phase as string | number }),
+  });
 }
 
 function normalizeEndpoint(endpoint: string): {
@@ -274,6 +337,82 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     }
   }
 
+  async getWorkspace(
+    name: string,
+    signal: AbortSignal,
+  ): Promise<OpenShellWorkspaceResponse | undefined> {
+    try {
+      return workspaceResponse(
+        await this.unary(
+          "GetWorkspace",
+          { name: nonempty(name, "OpenShell Workspace name") },
+          signal,
+        ),
+        "GetWorkspace",
+      );
+    } catch (error) {
+      const { grpc } = await this.ensureClient();
+      if (statusCode(error) === grpc.status.NOT_FOUND) {
+        return undefined;
+      }
+      throw error;
+    }
+  }
+
+  async createWorkspace(
+    name: string,
+    labels: Readonly<Record<string, string>>,
+    signal: AbortSignal,
+  ): Promise<OpenShellWorkspaceResponse> {
+    const workspaceName = nonempty(name, "OpenShell Workspace name");
+    try {
+      return workspaceResponse(
+        await this.unary(
+          "CreateWorkspace",
+          { name: workspaceName, labels: { ...labels }, request_id: randomUUID() },
+          signal,
+        ),
+        "CreateWorkspace",
+      );
+    } catch (error) {
+      const { grpc } = await this.ensureClient();
+      if (statusCode(error) === grpc.status.ALREADY_EXISTS) {
+        throw new OpenShellWorkspaceAlreadyExistsError(workspaceName);
+      }
+      throw error;
+    }
+  }
+
+  async deleteWorkspace(name: string, signal: AbortSignal): Promise<void> {
+    let response: RecordValue;
+    try {
+      response = await this.unary(
+        "DeleteWorkspace",
+        {
+          name: nonempty(name, "OpenShell Workspace name"),
+          allow_missing: true,
+          request_id: randomUUID(),
+        },
+        signal,
+      );
+    } catch (error) {
+      const { grpc } = await this.ensureClient();
+      if (statusCode(error) === grpc.status.NOT_FOUND) {
+        return;
+      }
+      throw error;
+    }
+    if (
+      !["DELETION_OUTCOME_COMPLETED", "DELETION_OUTCOME_ALREADY_ABSENT", 1, 3].includes(
+        response.outcome as string | number,
+      )
+    ) {
+      throw new OpenShellGatewayFailure(
+        "OpenShell DeleteWorkspace did not confirm Workspace deletion.",
+      );
+    }
+  }
+
   async createSandbox(
     request: OpenShellSandboxCreateRequest,
     signal: AbortSignal,
@@ -363,7 +502,13 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
   }
 
   private async unary(
-    method: "Health" | "CreateSandbox" | "DeleteSandbox",
+    method:
+      | "Health"
+      | "GetWorkspace"
+      | "CreateWorkspace"
+      | "DeleteWorkspace"
+      | "CreateSandbox"
+      | "DeleteSandbox",
     request: RecordValue,
     signal: AbortSignal,
   ): Promise<RecordValue> {

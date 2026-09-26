@@ -442,6 +442,27 @@ function emptyFileResult(path, issues) {
   };
 }
 
+function imageDigests(env) {
+  const names = {
+    controller: "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE",
+    postgres: "OCC_TEST_PRODUCTION_POSTGRES_IMAGE",
+    node: "OCC_TEST_PRODUCTION_NODE_IMAGE",
+    fixture: "OCC_TEST_KUBERNETES_IMAGE",
+    gateway: "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+    codex: "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+    collector: "OCC_TEST_OBSERVABILITY_COLLECTOR_IMAGE",
+    prometheus: "OCC_TEST_OBSERVABILITY_PROMETHEUS_IMAGE",
+    grafana: "OCC_TEST_OBSERVABILITY_GRAFANA_IMAGE",
+    loki: "OCC_TEST_OBSERVABILITY_LOKI_IMAGE",
+  };
+  return Object.fromEntries(
+    Object.entries(names).flatMap(([role, name]) => {
+      const digest = env[name]?.match(/@(sha256:[a-f0-9]{64})$/)?.[1];
+      return digest ? [[role, digest]] : [];
+    }),
+  );
+}
+
 async function runFile(root, lane, file, statePath, prepareFile) {
   const issues = [];
   const relativePath = repoRelativePath(root, file.path);
@@ -612,6 +633,7 @@ async function runFile(root, lane, file, statePath, prepareFile) {
     tests,
     issues,
     cleanup: cleanupResult,
+    imageDigests: imageDigests(env),
   };
 }
 

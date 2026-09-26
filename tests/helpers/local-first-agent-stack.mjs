@@ -135,14 +135,15 @@ async function recordedStack(directory) {
     }
     if (
       (await readFile(join(directory, ".openclaw-development"), "utf8")) !==
-      "openclaw-enterprise-development-v2\n"
+      "openclaw-enterprise-development-v3\n"
     ) {
       return undefined;
     }
     const state = JSON.parse(await readFile(join(directory, "state.json"), "utf8"));
     if (
-      state.version !== 2 ||
+      state.version !== 3 ||
       state.computeDriver !== "kubernetes" ||
+      state.sandboxDriver !== "none" ||
       !["docker", "podman"].includes(state.containerEngine) ||
       !/^[a-z0-9][a-z0-9_-]*$/.test(state.composeProject ?? "") ||
       !/^occ-dev-[a-z0-9][a-z0-9-]*$/.test(state.cluster ?? "") ||

@@ -192,8 +192,8 @@ test("an admitted AgentRevision is a detached and deeply immutable deployment sn
       method: "chatgpt_service_account",
       serviceAccountId: "service-account-a",
       credential: { kind: "access_token", secretRef: { name: "account-source", key: "token" } },
-      providerBinding: {
-        providerId: "chatgpt",
+      backendBinding: {
+        backendId: "chatgpt",
         driverId: "accounts",
         workspaceId: "workspace-a",
         credentialIssued: true,
@@ -218,7 +218,7 @@ test("an admitted AgentRevision is a detached and deeply immutable deployment sn
         {
           repositoryRef: "application",
           profile: "write-profile",
-          providerId: "repository-provider",
+          backendId: "repository-provider",
           grant: {
             providerInstanceId: "provider-instance",
             repositoryId: "repository-identity",
@@ -239,7 +239,7 @@ test("an admitted AgentRevision is a detached and deeply immutable deployment sn
   assert.equal(Object.isFrozen(admitted.compute), true);
   assert.equal(Object.isFrozen(admitted.harnessAuth), true);
   assert.equal(Object.isFrozen(admitted.harnessAuth.credential.secretRef), true);
-  assert.equal(Object.isFrozen(admitted.harnessAuth.providerBinding), true);
+  assert.equal(Object.isFrozen(admitted.harnessAuth.backendBinding), true);
   assert.equal(Object.isFrozen(admitted.repositoryCredentials), true);
   assert.equal(Object.isFrozen(admitted.repositoryCredentials.driver), true);
   assert.equal(Object.isFrozen(admitted.repositoryCredentials.bindings), true);
@@ -258,7 +258,7 @@ test("an admitted AgentRevision is a detached and deeply immutable deployment sn
   mutableRevision.compute.implementation = "changed-after-admission";
   mutableRevision.sandboxDriverId = "changed-after-admission";
   mutableRevision.harnessAuth.credential.secretRef.name = "replacement-source";
-  mutableRevision.harnessAuth.providerBinding.workspaceId = "replacement-workspace";
+  mutableRevision.harnessAuth.backendBinding.workspaceId = "replacement-workspace";
   const draftPlugin = mutableRevision.plugins.plugins["codex-plugin:github@openai-curated-remote"];
   draftPlugin.toolDefaults.approval = "approve";
   draftPlugin.toolDefaults.reviewer = "auto";
@@ -281,7 +281,7 @@ test("an admitted AgentRevision is a detached and deeply immutable deployment sn
     repositoryRef: "additional-repository",
   });
   assert.equal(admitted.harnessAuth.credential.secretRef.name, "account-source");
-  assert.equal(admitted.harnessAuth.providerBinding.workspaceId, "workspace-a");
+  assert.equal(admitted.harnessAuth.backendBinding.workspaceId, "workspace-a");
   assert.equal(admitted.repositoryCredentials.driver.id, "repository-credentials");
   assert.equal(admitted.repositoryCredentials.deadlineWallMs, 1786755600000);
   assert.equal(admitted.repositoryCredentials.bindings.length, 1);

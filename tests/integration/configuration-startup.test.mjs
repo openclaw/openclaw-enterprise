@@ -7,10 +7,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import pg from "pg";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
-import {
-  DEVELOPMENT_HARNESS_DESCRIPTOR,
-  PRODUCTION_HARNESS_DESCRIPTOR,
-} from "../../apps/controller/src/composition/production-harness.ts";
+import { DEVELOPMENT_HARNESS_DESCRIPTOR } from "../../apps/controller/src/composition/production-harness.ts";
 import {
   kubernetesNamespaceName,
   kubernetesGatewayNamespaceName,
@@ -46,7 +43,7 @@ async function fixture(t, configuration = installation()) {
 
 function chatgptInstallation() {
   const configuration = installation();
-  configuration.provider = [
+  configuration.backend = [
     {
       id: "openai",
       type: "chatgpt",
@@ -93,7 +90,7 @@ async function repositoryInstallation(t) {
   await chmod(writableCaPath, 0o666);
   const registry = {
     version: 1,
-    providerId: "github-primary",
+    backendId: "github-primary",
     providerInstanceId: "github-com",
     appId: "12345",
     githubInstallationId: "67890",
@@ -116,9 +113,9 @@ async function repositoryInstallation(t) {
   const publicCaPath = join(directory, "ca.crt");
   await symlink(tls.certFile, publicCaPath);
   const configuration = installation();
-  configuration.provider = [
+  configuration.backend = [
     {
-      id: registry.providerId,
+      id: registry.backendId,
       type: "github",
       configuration: { registryPath },
       drivers: { repo: "repository-credentials" },
@@ -158,7 +155,7 @@ test("repository startup constructs the same local resolver without a private so
   // The capability name does not replace the operator's opaque Driver identity.
   assert.equal(api.repoDriver.id, "repository-credentials");
   assert.equal(worker.repoDriver.id, api.repoDriver.id);
-  assert.deepEqual(api.installation.provider[0].drivers, { repo: api.repoDriver.id });
+  assert.deepEqual(api.installation.backend[0].drivers, { repo: api.repoDriver.id });
   assert.equal(Object.hasOwn(api.installation.drivers, "repository_credentials"), false);
   assert.equal(api.installation.drivers.repo.implementation, api.repoDriver.implementation);
   const selection = { namespaceId: "ns_repository", bindings: [{ repositoryRef: "application" }] };
@@ -173,14 +170,14 @@ test("repository startup constructs the same local resolver without a private so
   );
   const chatgpt = chatgptInstallation();
   const combined = structuredClone(configuration);
-  combined.provider.push(...chatgpt.provider);
+  combined.backend.push(...chatgpt.backend);
   combined.drivers.service_account = chatgpt.drivers.service_account;
   const combinedDrivers = await loadInstallationConfiguration({
     mode: "production",
     environment: { OCC_CONFIG_PATH: await fixture(t, combined) },
   });
   assert.deepEqual(
-    combinedDrivers.installation.provider.map((provider) => provider.type),
+    combinedDrivers.installation.backend.map((backend) => backend.type),
     ["github", "chatgpt"],
   );
 
@@ -208,7 +205,7 @@ test("repository startup constructs the same local resolver without a private so
 test("repository startup rejects unmatched ownership, registry identity, duration and CA inputs", async (t) => {
   const { configuration: baseline, tls, writableCaPath } = await repositoryInstallation(t);
   for (const [mutate, expected] of [
-    [(value) => delete value.provider, /requires an owning provider/],
+    [(value) => delete value.backend, /requires an owning backend/],
     [
       (value) => {
         value.drivers.repository_credentials = value.drivers.repo;
@@ -218,23 +215,23 @@ test("repository startup rejects unmatched ownership, registry identity, duratio
     ],
     [
       (value) => {
-        value.provider[0].drivers.repository_credentials = value.provider[0].drivers.repo;
-        delete value.provider[0].drivers.repo;
+        value.backend[0].drivers.repository_credentials = value.backend[0].drivers.repo;
+        delete value.backend[0].drivers.repo;
       },
       /plaintext credential/,
     ],
     [(value) => delete value.drivers.repo, /requires drivers\.repo/],
-    [(value) => (value.provider[0].drivers.repo = "other-driver"), /must match/],
+    [(value) => (value.backend[0].drivers.repo = "other-driver"), /must match/],
     [
-      (value) => (value.provider[0].configuration.registryPath = "relative.json"),
+      (value) => (value.backend[0].configuration.registryPath = "relative.json"),
       /absolute mounted/,
     ],
-    [(value) => (value.provider[0].configuration.apiKeyPath = "/unavailable"), /unsupported/],
+    [(value) => (value.backend[0].configuration.apiKeyPath = "/unavailable"), /unsupported/],
     [
-      (value) => value.provider.push({ ...structuredClone(value.provider[0]), id: "other-github" }),
-      /cannot belong to multiple Providers/,
+      (value) => value.backend.push({ ...structuredClone(value.backend[0]), id: "other-github" }),
+      /cannot belong to multiple Backends/,
     ],
-    [(value) => (value.provider[0].id = "other-provider"), /invalid-repository-registry/],
+    [(value) => (value.backend[0].id = "other-backend"), /invalid-repository-registry/],
     [
       (value) => (value.drivers.repo.configuration.sessionDurationSeconds = 3601),
       /duration|configuration/,
@@ -253,7 +250,7 @@ test("repository startup rejects unmatched ownership, registry identity, duratio
       /repository service peer/,
     ],
     [
-      (value) => (value.provider[0].drivers.repo = "ghp_notarealtoken123456"),
+      (value) => (value.backend[0].drivers.repo = "ghp_notarealtoken123456"),
       /plaintext credential/,
     ],
   ]) {
@@ -298,14 +295,14 @@ test("startup loads singleton Installation YAML and validates Drivers before con
   assert.equal(updated.installation.drivers.compute.configuration.network.gatewayPort, 8081);
 });
 
-test("shared startup loads provider metadata without reading the API-only ChatGPT admin Secret", async (t) => {
+test("shared startup loads backend metadata without reading the API-only ChatGPT admin Secret", async (t) => {
   // The worker shares this loader but deliberately cannot access the configured API-only mount.
   const drivers = await loadInstallationConfiguration({
     mode: "production",
     environment: { OCC_CONFIG_PATH: await fixture(t, chatgptInstallation()) },
   });
 
-  assert.deepEqual(drivers.installation.provider, [
+  assert.deepEqual(drivers.installation.backend, [
     {
       id: "openai",
       type: "chatgpt",
@@ -319,10 +316,7 @@ test("shared startup loads provider metadata without reading the API-only ChatGP
       },
     },
   ]);
-  assert.equal(
-    Object.hasOwn(drivers.installation.provider[0].configuration, "adminKeyPath"),
-    false,
-  );
+  assert.equal(Object.hasOwn(drivers.installation.backend[0].configuration, "adminKeyPath"), false);
   assert.deepEqual(drivers.installation.drivers.service_account, {
     id: "chatgpt-service-accounts",
   });
@@ -330,62 +324,59 @@ test("shared startup loads provider metadata without reading the API-only ChatGP
   assert.equal(Object.hasOwn(drivers, "chatgptClient"), false);
 });
 
-test("ChatGPT startup rejects retired integrations and unsafe provider configuration", async (t) => {
+test("ChatGPT startup rejects retired integrations and unsafe backend configuration", async (t) => {
   await assert.rejects(
     loadInstallationConfiguration({
       mode: "production",
       environment: { OCC_CONFIG_PATH: await fixture(t, retiredChatgptInstallation()) },
     }),
-    /integrations is retired.*provider.*apiKeyPath/,
+    /integrations is retired.*backend.*apiKeyPath/,
   );
 
   for (const [mutate, expected] of [
-    [(value) => delete value.provider, /requires an owning provider/],
+    [(value) => delete value.backend, /requires an owning backend/],
     [(value) => delete value.drivers.service_account, /requires drivers\.service_account/],
     [
-      (value) => delete value.provider[0].drivers.service_account,
+      (value) => delete value.backend[0].drivers.service_account,
       /drivers\.service_account.*required/,
     ],
+    [(value) => (value.backend[0].configuration.workspaceId = "untrusted"), /workspaceId.*invalid/],
     [
-      (value) => (value.provider[0].configuration.workspaceId = "untrusted"),
-      /workspaceId.*invalid/,
-    ],
-    [
-      (value) => (value.provider[0].configuration.apiKeyPath = "relative-admin-key"),
+      (value) => (value.backend[0].configuration.apiKeyPath = "relative-admin-key"),
       /absolute mounted file path/,
     ],
     [
-      (value) => (value.provider[0].configuration.credentialTtlSeconds = 2_592_001),
+      (value) => (value.backend[0].configuration.credentialTtlSeconds = 2_592_001),
       /between 1 and 2592000/,
     ],
     [
-      (value) => (value.provider[0].configuration.apiKey = "plaintext-admin-key"),
+      (value) => (value.backend[0].configuration.apiKey = "plaintext-admin-key"),
       /plaintext credential|unsupported option/,
     ],
     [
-      (value) => (value.provider[0].configuration.adminKeyPath = "/tmp/old-admin-key"),
+      (value) => (value.backend[0].configuration.adminKeyPath = "/tmp/old-admin-key"),
       /adminKeyPath.*unsupported/,
     ],
-    [(value) => (value.provider[0].type = "installed"), /must be chatgpt/],
-    [(value) => (value.provider[0].package = "@example/provider"), /unsupported option package/],
+    [(value) => (value.backend[0].type = "installed"), /must be chatgpt/],
+    [(value) => (value.backend[0].package = "@example/backend"), /unsupported option package/],
     [
-      (value) => (value.provider[0].drivers.service_account = "other-service-accounts"),
+      (value) => (value.backend[0].drivers.service_account = "other-service-accounts"),
       /must match the selected drivers\.service_account\.id/,
     ],
     [
-      (value) => value.provider.push(structuredClone(value.provider[0])),
-      /Provider IDs must be unique/,
+      (value) => value.backend.push(structuredClone(value.backend[0])),
+      /Backend IDs must be unique/,
     ],
     [
       (value) => {
-        const duplicate = structuredClone(value.provider[0]);
+        const duplicate = structuredClone(value.backend[0]);
         duplicate.id = "other-openai";
-        value.provider.push(duplicate);
+        value.backend.push(duplicate);
       },
-      /ServiceAccount Driver cannot belong to multiple Providers/,
+      /ServiceAccount Driver cannot belong to multiple Backends/,
     ],
     [
-      (value) => (value.drivers.service_account.configuration.providerId = "openai"),
+      (value) => (value.drivers.service_account.configuration.backendId = "openai"),
       /unsupported option/,
     ],
   ]) {
@@ -401,7 +392,7 @@ test("ChatGPT startup rejects retired integrations and unsafe provider configura
   }
 });
 
-test("production embedded and dedicated replacements preserve their active Services across failed activation", async (t) => {
+test("production embedded replacements preserve their active Service across failed activation", async (t) => {
   const drivers = await loadInstallationConfiguration({
     mode: "production",
     environment: { OCC_CONFIG_PATH: await fixture(t) },
@@ -426,213 +417,198 @@ test("production embedded and dedicated replacements preserve their active Servi
 
   const shortHash = (value, length) =>
     createHash("sha256").update(value).digest("hex").slice(0, length);
-  for (const harness of [
-    { ...DEVELOPMENT_HARNESS_DESCRIPTOR, mode: "embedded" },
-    { ...PRODUCTION_HARNESS_DESCRIPTOR, mode: "dedicated" },
-  ]) {
-    const namespaceId = `ns_production-${harness.mode}-cutover`;
-    const agentId = `agt_production-${harness.mode}-cutover`;
-    const servicePrincipalId = `service-production-${harness.mode}-cutover`;
-    const predecessor = {
-      id: `rev_production-${harness.mode}-active`,
-      namespaceId,
-      agentId,
-      revision: 1,
-      configurationId: `cfg_production-${harness.mode}-cutover`,
-      configurationKind: "agent",
-      configurationGeneration: 1,
-      configuration: admitLoggingConfiguration(
-        createHarnessConfiguration(harness.id, "gpt-4.1"),
-        "info",
-      ),
-      harnessAuth: {
-        method: "api_key",
-        source: { kind: "secret", namespaceId, id: "sec_production-model" },
-        secretDriverId: "secret-kubernetes",
+  // Dedicated RWO replacement stops its predecessor before preparation. Its
+  // interruption/recovery contract is covered by the PostgreSQL worker and real-cluster suites.
+  const harness = { ...DEVELOPMENT_HARNESS_DESCRIPTOR, mode: "embedded" };
+  const namespaceId = `ns_production-${harness.mode}-cutover`;
+  const agentId = `agt_production-${harness.mode}-cutover`;
+  const servicePrincipalId = `service-production-${harness.mode}-cutover`;
+  const predecessor = {
+    id: `rev_production-${harness.mode}-active`,
+    namespaceId,
+    agentId,
+    revision: 1,
+    configurationId: `cfg_production-${harness.mode}-cutover`,
+    configurationKind: "agent",
+    configurationGeneration: 1,
+    configuration: admitLoggingConfiguration(
+      createHarnessConfiguration(harness.id, "gpt-4.1"),
+      "info",
+    ),
+    harnessAuth: {
+      method: "api_key",
+      source: { kind: "secret", namespaceId, id: "sec_production-model" },
+      secretDriverId: "secret-kubernetes",
+    },
+    harness,
+    compute: { id: computeDriver.id, implementation: computeDriver.implementation },
+    servicePrincipalId,
+    createdAt: new Date().toISOString(),
+  };
+  const candidate = {
+    ...predecessor,
+    id: `rev_production-${harness.mode}-candidate`,
+    revision: 2,
+  };
+  const authContext = {
+    harnessAuth: {
+      ...candidate.harnessAuth,
+      backendRef: {
+        namespaceName: kubernetesGatewayNamespaceName(namespaceId),
+        name: "model-key",
+        key: "value",
+        uid: "model-key-uid",
       },
-      harness,
-      compute: { id: computeDriver.id, implementation: computeDriver.implementation },
-      servicePrincipalId,
-      createdAt: new Date().toISOString(),
-    };
-    const candidate = {
-      ...predecessor,
-      id: `rev_production-${harness.mode}-candidate`,
-      revision: 2,
-    };
-    const authContext = {
-      harnessAuth: {
-        ...candidate.harnessAuth,
-        backendRef: {
-          namespaceName: kubernetesGatewayNamespaceName(namespaceId),
-          name: "model-key",
-          key: "value",
-          uid: "model-key-uid",
-        },
-      },
-    };
-    const embedded = harness.mode === "embedded";
-    const name = `${embedded ? "gateway" : "agent"}-${shortHash(agentId, 12)}`;
-    const activeSelector = embedded
-      ? {
-          "app.kubernetes.io/name": name,
-          "openclaw.dev/agent": agentId,
-        }
-      : {
-          "app.kubernetes.io/name": `${name}-rev-${shortHash(predecessor.id, 12)}`,
-          "openclaw.dev/agent": agentId,
-          "openclaw.dev/revision": predecessor.id,
-        };
-    const ownership = embedded
-      ? { namespaceId, agentId }
-      : { namespaceId, agentId, servicePrincipalId };
-    const service = computeDriver.service(
-      name,
-      ownership,
-      kubernetesNamespaceName(namespaceId),
-      structuredClone(activeSelector),
-    );
-    assert.equal(service.spec.ports[0].name, embedded ? "http" : "websocket");
+    },
+  };
+  const name = `gateway-${shortHash(agentId, 12)}`;
+  const activeSelector = {
+    "app.kubernetes.io/name": name,
+    "openclaw.dev/agent": agentId,
+  };
+  const ownership = { namespaceId, agentId };
+  const service = computeDriver.service(
+    name,
+    ownership,
+    kubernetesNamespaceName(namespaceId),
+    structuredClone(activeSelector),
+  );
+  assert.equal(service.spec.ports[0].name, "http");
 
-    const serviceWrites = [];
-    computeDriver.reconcile = async (manifest) => {
-      assert.equal(manifest.kind, "Service");
-      assert.equal(manifest.metadata.name, name);
-      service.spec.selector = structuredClone(manifest.spec.selector);
-      serviceWrites.push(structuredClone(manifest.spec.selector));
-    };
-    computeDriver.prepareRevision = async (revision) => ({
-      namespaceId: revision.namespaceId,
-      agentId: revision.agentId,
-      revisionId: revision.id,
-      ready: true,
+  const serviceWrites = [];
+  computeDriver.reconcile = async (manifest) => {
+    assert.equal(manifest.kind, "Service");
+    assert.equal(manifest.metadata.name, name);
+    service.spec.selector = structuredClone(manifest.spec.selector);
+    serviceWrites.push(structuredClone(manifest.spec.selector));
+  };
+  computeDriver.prepareRevision = async (revision) => ({
+    namespaceId: revision.namespaceId,
+    agentId: revision.agentId,
+    revisionId: revision.id,
+    ready: true,
+  });
+  const now = new Date();
+  const claim = {
+    idempotencyKey: `revision:${candidate.id}:reconcile`,
+    namespaceId,
+    agentId,
+    revisionId: candidate.id,
+    actorId: "principal-production",
+    state: "claimed",
+    claimToken: randomUUID(),
+    leaseExpiresAt: new Date(now.getTime() + 30_000),
+    availableAt: now,
+    attemptCount: 1,
+    createdAt: now,
+    updatedAt: now,
+  };
+  // This selector unit assumes a live claim at the queue boundary; actual
+  // renewal/loss is exercised by the PostgreSQL worker and stale-claim suites.
+  const heartbeat = t.mock.method(worker.queue, "heartbeat", async (received) => {
+    assert.equal(received, claim);
+    return claim;
+  });
+  worker.state.read = async (read) =>
+    read({
+      agents: {
+        findAgent: async () => ({
+          id: agentId,
+          namespaceId,
+          desiredRuntimeState: "running",
+        }),
+      },
     });
-    const now = new Date();
-    const claim = {
-      idempotencyKey: `revision:${candidate.id}:reconcile`,
-      namespaceId,
-      agentId,
-      revisionId: candidate.id,
-      actorId: "principal-production",
-      state: "claimed",
-      claimToken: randomUUID(),
-      leaseExpiresAt: new Date(now.getTime() + 30_000),
-      availableAt: now,
-      attemptCount: 1,
-      createdAt: now,
-      updatedAt: now,
-    };
-    // This selector unit assumes a live claim at the queue boundary; actual
-    // renewal/loss is exercised by the PostgreSQL worker and stale-claim suites.
-    const heartbeat = t.mock.method(worker.queue, "heartbeat", async (received) => {
-      assert.equal(received, claim);
-      return claim;
-    });
-    worker.state.read = async (read) =>
-      read({
+
+  // Preparation must leave the currently serving selector untouched before CAS.
+  const observation = await worker.observeRevision(claim, candidate, predecessor, predecessor.id);
+  assert.deepEqual(service.spec.selector, activeSelector);
+  assert.deepEqual(serviceWrites, []);
+  assert.equal(observation.expectedActiveRevisionId, predecessor.id);
+
+  const activeAgent = {
+    id: agentId,
+    namespaceId,
+    servicePrincipalId,
+    activeRevisionId: predecessor.id,
+    desiredRuntimeState: "running",
+  };
+  const retries = [];
+  let compareAndSetAttempts = 0;
+  worker.state.transactWithQueue = async (transaction) =>
+    transaction(
+      {
         agents: {
-          findAgent: async () => ({
-            id: agentId,
-            namespaceId,
-            desiredRuntimeState: "running",
-          }),
-        },
-      });
-
-    // Preparation must leave each mode's currently serving selector untouched before CAS.
-    const observation = await worker.observeRevision(claim, candidate, predecessor, predecessor.id);
-    assert.deepEqual(service.spec.selector, activeSelector);
-    assert.deepEqual(serviceWrites, []);
-    assert.equal(observation.expectedActiveRevisionId, predecessor.id);
-
-    const activeAgent = {
-      id: agentId,
-      namespaceId,
-      servicePrincipalId,
-      activeRevisionId: predecessor.id,
-      desiredRuntimeState: "running",
-    };
-    const retries = [];
-    let compareAndSetAttempts = 0;
-    worker.state.transactWithQueue = async (transaction) =>
-      transaction(
-        {
-          agents: {
-            lockAgent: async () => activeAgent,
-            compareAndSetActiveRevision: async (...arguments_) => {
-              compareAndSetAttempts++;
-              assert.deepEqual(arguments_, [namespaceId, agentId, predecessor.id, candidate.id]);
-              return undefined;
-            },
+          lockAgent: async () => activeAgent,
+          compareAndSetActiveRevision: async (...arguments_) => {
+            compareAndSetAttempts++;
+            assert.deepEqual(arguments_, [namespaceId, agentId, predecessor.id, candidate.id]);
+            return undefined;
           },
         },
-        {
-          heartbeat: async () => claim,
-          retry: async (_claim, reason) => retries.push(reason),
-        },
-      );
-    await worker.finalizeRevision(claim, observation);
-    assert.equal(compareAndSetAttempts, 1);
-    assert.deepEqual(retries, [{ code: "ACTIVE_REVISION_CHANGED" }]);
-    assert.equal(activeAgent.activeRevisionId, predecessor.id);
-    assert.deepEqual(service.spec.selector, activeSelector);
-    assert.deepEqual(serviceWrites, []);
+      },
+      {
+        heartbeat: async () => claim,
+        retry: async (_claim, reason) => retries.push(reason),
+      },
+    );
+  await worker.finalizeRevision(claim, observation);
+  assert.equal(compareAndSetAttempts, 1);
+  assert.deepEqual(retries, [{ code: "ACTIVE_REVISION_CHANGED" }]);
+  assert.equal(activeAgent.activeRevisionId, predecessor.id);
+  assert.deepEqual(service.spec.selector, activeSelector);
+  assert.deepEqual(serviceWrites, []);
 
-    if (embedded) {
-      // Recovery for an older claim must never replace a gateway already advanced to a newer revision.
-      const newerGateway = computeDriver.deployment(
-        name,
-        ownership,
-        kubernetesNamespaceName(namespaceId),
-        "openclaw-enterprise/gateway-fixture:local",
-        `agent-${shortHash(agentId, 12)}`,
-        "gateway",
-        {},
-        "info",
-        computeDriver.gatewayConfiguration(candidate),
-        true,
-        servicePrincipalId,
-        computeDriver.harnessAuthForRevision(
-          candidate,
-          authContext,
-          kubernetesGatewayNamespaceName(namespaceId),
-        ),
-      );
-      const originalGet = computeDriver.get;
-      computeDriver.get = async (kind, requestedName) => {
-        assert.equal(kind, "Deployment");
-        assert.equal(requestedName, name);
-        return newerGateway;
-      };
-      try {
-        await assert.rejects(
-          computeDriver.activateRevision(predecessor, authContext),
-          /stale.*activation/i,
-        );
-      } finally {
-        computeDriver.get = originalGet;
-      }
-      assert.deepEqual(serviceWrites, []);
-    }
-
-    const inactiveSelector = { "app.kubernetes.io/name": `${name}-inactive` };
-    if (embedded) {
-      // Embedded preparation already fences its gateway; the worker must never rewrite it pre-CAS.
-      service.spec.selector = computeDriver.service(
-        name,
-        ownership,
-        kubernetesNamespaceName(namespaceId),
-        inactiveSelector,
-      ).spec.selector;
-    }
-    const initial = await worker.observeRevision(claim, candidate, undefined, undefined);
-    assert.equal(initial.outcome, "success");
-    assert.equal(initial.code, "REVISION_ACTIVATED");
-    assert.equal(Object.hasOwn(initial, "expectedActiveRevisionId"), false);
-    assert.deepEqual(serviceWrites, embedded ? [] : [inactiveSelector]);
-    assert.deepEqual(service.spec.selector, inactiveSelector);
-    heartbeat.mock.restore();
+  // Recovery for an older claim must never replace a gateway already advanced to a newer revision.
+  const newerGateway = computeDriver.deployment(
+    name,
+    ownership,
+    kubernetesNamespaceName(namespaceId),
+    "openclaw-enterprise/gateway-fixture:local",
+    `agent-${shortHash(agentId, 12)}`,
+    "gateway",
+    {},
+    "info",
+    computeDriver.gatewayConfiguration(candidate),
+    true,
+    servicePrincipalId,
+    computeDriver.harnessAuthForRevision(
+      candidate,
+      authContext,
+      kubernetesGatewayNamespaceName(namespaceId),
+    ),
+  );
+  const originalGet = computeDriver.get;
+  computeDriver.get = async (kind, requestedName) => {
+    assert.equal(kind, "Deployment");
+    assert.equal(requestedName, name);
+    return newerGateway;
+  };
+  try {
+    await assert.rejects(
+      computeDriver.activateRevision(predecessor, authContext),
+      /stale.*activation/i,
+    );
+  } finally {
+    computeDriver.get = originalGet;
   }
+  assert.deepEqual(serviceWrites, []);
+
+  const inactiveSelector = { "app.kubernetes.io/name": `${name}-inactive` };
+  // Embedded preparation already fences its gateway; the worker must never rewrite it pre-CAS.
+  service.spec.selector = computeDriver.service(
+    name,
+    ownership,
+    kubernetesNamespaceName(namespaceId),
+    inactiveSelector,
+  ).spec.selector;
+  const initial = await worker.observeRevision(claim, candidate, undefined, undefined);
+  assert.equal(initial.outcome, "success");
+  assert.equal(initial.code, "REVISION_ACTIVATED");
+  assert.equal(Object.hasOwn(initial, "expectedActiveRevisionId"), false);
+  assert.deepEqual(serviceWrites, []);
+  assert.deepEqual(service.spec.selector, inactiveSelector);
+  heartbeat.mock.restore();
 });
 
 test("startup accepts actual block-style YAML instead of requiring JSON", async (t) => {
@@ -697,7 +673,7 @@ test("production server and worker resolve singleton startup without an Installa
   assert.doesNotMatch(worker.stderr, /OCC_INSTALLATION_ID|explicit Installation/);
 });
 
-test("only the actual API process reads ChatGPT admin credentials and provider accounts require PostgreSQL", async (t) => {
+test("only the actual API process reads ChatGPT admin credentials and backend accounts require PostgreSQL", async (t) => {
   const path = await fixture(t, chatgptInstallation());
   const shared = {
     PATH: process.env.PATH,
@@ -740,7 +716,7 @@ test("only the actual API process reads ChatGPT admin credentials and provider a
   );
   assert.doesNotMatch(worker.stderr, /ChatGPT|admin-key|ServiceAccount Driver/);
 
-  // Driver-private provider bindings cannot silently fall back to ephemeral in-memory persistence.
+  // Driver-private backend bindings cannot silently fall back to ephemeral in-memory persistence.
   const inMemory = spawnSync(process.execPath, ["apps/controller/src/server.mjs"], {
     cwd: process.cwd(),
     env: {

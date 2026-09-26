@@ -122,7 +122,7 @@ async function projectionFixture(t, { count = 1 } = {}) {
       bindings: bindings.map(({ repositoryRef }) => ({
         repositoryRef,
         profile: "read",
-        providerId: "github",
+        backendId: "github",
         grant: { providerInstanceId: "github-main", repositoryId: "project", grantId: "read" },
       })),
     },

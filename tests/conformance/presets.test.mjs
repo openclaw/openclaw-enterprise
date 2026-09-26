@@ -201,7 +201,12 @@ test("preset admission preserves credential structure and literal and default sc
       },
     },
   };
-  assert.deepEqual(normalizePresetTemplate(template, namespaceId), template);
+  const normalized = normalizePresetTemplate(template, namespaceId);
+  assert.deepEqual(normalized, template);
+  assert.notEqual(normalized, template);
+  assert.notEqual(normalized.configuration.secretBindings, template.configuration.secretBindings);
+  assert.equal(Object.isFrozen(normalized.configuration.secretBindings.BOT_TOKEN.source), true);
+  assert.equal(Object.isFrozen(template.configuration.secretBindings.BOT_TOKEN.source), false);
   const scopedVariable = {
     variables: { scope: { type: "string" } },
     agent: {

@@ -1,7 +1,7 @@
-// Minimal OpenShell v0.1.0-pre.7 gateway surface used by OpenClaw Enterprise.
+// Minimal OpenShell v0.1.0 gateway surface used by OpenClaw Enterprise.
 //
 // This intentionally models only the messages needed for lifecycle-safe
-// Sandbox creation and deletion. Field numbers and wire types match the
+// Workspace and Sandbox lifecycle. Field numbers and wire types match the
 // OpenShell public protos so grpc-js can interoperate with the real gateway.
 syntax = "proto3";
 
@@ -11,6 +11,9 @@ import "google/protobuf/struct.proto";
 
 service OpenShell {
   rpc Health(HealthRequest) returns (HealthResponse);
+  rpc CreateWorkspace(CreateWorkspaceRequest) returns (CreateWorkspaceResponse);
+  rpc GetWorkspace(GetWorkspaceRequest) returns (GetWorkspaceResponse);
+  rpc DeleteWorkspace(DeleteWorkspaceRequest) returns (DeleteWorkspaceResponse);
   rpc CreateSandbox(CreateSandboxRequest) returns (SandboxResponse);
   rpc DeleteSandbox(DeleteSandboxRequest) returns (DeleteSandboxResponse);
 }
@@ -36,6 +39,58 @@ message ObjectMeta {
   uint64 resource_version = 5;
   map<string, string> annotations = 6;
   string workspace = 7;
+}
+
+message Workspace {
+  ObjectMeta metadata = 1;
+  WorkspaceStatus status = 2;
+}
+
+message WorkspaceStatus {
+  WorkspacePhase phase = 1;
+}
+
+enum WorkspacePhase {
+  WORKSPACE_PHASE_UNSPECIFIED = 0;
+  WORKSPACE_PHASE_ACTIVE = 1;
+  WORKSPACE_PHASE_TERMINATING = 2;
+}
+
+message CreateWorkspaceRequest {
+  string name = 1;
+  map<string, string> labels = 2;
+  string request_id = 3;
+}
+
+message CreateWorkspaceResponse {
+  Workspace workspace = 1;
+}
+
+message GetWorkspaceRequest {
+  string name = 1;
+}
+
+message GetWorkspaceResponse {
+  Workspace workspace = 1;
+}
+
+message DeleteWorkspaceRequest {
+  string name = 1;
+  bool allow_missing = 2;
+  string request_id = 3;
+}
+
+message DeleteWorkspaceResponse {
+  reserved 1;
+  reserved "deleted";
+  DeletionOutcome outcome = 2;
+}
+
+enum DeletionOutcome {
+  DELETION_OUTCOME_UNSPECIFIED = 0;
+  DELETION_OUTCOME_COMPLETED = 1;
+  DELETION_OUTCOME_ACCEPTED = 2;
+  DELETION_OUTCOME_ALREADY_ABSENT = 3;
 }
 
 message Sandbox {

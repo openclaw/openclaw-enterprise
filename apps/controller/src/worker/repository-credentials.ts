@@ -105,7 +105,7 @@ export class RepositoryCredentialLifecycle {
           matches.length !== 1 ||
           selected === undefined ||
           selected.profile !== binding.profile ||
-          selected.providerId !== binding.providerId ||
+          selected.backendId !== binding.backendId ||
           !sameGrant(selected.grant, binding.grant)
         );
       })

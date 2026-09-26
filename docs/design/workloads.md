@@ -111,8 +111,8 @@ An `Agent` is the stable, user-configured platform resource. Its explicit
 `executionMode` is either `embedded` or `dedicated`. Its `Configuration`,
 `ServiceAccount`, `Channel`, `Secret`, and `SandboxPolicy` references belong to
 its Namespace; its native Configuration selects a Harness approved for the same
-Installation. Its optional `providerId` references Installation-owned Provider
-configuration; null preserves providerless Agents. It can also own desired
+Installation. Its optional `backendId` references Installation-owned Backend
+configuration; null preserves Agents without a Backend. It can also own desired
 plugin selections independently of its reusable Configuration. One
 Installation-selected PluginDriver validates and renders those selections during
 revision startup.
@@ -135,19 +135,19 @@ Deploying an Agent follows one path.
 4. Each separately protected reference receives its own allow decision from
    the authoritative `IAMDriver` for that exact resource.
 5. OCC validates Namespace and Installation scope for every reference. It resolves
-   the optional Provider and required related Drivers; a managed access token
-   requires the exact private Provider, Driver, workspace, account, and issued
+   the optional Backend and required related Drivers; a managed access token
+   requires the exact private Backend, Driver, workspace, account, and issued
    credential binding.
 6. OCC verifies that the exact backing tenant infrastructure is ready in the
    selected runtime targets and that the selected `SandboxDriver` supports the
    entire `SandboxPolicy`. Gateway readiness remains part of the exact Agent's
    revision preparation.
 7. OCC creates an immutable `AgentRevision` from the admitted Agent,
-   configuration, references including nullable `providerId`, requested plugin
+   configuration, references including nullable `backendId`, requested plugin
    selections, server-approved Harness identity/version and explicit mode,
    sandbox policy, and selected compute, sandbox, and plugin implementations.
 8. OCC gives selected Drivers the same revision, exact Namespace, and
-   stable Agent `WorkloadIdentity`. The worker rechecks Provider metadata and
+   stable Agent `WorkloadIdentity`. The worker rechecks Backend metadata and
    managed credential ownership after current IAM authorization and before effects.
 9. The selected Compute Driver invokes revision-scoped `prepareRevision` to
    provision the exact Agent's configured gateway and requested topology in
