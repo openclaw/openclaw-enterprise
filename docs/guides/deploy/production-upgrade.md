@@ -94,10 +94,17 @@ scripts/upgrade-production-images \
   --occ /secure/occ/bin/occ
 ```
 
-The command verifies the selected cluster and OCC Installation, checks that the
-protected files match live state, renders the chart, and performs a server-side
-dry run. It then changes only `images.controller`, runs Helm, waits for the API
-and worker, verifies their image, and confirms OCC authentication recovers.
+The command verifies the selected cluster and OCC Installation and checks that
+protected files match live state. When repository credentials are enabled, it
+reads the running worker's broker origin and carries its Service name and exact
+hostname into the candidate values. It rejects a mismatch with explicit Helm
+settings. Keep the protected values equal to live values; do not add the hostname
+manually before running the helper. It then renders the chart and performs a
+server-side dry run.
+
+The command changes `images.controller`, persists the preserved broker endpoint
+when enabled, runs Helm, waits for the API and worker, verifies their image, and
+confirms OCC authentication recovers.
 
 Helm runs the candidate controller's database migration init container with the
 migration role, then runs bootstrap. The API and worker do not roll out unless

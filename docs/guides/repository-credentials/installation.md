@@ -169,7 +169,9 @@ in effect. Unbound Agents receive no generated policy change. Because worker and
 sidecar share a Pod network namespace, these rules do not isolate containers
 within that Pod.
 
-For an existing installation with active repository sessions, keep
+The [image upgrade helper](../deploy/production-upgrade.md) carries forward the
+running broker's Service name and exact hostname automatically. For direct Helm
+upgrades of an existing installation with active repository sessions, keep
 `repositoryCredentials.serviceName` and `repositoryCredentials.hostname` set to
 the current Service name and exact broker hostname. The hostname must be
 `<serviceName>.<namespace>.svc` or that name followed by `.<clusterDomain>`;

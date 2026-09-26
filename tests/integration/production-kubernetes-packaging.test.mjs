@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
@@ -687,6 +687,197 @@ test(
         "--backend-id",
         "github-primary",
       ]);
+    }
+  },
+);
+
+test(
+  "image upgrade helper preserves the live broker endpoint before rendering Helm",
+  tooling,
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "broker-upgrade-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const bin = join(directory, "bin");
+    await mkdir(bin);
+    const liveValues = join(directory, "live-values.yaml");
+    // Use chart defaults and real Helm/yq; only remote reads are fixtures.
+    const defaults = await readFile(
+      new URL("../../deploy/helm/openclaw-enterprise/values.yaml", import.meta.url),
+      "utf8",
+    );
+    await writeFile(liveValues, defaults, { mode: 0o600 });
+    const initial = { ...values, ...repositoryCredentialValues };
+    for (const [key, value] of Object.entries(initial)) {
+      await execute(process.env.OCC_YQ_BIN ?? "yq", [
+        "-i",
+        `${key.startsWith(".") ? key : `.${key}`} = ${JSON.stringify(value)}`,
+        liveValues,
+      ]);
+    }
+    await execute(process.env.OCC_YQ_BIN ?? "yq", [
+      "-i",
+      ".repositoryCredentials.enabled = true | del(.repositoryCredentials.hostname, .repositoryCredentials.serviceName)",
+      liveValues,
+    ]);
+    const installation = join(directory, "installation.json");
+    const kubeconfig = join(directory, "kubeconfig");
+    const key = join(directory, "key");
+    for (const path of [installation, kubeconfig, key]) {
+      await writeFile(path, "{}", { mode: 0o600 });
+    }
+    const secret = join(directory, "secret.json");
+    await writeFile(
+      secret,
+      JSON.stringify({
+        metadata: { annotations: { "openclaw.dev/installation-id": "ins_test" } },
+        data: { "installation.yaml": Buffer.from("{}").toString("base64") },
+      }),
+      { mode: 0o600 },
+    );
+    const worker = join(directory, "worker.json");
+    const wrappers = {
+      kubectl: `#!/usr/bin/env bash
+case "$*" in
+  *'get secret '*) cat "$TEST_SECRET" ;;
+  *'get deployment openclaw-enterprise-worker '*) cat "$TEST_WORKER" ;;
+  *'get deployments,statefulsets,pods,persistentvolumeclaims '*) printf '{"items":[]}' ;;
+  *'get --raw=/readyz'*) printf 'ok' ;;
+  *) exit 90 ;;
+esac
+`,
+      occ: `#!/usr/bin/env bash
+printf '{"id":"ins_test"}'
+`,
+      helm: `#!/usr/bin/env bash
+case "$1 $2" in
+  'get values') cat "$TEST_LIVE_VALUES" ;;
+  'status oce') printf 'deployed' ;;
+  'template oce') exec "$TEST_REAL_HELM" "$@" ;;
+  'upgrade --install') exit 47 ;;
+  *) exit 91 ;;
+esac
+`,
+    };
+    for (const [name, contents] of Object.entries(wrappers)) {
+      await writeFile(join(bin, name), contents);
+      await chmod(join(bin, name), 0o755);
+    }
+    const realHelm = (await execute("sh", ["-c", 'command -v "$1"', "sh", helm])).stdout.trim();
+    for (const [name, hostname, configuredHostname, failure] of [
+      ["short", "broker.openclaw-system.svc"],
+      ["full", "broker.openclaw-system.svc.cluster.local"],
+      [
+        "conflicting",
+        "broker.openclaw-system.svc",
+        "broker.openclaw-system.svc.cluster.local",
+        /live origin and Helm Service settings disagree/,
+      ],
+      [
+        "foreign",
+        "broker.other-namespace.svc",
+        undefined,
+        /live origin and Helm Service settings disagree/,
+      ],
+    ]) {
+      await writeFile(
+        worker,
+        JSON.stringify({
+          metadata: { labels: { "app.kubernetes.io/instance": "oce" } },
+          spec: {
+            template: {
+              spec: {
+                containers: [
+                  {
+                    name: "repository-credentials",
+                    args: [
+                      "--public-origin",
+                      `https://${hostname}`,
+                      "--backend-id",
+                      "github-primary",
+                    ],
+                  },
+                ],
+              },
+            },
+          },
+        }),
+      );
+      await execute(process.env.OCC_YQ_BIN ?? "yq", [
+        "-i",
+        configuredHostname
+          ? `.repositoryCredentials.hostname = ${JSON.stringify(configuredHostname)}`
+          : "del(.repositoryCredentials.hostname)",
+        liveValues,
+      ]);
+      const evidence = join(directory, name);
+      await assert.rejects(
+        execute(
+          new URL("../../scripts/upgrade-production-images", import.meta.url).pathname,
+          [
+            "--kubeconfig",
+            kubeconfig,
+            "--context",
+            "fixture",
+            "--namespace",
+            "openclaw-system",
+            "--release",
+            "oce",
+            "--values",
+            liveValues,
+            "--installation",
+            installation,
+            "--controller-image",
+            `registry.example.invalid/controller@sha256:${"c".repeat(64)}`,
+            "--source-revision",
+            "d".repeat(40),
+            "--evidence-dir",
+            evidence,
+            "--occ",
+            join(bin, "occ"),
+          ],
+          {
+            cwd: repository,
+            env: {
+              ...process.env,
+              PATH: `${bin}:${process.env.PATH}`,
+              OCC_URL: "https://occ.example.invalid",
+              OCC_SERVICE_KEY_FILE: key,
+              TEST_SECRET: secret,
+              TEST_WORKER: worker,
+              TEST_LIVE_VALUES: liveValues,
+              TEST_REAL_HELM: realHelm,
+            },
+          },
+        ),
+        (error) => {
+          if (failure) {
+            assert.match(error.stderr, failure);
+          } else {
+            assert.equal(error.code, 47, error.stderr);
+          }
+          return true;
+        },
+      );
+      if (!failure) {
+        const candidate = await resources(await readFile(join(evidence, "rendered.yaml"), "utf8"));
+        const deployment = candidate.find(
+          ({ kind, metadata }) =>
+            kind === "Deployment" && metadata.name === "openclaw-enterprise-worker",
+        );
+        const broker = deployment.spec.template.spec.containers.find(
+          ({ name }) => name === "repository-credentials",
+        );
+        assert.equal(broker.args[1], `https://${hostname}`);
+        assert.ok(
+          candidate.some(({ kind, metadata }) => kind === "Service" && metadata.name === "broker"),
+        );
+        const retained = loadYaml(await readFile(liveValues, "utf8"));
+        assert.equal(
+          retained.repositoryCredentials.serviceName,
+          undefined,
+          "dry-run must not mutate protected inputs",
+        );
+      }
     }
   },
 );

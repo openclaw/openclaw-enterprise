@@ -52,13 +52,15 @@ graph TD
 
 ## Execution Trace
 
-Before an image-only upgrade, preserve the repository broker's exact hostname
-in Helm values. `deploy/helm/openclaw-enterprise/templates/_helpers.tpl` validates
-`repositoryCredentials.hostname` against the selected Service and namespace;
-empty selects its cluster-qualified DNS name. The worker sidecar uses that host
-for TLS validation and newly admitted repository sessions. Keeping only the
-Service name does not preserve an existing `.svc` origin. See the
-[repository installation guide](../guides/repository-credentials/installation.md).
+For repository-enabled releases, `scripts/upgrade-production-images` reads the
+worker's broker origin after checking protected/live values and Installation
+identity. It validates the origin against the release namespace, Service name,
+and cluster domain, then writes the exact hostname and Service name into the
+candidate values. Explicit conflicting settings stop the upgrade.
+`deploy/helm/openclaw-enterprise/templates/_helpers.tpl` restricts that hostname
+to the selected Service's namespace-qualified or cluster-qualified DNS name.
+The sidecar uses it for certificate validation and new repository sessions.
+See the [repository installation guide](../guides/repository-credentials/installation.md).
 
 ### 1. Validate the target and selected ownership
 

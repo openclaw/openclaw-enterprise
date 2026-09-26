@@ -264,6 +264,40 @@ candidate_values="$evidence_dir/candidate-values.yaml"
 candidate_installation="$evidence_dir/candidate-installation.yaml"
 cp "$values" "$candidate_values"
 cp "$installation" "$candidate_installation"
+
+# Keep the endpoint already pinned by certificates and repository sessions.
+# Read it only after protected/live values and Installation identity agree.
+if [[ $(yq -r '.repositoryCredentials.enabled // false' "$values") == true ]]; then
+  broker_deployment="$evidence_dir/before-broker-deployment.json"
+  "${kube[@]}" --namespace "$namespace" get deployment openclaw-enterprise-worker \
+    --output json >"$broker_deployment"
+  yq -o=json '.' "$values" >"$evidence_dir/before-broker-values.json"
+  broker_hostname=$(python3 - "$broker_deployment" "$evidence_dir/before-broker-values.json" "$namespace" "$release" <<'PYTHON'
+import json, re, sys
+try:
+    deployment = json.load(open(sys.argv[1]))
+    values = json.load(open(sys.argv[2]))["repositoryCredentials"]
+    assert deployment["metadata"]["labels"]["app.kubernetes.io/instance"] == sys.argv[4]
+    containers = [c for c in deployment["spec"]["template"]["spec"]["containers"] if c["name"] == "repository-credentials"]
+    assert len(containers) == 1
+    args = containers[0]["args"]
+    assert args.count("--public-origin") == 1
+    origin = args[args.index("--public-origin") + 1]
+    domain = values.get("clusterDomain", "cluster.local")
+    match = re.fullmatch(r"https://([a-z][a-z0-9-]*)\." + re.escape(sys.argv[3]) + r"\.svc(?:\." + re.escape(domain) + r")?", origin)
+    assert match is not None
+    hostname = origin.removeprefix("https://")
+    assert not values.get("serviceName") or values["serviceName"] == match[1]
+    assert not values.get("hostname") or values["hostname"] == hostname
+    print(hostname)
+except (AssertionError, KeyError, ValueError, TypeError, IndexError):
+    sys.exit("Cannot preserve repository broker hostname: live origin and Helm Service settings disagree.")
+PYTHON
+  )
+  BROKER_HOSTNAME="$broker_hostname" BROKER_SERVICE_NAME="${broker_hostname%%.*}" yq -i \
+    '.repositoryCredentials.hostname = strenv(BROKER_HOSTNAME) |
+     .repositoryCredentials.serviceName = strenv(BROKER_SERVICE_NAME)' "$candidate_values"
+fi
 if [[ -n "$controller_image" ]]; then
   CONTROLLER_IMAGE="$controller_image" yq -i \
     '.images.controller = strenv(CONTROLLER_IMAGE)' "$candidate_values"
