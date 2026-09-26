@@ -97,6 +97,13 @@
 {{- fail "repositoryCredentials.clusterDomain must be a valid Kubernetes cluster DNS domain" -}}
 {{- end -}}
 {{- end -}}
+{{- if not (kindIs "string" $credentials.hostname) -}}
+{{- fail "repositoryCredentials.hostname must be a string" -}}
+{{- end -}}
+{{- $serviceHost := printf "%s.%s.svc" $serviceName .Release.Namespace -}}
+{{- if and $credentials.hostname (ne $credentials.hostname $serviceHost) (ne $credentials.hostname (printf "%s.%s" $serviceHost $clusterDomain)) -}}
+{{- fail "repositoryCredentials.hostname must match this Service's namespace-qualified or cluster-qualified DNS name" -}}
+{{- end -}}
 {{- $hostname := include "openclaw.repositoryCredentials.hostname" . -}}
 {{- if gt (len $hostname) 253 -}}
 {{- fail "repository credential broker hostname must not exceed 253 characters" -}}
@@ -234,7 +241,7 @@ capabilities:
 {{- end -}}
 
 {{- define "openclaw.repositoryCredentials.hostname" -}}
-{{- printf "%s.%s.svc.%s" (include "openclaw.repositoryCredentials.serviceName" .) .Release.Namespace (include "openclaw.repositoryCredentials.clusterDomain" .) -}}
+{{- default (printf "%s.%s.svc.%s" (include "openclaw.repositoryCredentials.serviceName" .) .Release.Namespace (include "openclaw.repositoryCredentials.clusterDomain" .)) .Values.repositoryCredentials.hostname -}}
 {{- end -}}
 
 {{- define "openclaw.repositoryCredentials.origin" -}}

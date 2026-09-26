@@ -33,9 +33,9 @@ Place these operator inputs in a private directory such as `/secure/occ/reposito
 | `ca.crt`             | Public PEM CA trust for that certificate, without private keys   |
 
 Provision the certificate through your issuer. Its exact DNS SAN must cover the
-internal Service host derived from Helm's `repositoryCredentials.serviceName`,
-release namespace, and `repositoryCredentials.clusterDomain`, which defaults to
-`git.openclaw-system.svc.cluster.local`; wildcard or Common Name fallback does
+internal Service host selected by Helm's `repositoryCredentials.hostname`.
+When empty, the chart derives `<serviceName>.<namespace>.svc.<clusterDomain>`,
+which defaults to `git.openclaw-system.svc.cluster.local`; wildcard or Common Name fallback does
 not satisfy the Kubernetes projection check. Change the namespace, Service name,
 and cluster domain consistently if installing elsewhere. The internal Service
 exposes HTTPS 443 and forwards to sidecar port 8443. Do not disable certificate
@@ -144,6 +144,7 @@ repositoryCredentials:
   enabled: true
   image: "<credential-service-image>@sha256:<digest>"
   serviceName: git
+  hostname: "" # Empty selects git.<release-namespace>.svc.<clusterDomain>.
   backendId: repository-backend
   registryConfigMapName: occ-repository-registry-v1
   serviceConfigSecretName: occ-repository-service
@@ -169,10 +170,15 @@ sidecar share a Pod network namespace, these rules do not isolate containers
 within that Pod.
 
 For an existing installation with active repository sessions, keep
-`repositoryCredentials.serviceName` set to the old Service name until those
-sessions drain, then issue a certificate for
-`git.<namespace>.svc.<clusterDomain>`, switch the value to `git`, and deploy new
-Agent revisions. Restarting the broker process can lose in-memory sessions, and
+`repositoryCredentials.serviceName` and `repositoryCredentials.hostname` set to
+the current Service name and exact broker hostname. The hostname must be
+`<serviceName>.<namespace>.svc` or that name followed by `.<clusterDomain>`;
+URLs, ports, and unrelated hosts are rejected. For example, a broker using
+`openclaw-enterprise-repository-credentials.openclaw-system.svc` must retain that
+full value in `hostname`, even with the same Service name. Preserve its CA and
+certificate until sessions drain. Then issue a certificate for
+`git.<namespace>.svc.<clusterDomain>`, set `serviceName` to `git`, clear
+`hostname` to use the derived name, and deploy new Agent revisions. Restarting the broker process can lose in-memory sessions, and
 an old mounted session also pins the broker origin and public trust material it
 received at admission. The chart cannot detect whether sessions have drained;
 upgrades fail unless `serviceName` is explicit so operators choose the current

@@ -627,9 +627,23 @@ test(
   "repository credential Helm packaging derives the broker origin from Service settings",
   tooling,
   async () => {
-    for (const [namespace, serviceName, clusterDomain, expectedOrigin] of [
+    for (const [namespace, serviceName, clusterDomain, expectedOrigin, hostname] of [
       ["tenant-control", undefined, undefined, "https://git.tenant-control.svc.cluster.local"],
       ["tenant-control", "git", undefined, "https://git.tenant-control.svc.cluster.local"],
+      [
+        "tenant-control",
+        "git",
+        undefined,
+        "https://git.tenant-control.svc",
+        "git.tenant-control.svc",
+      ],
+      [
+        "tenant-control",
+        "git",
+        "cluster.internal",
+        "https://git.tenant-control.svc.cluster.internal",
+        "git.tenant-control.svc.cluster.internal",
+      ],
       [
         "tenant-control",
         "git",
@@ -645,6 +659,7 @@ test(
     ]) {
       const overrides = {
         ...repositoryCredentialValues,
+        ...(hostname === undefined ? {} : { "repositoryCredentials.hostname": hostname }),
         ...(serviceName === undefined ? {} : { "repositoryCredentials.serviceName": serviceName }),
         ...(clusterDomain === undefined
           ? {}
@@ -757,6 +772,16 @@ test(
       [{ "repositoryCredentials.tlsSecretName": "repository-config" }, /dedicated Secret/],
       [{ "repositoryCredentials.upstreamCidrs[0]": "0.0.0.0/0" }, /explicit IPv4 CIDRs/],
       [{ "repositoryCredentials.upstreamCidrs[0]": "999.1.1.1/32" }, /invalid IPv4 address/],
+      ...[
+        "external.example.com",
+        "git.other-namespace.svc",
+        "other.openclaw-system.svc",
+        "git.openclaw-system.svc.other-cluster",
+        "https://git.openclaw-system.svc",
+        "git.openclaw-system.svc:443",
+        "git.openclaw-system.svc.",
+      ].map((hostname) => [{ "repositoryCredentials.hostname": hostname }, /hostname must match/]),
+      [{ "repositoryCredentials.hostname[0]": "git" }, /hostname must be a string/],
       [{ "repositoryCredentials.serviceName": "1git" }, /DNS-1035/],
       [{ "repositoryCredentials.serviceName": "git.openclaw-system.svc" }, /DNS-1035/],
       [{ "repositoryCredentials.serviceName": "a".repeat(64) }, /DNS-1035/],
