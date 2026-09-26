@@ -23,15 +23,80 @@ const docker = process.env.OCC_DOCKER_BIN ?? "docker";
 const image = process.env.OCC_TEST_RUNTIME_IMAGE;
 const runtimeImageModel = defaultAgentModel;
 const syntheticCodexApiKey = "sk-openclaw-runtime-image-smoke-synthetic";
-const reviewedCodexSeccompProfileSha256 =
+const manualReviewedCodexSeccompProfileSha256 =
   "71a2871a066a696a171049a15db3f065122c153cd11ef451cee3341ddbd9697f";
-const reviewedCodexSeccompProfileFile = `codex-0.156.0-${reviewedCodexSeccompProfileSha256}.json`;
+const reviewedCodexSeccompProfileFilePattern = /^codex-0\.156\.0-([a-f0-9]{64})\.json$/;
 const imageTestOptions =
   image === undefined
     ? {
         skip: "Set OCC_TEST_RUNTIME_IMAGE to a locally built OpenClaw runtime image tag.",
       }
     : {};
+
+test("runtime image seccomp option requires the CI-prepared profile record", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "oce-runtime-seccomp-profile-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const contents = Buffer.from(`${JSON.stringify({ defaultAction: "SCMP_ACT_ERRNO" })}\n`);
+  const digest = createHash("sha256").update(contents).digest("hex");
+  const profile = join(directory, `codex-0.156.0-${digest}.json`);
+  const statePath = join(directory, "state.json");
+  await writeFile(profile, contents);
+  await writeFile(
+    statePath,
+    JSON.stringify({
+      resources: [
+        {
+          kind: "k3d-cluster",
+          codexDockerSeccompProfile: { path: profile, sha256: digest },
+        },
+      ],
+    }),
+  );
+
+  assert.deepEqual(await reviewedCodexSeccompSecurityOptions({ profile, ciStatePath: statePath }), [
+    "--security-opt",
+    "no-new-privileges",
+    "--security-opt",
+    `seccomp=${profile}`,
+  ]);
+
+  await assert.rejects(
+    reviewedCodexSeccompSecurityOptions({ profile }),
+    /must be prepared by images-packaging CI state/,
+  );
+
+  await writeFile(
+    statePath,
+    JSON.stringify({
+      resources: [
+        {
+          kind: "k3d-cluster",
+          codexDockerSeccompProfile: { path: join(directory, "other.json"), sha256: digest },
+        },
+      ],
+    }),
+  );
+  await assert.rejects(
+    reviewedCodexSeccompSecurityOptions({ profile, ciStatePath: statePath }),
+    /must match the CI-prepared Codex seccomp profile path/,
+  );
+
+  await writeFile(
+    statePath,
+    JSON.stringify({
+      resources: [
+        {
+          kind: "k3d-cluster",
+          codexDockerSeccompProfile: { path: profile, sha256: "0".repeat(64) },
+        },
+      ],
+    }),
+  );
+  await assert.rejects(
+    reviewedCodexSeccompSecurityOptions({ profile, ciStatePath: statePath }),
+    /must match the CI-prepared Codex seccomp profile digest/,
+  );
+});
 
 test(
   "runtime image reaps descendants during workspace node and Codex restarts",
@@ -188,8 +253,40 @@ async function runDocker(args, options = {}) {
   });
 }
 
-async function reviewedCodexSeccompSecurityOptions() {
-  const profile = process.env.OCC_TEST_CODEX_SECCOMP_PROFILE;
+async function ciPreparedCodexSeccompProfile(ciStatePath) {
+  if (ciStatePath === undefined || ciStatePath.length === 0) {
+    return undefined;
+  }
+  let state;
+  try {
+    state = JSON.parse(await readFile(ciStatePath, "utf8"));
+  } catch (error) {
+    throw new Error(
+      `OPENCLAW_ENTERPRISE_CI_STATE must name readable CI preparation state for OCC_TEST_CODEX_SECCOMP_PROFILE: ${error.message}`,
+      { cause: error },
+    );
+  }
+  const cluster = state.resources?.find(
+    (resource) => resource?.kind === "k3d-cluster" && resource.codexDockerSeccompProfile,
+  );
+  const prepared = cluster?.codexDockerSeccompProfile;
+  assert.equal(
+    typeof prepared?.path,
+    "string",
+    "OPENCLAW_ENTERPRISE_CI_STATE must record cluster.codexDockerSeccompProfile.path.",
+  );
+  assert.match(
+    prepared.sha256 ?? "",
+    /^[a-f0-9]{64}$/,
+    "OPENCLAW_ENTERPRISE_CI_STATE must record cluster.codexDockerSeccompProfile.sha256.",
+  );
+  return prepared;
+}
+
+async function reviewedCodexSeccompSecurityOptions({
+  profile = process.env.OCC_TEST_CODEX_SECCOMP_PROFILE,
+  ciStatePath = process.env.OPENCLAW_ENTERPRISE_CI_STATE,
+} = {}) {
   const securityOptions = ["--security-opt", "no-new-privileges"];
   if (profile === undefined || profile.length === 0) {
     return securityOptions;
@@ -200,10 +297,10 @@ async function reviewedCodexSeccompSecurityOptions() {
     false,
     "OCC_TEST_CODEX_SECCOMP_PROFILE must not select an unconfined seccomp profile.",
   );
-  assert.equal(
-    basename(profile),
-    reviewedCodexSeccompProfileFile,
-    `OCC_TEST_CODEX_SECCOMP_PROFILE must point to ${reviewedCodexSeccompProfileFile}.`,
+  const expected = basename(profile).match(reviewedCodexSeccompProfileFilePattern)?.[1];
+  assert.ok(
+    expected,
+    "OCC_TEST_CODEX_SECCOMP_PROFILE must point to codex-0.156.0-<profile-sha256>.json.",
   );
 
   let contents;
@@ -211,7 +308,7 @@ async function reviewedCodexSeccompSecurityOptions() {
     contents = await readFile(profile);
   } catch (error) {
     throw new Error(
-      `OCC_TEST_CODEX_SECCOMP_PROFILE must name a readable reviewed Codex seccomp profile: ${error.message}`,
+      `OCC_TEST_CODEX_SECCOMP_PROFILE must name a readable Codex seccomp profile: ${error.message}`,
       { cause: error },
     );
   }
@@ -219,9 +316,29 @@ async function reviewedCodexSeccompSecurityOptions() {
   const actual = createHash("sha256").update(contents).digest("hex");
   assert.equal(
     actual,
-    reviewedCodexSeccompProfileSha256,
-    `OCC_TEST_CODEX_SECCOMP_PROFILE digest ${actual} did not match the reviewed Codex 0.156.0 profile digest.`,
+    expected,
+    `OCC_TEST_CODEX_SECCOMP_PROFILE digest ${actual} did not match the Codex 0.156.0 profile filename digest ${expected}.`,
   );
+
+  const prepared = await ciPreparedCodexSeccompProfile(ciStatePath);
+  if (prepared === undefined) {
+    assert.equal(
+      expected,
+      manualReviewedCodexSeccompProfileSha256,
+      "OCC_TEST_CODEX_SECCOMP_PROFILE must be prepared by images-packaging CI state or use the pinned manual reviewed Codex profile.",
+    );
+  } else {
+    assert.equal(
+      profile,
+      prepared.path,
+      "OCC_TEST_CODEX_SECCOMP_PROFILE must match the CI-prepared Codex seccomp profile path.",
+    );
+    assert.equal(
+      actual,
+      prepared.sha256,
+      "OCC_TEST_CODEX_SECCOMP_PROFILE must match the CI-prepared Codex seccomp profile digest.",
+    );
+  }
   return [...securityOptions, "--security-opt", `seccomp=${profile}`];
 }
 

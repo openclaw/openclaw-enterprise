@@ -154,8 +154,11 @@ Then run the runtime startup smoke from the repository root with host Node.js
 [Image and Helm tests](../../docs/testing/images.md#runtime-image-startup-test-environment):
 
 ```bash
-OCC_TEST_RUNTIME_IMAGE=openclaw-enterprise-runtime:quickstart \
-OCC_TEST_CODEX_SECCOMP_PROFILE=/path/to/codex-0.156.0-71a2871a066a696a171049a15db3f065122c153cd11ef451cee3341ddbd9697f.json \
+node scripts/ci/prepare.mjs --lane images-packaging --state /tmp/images-packaging.json --github-env /tmp/images-packaging.env
+set -a
+. /tmp/images-packaging.env
+set +a
+OPENCLAW_ENTERPRISE_CI_STATE=/tmp/images-packaging.json \
   node --test tests/integration/runtime-image-startup.test.mjs
 ```
 
