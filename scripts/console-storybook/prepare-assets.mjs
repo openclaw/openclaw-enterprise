@@ -16,6 +16,15 @@ await copyFile(
   new URL("preset-variables.mjs", assets),
 );
 
+await copyFile(
+  new URL("agents/plugin-fields.mjs", assets),
+  new URL("agents/plugin-fields.production.mjs", assets),
+);
+await writeFile(
+  new URL("agents/plugin-fields.mjs", assets),
+  await readFile(new URL("./plugin-fields.storybook-wrapper.mjs", import.meta.url), "utf8"),
+);
+
 // Preview shipped Presets so screenshots follow their current contracts.
 for (const name of [
   "standard-codex",

@@ -9,13 +9,19 @@ entry. The checkpoint now adds Linear, sets automatic review by default, and
 requires approval for Create issue. This remains simulated UI evidence, not live
 plugin access, credential readiness, or runtime policy enforcement.
 
+The current DevDay Storybook fixture keeps that catalog available regardless of
+the create path: Start without Preset, every DevDay Preset, both standard
+Presets, new model Secret entry, and existing model Secret selection. The
+checkpoint exercises the same Linear policy steps and reaches the Workspace tab.
+
 Verified source `a27ec9ad9d032cba731b4703621a1dd44008f867`, rebased onto
 `fbbc0e42`, in headed Chromium on macOS on September 24, 2026. The manual
 segment 1 walkthrough selects SWE Agent with a fake newly entered service-account
 token, loads the plugin catalog, adds Calendar, sets automatic review by default,
 and requires approval for Create event. It then selects both repositories,
 configures Slack, creates the simulated Agent, and opens the Admin UI.
-The checkpoint completes the same plugin controls automatically.
+Those media files are historical evidence for the earlier Calendar-based
+walkthrough; the current checkpoint exercises Linear automatically.
 
 - [Plugin catalog](plugins/01-plugin-catalog.png),
   [tool policy](plugins/02-tool-policy.png), and

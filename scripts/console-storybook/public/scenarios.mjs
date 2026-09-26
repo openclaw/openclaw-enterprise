@@ -304,7 +304,6 @@ const devdayCreateCheckpoint = [
   { selector: "#preset-variable-modelSecret", value: "at-demo-devday-service-account-token" },
   click("Use Preset"),
   click("Configure plugins"),
-  click("Load plugins"),
   { selector: 'button[aria-label="Linear"]', click: true },
   click("Add Linear"),
   { selector: 'select[aria-label="Linear default reviewer"]', value: "auto" },
@@ -2502,6 +2501,9 @@ export const scenarios = {
     },
     pluginDiscovery: devdayPluginDiscovery,
     pluginCapabilities,
+    fixturePluginCatalog: true,
+    fixturePluginCatalogMessage:
+      "Storybook is showing a simulated curated plugin catalog for DevDay rehearsal. Real deployments still require plugin access for the selected service account.",
     repositoryOptions: [
       {
         repositoryRef: "openclaw/openclaw-enterprise",
@@ -2535,7 +2537,7 @@ export const scenarios = {
       "Start on the Agents list with the already deployed oceclaw seed, then click Create Agent.",
       "The picker includes SWE Agent, Partners Agent, Q&A Agent, and Oncall Agent. Select SWE Agent and enter devday claw for its name.",
       "Keep the default gpt-6-astra model. Storybook fills the fake modelSecret at-demo-devday-service-account-token for rehearsal only; click Use Preset. Review AGENTS.md: its opening sentence now says You are devday claw. Workspace defaults remain editable.",
-      "Open Configure plugins. The simulated curated catalog loads from the fake service-account token; add Linear, set Linear default reviewer to Automatic review, and set Create issue approval to Ask for approval.",
+      "Open Configure plugins. The simulated curated catalog is available for every Preset and Secret choice in this Storybook flow; add Linear, set Linear default reviewer to Automatic review, and set Create issue approval to Ask for approval.",
       "Repository access offers openclaw/openclaw-enterprise and openclaw/openclaw. Select either or both with Contributor access.",
       "Open Edit Slack. Confirm prefilled channel C0C43A2QA11, allow simulated user UDEMO123, then bind the existing simulated DevDay Slack Secrets and apply settings.",
       "Create Agent and keep the Console visible while the fixture progresses through provisioning and deployment activation until Workspace files open for the admitted revision.",
@@ -2560,6 +2562,9 @@ export const scenarios = {
     },
     pluginDiscovery: devdayPluginDiscovery,
     pluginCapabilities,
+    fixturePluginCatalog: true,
+    fixturePluginCatalogMessage:
+      "Storybook is showing a simulated curated plugin catalog for DevDay rehearsal. Real deployments still require plugin access for the selected service account.",
     repositoryOptions: [
       {
         repositoryRef: "openclaw/openclaw-enterprise",
