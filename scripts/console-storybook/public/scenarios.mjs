@@ -1066,7 +1066,7 @@ export const scenarios = {
   },
   createRepositoriesUnavailable: {
     group: "Pages/Create Agent",
-    name: "Optional repository service unavailable",
+    name: "Repository choices unavailable",
     path: create,
     actions: repositoryForm,
     rules: [
@@ -1077,7 +1077,12 @@ export const scenarios = {
       },
     ],
     description:
-      "The endpoint-specific optional-unavailability response permits an ordinary Agent. The preview does not establish real authorization.",
+      "Unavailable repository choices show administrator setup guidance and allow a draft without repositories.",
+    steps: [
+      "Read the setup guidance and open Set up repository access to review the operator procedure.",
+      "Retry repository choices, or save a draft without repositories.",
+    ],
+    gap: "Simulated UI proof only; this preview does not configure a GitHub App or verify repository access.",
   },
   createRepositoryNavigationOutage: {
     group: "Pages/Create Agent",

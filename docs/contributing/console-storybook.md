@@ -144,8 +144,10 @@ See [Create and deploy in the console](../reference/console/create-and-deploy.md
 for the supported installation workflow and prerequisites.
 
 Repository previews cover shared access levels, empty or pending discovery,
-optional service unavailability, denied or unverified authorization, and reselection
-after a rejected save. The recovery story retains its saved Configuration and
+setup guidance when choices are unavailable, denied or unverified authorization,
+and reselection after a rejected save. In **Repository choices unavailable**, follow
+the setup link or retry discovery; a draft without repositories remains available.
+The recovery story retains its saved Configuration and
 requires a current nonempty repository selection before retrying. GitHub App
 setup, Namespace approvals, runtime images, and credential-service networking
 remain operator prerequisites; the fixture does not verify them.

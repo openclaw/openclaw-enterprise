@@ -1086,6 +1086,18 @@ test("Agent creation distinguishes unavailable repository choices from denied Ag
   assert.equal(options.status(), 503);
   assert.equal((await options.json()).error.code, "REPOSITORY_OPTIONS_UNAVAILABLE");
   await unavailablePage.getByText(/Repository choices are unavailable/).waitFor();
+  assert.match(
+    await unavailablePage
+      .getByRole("status")
+      .filter({ hasText: "Repository choices are unavailable" })
+      .innerText(),
+    /You can save a draft without repositories/,
+  );
+  const setupGuide = unavailablePage.getByRole("link", { name: "Set up repository access" });
+  assert.equal(
+    await setupGuide.getAttribute("href"),
+    "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/guides/repository-credentials/team-runbook.md",
+  );
   assert.equal(
     await unavailablePage.getByRole("button", { name: "Create Agent" }).isEnabled(),
     true,
@@ -6575,6 +6587,61 @@ test("standard Codex password Preset creates one scoped Secret and reuses it aft
       (binding) =>
         binding.subjectId === created.data.servicePrincipalId &&
         binding.resourceId === created.data.harnessAuth.source.id,
+    ),
+  );
+});
+
+test("Preset with a prebound model Secret grants the created draft access", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const root = await mkdtemp(join(tmpdir(), "occ-bound-secret-preset-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  fixture.controller.registerDriver(configurationDriver);
+  fixture.controller.selectDriver("configuration", configurationDriver.id);
+  const namespace = await fixture.createNamespace("Bound Secret Preset", { ready: true });
+  const modelSecret = await fixture.createSecret(namespace.id, "Model token", "hidden-model-token");
+  const artifact = JSON.parse(
+    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+  );
+  delete artifact.template.variables.modelSecret;
+  artifact.template.agent.harnessAuth = { method: "api_key", source: modelSecret.ref };
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: artifact,
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { page } = await newPage(t, fixture);
+  await routeInstallationWithoutProvisioning(page, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByLabel("Variable: name", { exact: true }).fill("Bound Secret Agent");
+  await page.getByLabel("Variable: model", { exact: true }).fill("gpt-5.1");
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  const createdResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const created = (await (await createdResponse).json()).data;
+  await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
+  const bindings = await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`);
+  const roles = await fixture.request("GET", `/namespaces/${namespace.id}/iam/roles`);
+  const secretOperateRole = roles.data.find(
+    (role) =>
+      role.permissions.length === 1 &&
+      role.permissions[0].resourceKind === "secret" &&
+      role.permissions[0].action === "operate",
+  );
+  assert.ok(secretOperateRole);
+  assert.ok(
+    bindings.data.some(
+      (binding) =>
+        binding.subjectKind === "identity" &&
+        binding.subjectId === created.servicePrincipalId &&
+        binding.roleId === secretOperateRole.id &&
+        binding.resourceKind === "secret" &&
+        binding.resourceId === modelSecret.id,
     ),
   );
 });

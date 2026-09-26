@@ -433,7 +433,19 @@ export function createRepositoryFields(context, onChange, initialBindings = []) 
         status.textContent = `Repository choices could not be loaded. ${message(error)} Your selections are retained. Retry repository choices before creating an Agent.`;
       } else if (optionalOutage) {
         status.className = "hint";
-        status.textContent = `Repository choices are unavailable. ${message(error)} You can save a draft without repository access; provisioning is unavailable until discovery succeeds.`;
+        status.replaceChildren(
+          "Repository choices are unavailable. ",
+          element(
+            "a",
+            {
+              href: "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/guides/repository-credentials/team-runbook.md",
+              target: "_blank",
+              rel: "noopener noreferrer",
+            },
+            "Set up repository access",
+          ),
+          ". You can save a draft without repositories.",
+        );
       } else {
         status.className = "error";
         status.textContent = `Repository choices could not be loaded. ${message(error)} Retry repository choices before creating an Agent.`;

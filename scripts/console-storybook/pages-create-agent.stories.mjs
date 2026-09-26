@@ -78,7 +78,7 @@ export const RepositoryLoading = {
 };
 export const RepositoryUnavailable = {
   ...story("createRepositoriesUnavailable"),
-  name: "Optional repository service unavailable",
+  name: "Repository choices unavailable",
 };
 export const RepositoryDenied = {
   ...story("createRepositoriesDenied"),
