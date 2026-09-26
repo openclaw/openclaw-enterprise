@@ -2,13 +2,26 @@
 
 ## Plugin configuration in the DevDay create flow
 
+Current source serves a Storybook-only curated plugin catalog in the DevDay
+create flow. It includes the 26 curated plugin suggestions, including Linear,
+Slack, GitHub, Figma, Notion, and Sentry, plus the existing simulated Calendar
+entry. The checkpoint now adds Linear, sets automatic review by default, and
+requires approval for Create issue. This remains simulated UI evidence, not live
+plugin access, credential readiness, or runtime policy enforcement.
+
+The current DevDay Storybook fixture keeps that catalog available regardless of
+the create path: Start without Preset, every DevDay Preset, both standard
+Presets, new model Secret entry, and existing model Secret selection. The
+checkpoint exercises the same Linear policy steps and reaches the Workspace tab.
+
 Verified source `a27ec9ad9d032cba731b4703621a1dd44008f867`, rebased onto
 `fbbc0e42`, in headed Chromium on macOS on September 24, 2026. The manual
 segment 1 walkthrough selects SWE Agent with a fake newly entered service-account
 token, loads the plugin catalog, adds Calendar, sets automatic review by default,
 and requires approval for Create event. It then selects both repositories,
 configures Slack, creates the simulated Agent, and opens the Admin UI.
-The checkpoint completes the same plugin controls automatically.
+Those media files are historical evidence for the earlier Calendar-based
+walkthrough; the current checkpoint exercises Linear automatically.
 
 - [Plugin catalog](plugins/01-plugin-catalog.png),
   [tool policy](plugins/02-tool-policy.png), and
@@ -38,6 +51,9 @@ all retained `gpt-6-astra`, Codex service-account authentication, and the render
 Agent name in `AGENTS.md`. No browser errors or unhandled fixture requests occurred.
 The Installation example still comments out custom presets; Storybook includes
 all three for rehearsal.
+Current source also includes Community Agent. All four presets now prefill
+`oce-feedback`, `oce-team`, `oce-feedback-test`, and `oce-team-test`; the older
+captures below predate those channel defaults.
 
 - [SWE Agent](presets/11-swe-choice.png)
 - [Q&A Agent](presets/12-qa-choice.png)
@@ -81,7 +97,7 @@ Storybook was rebuilt from this source and served only on loopback.
 
 This earlier connected recording selected SWE Agent with both standard presets
 available. The newer recording above verifies all three custom presets. Custom
-presets remain disabled in the Installation example.
+presets, including Community Agent, remain disabled in the Installation example.
 
 The connected walkthrough selected SWE Agent, supplied fake credentials, verified
 the channel prefill, selected both `openclaw/openclaw-enterprise` and

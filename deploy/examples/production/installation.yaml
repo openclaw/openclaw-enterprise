@@ -22,6 +22,7 @@ presets:
   # Relative paths resolve beside installation.yaml; mount files for API and worker.
   # files:
   #   - /app/deploy/presets/devday.json # SWE Agent
+  #   - /app/deploy/presets/devday-partners.json # Community Agent
   #   - /app/deploy/presets/devday-qa.json # Q&A Agent
   #   - /app/deploy/presets/devday-oncall.json # Oncall Agent
 

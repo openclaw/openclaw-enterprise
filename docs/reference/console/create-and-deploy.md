@@ -37,7 +37,8 @@ Presets and edited Configuration JSON retain their settings.
    For API keys, use [OpenAI API keys](https://platform.openai.com/api-keys). For
    Service Accounts, open [OpenAI admin](https://admin.openai.com/), choose your
    workspace, open **Service accounts**, and create a token with Codex scope.
-   The fields show `sk-…` and `at-…` hints; prefixes do not select the method.
+   Choose an existing model credential Secret or **Create new Secret...**.
+   Creating saves it immediately, even if you cancel Agent creation.
    Choose a model from the starter list or select **Enter model ID manually**.
    The hardcoded list has no preselected model and appears before credential entry;
    confirm credential and runtime support. The form updates native model
@@ -83,15 +84,15 @@ discard. Reload, page exit, and sign-out clear local drafts. Once saving begins,
 navigation does not retain partial-save or uncertain-outcome form state; follow
 save recovery below.
 
-For Codex plugins, enter a **Service Accounts** token with **Codex** and open
-**Configure plugins**. **Previous page** and **Next page** fetch
+For Codex plugins, select **Service Accounts** with **Codex**, expand
+**Plugin discovery token (optional)**, enter a token, and open **Configure plugins**. **Previous page** and **Next page** fetch
 upstream pages; **Filter this page** filters locally. PAT catalog search is unavailable.
 Select a plugin to load tools, then **Add**. Use toggles for enablement and
 **Tool policy** for overrides. **Configured plugins** includes other pages'
 selections. **Done** closes the modal; **Create Agent** saves changes.
 
 [Discovery](../../flows/agent-plugins.md#credential-scoped-discovery) uses the entered
-token transiently, excluding saved Preset credentials. Credential/provider/Harness
+token transiently; saved Secret values are never read back. Credential/provider/Harness
 changes clear results; **Plugin selections JSON** preserves selections separately
 from Configuration. Check permissions for rejection or outbound access for service
 failure, then retry. Editing follows installation capabilities and the
@@ -101,7 +102,9 @@ Credentials are masked Namespace Secrets, excluded from Configuration JSON, Agen
 responses, and browser storage. Provisioning creates exact grants; ordinary drafts
 require IAM administration permission.
 
-Presets retain their authentication binding. API-key and Service Accounts Presets
+Presets with only an authentication method preselect that method and require a
+model credential Secret selection. Presets with saved authentication bindings
+retain them. Bound API-key and Service Accounts Presets
 fix the provider, including JSON edits; saved service account tokens also fix Codex.
 Operator-managed credentials fix OpenClaw across provider changes. Start without a
 Preset to change these choices, or edit authentication later in **Credentials**.

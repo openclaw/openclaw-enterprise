@@ -1,5 +1,5 @@
 {
-  "name": "standard-codex",
+  "name": "Standard Codex",
   "template": {
     "variables": {
       "name": {
@@ -98,7 +98,7 @@
                   "transport": "websocket",
                   "url": "${APP_SERVER_URL}",
                   "authToken": "${APP_SERVER_TOKEN}",
-                  "approvalPolicy": "never",
+                  "approvalPolicy": "on-request",
                   "sandbox": "workspace-write",
                   "networkProxy": {
                     "enabled": true,

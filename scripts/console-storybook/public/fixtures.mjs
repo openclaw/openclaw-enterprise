@@ -1,6 +1,7 @@
 import standardCodexPreset from "/console/standard-codex-preset.mjs";
 import standardOpenclawPreset from "/console/standard-openclaw-preset.mjs";
 import devdayPreset from "/console/devday-preset.mjs";
+import devdayPartnersPreset from "/console/devday-partners-preset.mjs";
 import devdayQaPreset from "/console/devday-qa-preset.mjs";
 import devdayOncallPreset from "/console/devday-oncall-preset.mjs";
 
@@ -268,6 +269,7 @@ export function installFixture(scenario, evidence) {
     for (const [name, definition] of [
       ["standard-codex", standardCodexPreset],
       ["standard-openclaw", standardOpenclawPreset],
+      ["devday-partners", devdayPartnersPreset],
       ["devday-qa", devdayQaPreset],
       ["devday-oncall", devdayOncallPreset],
     ]) {

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
 updated: 2026-09-26
-last_updated_session: authoring-run/27646efe-b5bb-44a4-8d76-0506bd266237
+last_updated_session: authoring-run/33370d63-d3f8-4d66-8ad2-02dab55954e2
 ---
 
 # Agent Presets flow
@@ -17,7 +17,7 @@ continues through [revision admission](configuration-driver/persistence-and-revi
 
 - [Installation loader](../../apps/controller/src/composition/installation-config.ts):
   `loadInstallationConfiguration` reads `presets.includeDefaults` and `presets.files`.
-  Bundled defaults are `standard-codex` and `standard-openclaw`; custom DevDay
+  Bundled defaults are **Standard Codex** and **Standard OpenClaw**; custom DevDay
   files are loaded only when explicitly listed. Production and PostgreSQL development composition pass generic
   name/template definitions to OCC and call `initializeDefaultPresets`.
 
@@ -79,7 +79,7 @@ authorized persisted administrator through IAM, and initialize defaults after
 selecting Configuration and IAM Drivers. Native template contents
 remain in the application bundle; OCC owns generic Preset lifecycle. The
 [standard Codex artifact](../../deploy/presets/standard-codex.json) requests
-cached hosted search and grants the exact build hosts documented in the
+on-request approvals with the user as reviewer, cached hosted search, and the exact build hosts in the
 [standard Preset guide](../guides/topics/standard-codex-preset.md#build-network-allowlist).
 Seeding and rendering copy that native policy; the deployed Codex plugin owns
 its enforcement. Updating the bundle does not replace already installed copies.
@@ -138,6 +138,7 @@ keys, and preserves runtime placeholders and unresolved SecretRefs.
 Rendering makes no requests and fetches no credentials. On success, the chooser
 is replaced by the ordinary Agent form; the form keeps only the rendered
 settings and, when selected, ephemeral existing-Secret metadata for access grants.
+The chooser lists Presets alphabetically by display name.
 Password values move into the ordinary masked credential input; the
 chooser clears its detached password controls. Preset updates or deletion cannot alter them. Before saving,
 **Start over** discards the unsaved draft after confirmation and opens a fresh
@@ -163,6 +164,11 @@ new Agent. Existing partial-save recovery remains local to its form.
 
 [The creation form](../../apps/controller/src/console/agents/create.mjs) copies
 rendered settings into editable fields and checks their form representation.
+A method-only Preset authentication default selects API key or Service Accounts
+without binding a Secret. The shared Secret picker requires a same-Namespace
+selection. **Create new Secret...** saves immediately and stages the reference;
+the browser never reads existing Secret bytes. Final Agent admission still
+requires a complete authentication binding.
 Preset `agent.initialWorkspaceFiles` override matching workspace defaults,
 including explicit empty strings. The shared Preset validator checks supported
 filenames, Unicode, NUL, and byte limits before and after expansion; password
@@ -170,6 +176,8 @@ variables remain confined to the credential field. User-edited workspace bytes
 follow the existing private workspace setup path in both regular and provisioning
 creation. The form keeps Secret bindings internally and exposes channel-specific
 Secret controls rather than a raw bindings editor.
+Selected model Secret metadata and references survive draft navigation; raw
+passwords do not. Provider or authentication-method changes clear the selection.
 For an existing selection or a Secret reference already bound in the Preset,
 Save uses the reference without creating another Secret. Ordinary creation grants
 the new Agent's service principal exact Secret `operate` access and retains the
@@ -232,6 +240,8 @@ or an immutable admitted revision.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-09-26 13:34: Trace main-form Secret selection, immediate creation, and metadata-only draft restoration. (authoring-run/33370d63-d3f8-4d66-8ad2-02dab55954e2 - 5b9fa853a23c47d410e3b7338a20ee0509041493)
 
 - 2026-09-26 00:31: Grant ordinary drafts access to model Secrets already bound in Presets. (authoring-run/27646efe-b5bb-44a4-8d76-0506bd266237 - e387b38cc259ee4a55936ecb848bbce8210bcd68)
 

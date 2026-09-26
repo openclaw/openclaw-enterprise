@@ -26,10 +26,9 @@ python3 -m http.server 6006 --bind 127.0.0.1 \
   --directory scripts/console-storybook/dist/site
 ```
 
-Serve this build at its own origin's root. The console uses absolute `/console/`
-URLs. Reload with **Reset story**, not the embedded frame's current console URL.
-The Storybook build workflow also uploads a static artifact; it does not publish
-or change access to the documentation site.
+Serve at the origin root for absolute `/console/` URLs. Build fingerprints version
+fixture pages and module imports to prevent stale cached UI. Use **Reset story**
+to restart. CI uploads a static artifact without publishing the documentation site.
 
 ## Appearance review
 
@@ -103,25 +102,24 @@ Choose a Preset, fill its variables, review seeded workspace files, and create
 an Agent with the Codex harness. The Console submits its inline Configuration
 and saved Secret references, follows simulated provisioning and deployment
 activation, and opens Workspace files for the returned revision. A separate flow
-starts without a Preset, selects OpenAI with Codex, enters a dummy API key or service account
-token, selects a model, edits IDENTITY.md, and clears USER.md before creation.
+starts without a Preset, selects OpenAI with Codex, creates or selects a model
+Secret, selects a model, edits IDENTITY.md, and clears USER.md before creation.
 OpenClaw and unsupported-runtime stories retain the draft workflow: provision
 credentials and deploy from Agent detail. These transitions demonstrate
 presentation only; they do not prove a worker ran.
 
-The DevDay create segment rehearses the same create-and-deploy path with a
-shipped SWE Agent Preset copied from standard Codex, a fake service account token,
-a prefilled `gpt-6-astra` default, an existing model Secret option, Calendar plugin
-configuration from the simulated discovery catalog, repository choices
-`openclaw/openclaw-enterprise` and `openclaw/openclaw`, prefilled channel
-`C0C43A2QA11`, and simulated Slack Secrets. The separate Preset workspace story
-demonstrates variable-rendered file contents and an intentionally empty file.
-The DevDay picker includes both bundled standard presets and all three custom
-presets: SWE Agent, Q&A Agent, and Oncall Agent.
+The DevDay segment offers SWE, Community, Q&A, Oncall, and both standard presets.
+DevDay presets supply model defaults, templated workspace files, and four Slack
+channels. Choose or create a model Secret; configure Linear from the simulated
+curated catalog and select `openclaw/openclaw-enterprise` or `openclaw/openclaw`.
+The catalog works with any Preset, either Secret option, or no Preset. Production
+discovery requires an eligible Codex service-account token.
+The workspace story demonstrates variable-rendered and intentionally empty files.
 The Standard OpenClaw preset story previews its native harness settings.
 Preset Secret stories cover existing selection, pending metadata, denied reads,
 and an empty catalog; each leaves new-token entry available explicitly.
-Q&A Agent and Oncall Agent remain disabled in the example Installation YAML.
+Community Agent, Q&A Agent, and Oncall Agent remain disabled in the example
+Installation YAML.
 
 Use the [DevDay storyboard](../../scripts/console-storybook/devday-storyboard.md)
 for presenter actions, expected visible states, and fallbacks.

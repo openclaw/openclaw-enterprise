@@ -5,11 +5,16 @@ const revision =
 const create = "/console/agents/new?namespace=ns_00000000-0000-4000-8000-000000000001";
 const click = (text) => ({ click: text });
 const form = [click("Start without Preset")];
+const createModelSecret = (value) => [
+  { selector: "#provider-credential-secret", value: "__openclaw_create_secret__" },
+  { selector: "#create-provider-credential-secret-value", value },
+  click("Create Secret"),
+];
 const readyForm = [
   ...form,
   { selector: "#agent-name", value: "Research assistant" },
-  { selector: "#provider-api-key", value: "storybook-model-api-key" },
   { selector: "#agent-model", value: "gpt-5.6-sol" },
+  ...createModelSecret("storybook-model-api-key"),
 ];
 const passwordPresetForm = [
   { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
@@ -19,8 +24,9 @@ const passwordPresetForm = [
   click("Use Preset"),
 ];
 const existingPresetSecret = [
-  { selector: "#agent-preset", value: "pre_devday_codex" },
-  { selector: "#preset-variable-name", value: "SWE assistant" },
+  { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
+  { selector: "#preset-variable-name", value: "Codex assistant" },
+  { selector: "#preset-variable-model", value: "gpt-5.1" },
   { selector: "#preset-variable-modelSecret-secret-source", value: "existing" },
 ];
 const presetSecretsPath = "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets";
@@ -85,6 +91,62 @@ const unavailablePlugins = [
     tools: null,
   },
 ];
+// Names and IDs from plugin-suggestions branch commit eb83563c.
+// Catalog availability and tool details are simulated in this Storybook fixture.
+const codexPluginSuggestions = [
+  { id: "codex-plugin:airtable@openai-curated-remote", name: "Airtable" },
+  { id: "codex-plugin:asana@openai-curated-remote", name: "Asana" },
+  { id: "codex-plugin:box@openai-curated-remote", name: "Box" },
+  { id: "codex-plugin:canva@openai-curated-remote", name: "Canva" },
+  { id: "codex-plugin:datadog@openai-curated-remote", name: "Datadog (Preview)" },
+  { id: "codex-plugin:figma@openai-curated-remote", name: "Figma" },
+  { id: "codex-plugin:github@openai-curated-remote", name: "GitHub" },
+  { id: "codex-plugin:google-contacts@openai-curated-remote", name: "Google Contacts" },
+  { id: "codex-plugin:granola@openai-curated-remote", name: "Granola" },
+  { id: "codex-plugin:hubspot@openai-curated-remote", name: "HubSpot" },
+  { id: "codex-plugin:quickbooks@openai-curated-remote", name: "Intuit QuickBooks" },
+  { id: "codex-plugin:linear@openai-curated-remote", name: "Linear" },
+  { id: "codex-plugin:monday-com@openai-curated-remote", name: "monday.com" },
+  { id: "codex-plugin:notion@openai-curated-remote", name: "Notion" },
+  { id: "codex-plugin:outlook-calendar@openai-curated-remote", name: "Outlook Calendar" },
+  { id: "codex-plugin:outlook-email@openai-curated-remote", name: "Outlook Email" },
+  { id: "codex-plugin:posthog@openai-curated-remote", name: "PostHog" },
+  { id: "codex-plugin:semrush@openai-curated-remote", name: "Semrush" },
+  { id: "codex-plugin:sentry@openai-curated-remote", name: "Sentry" },
+  { id: "codex-plugin:sharepoint@openai-curated-remote", name: "SharePoint" },
+  { id: "codex-plugin:slack@openai-curated-remote", name: "Slack" },
+  { id: "codex-plugin:supabase@openai-curated-remote", name: "Supabase" },
+  { id: "codex-plugin:superhuman@openai-curated-remote", name: "Superhuman Mail" },
+  { id: "codex-plugin:teams@openai-curated-remote", name: "Teams" },
+  { id: "codex-plugin:vercel@openai-curated-remote", name: "Vercel" },
+  { id: "codex-plugin:zoom@openai-curated-remote", name: "Zoom" },
+];
+const linearAppId = "asdk_app_69a089a326dc8191b32a3f2553f5be2c";
+const devdayCuratedEntries = codexPluginSuggestions.map((suggestion) => {
+  const remoteId = suggestion.id.match(/^codex-plugin:([^@]+)@/)?.[1] ?? suggestion.id;
+  return {
+    ...suggestion,
+    remoteId,
+    available: true,
+    tools:
+      suggestion.id === "codex-plugin:linear@openai-curated-remote"
+        ? [
+            {
+              id: `${linearAppId}/create_issue`,
+              name: "Create issue",
+              ownerId: linearAppId,
+              description: "Create a Linear issue with a title, description, and team.",
+            },
+            {
+              id: `${linearAppId}/search_issues`,
+              name: "Search issues",
+              ownerId: linearAppId,
+              description: "Search Linear issues by text and status.",
+            },
+          ]
+        : [],
+  };
+});
 const pluginCatalog = {
   status: "ready",
   setup: pluginSetup,
@@ -181,9 +243,25 @@ const pluginDiscovery = {
   },
   details: Object.fromEntries(pluginCatalog.entries.map((entry) => [entry.remoteId, entry])),
 };
+const devdayPluginCatalog = {
+  status: "ready",
+  setup: pluginSetup,
+  entries: [...devdayCuratedEntries, pluginCatalog.entries[0]],
+};
+const devdayPluginDiscovery = {
+  pages: {
+    initial: {
+      plugins: devdayPluginCatalog.entries.map((entry) => ({ ...entry, tools: null })),
+      nextCursor: null,
+      setup: pluginSetup,
+    },
+  },
+  details: Object.fromEntries(devdayPluginCatalog.entries.map((entry) => [entry.remoteId, entry])),
+};
 const pluginDiscoveryForm = [
   ...form,
   { selector: "#agent-auth-method", value: "codex_pat" },
+  { selector: "#plugin-discovery-token summary", click: true },
   { selector: "#provider-api-key", value: "at-storybook-pat" },
   click("Configure plugins"),
 ];
@@ -206,8 +284,8 @@ const createWorkspaceFields = [
   ...form,
   { selector: ".launch-advanced summary", click: true },
   { selector: "#agent-name", value: "Workspace seed demo" },
-  { selector: "#provider-api-key", value: "storybook-model-api-key" },
   { selector: "#agent-model", value: "gpt-5.6-sol" },
+  ...createModelSecret("storybook-model-api-key"),
   {
     selector: "#workspace-IDENTITY-md",
     value:
@@ -230,18 +308,18 @@ const devdayCreateCheckpoint = [
   click("Create Agent"),
   { selector: "#agent-preset", value: "pre_devday_codex" },
   { selector: "#preset-variable-name", value: "devday claw" },
-  { selector: "#preset-variable-modelSecret", value: "at-demo-devday-service-account-token" },
   click("Use Preset"),
+  { selector: "#provider-credential-secret", value: "sec_devday_model_token" },
   click("Configure plugins"),
-  click("Load plugins"),
-  { selector: 'button[aria-label="Calendar"]', click: true },
-  click("Add Calendar"),
-  { selector: 'select[aria-label="Calendar default reviewer"]', value: "auto" },
+  { selector: 'button[aria-label="Linear"]', click: true },
+  click("Add Linear"),
+  { selector: 'select[aria-label="Linear default reviewer"]', value: "auto" },
   {
-    selector: 'details.plugin-tool-row[data-tool="app_calendar/create_event"] > summary',
+    selector:
+      'details.plugin-tool-row[data-tool="asdk_app_69a089a326dc8191b32a3f2553f5be2c/create_issue"] > summary',
     click: true,
   },
-  { selector: 'select[aria-label="Create event approval"]', value: "prompt" },
+  { selector: 'select[aria-label="Create issue approval"]', value: "prompt" },
   click("Done"),
   { selector: devdayRepositorySelector, click: true },
   { selector: "#repository-profile-git-write", click: true },
@@ -1230,25 +1308,23 @@ export const scenarios = {
   },
   createPresetExistingSecret: {
     group: "Pages/Create Agent",
-    name: "SWE existing service account Secret",
+    name: "Standard Codex existing Secret",
     path: create,
-    devdayPreset: true,
-    extraSecrets: [
-      { id: "sec_devday_model_token", name: "DevDay Codex service account (simulated)" },
-    ],
+    standardCodexPreset: true,
+    extraSecrets: [{ id: "sec_devday_model_token", name: "Codex API key (simulated)" }],
     actions: [
       ...existingPresetSecret,
       { selector: "#preset-variable-modelSecret-existing-secret", value: "sec_devday_model_token" },
     ],
     description:
-      "SWE defaults to gpt-6-astra and Codex Service Accounts. Use Preset reuses this Namespace Secret without reading its value; Create Agent grants access.",
-    gap: "Secret metadata and API responses are simulated. This does not validate a real service account token.",
+      "The standard Codex Preset reuses this Namespace Secret without reading its value; Create Agent grants access.",
+    gap: "Secret metadata and API responses are simulated. This does not validate a real API key.",
   },
   createPresetSecretsLoading: {
     group: "Pages/Create Agent",
     name: "Preset Secrets loading",
     path: create,
-    devdayPreset: true,
+    standardCodexPreset: true,
     actions: existingPresetSecret,
     rules: [{ path: presetSecretsPath, hold: true }],
     description:
@@ -1258,7 +1334,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "Preset Secret metadata denied",
     path: create,
-    devdayPreset: true,
+    standardCodexPreset: true,
     actions: existingPresetSecret,
     rules: [{ path: presetSecretsPath, status: 403 }],
     description:
@@ -1268,7 +1344,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "No existing Preset Secrets",
     path: create,
-    devdayPreset: true,
+    standardCodexPreset: true,
     emptySecrets: true,
     actions: existingPresetSecret,
     description:
@@ -1381,7 +1457,7 @@ export const scenarios = {
     actions: [
       ...form,
       { selector: "#model-provider", value: "anthropic" },
-      { selector: "#provider-api-key", value: "storybook-anthropic-key" },
+      ...createModelSecret("storybook-anthropic-key"),
     ],
     description:
       "Anthropic offers only the OpenClaw harness, with Embedded execution. Its fixed model list is available before credential entry and starts without a selection.",
@@ -1393,7 +1469,7 @@ export const scenarios = {
     actions: [
       ...form,
       { selector: "#agent-auth-method", value: "codex_pat" },
-      { selector: "#provider-api-key", value: "at-storybook-pat" },
+      ...createModelSecret("at-storybook-pat"),
     ],
     description:
       "Service Accounts authentication is available with the Codex harness and uses the same fixed OpenAI model list. Switching to OpenClaw selects API-key authentication and clears the credential and model selection.",
@@ -1405,12 +1481,12 @@ export const scenarios = {
     actions: [
       ...form,
       { selector: "#agent-auth-method", value: "codex_pat" },
-      { selector: "#provider-api-key", value: "at-storybook-pat" },
+      ...createModelSecret("at-storybook-pat"),
       { selector: "#agent-model", value: "gpt-5.6-sol" },
       { selector: "#agent-harness", value: "openclaw" },
     ],
     description:
-      "Switching an unsaved service account form to OpenClaw clears the token and model, selects API-key authentication, and uses Embedded execution. Enter a dummy API key to continue.",
+      "Switching an unsaved service account form to OpenClaw clears the token and model, selects API-key authentication, and uses Embedded execution. Choose or create a simulated API key Secret to continue.",
   },
   createBoundPatPreset: {
     group: "Pages/Create Agent",
@@ -1453,7 +1529,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "API key storage denied",
     path: create,
-    actions: [...readyForm, click("Create Agent")],
+    actions: readyForm,
     rules: [
       {
         path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets",
@@ -1462,7 +1538,7 @@ export const scenarios = {
       },
     ],
     description:
-      "A rejected Secret write keeps the form available and does not create a Configuration or Agent.",
+      "A rejected Secret write keeps the creation dialog open and does not create a Configuration or Agent.",
   },
   createGrantDenied: {
     unsupportedProvisioning: true,
@@ -2450,8 +2526,11 @@ export const scenarios = {
     nativeAdmin: "available",
     nativeAdminUrl: "/storybook-fixtures/devday-admin.html?agent=oceclaw&channel=openclaw-feedback",
     devdayPreset: true,
-    pluginDiscovery,
+    pluginDiscovery: devdayPluginDiscovery,
     pluginCapabilities,
+    fixturePluginCatalog: true,
+    fixturePluginCatalogMessage:
+      "Storybook is showing a simulated curated plugin catalog for DevDay rehearsal. Real deployments still require plugin access for the selected service account.",
     repositoryOptions: [
       {
         repositoryRef: "openclaw/openclaw-enterprise",
@@ -2483,11 +2562,11 @@ export const scenarios = {
       "DevDay create-flow rehearsal using real Console controls with fake service-account and Slack Secret data. Provisioning and deployment progress are simulated in the Storybook fixture.",
     steps: [
       "Start on the Agents list with the already deployed oceclaw seed, then click Create Agent.",
-      "The picker includes SWE Agent, Q&A Agent, and Oncall Agent. Select SWE Agent and enter devday claw for its name.",
-      "Keep the default gpt-6-astra model and enter fake modelSecret at-demo-devday-service-account-token, then Use Preset. Review AGENTS.md: its opening sentence now says You are devday claw. Workspace defaults remain editable.",
-      "Open Configure plugins, load the simulated catalog with the fake service-account token, add Calendar, set Calendar default reviewer to Automatic review, and set Create event approval to Ask for approval.",
+      "The picker includes SWE Agent, Community Agent, Q&A Agent, and Oncall Agent. Select SWE Agent and enter devday claw for its name.",
+      "Keep the default gpt-6-astra model and click Use Preset. Choose the existing DevDay Codex service account (simulated) Secret, or explicitly create a new simulated Secret. No credential is preselected. Review AGENTS.md: its opening sentence now says You are devday claw. Workspace defaults remain editable.",
+      "Open Configure plugins. The simulated curated catalog is available for every Preset and Secret choice in this Storybook flow; add Linear, set Linear default reviewer to Automatic review, and set Create issue approval to Ask for approval.",
       "Repository access offers openclaw/openclaw-enterprise and openclaw/openclaw. Select either or both with Contributor access.",
-      "Open Edit Slack. Confirm prefilled channel C0C43A2QA11, allow simulated user UDEMO123, then bind the existing simulated DevDay Slack Secrets and apply settings.",
+      "Open Edit Slack. Confirm the four prefilled channels: oce-feedback (C0C49E7CS4A), oce-team (C0C43A2QA11), oce-feedback-test (C0C569NN9ME), and oce-team-test (C0C4A0JH2BG); mentions are not required. Allow simulated user UDEMO123, then bind the existing simulated DevDay Slack Secrets and apply settings.",
       "Create Agent and keep the Console visible while the fixture progresses through provisioning and deployment activation until Workspace files open for the admitted revision.",
       "Use ← Agents and open oceclaw in the same fixture to continue segment 2. The next-segment link starts an independent resettable fixture.",
     ],
@@ -2504,8 +2583,11 @@ export const scenarios = {
     nativeAdmin: "available",
     nativeAdminUrl: "/storybook-fixtures/devday-admin.html?agent=oceclaw&channel=openclaw-feedback",
     devdayPreset: true,
-    pluginDiscovery,
+    pluginDiscovery: devdayPluginDiscovery,
     pluginCapabilities,
+    fixturePluginCatalog: true,
+    fixturePluginCatalogMessage:
+      "Storybook is showing a simulated curated plugin catalog for DevDay rehearsal. Real deployments still require plugin access for the selected service account.",
     repositoryOptions: [
       {
         repositoryRef: "openclaw/openclaw-enterprise",
@@ -2537,7 +2619,7 @@ export const scenarios = {
       "Auto-run checkpoint for reviewers who want the deployed end state of the DevDay create segment without replaying every presenter click.",
     steps: [
       "Use the primary DevDay segment 1 story for recording the manual presenter flow.",
-      "This checkpoint clicks through the same controls, including the Calendar plugin policy choices, and waits until Workspace files open for the admitted revision.",
+      "This checkpoint clicks through the same controls, including the Linear plugin policy choices, and waits until Workspace files open for the admitted revision.",
     ],
     gap: "Checkpoint automation is a setup aid. Use the manual story for the demo video.",
   },
