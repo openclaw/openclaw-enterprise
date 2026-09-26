@@ -131,15 +131,22 @@ Driver gateway entrypoint, UID `1000:1000`, a read-only root filesystem, and
 tmpfs-backed `/home/node` and `/tmp`. Host Node.js 24+ is required to run the
 test.
 
-| Variable                 | Requirement or default                                    |
-| ------------------------ | --------------------------------------------------------- |
-| `OCC_TEST_RUNTIME_IMAGE` | Local runtime image tag or digest reference; unset skips. |
-| `OCC_DOCKER_BIN`         | Optional Docker executable path; defaults to `docker`.    |
+| Variable                         | Requirement or default                                                                                                                 |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `OCC_TEST_RUNTIME_IMAGE`         | Local runtime image tag or digest reference; unset skips.                                                                              |
+| `OCC_TEST_CODEX_SECCOMP_PROFILE` | Optional reviewed Codex Localhost seccomp profile path; required on Docker engines whose default seccomp blocks Codex sandbox startup. |
+| `OCC_DOCKER_BIN`                 | Optional Docker executable path; defaults to `docker`.                                                                                 |
 
 This check proves an embedded OpenClaw gateway reaches `/readyz` from a fresh
-runtime home and the bundled Codex plugin can be discovered without missing
-package dependencies. It does not prove Docker Compose orchestration,
-Kubernetes reconciliation, model credentials, or a model turn.
+runtime home, the bundled Codex plugin can be discovered without missing
+package dependencies, and, when the reviewed Codex seccomp profile is supplied,
+the native Codex command execution path enforces the repository broker private
+endpoint policy. It does not prove Docker Compose orchestration, Kubernetes
+reconciliation, model credentials, or a model turn. When the suite runs from
+inside another container that talks to a host Docker daemon, mount the repository
+and the fixture temp directory at the same absolute host paths and set `TMPDIR`
+to that shared temp root; otherwise nested Docker bind mounts can turn missing
+host files into directories and make fixture failures look like image failures.
 
 ## Repository runtime volume test environment
 

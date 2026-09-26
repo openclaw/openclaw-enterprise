@@ -15,16 +15,17 @@ Codex and Slack come from that same source. The selected commit contains
 the restricted workspace-node commands and saved-token-first pairing required by
 split storage; published `2026.9.5` packages do not contain that complete contract.
 
-The source pin is the merged commit of
-[OpenClaw #157592](https://github.com/openclaw/openclaw/pull/157592), which releases
-remote Skills subscriptions during shutdown. The commit and verified archive
+The source pin is the reviewed bridge/repository-broker commit from
+[OpenClaw #158724](https://github.com/openclaw/openclaw/pull/158724), which retains
+the product runtime assembly while adding the repository broker configuration
+surface needed by OpenClaw Enterprise. The commit and verified codeload archive
 checksum below identify this source build; it is not a published OpenClaw release.
 
 | Input                                        | Selection                                                                                                    |
 | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | Build base                                   | `docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584` |
-| OpenClaw source commit                       | `abc1b44118af833a24fa00763db10bde8a0a9a91`                                                                   |
-| Source archive SHA-256                       | `18a6b66d16c422ad9f643e27decf81eb0decb7f8fc3ce712ac2a5b6aa8d113b3`                                           |
+| OpenClaw source commit                       | `5f402bf7a8b510aa7489737c35621e9ad947469c`                                                                   |
+| Source archive SHA-256                       | `800e96a619db7fa2714be4432f705b72da823e75724a51b61bbb3482561145d6`                                           |
 | Dedicated Codex CLI (`OPENAI_CODEX_VERSION`) | `0.156.0`                                                                                                    |
 
 The source's package version is `2026.9.6`; it does not identify this custom
@@ -69,7 +70,7 @@ installing packages at gateway startup. Slack credentials remain operator-owned
 runtime Secrets; do not put them in the image.
 
 Keep the source commit and archive checksum together when updating OpenClaw.
-Follow the [pinned upstream Docker assembly](https://github.com/openclaw/openclaw/blob/abc1b44118af833a24fa00763db10bde8a0a9a91/Dockerfile)
+Follow the [pinned upstream Docker assembly](https://github.com/openclaw/openclaw/blob/5f402bf7a8b510aa7489737c35621e9ad947469c/Dockerfile)
 to keep plugin dependencies and runtime assets consistent. Its plugin-local
 dependency layout preserves dependencies that differ from core versions.
 Plugin chunks emitted directly under `dist` also need package-root resolution.
@@ -80,6 +81,14 @@ one shared dependency version. Alternate
 `NODE_BASE_IMAGE` values must provide Node.js 24.16 or newer within the 24 series.
 The Dedicated command and bundled plugin both resolve the same
 [Codex 0.156.0](https://github.com/openai/codex/releases/tag/rust-v0.156.0) installation.
+For multi-architecture builds, the Dockerfile maps `TARGETARCH=amd64` to
+`@openai/codex-linux-x64` and `TARGETARCH=arm64` to
+`@openai/codex-linux-arm64`, replacing the matching platform binary with the
+patched CLI built for that image architecture. The patched CLI is built with the
+native GNU target used by the Rust base image and installed into the matching npm
+platform package path in the Debian runtime image. `/opt/oce/runtime/provenance.json`
+records `codexBrokerPolicy` with the Codex source commit, patch digest, binary
+digest, target architecture, package name, and installed binary path.
 Update the reviewed dependency patch and compatibility assertion together when
 changing that version. Run the compatibility
 check below against the resulting image. Provider model availability still
@@ -137,16 +146,21 @@ docker run --rm openclaw-enterprise-runtime:quickstart \
 ```
 
 Then run the runtime startup smoke from the repository root with host Node.js
-24+:
+24+. The image test environment and Docker fixture requirements are documented in
+[Image and Helm tests](../../docs/testing/images.md#runtime-image-startup-test-environment):
 
 ```bash
 OCC_TEST_RUNTIME_IMAGE=openclaw-enterprise-runtime:quickstart \
+OCC_TEST_CODEX_SECCOMP_PROFILE=/path/to/codex-0.156.0-71a2871a066a696a171049a15db3f065122c153cd11ef451cee3341ddbd9697f.json \
   node --test tests/integration/runtime-image-startup.test.mjs
 ```
 
 The smoke starts task-owned containers with the Docker Compute Driver gateway
-entrypoint and the Kubernetes Compute Driver gateway entrypoint, UID
-`1000:1000`, a read-only root filesystem, and tmpfs-backed runtime directories.
+entrypoint, the Kubernetes Compute Driver gateway entrypoint, and the native
+Codex command execution path, UID `1000:1000`, a read-only root filesystem, and
+tmpfs-backed runtime directories. The private broker endpoint smoke requires the
+reviewed Codex 0.156.0 seccomp profile above so the nested bubblewrap sandbox can
+start without broadening to an unconfined Docker seccomp profile.
 Passing means an embedded OpenClaw gateway reaches `/readyz` from a fresh home,
 the bundled Codex and Slack plugins load without missing package dependencies,
 the installed Codex plugin successfully initializes the image's real Codex
@@ -157,6 +171,10 @@ enrolls a real restricted workspace node, checks its exact seven-command invento
 and restarts it with the redeemed setup code and saved identity. It requires the
 original bootstrap completion to remain unchanged. These checks do not exercise
 all workspace command payloads, make a model call, or establish a Slack connection.
+When running this suite from inside another container that talks to a host Docker
+daemon, mount the repository and any temporary fixture directory at the same
+absolute host path and set `TMPDIR` inside that shared path; otherwise nested
+Docker bind mounts can turn missing host files into directories.
 
 Before enabling Slack in an Installation, run the
 [live Slack test](../../docs/testing/slack.md#slack) with the verified image, projected

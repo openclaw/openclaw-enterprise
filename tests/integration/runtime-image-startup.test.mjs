@@ -1,10 +1,10 @@
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
@@ -23,6 +23,9 @@ const docker = process.env.OCC_DOCKER_BIN ?? "docker";
 const image = process.env.OCC_TEST_RUNTIME_IMAGE;
 const runtimeImageModel = defaultAgentModel;
 const syntheticCodexApiKey = "sk-openclaw-runtime-image-smoke-synthetic";
+const reviewedCodexSeccompProfileSha256 =
+  "71a2871a066a696a171049a15db3f065122c153cd11ef451cee3341ddbd9697f";
+const reviewedCodexSeccompProfileFile = `codex-0.156.0-${reviewedCodexSeccompProfileSha256}.json`;
 const imageTestOptions =
   image === undefined
     ? {
@@ -183,6 +186,57 @@ async function runDocker(args, options = {}) {
     maxBuffer: 1_000_000,
     ...options,
   });
+}
+
+async function reviewedCodexSeccompSecurityOptions() {
+  const profile = process.env.OCC_TEST_CODEX_SECCOMP_PROFILE;
+  const securityOptions = ["--security-opt", "no-new-privileges"];
+  if (profile === undefined || profile.length === 0) {
+    return securityOptions;
+  }
+
+  assert.equal(
+    profile.toLowerCase().includes("unconfined"),
+    false,
+    "OCC_TEST_CODEX_SECCOMP_PROFILE must not select an unconfined seccomp profile.",
+  );
+  assert.equal(
+    basename(profile),
+    reviewedCodexSeccompProfileFile,
+    `OCC_TEST_CODEX_SECCOMP_PROFILE must point to ${reviewedCodexSeccompProfileFile}.`,
+  );
+
+  let contents;
+  try {
+    contents = await readFile(profile);
+  } catch (error) {
+    throw new Error(
+      `OCC_TEST_CODEX_SECCOMP_PROFILE must name a readable reviewed Codex seccomp profile: ${error.message}`,
+    );
+  }
+
+  const actual = createHash("sha256").update(contents).digest("hex");
+  assert.equal(
+    actual,
+    reviewedCodexSeccompProfileSha256,
+    `OCC_TEST_CODEX_SECCOMP_PROFILE digest ${actual} did not match the reviewed Codex 0.156.0 profile digest.`,
+  );
+  return [...securityOptions, "--security-opt", `seccomp=${profile}`];
+}
+
+async function waitForDockerLog(containerName, pattern) {
+  const deadline = Date.now() + 20_000 * imageSmokeTimeoutMultiplier;
+  let output = "";
+  while (Date.now() < deadline) {
+    const logs = await runDocker(["logs", containerName]).catch((error) => error);
+    output = commandOutput(logs);
+    if (pattern.test(output)) {
+      return output;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error(`Timed out waiting for ${pattern} in ${containerName} logs.
+${output}`);
 }
 
 function commandOutput(error) {
@@ -901,12 +955,331 @@ test(
 );
 
 test(
+  "runtime image enforces Codex broker private endpoint policy in native command execution",
+  imageTestOptions,
+  async (t) => {
+    const suffix = randomBytes(6).toString("hex");
+    const networkName = `oce-runtime-broker-${suffix}`;
+    const brokerName = `oce-runtime-broker-${suffix}`;
+    const directory = await mkdtemp(join(tmpdir(), "oce-runtime-broker-certs-"));
+    t.after(async () => {
+      await runDocker(["rm", "-f", brokerName]).catch(() => {});
+      await runDocker(["network", "rm", networkName]).catch(() => {});
+      await rm(directory, { recursive: true, force: true });
+    });
+
+    await execute("openssl", [
+      "req",
+      "-x509",
+      "-newkey",
+      "rsa:2048",
+      "-nodes",
+      "-days",
+      "1",
+      "-subj",
+      "/CN=OCE Runtime Broker Test CA",
+      "-keyout",
+      join(directory, "ca.key"),
+      "-out",
+      join(directory, "ca.pem"),
+    ]);
+    await writeFile(
+      join(directory, "server.ext"),
+      [
+        "subjectAltName=DNS:git.oce.svc,DNS:unrelated.oce.svc",
+        "extendedKeyUsage=serverAuth",
+        "",
+      ].join("\n"),
+    );
+    await execute("openssl", [
+      "req",
+      "-newkey",
+      "rsa:2048",
+      "-nodes",
+      "-subj",
+      "/CN=git.oce.svc",
+      "-keyout",
+      join(directory, "server.key"),
+      "-out",
+      join(directory, "server.csr"),
+    ]);
+    await execute("openssl", [
+      "x509",
+      "-req",
+      "-days",
+      "1",
+      "-in",
+      join(directory, "server.csr"),
+      "-CA",
+      join(directory, "ca.pem"),
+      "-CAkey",
+      join(directory, "ca.key"),
+      "-CAcreateserial",
+      "-out",
+      join(directory, "server.pem"),
+      "-extfile",
+      join(directory, "server.ext"),
+    ]);
+    await chmod(directory, 0o755);
+    await chmod(join(directory, "server.key"), 0o444);
+    await chmod(join(directory, "server.pem"), 0o444);
+
+    await runDocker(["network", "create", "--driver", "bridge", networkName]);
+    const broker = String.raw`
+const https = require("node:https");
+const { readFileSync } = require("node:fs");
+const options = {
+  key: readFileSync("/certs/server.key"),
+  cert: readFileSync("/certs/server.pem"),
+};
+let ready = 0;
+const handler = (request, response) => {
+  request.resume();
+  request.on("end", () => {
+    console.log(request.method + " " + request.headers.host + " " + request.socket.localPort + " " + request.url);
+    response.writeHead(200, { "content-type": "text/plain" });
+    response.end(request.method + " " + request.url + "\\n");
+  });
+};
+for (const port of [443, 444]) {
+  https.createServer(options, handler).listen(port, "0.0.0.0", () => {
+    ready += 1;
+    if (ready === 2) console.log("broker-ready");
+  });
+}
+`;
+    await runDocker([
+      "run",
+      "-d",
+      "--name",
+      brokerName,
+      "--network",
+      networkName,
+      "--network-alias",
+      "git.oce.svc",
+      "--network-alias",
+      "unrelated.oce.svc",
+      "--user",
+      "0:0",
+      "--read-only",
+      "--cap-drop",
+      "ALL",
+      "--cap-add",
+      "NET_BIND_SERVICE",
+      "--security-opt",
+      "no-new-privileges",
+      "--tmpfs",
+      "/tmp:size=32m,mode=1777",
+      "-v",
+      `${directory}:/certs:ro`,
+      "--entrypoint",
+      "node",
+      image,
+      "-e",
+      broker,
+    ]);
+    await waitForDockerLog(brokerName, /broker-ready/);
+
+    const codexConfigurationToml = String.raw`
+default_permissions = "repository-broker"
+
+[features]
+apps = false
+plugins = false
+remote_plugin = false
+network_proxy = true
+
+[permissions.repository-broker]
+extends = ":workspace"
+
+[permissions.repository-broker.network]
+enabled = true
+mode = "limited"
+allow_local_binding = false
+
+[permissions.repository-broker.network.domains]
+"git.oce.svc" = "allow"
+"unrelated.oce.svc" = "allow"
+
+[[permissions.repository-broker.network.private_endpoints]]
+host = "git.oce.svc"
+port = 443
+allow_methods = ["POST"]
+`;
+    const pluginRuntime = {
+      manifest: {
+        kind: "codex",
+        selections: {},
+        repositoryBrokerNetworkPolicy: {
+          host: "git.oce.svc",
+          port: 443,
+          allowMethods: ["POST"],
+          domains: {},
+        },
+      },
+      codexConfigurationToml,
+    };
+    const probeSecurityOptions = await reviewedCodexSeccompSecurityOptions();
+    const probe = `
+const assert = require("node:assert/strict");
+const cp = require("node:child_process");
+const vm = require("node:vm");
+const { createInterface } = require("node:readline");
+const environment = {
+  PATH: "/opt/oce/repository-credentials/bin:" + process.env.PATH,
+  HOME: "/home/node", CODEX_HOME: "/home/node/.codex",
+  CODEX_LOGIN_MODE: "api_key", OPENAI_API_KEY: "synthetic-offline-key",
+  OPENCLAW_HARNESS_MODEL: "codex/gpt-5",
+  APP_SERVER_TOKEN: "synthetic-transport-token", APP_SERVER_PORT: "4500",
+  OPENCLAW_PLUGIN_RUNTIME_JSON: ${JSON.stringify(JSON.stringify(pluginRuntime))},
+  SSL_CERT_FILE: "/certs/ca.pem",
+  REQUESTS_CA_BUNDLE: "/certs/ca.pem",
+  CURL_CA_BUNDLE: "/certs/ca.pem",
+  NODE_EXTRA_CA_CERTS: "/certs/ca.pem",
+  GIT_SSL_CAINFO: "/certs/ca.pem",
+};
+let native;
+vm.runInNewContext(${JSON.stringify(AGENT_RUNTIME_ENTRYPOINT)}, {
+  URL, console, setTimeout, setInterval,
+  process: { env: environment, on() {}, exit() {} },
+  require(name) {
+    if (name !== "node:child_process") return require(name);
+    return {
+      spawnSync(_command, args) {
+        return args.includes("login") ? { status: 0 } : {
+          status: 0,
+          stdout: [
+            { type: "turn.started" },
+            { type: "item.completed", item: { type: "agent_message", text: "READY" } },
+            { type: "turn.completed" },
+          ].map(JSON.stringify).join("\\n"),
+        };
+      },
+      spawn(command, args, options) {
+        const appServer = args.indexOf("app-server");
+        assert.ok(appServer > 0);
+        native = cp.spawn(command, [...args.slice(0, appServer + 1), "--listen", "stdio://"], {
+          ...options, env: environment, stdio: ["pipe", "pipe", "pipe"],
+        });
+        return native;
+      },
+    };
+  },
+});
+assert.ok(native);
+const pending = new Map();
+let nextId = 1;
+const lines = createInterface({ input: native.stdout });
+lines.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (pending.has(message.id)) {
+    const { resolve, reject } = pending.get(message.id);
+    pending.delete(message.id);
+    message.error ? reject(new Error(JSON.stringify(message.error))) : resolve(message.result);
+  }
+});
+let stderr = "";
+native.stderr.on("data", (chunk) => { stderr += chunk; });
+const rpc = (method, params) => new Promise((resolve, reject) => {
+  const id = nextId++;
+  pending.set(id, { resolve, reject });
+  native.stdin.write(JSON.stringify({ id, method, params }) + "\\n");
+});
+async function execShell(script) {
+  return await rpc("command/exec", {
+    command: ["/bin/bash", "-euo", "pipefail", "-c", script],
+    permissionProfile: "repository-broker",
+    timeoutMs: 10000,
+  });
+}
+async function expectProxyDenied(name, script) {
+  const denied = await execShell([
+    "set +e",
+    "output=$(" + script + " 2>&1)",
+    "status=$?",
+    "set -e",
+    "printf '%s\\n' \\"$output\\"",
+    "if [ \\"$status\\" -eq 0 ]; then exit 42; fi",
+    "printf '%s\\n' \\"$output\\" | grep -Eiq '403|[Ff]orbidden|[Dd]enied|[Bb]locked|policy|private|CONNECT|proxy'",
+    "if printf '%s\\n' \\"$output\\" | grep -Eiq 'timed out|Connection refused|certificate|Could not resolve|No route'; then exit 43; fi",
+  ].join("\\n"));
+  assert.equal(denied.exitCode, 0, name + " did not fail with a proxy policy denial: " + denied.stdout + denied.stderr);
+}
+const timeout = setTimeout(() => {
+  console.error(stderr);
+  native.kill("SIGKILL");
+  process.exitCode = 1;
+}, 40000);
+(async () => {
+  try {
+    await rpc("initialize", { clientInfo: { name: "repository-broker-network-policy-smoke", version: "1.0.0" }, capabilities: { experimentalApi: true } });
+    native.stdin.write(JSON.stringify({ method: "initialized" }) + "\\n");
+
+    const allowed = await execShell([
+      "curl -fsS --connect-timeout 5 --max-time 10 -X GET https://git.oce.svc/info/refs",
+      "curl -fsS --connect-timeout 5 --max-time 10 -X POST https://git.oce.svc/git-upload-pack",
+    ].join("\\n"));
+    assert.equal(allowed.exitCode, 0, allowed.stderr || allowed.stdout);
+    assert.match(allowed.stdout, /GET \\/info\\/refs/);
+    assert.match(allowed.stdout, /POST \\/git-upload-pack/);
+
+    await expectProxyDenied("put-same-broker", "curl -fsS --connect-timeout 5 --max-time 10 -X PUT https://git.oce.svc/git-upload-pack");
+    await expectProxyDenied("unrelated-private-host", "curl -fsS --connect-timeout 5 --max-time 10 -X GET https://unrelated.oce.svc/info/refs");
+    await expectProxyDenied("wrong-private-port", "curl -fsS --connect-timeout 5 --max-time 10 -X GET https://git.oce.svc:444/info/refs");
+    process.stdout.write("native-broker-private-endpoint-policy-ready\\n");
+  } finally {
+    clearTimeout(timeout);
+    lines.close();
+    native.kill("SIGTERM");
+  }
+})().catch((error) => { console.error(error); console.error(stderr); process.exitCode = 1; });
+`;
+    const { stdout } = await runDocker(
+      [
+        "run",
+        "--rm",
+        "--network",
+        networkName,
+        "--read-only",
+        "--user",
+        "1000:1000",
+        "--cap-drop",
+        "ALL",
+        ...probeSecurityOptions,
+        "--tmpfs",
+        "/home/node:size=128m,uid=1000,gid=1000,mode=700",
+        "--tmpfs",
+        "/tmp:size=64m,uid=1000,gid=1000,mode=1777",
+        "-v",
+        `${join(directory, "ca.pem")}:/certs/ca.pem:ro`,
+        "--entrypoint",
+        "node",
+        image,
+        "-e",
+        probe,
+      ],
+      { timeout: 90_000 * imageSmokeTimeoutMultiplier },
+    );
+    assert.match(stdout, /native-broker-private-endpoint-policy-ready/);
+
+    const logs = await waitForDockerLog(brokerName, /POST git\.oce\.svc/);
+    assert.match(logs, /GET git\.oce\.svc 443 \/info\/refs/);
+    assert.match(logs, /POST git\.oce\.svc 443 \/git-upload-pack/);
+    assert.doesNotMatch(logs, /PUT git\.oce\.svc/);
+    assert.doesNotMatch(logs, /unrelated\.oce\.svc/);
+    assert.doesNotMatch(logs, /git\.oce\.svc:444/);
+  },
+);
+
+test(
   "runtime image shares Codex 0.156.0 between the plugin and Dedicated command",
   imageTestOptions,
   async () => {
     const script = String.raw`
 const assert = require("node:assert/strict");
+const { createHash } = require("node:crypto");
 const { createRequire } = require("node:module");
+const { dirname, resolve } = require("node:path");
 const { realpathSync, readFileSync } = require("node:fs");
 const { execFileSync } = require("node:child_process");
 const plugin = createRequire("/app/dist/extensions/codex/package.json");
@@ -917,8 +1290,60 @@ assert.equal(realpathSync("/app/node_modules/.bin/codex"), realpathSync(bundledC
 assert.equal(execFileSync("codex", ["--version"], {encoding: "utf8"}).trim(), "codex-cli 0.156.0");
 assert.equal(execFileSync(process.execPath, [bundledCommand, "--version"], {encoding: "utf8"}).trim(), "codex-cli 0.156.0");
 const provenance = JSON.parse(readFileSync("/opt/oce/runtime/provenance.json", "utf8"));
+assert.equal(provenance.source, "https://github.com/openclaw/openclaw");
+assert.equal(provenance.commit, "5f402bf7a8b510aa7489737c35621e9ad947469c");
+assert.equal(provenance.sourceArchiveSha256, "800e96a619db7fa2714be4432f705b72da823e75724a51b61bbb3482561145d6");
 assert.equal(provenance.codexVersion, "0.156.0");
-assert.equal(require("node:crypto").createHash("sha256").update(readFileSync("/opt/oce/runtime/contents.json")).digest("hex"), provenance.runtimeContentsSha256);
+assert.equal(createHash("sha256").update(readFileSync("/opt/oce/runtime/contents.json")).digest("hex"), provenance.runtimeContentsSha256);
+const platformByArchitecture = {
+  x64: {
+    packageName: "@openai/codex-linux-x64",
+    packageDirectory: "codex-linux-x64",
+    binaryPath: "vendor/x86_64-unknown-linux-musl/bin/codex",
+    targetArch: "amd64",
+    buildTarget: "x86_64-unknown-linux-gnu",
+  },
+  arm64: {
+    packageName: "@openai/codex-linux-arm64",
+    packageDirectory: "codex-linux-arm64",
+    binaryPath: "vendor/aarch64-unknown-linux-musl/bin/codex",
+    targetArch: "arm64",
+    buildTarget: "aarch64-unknown-linux-gnu",
+  },
+};
+const platform = platformByArchitecture[process.arch];
+assert.ok(platform, "Unsupported runtime test architecture: " + process.arch);
+assert.deepEqual(
+  {
+    source: provenance.codexBrokerPolicy.source,
+    sourceCommit: provenance.codexBrokerPolicy.sourceCommit,
+    patchedCommit: provenance.codexBrokerPolicy.patchedCommit,
+    sourceArchiveSha256: provenance.codexBrokerPolicy.sourceArchiveSha256,
+    patchSha256: provenance.codexBrokerPolicy.patchSha256,
+    architecture: provenance.codexBrokerPolicy.architecture,
+    package: provenance.codexBrokerPolicy.package,
+    buildTarget: provenance.codexBrokerPolicy.buildTarget,
+    version: provenance.codexBrokerPolicy.version,
+  },
+  {
+    source: "https://github.com/openai/codex",
+    sourceCommit: "fe74a774532af67b5a4a3dec03ce9469e17f89af",
+    patchedCommit: "6b469b0afb0daa131b4d2caf4ee487feed6a9983",
+    sourceArchiveSha256: "aec40816bf320ff9f7666ca262222992c9617b2ecb60319f8b411dd8eba5c824",
+    patchSha256: "3158a00e50cafeef1910ad201676bdeb041657da38052c393ceb31d50f8725b8",
+    architecture: platform.targetArch,
+    package: platform.packageName,
+    buildTarget: platform.buildTarget,
+    version: "0.156.0",
+  },
+);
+const codexPackageRoot = dirname(plugin.resolve("@openai/codex/package.json"));
+const platformBinary = resolve(codexPackageRoot, "..", platform.packageDirectory, platform.binaryPath);
+assert.equal(provenance.codexBrokerPolicy.installedBinary, platformBinary);
+assert.equal(
+  createHash("sha256").update(readFileSync(platformBinary)).digest("hex"),
+  provenance.codexBrokerPolicy.binarySha256,
+);
 process.stdout.write("shared-codex-0.156.0-ready\n");
 `;
     const { stdout } = await runDocker([
