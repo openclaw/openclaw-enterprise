@@ -77,7 +77,9 @@ container file at `/app/deploy/presets/devday.json`. It is opt-in and is not add
 by `includeDefaults` alone.
 
 [`Community Agent`](../../deploy/presets/devday-partners.json) copies the SWE
-Agent template, including its prefilled Slack channels.
+Agent runtime and prefilled Slack channels, with community-focused workspace
+instructions for answering questions and discussing the roadmap. It checks Linear
+for relevant updates when available and continues with other sources if access fails.
 
 [`Q&A Agent`](../../deploy/presets/devday-qa.json) and
 [`Oncall Agent`](../../deploy/presets/devday-oncall.json) copy the entire SWE Agent
