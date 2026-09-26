@@ -759,6 +759,83 @@ test("SWE Agent Preset defaults to Astra and reuses an existing service-account 
   );
 });
 
+test("Community Agent Preset installs and creates a dedicated Agent with community defaults", async (t) => {
+  const { renderPresetTemplate, validatePresetTemplate } =
+    await import("../../packages/contracts/src/index.ts");
+  const fixture = await createFixture(t);
+  const namespace = await fixture.createNamespace("Community Agent", { ready: true });
+  const serviceAccount = await fixture.createSecret(
+    namespace.id,
+    "Existing community service account token",
+    "synthetic-community-service-account-token",
+  );
+  const artifact = JSON.parse(
+    await readFile(new URL("../../deploy/presets/devday-partners.json", import.meta.url), "utf8"),
+  );
+  const originalTemplate = structuredClone(artifact.template);
+  validatePresetTemplate(originalTemplate);
+  assert.equal(artifact.name, "Community Agent");
+  assert.deepEqual(originalTemplate.agent.harnessAuth, { method: "codex_pat" });
+  assert.deepEqual(originalTemplate.agent.plugins, {});
+
+  const installed = await fixture.request("POST", collection(namespace.id), { body: artifact });
+  assert.equal(installed.status, 201, JSON.stringify(installed.body));
+  const selected = await fixture.request("GET", `${collection(namespace.id)}/${installed.data.id}`);
+  assert.equal(selected.status, 200, JSON.stringify(selected.body));
+  assert.deepEqual(selected.data.template, originalTemplate);
+
+  const selectedTemplate = structuredClone(selected.data.template);
+  selectedTemplate.agent.harnessAuth = { method: "codex_pat", source: serviceAccount.ref };
+  const rendered = renderPresetTemplate(selectedTemplate, { name: "Community lifecycle" });
+  assert.equal(
+    rendered.agent.initialWorkspaceFiles["AGENTS.md"].startsWith("# Community lifecycle"),
+    true,
+  );
+  assert.equal(rendered.agent.initialWorkspaceFiles["AGENTS.md"].includes("# Ocalot"), false);
+  assert.match(rendered.agent.initialWorkspaceFiles["AGENTS.md"], /look in Linear/i);
+
+  const configuration = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/configurations`,
+    {
+      body: { kind: "agent", ...rendered.configuration },
+    },
+  );
+  assert.equal(configuration.status, 201, JSON.stringify(configuration.body));
+  assert.equal(configuration.data.values.channels.slack.dmPolicy, "disabled");
+  assert.deepEqual(configuration.data.values.channels.slack.channels, {
+    C0C49E7CS4A: { requireMention: false, users: ["*"] },
+    C0C43A2QA11: { requireMention: false, users: ["*"] },
+    C0C569NN9ME: { requireMention: false, users: ["*"] },
+    C0C4A0JH2BG: { requireMention: false, users: ["*"] },
+  });
+  const created = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      ...rendered.agent,
+      configurationId: configuration.data.id,
+    },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.equal(created.data.executionMode, "dedicated");
+  assert.deepEqual(created.data.plugins, {});
+  assert.deepEqual(created.data.harnessAuth, {
+    method: "codex_pat",
+    source: serviceAccount.ref,
+  });
+  const workspaceSetup = await fixture.state.read((state) =>
+    state.workspaceSetups.find(namespace.id, created.data.id),
+  );
+  assert.deepEqual(workspaceSetup?.files, rendered.agent.initialWorkspaceFiles);
+  assert.equal(
+    JSON.stringify(installed.body).includes("synthetic-community-service-account-token"),
+    false,
+  );
+  assert.equal(
+    JSON.stringify(created.body).includes("synthetic-community-service-account-token"),
+    false,
+  );
+});
+
 test("password Presets reject stored credentials and password substitution outside credential inputs", async (t) => {
   const fixture = await createFixture(t);
   const namespace = await fixture.createNamespace("Password admission", { ready: true });

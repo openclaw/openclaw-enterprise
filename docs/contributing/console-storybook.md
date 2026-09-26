@@ -102,22 +102,19 @@ Choose a Preset, fill its variables, review seeded workspace files, and create
 an Agent with the Codex harness. The Console submits its inline Configuration
 and saved Secret references, follows simulated provisioning and deployment
 activation, and opens Workspace files for the returned revision. A separate flow
-starts without a Preset, selects OpenAI with Codex, enters a dummy API key or service account
-token, selects a model, edits IDENTITY.md, and clears USER.md before creation.
+starts without a Preset, selects OpenAI with Codex, creates or selects a model
+Secret, selects a model, edits IDENTITY.md, and clears USER.md before creation.
 OpenClaw and unsupported-runtime stories retain the draft workflow: provision
 credentials and deploy from Agent detail. These transitions demonstrate
 presentation only; they do not prove a worker ran.
 
-The DevDay create segment rehearses the same create-and-deploy path with a
-shipped SWE Agent Preset copied from standard Codex, a fake service account token,
-a prefilled `gpt-6-astra` default, an existing model Secret option, Linear plugin
-configuration from the Storybook-only curated catalog, repository choices
-`openclaw/openclaw-enterprise` and `openclaw/openclaw`, prefilled channel
-`C0C43A2QA11`, and simulated Slack Secrets. The separate Preset workspace story
-demonstrates variable-rendered file contents and an intentionally empty file.
-The picker includes both standard presets, SWE, Partners, Q&A, and Oncall.
-Its simulated plugin catalog supports every Preset, either Secret option, and
-no Preset. Production discovery still requires an eligible Codex service-account token.
+The DevDay segment offers SWE, Community, Q&A, Oncall, and both standard presets.
+DevDay presets supply model defaults, templated workspace files, and four Slack
+channels. Choose or create a model Secret; configure Linear from the simulated
+curated catalog and select `openclaw/openclaw-enterprise` or `openclaw/openclaw`.
+The catalog works with any Preset, either Secret option, or no Preset. Production
+discovery requires an eligible Codex service-account token.
+The workspace story demonstrates variable-rendered and intentionally empty files.
 The Standard OpenClaw preset story previews its native harness settings.
 Preset Secret stories cover existing selection, pending metadata, denied reads,
 and an empty catalog; each leaves new-token entry available explicitly.
