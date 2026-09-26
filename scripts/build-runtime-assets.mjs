@@ -42,6 +42,45 @@ const runtimePaths = [
 ];
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
+async function writeRuntimeInventory(root, output, { pruneSourceAssets = false } = {}) {
+  const inventory = [];
+  async function walk(relative = "") {
+    for (const name of (await readdir(join(root, relative))).sort()) {
+      const path = join(relative, name);
+      const absolute = join(root, path);
+      const info = await lstat(absolute);
+      const sourceAsset = path.startsWith("extensions/") || path.startsWith("docs/");
+      if (
+        pruneSourceAssets &&
+        sourceAsset &&
+        (/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(name) ||
+          name === "__tests__" ||
+          (path.startsWith("docs/") && /\.(?:png|jpe?g|webp)$/i.test(name)))
+      ) {
+        await rm(absolute, { recursive: true });
+      } else if (info.isSymbolicLink()) {
+        inventory.push({ path, link: await readlink(absolute) });
+      } else if (info.isDirectory()) {
+        await walk(path);
+      } else if (info.isFile()) {
+        inventory.push({
+          path,
+          size: info.size,
+          mode: info.mode & 0o777,
+          sha256: hash(await readFile(absolute)),
+        });
+      } else {
+        throw new Error(`Unsupported runtime asset: ${path}`);
+      }
+    }
+  }
+  await walk();
+  await mkdir(output, { recursive: true });
+  const contents = `${JSON.stringify(inventory)}\n`;
+  await writeFile(join(output, "contents.json"), contents);
+  return contents;
+}
+
 if (command === "inputs") {
   await mkdir(output, { recursive: true });
   for (const name of await readdir(root)) {
@@ -167,40 +206,7 @@ if (command === "inputs") {
       await rm(join(store, name), { recursive: true });
     }
   }
-  const inventory = [];
-  async function walk(relative = "") {
-    for (const name of (await readdir(join(root, relative))).sort()) {
-      const path = join(relative, name);
-      const absolute = join(root, path);
-      const info = await lstat(absolute);
-      const sourceAsset = path.startsWith("extensions/") || path.startsWith("docs/");
-      if (
-        sourceAsset &&
-        (/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(name) ||
-          name === "__tests__" ||
-          (path.startsWith("docs/") && /\.(?:png|jpe?g|webp)$/i.test(name)))
-      ) {
-        await rm(absolute, { recursive: true });
-      } else if (info.isSymbolicLink()) {
-        inventory.push({ path, link: await readlink(absolute) });
-      } else if (info.isDirectory()) {
-        await walk(path);
-      } else if (info.isFile()) {
-        inventory.push({
-          path,
-          size: info.size,
-          mode: info.mode & 0o777,
-          sha256: hash(await readFile(absolute)),
-        });
-      } else {
-        throw new Error(`Unsupported runtime asset: ${path}`);
-      }
-    }
-  }
-  await walk();
-  await mkdir(output, { recursive: true });
-  const contents = `${JSON.stringify(inventory)}\n`;
-  await writeFile(join(output, "contents.json"), contents);
+  const contents = await writeRuntimeInventory(root, output, { pruneSourceAssets: true });
   const pkg = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
   await writeFile(
     join(output, "provenance.json"),
@@ -223,6 +229,12 @@ if (command === "inputs") {
       2,
     )}\n`,
   );
+} else if (command === "inventory") {
+  const contents = await writeRuntimeInventory(root, output);
+  const provenancePath = join(output, "provenance.json");
+  const provenance = JSON.parse(await readFile(provenancePath, "utf8"));
+  provenance.runtimeContentsSha256 = hash(contents);
+  await writeFile(provenancePath, `${JSON.stringify(provenance, null, 2)}\n`);
 } else {
-  throw new Error("Expected inputs or package, source root, and output directory.");
+  throw new Error("Expected inputs, package, or inventory with source root and output directory.");
 }

@@ -218,6 +218,7 @@ RUN mkdir -p node_modules/.bin \
 
 COPY --from=codex-broker-cli-build /opt/oce-codex-broker /tmp/oce-codex-broker
 COPY --from=codex-broker-cli-build /opt/oce-codex-broker.json /tmp/oce-codex-broker.json
+COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
 RUN TARGETARCH="${TARGETARCH:-amd64}" node --input-type=module <<'NODE'
 import { chmodSync, copyFileSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -276,7 +277,9 @@ RUN mkdir -p node_modules/openclaw/dist/extensions ./plugin-skills /etc/openclaw
   && node -e 'if (typeof require("ws") !== "function") throw new Error("Runtime WebSocket dependency unavailable")' \
   && test "$(codex --version)" = "codex-cli ${OPENAI_CODEX_VERSION}" \
   && test -f /app/dist/extensions/codex/openclaw.plugin.json \
-  && test -f /app/dist/extensions/slack/openclaw.plugin.json
+  && test -f /app/dist/extensions/slack/openclaw.plugin.json \
+  && node /tmp/build-runtime-assets.mjs inventory /app/node_modules/openclaw /opt/oce/runtime \
+  && rm /tmp/build-runtime-assets.mjs
 
 COPY --from=repository-client-build /build/.build/repository-credentials/client/package.json /opt/oce/repository-credentials/package.json
 COPY --from=repository-client-build /build/.build/repository-credentials/client/dist /opt/oce/repository-credentials/dist

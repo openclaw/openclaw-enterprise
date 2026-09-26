@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { basename, isAbsolute, join, posix, relative, resolve } from "node:path";
 import {
   assertReviewedCodexVersion,
@@ -383,7 +383,22 @@ async function installProfileOnNode(nodeName, profileName, profile, directory, o
     verified.stdout.trim().startsWith(expectedSha256),
     `Installed seccomp profile hash mismatch on ${nodeName}.`,
   );
-  return { path: destination, sha256: expectedSha256, bytes: Buffer.byteLength(profileData) };
+  return {
+    path: destination,
+    sha256: expectedSha256,
+    bytes: Buffer.byteLength(profileData),
+    profileData,
+  };
+}
+
+async function writeDockerSeccompProfile(directory, codexVersion, installation) {
+  const dockerDirectory = join(directory, "docker-seccomp");
+  await mkdir(dockerDirectory, { recursive: true, mode: 0o700 });
+  await chmod(dockerDirectory, 0o700);
+  const profilePath = join(dockerDirectory, `codex-${codexVersion}-${installation.sha256}.json`);
+  await writeFile(profilePath, installation.profileData, { mode: 0o644, flag: "wx" });
+  await chmod(profilePath, 0o644);
+  return profilePath;
 }
 
 async function verifyInstalledProfile(
@@ -475,6 +490,8 @@ async function prepareCodexSeccompProfile({
     codexVersion,
   };
   const nodes = [];
+  let dockerProfilePath;
+  let dockerProfileSha256;
   let primaryError;
   try {
     await kubectl(selection, ["create", "namespace", namespace], options);
@@ -494,6 +511,16 @@ async function prepareCodexSeccompProfile({
         directory,
         options,
       );
+      if (dockerProfileSha256 === undefined) {
+        dockerProfileSha256 = installation.sha256;
+        dockerProfilePath = await writeDockerSeccompProfile(
+          selectedCluster.directory,
+          codexVersion,
+          installation,
+        );
+      } else if (dockerProfileSha256 !== installation.sha256) {
+        throw new Error("Codex seccomp profile differs across selected k3d nodes.");
+      }
       await verifyInstalledProfile(
         selection,
         namespace,
@@ -523,6 +550,8 @@ async function prepareCodexSeccompProfile({
     );
     return {
       profileName,
+      dockerProfilePath,
+      profileSha256: dockerProfileSha256,
       env: { OCC_TEST_KUBERNETES_CODEX_SECCOMP_PROFILE: profileName },
       nodes,
       sourceProvenance: codexBwrapSourceProvenance,

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -1050,6 +1051,144 @@ test("codex seccomp preparation requires a namespace/seccomp RuntimeDefault deni
   assert.deepEqual(dockerCalls, []);
 });
 
+test("codex seccomp preparation publishes a reviewed Docker profile for native smoke tests", async (t) => {
+  const root = await fixture(t);
+  const clusterDirectory = join(root, "openclaw-k8s-test-owned");
+  await mkdir(clusterDirectory);
+  const cluster = {
+    name: "openclaw-k8s-test",
+    directory: clusterDirectory,
+    kubeconfig: join(clusterDirectory, "kubeconfig"),
+    context: "k3d-openclaw-k8s-test",
+  };
+  const baseline = {
+    defaultAction: "SCMP_ACT_ERRNO",
+    architectures: ["SCMP_ARCH_X86_64"],
+    syscalls: [{ names: ["clone3"], action: "SCMP_ACT_ERRNO", errnoRet: 38 }],
+  };
+  let installedProfile;
+  const applied = new Map();
+  const execFile = async (command, args) => {
+    if (command === "kubectl") {
+      if (args.includes("create") && args.includes("namespace")) {
+        return { stdout: "", stderr: "" };
+      }
+      if (args.includes("delete") && args.includes("namespace")) {
+        return { stdout: "", stderr: "" };
+      }
+      if (args.includes("apply")) {
+        const manifest = JSON.parse(await readFile(args.at(-1), "utf8"));
+        applied.set(manifest.metadata.name, manifest);
+        return { stdout: "", stderr: "" };
+      }
+      if (args.includes("nodes")) {
+        return {
+          stdout: JSON.stringify({
+            items: [{ metadata: { name: "k3d-openclaw-k8s-test-server-0" } }],
+          }),
+          stderr: "",
+        };
+      }
+      if (args.includes("pod")) {
+        const name = args[args.indexOf("pod") + 1];
+        const manifest = applied.get(name);
+        const localhostProfile =
+          manifest?.spec?.containers?.[0]?.securityContext?.seccompProfile?.localhostProfile;
+        if (localhostProfile?.includes("missing-")) {
+          return {
+            stdout: JSON.stringify({
+              metadata: { name },
+              status: {
+                containerStatuses: [
+                  {
+                    name: "probe",
+                    state: {
+                      waiting: {
+                        reason: "CreateContainerError",
+                        message: "seccomp profile is not found",
+                      },
+                    },
+                  },
+                ],
+              },
+            }),
+            stderr: "",
+          };
+        }
+        return {
+          stdout: JSON.stringify({
+            metadata: { name },
+            status: {
+              containerStatuses: [
+                {
+                  name: "probe",
+                  ready: true,
+                  containerID: `containerd://${localhostProfile ? "installed" : "runtime-default"}`,
+                },
+              ],
+            },
+          }),
+          stderr: "",
+        };
+      }
+      if (args.includes("exec")) {
+        const podName = args[args.indexOf("exec") + 1];
+        const manifest = applied.get(podName);
+        if (!manifest?.spec?.containers?.[0]?.securityContext?.seccompProfile?.localhostProfile) {
+          const error = new Error("RuntimeDefault denied bwrap namespace creation");
+          error.stderr = "operation not permitted: bwrap clone namespace denied by seccomp";
+          error.stdout = "";
+          error.exitCode = 1;
+          error.timedOut = false;
+          throw error;
+        }
+        return { stdout: "", stderr: "" };
+      }
+    }
+    if (command === "docker") {
+      if (args[0] === "exec" && args[2] === "crictl" && args[3] === "inspect") {
+        const seccomp = args[4] === "runtime-default" ? baseline : installedProfile;
+        return {
+          stdout: JSON.stringify({ info: { runtimeSpec: { linux: { seccomp } } } }),
+          stderr: "",
+        };
+      }
+      if (args[0] === "exec" && args[2] === "mkdir") {
+        return { stdout: "", stderr: "" };
+      }
+      if (args[0] === "cp") {
+        installedProfile = JSON.parse(await readFile(args[1], "utf8"));
+        return { stdout: "", stderr: "" };
+      }
+      if (args[0] === "exec" && args[2] === "chmod") {
+        return { stdout: "", stderr: "" };
+      }
+      if (args[0] === "exec" && args[2] === "sha256sum") {
+        const data = `${JSON.stringify(installedProfile, null, 2)}\n`;
+        const digest = createHash("sha256").update(data).digest("hex");
+        return { stdout: `${digest}  ${args[4]}\n`, stderr: "" };
+      }
+    }
+    throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
+  };
+
+  const seccomp = await prepareCodexSeccompProfile({
+    cluster,
+    image: immutableImage,
+    execFile,
+  });
+
+  assert.equal(seccomp.profileName, "openclaw/codex-bwrap.json");
+  assert.match(seccomp.profileSha256, /^[a-f0-9]{64}$/);
+  assert.equal(
+    seccomp.dockerProfilePath,
+    join(clusterDirectory, "docker-seccomp", `codex-0.156.0-${seccomp.profileSha256}.json`),
+  );
+  const profileData = await readFile(seccomp.dockerProfilePath, "utf8");
+  assert.deepEqual(JSON.parse(profileData), installedProfile);
+  assert.equal((await stat(seccomp.dockerProfilePath)).mode & 0o777, 0o644);
+});
+
 test("prepareLane fails closed instead of overwriting an existing CI state file", async (t) => {
   const root = await fixture(t);
   const statePath = join(root, "state.json");
@@ -1098,6 +1237,16 @@ test("prepareLane preserves an explicit logging Collector Node image over its de
   const exported = await readFile(githubEnv, "utf8");
   assert.match(exported, /OCC_TEST_LOGGING_COLLECTOR=1/);
   assert.match(exported, new RegExp(`OCC_TEST_LOGGING_NODE_IMAGE=${customNodeImage}`));
+});
+
+test("images packaging lane prepares Codex seccomp before native runtime smoke tests", () => {
+  const manifest = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"));
+  const lane = manifest.lanes["images-packaging"];
+
+  assert.equal(lane.prepare?.codexSeccomp, true);
+  assert.ok(
+    lane.files.some(({ path }) => path === "tests/integration/runtime-image-startup.test.mjs"),
+  );
 });
 
 test("prepareFile applies the images packaging Node base default without hiding invalid overrides", async (t) => {

@@ -1509,6 +1509,49 @@ async function prepareK3dRuntimeImages(
   }
 }
 
+async function prepareImagesPackagingCodexSeccompProfile(statePath, state, env) {
+  const cluster = await timedPreparation(state.lane, "k3d-create", () =>
+    ensureK3dCluster(statePath, state),
+  );
+  const runtimeImage = await timedPreparation(state.lane, "runtime-image-import", () =>
+    registerImageInK3d(
+      statePath,
+      state,
+      cluster,
+      env.OCC_TEST_KUBERNETES_RUNTIME_IMAGE,
+      "OCC_TEST_KUBERNETES_RUNTIME_IMAGE",
+    ),
+  );
+  progress(
+    state.lane,
+    "Deriving the reviewed Codex seccomp profile for native runtime image smoke tests.",
+  );
+  const seccomp = await timedPreparation(state.lane, "codex-seccomp-profile", () =>
+    prepareCodexSeccompProfile({
+      cluster,
+      image: runtimeImage.reference,
+      execFile,
+      kubectl: cluster.kubectl ?? process.env.OCC_KUBECTL_BIN ?? "kubectl",
+      codexVersion:
+        env.OCC_TEST_KUBERNETES_CODEX_VERSION ??
+        process.env.OCC_TEST_KUBERNETES_CODEX_VERSION ??
+        "0.156.0",
+    }),
+  );
+  if (!seccomp.dockerProfilePath || !isAbsolute(seccomp.dockerProfilePath)) {
+    throw new Error("Codex seccomp preparation did not publish an absolute Docker profile path.");
+  }
+  env.OCC_TEST_CODEX_SECCOMP_PROFILE = seccomp.dockerProfilePath;
+  env.OCC_TEST_KUBERNETES_CODEX_SECCOMP_PROFILE = seccomp.profileName;
+  cluster.codexSeccompProfile = seccomp.profileName;
+  cluster.codexSeccompProfiles = seccomp.nodes;
+  cluster.codexDockerSeccompProfile = {
+    path: seccomp.dockerProfilePath,
+    sha256: seccomp.profileSha256,
+  };
+  await writeState(statePath, state);
+}
+
 async function prepareProductionImages(
   statePath,
   state,
@@ -1632,6 +1675,9 @@ async function prepareLane({ lane, statePath }) {
           )
         ).env,
       );
+      if (lanePrepare(name).codexSeccomp) {
+        await prepareImagesPackagingCodexSeccompProfile(resolvedStatePath, state, env);
+      }
       break;
     case "repository-credentials-container":
       Object.assign(

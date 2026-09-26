@@ -6,7 +6,8 @@
     },
     "requiresPreparedStateForFile": true,
     "requireEnv": ["NODE_BASE_IMAGE"],
-    "nodeBaseImage": true
+    "nodeBaseImage": true,
+    "codexSeccomp": true
   },
   "files": [
     {

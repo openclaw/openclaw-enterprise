@@ -41,7 +41,10 @@ generated API, site build, navigation, and links must pass. Run
 
 Suite Audit and the eleven PR lanes start independently on ephemeral runners.
 Kubernetes fixture and observability lanes use `ubuntu-22.04` for bridge
-netfilter support; other lanes and the audit use `blacksmith-8vcpu-ubuntu-2404`.
+netfilter support. The repository credential platform lane uses
+`blacksmith-16vcpu-ubuntu-2404` because it builds the delivered runtime image and
+the repository platform fixture in one job; other lanes and the audit use
+`blacksmith-8vcpu-ubuntu-2404`.
 `CI Required` uses `ubuntu-22.04` and still requires the audit and every lane to
 pass, including result-artifact accounting. This avoids serial runner allocation
 before test lanes without changing selection or failure handling.
@@ -49,7 +52,10 @@ before test lanes without changing selection or failure handling.
 The repository credential platform lane uses Blacksmith and its full delivered
 runtime image. Its proof covers HTTP, PostgreSQL, Unix control and credential
 material inside Kubernetes; NetworkPolicy enforcement is proved separately by
-the Kubernetes fixture lanes on the compatible GitHub runner kernel.
+the Kubernetes fixture lanes on the compatible GitHub runner kernel. The images
+packaging lane uses the full tool profile so preparation can derive the reviewed
+Codex seccomp profile in an owned k3d cluster and export
+`OCC_TEST_CODEX_SECCOMP_PROFILE` before the native runtime image smoke tests run.
 
 Full Integration is manual and uses the immutable event commit. All lanes
 require `main` except `k3d-model`, which also accepts an `integration-model`

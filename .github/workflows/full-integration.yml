@@ -57,7 +57,7 @@ jobs:
 
   pr-safe-same-sha:
     name: Same-SHA ${{ matrix.title }}
-    runs-on: ${{ (startsWith(matrix.lane, 'k3d-fixture-') || startsWith(matrix.lane, 'k3d-observability')) && 'ubuntu-22.04' || 'ubuntu-24.04' }}
+    runs-on: ${{ (startsWith(matrix.lane, 'k3d-fixture-') || startsWith(matrix.lane, 'k3d-observability')) && 'ubuntu-22.04' || matrix.lane == 'repository-credentials-platform' && 'blacksmith-16vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
     needs: preflight
     if: needs.preflight.outputs.run_all == 'true'
     timeout-minutes: ${{ matrix.timeout }}
@@ -79,7 +79,7 @@ jobs:
             timeout: 25
           - lane: images-packaging
             title: Images and Packaging
-            profile: images
+            profile: full
             timeout: 45
           - lane: k3d-fixture-configuration
             title: k3d Fixture and Configuration

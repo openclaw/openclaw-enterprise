@@ -212,6 +212,7 @@ async function reviewedCodexSeccompSecurityOptions() {
   } catch (error) {
     throw new Error(
       `OCC_TEST_CODEX_SECCOMP_PROFILE must name a readable reviewed Codex seccomp profile: ${error.message}`,
+      { cause: error },
     );
   }
 
@@ -345,7 +346,9 @@ async function listGatewayPlugins(containerName) {
   try {
     return JSON.parse(stdout);
   } catch (error) {
-    throw new Error(`OpenClaw plugin list output was not valid JSON.\n${stdout}`);
+    throw new Error(`OpenClaw plugin list output was not valid JSON.\n${stdout}`, {
+      cause: error,
+    });
   }
 }
 
@@ -587,7 +590,7 @@ async function runGatewaySmoke(t, harnessId, options = {}) {
     };
   } catch (error) {
     const logs = await runDocker(["logs", containerName]).catch((logsError) => logsError);
-    throw new Error(`${error.message}\n${commandOutput(logs)}`);
+    throw new Error(`${error.message}\n${commandOutput(logs)}`, { cause: error });
   }
 }
 
@@ -1279,7 +1282,7 @@ test(
 const assert = require("node:assert/strict");
 const { createHash } = require("node:crypto");
 const { createRequire } = require("node:module");
-const { dirname, resolve } = require("node:path");
+const { dirname, relative, resolve } = require("node:path");
 const { realpathSync, readFileSync } = require("node:fs");
 const { execFileSync } = require("node:child_process");
 const plugin = createRequire("/app/dist/extensions/codex/package.json");
@@ -1294,7 +1297,9 @@ assert.equal(provenance.source, "https://github.com/openclaw/openclaw");
 assert.equal(provenance.commit, "5f402bf7a8b510aa7489737c35621e9ad947469c");
 assert.equal(provenance.sourceArchiveSha256, "800e96a619db7fa2714be4432f705b72da823e75724a51b61bbb3482561145d6");
 assert.equal(provenance.codexVersion, "0.156.0");
-assert.equal(createHash("sha256").update(readFileSync("/opt/oce/runtime/contents.json")).digest("hex"), provenance.runtimeContentsSha256);
+const contents = readFileSync("/opt/oce/runtime/contents.json");
+const inventory = JSON.parse(contents);
+assert.equal(createHash("sha256").update(contents).digest("hex"), provenance.runtimeContentsSha256);
 const platformByArchitecture = {
   x64: {
     packageName: "@openai/codex-linux-x64",
@@ -1340,10 +1345,14 @@ assert.deepEqual(
 const codexPackageRoot = dirname(plugin.resolve("@openai/codex/package.json"));
 const platformBinary = resolve(codexPackageRoot, "..", platform.packageDirectory, platform.binaryPath);
 assert.equal(provenance.codexBrokerPolicy.installedBinary, platformBinary);
-assert.equal(
-  createHash("sha256").update(readFileSync(platformBinary)).digest("hex"),
-  provenance.codexBrokerPolicy.binarySha256,
-);
+const platformBinarySha256 = createHash("sha256").update(readFileSync(platformBinary)).digest("hex");
+assert.equal(platformBinarySha256, provenance.codexBrokerPolicy.binarySha256);
+const platformInventoryPath = relative("/app/node_modules/openclaw", realpathSync(platformBinary));
+assert.ok(!platformInventoryPath.startsWith(".."), "Codex platform binary must live under the inventoried OpenClaw package root.");
+const platformInventoryEntry = inventory.find((entry) => entry.path === platformInventoryPath);
+assert.ok(platformInventoryEntry, "The final runtime inventory must include the replaced Codex platform binary.");
+assert.equal(platformInventoryEntry.mode, 0o555);
+assert.equal(platformInventoryEntry.sha256, platformBinarySha256);
 process.stdout.write("shared-codex-0.156.0-ready\n");
 `;
     const { stdout } = await runDocker([

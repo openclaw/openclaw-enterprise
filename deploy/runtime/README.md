@@ -32,7 +32,8 @@ The source's package version is `2026.9.6`; it does not identify this custom
 build. `/opt/oce/runtime/provenance.json` records the source commit, verified archive
 hash, lockfile hash, pinned package manager, selected plugins, architecture, and
 Codex patch hash and version, and the SHA-256 of `contents.json`, which inventories
-packaged files, modes, hashes, and symlinks. The final stage copies the assembled
+packaged files, modes, hashes, and symlinks after final-stage Codex binary
+replacement and permission normalization. The final stage copies the assembled
 directory directly, without an intermediate compressed archive. Its pinned
 `node:24-bookworm-slim` base retains required runtime libraries, Git/SSH, GitHub CLI,
 Python, and process utilities. Build compilers stay in the full Bookworm stages.
@@ -86,9 +87,12 @@ For multi-architecture builds, the Dockerfile maps `TARGETARCH=amd64` to
 `@openai/codex-linux-arm64`, replacing the matching platform binary with the
 patched CLI built for that image architecture. The patched CLI is built with the
 native GNU target used by the Rust base image and installed into the matching npm
-platform package path in the Debian runtime image. `/opt/oce/runtime/provenance.json`
-records `codexBrokerPolicy` with the Codex source commit, patch digest, binary
-digest, target architecture, package name, and installed binary path.
+platform package path in the Debian runtime image. The image then rebuilds
+`/opt/oce/runtime/contents.json` from `/app/node_modules/openclaw` and updates
+`/opt/oce/runtime/provenance.json#runtimeContentsSha256` after the final runtime
+permission pass. The provenance file also records `codexBrokerPolicy` with the
+Codex source commit, patch digest, binary digest, target architecture, package
+name, and installed binary path.
 Update the reviewed dependency patch and compatibility assertion together when
 changing that version. Run the compatibility
 check below against the resulting image. Provider model availability still

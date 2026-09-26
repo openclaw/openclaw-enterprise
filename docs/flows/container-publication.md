@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-09-25
-last_updated_session: authoring-run/79b51ae7-5ded-47f2-bb2f-ebcb115445d0
+updated: 2026-09-26
+last_updated_session: authoring-run/5396927a-061a-4dda-b2d1-d3975a89c1e8
 ---
 
 # Container publication flow
@@ -90,11 +90,15 @@ use a separately pinned Node 24 Bookworm slim base.
 `scripts/build-runtime-assets.mjs` removes development/QA source, extension tests,
 and documentation media, while retaining runtime templates, skills, and help.
 It follows importer-relative runtime dependencies to remove unreachable pnpm
-store entries without collapsing distinct package versions. It writes a content
-inventory and provenance containing source, patch, lockfile,
-and inventory hashes. The runtime copies the assembled directory directly;
-there is no gzip archive or second Codex installation. Upstream import-closure
-and native-addon checks remain. See the [runtime recipe](../../deploy/runtime/README.md).
+store entries without collapsing distinct package versions. It writes initial
+provenance containing source, patch, lockfile, and inventory hashes. The runtime
+copies the assembled directory directly; there is no gzip archive or second
+Codex installation. After the final stage replaces the bundled Codex platform
+binary and normalizes runtime permissions, the same inventory helper rewrites
+`contents.json` from `/app/node_modules/openclaw` and updates
+`runtimeContentsSha256` so provenance describes the final runtime tree. Upstream
+import-closure and native-addon checks remain. See the
+[runtime recipe](../../deploy/runtime/README.md).
 
 ### 2. Verify and assemble both platform variants
 
@@ -171,6 +175,8 @@ not rebuild them. Old amd64-only seals cannot satisfy this platform contract.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-09-26 02:37: Recompute runtime contents after final-stage Codex replacement and permission normalization so provenance describes the final OpenClaw package tree. (authoring-run/5396927a-061a-4dda-b2d1-d3975a89c1e8 - 2ba56d35)
 
 - 2026-09-25 00:51: Pin build timestamps to the source commit and exclude exporter-only annotations from registry image identity so same-source publication is idempotent when resolved inputs are unchanged. (authoring-run/79b51ae7-5ded-47f2-bb2f-ebcb115445d0 - 0f3a4789)
 
