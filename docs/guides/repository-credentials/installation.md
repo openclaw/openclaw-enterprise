@@ -121,10 +121,11 @@ repositoryCredentials:
 ```
 
 The broker origin comes from admitted repository session material; fresh Helm
-installs mint sessions for `git.<release-namespace>.svc`. Use the runtime image
-with the OpenClaw bridge that forwards stock Codex network settings. No custom
-Codex binary or Installation capability declaration is required. Compute derives
-the bound Agent's broker hostname and policy from admitted session material.
+installs mint sessions for `git.<release-namespace>.svc.<clusterDomain>`, using
+the configured repository credential cluster domain. Use the runtime image with
+the OpenClaw bridge that forwards stock Codex network settings. No custom Codex
+binary or Installation capability declaration is required. Compute derives the
+bound Agent's broker hostname and policy from admitted session material.
 
 Use the actual Helm release name for `app.kubernetes.io/instance`. Grant the
 chart's tenant-worker RoleBinding in each tenant namespace as described in the
