@@ -152,19 +152,19 @@
             },
             "channels": {
               "C0C49E7CS4A": {
-                "requireMention": true,
+                "requireMention": false,
                 "users": ["*"]
               },
               "C0C43A2QA11": {
-                "requireMention": true,
+                "requireMention": false,
                 "users": ["*"]
               },
               "C0C569NN9ME": {
-                "requireMention": true,
+                "requireMention": false,
                 "users": ["*"]
               },
               "C0C4A0JH2BG": {
-                "requireMention": true,
+                "requireMention": false,
                 "users": ["*"]
               }
             }

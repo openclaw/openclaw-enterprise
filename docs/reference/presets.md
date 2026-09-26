@@ -95,8 +95,8 @@ All four DevDay presets prefill these channels:
 | oce-team-test     | `C0C4A0JH2BG` |
 
 In the Console, choose **SWE Agent**, fill its variables, then use **Edit Slack** to
-choose allowed senders and bind Slack app/bot Secrets. The preset allows channel members to mention the agent (`users: ["*"]`)
-in this channel and requires a mention. Narrow the sender list in the drawer if
+choose allowed senders and bind Slack app/bot Secrets. The presets allow all channel members (`users: ["*"]`)
+and do not require mentions in any of the four channels. Narrow the sender list in the drawer if
 needed. No credentials are stored in the file.
 The preset includes the supplied instructions in
 `template.agent.initialWorkspaceFiles.AGENTS.md`, including their draft decisions.

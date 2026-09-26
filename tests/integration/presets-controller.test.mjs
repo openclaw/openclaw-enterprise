@@ -830,7 +830,7 @@ test("Installation YAML seeds authorized default Presets for new and existing Na
   assert.equal(customDefault.template.agent.harnessAuth.method, "codex_pat");
   assert.equal(
     customDefault.template.configuration.values.channels.slack.channels.C0C43A2QA11.requireMention,
-    true,
+    false,
   );
   assert.equal(customDefault.template.configuration.values.plugins.entries.slack.enabled, true);
   const openclaw = list.data.find((preset) => preset.name === "standard-openclaw");
