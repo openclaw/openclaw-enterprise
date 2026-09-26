@@ -101,16 +101,17 @@ for it without echoing the value. `test` requires the variable explicitly;
 and its children; the helper does not write it to preparation or demo state
 files.
 
-The helper requires k3d, `kubectl`, Helm, and OpenSSL, plus either Docker with
-Docker Compose or Podman with `podman-compose`. It uses a running Podman API
-socket when both engines are available unless `DOCKER_HOST` already selects an
-engine. Set `OCC_K3D_CONTAINER_ENGINE=podman` or `docker` to override detection.
+The helper requires k3d, `kubectl`, Helm, OpenSSL, and Docker Compose or
+`podman-compose`. It prefers a running Podman API socket unless `DOCKER_HOST`
+selects an engine. Set `OCC_K3D_CONTAINER_ENGINE=podman` or `docker` to override detection.
 
 Preparation state is private to the selected engine under
 `${XDG_STATE_HOME:-$HOME/.local/state}/openclaw-enterprise/k3d-<engine>-codex`.
 Set `OCC_K3D_STATE_DIR` to an absolute path to override that location. Later
 runs reuse the prepared cluster, database, images, Envoy Gateway, cert-manager,
-and the disposable private-routing CA. The helper builds the current checkout
+and the disposable private-routing CA. This helper has no image upgrade command;
+its demo resources are disposable. For a separate persistent Helm installation,
+see [local k3d image upgrades](../guides/deploy/local-k3d-image-upgrade.md). The helper builds the current checkout
 and ignores Kubernetes image selectors inherited from an earlier test shell.
 State prepared by an older version without workspace routing must be removed
 with `./scripts/k3d down` before starting the updated demo.
@@ -159,14 +160,10 @@ files directly:
 ./scripts/k3d copy occ-password
 ```
 
-`info` reports the selected engine, state directory, preparation status, demo
-status, non-secret connection values, password copy commands, and the live
-host/container processes outside Kubernetes. `get` prints only a selected
-non-sensitive value for shell composition; run
-`./scripts/k3d help` for its available fields. `copy` sends
-`openclaw-password` or `occ-password` directly to the clipboard with `pbcopy`,
-`wl-copy`, or `xclip` and prints only a confirmation; it never writes the
-selected value to standard output. The OCC console's Workspace files panel uses
+`info` reports the engine, state directory, status, connection values, password
+copy commands, and host/container processes. `get` prints a selected non-sensitive
+value; run `./scripts/k3d help` for fields. `copy` sends either password to the
+clipboard with `pbcopy`, `wl-copy`, or `xclip`, never to standard output. The OCC console's Workspace files panel uses
 the same private Envoy route exercised by the focused gateway-routing
 integration. Demo fields become available after the foreground command reports
 readiness. Cluster fields remain available while its prepared state exists.

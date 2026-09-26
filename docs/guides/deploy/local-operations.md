@@ -77,6 +77,10 @@ Set the remaining database, HTTPS, network, and storage inputs for your trial
 those dependencies or prove an Agent model turn. When finished with the trial,
 run `KUBECONFIG="$KUBECONFIG_FILE" k3d cluster delete "$CLUSTER"`.
 
+For an already installed, persistent Helm release on k3d, follow
+[local k3d image upgrades](local-k3d-image-upgrade.md) to preserve its state.
+The disposable cluster cleanup above is not an upgrade procedure.
+
 ## Stop development safely
 
 Run the exact command under `Cleanup` in the `dev-up` output. For Podman, it
