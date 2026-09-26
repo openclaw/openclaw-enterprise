@@ -581,7 +581,7 @@ test(
     ]);
     assert.deepEqual(service.args, [
       "--public-origin",
-      "https://git.openclaw-system.svc",
+      "https://git.openclaw-system.svc.cluster.local",
       "--backend-id",
       "github-primary",
     ]);
@@ -627,19 +627,29 @@ test(
   "repository credential Helm packaging derives the broker origin from Service settings",
   tooling,
   async () => {
-    for (const [namespace, serviceName, expectedOrigin] of [
-      ["tenant-control", undefined, "https://git.tenant-control.svc"],
-      ["tenant-control", "git", "https://git.tenant-control.svc"],
+    for (const [namespace, serviceName, clusterDomain, expectedOrigin] of [
+      ["tenant-control", undefined, undefined, "https://git.tenant-control.svc.cluster.local"],
+      ["tenant-control", "git", undefined, "https://git.tenant-control.svc.cluster.local"],
+      [
+        "tenant-control",
+        "git",
+        "cluster.internal",
+        "https://git.tenant-control.svc.cluster.internal",
+      ],
       [
         "openclaw-system",
         "openclaw-enterprise-repository-credentials",
-        "https://openclaw-enterprise-repository-credentials.openclaw-system.svc",
+        undefined,
+        "https://openclaw-enterprise-repository-credentials.openclaw-system.svc.cluster.local",
       ],
     ]) {
-      const overrides =
-        serviceName === undefined
-          ? repositoryCredentialValues
-          : { ...repositoryCredentialValues, "repositoryCredentials.serviceName": serviceName };
+      const overrides = {
+        ...repositoryCredentialValues,
+        ...(serviceName === undefined ? {} : { "repositoryCredentials.serviceName": serviceName }),
+        ...(clusterDomain === undefined
+          ? {}
+          : { "repositoryCredentials.clusterDomain": clusterDomain }),
+      };
       const objects = await resources(
         (await render(overrides, { namespace, isUpgrade: serviceName !== undefined })).stdout,
       );
@@ -750,6 +760,17 @@ test(
       [{ "repositoryCredentials.serviceName": "1git" }, /DNS-1035/],
       [{ "repositoryCredentials.serviceName": "git.openclaw-system.svc" }, /DNS-1035/],
       [{ "repositoryCredentials.serviceName": "a".repeat(64) }, /DNS-1035/],
+      [{ "repositoryCredentials.clusterDomain": "cluster.local." }, /cluster DNS domain/],
+      [{ "repositoryCredentials.clusterDomain": "Cluster.local" }, /cluster DNS domain/],
+      [{ "repositoryCredentials.clusterDomain": `${"a".repeat(64)}.local` }, /cluster DNS domain/],
+      [{ "repositoryCredentials.clusterDomain": "a".repeat(254) }, /cluster DNS domain/],
+      [{ "repositoryCredentials.clusterDomain[0]": "cluster" }, /cluster DNS domain/],
+      [
+        {
+          "repositoryCredentials.clusterDomain": `${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(38)}`,
+        },
+        /broker hostname/,
+      ],
     ]) {
       await assert.rejects(render({ ...repositoryCredentialValues, ...overrides }), message);
     }

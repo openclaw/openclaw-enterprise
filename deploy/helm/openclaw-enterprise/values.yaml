@@ -76,6 +76,8 @@ repositoryCredentials:
   # set this explicitly to the current Service name until repository sessions
   # drain, then switch it deliberately to git.
   serviceName: ""
+  # Kubernetes cluster DNS suffix used to form the broker Service FQDN.
+  clusterDomain: cluster.local
   backendId: ""
   # Operator-created immutable, versioned ConfigMap shared by all three consumers.
   registryConfigMapName: ""

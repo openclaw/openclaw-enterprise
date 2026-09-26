@@ -10,7 +10,7 @@ import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/sr
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
 const deadlineWallMs = Date.now() + 86400000;
-function repositoryClient(gatewayOrigin = "https://git.credentials.svc") {
+function repositoryClient(gatewayOrigin = "https://git.credentials.svc.cluster.local") {
   return {
     gatewayOrigin,
     gitRemote: `${gatewayOrigin}/example/project.git`,
@@ -1020,7 +1020,13 @@ test("Dedicated Codex repository bindings receive broker network policy centrall
   });
   await f.driver.prepareRevision(
     f.revision,
-    f.context([runtimeBinding("session_custom_control", undefined, "https://git.123-control.svc")]),
+    f.context([
+      runtimeBinding(
+        "session_custom_control",
+        undefined,
+        "https://git.123-control.svc.cluster.local",
+      ),
+    ]),
   );
   const config = preparedCodexConfig(f);
   assert.match(config, /^\[features\]$/m);
@@ -1028,7 +1034,7 @@ test("Dedicated Codex repository bindings receive broker network policy centrall
   assert.doesNotMatch(config, /^\[\[network\.private_endpoints\]\]$/m);
   assert.doesNotMatch(config, /privateEndpoints|private_endpoints|default_permissions/);
   assert.deepEqual(preparedCodexManifest(f).repositoryBrokerNetworkPolicy, {
-    host: "git.123-control.svc",
+    host: "git.123-control.svc.cluster.local",
     domains: {},
   });
 });
@@ -1058,7 +1064,7 @@ test("Dedicated Codex repository policy is independent of preset shape", async (
       configure(f.revision.configuration);
       await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
       const policy = preparedCodexManifest(f).repositoryBrokerNetworkPolicy;
-      assert.equal(policy.host, "git.credentials.svc");
+      assert.equal(policy.host, "git.credentials.svc.cluster.local");
       if (name === "custom") {
         assert.deepEqual(policy.domains, { "github.com": "allow" });
       }
@@ -1071,12 +1077,12 @@ test("Dedicated Codex repository policy preserves compatible domain decisions", 
   f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy = {
     enabled: true,
     mode: "limited",
-    domains: { "GitHub.COM ": "allow", "*.credentials.svc": "deny" },
+    domains: { "GitHub.COM ": "allow", "*.credentials.svc.cluster.local": "deny" },
   };
   await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
   assert.deepEqual(preparedCodexManifest(f).repositoryBrokerNetworkPolicy, {
-    host: "git.credentials.svc",
-    domains: { "github.com": "allow", "*.credentials.svc": "deny" },
+    host: "git.credentials.svc.cluster.local",
+    domains: { "github.com": "allow", "*.credentials.svc.cluster.local": "deny" },
   });
 });
 
@@ -1098,8 +1104,8 @@ test("Dedicated Codex repository policy preserves explicit broker host denies", 
   const f = await fixture("dedicated");
   f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy ??= {};
   f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy.domains = {
-    " Git.Credentials.SVC ": "deny",
-    "git.credentials.svc": "allow",
+    " Git.Credentials.SVC.Cluster.Local ": "deny",
+    "git.credentials.svc.cluster.local": "allow",
   };
   await assert.rejects(
     f.driver.prepareRevision(f.revision, f.context([runtimeBinding()])),
@@ -1122,7 +1128,7 @@ test("Dedicated Codex repository policy accepts stock private-network settings",
       f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy = networkProxy;
       await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
       assert.deepEqual(preparedCodexManifest(f).repositoryBrokerNetworkPolicy, {
-        host: "git.credentials.svc",
+        host: "git.credentials.svc.cluster.local",
         domains: {},
       });
     });
@@ -1193,7 +1199,7 @@ test("Embedded Codex plugin runtime receives broker network policy centrally", a
   f.revision.plugins = codexPluginState();
   await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
   assert.deepEqual(preparedCodexManifest(f).repositoryBrokerNetworkPolicy, {
-    host: "git.credentials.svc",
+    host: "git.credentials.svc.cluster.local",
     domains: {},
   });
 });

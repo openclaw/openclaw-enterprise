@@ -62,7 +62,7 @@ currently selected projected-volume generation. The projection layer fills an
 absent `gateway.publicOrigin` from the trusted `--public-origin` deployment
 argument. If operators provide `gateway.publicOrigin`, it must match that
 argument exactly. The same projection check verifies that the serving certificate
-covers the derived origin host before copying any projected input into the
+covers the derived full Service FQDN before copying any projected input into the
 private runtime directory.
 
 The protected loader requires a normalized absolute path and validates its directory

@@ -33,13 +33,13 @@ Place these operator inputs in a private directory such as `/secure/occ/reposito
 | `ca.crt`             | Public PEM CA trust for that certificate, without private keys   |
 
 Provision the certificate through your issuer. Its exact DNS SAN must cover the
-internal Service host derived from Helm's `repositoryCredentials.serviceName`
-and the release namespace, which defaults to `git.openclaw-system.svc`; wildcard
-or Common Name fallback does not satisfy the Kubernetes projection check. Change
-the namespace and Service name consistently if installing elsewhere. The
-internal Service exposes HTTPS 443 and forwards to sidecar port 8443. Do not
-disable certificate verification or use the TLS private-key Secret as the public
-trust input.
+internal Service host derived from Helm's `repositoryCredentials.serviceName`,
+release namespace, and `repositoryCredentials.clusterDomain`, which defaults to
+`git.openclaw-system.svc.cluster.local`; wildcard or Common Name fallback does
+not satisfy the Kubernetes projection check. Change the namespace, Service name,
+and cluster domain consistently if installing elsewhere. The internal Service
+exposes HTTPS 443 and forwards to sidecar port 8443. Do not disable certificate
+verification or use the TLS private-key Secret as the public trust input.
 
 Write `config.json` with the same Backend ID and duration policy as the registry:
 
@@ -62,7 +62,7 @@ Write `config.json` with the same Backend ID and duration policy as the registry
 ```
 
 This is the Kubernetes projection input. The sidecar supplies the broker origin
-from Helm's `repositoryCredentials.serviceName`, then supplies protected
+from Helm's repository credential hostname helper, then supplies protected
 registry, App-key and TLS file paths after copying its selected projection into
 private owned files. It rejects an explicit `gateway.publicOrigin` that differs
 from the Helm-derived origin and rejects a serving certificate that does not
@@ -169,12 +169,13 @@ within that Pod.
 
 For an existing installation with active repository sessions, keep
 `repositoryCredentials.serviceName` set to the old Service name until those
-sessions drain, then issue a certificate for `git.<namespace>.svc`, switch the
-value to `git`, and deploy new Agent revisions. Restarting the broker process can
-lose in-memory sessions, and an old mounted session also pins the broker origin
-and public trust material it received at admission. The chart cannot detect
-whether sessions have drained; upgrades fail unless `serviceName` is explicit so
-operators choose the current name or the deliberate cutover name.
+sessions drain, then issue a certificate for
+`git.<namespace>.svc.<clusterDomain>`, switch the value to `git`, and deploy new
+Agent revisions. Restarting the broker process can lose in-memory sessions, and
+an old mounted session also pins the broker origin and public trust material it
+received at admission. The chart cannot detect whether sessions have drained;
+upgrades fail unless `serviceName` is explicit so operators choose the current
+name or the deliberate cutover name.
 
 ## Install and verify
 

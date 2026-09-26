@@ -85,6 +85,22 @@
 {{- if or (gt (len $serviceName) 63) (not (regexMatch "^[a-z]([-a-z0-9]*[a-z0-9])?$" $serviceName)) -}}
 {{- fail "repositoryCredentials.serviceName must be a valid Kubernetes Service DNS-1035 label" -}}
 {{- end -}}
+{{- if not (kindIs "string" $credentials.clusterDomain) -}}
+{{- fail "repositoryCredentials.clusterDomain must be a valid Kubernetes cluster DNS domain" -}}
+{{- end -}}
+{{- $clusterDomain := include "openclaw.repositoryCredentials.clusterDomain" . -}}
+{{- if or (gt (len $clusterDomain) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $clusterDomain)) -}}
+{{- fail "repositoryCredentials.clusterDomain must be a valid Kubernetes cluster DNS domain" -}}
+{{- end -}}
+{{- range $label := splitList "." $clusterDomain -}}
+{{- if gt (len $label) 63 -}}
+{{- fail "repositoryCredentials.clusterDomain must be a valid Kubernetes cluster DNS domain" -}}
+{{- end -}}
+{{- end -}}
+{{- $hostname := include "openclaw.repositoryCredentials.hostname" . -}}
+{{- if gt (len $hostname) 253 -}}
+{{- fail "repository credential broker hostname must not exceed 253 characters" -}}
+{{- end -}}
 {{- range $name := list "backendId" "registryConfigMapName" "registryKey" "serviceConfigSecretName" "serviceConfigKey" "appKeySecretName" "appKeyKey" "tlsSecretName" "publicCaSecretName" "publicCaKey" -}}
 {{- if not (index $credentials $name) -}}{{- fail (printf "repositoryCredentials.%s is required when enabled" $name) -}}{{- end -}}
 {{- end -}}
@@ -213,8 +229,12 @@ capabilities:
 {{- default "git" .Values.repositoryCredentials.serviceName -}}
 {{- end -}}
 
+{{- define "openclaw.repositoryCredentials.clusterDomain" -}}
+{{- .Values.repositoryCredentials.clusterDomain -}}
+{{- end -}}
+
 {{- define "openclaw.repositoryCredentials.hostname" -}}
-{{- printf "%s.%s.svc" (include "openclaw.repositoryCredentials.serviceName" .) .Release.Namespace -}}
+{{- printf "%s.%s.svc.%s" (include "openclaw.repositoryCredentials.serviceName" .) .Release.Namespace (include "openclaw.repositoryCredentials.clusterDomain" .) -}}
 {{- end -}}
 
 {{- define "openclaw.repositoryCredentials.origin" -}}
