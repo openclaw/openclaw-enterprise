@@ -118,12 +118,27 @@ install_kubectl() {
     kubectl version --client=true
     return
   fi
-  linux_amd64_or_manual kubectl
+  local arch
+  local checksum
+  case "${platform}" in
+    Linux-x86_64)
+      arch="amd64"
+      checksum="a2e984a18a0c063279d692533031c1eff93a262afcc0afdc517375432d060989"
+      ;;
+    Linux-aarch64|Linux-arm64)
+      arch="arm64"
+      checksum="58f82f9fe796c375c5c4b8439850b0f3f4d401a52434052f2df46035a8789e25"
+      ;;
+    *)
+      echo "Install kubectl v${version} manually on ${platform}." >&2
+      return 1
+      ;;
+  esac
   local binary="${bin_dir}/kubectl"
   download_file \
-    "https://dl.k8s.io/release/v${version}/bin/linux/amd64/kubectl" \
+    "https://dl.k8s.io/release/v${version}/bin/linux/${arch}/kubectl" \
     "${binary}" \
-    "a2e984a18a0c063279d692533031c1eff93a262afcc0afdc517375432d060989"
+    "${checksum}"
   chmod 0755 "${binary}"
   kubectl version --client=true
 }
@@ -134,12 +149,27 @@ install_k3d() {
     k3d version
     return
   fi
-  linux_amd64_or_manual k3d
+  local arch
+  local checksum
+  case "${platform}" in
+    Linux-x86_64)
+      arch="amd64"
+      checksum="dbaa79a76ace7f4ca230a1ff41dc7d8a5036a8ad0309e9c54f9bf3836dbe853e"
+      ;;
+    Linux-aarch64|Linux-arm64)
+      arch="arm64"
+      checksum="0b8110f2229631af7402fb828259330985918b08fefd38b7f1b788a1c8687216"
+      ;;
+    *)
+      echo "Install k3d v${version} manually on ${platform}." >&2
+      return 1
+      ;;
+  esac
   local binary="${bin_dir}/k3d"
   download_file \
-    "https://github.com/k3d-io/k3d/releases/download/v${version}/k3d-linux-amd64" \
+    "https://github.com/k3d-io/k3d/releases/download/v${version}/k3d-linux-${arch}" \
     "${binary}" \
-    "dbaa79a76ace7f4ca230a1ff41dc7d8a5036a8ad0309e9c54f9bf3836dbe853e"
+    "${checksum}"
   chmod 0755 "${binary}"
   k3d version
 }

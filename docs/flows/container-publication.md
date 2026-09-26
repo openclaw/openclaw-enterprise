@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
 updated: 2026-09-26
-last_updated_session: authoring-run/c29b3860-d1f0-4a14-a264-49090586cb20
+last_updated_session: codex/01a0b1f2-e696-7232-a439-5b668154bcd9
 ---
 
 # Container publication flow
@@ -122,6 +122,14 @@ index and archive without rebuilding either variant, then removes the temporary 
 Linux manifest with matching config and content digests. Publication still consumes
 this sealed archive; registry access is not needed during assembly.
 
+Before runtime smoke, `scripts/ci/prepare.mjs:prepareRuntimeImageSmoke` imports
+the loaded config ID into a disposable k3d cluster. It reuses the Images and
+Packaging lane's reviewed Codex seccomp derivation and sandbox probes, then passes
+the resulting profile and ownership state to the Docker tests. This preparation
+does not rebuild the runtime. Cleanup removes the owned cluster and temporary
+image tag on success or failure; a workflow cleanup step also runs after an
+interrupted smoke command.
+
 ### 3. Seal and enter publication
 
 `scripts/ci/container-release.mjs:seal` rechecks the platform contents and records
@@ -177,6 +185,8 @@ not rebuild them. Old amd64-only seals cannot satisfy this platform contract.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-09-26 20:36: Prepare the reviewed Codex seccomp profile for native release smoke using the exact exported runtime image. (codex/01a0b1f2-e696-7232-a439-5b668154bcd9 - 849b2b24)
 
 - 2026-09-26 09:07: Retain final runtime provenance while selecting stock Codex packages and forwarding stock broker network settings. (authoring-run/c29b3860-d1f0-4a14-a264-49090586cb20 - 20123a3aa96021391616e918deee0ce60b009fa3)
   Removed the custom Codex private-endpoint requirement. (NOT_IN_SPEC)

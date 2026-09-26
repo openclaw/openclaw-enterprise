@@ -1576,6 +1576,30 @@ async function prepareImagesPackagingCodexSeccompProfile(statePath, state, env) 
   await writeState(statePath, state);
 }
 
+export async function prepareRuntimeImageSmoke({ image, statePath }) {
+  assertDockerImageId(image, "Runtime smoke image");
+  const path = normalizeStatePath(statePath);
+  if (await readState(path)) {
+    throw new Error(`CI state already exists at ${path}; run cleanup before runtime smoke.`);
+  }
+  const state = baseState("images-packaging", path);
+  const tag = `localhost/${state.prefix}/runtime-smoke-${randomSuffix()}:local`;
+  const env = { ...baseEnv(path, state), OCC_TEST_KUBERNETES_RUNTIME_IMAGE: tag };
+  const resource = addResource(state, "image-tag", { name: tag });
+  await writeState(path, state);
+  try {
+    // Import the caller's exact loaded config ID without rebuilding or pulling.
+    await execFile(process.env.OCC_DOCKER_BIN ?? "docker", ["tag", image, tag]);
+    await markResourceReady(path, state, resource);
+    await prepareImagesPackagingCodexSeccompProfile(path, state, env);
+    await saveLaneEnv(path, state, env);
+    return { env, cleanup: () => cleanupResourceIds(path) };
+  } catch (error) {
+    await cleanupResourceIds(path);
+    throw error;
+  }
+}
+
 async function prepareProductionImages(
   statePath,
   state,

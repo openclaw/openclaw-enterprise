@@ -129,7 +129,15 @@ jobs:
           PLATFORM: linux/${{ matrix.arch }}
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
           CI_ATTEMPT: ${{ env.CI_ATTEMPT }}
-        run: node scripts/ci/container-release.mjs smoke "$RUNNER_TEMP/oci"
+        run: |
+          if [[ "$IMAGE" == runtime ]]; then
+            bash scripts/ci/setup-tools.sh k3d
+            export PATH="$RUNNER_TEMP/bin:$PATH"
+          fi
+          node scripts/ci/container-release.mjs smoke "$RUNNER_TEMP/oci"
+      - name: Clean up runtime smoke resources
+        if: always() && matrix.image == 'runtime'
+        run: node scripts/ci/cleanup.mjs --state "$RUNNER_TEMP/runtime-smoke-${{ matrix.arch }}.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: platform-${{ matrix.image }}-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
