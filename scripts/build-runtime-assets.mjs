@@ -15,7 +15,7 @@ import {
 } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, sep, resolve } from "node:path";
 
-const [command, sourceRoot, output, patchPath] = process.argv.slice(2);
+const [command, sourceRoot, output] = process.argv.slice(2);
 const root = await realpath(sourceRoot);
 const runtimePaths = [
   "dist",
@@ -295,8 +295,6 @@ if (command === "inputs") {
         artifactKind: "assembled-runtime-root",
         runtimeContentsSha256: hash(contents),
         lockfileSha256: hash(await readFile(join(root, "pnpm-lock.yaml"))),
-        codexPatchSha256: hash(await readFile(patchPath)),
-        codexVersion: "0.156.0",
         codex: await readCodexRuntimeIdentity(root),
         packageManager: pkg.packageManager,
         platform: process.platform,

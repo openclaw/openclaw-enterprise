@@ -9,8 +9,8 @@ entrypoints:
 
 The Dockerfile builds OpenClaw from a verified public source archive, using its
 pinned package manager, frozen dependency lockfile, and upstream Docker assembly.
-The reviewed `codex-0.156.0.patch` updates only Codex dependency versions and package
-integrities before the frozen install; it does not modify the Codex binary. Both
+The reviewed `stock-codex-0.156.0-dependency-pin.patch` updates only Codex dependency
+versions and package integrities before the frozen install; it does not modify the Codex binary. Both
 Codex entrypoints use the same stock `0.156.0` installation.
 Codex and Slack come from that same source. The selected commit contains
 the restricted workspace-node commands and saved-token-first pairing required by
@@ -31,8 +31,8 @@ checksum below identify this source build; it is not a published OpenClaw releas
 
 The source's package version is `2026.9.6`; it does not identify this custom
 build. `/opt/oce/runtime/provenance.json` records the source commit, verified archive
-hash, lockfile hash, pinned package manager, selected plugins, architecture, and
-Codex dependency-patch hash and version, and the SHA-256 of `contents.json`, which inventories
+hash, lockfile hash, pinned package manager, selected plugins, architecture, stock Codex
+package identity, and the SHA-256 of `contents.json`, which inventories
 packaged files, modes, hashes, and symlinks after final-stage permission
 normalization. The final stage copies the assembled
 directory directly, without an intermediate compressed archive. Its pinned

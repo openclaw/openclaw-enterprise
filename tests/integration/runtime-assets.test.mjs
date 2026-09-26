@@ -13,7 +13,16 @@ test("runtime assembly preserves executable assets and links while excluding dev
   const output = join(directory, "output");
   const files = {
     "package.json": '{"packageManager":"pnpm@12.4.2","dependencies":{"dep":"1.0.0"}}',
-    "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
+    "pnpm-lock.yaml": `lockfileVersion: '9.0'
+
+packages:
+  '@openai/codex@0.156.0':
+    resolution: {integrity: sha512-codex}
+  '@openai/codex-linux-arm64@0.156.0':
+    resolution: {integrity: sha512-codexlinuxarm}
+  '@openai/codex-linux-x64@0.156.0':
+    resolution: {integrity: sha512-codexlinux}
+`,
     "dist/index.js": "export const ready = true;\n",
     "openclaw.mjs":
       'import { ready } from "./node-compile-cache.mjs"; process.stdout.write(ready);\n',
@@ -25,7 +34,18 @@ test("runtime assembly preserves executable assets and links while excluding dev
     "docs/images/screenshot.png": "image bytes",
     "qa/scenario.json": "{}",
     "src/server.ts": "development source",
+    "dist/extensions/codex/package.json": '{"dependencies":{"@openai/codex":"0.156.0"}}',
     "node_modules/codex/bin.js": "#!/usr/bin/env node\n",
+    "node_modules/.pnpm/@openai+codex@0.156.0/node_modules/@openai/codex/package.json":
+      '{"name":"@openai/codex","version":"0.156.0","optionalDependencies":{"@openai/codex-linux-x64":"0.156.0"}}',
+    "node_modules/.pnpm/@openai+codex@0.156.0/node_modules/@openai/codex-linux-arm64/package.json":
+      '{"name":"@openai/codex-linux-arm64","version":"0.156.0"}',
+    "node_modules/.pnpm/@openai+codex@0.156.0/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex":
+      "#!/usr/bin/env node\nconsole.log('codex-cli 0.156.0');\n",
+    "node_modules/.pnpm/@openai+codex@0.156.0/node_modules/@openai/codex-linux-x64/package.json":
+      '{"name":"@openai/codex-linux-x64","version":"0.156.0"}',
+    "node_modules/.pnpm/@openai+codex@0.156.0/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex":
+      "#!/usr/bin/env node\nconsole.log('codex-cli 0.156.0');\n",
     LICENSE: "license notice",
     "node_modules/.pnpm/dep@1.0.0/node_modules/dep/package.json":
       '{"name":"dep","version":"1.0.0"}',
@@ -40,10 +60,25 @@ test("runtime assembly preserves executable assets and links while excluding dev
   };
   for (const [name, bytes] of Object.entries(files)) {
     await mkdir(join(root, name, ".."), { recursive: true });
-    await writeFile(join(root, name), bytes, { mode: name.endsWith("bin.js") ? 0o755 : 0o644 });
+    await writeFile(join(root, name), bytes, {
+      mode: name.endsWith("bin.js") || name.endsWith("/codex") ? 0o755 : 0o644,
+    });
   }
   await mkdir(join(root, "node_modules/.bin"));
   await symlink("../codex/bin.js", join(root, "node_modules/.bin/codex"));
+  await mkdir(join(root, "node_modules/@openai"), { recursive: true });
+  await symlink(
+    "../.pnpm/@openai+codex@0.156.0/node_modules/@openai/codex",
+    join(root, "node_modules/@openai/codex"),
+  );
+  await symlink(
+    "../.pnpm/@openai+codex@0.156.0/node_modules/@openai/codex-linux-arm64",
+    join(root, "node_modules/@openai/codex-linux-arm64"),
+  );
+  await symlink(
+    "../.pnpm/@openai+codex@0.156.0/node_modules/@openai/codex-linux-x64",
+    join(root, "node_modules/@openai/codex-linux-x64"),
+  );
   await symlink(".pnpm/dep@1.0.0/node_modules/dep", join(root, "node_modules/dep"));
   await mkdir(join(root, "extensions/slack/node_modules"));
   await symlink(
@@ -54,13 +89,11 @@ test("runtime assembly preserves executable assets and links while excluding dev
     "../../optional@1.0.0/node_modules/optional",
     join(root, "node_modules/.pnpm/dep@2.0.0/node_modules/optional"),
   );
-  const patch = join(directory, "codex.patch");
-  await writeFile(patch, "reviewed dependency patch");
   const sourceAlias = join(directory, "source-alias");
   await symlink(root, sourceAlias, "dir");
   execFileSync(
     process.execPath,
-    ["scripts/build-runtime-assets.mjs", "package", sourceAlias, output, patch],
+    ["scripts/build-runtime-assets.mjs", "package", sourceAlias, output],
     {
       env: { ...process.env, GIT_COMMIT: "a".repeat(40) },
     },
@@ -108,5 +141,7 @@ test("runtime assembly preserves executable assets and links while excluding dev
     provenance.runtimeContentsSha256,
     createHash("sha256").update(contents).digest("hex"),
   );
-  assert.equal(provenance.codexVersion, "0.156.0");
+  assert.equal(provenance.codex.version, "0.156.0");
+  assert.equal(Object.hasOwn(provenance, "codexPatchSha256"), false);
+  assert.equal(Object.hasOwn(provenance, "codexVersion"), false);
 });

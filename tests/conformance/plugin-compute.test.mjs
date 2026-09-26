@@ -1933,6 +1933,14 @@ test("embedded plugin preparation applies runtime egress before gateway readines
     revisionId: dedicated.id,
     ready: true,
   });
+  const runtimeGatewayPolicyIndex = dedicatedReconciled.findIndex(
+    ({ kind, metadata }) =>
+      kind === "NetworkPolicy" && metadata.name.startsWith("allow-gateway-agent-"),
+  );
+  const runtimeAgentPolicyIndex = dedicatedReconciled.findIndex(
+    ({ kind, metadata }) =>
+      kind === "NetworkPolicy" && metadata.name.startsWith("allow-agent-runtime-"),
+  );
   const statusGatewayPolicyIndex = dedicatedReconciled.findIndex(
     ({ kind, metadata }) =>
       kind === "NetworkPolicy" && metadata.name.startsWith("allow-plugin-status-gateway-"),
@@ -1950,13 +1958,41 @@ test("embedded plugin preparation applies runtime egress before gateway readines
   const dedicatedGatewayDeploymentIndex = dedicatedReconciled.findIndex(
     ({ kind, metadata }) => kind === "Deployment" && metadata.name.startsWith("gateway-"),
   );
+  assert.ok(runtimeGatewayPolicyIndex >= 0);
+  assert.ok(runtimeAgentPolicyIndex >= 0);
   assert.ok(statusGatewayPolicyIndex >= 0);
   assert.ok(statusAgentPolicyIndex >= 0);
   assert.ok(dedicatedAgentServiceIndex >= 0);
   assert.ok(dedicatedGatewayDeploymentIndex >= 0);
+  assert.ok(runtimeGatewayPolicyIndex < dedicatedGatewayDeploymentIndex);
+  assert.ok(runtimeAgentPolicyIndex < dedicatedGatewayDeploymentIndex);
   assert.ok(statusGatewayPolicyIndex < dedicatedGatewayDeploymentIndex);
   assert.ok(statusAgentPolicyIndex < dedicatedGatewayDeploymentIndex);
   assert.ok(dedicatedAgentServiceIndex < dedicatedGatewayDeploymentIndex);
+  assert.deepEqual(dedicatedReconciled[runtimeGatewayPolicyIndex].metadata.namespace, cp);
+  assert.deepEqual(dedicatedReconciled[runtimeGatewayPolicyIndex].spec.podSelector.matchLabels, {
+    "openclaw.dev/namespace": dedicated.namespaceId,
+    "openclaw.dev/workload-role": "gateway",
+    "openclaw.dev/agent": dedicated.agentId,
+  });
+  assert.deepEqual(dedicatedReconciled[runtimeGatewayPolicyIndex].spec.egress[0].ports, [
+    { protocol: "TCP", port: 18790 },
+    { protocol: "TCP", port: 18791 },
+  ]);
+  assert.deepEqual(
+    dedicatedReconciled[runtimeAgentPolicyIndex].metadata.namespace,
+    dedicatedNamespace,
+  );
+  assert.deepEqual(dedicatedReconciled[runtimeAgentPolicyIndex].spec.podSelector.matchLabels, {
+    "openclaw.dev/namespace": dedicated.namespaceId,
+    "openclaw.dev/workload-role": "agent",
+    "openclaw.dev/agent": dedicated.agentId,
+    "openclaw.dev/revision": dedicated.id,
+  });
+  assert.deepEqual(dedicatedReconciled[runtimeAgentPolicyIndex].spec.ingress[0].ports, [
+    { protocol: "TCP", port: 18790 },
+    { protocol: "TCP", port: 18791 },
+  ]);
 });
 
 test("Kubernetes plugin runtime status requires the exact ready Pod report", async (t) => {

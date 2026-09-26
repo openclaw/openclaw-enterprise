@@ -39,8 +39,9 @@ RUN --mount=type=secret,id=build-ca,required=false \
     echo '947682ca9c92e8f6f274c1af771c3c180ab92921b06c52878c59837fef2095d0  /tmp/openclaw-source.tar.gz' | sha256sum --check --strict; \
     tar -xzf /tmp/openclaw-source.tar.gz --strip-components=1; \
     rm /tmp/openclaw-source.tar.gz
-COPY deploy/runtime/codex-0.156.0.patch /tmp/codex.patch
-RUN git apply /tmp/codex.patch
+# Pin the stock Codex package used by the bundled upstream OpenClaw extension.
+COPY deploy/runtime/stock-codex-0.156.0-dependency-pin.patch /tmp/codex-dependency-pin.patch
+RUN git apply /tmp/codex-dependency-pin.patch
 COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
 RUN node /tmp/build-runtime-assets.mjs inputs /source /inputs
 
@@ -122,11 +123,10 @@ for (const plugin of ["codex", "slack"]) {
   }
 }
 NODE
-COPY --from=openclaw-source /tmp/codex.patch /tmp/codex.patch
 COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
 RUN --mount=type=bind,from=openclaw-source,source=/source/scripts,target=/verification/scripts \
     --mount=type=bind,from=openclaw-build,source=/source/node_modules,target=/verification/node_modules \
-    node /tmp/build-runtime-assets.mjs package /source /out /tmp/codex.patch \
+    node /tmp/build-runtime-assets.mjs package /source /out \
     && node /verification/scripts/check-package-dist-imports.mjs /source
 
 FROM ${NODE_RUNTIME_BASE_IMAGE} AS runtime

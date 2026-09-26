@@ -2563,6 +2563,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
         );
       }
       if (this.options.runtime !== undefined) {
+        for (const policy of this.agentNetworkPolicies(revision, namespace)) {
+          await this.reconcile(policy, gatewayOwnership, policy.metadata.namespace);
+        }
         await this.reconcile(
           this.agentAuthenticationNetworkPolicy(revision, namespace),
           agentOwnership,

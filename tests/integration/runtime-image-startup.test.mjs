@@ -1603,7 +1603,9 @@ const provenance = JSON.parse(readFileSync("/opt/oce/runtime/provenance.json", "
 assert.equal(provenance.source, "https://github.com/openclaw/openclaw");
 assert.equal(provenance.commit, "e3c7304f01ed4c7d9aa7d3aed1d27dc1e2a630f3");
 assert.equal(provenance.sourceArchiveSha256, "947682ca9c92e8f6f274c1af771c3c180ab92921b06c52878c59837fef2095d0");
-assert.equal(provenance.codexVersion, "0.156.0");
+assert.equal(provenance.codex.version, "0.156.0");
+assert.equal(Object.hasOwn(provenance, "codexPatchSha256"), false);
+assert.equal(Object.hasOwn(provenance, "codexVersion"), false);
 const contents = readFileSync("/opt/oce/runtime/contents.json");
 const inventory = JSON.parse(contents);
 assert.equal(createHash("sha256").update(contents).digest("hex"), provenance.runtimeContentsSha256);
