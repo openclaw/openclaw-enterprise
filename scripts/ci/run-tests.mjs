@@ -615,13 +615,10 @@ async function runFile(root, lane, file, statePath, prepareFile) {
     }
   }
 
-  const counts = {
-    passed: tests.filter((testCase) => testCase.status === "passed").length,
-    failed: tests.filter((testCase) => testCase.status === "failed").length,
-    skipped: tests.filter((testCase) => testCase.status === "skipped").length,
-    todo: tests.filter((testCase) => testCase.status === "todo").length,
-    total: tests.length,
-  };
+  const counts = { passed: 0, failed: 0, skipped: 0, todo: 0, total: tests.length };
+  for (const testCase of tests) {
+    counts[testCase.status] += 1;
+  }
   const nodeExitCode = nodeResult ? (nodeResult.status ?? (nodeResult.signal ? 1 : 0)) : null;
 
   return {
