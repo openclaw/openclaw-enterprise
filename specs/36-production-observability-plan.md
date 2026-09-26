@@ -16,10 +16,12 @@ PostgreSQL, Prometheus, Collector, and Loki.
 OpenTelemetry Collector, Prometheus, Grafana, and Loki.
 
 **Spec:** [Default production observability](36-production-observability.md).
-Status: Implemented in an isolated worktree; the default local command passed
-both required cases without skips and cleaned up. Separate model-turn
-qualification is blocked by a provider HTTP 401 for the supplied credential. See the [qualification report](reports/36-production-observability-implementation.md)
-for evidence, delivery adjustments, and remaining hosted/review checks.
+Status: Earlier local acceptance passed on its recorded source. The expanded
+Helm-installed model and revision-cutover coverage is deferred; the existing
+protected model lane is retained. Model-turn qualification on the current cut
+and hosted checks remain outstanding. See the
+[qualification report](reports/36-production-observability-implementation.md)
+for historical evidence and delivery adjustments.
 
 ## Global constraints
 
@@ -214,6 +216,10 @@ receives filtered Collector OTLP logs. No operator CRDs or cloud service require
 
 ## Task 4: Make local k3d and CI the standard acceptance path
 
+The completed wrapper tasks below record the original implementation. The
+wrapper and its package commands were later removed; use the current
+[CI lane procedures](../docs/testing/metrics.md#kubernetes-observability-acceptance).
+
 **Files:** Create `scripts/test-observability.mjs`; modify `package.json`,
 `scripts/ci/test-suites.json`, `.github/workflows/ci.yml`,
 `.github/workflows/full-integration.yml`, and
@@ -231,17 +237,16 @@ receives filtered Collector OTLP logs. No operator CRDs or cloud service require
       `scripts/k3d`'s current model demo default. Preflight model credentials only
       for the explicit model-turn command, before provisioning. Never load or
       print secrets implicitly.
-- [ ] Run the credential-free lane on PRs, main pushes, merge groups, and manual
-      CI. Select `ubuntu-22.04` and enable bridge netfilter, including the new lane
-      in both runner selection and the composite action's setup condition.
-- [x] Extend `harness-topology-k3d-otel-real.test.mjs` and its helpers to exercise
-      embedded and dedicated model turns through a Helm-installed API/worker.
-      Reuse the production Helm helper; the existing test-assembled controller
-      path is insufficient. Verify actual gateway/Codex records with Agent and
-      revision attribution before and after revision cutover, plus metrics and
-      absence of model credentials in exported records.
-- [x] Keep those cases owned by `k3d-otel`. Run that lane only from the separate
-      local model-turn command or existing protected CI dispatch using
+- [ ] Verify the configured credential-free lane on PRs, main pushes, merge
+      groups, and manual CI. Runner selection uses `ubuntu-22.04`, and the
+      composite action enables bridge netfilter; hosted results remain pending.
+- [ ] Add expanded model coverage through a Helm-installed API/worker,
+      including revision-cutover attribution, metrics, and credential exclusion
+      across revisions. This coverage is deferred from the current cut. The retained
+      `k3d-otel` cases use the existing production topology fixture and check one
+      revision's gateway/Codex records and model turns.
+- [x] Keep the existing cases owned by `k3d-otel`. Run that lane only through
+      the documented local procedure or the protected CI dispatch using
       `integration-otel`. Preserve reviewers and immutable source checkout;
       do not add automatic model execution to ordinary PR or main CI.
 - [x] Test wrapper failure propagation and owned cleanup with real preparation
@@ -265,10 +270,11 @@ receives filtered Collector OTLP logs. No operator CRDs or cloud service require
 - [x] Run formatting, `pnpm lint`, `pnpm typecheck`, `pnpm check:workspace`,
       `pnpm docs:check`, `pnpm docs:check-length`, and `git diff --check` as applicable
       with matching installed dependencies. Do not install dependencies as verification.
-- [ ] Run `pnpm test:observability` locally without model credentials, then obtain
-      passing required CI for the final revision. Qualify changed model-turn tests
-      separately with `pnpm test:observability:models` and protected CI; report any
-      missing runtime evidence without presenting default checks as runtime proof.
+- [ ] Run the credential-free lanes locally using the current
+      [CI lane procedures](../docs/testing/metrics.md#kubernetes-observability-acceptance),
+      then obtain passing required CI for the final revision. Qualify model
+      turns separately using the retained model lane and protected CI;
+      report missing runtime evidence without presenting default checks as runtime proof.
       Run the existing three k3d fixture cases when shared preparation changes;
       all selected cases must pass without skips.
 - [ ] Record delivery status, exact proof and limitations in the spec and review.

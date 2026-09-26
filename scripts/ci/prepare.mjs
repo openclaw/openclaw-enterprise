@@ -1866,15 +1866,6 @@ async function prepareLane({ lane, statePath }) {
       const routing = await prepareGatewayRouting({ cluster, execFile });
       Object.assign(env, routing.env);
       if (name === "k3d-otel") {
-        const inputs = effectiveLaneEnv(name, env);
-        for (const [variable, image] of Object.entries({
-          OCC_TEST_PRODUCTION_POSTGRES_IMAGE: inputs.OCC_TEST_PRODUCTION_POSTGRES_IMAGE,
-          OCC_TEST_PRODUCTION_NODE_IMAGE: inputs.NODE_BASE_IMAGE,
-        })) {
-          env[variable] = (
-            await registerImageInK3d(resolvedStatePath, state, cluster, image, variable)
-          ).reference;
-        }
         await prepareLaneLogging(resolvedStatePath, state, env, cluster);
       }
       break;

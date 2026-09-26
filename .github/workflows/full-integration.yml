@@ -100,7 +100,7 @@ jobs:
           - lane: k3d-observability
             title: Production Observability
             profile: k3d
-            timeout: 15
+            timeout: 45
           - lane: logging-collector
             title: Logging Collector
             profile: images

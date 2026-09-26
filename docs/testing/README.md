@@ -119,7 +119,6 @@ databases, or unrelated clusters.
 - [Runtime image recipe](../../deploy/runtime/README.md)
 - [Contributor integration boundaries](../../AGENTS.md#running-integration-tests)
 
-For default production telemetry and the optional demo backends, run
-`pnpm test:observability`; see [Kubernetes observability acceptance](metrics.md#kubernetes-observability-acceptance).
-The credential-free local command and PR CI use the same lane. Model-turn logs
-have separate prerequisites and protected execution.
+For production telemetry and the optional demo backends, select a
+[Kubernetes observability lane](metrics.md#kubernetes-observability-acceptance).
+Model-turn logs have separate prerequisites and protected execution.

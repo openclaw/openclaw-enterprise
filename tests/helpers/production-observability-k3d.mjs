@@ -17,7 +17,7 @@ export const observabilitySelection = {
   skip:
     process.env.OCC_TEST_PRODUCTION_OBSERVABILITY === "1"
       ? false
-      : "Run pnpm test:observability for the owned k3d installation.",
+      : "Select k3d-observability with the CI runner; see docs/testing/metrics.md.",
   timeout: 1_200_000,
 };
 

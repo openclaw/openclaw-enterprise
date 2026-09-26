@@ -11,7 +11,6 @@ on:
       - "tests/helpers/kubernetes-real.mjs"
       - "tests/fixtures/repository-credentials/process.mjs"
       - "scripts/ci/**"
-      - "scripts/test-observability.mjs"
       - "pnpm-lock.yaml"
   push:
     branches: [main]
@@ -24,7 +23,6 @@ on:
       - "tests/helpers/kubernetes-real.mjs"
       - "tests/fixtures/repository-credentials/process.mjs"
       - "scripts/ci/**"
-      - "scripts/test-observability.mjs"
       - "pnpm-lock.yaml"
   merge_group:
   workflow_dispatch:

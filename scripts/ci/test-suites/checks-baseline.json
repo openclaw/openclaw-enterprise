@@ -345,9 +345,6 @@
     },
     {
       "path": "tests/integration/runtime-assets.test.mjs"
-    },
-    {
-      "path": "tests/integration/test-observability.test.mjs"
     }
   ]
 }
