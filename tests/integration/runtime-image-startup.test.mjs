@@ -1374,16 +1374,22 @@ const preparation = cp.spawnSync(process.execPath, ["-e", ${JSON.stringify(REPOS
 });
 assert.equal(preparation.status, 0, "repository native Git initialization failed");
 assert.ok(fs.readFileSync("/run/oce/repository-credentials/gitconfig", "utf8").includes("/opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/git-helper.js"));
+const brokerCaBundle = fs.readdirSync("/run/oce/repository-credentials/sessions")
+  .map((name) => "/run/oce/repository-credentials/sessions/" + name + "/ca-bundle.pem")
+  .find((filename) => fs.existsSync(filename));
+assert.ok(brokerCaBundle, "repository material initialization must project a broker CA bundle");
+assert.ok(fs.readFileSync(brokerCaBundle, "utf8").includes("BEGIN CERTIFICATE"));
 const environment = {
   PATH: "/opt/oce/repository-credentials/bin:" + process.env.PATH,
   HOME: "/home/node", CODEX_HOME: "/home/node/.codex",
   CODEX_LOGIN_MODE: "api_key", OPENAI_API_KEY: "synthetic-offline-key",
   OPENCLAW_HARNESS_MODEL: "codex/gpt-5",
   APP_SERVER_TOKEN: "synthetic-transport-token", APP_SERVER_PORT: "4500",
-  SSL_CERT_FILE: "/certs/broker-ca.pem",
-  REQUESTS_CA_BUNDLE: "/certs/broker-ca.pem",
-  CURL_CA_BUNDLE: "/certs/broker-ca.pem",
-  NODE_EXTRA_CA_CERTS: "/certs/broker-ca.pem",
+  SSL_CERT_FILE: brokerCaBundle,
+  GIT_SSL_CAINFO: brokerCaBundle,
+  REQUESTS_CA_BUNDLE: brokerCaBundle,
+  CURL_CA_BUNDLE: brokerCaBundle,
+  NODE_EXTRA_CA_CERTS: brokerCaBundle,
 };
 const configPatchProbe = [
   'import { readFileSync, readdirSync } from "node:fs";',
@@ -1451,7 +1457,7 @@ environment.OPENCLAW_PLUGIN_RUNTIME_JSON = JSON.stringify({
   codexConfigurationToml: codexConfigPatchToml(configPatch),
 });
 const homeControlSentinelPath = "/home/node/openclaw-stock-codex-control-sentinel.txt";
-const homeControlSentinel = "synthetic-openclaw-control-sentinel\n";
+const homeControlSentinel = "synthetic-openclaw-control-sentinel\\n";
 fs.writeFileSync(homeControlSentinelPath, homeControlSentinel, { mode: 0o600 });
 assert.equal(fs.readFileSync(homeControlSentinelPath, "utf8"), homeControlSentinel);
 let native;
@@ -1515,7 +1521,9 @@ async function execShell(script, permissionProfile = brokerPermissionProfile, ti
 async function expectFailure(name, script, pattern, permissionProfile = brokerPermissionProfile) {
   const failureProbe = [
     "set +e",
-    "output=$(" + script + " 2>&1)",
+    "output=$({",
+    script,
+    "} 2>&1)",
     "status=$?",
     "set -e",
     ${JSON.stringify("printf '%s\n' \"$output\"")},
@@ -1550,7 +1558,12 @@ const timeout = setTimeout(() => {
     assert.match(brokerDenials.stdout, /broker-denial-codes-confirmed/);
 
     await expectFailure("outside-workspace-home-read-denied", "cat " + homeControlSentinelPath, "No such file|Permission denied|Operation not permitted|EACCES|ENOENT");
-    await expectFailure("outside-workspace-write-denied", "printf blocked > /tmp/openclaw-stock-codex-denied", "Read-only file system|Permission denied|Operation not permitted|EACCES|EROFS");
+    const sentinelBeforeSandboxWrite = fs.readFileSync(homeControlSentinelPath, "utf8");
+    const shadowWrite = await execShell("printf shadowed > " + homeControlSentinelPath + " && printf sandbox-write-exit0", brokerPermissionProfile);
+    assert.equal(shadowWrite.exitCode, 0, shadowWrite.stderr + shadowWrite.stdout);
+    assert.match(shadowWrite.stdout, /sandbox-write-exit0/);
+    assert.equal(fs.readFileSync(homeControlSentinelPath, "utf8"), sentinelBeforeSandboxWrite, "sandbox writes must not modify the parent home sentinel");
+    await expectFailure("outside-workspace-home-read-still-denied-after-shadow-write", "cat " + homeControlSentinelPath, "No such file|Permission denied|Operation not permitted|EACCES|ENOENT");
 
     const gitProof = await execShell(${JSON.stringify(gitProofScript)}, brokerPermissionProfile, 60000);
     assert.equal(gitProof.exitCode, 0, gitProof.stderr + "\\n" + gitProof.stdout);

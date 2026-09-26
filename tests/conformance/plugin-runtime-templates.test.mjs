@@ -80,6 +80,11 @@ test("serialized Agent startup carries repository broker policy into bridge conf
         enabled: true,
         mode: "full",
         allowLocalBinding: true,
+        readOnlyPaths: [
+          "/app/node_modules/openclaw",
+          "/opt/oce/repository-credentials",
+          "/run/oce/repository-credentials",
+        ],
         domains: { "github.com": "allow", "git.openclaw-system.svc": "allow" },
       },
     },
