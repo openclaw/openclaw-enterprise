@@ -120,11 +120,6 @@
       "count": 1
     }
   },
-  "tests/browser/console-agents.test.mjs": {
-    "no-empty": {
-      "count": 1
-    }
-  },
   "tests/conformance/plugin-compute.test.mjs": {
     "no-unused-vars": {
       "count": 1

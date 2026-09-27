@@ -81,14 +81,18 @@ test("OpenClaw runtime helper installs exact admitted package pins and verifies 
 
 test("OpenClaw runtime merges matching inherited native approvers", () => {
   const agentApprover = "team:T123:user:U123";
+  const otherAgentApprover = "team:T123:user:U789";
   const pluginApprover = "team:T123:user:U456";
   const runtime = openClawRuntime({
     approvers: [{ channel: "slack", id: pluginApprover }],
     tools: { diffs: { approvers: [] } },
   });
-  runtime.manifest.pluginApprovers = [{ channel: "slack", id: agentApprover }];
+  runtime.manifest.pluginApprovers = [agentApprover, otherAgentApprover].map((id) => ({
+    channel: "slack",
+    id,
+  }));
   const configured = {
-    approvers: [agentApprover],
+    approvers: [otherAgentApprover.toUpperCase(), agentApprover],
     plugins: {
       diffs: {
         tools: { other: { approvers: [pluginApprover] }, diffs: { approvers: [] } },
@@ -100,7 +104,10 @@ test("OpenClaw runtime merges matching inherited native approvers", () => {
     baseConfig: { approvals: { plugin: { slack: configured } } },
   });
   const effective = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
-  assert.deepEqual(effective.approvals.plugin.slack, configured);
+  assert.deepEqual(effective.approvals.plugin.slack, {
+    ...configured,
+    approvers: [agentApprover, otherAgentApprover],
+  });
 
   const conflicting = runOpenClawRuntimeHelper(runtime, [], {
     baseConfig: {

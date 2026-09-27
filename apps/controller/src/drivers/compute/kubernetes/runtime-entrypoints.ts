@@ -653,7 +653,12 @@ function isManagedOpenClawPluginEntry(value) {
 
 function conflictingApproverList(configured, managedList) {
   return isPlainObject(configured) && Object.hasOwn(configured, "approvers") &&
-    managedList !== undefined && !pluginDeepEqual(configured.approvers, managedList);
+    managedList !== undefined &&
+    (!Array.isArray(configured.approvers) ||
+      !pluginDeepEqual(
+        configured.approvers.map((id) => typeof id === "string" ? id.toLowerCase() : id).sort(),
+        managedList.map((id) => id.toLowerCase()).sort(),
+      ));
 }
 
 function assertNoOpenClawPluginConfigConflict(base, overlay, options = {}) {

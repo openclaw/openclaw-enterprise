@@ -7,6 +7,23 @@ import { chromium } from "playwright";
 
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
+export function apiRequests(page, origin) {
+  const requests = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.origin === origin) {
+      let body;
+      try {
+        body = request.postDataJSON();
+      } catch {
+        // Some request bodies are not JSON.
+      }
+      requests.push({ method: request.method(), path: `${url.pathname}${url.search}`, body });
+    }
+  });
+  return requests;
+}
+
 async function artifactDirectory(t) {
   const configured = process.env.OCC_TEST_CONSOLE_ARTIFACT_DIR;
   const directory =

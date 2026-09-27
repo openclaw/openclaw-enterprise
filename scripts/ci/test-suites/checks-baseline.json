@@ -202,6 +202,9 @@
       "path": "tests/browser/console-agents.test.mjs"
     },
     {
+      "path": "tests/browser/console-agent-plugin-approvers.test.mjs"
+    },
+    {
       "path": "tests/browser/console-agent-channels.test.mjs"
     },
     {
