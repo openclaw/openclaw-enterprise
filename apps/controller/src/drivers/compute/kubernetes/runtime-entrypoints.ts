@@ -1526,12 +1526,18 @@ const loginArguments = loginMode === "api_key"
       "login",
       "--with-access-token",
     ];
-const login = spawnSync("codex", loginArguments, {
-  input: loginMode === "api_key" ? apiKey : accessToken,
-  encoding: "utf8",
-  stdio: ["pipe", "ignore", "pipe"],
-  timeout: 30000, killSignal: "SIGKILL", maxBuffer: 262144,
-});
+let login;
+for (let attempt = 0; attempt < 3; attempt++) {
+  login = spawnSync("codex", loginArguments, {
+    input: loginMode === "api_key" ? apiKey : accessToken,
+    encoding: "utf8",
+    stdio: ["pipe", "ignore", "pipe"],
+    timeout: 30000, killSignal: "SIGKILL", maxBuffer: 262144,
+  });
+  // Access-token login validates the same credential remotely before saving it.
+  // A cold-node network timeout may recover; refusals and model calls are not retried.
+  if (loginMode === "api_key" || login.error?.code !== "ETIMEDOUT") break;
+}
 if (login.status !== 0 || login.error) {
   holdFailedAuthentication("login", "LOGIN_FAILED");
 } else {

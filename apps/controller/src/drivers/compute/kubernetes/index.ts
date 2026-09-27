@@ -7805,6 +7805,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
         name: "initialize-workspace",
         image: this.options.images.gateway,
         imagePullPolicy: "IfNotPresent",
+        // Native setup loads the Gateway CLI and needs its configured resource budget.
+        resources: this.options.resources.gateway,
         command: ["node", "-e"],
         args: [WORKSPACE_SETUP_RUNTIME],
         env: [

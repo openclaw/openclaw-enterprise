@@ -1144,7 +1144,7 @@ test("Agent creation distinguishes unavailable repository choices from denied Ag
       .getByRole("status")
       .filter({ hasText: "Repository choices are unavailable" })
       .innerText(),
-    /You can save a draft without repositories/,
+    /You can continue without repository access/,
   );
   const setupGuide = unavailablePage.getByRole("link", { name: "Set up repository access" });
   assert.equal(
@@ -1995,6 +1995,45 @@ test("Dedicated Agent creation provisions inline Configuration and masked new Se
   assert.equal(agentPostRequests(requests, namespace.id).length, 0);
   assert.ok(provisioningReads >= 1);
   assert.ok(deploymentReads >= 2);
+});
+
+test("Dedicated Agent creation keeps provisioning when optional repository discovery is unavailable", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Model-only provision", { ready: true });
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await routeInstallationProvisioning(page, fixture);
+  // The real discovery endpoint reports the fixture's missing optional Repo Driver.
+  // Admission can still reject creation; the browser must not silently save a draft.
+  await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) =>
+    route.fulfill({
+      status: 403,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "FORBIDDEN", message: "Agent creation permission changed." },
+      }),
+    }),
+  );
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByText(/Repository choices are unavailable/).waitFor();
+  await page.getByLabel("Agent name", { exact: true }).fill("Model-only Agent");
+  await enterManualModel(page, "model-only-test-key", "gpt-5.1");
+  const admission = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/namespaces/${namespace.id}/agents/provision`) &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  assert.equal((await admission).status(), 403);
+  await page.getByText(/Agent creation permission changed/).waitFor();
+  const submitted = agentProvisionPostRequests(requests, namespace.id);
+  assert.equal(submitted.length, 1);
+  assert.equal(submitted[0].body.executionMode, "dedicated");
+  assert.equal(Object.hasOwn(submitted[0].body, "repositoryBindings"), false);
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
+  assert.equal(agentPostRequests(requests, namespace.id).length, 0);
 });
 
 test("Dedicated Agent creation uses regular create when provisioning is unsupported", async (t) => {

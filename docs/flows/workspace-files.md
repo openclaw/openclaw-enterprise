@@ -1,6 +1,6 @@
 ---
 created: 2026-08-31
-updated: 2026-09-24
+updated: 2026-09-27
 last_updated_session: 01a0cf72-6985-7712-ba92-d8cc32470f24
 ---
 
@@ -8,14 +8,12 @@ last_updated_session: 01a0cf72-6985-7712-ba92-d8cc32470f24
 
 ## Overview
 
-At Agent creation, an authenticated caller supplies `AGENTS.md`, `SOUL.md`,
-`IDENTITY.md`, and `USER.md`. OCC stages these privately; Compute initializes
-the Agent's durable workspace before execution. Activation replaces staged
-contents with completion metadata.
+OCC privately stages authenticated creation inputs: `AGENTS.md`, `SOUL.md`,
+`IDENTITY.md`, and `USER.md`. Compute initializes durable storage before execution;
+activation retains completion metadata.
 
-Later reads and edits authorize the exact active Agent, resolve its private
-endpoint through Compute, and send one native file RPC through Envoy Gateway.
-This flow ends at setup completion or the bounded file response.
+Subsequent file operations authorize the exact active Agent and use its
+Compute-resolved private endpoint through Envoy Gateway.
 
 Dedicated execution uses Kubernetes Codex; see
 [workspace and launcher boundaries](../reference/drivers/kubernetes-compute/storage-and-credentials.md#shared-contracts-and-the-codex-implementation).
@@ -110,6 +108,8 @@ The runner validates identity, paths, OpenClaw `2026.9.6`, and the rendered
 template digest against Console defaults before initialization. Submitted
 defaults identities must match; links and conflicts fail. Without a completion
 marker, native `setup` initializes the workspace and Git without starting the Gateway.
+The Kubernetes initializer uses the configured Gateway resource budget because it
+loads the native CLI, even when it runs in the dedicated Harness Pod.
 It atomically replaces supplied files, including empty strings, only if the
 existing value is absent, stock, or already submitted. It runs native setup
 again so native `BOOTSTRAP.md` lifecycle sees the submitted profile, verifies
@@ -263,8 +263,8 @@ hello grants `operator.admin`; reads also accept `operator.read`.
 
 `apps/controller/src/gateway/workspace-files-client.ts:requestNativeWorkspaceFile`
 
-The client invokes only `agents.files.get` or `agents.files.set` for the native
-primary Agent `main`. Reads re-check the response content limit and return
+The client invokes `agents.files.get` or `agents.files.set` for native Agent
+`main`. Reads enforce the response content limit and return
 `{ name, content }`; writes return `{ name, size }`. There is no list, delete,
 compare-and-swap, generic RPC, chat bridge, or PostgreSQL file copy.
 
@@ -318,6 +318,8 @@ replays it. The native client closes in the operation's cleanup path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-27 05:17: Give native workspace initialization the Gateway resource budget. (01a0cf72-6985-7712-ba92-d8cc32470f24 - c0f792d5b92e2dee596711654784759d327e0817)
 
 - 2026-09-24 11:28: Document exclusive dedicated preparation and durable RWO workspaces in the accompanying change. (01a0cf72-6985-7712-ba92-d8cc32470f24 - 14a4508baad876d3eea4e6fe6388f8d8a91559b7)
 

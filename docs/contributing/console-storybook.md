@@ -143,7 +143,7 @@ for the supported installation workflow and prerequisites.
 Repository previews cover shared access levels, empty or pending discovery,
 setup guidance when choices are unavailable, denied or unverified authorization,
 and reselection after a rejected save. In **Repository choices unavailable**, follow
-the setup link or retry discovery; a draft without repositories remains available.
+the setup link or retry discovery; creation without repository access remains available.
 The recovery story retains its saved Configuration and
 requires a current nonempty repository selection before retrying. GitHub App
 setup, Namespace approvals, runtime images, and credential-service networking

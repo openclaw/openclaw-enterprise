@@ -46,6 +46,8 @@ For detailed operator contracts, see:
 - Approved, digest-pinned gateway and Agent images.
 - Explicit container resource limits, namespace quotas, DNS settings, approved
   proxy clients, and `network.gatewayTrustedProxyCidrs` for gateway trust.
+  Native workspace initialization uses `resources.gateway`, including in dedicated
+  Harness Pods, because it loads the OpenClaw CLI.
 - For real gateways in either topology, an explicitly selected
   `runtime.gatewayStorageClassName` for a private disk supporting `10Gi`
   `ReadWriteOnce` filesystem claims. Use `local-path` in the disposable k3d
@@ -272,6 +274,9 @@ for additional execution details.
   workload readiness. Dedicated Codex Harness containers clear the plugin
   readiness marker at process start so a marker left in the Pod's temporary
   volume by a previous container attempt cannot make a restarted runtime ready.
+  Access-token login retries only native process timeouts, up to three 30-second
+  attempts. Credential refusals and model probes are not retried; exhausted
+  startup remains unready until an explicit restart.
   Native plugin startup, authentication, transport, and installation failures
   remain generic workload startup failures unless the Compute-owned runtime
   reports a verified current-startup warning for an admitted selected plugin.

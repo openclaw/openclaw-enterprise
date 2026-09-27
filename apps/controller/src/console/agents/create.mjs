@@ -1280,9 +1280,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     updateControls();
   }
   const shouldProvision = () =>
-    mode.value === "dedicated" &&
-    provisionableExecutionModes.has(mode.value) &&
-    !repositories.draftOnly();
+    mode.value === "dedicated" && provisionableExecutionModes.has(mode.value);
   const updateControls = () => {
     const saved = Boolean(savedConfiguration || savedAgent || provisioningAttempt);
     for (const node of form.querySelectorAll("button, input, select, textarea")) {

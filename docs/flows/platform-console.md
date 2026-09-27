@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: 2026-09-27
-last_updated_session: 01a0e099-da9d-78f1-8e79-ea4a919edf7d
+last_updated_session: 01a0cf72-6985-7712-ba92-d8cc32470f24
 ---
 
 # Platform console request flow
@@ -56,8 +56,8 @@ graph TD
     F -->|Backends and Installation admin| H["Project loaded Backend IDs and types"]
     S1 -->|create| S2["POST stores Namespace Secret immediately"]
     S2 --> S3
-    E1 -->|draft or optional discovery outage| M1["POST creates Configuration with staged bindings"]
-    E1 -->|supported Dedicated and successful discovery| M3["POST queues provisioning with inline Configuration"]
+    E1 -->|draft runtime| M1["POST creates Configuration with staged bindings"]
+    E1 -->|supported Dedicated and valid repository selection| M3["POST queues provisioning with inline Configuration"]
     M3 --> M4["Worker creates resources, grants and first deployment"]
     M1 -->|returned Configuration ID| M["POST creates Agent draft only"]
     M --> M2["Console grants Agent use of selected Secrets"]
@@ -190,18 +190,17 @@ Compute supplies gateway authentication; Presets replace the starter unchanged.
 traces Slack settings, staged bindings, grants, and cancellation effects.
 
 `GET /namespaces/:namespaceId/agents/repository-options` discovers approved choices.
-Console submits opaque references and an explicit common profile. Read-only and
-Contributor use approved profiles; customization can disable issue management. Only
-`503 REPOSITORY_OPTIONS_UNAVAILABLE` permits a fresh draft without bindings;
-other failures block submission. `draftBindings()` captures selections independently
-of discovery results. Failed reads retain them and block creation; successful
-reads filter them against current policy. Retry discovery before provisioning.
+Console submits opaque references and an explicit common profile. Only
+`503 REPOSITORY_OPTIONS_UNAVAILABLE` permits creation without repository bindings
+when no selections are retained. Other failures block submission. `draftBindings()`
+preserves choices; failed rediscovery blocks creation. Successful reads filter
+choices against current policy.
 
-Supported Dedicated runtimes with successful repository discovery submit inline
-Configuration, repository bindings, and Secret references to
-[provisioning](agent-provisioning.md). Console polls the job, then opens its Agent
-revision. The worker creates resources and exact Secret grants before deployment
-admission; Console does not duplicate grants.
+Supported Dedicated runtimes submit inline Configuration, optional repository
+bindings, and Secret references to [provisioning](agent-provisioning.md), including
+when optional discovery is unavailable without retained selections. The worker
+reauthorizes, creates resources and exact Secret grants, and deploys. Console polls
+the job, then opens its revision.
 
 Ordinary drafts post `{kind: "agent", values, secretBindings}` to
 `POST /namespaces/:namespaceId/configurations`, then submit its ID, plugins,
@@ -323,6 +322,8 @@ uncertain response disables replay until refresh and inspection.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-27 05:05: Keep supported Dedicated provisioning available without optional repository discovery. (01a0cf72-6985-7712-ba92-d8cc32470f24 - c0f792d5b92e2dee596711654784759d327e0817)
 
 - 2026-09-27 02:30: Use selected PAT Secrets for discovery. (01a0e099-da9d-78f1-8e79-ea4a919edf7d - ec4e9dc517497afe05be63a320542abcf61e8a55)
 
