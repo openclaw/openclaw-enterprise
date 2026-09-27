@@ -14,7 +14,7 @@ export function renderAgentPlugins(
       element(
         "p",
         { className: "muted" },
-        "This revision's plugin selections are immutable. Open New revision to change them for a future deployment.",
+        "This version's plugin selections are immutable. Select Create new version to change them for a future deployment.",
       ),
       element("pre", { tabindex: "0" }, JSON.stringify(snapshot.plugins?.plugins ?? {}, null, 2)),
     );
@@ -84,7 +84,7 @@ export function renderAgentPlugins(
     element(
       "p",
       { className: "muted" },
-      "Save selections on this Agent, then deploy a new revision to apply them.",
+      "Save selections on this Agent, then deploy a new version to apply them.",
     ),
     discovery.fields.section,
     capabilitiesStatus,

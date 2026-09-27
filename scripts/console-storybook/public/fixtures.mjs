@@ -659,6 +659,12 @@ export function installFixture(scenario, evidence) {
         if (!saved) {
           return error(404);
         }
+        if (suffix === "/plugins/capabilities" && method === "GET" && scenario.pluginCapabilities) {
+          return response({
+            ...scenario.pluginCapabilities,
+            discoveryCredential: scenario.pluginDiscoveryCredential ?? "required",
+          });
+        }
         if (suffix === "/plugins" && method === "POST" && scenario.pluginDiscovery) {
           const page = scenario.pluginDiscovery.pages[body.cursor ?? "initial"];
           return page ? response(page) : error(400, "PLUGIN_DISCOVERY_INVALID_RESPONSE");
