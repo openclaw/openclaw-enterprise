@@ -99,11 +99,11 @@ SWE Agent, Q&A Agent, and Oncall Agent prefill these channels:
 
 Community Agent prefills its own channel list:
 
-| Channel | ID |
-| --- | --- |
-| oce-team | `C0C43A2QA11` |
-| oce-team-test | `C0C4A0JH2BG` |
-| oce-community | `C0C5KF0JLSC` |
+| Channel            | ID            |
+| ------------------ | ------------- |
+| oce-team           | `C0C43A2QA11` |
+| oce-team-test      | `C0C4A0JH2BG` |
+| oce-community      | `C0C5KF0JLSC` |
 | oce-community-test | `C0C5KF0DWLQ` |
 
 In the Console, choose **SWE Agent**, fill its variables, then use **Edit Slack** to
