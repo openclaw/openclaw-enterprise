@@ -2027,7 +2027,7 @@ test("Dedicated Agent creation keeps provisioning when optional repository disco
   );
   await page.getByRole("button", { name: "Create Agent" }).click();
   assert.equal((await admission).status(), 403);
-  await page.getByText(/Agent creation permission changed/).waitFor();
+  await page.getByText("Access denied. You do not have permission for this operation.").waitFor();
   const submitted = agentProvisionPostRequests(requests, namespace.id);
   assert.equal(submitted.length, 1);
   assert.equal(submitted[0].body.executionMode, "dedicated");
