@@ -492,6 +492,66 @@ test("compute renders plugin-free Codex revisions with native default-deny plugi
   assert.match(data[PLUGIN_RUNTIME_CODEX_CONFIG], /^\[apps\._default\]\nenabled = false/m);
 });
 
+test("plugin-free revisions apply an explicit empty Slack approver default and keep unrelated approvals", () => {
+  for (const candidate of [
+    revision({ pluginApprovers: [] }),
+    revision({
+      harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+      pluginApprovers: [],
+    }),
+  ]) {
+    const runtime = pluginRuntimeSpecForRevision(candidate);
+    assert.deepEqual(runtime.pluginApprovers, []);
+    assert.deepEqual(JSON.parse(pluginRuntimeConfigMapData(runtime)[PLUGIN_RUNTIME_MANIFEST]), {
+      kind: runtime.kind,
+      selections: {},
+      pluginApprovers: [],
+    });
+    const { files } = runOpenClawRuntimeHelper({ manifest: runtime }, [], {
+      baseConfig: {
+        approvals: {
+          exec: { security: "full" },
+          plugin: { slack: { plugins: { unmanaged: { approvers: ["team:T123:user:U123"] } } } },
+        },
+      },
+    });
+    const config = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
+    assert.deepEqual(config.approvals, {
+      exec: { security: "full" },
+      plugin: {
+        slack: {
+          approvers: [],
+          plugins: { unmanaged: { approvers: ["team:T123:user:U123"] } },
+        },
+      },
+    });
+  }
+});
+
+test("plugin-free Codex runtime carries broker policy and Slack approvers together", () => {
+  const repositoryBrokerNetworkPolicy = {
+    host: "git.oce.svc",
+    domains: { "github.com": "allow" },
+  };
+  const runtime = pluginRuntimeSpecForRevision(
+    revision({ pluginApprovers: [] }),
+    repositoryBrokerNetworkPolicy,
+  );
+  assert.deepEqual(JSON.parse(pluginRuntimeConfigMapData(runtime)[PLUGIN_RUNTIME_MANIFEST]), {
+    kind: "codex",
+    selections: {},
+    pluginApprovers: [],
+    repositoryBrokerNetworkPolicy,
+  });
+  const { files } = runOpenClawRuntimeHelper({ manifest: runtime }, []);
+  const config = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
+  assert.deepEqual(config.approvals.plugin.slack.approvers, []);
+  assert.equal(
+    config.plugins.entries.codex.config.appServer.networkProxy.domains["git.oce.svc"],
+    "allow",
+  );
+});
+
 test("compute consumes Codex no-plugin selections from the revision", () => {
   const state = codexNoPluginState();
   const runtime = pluginRuntimeSpecForRevision(revision({ plugins: state }));
@@ -3478,4 +3538,37 @@ test("Kubernetes dedicated Codex gateway mounts bridge runtime and prior plugin 
       ["plugin-status", 18791],
     ],
   );
+});
+
+test("Kubernetes plugin-free Codex gateway receives explicit Agent approvers", () => {
+  const driver = createKubernetesComputeDriver(kubernetesOptions());
+  for (const [pluginApprovers, expectedMount] of [
+    [undefined, false],
+    [[], true],
+  ]) {
+    const candidate = revision({ pluginApprovers });
+    const runtime = pluginRuntimeSpecForRevision(candidate);
+    const deployment = driver.deployment(
+      "gateway-plugin-free",
+      { namespaceId: tenant.id, agentId: agent.id, revisionId: candidate.id },
+      "oce-plugin-compute",
+      "openclaw-enterprise/gateway-fixture:local",
+      "gateway-plugin-compute",
+      "gateway",
+      {},
+      "info",
+      driver.gatewayConfiguration(candidate, undefined, "oce-plugin-compute"),
+      false,
+      undefined,
+      undefined,
+      [],
+      [],
+      { name: "plugin-runtime-gateway-plugin-free", runtime },
+    );
+    const pod = deployment.spec.template.spec;
+    assert.equal(
+      pod.volumes.some((volume) => volume.configMap?.name === "plugin-runtime-gateway-plugin-free"),
+      expectedMount,
+    );
+  }
 });

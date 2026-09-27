@@ -1114,15 +1114,53 @@ summary:focus-visible {
 .plugin-fields {
   margin-block: 1.5rem;
 }
+.slack-approver-field {
+  display: grid;
+  gap: 0.5rem;
+  margin-block: 1rem;
+  padding: 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.slack-approver-field[hidden],
+.slack-approver-manual[hidden],
 .slack-directory-picker[hidden],
 .slack-directory-pagination[hidden] {
   display: none;
 }
+.slack-approver-field label {
+  display: grid;
+  gap: 0.35rem;
+  font-weight: 600;
+}
+.slack-approver-field select {
+  width: 100%;
+}
+.slack-approver-manual {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.5rem;
+}
+.slack-approver-manual label {
+  flex: 1 1 16rem;
+}
+.slack-approver-manual input {
+  width: 100%;
+}
+.slack-approver-manual .error {
+  flex-basis: 100%;
+}
+.slack-approver-field .hint {
+  margin: 0;
+}
+.slack-approver-ids,
 .slack-directory-saved-ids {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
 }
+.slack-approver-id,
 .slack-directory-saved-id {
   display: inline-flex;
   align-items: center;
@@ -1133,10 +1171,13 @@ summary:focus-visible {
   background: var(--surface-muted);
   border-radius: 6px;
 }
+.slack-approver-id code,
 .slack-directory-saved-id code {
   overflow-wrap: anywhere;
 }
-
+.slack-approver-id button {
+  padding: 0.15rem 0.45rem;
+}
 .slack-directory-id-field {
   display: grid;
   gap: 0.5rem;

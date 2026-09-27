@@ -7662,6 +7662,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           role === "gateway" &&
           !embedded &&
           (Object.keys(pluginRuntime.runtime.selections).length > 0 ||
+            pluginRuntime.runtime.pluginApprovers !== undefined ||
             pluginRuntime.runtime.repositoryBrokerNetworkPolicy !== undefined)));
     const hasEnabledPlugins =
       pluginRuntime !== undefined &&

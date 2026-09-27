@@ -1777,12 +1777,14 @@ test("Agent create and update replace policy-only plugin maps and revisions free
     approval: ["native", "approve"],
     reviewer: [],
   });
+  assert.deepEqual(capabilities.approvers, { agent: true, plugin: true, tools: true });
   assert.equal(capabilities.driverPolicySchema.additionalProperties, false);
   assert.deepEqual(capabilities.driverPolicySchema.properties, {});
   const initialPlugins = {
     [diffsPluginId]: pluginPolicy({
+      approvers: [{ channel: "slack", id: "team:T123:user:U123" }],
       toolDefaults: { enabled: false, approval: "approve" },
-      tools: { diffs: { enabled: true } },
+      tools: { diffs: { enabled: true, approvers: [] } },
     }),
   };
 
@@ -1791,10 +1793,12 @@ test("Agent create and update replace policy-only plugin maps and revisions free
       name: "plugin-agent",
       configurationId: configuration.id,
       plugins: initialPlugins,
+      pluginApprovers: [],
     },
   });
   assert.equal(created.status, 201);
   assert.deepEqual(created.data.plugins, initialPlugins);
+  assert.deepEqual(created.data.pluginApprovers, []);
   assertPolicyOnlyPlugin(created.data.plugins[diffsPluginId]);
 
   const saved = await controller.request(
@@ -1803,6 +1807,7 @@ test("Agent create and update replace policy-only plugin maps and revisions free
   );
   assert.equal(saved.status, 200);
   assert.deepEqual(saved.data.plugins, initialPlugins);
+  assert.deepEqual(saved.data.pluginApprovers, []);
 
   await controller.fixture.controller.handleNamespaceLifecycle(
     controller.fixture.principal.id,
@@ -1819,6 +1824,7 @@ test("Agent create and update replace policy-only plugin maps and revisions free
     driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
     plugins: initialPlugins,
   });
+  assert.deepEqual(deployment.data.pluginApprovers, []);
   assert.equal(Object.hasOwn(deployment.data.plugins, "artifacts"), false);
 
   const omittedPlugins = await controller.request(
@@ -1829,6 +1835,7 @@ test("Agent create and update replace policy-only plugin maps and revisions free
   assert.equal(omittedPlugins.status, 200);
   assert.equal(omittedPlugins.data.configurationId, replacementConfiguration.id);
   assert.deepEqual(omittedPlugins.data.plugins, initialPlugins);
+  assert.deepEqual(omittedPlugins.data.pluginApprovers, []);
 
   const replacementPlugins = {
     [diffsPluginId]: pluginPolicy({
@@ -1839,11 +1846,20 @@ test("Agent create and update replace policy-only plugin maps and revisions free
   const replacedPlugins = await controller.request(
     "PATCH",
     `/namespaces/${namespace.id}/agents/${created.data.id}`,
-    { body: { configurationId: replacementConfiguration.id, plugins: replacementPlugins } },
+    {
+      body: {
+        configurationId: replacementConfiguration.id,
+        plugins: replacementPlugins,
+        pluginApprovers: [{ channel: "slack", id: "team:T123:user:U456" }],
+      },
+    },
   );
   assert.equal(replacedPlugins.status, 200);
   // Replacing policy removes old enablement overrides without inventing new defaults.
   assert.deepEqual(replacedPlugins.data.plugins, replacementPlugins);
+  assert.deepEqual(replacedPlugins.data.pluginApprovers, [
+    { channel: "slack", id: "team:T123:user:U456" },
+  ]);
   assertPolicyOnlyPlugin(replacedPlugins.data.plugins[diffsPluginId]);
 
   const clearedPlugins = await controller.request(
@@ -1853,6 +1869,9 @@ test("Agent create and update replace policy-only plugin maps and revisions free
   );
   assert.equal(clearedPlugins.status, 200);
   assert.deepEqual(clearedPlugins.data.plugins, {});
+  assert.deepEqual(clearedPlugins.data.pluginApprovers, [
+    { channel: "slack", id: "team:T123:user:U456" },
+  ]);
 
   const historical = await controller.request(
     "GET",
@@ -1860,6 +1879,7 @@ test("Agent create and update replace policy-only plugin maps and revisions free
   );
   assert.equal(historical.status, 200);
   assert.deepEqual(historical.data.plugins, deployment.data.plugins);
+  assert.deepEqual(historical.data.pluginApprovers, []);
 
   const pluginFreeRevision = await controller.request(
     "POST",
@@ -1867,6 +1887,25 @@ test("Agent create and update replace policy-only plugin maps and revisions free
   );
   assert.equal(pluginFreeRevision.status, 202);
   assert.equal(Object.hasOwn(pluginFreeRevision.data, "plugins"), false);
+  assert.deepEqual(pluginFreeRevision.data.pluginApprovers, [
+    { channel: "slack", id: "team:T123:user:U456" },
+  ]);
+  const clearedApprovers = await controller.request(
+    "PATCH",
+    `/namespaces/${namespace.id}/agents/${created.data.id}`,
+    { body: { configurationId: replacementConfiguration.id, pluginApprovers: null } },
+  );
+  assert.equal(clearedApprovers.status, 200);
+  assert.equal(Object.hasOwn(clearedApprovers.data, "pluginApprovers"), false);
+  const inheritedRevision = await controller.request(
+    "POST",
+    `/namespaces/${namespace.id}/agents/${created.data.id}/deploy`,
+  );
+  assert.equal(inheritedRevision.status, 202);
+  assert.equal(Object.hasOwn(inheritedRevision.data, "pluginApprovers"), false);
+  assert.deepEqual(pluginFreeRevision.data.pluginApprovers, [
+    { channel: "slack", id: "team:T123:user:U456" },
+  ]);
 });
 
 test("Agent plugin reviewer selection preserves omission and rejects unsupported tool scope", async () => {

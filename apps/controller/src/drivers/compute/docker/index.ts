@@ -1182,7 +1182,7 @@ ${WORKSPACE_SETUP_RUNTIME}`,
       (runtime.kind === "codex" &&
         role === "gateway" &&
         !embedded &&
-        Object.keys(runtime.selections).length > 0);
+        (Object.keys(runtime.selections).length > 0 || runtime.pluginApprovers !== undefined));
     if (!applies) {
       return {};
     }

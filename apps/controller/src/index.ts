@@ -30,6 +30,8 @@ import {
   PluginDesiredStateSchema,
   PluginDriverIdentitySchema,
   PluginToolPolicySchema,
+  PluginToolDefaultsSchema,
+  PluginApproversSchema,
   SecretResponse,
   occApiRoutes,
   type Agent,
@@ -793,6 +795,7 @@ function clientAgent(agent: Readonly<Agent>): Record<string, unknown> {
     backendId: agent.backendId,
     executionMode: agent.executionMode,
     ...(agent.plugins === undefined ? {} : { plugins: agent.plugins }),
+    ...(agent.pluginApprovers === undefined ? {} : { pluginApprovers: agent.pluginApprovers }),
     ...(agent.repositoryBindings === undefined
       ? {}
       : { repositoryBindings: agent.repositoryBindings }),
@@ -844,6 +847,9 @@ function clientRevision(revision: Readonly<AgentRevision>): Record<string, unkno
     ...(revision.secretDriverId === undefined ? {} : { secretDriverId: revision.secretDriverId }),
     ...(revision.secretBindings === undefined ? {} : { secretBindings: revision.secretBindings }),
     ...(revision.plugins === undefined ? {} : { plugins: revision.plugins }),
+    ...(revision.pluginApprovers === undefined
+      ? {}
+      : { pluginApprovers: revision.pluginApprovers }),
     ...(revision.repositoryCredentials === undefined
       ? {}
       : {
@@ -959,7 +965,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   app.removeContentTypeParser("text/plain");
   app.addSchema(JsonValue);
   app.addSchema(PluginDriverIdentitySchema);
+  app.addSchema(PluginApproversSchema);
   app.addSchema(PluginToolPolicySchema);
+  app.addSchema(PluginToolDefaultsSchema);
   app.addSchema(PluginDesiredSelectionSchema);
   app.addSchema(PluginDesiredStateSchema);
   void app.register(swagger, {
@@ -2215,6 +2223,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           ...(provisionBody.plugins === undefined
             ? {}
             : { plugins: provisionBody.plugins as never }),
+          ...(provisionBody.pluginApprovers === undefined
+            ? {}
+            : { pluginApprovers: provisionBody.pluginApprovers as never }),
           ...(provisionBody.repositoryBindings === undefined
             ? {}
             : {
@@ -2306,6 +2317,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             ? {}
             : { harnessAuth: body.harnessAuth as HarnessAuthBinding | null }),
           ...(body?.plugins === undefined ? {} : { plugins: body.plugins as never }),
+          ...(body?.pluginApprovers === undefined
+            ? {}
+            : { pluginApprovers: body.pluginApprovers as never }),
           ...(body?.repositoryBindings === undefined
             ? {}
             : {
@@ -2409,6 +2423,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             ? {}
             : { harnessAuth: body.harnessAuth as HarnessAuthBinding | null }),
           ...(body?.plugins === undefined ? {} : { plugins: body.plugins as never }),
+          ...(body?.pluginApprovers === undefined
+            ? {}
+            : { pluginApprovers: body.pluginApprovers as never }),
           ...(body?.repositoryBindings === undefined
             ? {}
             : {

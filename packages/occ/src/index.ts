@@ -33,6 +33,7 @@ import type {
   PermissionAction,
   PluginDesiredSelection,
   PluginDesiredState,
+  PluginApprovers,
   PluginCatalogEntry,
   PluginCatalogPage,
   PluginDriver,
@@ -75,6 +76,7 @@ import {
   admitLoggingConfiguration,
   normalizeLoggingLevel,
   normalizePluginDesiredState,
+  normalizePluginApprovers,
   normalizePresetTemplate,
   presetTemplateDefaults,
   PresetValidationError,
@@ -287,6 +289,7 @@ export interface CreateAgentInput {
   readonly harnessAuth?: HarnessAuthBinding | null;
   readonly executionMode?: HarnessExecutionMode;
   readonly plugins?: PluginDesiredState;
+  readonly pluginApprovers?: PluginApprovers;
   readonly repositoryBindings?: readonly RepositoryBindingRequest[];
 }
 
@@ -298,6 +301,7 @@ export interface UpdateAgentInput {
   readonly harnessAuth?: HarnessAuthBinding | null;
   readonly executionMode?: HarnessExecutionMode;
   readonly plugins?: PluginDesiredState;
+  readonly pluginApprovers?: PluginApprovers | null;
   readonly repositoryBindings?: readonly RepositoryBindingRequest[];
 }
 
@@ -817,6 +821,12 @@ function normalizeAgentPlugins(
   plugins: PluginDesiredState | undefined,
 ): PluginDesiredState | undefined {
   return normalizePluginDesiredState(plugins, invalidPluginRequest);
+}
+
+function normalizeAgentPluginApprovers(
+  approvers: PluginApprovers | undefined,
+): PluginApprovers | undefined {
+  return normalizePluginApprovers(approvers, invalidPluginRequest);
 }
 
 function sameSecretBackend(left: Secret, right: Secret): boolean {
@@ -1576,6 +1586,7 @@ export class OpenClawController {
     }
     const backendId = this.backendId(input.backendId);
     const plugins = normalizeAgentPlugins(input.plugins);
+    const pluginApprovers = normalizeAgentPluginApprovers(input.pluginApprovers);
     const workspace = normalizeProvisioningWorkspace(
       input.initialWorkspaceFiles,
       input.workspaceDefaultsId,
@@ -1613,6 +1624,7 @@ export class OpenClawController {
       harnessAuth,
       executionMode,
       ...(plugins === undefined ? {} : { plugins }),
+      ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
       ...(input.repositoryBindings === undefined
         ? {}
         : { repositoryBindings: input.repositoryBindings }),
@@ -1652,7 +1664,7 @@ export class OpenClawController {
         id: namespace.id,
         namespaceId: namespace.id,
       });
-      this.validatePluginPolicies(plugins);
+      this.validatePluginPolicies(plugins, pluginApprovers);
       await this.authorizeProvisioningSecretSources(
         state,
         principalId,
@@ -1688,6 +1700,7 @@ export class OpenClawController {
           executionMode,
           ...(backendId === undefined ? {} : { backendId }),
           ...(plugins === undefined ? {} : { plugins }),
+          ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
           ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
           ...(workspace.initialWorkspaceFiles === undefined
             ? {}
@@ -3473,6 +3486,7 @@ export class OpenClawController {
     }
     const backendId = this.backendId(input.backendId);
     const plugins = normalizeAgentPlugins(input.plugins);
+    const pluginApprovers = normalizeAgentPluginApprovers(input.pluginApprovers);
     return this.mutate(async (state) => {
       const namespace = await this.lockNamespace(state, input.namespaceId);
       if (namespace.status !== "provisioning" && namespace.status !== "ready") {
@@ -3500,7 +3514,7 @@ export class OpenClawController {
       }
       await this.guardProvisioningConfiguration(state, namespace.id, input.configurationId);
       await this.authorizeHarnessAuthSource(state, principalId, namespace.id, harnessAuth);
-      this.validatePluginPolicies(plugins);
+      this.validatePluginPolicies(plugins, pluginApprovers);
       const agentId = this.nextIdentifier("agent");
       await this.authorizeBindings(
         state,
@@ -3522,6 +3536,7 @@ export class OpenClawController {
         harnessAuth,
         executionMode,
         ...(plugins === undefined ? {} : { plugins }),
+        ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
         ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
         servicePrincipalId: `service-agent-${agentId}`,
         desiredRuntimeState: "stopped",
@@ -3555,6 +3570,8 @@ export class OpenClawController {
       throw new ScopeViolationError("The Agent Harness execution mode is invalid.");
     }
     const plugins = normalizeAgentPlugins(input.plugins);
+    const pluginApprovers =
+      input.pluginApprovers === null ? null : normalizeAgentPluginApprovers(input.pluginApprovers);
     return this.mutate(async (state) => {
       const namespace = await this.lockNamespace(state, input.namespaceId);
       const agent = await state.agents.lockAgent(namespace.id, input.agentId);
@@ -3599,7 +3616,10 @@ export class OpenClawController {
         input.repositoryBindings === undefined
           ? undefined
           : (this.repositoryBindingSelections(namespace.id, input.repositoryBindings) ?? []);
-      this.validatePluginPolicies(plugins);
+      this.validatePluginPolicies(
+        plugins ?? agent.plugins,
+        pluginApprovers === null ? undefined : (pluginApprovers ?? agent.pluginApprovers),
+      );
       const updated = await state.agents.updateConfiguration(
         namespace.id,
         agent.id,
@@ -3609,6 +3629,7 @@ export class OpenClawController {
         input.backendId === undefined ? undefined : backendId,
         plugins,
         repositoryBindings,
+        pluginApprovers,
       );
       if (!updated) {
         throw new ResourceConflictError("The Agent Configuration changed during its update.");
@@ -3771,7 +3792,7 @@ export class OpenClawController {
           ? undefined
           : (() => {
               const driver = this.pluginDriver();
-              driver.validatePolicies(lockedAgent.plugins);
+              driver.validatePolicies(lockedAgent.plugins, lockedAgent.pluginApprovers);
               return immutableCopy({
                 driver: { id: driver.id, implementation: driver.implementation },
                 plugins: lockedAgent.plugins,
@@ -3849,6 +3870,9 @@ export class OpenClawController {
             ? {}
             : { secretDriverId: secretDriver.id, secretBindings }),
           ...(pluginState === undefined ? {} : { plugins: pluginState }),
+          ...(lockedAgent.pluginApprovers === undefined
+            ? {}
+            : { pluginApprovers: lockedAgent.pluginApprovers }),
           ...(repositoryCredentials === undefined ? {} : { repositoryCredentials }),
           harnessAuth,
           servicePrincipalId: lockedAgent.servicePrincipalId,
@@ -4551,6 +4575,7 @@ export class OpenClawController {
     }
     this.validatePluginPolicies(
       normalizeAgentPlugins(record.plan.plugins as PluginDesiredState | undefined),
+      normalizeAgentPluginApprovers(record.plan.pluginApprovers as PluginApprovers | undefined),
     );
     if (agent !== undefined) {
       this.admitRepositoryCredentials(
@@ -4950,6 +4975,9 @@ export class OpenClawController {
       const plugins = normalizeAgentPlugins(
         planRecord.plugins as Readonly<Record<string, PluginDesiredSelection>> | undefined,
       );
+      const pluginApprovers = normalizeAgentPluginApprovers(
+        planRecord.pluginApprovers as PluginApprovers | undefined,
+      );
       const repositoryBindings = this.repositoryBindingSelections(
         namespace.id,
         planRecord.repositoryBindings as readonly RepositoryBindingRequest[] | undefined,
@@ -4987,6 +5015,7 @@ export class OpenClawController {
           harnessAuth: plan.harnessAuth,
           executionMode: plan.executionMode,
           ...(plugins === undefined ? {} : { plugins }),
+          ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
           ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
           servicePrincipalId: `service-agent-${agentId}`,
           desiredRuntimeState: "stopped",
@@ -5720,9 +5749,15 @@ export class OpenClawController {
     }
   }
 
-  private validatePluginPolicies(plugins: PluginDesiredState | undefined): void {
-    if (plugins !== undefined && Object.keys(plugins).length > 0) {
-      this.pluginDriver().validatePolicies(plugins);
+  private validatePluginPolicies(
+    plugins: PluginDesiredState | undefined,
+    pluginApprovers?: PluginApprovers,
+  ): void {
+    if (
+      (plugins !== undefined && Object.keys(plugins).length > 0) ||
+      (pluginApprovers !== undefined && pluginApprovers.length > 0)
+    ) {
+      this.pluginDriver().validatePolicies(plugins ?? {}, pluginApprovers);
     }
   }
 

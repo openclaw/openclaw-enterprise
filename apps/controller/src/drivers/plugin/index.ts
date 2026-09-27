@@ -5,6 +5,7 @@ import {
   type PluginCatalogPage,
   type PluginDriver,
   type PluginDesiredState,
+  type PluginApprovers,
   type PluginPolicyCapabilities,
   type PluginDriverContext,
   type PluginDriverIdentity,
@@ -311,9 +312,13 @@ class BundledPluginDriverBase {
     }
   }
 
-  protected validate(kind: "codex" | "openclaw", selections: PluginDesiredState): void {
+  protected validate(
+    kind: "codex" | "openclaw",
+    selections: PluginDesiredState,
+    defaultApprovers?: PluginApprovers,
+  ): void {
     try {
-      validatePolicies(kind, selections);
+      validatePolicies(kind, selections, defaultApprovers);
     } catch (error) {
       const field =
         error instanceof Error && "policyField" in error ? error.policyField : undefined;
@@ -331,13 +336,14 @@ class BundledPluginDriverBase {
 export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDriver {
   static readonly configurationSchema = EMPTY_CONFIGURATION_SCHEMA;
   readonly policyCapabilities: PluginPolicyCapabilities = deepFreeze({
+    approvers: { agent: true, plugin: true, tools: true },
     toolDefaults: { enabled: true, approval: ["native", "approve"], reviewer: [] },
     tools: { enabled: true, approval: ["native", "approve"], reviewer: [] },
     driverPolicySchema: EMPTY_CONFIGURATION_SCHEMA,
   });
 
-  validatePolicies(selections: PluginDesiredState): void {
-    this.validate("openclaw", selections);
+  validatePolicies(selections: PluginDesiredState, defaultApprovers?: PluginApprovers): void {
+    this.validate("openclaw", selections, defaultApprovers);
   }
 
   static validateConfiguration(configuration: unknown): void {
@@ -360,6 +366,7 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
   // TODO: gate prompt on enforceable session constraints before this draft ships.
   // A permissive native session can bypass app-level review despite translation.
   readonly policyCapabilities: PluginPolicyCapabilities = deepFreeze({
+    approvers: { agent: true, plugin: true, tools: true },
     toolDefaults: {
       enabled: true,
       approval: ["native", "prompt", "approve"],
@@ -369,8 +376,8 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
     driverPolicySchema: CODEX_POLICY_SCHEMA,
   });
 
-  validatePolicies(selections: PluginDesiredState): void {
-    this.validate("codex", selections);
+  validatePolicies(selections: PluginDesiredState, defaultApprovers?: PluginApprovers): void {
+    this.validate("codex", selections, defaultApprovers);
   }
   private readonly catalogReader: CodexPluginCatalogReader | undefined;
   private readonly catalogSource: "hosted" | "openai-curated";

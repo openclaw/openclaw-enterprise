@@ -169,6 +169,9 @@ export function installFixture(scenario, evidence) {
     executionMode: "dedicated",
     harnessAuth: selectedAuth,
     ...(scenario.agentPlugins ? { plugins: structuredClone(scenario.agentPlugins) } : {}),
+    ...(scenario.agentPluginApprovers !== undefined
+      ? { pluginApprovers: structuredClone(scenario.agentPluginApprovers) }
+      : {}),
     servicePrincipalId: "identity_demo_agent",
     createdAt,
     activeRevisionId: selectedRevisionId,
@@ -193,6 +196,9 @@ export function installFixture(scenario, evidence) {
       configuration: structuredClone(configuration.values),
       secretBindings: structuredClone(configuration.secretBindings),
       harnessAuth: structuredClone(owner.harnessAuth),
+      ...(owner.pluginApprovers !== undefined
+        ? { pluginApprovers: structuredClone(owner.pluginApprovers) }
+        : {}),
       ...(owner.plugins
         ? {
             plugins: {

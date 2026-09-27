@@ -45,6 +45,7 @@ Stores Agent drafts, their desired runtime state, and the active revision refere
 - `backend_id`
 - `execution_mode`
 - `plugins`
+- `plugin_approvers`
 - `repository_bindings`
 - `service_principal_id`
 - `harness_auth`

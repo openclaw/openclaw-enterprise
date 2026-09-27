@@ -789,6 +789,7 @@
               "flows/driver-plugin-loading",
               "flows/agent-plugins",
               "flows/agent-channel-directory",
+              "flows/agent-plugin-approvals",
               "flows/agent-provisioning",
               "flows/agent-native-admin",
               "flows/kubernetes-existing-namespace-placement",

@@ -102,7 +102,6 @@ function requireReceiptsMatchEntries(receipts, entries) {
 }
 
 function classifyReceipts(receipts, manifest) {
-  const backendCompletedLength = manifest.entries.length - 1;
   const providerCompleted = manifest.compatibleLineages?.providerCompleted;
   if (providerCompleted !== undefined && receipts.length >= providerCompleted.entries.length) {
     const providerEntries = [
@@ -112,6 +111,9 @@ function classifyReceipts(receipts, manifest) {
     if (receiptsMatchEntries(receipts, providerEntries)) {
       if (receipts.length === manifest.entries.length) {
         return "completed";
+      }
+      if (receipts.length === 32) {
+        return "prePluginApprovers";
       }
       return "providerCompleted";
     }
@@ -145,8 +147,11 @@ function classifyReceipts(receipts, manifest) {
   if (receipts.length === 30) {
     return "agentProvisioning";
   }
-  if (receipts.length === backendCompletedLength) {
+  if (receipts.length === 31) {
     return "backendCompleted";
+  }
+  if (receipts.length === 32) {
+    return "prePluginApprovers";
   }
   refuse("an incomplete or unsupported development history is installed");
 }

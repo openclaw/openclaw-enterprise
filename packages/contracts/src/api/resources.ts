@@ -150,6 +150,12 @@ const RuntimeEvidenceTimestamp = Type.String({
 const PluginPolicyCapabilitiesSchema = Type.Object(
   {
     driver: Type.Ref("PluginDriverIdentity"),
+    approvers: Type.Optional(
+      Type.Object(
+        { agent: Type.Boolean(), plugin: Type.Boolean(), tools: Type.Boolean() },
+        { additionalProperties: false },
+      ),
+    ),
     toolDefaults: Type.Object(
       {
         enabled: Type.Boolean(),
@@ -243,6 +249,7 @@ export const AgentSchema = Type.Object(
     harnessAuth: Type.Union([HarnessAuthBindingSchema, Type.Null()]),
     executionMode: HarnessExecutionModeSchema,
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
+    pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
     repositoryBindings: Type.Optional(RepositoryBindingSelectionsSchema),
     desiredRuntimeState: Type.Union([Type.Literal("running"), Type.Literal("stopped")]),
     activeRevisionId: Type.Optional(RevisionId),
@@ -257,11 +264,21 @@ export const PluginDriverIdentitySchema = Type.Object(
   { additionalProperties: false, $id: "PluginDriverIdentity" },
 );
 
+export const PluginToolDefaultsSchema = Type.Object(
+  {
+    enabled: Type.Optional(Type.Boolean()),
+    approval: Type.Optional(PluginApprovalModeSchema),
+    reviewer: Type.Optional(PluginReviewerSchema),
+  },
+  { additionalProperties: false, minProperties: 1, $id: "PluginToolDefaults" },
+);
+
 export const PluginToolPolicySchema = Type.Object(
   {
     enabled: Type.Optional(Type.Boolean()),
     approval: Type.Optional(PluginApprovalModeSchema),
     reviewer: Type.Optional(PluginReviewerSchema),
+    approvers: Type.Optional(Type.Ref("PluginApprovers")),
   },
   { additionalProperties: false, minProperties: 1, $id: "PluginToolPolicy" },
 );
@@ -282,7 +299,8 @@ const PluginToolPolicyMapSchema = Type.Unsafe({
 export const PluginDesiredSelectionSchema = Type.Object(
   {
     enabled: Type.Boolean(),
-    toolDefaults: Type.Optional(Type.Ref("PluginToolPolicy")),
+    approvers: Type.Optional(Type.Ref("PluginApprovers")),
+    toolDefaults: Type.Optional(Type.Ref("PluginToolDefaults")),
     driverPolicy: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
     tools: Type.Optional(PluginToolPolicyMapSchema),
   },
@@ -656,6 +674,7 @@ export const AgentRevisionSchema = Type.Object(
         { additionalProperties: false },
       ),
     ),
+    pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
     harnessAuth: HarnessAuthBindingSchema,
     repositoryCredentials: Type.Optional(RepositoryRevisionStateSchema),
     createdAt: Timestamp,

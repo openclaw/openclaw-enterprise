@@ -90,14 +90,15 @@ including when a PluginDriver is selected.
 
 ## HTTP operations
 
-Plugin selections are managed through the existing Agent create/update API.
+Plugin selections and default plugin approvers are managed through the existing
+Agent create/update API.
 There is no separate plugin resource, install/delete endpoint, policy mutation
 endpoint, or plugin-tool invocation endpoint.
 
-| Method and path                                  | Body                                          | Successful response                            |
-| ------------------------------------------------ | --------------------------------------------- | ---------------------------------------------- |
-| `POST /namespaces/:namespaceId/agents`           | Agent create body with optional `plugins` map | `201`, Agent response containing the saved map |
-| `PATCH /namespaces/:namespaceId/agents/:agentId` | Agent update body with optional `plugins` map | `200`, Agent response containing the saved map |
+| Method and path                                  | Body                                                            | Successful response                     |
+| ------------------------------------------------ | --------------------------------------------------------------- | --------------------------------------- |
+| `POST /namespaces/:namespaceId/agents`           | Agent create body with optional `plugins` and `pluginApprovers` | `201`, Agent response with saved policy |
+| `PATCH /namespaces/:namespaceId/agents/:agentId` | Agent update body with optional `plugins` and `pluginApprovers` | `200`, Agent response with saved policy |
 
 Every Agent update must include `configurationId`, even when only plugins
 change. Agent creation also requires `name`. See the
@@ -121,20 +122,24 @@ objects reject unknown fields. `plugins:null` is invalid.
 On Agent create, an absent `plugins` field and `{}` mean no desired user plugins.
 On update, omitting `plugins` preserves the existing map, `{}` clears it, and a
 nonempty object replaces the whole map, including nested policies.
+On update, omitted `pluginApprovers` preserves the default; `null` restores
+legacy routing; `[]` denies Slack approval.
 
-| Plugin map value field    | Type                                      | Behavior                                                            |
-| ------------------------- | ----------------------------------------- | ------------------------------------------------------------------- |
-| `enabled`                 | Boolean                                   | Required plugin gate; `false` wins over every tool override.        |
-| `toolDefaults.enabled`    | Optional Boolean                          | Default tool enablement, unless overridden for an individual tool.  |
-| `toolDefaults.approval`   | Optional `native`, `prompt`, or `approve` | Default review behavior.                                            |
-| `toolDefaults.reviewer`   | Optional `human` or `auto`                | Default reviewer; omission inherits the effective Harness reviewer. |
-| `tools.<toolId>.enabled`  | Optional Boolean                          | Override the tool enablement default.                               |
-| `tools.<toolId>.approval` | Optional approval mode                    | Override the approval default independently.                        |
-| `tools.<toolId>.reviewer` | Optional reviewer                         | Override the reviewer default only where the Driver supports it.    |
-| `driverPolicy`            | Optional object                           | Fields owned and validated by the selected Driver.                  |
+| Plugin map value field     | Type                                      | Behavior                                                            |
+| -------------------------- | ----------------------------------------- | ------------------------------------------------------------------- |
+| `enabled`                  | Boolean                                   | Required plugin gate; `false` wins over every tool override.        |
+| `toolDefaults.enabled`     | Optional Boolean                          | Default tool enablement, unless overridden for an individual tool.  |
+| `toolDefaults.approval`    | Optional `native`, `prompt`, or `approve` | Default review behavior.                                            |
+| `toolDefaults.reviewer`    | Optional `human` or `auto`                | Default reviewer; omission inherits the effective Harness reviewer. |
+| `approvers`                | Optional array of channel user identities | Plugin approval users; replaces `pluginApprovers` for this plugin.  |
+| `tools.<toolId>.enabled`   | Optional Boolean                          | Override the tool enablement default.                               |
+| `tools.<toolId>.approval`  | Optional approval mode                    | Override the approval default independently.                        |
+| `tools.<toolId>.reviewer`  | Optional reviewer                         | Override the reviewer default only where the Driver supports it.    |
+| `tools.<toolId>.approvers` | Optional array of channel user identities | Replaces the plugin approvers for this tool.                        |
+| `driverPolicy`             | Optional object                           | Fields owned and validated by the selected Driver.                  |
 
-Each supplied `toolDefaults` or tool override contains at least one of `enabled`,
-`approval`, or `reviewer`. Omission inherits that field's default. The Driver
+Each supplied `toolDefaults` or tool override contains at least one supported
+field. Omission inherits that field's default. The Driver
 validates unsupported fields and combinations even when the plugin or tool is
 disabled. Replace an entry without an optional field to remove its override.
 The approval values `always`, `never`, and `auto`, top-level `approvalMode`, and
@@ -176,12 +181,17 @@ Codex advertises `["human","auto"]` for defaults and `[]` for tools. Diffs
 advertises `[]` at both scopes. These arrays describe translation support;
 runtime availability and managed requirements still need verification.
 
+The `approvers` capability reports whether Agent defaults, plugin overrides, and
+tool overrides can be saved. These are Slack identities for plugin approval
+requests, separate from `reviewer` (`human` or `auto`).
+
 This is capability discovery, not plugin or tool discovery. It does not prove
 that a particular plugin is available to the Agent's credentials.
 
 ### Response fields
 
 Agent GET, create, and update return saved selections under `data.plugins`.
+They also return `data.pluginApprovers` when an Agent default was supplied.
 Existing revision and deployment-status reads describe the deployed request and
 startup outcome. Successful Agent mutations and authorization denials retain
 attributable audit evidence.
@@ -207,6 +217,8 @@ body. It freezes requested state, not resolved native release metadata.
 | `driver`                 | Driver identity object    | Required `id` and `implementation` strings.            |
 | `plugins`                | Object keyed by plugin ID | Frozen requested selections, matching `Agent.plugins`. |
 
+`AgentRevision.pluginApprovers` freezes the Agent default for that deployment.
+
 At startup, Codex translation writes native app defaults and explicit tool
 settings, then configures selected-only OpenClaw bridge entries. The bridge keeps
 `allow_all_plugins:false`; empty desired state keeps apps/plugins disabled.
@@ -227,6 +239,31 @@ This page documents the nested plugin wire contract. The
 executable definitions.
 
 ## Approval policy
+
+### Slack approver users
+
+`pluginApprovers` is the Agent-wide default for Slack plugin approvals. Each
+entry has `{ "channel": "slack", "id": "team:T123:user:U456" }`; Slack user
+IDs may start with `U` or `W`. A plugin's `approvers` array replaces the Agent
+default, and a tool's `approvers` array replaces the plugin list. Omission
+inherits; an explicit empty array denies Slack approval. Tool keys use the
+plugin catalog's exact composite tool ID.
+
+Omitting the Agent default does not map an OCE owner to a Slack user. For an
+Agent without this policy, OpenClaw uses its account-level Slack approval
+destinations (`allowFrom` and `defaultTo`). The Console leaves new Agents'
+default omitted until an operator explicitly selects approvers or an empty list.
+An approval request with no authorized Slack destination cannot be approved
+from Slack. This policy applies only when the runtime requests plugin approval;
+it does not create a review prompt or change exec approval policy.
+
+The Console looks up user and channel names through the selected same-Namespace
+`SLACK_BOT_TOKEN` Secret. It displays the bot's workspace and stores only Slack
+IDs. Lookups require Agent create or exact Agent/Configuration update permission
+and `operate` on the Secret. The bot needs `users:read` to list people and
+`channels:read` or `groups:read` to list public or private channels. Lists can
+be incomplete until the next page is loaded; names are display hints, not saved
+approval identities. The Secret value stays on the server.
 
 | `approval` | Requested behavior                                                                     |
 | ---------- | -------------------------------------------------------------------------------------- |

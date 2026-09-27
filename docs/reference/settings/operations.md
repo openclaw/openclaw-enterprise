@@ -55,7 +55,8 @@ pnpm db:migrate --check
 An exit-0 `migration.checked` record reports one reviewed history shape:
 `empty`, `prePresetsMain`, `main`, `repositoryCredentials`,
 `repositoryRetention`, `workspaceSetup`, `agentProvisioning`,
-`backendCompleted`, `providerCompleted`, or `completed`. `prePresetsMain` means
+`backendCompleted`, `providerCompleted`, `prePluginApprovers`, or `completed`.
+`prePresetsMain` means
 the exact canonical history through `0023_runtime_failure_timestamp_validation`;
 `main` also includes `0024_agent_presets`. `repositoryCredentials` adds
 `0025_repository_credentials` and `0026_privileged_function_search_paths`.
@@ -63,8 +64,9 @@ the exact canonical history through `0023_runtime_failure_timestamp_validation`;
 through `0029_agent_provisioning_work`. `backendCompleted` is the exact
 31-receipt Backend terminology history published before the compatibility
 migration. `providerCompleted` is the exact 31-receipt Provider terminology
-history published before the rename. `completed` is the current canonical
-history with all receipts, including the compatibility migration.
+history published before the rename. `prePluginApprovers` has the 32 receipts
+through `0031_backend_terminology_compatibility`. `completed` is the current
+canonical history with all receipts, including the Agent plugin approver migration.
 The source manifest is
 [`migrations/meta/canonical-history.json`](../../../migrations/meta/canonical-history.json).
 Empty schemas may be absent or have only their owner's ordinary `CREATE` and

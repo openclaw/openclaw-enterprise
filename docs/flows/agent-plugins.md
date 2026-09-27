@@ -125,15 +125,14 @@ mapping, release metadata, and configuration are resolved later.
 
 `apps/controller/src/drivers/compute/plugin-runtime.ts:pluginRuntimeSpecForRevision`
 
-Compute validates the admitted state, Driver, and Harness. Kubernetes projects
-the nonsecret request into the revision workload; Docker uses bounded runtime
-environment delivery.
+Compute validates admitted state, Driver, and Harness. Kubernetes projects the
+nonsecret request; Docker uses bounded environment delivery.
 
 SSH Compute rejects nonempty plugin maps before host effects.
 
-For an initial embedded Kubernetes gateway, preparation applies exact-Agent HTTPS
-egress before installation. For an existing gateway, `prepareRevision` avoids a
-second process on the Agent-owned database. `activateRevision` uses `Recreate`:
+Initial embedded Kubernetes gateway preparation applies exact-Agent HTTPS
+egress before installation. For existing gateways, `prepareRevision` avoids
+duplicate access to the Agent-owned database. `activateRevision` uses `Recreate`:
 the old gateway stops before installation. Revision files remain private and the
 native registry stays in the Agent-owned database. Docker keeps native state in
 the container's private temporary home.
@@ -153,9 +152,8 @@ refreshes the registry and verifies admitted configuration. The runtime image
 must gain this flag; the pinned release lacks it.
 Native inspection verifies plugin ID, package name, runtime/install version,
 recorded integrity, and the runtime source's containment in the install path.
-Verification failure stops startup before the replacement gateway becomes ready.
-A confirmed install rejection instead disables that optional selection and
-removes its managed tool allowance before the gateway starts.
+Verification failure prevents gateway readiness. Confirmed install rejection
+disables the optional selection and removes its managed tool allowance before startup.
 
 Dedicated Codex bootstraps its isolated `CODEX_HOME` with apps, plugins, and
 remote plugins enabled only for nonempty selections. Both states set
@@ -228,11 +226,10 @@ creates it only when the Agent and plugin status are ready and its Service selec
 the revision. Existing gateways and full runtime policies retain their activation
 boundary.
 
-The Agent and gateway derive an app-server credential from the existing transport
-Secret, revision ID, and Agent startup ID. The gateway receives that credential
-only after reading the matching status and rendering its exclusions. After an
-Agent restart, the previous gateway process cannot authenticate with its old
-credential while its supervisor waits for the next status poll. The supervisor
+The Agent and gateway derive an app-server credential from the transport Secret,
+revision ID, and Agent startup ID. The gateway receives it after reading matching
+status and rendering exclusions. After restart, the old gateway cannot
+authenticate while its supervisor awaits the next status poll. The supervisor
 publishes non-ready status before stopping a gateway whose peer result changed.
 
 ### 5. Complete revision reconciliation
@@ -285,6 +282,7 @@ completed deployment attempt rather than ongoing runtime health.
 ## Related docs
 
 - [Agent plugin reference](../reference/agent-plugins.md).
+- [Agent plugin approvals and channel directory flow](agent-plugin-approvals.md).
 - [PluginDriver selection and limits](../reference/drivers/plugin-bundled.md).
 - [Controller worker](controller-worker.md).
 - [Harness execution topology](harness-execution-topology.md).
@@ -304,6 +302,8 @@ completed deployment attempt rather than ongoing runtime health.
 - 2026-09-27 05:38: Resolve catalog IDs through owned runtime metadata. (01a0d4f7-8085-70e0-9d0c-69a465a81fe3 - 6f7534fa)
 
 - 2026-09-27 02:41: Authorize the selected Secret before reporting unsupported plugin discovery. (01a0e099-da9d-78f1-8e79-ea4a919edf7d - 36cb6d6a4a515ad7328eb596b3da174f262f6d18)
+
+- 2026-09-27 02:03: Link the Agent approval and channel directory flow. (01a0df20-f340-7810-bb59-b1df6c0bbbd3 - b2de165412191a4c9d124acf59fa1efb25cc29d6)
 
 - 2026-09-27 02:08: Added exact-Secret-authorized transient plugin discovery and current-value reads. (01a0e099-da9d-78f1-8e79-ea4a919edf7d - 41aae7750e33b8739efc5f7c6a0ebd160f42f711)
 

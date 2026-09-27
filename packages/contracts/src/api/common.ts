@@ -45,6 +45,17 @@ export const Name = Type.String({
   pattern: /^(?!\s)(?!.*\s$)(?!.*[\u0000-\u001f\u007f]).+$/.source,
 });
 
+export const PluginApproversSchema = Type.Array(
+  Type.Object(
+    {
+      channel: Type.String({ minLength: 1, maxLength: 64, pattern: "^[a-z][a-z0-9_-]*$" }),
+      id: Type.String({ minLength: 1, maxLength: 200, pattern: "^[^\\u0000-\\u0020\\u007f]+$" }),
+    },
+    { additionalProperties: false },
+  ),
+  { maxItems: 64, uniqueItems: true, $id: "PluginApprovers" },
+);
+
 export const KubernetesNamespaceName = Type.String({
   minLength: 1,
   maxLength: 63,
@@ -447,6 +458,7 @@ export const CreateAgentBody = Type.Object(
     harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
+    pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
     repositoryBindings: Type.Optional(RepositoryBindingRequestsSchema),
   },
   { additionalProperties: false },
@@ -472,6 +484,7 @@ export const ProvisionAgentBody = Type.Object(
     harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
+    pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
     repositoryBindings: Type.Optional(RepositoryBindingRequestsSchema),
   },
   { additionalProperties: false },
@@ -484,6 +497,7 @@ export const UpdateAgentBody = Type.Object(
     harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
+    pluginApprovers: Type.Optional(Type.Union([Type.Ref("PluginApprovers"), Type.Null()])),
     repositoryBindings: Type.Optional(RepositoryBindingRequestsSchema),
   },
   { additionalProperties: false },

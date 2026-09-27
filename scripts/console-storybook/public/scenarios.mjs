@@ -37,6 +37,7 @@ const presetSecretsPath = "/namespaces/ns_00000000-0000-4000-8000-000000000001/s
 const repositoryForm = [...readyForm, { selector: "#agent-name", value: "Repository assistant" }];
 const pluginCapabilities = {
   driver: { id: "codex-plugin", implementation: "occ/codex-plugin" },
+  approvers: { agent: true, plugin: true, tools: true },
   toolDefaults: {
     enabled: true,
     approval: ["native", "prompt", "approve"],
@@ -230,6 +231,11 @@ const pluginSelections = JSON.stringify(
   null,
   2,
 );
+const pluginApproverOverrides = JSON.parse(pluginSelections);
+pluginApproverOverrides["codex-plugin:calendar@openai-curated-remote"].approvers = [];
+pluginApproverOverrides["codex-plugin:calendar@openai-curated-remote"].tools[
+  "app_calendar/create_event"
+].approvers = [{ channel: "slack", id: "team:TDEMO123:user:UDEMO124" }];
 const pluginPreviewGap =
   "Catalog entries, local placeholder logos, and Driver capabilities are passed directly to the production component as Storybook fixtures. These previews do not verify PAT access, plugin availability, or runtime policy enforcement.";
 const pluginDiscovery = {
@@ -794,6 +800,20 @@ export const scenarios = {
       "Click Done, open Plugin selections JSON, and inspect the policies. Reopen Configure plugins to continue editing.",
     ],
     gap: pluginDiscoveryGap,
+  },
+  createPluginApproversMissingSecret: {
+    group: "Pages/Create Agent",
+    name: "Plugin approvers need a Slack bot Secret",
+    path: create,
+    pluginCapabilities,
+    actions: [
+      ...form,
+      { selector: 'select[aria-label="Default plugin approvers mode"]', value: "chosen" },
+      click("Find approver for Default plugin approvers"),
+    ],
+    description:
+      "New Agents inherit OpenClaw's existing approval routing until an operator selects a default. The directory explains that a Slack bot Secret must be selected under Channels before names can be resolved.",
+    gap: "The fixture does not prove Secret permissions or OpenClaw approval enforcement.",
   },
   createPluginsSetupReminder: {
     group: "Pages/Create Agent",
@@ -1768,6 +1788,70 @@ export const scenarios = {
       "Select Save plugin selections, then Deploy new version. Compare the new version with the earlier immutable plugin snapshot.",
     ],
     gap: "Catalog and deployment responses are simulated. This does not verify plugin access, installation, policy enforcement, or a live Agent turn.",
+  },
+  pluginApproversInherited: {
+    group: "Pages/Agent detail",
+    name: "Plugin approver inheritance",
+    path: draft,
+    slack: true,
+    auth: "codex_pat",
+    agentPlugins: JSON.parse(pluginSelections),
+    agentPluginApprovers: [{ channel: "slack", id: "team:TDEMO123:user:UDEMO123" }],
+    pluginCapabilities,
+    pluginDiscovery,
+    actions: [
+      click("Plugins"),
+      click("Configure plugins"),
+      { selector: 'button[aria-label="Calendar"]', click: true },
+      {
+        selector: 'details.plugin-tool-row[data-tool="app_calendar/create_event"] > summary',
+        click: true,
+      },
+    ],
+    description:
+      "The Agent default has one workspace-qualified Slack user. Calendar inherits that list, and Create event inherits Calendar. Clearing a plugin or tool override restores inheritance.",
+    gap: "This is simulated UI and does not prove runtime approval authorization.",
+  },
+  pluginApproversOverrides: {
+    group: "Pages/Agent detail",
+    name: "Plugin and tool approver overrides",
+    path: draft,
+    slack: true,
+    auth: "codex_pat",
+    agentPlugins: pluginApproverOverrides,
+    agentPluginApprovers: [{ channel: "slack", id: "team:TDEMO123:user:UDEMO123" }],
+    pluginCapabilities,
+    pluginDiscovery,
+    actions: [
+      click("Plugins"),
+      click("Configure plugins"),
+      { selector: 'button[aria-label="Calendar"]', click: true },
+      {
+        selector: 'details.plugin-tool-row[data-tool="app_calendar/create_event"] > summary',
+        click: true,
+      },
+    ],
+    description:
+      "Calendar explicitly has no Slack approvers, while Create event overrides it with a different user. The UI distinguishes both from inherited lists.",
+    steps: [
+      "Change Calendar to Inherit Agent default approvers and inspect Plugin selections JSON.",
+      "Open Find approver for Create event tool approvers to choose between duplicate Alex Chen names by exact ID.",
+    ],
+    gap: "This is simulated UI and does not prove runtime approval authorization.",
+  },
+  pluginApproversLookup: {
+    group: "Pages/Agent detail",
+    name: "Find Slack plugin approvers",
+    path: draft,
+    slack: true,
+    auth: "codex_pat",
+    agentPlugins: JSON.parse(pluginSelections),
+    agentPluginApprovers: [],
+    pluginCapabilities,
+    actions: [click("Plugins"), click("Find approver for Default plugin approvers")],
+    description:
+      "The selected bot Secret resolves names within Demo workspace. Duplicate Alex Chen results show their distinct user IDs; choosing one saves a team-qualified selector.",
+    gap: "The fixture simulates directory data; it does not contact Slack or read a real Secret.",
   },
   pluginsAdmitted: {
     group: "Pages/Agent detail",

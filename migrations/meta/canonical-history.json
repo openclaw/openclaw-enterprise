@@ -257,6 +257,14 @@
       "tag": "0031_backend_terminology_compatibility",
       "breakpoints": true,
       "sha256": "e123912bb4116b1b1ecbccbce0a75d52c502e77971e8a7c93ec9dde59689a1b6"
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1787000000032,
+      "tag": "0032_agent_plugin_approvers",
+      "breakpoints": true,
+      "sha256": "e7895f2c3b9e4825a9aca1d9dc6c7019913e1d48285a154551d08e5cd1495629"
     }
   ],
   "initialSchemaStates": {
@@ -284,10 +292,11 @@
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
-    "completed": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",
+    "completed": "29fb5e774de8a4ed6779c28f0fa2aec247d2d3ca440c79aa7d1134167ad3cab1",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
     "agentProvisioning": "baac9e369ace8610f96948c1a930e6387431b1d0a33cefa3893765e52f8f7a52",
     "backendCompleted": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",
+    "prePluginApprovers": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",
     "providerCompleted": "27601744e41dfd20e4f1612a133eee9b0a42732b0ebc2f0d093e8036e5f82dcf"
   },
   "ledgerCatalogs": {

@@ -79,6 +79,97 @@ test("OpenClaw runtime helper installs exact admitted package pins and verifies 
   assert.deepEqual(effective.tools.alsoAllow, ["existing-tool", "diffs"]);
 });
 
+test("OpenClaw runtime merges disjoint native approver tools and matching values", () => {
+  const agentApprover = "team:T123:user:U123";
+  const pluginApprover = "team:T123:user:U456";
+  const runtime = openClawRuntime({
+    approvers: [{ channel: "slack", id: pluginApprover }],
+    tools: { diffs: { approvers: [] } },
+  });
+  runtime.manifest.pluginApprovers = [{ channel: "slack", id: agentApprover }];
+  const configured = {
+    approvers: [agentApprover],
+    plugins: {
+      diffs: {
+        tools: { other: { approvers: [agentApprover] }, diffs: { approvers: [] } },
+        approvers: [pluginApprover],
+      },
+    },
+  };
+  const { files } = runOpenClawRuntimeHelper(runtime, installedPluginResponses(), {
+    baseConfig: { approvals: { plugin: { slack: configured } } },
+  });
+  const effective = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
+  assert.deepEqual(effective.approvals.plugin.slack, configured);
+
+  const conflicting = runOpenClawRuntimeHelper(runtime, [], {
+    baseConfig: {
+      approvals: {
+        plugin: {
+          slack: {
+            ...configured,
+            plugins: { diffs: { ...configured.plugins.diffs, approvers: [] } },
+          },
+        },
+      },
+    },
+    captureError: true,
+  });
+  assert.match(conflicting.error?.message ?? "", /conflicts with managed Agent approvers/);
+  assert.deepEqual(conflicting.calls, []);
+
+  const conflictingTool = runOpenClawRuntimeHelper(runtime, [], {
+    baseConfig: {
+      approvals: {
+        plugin: {
+          slack: {
+            ...configured,
+            plugins: {
+              diffs: {
+                ...configured.plugins.diffs,
+                tools: { ...configured.plugins.diffs.tools, diffs: { approvers: [agentApprover] } },
+              },
+            },
+          },
+        },
+      },
+    },
+    captureError: true,
+  });
+  assert.match(conflictingTool.error?.message ?? "", /conflicts with managed Agent approvers/);
+  assert.deepEqual(conflictingTool.calls, []);
+});
+
+test("Codex bridge preserves an unrelated native tool approver for the same plugin", () => {
+  const appId = "asdk_app_69a089a326dc8191b32a3f2553f5be2c";
+  const readTool = `${appId}/repos%2Fread`;
+  const writeTool = `${appId}/repos%2Fwrite`;
+  const approver = "team:T123:user:U123";
+  const runtime = {
+    manifest: {
+      kind: "codex",
+      selections: {
+        "codex-plugin:linear@openai-curated-remote": {
+          enabled: true,
+          tools: { [readTool]: { approvers: [{ channel: "slack", id: approver }] } },
+        },
+      },
+    },
+  };
+  const { files } = runOpenClawRuntimeHelper(runtime, [], {
+    baseConfig: {
+      approvals: {
+        plugin: { slack: { plugins: { linear: { tools: { [writeTool]: { approvers: [] } } } } } },
+      },
+    },
+  });
+  const effective = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
+  assert.deepEqual(effective.approvals.plugin.slack.plugins.linear.tools, {
+    [writeTool]: { approvers: [] },
+    [readTool]: { approvers: [approver] },
+  });
+});
+
 for (const [name, tools] of [
   ["profile grants", { alsoAllow: ["existing-tool"] }],
   ["explicit allowlist", { allow: ["read"] }],

@@ -21,6 +21,7 @@ import type {
   Installation,
   Namespace,
   PluginDesiredState,
+  PluginApprovers,
   Preset,
   Permission,
   Principal,
@@ -34,10 +35,12 @@ import type {
 import {
   harnessAuthBindingFromSnapshot,
   normalizePluginDesiredState,
+  normalizePluginApprovers,
   normalizeHarnessAuthBinding,
   normalizeSecretBindings,
   RESOURCE_KINDS as PLATFORM_RESOURCE_KINDS,
   validPluginRevisionState,
+  validPluginApprovers,
 } from "@openclaw-enterprise/contracts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
 import {
@@ -208,6 +211,17 @@ function normalizedPlugins(plugins?: PluginDesiredState): PluginDesiredState | u
   return normalizePluginDesiredState(plugins, invalidPluginState);
 }
 
+function normalizedPluginApprovers(approvers?: PluginApprovers): PluginApprovers | undefined {
+  return normalizePluginApprovers(approvers, invalidPluginState);
+}
+
+function pluginApproversFromJson(value: unknown): PluginApprovers | undefined {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+  return normalizePluginApprovers(value, invalidPersistedPluginState);
+}
+
 function pluginStateFromJson(value: unknown): PluginDesiredState | undefined {
   if (value === null || value === undefined) {
     return undefined;
@@ -273,6 +287,7 @@ function presetFromRow(row: PostgresRow): Readonly<Preset> {
 function agentFromRow(row: PostgresRow): Readonly<Agent> {
   const activeRevisionId = optionalText(row, "active_revision_id");
   const repositoryBindings = repositoryBindingsFromJson(row.repository_bindings);
+  const pluginApprovers = pluginApproversFromJson(row.plugin_approvers);
   let harnessAuth: Agent["harnessAuth"];
   try {
     harnessAuth = normalizeHarnessAuthBinding(row.harness_auth);
@@ -294,6 +309,7 @@ function agentFromRow(row: PostgresRow): Readonly<Agent> {
     ...(row.plugins === null || row.plugins === undefined
       ? {}
       : { plugins: pluginStateFromJson(row.plugins)! }),
+    ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
     ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
     servicePrincipalId: text(row, "service_principal_id"),
     harnessAuth,
@@ -363,6 +379,7 @@ function revisionFromRow(row: PostgresRow): Readonly<AgentRevision> {
     secret_driver_id?: AgentRevision["secretDriverId"];
     secret_bindings?: AgentRevision["secretBindings"];
     plugins?: AgentRevision["plugins"];
+    plugin_approvers?: AgentRevision["pluginApprovers"];
     repository_credentials?: AgentRevision["repositoryCredentials"];
   };
   if (
@@ -379,6 +396,9 @@ function revisionFromRow(row: PostgresRow): Readonly<AgentRevision> {
       : secretBindingsFromJson(admitted.secret_bindings, text(row, "namespace_id"));
   if (!validPluginRevisionState(admitted.plugins)) {
     throw new DependencyUnavailableError("Persisted AgentRevision plugin state is invalid.");
+  }
+  if (!validPluginApprovers(admitted.plugin_approvers)) {
+    throw new DependencyUnavailableError("Persisted AgentRevision plugin approvers are invalid.");
   }
   if (
     admitted.repository_credentials !== undefined &&
@@ -408,6 +428,9 @@ function revisionFromRow(row: PostgresRow): Readonly<AgentRevision> {
       : { secretDriverId: admitted.secret_driver_id }),
     ...(secretBindings === undefined ? {} : { secretBindings }),
     ...(admitted.plugins === undefined ? {} : { plugins: admitted.plugins }),
+    ...(admitted.plugin_approvers === undefined
+      ? {}
+      : { pluginApprovers: admitted.plugin_approvers }),
     ...(admitted.repository_credentials === undefined
       ? {}
       : { repositoryCredentials: admitted.repository_credentials }),
@@ -1934,7 +1957,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         (
           await client.query(
             `SELECT a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                    a.backend_id, a.plugins, a.repository_bindings, a.service_principal_id, a.harness_auth,
+                    a.backend_id, a.plugins, a.plugin_approvers, a.repository_bindings, a.service_principal_id, a.harness_auth,
                     a.active_revision_id, a.desired_runtime_state, a.status, a.created_at
              FROM occ.agents AS a
              JOIN occ.namespaces AS n ON n.id = a.namespace_id AND n.deleted_at IS NULL
@@ -2017,7 +2040,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           (
             await client.query(
               `SELECT a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                      a.backend_id, a.plugins, a.repository_bindings, a.service_principal_id, a.harness_auth,
+                      a.backend_id, a.plugins, a.plugin_approvers, a.repository_bindings, a.service_principal_id, a.harness_auth,
                       a.active_revision_id, a.desired_runtime_state, a.status, a.created_at
                FROM occ.agents AS a
                JOIN occ.namespaces AS n ON n.id = a.namespace_id AND n.deleted_at IS NULL
@@ -2051,16 +2074,19 @@ export class PostgresPlatformState implements PlatformStateStore {
           agent.harnessAuth,
         );
         const plugins = normalizedPlugins(agent.plugins);
+        const pluginApprovers = normalizedPluginApprovers(agent.pluginApprovers);
         const repositoryBindings =
           agent.repositoryBindings?.length === 0 ? undefined : agent.repositoryBindings;
         const {
           plugins: _providedPlugins,
+          pluginApprovers: _providedPluginApprovers,
           repositoryBindings: _providedRepositoryBindings,
           ...withoutPlugins
         } = agent;
         const saved = immutableCopy({
           ...withoutPlugins,
           ...(plugins === undefined ? {} : { plugins }),
+          ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
           ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
           desiredRuntimeState: "stopped" as const,
           status: "active" as const,
@@ -2069,8 +2095,8 @@ export class PostgresPlatformState implements PlatformStateStore {
           `INSERT INTO occ.agents
            (id, namespace_id, name, configuration_id, backend_id, execution_mode,
              service_principal_id, harness_auth, active_revision_id, created_at, plugins,
-             repository_bindings)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11::jsonb, $12::jsonb)`,
+             plugin_approvers, repository_bindings)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11::jsonb, $12::jsonb, $13::jsonb)`,
           [
             saved.id,
             saved.namespaceId,
@@ -2083,6 +2109,7 @@ export class PostgresPlatformState implements PlatformStateStore {
             saved.activeRevisionId ?? null,
             saved.createdAt,
             plugins === undefined ? null : JSON.stringify(plugins),
+            pluginApprovers === undefined ? null : JSON.stringify(pluginApprovers),
             repositoryBindings === undefined ? null : JSON.stringify(repositoryBindings),
           ],
         );
@@ -2102,6 +2129,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         backendId,
         plugins,
         repositoryBindings,
+        pluginApprovers,
       ) => {
         if (harnessAuth !== undefined) {
           await assertHarnessAuthAvailable({ secrets, serviceAccounts }, namespaceId, harnessAuth);
@@ -2112,6 +2140,8 @@ export class PostgresPlatformState implements PlatformStateStore {
         }
         await validateSecretBindingsAvailable(namespaceId, configuration.secretBindings);
         const nextPlugins = plugins === undefined ? undefined : normalizedPlugins(plugins);
+        const nextPluginApprovers =
+          pluginApprovers == null ? undefined : normalizedPluginApprovers(pluginApprovers);
         const nextRepositoryBindings =
           repositoryBindings?.length === 0 ? undefined : repositoryBindings;
         const updated = rows(
@@ -2122,12 +2152,13 @@ export class PostgresPlatformState implements PlatformStateStore {
                    harness_auth = CASE WHEN $5::boolean THEN $6::jsonb ELSE a.harness_auth END,
                    backend_id = CASE WHEN $7::boolean THEN $8::text ELSE a.backend_id END,
                    plugins = CASE WHEN $9::boolean THEN $10::jsonb ELSE a.plugins END,
-                   repository_bindings = CASE WHEN $11::boolean THEN $12::jsonb ELSE a.repository_bindings END
+                   plugin_approvers = CASE WHEN $11::boolean THEN $12::jsonb ELSE a.plugin_approvers END,
+                   repository_bindings = CASE WHEN $13::boolean THEN $14::jsonb ELSE a.repository_bindings END
                FROM occ.namespaces AS n
                WHERE a.namespace_id = $1 AND a.id = $2
                  AND n.id = a.namespace_id AND n.deleted_at IS NULL
                  RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                          a.backend_id, a.plugins, a.repository_bindings, a.service_principal_id, a.harness_auth,
+                          a.backend_id, a.plugins, a.plugin_approvers, a.repository_bindings, a.service_principal_id, a.harness_auth,
                           a.active_revision_id, a.desired_runtime_state, a.status, a.created_at`,
               [
                 namespaceId,
@@ -2140,6 +2171,8 @@ export class PostgresPlatformState implements PlatformStateStore {
                 backendId ?? null,
                 plugins !== undefined,
                 nextPlugins === undefined ? null : JSON.stringify(nextPlugins),
+                pluginApprovers !== undefined,
+                nextPluginApprovers === undefined ? null : JSON.stringify(nextPluginApprovers),
                 repositoryBindings !== undefined,
                 nextRepositoryBindings === undefined
                   ? null
@@ -2165,7 +2198,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                 AND a.active_revision_id IS NOT DISTINCT FROM $3::text
                   AND n.id = a.namespace_id AND n.deleted_at IS NULL
                   RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                          a.backend_id, a.plugins, a.repository_bindings, a.service_principal_id, a.harness_auth,
+                          a.backend_id, a.plugins, a.plugin_approvers, a.repository_bindings, a.service_principal_id, a.harness_auth,
                           a.active_revision_id, a.desired_runtime_state, a.status, a.created_at`,
               [namespaceId, agentId, expectedRevisionId ?? null, candidateRevisionId],
             )
@@ -2182,7 +2215,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                WHERE a.namespace_id = $1 AND a.id = $2 AND a.active_revision_id = $3
                  AND n.id = a.namespace_id AND n.deleted_at IS NULL
                 RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                         a.backend_id, a.plugins, a.repository_bindings, a.service_principal_id, a.harness_auth,
+                         a.backend_id, a.plugins, a.plugin_approvers, a.repository_bindings, a.service_principal_id, a.harness_auth,
                          a.active_revision_id, a.desired_runtime_state, a.status, a.created_at`,
               [namespaceId, agentId, expectedRevisionId],
             )
@@ -2201,7 +2234,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                  AND a.desired_runtime_state = ANY($3::text[])
                  AND n.id = a.namespace_id AND n.deleted_at IS NULL
                 RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                         a.backend_id, a.plugins, a.repository_bindings, a.service_principal_id, a.harness_auth,
+                         a.backend_id, a.plugins, a.plugin_approvers, a.repository_bindings, a.service_principal_id, a.harness_auth,
                          a.active_revision_id, a.desired_runtime_state, a.status, a.created_at`,
               [namespaceId, agentId, expectedStates, next],
             )
@@ -2223,7 +2256,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                  AND a.status = ANY($3::text[])
                  AND n.id = a.namespace_id AND n.deleted_at IS NULL
                RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                         a.backend_id, a.plugins, a.repository_bindings, a.service_principal_id, a.harness_auth,
+                         a.backend_id, a.plugins, a.plugin_approvers, a.repository_bindings, a.service_principal_id, a.harness_auth,
                          a.active_revision_id, a.desired_runtime_state, a.status, a.created_at`,
               [namespaceId, agentId, expectedStatuses, next],
             )
@@ -2300,6 +2333,9 @@ export class PostgresPlatformState implements PlatformStateStore {
         if (!validPluginRevisionState(revision.plugins)) {
           throw new ScopeViolationError("The AgentRevision plugin state is invalid.");
         }
+        if (!validPluginApprovers(revision.pluginApprovers)) {
+          throw new ScopeViolationError("The AgentRevision plugin approvers are invalid.");
+        }
         await client.query(
           `INSERT INTO occ.agent_revisions
            (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, admitted_at)
@@ -2325,6 +2361,9 @@ export class PostgresPlatformState implements PlatformStateStore {
                 : { secret_driver_id: revision.secretDriverId }),
               ...(secretBindings === undefined ? {} : { secret_bindings: secretBindings }),
               ...(revision.plugins === undefined ? {} : { plugins: revision.plugins }),
+              ...(revision.pluginApprovers === undefined
+                ? {}
+                : { plugin_approvers: revision.pluginApprovers }),
               ...(revision.repositoryCredentials === undefined
                 ? {}
                 : { repository_credentials: revision.repositoryCredentials }),

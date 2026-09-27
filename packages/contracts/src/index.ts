@@ -5,8 +5,10 @@ import {
   PluginDesiredStateSchema,
   PluginDriverIdentitySchema,
   PluginToolPolicySchema,
+  PluginToolDefaultsSchema,
 } from "./api/resources.ts";
 import { Check } from "typebox/value";
+import { PluginApproversSchema } from "./api/common.ts";
 import type {
   RepositoryBindingSelection,
   RepositoryCredentialMaterialRef,
@@ -280,11 +282,23 @@ export interface PluginToolPolicy {
   readonly enabled?: boolean;
   readonly approval?: PluginApprovalMode;
   readonly reviewer?: PluginReviewer;
+  readonly approvers?: PluginApprovers;
 }
+
+export type PluginToolDefaults = Omit<PluginToolPolicy, "approvers">;
+
+/** The channel Driver interprets each opaque actor identity. */
+export interface PluginApprover {
+  readonly channel: string;
+  readonly id: string;
+}
+
+export type PluginApprovers = readonly PluginApprover[];
 
 export interface PluginDesiredSelection {
   readonly enabled: boolean;
-  readonly toolDefaults?: PluginToolPolicy;
+  readonly approvers?: PluginApprovers;
+  readonly toolDefaults?: PluginToolDefaults;
   /** Validated by the selected Plugin Driver, never interpreted by the control plane. */
   readonly driverPolicy?: Readonly<Record<string, unknown>>;
   readonly tools?: Readonly<Record<string, PluginToolPolicy>>;
@@ -304,6 +318,11 @@ export interface PluginToolCatalogEntry {
 }
 
 export interface PluginPolicyCapabilities {
+  readonly approvers?: {
+    readonly agent: boolean;
+    readonly plugin: boolean;
+    readonly tools: boolean;
+  };
   readonly toolDefaults: {
     readonly enabled: boolean;
     readonly approval: readonly PluginApprovalMode[];
@@ -353,11 +372,30 @@ export interface PluginRevisionState {
 export type PluginValidationFailure = (message: string) => never;
 
 const PLUGIN_SCHEMA_REFS = {
+  PluginApprovers: PluginApproversSchema,
   PluginDriverIdentity: PluginDriverIdentitySchema,
   PluginToolPolicy: PluginToolPolicySchema,
+  PluginToolDefaults: PluginToolDefaultsSchema,
   PluginDesiredSelection: PluginDesiredSelectionSchema,
   PluginDesiredState: PluginDesiredStateSchema,
 };
+
+export function normalizePluginApprovers(
+  approvers: unknown,
+  fail: PluginValidationFailure,
+): PluginApprovers | undefined {
+  if (approvers === undefined) {
+    return undefined;
+  }
+  if (!validPluginApprovers(approvers)) {
+    return fail("Agent plugin approvers are invalid.");
+  }
+  return immutableCopy(approvers as PluginApprovers);
+}
+
+export function validPluginApprovers(approvers: unknown): approvers is PluginApprovers | undefined {
+  return approvers === undefined || Check(PLUGIN_SCHEMA_REFS, PluginApproversSchema, approvers);
+}
 
 function validPluginDriverIdentity(value: unknown): value is PluginDriverIdentity {
   if (!Check(PLUGIN_SCHEMA_REFS, PluginDriverIdentitySchema, value)) {
@@ -452,6 +490,7 @@ export interface Agent extends Scope {
   readonly harnessAuth: HarnessAuthBinding | null;
   readonly executionMode: HarnessExecutionMode;
   readonly plugins?: PluginDesiredState;
+  readonly pluginApprovers?: PluginApprovers;
   readonly repositoryBindings?: readonly RepositoryBindingSelection[];
   readonly servicePrincipalId: string;
   readonly activeRevisionId?: string;
@@ -506,6 +545,7 @@ export interface AgentRevision extends Scope {
   readonly secretDriverId?: string;
   readonly secretBindings?: SecretBindings;
   readonly plugins?: PluginRevisionState;
+  readonly pluginApprovers?: PluginApprovers;
   readonly repositoryCredentials?: RepositoryRevisionState;
   readonly harnessAuth: HarnessAuthSnapshot;
   readonly servicePrincipalId: string;
@@ -520,6 +560,9 @@ export function freezeAgentRevision(revision: AgentRevision): Readonly<AgentRevi
       ? {}
       : { secretBindings: immutableCopy(revision.secretBindings) }),
     ...(revision.plugins === undefined ? {} : { plugins: immutableCopy(revision.plugins) }),
+    ...(revision.pluginApprovers === undefined
+      ? {}
+      : { pluginApprovers: immutableCopy(revision.pluginApprovers) }),
     ...(revision.repositoryCredentials === undefined
       ? {}
       : { repositoryCredentials: immutableCopy(revision.repositoryCredentials) }),
@@ -872,7 +915,7 @@ export interface PluginDriver extends Driver {
   readonly capability: "plugin";
   readonly policyCapabilities: PluginPolicyCapabilities;
   /** Checks policy support without installing plugins or performing authenticated discovery. */
-  validatePolicies(selections: PluginDesiredState): void;
+  validatePolicies(selections: PluginDesiredState, defaultApprovers?: PluginApprovers): void;
   listCatalog(context: PluginDriverContext): Promise<readonly PluginCatalogEntry[]>;
   /** Pre-Agent discovery defaults to requiring a transient credential. Results are not persisted. */
   readonly discoveryCredential?: "required" | "none";

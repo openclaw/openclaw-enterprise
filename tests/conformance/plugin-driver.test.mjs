@@ -182,6 +182,52 @@ test("OpenClaw plugin startup translation renders native install and enablement"
   assert.equal(Object.hasOwn(blocked.configuration, "tools"), false);
 });
 
+test("Plugin approver translation keeps Agent, plugin, and exact scoped tool overrides", () => {
+  const first = { channel: "slack", id: "team:T123:user:U123" };
+  const second = { channel: "slack", id: "team:T123:user:U456" };
+  const toolId = "asdk_app_69a089a326dc8191b32a3f2553f5be2c/repos%2Fread";
+  const codex = codexOpenClawConfiguration(
+    codexSelection(linearPluginId, {
+      approvers: [],
+      tools: { [toolId]: { approvers: [second] } },
+    }),
+    [],
+    undefined,
+    [first],
+  );
+  assert.deepEqual(codex.approvals.plugin.slack, {
+    approvers: [first.id],
+    plugins: {
+      linear: { approvers: [], tools: { [toolId]: { approvers: [second.id] } } },
+    },
+  });
+  assert.deepEqual(codexOpenClawConfiguration({}, [], undefined, []), {
+    approvals: { plugin: { slack: { approvers: [] } } },
+  });
+  assert.equal(codexOpenClawConfiguration({}), undefined);
+  assert.deepEqual(
+    codexOpenClawConfiguration(codexSelection(linearPluginId, { approvers: [] })).approvals.plugin
+      .slack,
+    { plugins: { linear: { approvers: [] } } },
+  );
+
+  const native = openClawRuntimeArtifact(
+    occSelection({ approvers: [second], tools: { diffs: { approvers: [] } } }),
+    [],
+    [first],
+  );
+  assert.deepEqual(native.configuration.approvals.plugin.slack, {
+    approvers: [first.id],
+    plugins: { diffs: { approvers: [second.id], tools: { diffs: { approvers: [] } } } },
+  });
+  assert.throws(() =>
+    validatePolicies("openclaw", occSelection({ toolDefaults: { approvers: [] } })),
+  );
+  assert.throws(() =>
+    validatePolicies("openclaw", {}, [{ channel: "slack", id: "team:X123:user:Y456" }]),
+  );
+});
+
 test("OpenClaw plugin startup translation rejects unsupported policies", () => {
   for (const selection of [
     occSelection({ toolDefaults: { approval: "prompt" } }),
