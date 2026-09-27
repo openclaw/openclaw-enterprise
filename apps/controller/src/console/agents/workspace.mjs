@@ -64,14 +64,15 @@ export function renderWorkspaceFiles(context, agent, path) {
     let outcomeUnknown = retained?.outcomeUnknown ?? false;
     let writing = false;
     let initialized = false;
-    context.drafts.track(draftKey, () => {
+    function captureDraft() {
       if (!loaded && !initialized) {
         return retained;
       }
       return writing || outcomeUnknown || editor.value !== (baseline ?? "")
         ? { text: editor.value, baseline, outcomeUnknown: outcomeUnknown || writing }
         : undefined;
-    });
+    }
+    context.drafts.track(draftKey, captureDraft);
     const save = element(
       "button",
       { type: "submit", className: "primary", disabled: true },
@@ -105,6 +106,41 @@ export function renderWorkspaceFiles(context, agent, path) {
       editor.setCustomValidity("");
       updateControls();
     });
+    function applyBackgroundRead({ data, error: cause }) {
+      if (!context.isCurrent()) {
+        return false;
+      }
+      if (cause && [403, 404].includes(cause.status)) {
+        editor.value = "";
+        baseline = undefined;
+        loaded = false;
+        initialized = true;
+        context.drafts.forget(draftKey);
+        context.drafts.track(draftKey, captureDraft);
+        status.textContent = "";
+        error.textContent = fileError(cause, false);
+        updateControls();
+        return true;
+      }
+      if (pending) {
+        return false;
+      }
+      if (cause) {
+        error.textContent = fileError(cause, false);
+        return true;
+      }
+      error.textContent = "";
+      if (outcomeUnknown || editor.value !== (baseline ?? "")) {
+        status.textContent = `${name} changed in the workspace. Reload replaces your unsaved edits.`;
+      } else {
+        editor.value = data.content;
+        baseline = data.content;
+        loaded = true;
+        status.textContent = `${name} loaded.`;
+      }
+      updateControls();
+      return true;
+    }
     async function load(discard = false) {
       if (pending || !context.isCurrent()) {
         return;
@@ -114,7 +150,7 @@ export function renderWorkspaceFiles(context, agent, path) {
       error.textContent = "";
       status.textContent = `Loading ${name}…`;
       try {
-        const file = await context.request(endpoint);
+        const file = await context.request(endpoint, { onRevalidated: applyBackgroundRead });
         if (!context.isCurrent()) {
           return;
         }

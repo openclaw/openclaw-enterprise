@@ -4598,6 +4598,43 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   assert.equal(new URL(expectedAccess.data.url).origin, expectedAccess.data.origin);
   assert.match(new URL(expectedAccess.data.url).hostname, new RegExp(`\\.${nativeDomain}$`));
 
+  // Returning focus rechecks privileged access without replacing the unchanged card.
+  const accessCard = await page.locator(".native-admin-access").elementHandle();
+  const checkedAccess = page.waitForResponse((response) =>
+    response.url().endsWith(`/agents/${agent.id}/native-admin`),
+  );
+  await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+  assert.equal((await checkedAccess).status(), 200);
+  await page.getByText("Native admin UI is available for this Agent’s active revision.").waitFor();
+  assert.equal(await accessCard.evaluate((node) => node.isConnected), true);
+
+  // Revocation must hide privileged access even though unchanged panels stay mounted.
+  fixture.policy.restrictions.push({
+    id: "deny-native-administer-on-focus",
+    namespaceId: namespace.id,
+    resourceKind: "agent",
+    resourceId: agent.id,
+    action: "administer",
+    effect: "deny",
+  });
+  await page.waitForTimeout(100);
+  const deniedOnFocus = page.waitForResponse((response) =>
+    response.url().endsWith(`/agents/${agent.id}/native-admin`),
+  );
+  await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+  assert.equal((await deniedOnFocus).status(), 403);
+  await expectNativeAdminHidden(page);
+  assert.equal(await accessCard.evaluate((node) => node.isConnected), true);
+  fixture.policy.restrictions.length = 0;
+  await page.waitForTimeout(100);
+  const restoredOnFocus = page.waitForResponse((response) =>
+    response.url().endsWith(`/agents/${agent.id}/native-admin`),
+  );
+  await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+  assert.equal((await restoredOnFocus).status(), 200);
+  await page.getByText("Native admin UI is available for this Agent’s active revision.").waitFor();
+  assert.equal(await accessCard.evaluate((node) => node.isConnected), true);
+
   // Viewing an older configuration snapshot must still open the current active gateway.
   await page.getByLabel("AgentRevision").selectOption(historicalRevisionId);
   await page.getByText("Native admin UI is available for this Agent’s active revision.").waitFor();
@@ -5432,6 +5469,21 @@ test("Agent credentials finish Slack Secret grants after navigating away from sa
       await route.fulfill({ response });
     },
   );
+  let markGrantRead;
+  const grantReadStarted = new Promise((resolve) => {
+    markGrantRead = resolve;
+  });
+  let releaseGrantRead;
+  const grantReadRelease = new Promise((resolve) => {
+    releaseGrantRead = resolve;
+  });
+  await page.route(`**/namespaces/${namespace.id}/iam/roles`, async (route, request) => {
+    if (request.method() === "GET") {
+      markGrantRead();
+      await grantReadRelease;
+    }
+    await route.continue();
+  });
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "credentials");
 
   await login(page, fixture, url.pathname + url.search);
@@ -5443,7 +5495,33 @@ test("Agent credentials finish Slack Secret grants after navigating away from sa
   await patchPersisted;
   await page.getByRole("button", { name: "Channels", exact: true }).click();
   await page.getByRole("button", { name: "Edit Slack", exact: true }).waitFor();
+  // The PATCH is committed but its response is delayed: focus must not discard
+  // the transaction before it can grant access to the saved Secrets.
+  await page.evaluate(() => {
+    globalThis.savedAgentView = globalThis.document.querySelector('.content [aria-live="polite"]');
+  });
+  const checkFocus = async () => {
+    const refreshed = page.waitForResponse(
+      (response) =>
+        response.url().endsWith(`/configurations/${agent.configurationId}`) &&
+        response.request().method() === "GET",
+    );
+    await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+    await refreshed;
+    await page.waitForTimeout(300);
+    assert.equal(await page.evaluate(() => globalThis.savedAgentView.isConnected), true);
+  };
+  t.after(() => {
+    releasePatch();
+    releaseGrantRead();
+  });
+  await checkFocus();
   releasePatch();
+  // Focus and tab changes while the post-save grants are pending must not abort them.
+  await grantReadStarted;
+  await page.getByRole("button", { name: "Configuration", exact: true }).click();
+  await checkFocus();
+  releaseGrantRead();
   await waitForCondition(
     () => accessBindingPostRequests(requests, namespace.id).length === 2,
     "expected saved Slack Secret grants to finish after navigation",
@@ -5547,6 +5625,18 @@ test("Agent credentials retry outstanding Slack Secret grants after changing one
   await selectSecret(page, "Slack app token", firstAppSecret);
   await selectSecret(page, "Slack bot token", botSecret);
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
+  await page.getByText("Resolve the saved Secret access grant before deploying.").waitFor();
+  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), true);
+
+  // Revalidation after a partial grant must retain the warning and retry state.
+  const revalidated = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/configurations/${agent.configurationId}`) &&
+      response.request().method() === "GET",
+  );
+  await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+  await revalidated;
+  await page.waitForTimeout(300);
   await page.getByText("Resolve the saved Secret access grant before deploying.").waitFor();
   assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), true);
 
@@ -6087,9 +6177,22 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   await dialog.getByRole("button", { name: "Add Calendar", exact: true }).click();
   const selected = { "codex-plugin:calendar@openai-curated-remote": { enabled: true } };
   assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), selected);
+  await filter.fill("Calendar");
+  await dialog.getByLabel("Filter tools", { exact: true }).fill("events");
+  const toolRow = dialog.locator('details.plugin-tool-row[data-tool="app_calendar/events%2Flist"]');
+  await toolRow.locator("summary").click();
+  const callsBeforeTabSwitch = upstreamCalls.length;
   await dialog.getByRole("button", { name: "Configured plugins", exact: true }).click();
   await dialog.getByRole("button", { name: "Calendar", exact: true }).waitFor();
   await dialog.getByRole("button", { name: "Available plugins", exact: true }).click();
+  assert.equal(await filter.inputValue(), "Calendar");
+  assert.equal(
+    await dialog.getByRole("heading", { name: "Calendar", exact: true }).isVisible(),
+    true,
+  );
+  assert.equal(await dialog.getByLabel("Filter tools", { exact: true }).inputValue(), "events");
+  assert.equal(await toolRow.evaluate((node) => node.open), true);
+  assert.equal(upstreamCalls.length, callsBeforeTabSwitch);
   await closePluginDialog();
   const reminder = page.locator(".plugin-setup-reminder");
   assert.equal(await reminder.isVisible(), true);
@@ -6818,7 +6921,7 @@ for (const [dmPolicy, groupPolicy, enterpriseOrgInstall] of [
   });
 }
 
-test("Agent tabs replace only their content and preserve surrounding panels and history", async (t) => {
+test("Agent tabs preserve loaded controls and surrounding panels through history", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Tab navigation", { ready: true });
@@ -6858,9 +6961,10 @@ test("Agent tabs replace only their content and preserve surrounding panels and 
       "Workspace files require a deployed Agent with an active revision and a reachable gateway.",
     )
     .waitFor();
-  assert.equal(await secretElement.evaluate((node) => node.isConnected), false);
+  assert.equal(await secretElement.evaluate((node) => node.isConnected), true);
   await page.goBack();
   await page.getByLabel("API key Secret").waitFor();
+  assert.equal(await secret.evaluate((node, previous) => node === previous, secretElement), true);
   assert.equal(new URL(page.url()).searchParams.get("tab"), "credentials");
   await page.goForward();
   await page.getByRole("heading", { name: "Workspace files", exact: true }).waitFor();
@@ -7919,8 +8023,13 @@ test("live workspace drafts survive navigation, stay Agent-scoped, and clear on 
   const url = detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace");
   await login(page, fixture, url.pathname + url.search);
   const file = page.getByLabel("AGENTS.md", { exact: true });
+  for (const name of Object.keys(WORKSPACE_DEFAULTS)) {
+    await page.getByText(`${name} loaded.`, { exact: true }).waitFor();
+  }
+  const originalEditor = await file.elementHandle();
   await file.fill("# Unsaved instructions\n");
   await page.getByLabel("USER.md", { exact: true }).fill("");
+  requests.length = 0;
   await page.getByRole("button", { name: "Configuration", exact: true }).click();
   await page.getByRole("button", { name: "Workspace files", exact: true }).click();
   await page.waitForFunction(() => {
@@ -7929,6 +8038,25 @@ test("live workspace drafts survive navigation, stay Agent-scoped, and clear on 
   });
   assert.equal(await file.inputValue(), "# Unsaved instructions\n");
   assert.equal(await page.getByLabel("USER.md", { exact: true }).inputValue(), "");
+  assert.equal(await file.evaluate((node, previous) => node === previous, originalEditor), true);
+  assert.deepEqual(
+    requests.filter((entry) => entry.path.includes("/workspace/files/")),
+    [],
+  );
+  // A background file change must not replace a different unsaved local edit on focus.
+  await writeFile(join(root, agent.id, "USER.md"), "# Updated in workspace\n");
+  const checkedFile = page.waitForResponse((response) =>
+    response.url().endsWith("/workspace/files/USER.md"),
+  );
+  await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+  assert.equal((await checkedFile).status(), 200);
+  await page.waitForTimeout(250);
+  assert.equal(await file.evaluate((node, previous) => node === previous, originalEditor), true);
+  assert.equal(await file.inputValue(), "# Unsaved instructions\n");
+  assert.equal(await page.getByLabel("USER.md", { exact: true }).inputValue(), "");
+  await page
+    .getByText("USER.md changed in the workspace. Reload replaces your unsaved edits.")
+    .waitFor();
   await page.getByRole("link", { name: "← Agents" }).click();
   await page.getByRole("link", { name: "Other workspace Agent", exact: true }).click();
   await page.getByRole("button", { name: "Workspace files", exact: true }).click();
@@ -7957,7 +8085,10 @@ test("live workspace drafts survive navigation, stay Agent-scoped, and clear on 
   );
   await page.getByRole("button", { name: "Reload USER.md", exact: true }).click();
   await page.getByText("USER.md loaded.", { exact: true }).waitFor();
-  assert.equal(await page.getByLabel("USER.md", { exact: true }).inputValue(), "# Saved USER.md\n");
+  assert.equal(
+    await page.getByLabel("USER.md", { exact: true }).inputValue(),
+    "# Updated in workspace\n",
+  );
   await page.getByRole("link", { name: "← Agents" }).click();
   assert.equal(await page.getByLabel("Search Agents").inputValue(), "Workspace draft owner");
   await page.goBack();
@@ -7966,7 +8097,27 @@ test("live workspace drafts survive navigation, stay Agent-scoped, and clear on 
     await page.getByRole("button", { name: "Save AGENTS.md", exact: true }).isDisabled(),
     true,
   );
-  assert.equal(await page.getByLabel("USER.md", { exact: true }).inputValue(), "# Saved USER.md\n");
+  assert.equal(
+    await page.getByLabel("USER.md", { exact: true }).inputValue(),
+    "# Updated in workspace\n",
+  );
+
+  // A different signed-in identity must not inherit this user's mounted file or draft.
+  await file.fill("# Private unsaved edit\n");
+  const otherUser = await fixture.createAccountWithPolicy("workspace-other-user", () => {});
+  const signedIn = await page.evaluate(async (credentials) => {
+    const response = await fetch("/api/auth/sign-in/email", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: credentials.email, password: credentials.password }),
+    });
+    return response.ok;
+  }, otherUser.credentials);
+  assert.equal(signedIn, true);
+  await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+  await page.getByRole("heading", { name: "Namespace unavailable", exact: true }).waitFor();
+  assert.equal(await page.getByText("# Private unsaved edit", { exact: true }).count(), 0);
+  assert.equal(await page.locator("#workspace-AGENTS\\.md").count(), 0);
 });
 
 test("authentication drafts retain Secret references and their original save baseline", async (t) => {

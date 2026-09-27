@@ -95,8 +95,8 @@ unsupported catalog or policy choices.
 ## Inspect detail, revisions, and channel drafts
 
 Switching between **Configuration**, **Channels**, **Credentials**, and **Workspace
-files** updates only the tab content. The surrounding Agent panels stay in place,
-and browser Back/Forward restores the selected tab. Unsaved Configuration JSON,
+files** keeps visited tabs and surrounding Agent panels in place. Browser Back/Forward
+restores the selected tab without rereading its files or credentials. Unsaved Configuration JSON,
 live workspace text, authentication source choices, and open Slack drawers survive
 tab and page navigation. Drafts stay in this document, scoped to the signed-in
 user, Namespace, and Agent. Preset variables and the Agents search filter also
@@ -109,6 +109,9 @@ while retaining unsaved edits. Restored Configuration and authentication editors
 keep their original save baseline; concurrent changes require the editor's reload.
 Unsaved Configuration edits still block deployment. Pending or uncertain saves
 retain their recovery guard until readback; navigation never retries a mutation.
+Returning browser focus checks the session, Namespace, and previously read resources.
+Unchanged content stays in place; a changed workspace file preserves unsaved text
+and offers Reload. Access revocation clears the affected private content.
 
 **New revision** edits the current Configuration through native JSON, channels,
 and authentication controls. **Operator-managed credentials** saves
@@ -127,20 +130,15 @@ access** without repeating the Agent update. Partial saves survive navigation.
 Deployment errors remain visible; confirmed grants do not establish runtime or
 provider readiness.
 
-Configuration and Slack summaries show Harness, app-token, and bot-token Secret
-names and IDs. Bindings belong to the viewed draft or revision; names require
-current, exact Secret `read` permission in the same Namespace. Denied, missing,
-or failed reads retain the bound ID with **Metadata unavailable**. **No Secret
-bound** means no binding exists. Summaries never read values or establish runtime
-credential validity.
+Configuration and Slack summaries show Secret names and IDs for the viewed draft
+or revision. Names require exact same-Namespace Secret `read` permission. Denied,
+missing, or failed reads show **Metadata unavailable** with the ID; **No Secret
+bound** means no binding exists. Summaries do not read values or verify credentials.
 
-AgentRevision snapshots are read-only: they cannot be edited, rolled back, or
-redeployed. **Deploy new revision** admits the current saved Configuration without
-changing the viewed snapshot. **Edit current Configuration** opens the draft
-without changing the snapshot. Activation means OCC admitted and selected a revision. Persisted
-deployment and startup evidence does not establish live gateway health; see the
-[deployment guide](../guides/deploy/production-agents.md#configure-the-agent-runtime)
-and [deployment reference](agents/deployment.md#revisions-and-deployment).
+AgentRevision snapshots are read-only. **Deploy new revision** admits the current
+saved Configuration; **Edit current Configuration** opens the draft. Neither
+changes the viewed snapshot. Activation and persisted startup evidence do not
+establish live gateway health; see the [deployment reference](agents/deployment.md#revisions-and-deployment).
 
 Channels edits the saved Slack draft. Teams credentials and Bot Framework ingress
 require operator setup; Teams has no editor and blocks Console deployment.

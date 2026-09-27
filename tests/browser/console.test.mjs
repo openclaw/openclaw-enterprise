@@ -510,7 +510,12 @@ test("Refresh and focus restoration retain rows until fresh data arrives", async
       }, trigger);
     }
     await pending.waitForRelease();
-    await expectRetainedPreview(page, "Existing background Agent");
+    if (trigger === "Refresh") {
+      await expectRetainedPreview(page, "Existing background Agent");
+    } else {
+      await page.getByText("Existing background Agent", { exact: true }).waitFor();
+      assert.equal(await page.locator('.content [aria-live="polite"][inert]').count(), 0);
+    }
     await releaseHeldRoute(page, "**/api/auth/session", pending);
     await page.getByText(`Added during ${trigger}`, { exact: true }).waitFor();
   }

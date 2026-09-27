@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: "2026-09-21"
-last_updated_session: "01a0c750-0c10-7492-97eb-f4124cded820"
+updated: "2026-09-27"
+last_updated_session: "01a0e168-b97f-7983-8674-3f04fd09fb86"
 ---
 
 # Agent Native Admin UI Flow
@@ -60,7 +60,10 @@ graph TD
 
 The Agent detail page inserts the native admin panel on its tabs, including Configuration and Workspace files. The panel starts hidden while it requests `${path}/native-admin`. The UI hides disabled and denied states, reports stopped, unavailable, or unsupported states, and shows the **Open native admin UI** link only when the API returns `status: "available"` with an Agent URL. The link opens that URL in a new tab with `noopener noreferrer`; opening it makes no additional availability or launch request.
 
-The warning text tells operators that native admin access can change gateway state outside OCE and that durable configuration should remain in OCE.
+Browser focus rechecks availability in the background. An unchanged result keeps
+the panel mounted; a denial hides it, and a later authorized result can restore it.
+The warning tells operators that native admin access can change gateway state
+outside OCE and that durable configuration should remain in OCE.
 
 ### 2. OCC protects the availability route
 
@@ -166,6 +169,8 @@ The WebSocket proxy requires a non-null exact Agent `Origin`, forwards a sanitiz
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-27 06:03: Recheck native admin access without replacing an unchanged panel. (01a0e168-b97f-7983-8674-3f04fd09fb86 - 7812d81bce78a415b7a47b4e335812304caf98ea)
 
 - 2026-09-21 21:20: Distinguished authorized stopped Agents with no active revision from unavailable running deployments. (01a0c750-0c10-7492-97eb-f4124cded820 - 156dd67b7bd280a380d96b5c34a64e402fe3b96b)
 - 2026-09-21 21:17: Clarified the console's active-revision dependency message and its independence from the viewed configuration snapshot. (01a0c750-0c10-7492-97eb-f4124cded820 - f3dbdd41c8f3b49573d1353a4b06ce510ee43a56)

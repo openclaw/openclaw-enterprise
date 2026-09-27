@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-09-26
-last_updated_session: 01a0db1e-7ab2-7bf1-936b-e71c9d6f9911
+updated: 2026-09-27
+last_updated_session: 01a0e168-b97f-7983-8674-3f04fd09fb86
 ---
 
 # Console Agent editing and runtime requests
@@ -89,12 +89,11 @@ another deployment until reload; inspect revision history before retrying. These
 reads do not make admission atomic.
 
 `apps/controller/src/console/drafts.mjs:createDraftStore` owns document-local
-snapshots. `console.mjs:resetReads` and `detail.mjs:renderTab` flush editor
-captures before teardown. Each editor selects retained fields, excluding
-passwords. Namespace and Agent keys isolate editors; session expiry, user changes,
-logout, and page exit clear snapshots and captures. No browser storage or URL
-carries draft contents. Preset variables,
-Create Agent fields, and Agent search use the same store.
+snapshots. `console.mjs:resetReads` flushes editor captures before teardown.
+Passwords are excluded. Namespace and Agent keys isolate editors; session expiry,
+user changes, logout, and page exit clear snapshots. Browser storage and URLs do
+not carry drafts. Preset variables, Create Agent fields, and Agent search share
+the store.
 
 Configuration and authentication snapshots retain their original save baselines,
 so fresh reads on reentry cannot silently authorize overwriting concurrent edits.
@@ -241,22 +240,19 @@ revision, the Agent gets an unavailable explanation without file requests.
 The editor GETs each supported filename. A successful response reauthorizes file
 access before restoring retained text,
 including empty edits. Drafts keep their original baseline; Reload replaces them
-with the current file. `404` permits an explicit create attempt, and other
-failures leave it disabled. Save sends `{ content }` to the same exact-Agent PUT
+with the current file. An initial `404` permits an explicit create attempt, and other failures leave it
+disabled. A background `403` or `404` clears the affected editor; explicit Reload
+checks it again. A changed file updates a clean editor or leaves a dirty editor
+intact with a Reload notice. Save sends `{ content }` to the same exact-Agent PUT
 route. It neither patches Configuration nor admits a revision. The existing
 [workspace flow](../workspace-files.md) owns authorization and native file transport.
-Results are per file. Unknown write outcomes require a successful reload before
-another save; the editor never retries a write automatically.
+Unknown write outcomes require reload before another save; writes never retry automatically.
 
-Creation uses the same channel editor to stage initial Configuration values and
-Secret bindings before its POST; see the [creation trace](../platform-console.md#3-authorize-the-selected-page-resource).
-Separately, `apps/controller/src/console/agents/create.mjs` submits the
-four workspace textarea values as `initialWorkspaceFiles` plus
-`workspaceDefaultsId` in the Agent POST. OCC stages these exact-Agent inputs
-privately until Compute initializes the workspace before execution. No deployed
-gateway is required. The [workspace setup flow](../workspace-files.md)
-owns initialization, retry, and completion cleanup; the live editor above
-becomes available after deployment.
+Creation stages channel values and Secret bindings before its POST; see the
+[creation trace](../platform-console.md#3-authorize-the-selected-page-resource).
+It submits workspace textareas and `workspaceDefaultsId` with the Agent. OCC
+stages these inputs until Compute initializes the workspace. The
+[workspace flow](../workspace-files.md) owns setup, retries, and cleanup.
 
 <span id="stop-agent"></span>
 
@@ -327,6 +323,8 @@ subsequent worker cleanup and the Namespace-owned resources it preserves.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-27 06:03: Trace background workspace updates and access loss without replacing other editors. (01a0e168-b97f-7983-8674-3f04fd09fb86 - 7812d81bce78a415b7a47b4e335812304caf98ea)
 
 - 2026-09-26 18:38: Trace searchable Secret selection, editable names, and duplicate-name recovery. (01a0e069-9ef8-7d81-802c-82c72c1f1e5d - dc07fe34cd2b0057693777acf4db394d211da393)
 

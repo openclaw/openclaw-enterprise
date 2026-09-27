@@ -76,19 +76,15 @@ through real controls after loading fixture data.
 | Stop Agent              | Confirmation, stopped requested state, permission denial, unknown outcome requiring refresh.                                                                                                                                                                                                                                                                                          |
 | Deletion                | Confirmation, pending cleanup, permission denial, conflict, unknown outcome.                                                                                                                                                                                                                                                                                                          |
 
-The production UI supplies buttons, forms, tables, badges, notices, JSON views,
-revision controls, and dialogs in these stories; Storybook does not duplicate them.
-Pending-read stories use the real client's 15-second timeout; reset them to replay
-loading.
+Stories use production UI controls. Pending reads use the real client's 15-second
+timeout; reset them to replay loading.
 
 ## Agent flows and UI gaps
 
-In **Components → Navigation → Namespace switcher**, use the header selector to
-switch between Engineering and Research. Check the URL, collection, and browser
-Back behavior; confirm the Namespaces page omits the selector. **Mobile Namespace
-selector** checks long-name truncation before the chevron and switching without the
-drawer. Existing no-readable, unavailable, loading, and denied stories cover
-restricted selector states.
+In **Components → Navigation → Namespace switcher**, switch between Engineering
+and Research. Check the URL, collection, Back behavior, and selector omission on
+Namespaces. **Mobile Namespace selector** checks name truncation and switching
+without the drawer. Other stories cover unavailable and restricted states.
 
 Saved simulated UI examples show the [desktop selector](../assets/console-namespace-selector/desktop.png),
 [mobile empty collection](../assets/console-namespace-selector/mobile.png),
@@ -111,14 +107,13 @@ presentation only; they do not prove a worker ran.
 
 DevDay presets supply model defaults, workspace files, and four Slack channels.
 Choose a model Secret, configure Linear from the simulated catalog, and select
-`openclaw/openclaw-enterprise` or `openclaw/openclaw`. The catalog works with
-any Preset or Secret choice. **Plugins Curated** exercises token-free discovery
-with simulated Driver responses; actual access remains unverified. Hosted discovery
-requires an eligible Codex service-account token. Workspace and Standard OpenClaw
-stories preview file and harness settings. Preset Secret stories cover existing,
-pending, denied, and empty results while retaining new-token entry.
-Community Agent, Q&A Agent, and Oncall Agent remain disabled in the example
-Installation YAML.
+`openclaw/openclaw-enterprise` or `openclaw/openclaw`. The catalog works with any
+Preset or Secret choice. **Plugins Curated** simulates token-free discovery;
+hosted discovery requires an eligible Codex service-account token. Actual access
+remains unverified. Workspace and Standard OpenClaw stories preview file and
+harness settings. Preset Secret stories cover existing, pending, denied, and
+empty results while retaining new-token entry. Community Agent, Q&A Agent, and
+Oncall Agent remain disabled in the example Installation YAML.
 
 Use the [DevDay storyboard](../../scripts/console-storybook/devday-storyboard.md)
 for presenter actions, expected visible states, and fallbacks.
@@ -161,6 +156,12 @@ content when the response arrives. These fixtures prove presentation; the
 Reset story clears retained state.
 
 ### Keep edits while navigating
+
+In **Components/Native admin → Available**, switch Agent tabs and return from a
+browser tab. The card remains mounted while access is checked; **Refresh access**
+explicitly rereads it. The launch target and access responses are simulated.
+In **Components/Plugins → Available catalog**, filter and select a plugin, switch
+between Available and Configured, and return to the filter and selected detail.
 
 Use **Pages/Agent detail → Keep Configuration edits**, **Components/Workspace →
 Keep unsaved files**, **Components/Credentials → Keep authentication choices**,

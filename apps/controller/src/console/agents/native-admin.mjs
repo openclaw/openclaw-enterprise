@@ -51,6 +51,33 @@ export function renderNativeAdminAccess(context, path) {
       current === undefined || current.status === "disabled" || current.status === "denied";
   }
 
+  function applyResult(value) {
+    current = value;
+    if (current.status === "available") {
+      status.textContent = "Native admin UI is available for this Agent’s active revision.";
+    } else if (current.status === "disabled" || current.status === "denied") {
+      status.textContent = "";
+    } else {
+      status.textContent = unavailableText(current.status);
+    }
+  }
+
+  function applyBackgroundRead({ data, error: cause }) {
+    if (!context.isCurrent() || pending) {
+      return false;
+    }
+    if (cause) {
+      current = undefined;
+      status.textContent = "";
+      error.textContent = message(cause);
+    } else {
+      error.textContent = "";
+      applyResult(data);
+    }
+    updateControls();
+    return true;
+  }
+
   async function load() {
     if (!context.isCurrent() || pending) {
       return;
@@ -60,17 +87,13 @@ export function renderNativeAdminAccess(context, path) {
     status.textContent = "Checking access…";
     updateControls();
     try {
-      current = await context.request(`${path}/native-admin`);
+      const result = await context.request(`${path}/native-admin`, {
+        onRevalidated: applyBackgroundRead,
+      });
       if (!context.isCurrent()) {
         return;
       }
-      if (current.status === "available") {
-        status.textContent = "Native admin UI is available for this Agent’s active revision.";
-      } else if (current.status === "disabled" || current.status === "denied") {
-        status.textContent = "";
-      } else {
-        status.textContent = unavailableText(current.status);
-      }
+      applyResult(result);
     } catch (cause) {
       if (!context.isCurrent()) {
         return;

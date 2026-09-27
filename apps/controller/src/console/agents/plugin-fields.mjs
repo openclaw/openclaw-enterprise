@@ -86,6 +86,8 @@ export function createPluginFields({
   let activeId = null;
   let configuredOnly = false;
   let toolQuery = "";
+  let restoredOpenTools = null;
+  const tabState = new Map();
   const search = element("input", {
     type: "search",
     id: "plugin-search",
@@ -128,8 +130,7 @@ export function createPluginFields({
       return;
     }
     if (!catalog?.canLoad && Object.keys(selections() ?? {}).length) {
-      configuredOnly = true;
-      render();
+      showConfigured(true);
     }
     dialog.showModal();
     search.focus();
@@ -184,9 +185,23 @@ export function createPluginFields({
   }
 
   function showConfigured(value) {
+    if (configuredOnly === value) {
+      return;
+    }
+    tabState.set(configuredOnly, {
+      search: search.value,
+      activeId,
+      toolQuery,
+      openTools: new Set(
+        [...detail.querySelectorAll("details[data-tool][open]")].map((node) => node.dataset.tool),
+      ),
+    });
     configuredOnly = value;
-    search.value = "";
-    activeId = null;
+    const restored = tabState.get(value);
+    search.value = restored?.search ?? "";
+    activeId = restored?.activeId ?? null;
+    toolQuery = restored?.toolQuery ?? "";
+    restoredOpenTools = restored?.openTools ?? new Set();
     render();
   }
 
@@ -256,9 +271,12 @@ export function createPluginFields({
   }
 
   function render() {
-    const open = new Set(
-      [...detail.querySelectorAll("details[data-tool][open]")].map((node) => node.dataset.tool),
-    );
+    const open =
+      restoredOpenTools ??
+      new Set(
+        [...detail.querySelectorAll("details[data-tool][open]")].map((node) => node.dataset.tool),
+      );
+    restoredOpenTools = null;
     const focused = document.activeElement?.getAttribute("aria-label");
     const focusedPlugin = document.activeElement?.closest(".plugin-card")?.dataset.plugin;
     const focusedTool = document.activeElement?.closest("[data-tool]")?.dataset.tool;
@@ -294,7 +312,7 @@ export function createPluginFields({
         entries.set(id, { id, name: id, tools: null });
       }
     }
-    if (activeId && !entries.has(activeId)) {
+    if (activeId && (!entries.has(activeId) || (configuredOnly && !values?.[activeId]))) {
       activeId = null;
     }
     status.textContent =

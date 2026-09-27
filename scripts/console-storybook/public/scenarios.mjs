@@ -465,7 +465,7 @@ export const scenarios = {
     steps: [
       "Wait for Agents, enter a search, open Create Agent, then return using the Agents breadcrumb. The loaded list and search remain visible while reads are pending.",
       "Visit Namespaces and Settings, then repeat with browser Back and Forward. First visits may load; returning pages retain their content.",
-      "Open an Agent, visit its tabs, return to Agents, and use Back. Check the selected revision and tab. Refresh and refocus the preview to check pending-read behavior.",
+      "Open an Agent and switch its tabs. Return to Agents and use Back. Refresh, then refocus the preview; unchanged content stays mounted during background checks.",
       "Switch Namespace to confirm the previous scope's rows disappear. Reset the story to clear retained state.",
     ],
   },
@@ -933,6 +933,7 @@ export const scenarios = {
     steps: [
       "Review the simulated Calendar and Documents logos. Project tracker’s intentionally missing image falls back to its initial. Choose each plugin to check the same logo or fallback in its detail heading.",
       "Filter this page for Documents, then clear the filter and choose Calendar.",
+      "Filter Calendar's tools, switch to Configured and back to Available, and check that the filter and selection remain.",
       "Click Add Calendar. Its tool defaults remain omitted until you change them.",
       "Choose the default tool availability, approval behavior, and reviewer, or keep the runtime defaults.",
       "Review the Driver-specific policy fields supplied by the capability descriptor.",
@@ -2407,6 +2408,12 @@ export const scenarios = {
     nativeAdmin: "available",
     description:
       "Authorized launch link and warning. The fixture opens an explanatory page instead of a real gateway.",
+    steps: [
+      "Switch between Configuration, Channels, and Workspace files; the Native admin UI card stays in place.",
+      "Edit a workspace file, visit another Agent tab, and return. The edit stays in the same editor.",
+      "Switch browser tabs and return, then use Refresh access to explicitly check the simulated status.",
+    ],
+    gap: "Simulated UI and access responses; no live gateway or authorization proof.",
   },
   nativeStopped: {
     group: "Components/Native admin",
@@ -2446,7 +2453,7 @@ export const scenarios = {
     ],
     description: "File edits, including empty text, survive tabs and pages until Save or Reload.",
     steps: [
-      "Switch to Configuration and back to Workspace files.",
+      "Switch to Configuration and back to Workspace files; the same editors and their unsaved text remain without new file reads.",
       "Open Namespaces, return with Back, then save AGENTS.md and reload USER.md.",
     ],
     gap: "Simulated files; no live Agent gateway.",

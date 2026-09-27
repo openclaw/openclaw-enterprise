@@ -11,7 +11,7 @@ function roleHasSecretOperatePermission(role) {
 
 async function secretOperateRole(context) {
   const rolesPath = `${namespacePath(context.namespaceId)}/iam/roles`;
-  const roles = await context.request(rolesPath);
+  const roles = await context.request(rolesPath, { observe: false });
   const existing = Array.isArray(roles) ? roles.find(roleHasSecretOperatePermission) : null;
   if (existing) {
     return existing;
@@ -32,7 +32,7 @@ export async function ensureSecretOperateBinding(context, agent, secret) {
   }
   const role = await secretOperateRole(context);
   const bindingsPath = `${namespacePath(context.namespaceId)}/iam/access-bindings`;
-  const bindings = await context.request(bindingsPath);
+  const bindings = await context.request(bindingsPath, { observe: false });
   if (
     Array.isArray(bindings) &&
     bindings.some(

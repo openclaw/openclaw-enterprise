@@ -25,10 +25,18 @@ const navigation = createNavigation({
 const { route, pageUrl, safeReturn, navigate } = navigation;
 const shellUI = createShell({ app, pages, route, pageUrl, navigate, loadPage, logout });
 const { publicPanel, renderRows, switchNamespace } = shellUI;
+const observedReads = new Map();
+const backgroundRefreshHolds = new Set();
+let backgroundRefresh = null;
 const request = createApiClient({
   lifetime,
   hasSession: () => session !== null,
   onExpired: () => showLogin("Your session has expired.", location.pathname + location.search),
+  onRead(path, result, onRevalidated) {
+    if (path !== "/api/auth/session" && path !== "/namespaces") {
+      observedReads.set(path, { snapshot: JSON.stringify(result), onRevalidated });
+    }
+  },
 });
 const retainedViews = new Map();
 let mountedRouteKey = null;
@@ -155,6 +163,8 @@ function markMountedRoute(current) {
 }
 
 function resetReads({ retainView = false } = {}) {
+  observedReads.clear();
+  backgroundRefreshHolds.clear();
   drafts.flush();
   navigateAgentTab = null;
   clearPasswordInputs();
@@ -460,6 +470,17 @@ async function loadPage({ fromNavigation = false } = {}) {
       view: shell.view,
       namespaceId,
       request,
+      holdBackgroundRefresh() {
+        const hold = Symbol();
+        backgroundRefreshHolds.add(hold);
+        return () => backgroundRefreshHolds.delete(hold);
+      },
+      acknowledgeRead(path, data) {
+        const previous = observedReads.get(path);
+        if (lifetime.isCurrent(active) && previous) {
+          observedReads.set(path, { ...previous, snapshot: JSON.stringify({ data }) });
+        }
+      },
       navigate,
       pageUrl,
       isCurrent: () => lifetime.isCurrent(active),
@@ -643,14 +664,105 @@ window.addEventListener("popstate", () => {
     void loadPage({ fromNavigation: true });
   }
 });
-window.addEventListener("focus", () => {
-  if (session && !loggingOut && !app.querySelector("form, dialog[open]")) {
-    void loadPage();
+async function revalidateVisiblePage() {
+  if (!session || loggingOut || backgroundRefresh || mountedRouteKey === null) {
+    return;
   }
+  const active = lifetime.capture();
+  const owner = sessionOwnerKey(session);
+  const oldSession = JSON.stringify(session);
+  const oldNamespaces = JSON.stringify(namespaces);
+  const reads = [...observedReads];
+  const check = async () => {
+    try {
+      const nextSession = await request("/api/auth/session", { observe: false });
+      if (!lifetime.isCurrent(active)) {
+        return;
+      }
+      if (!nextSession) {
+        showLogin("Your session has expired.", location.pathname + location.search);
+        return;
+      }
+      if (!owner || sessionOwnerKey(nextSession) !== owner) {
+        clearDrafts();
+        resetReads();
+        clearPrivate();
+        void loadPage();
+        return;
+      }
+      const readable = await request("/namespaces", { observe: false });
+      if (!lifetime.isCurrent(active)) {
+        return;
+      }
+      if (!Array.isArray(readable)) {
+        throw new Error("Invalid collection response");
+      }
+      if (
+        JSON.stringify(nextSession) !== oldSession ||
+        JSON.stringify(sorted(readable)) !== oldNamespaces
+      ) {
+        void loadPage();
+        return;
+      }
+      const results = await Promise.all(
+        reads.map(async ([path, previous]) => {
+          let result;
+          let error;
+          try {
+            const data = await request(path, { observe: false });
+            result = { data };
+          } catch (cause) {
+            error = cause;
+            result = { status: cause.status, code: cause.code };
+          }
+          if (!lifetime.isCurrent(active) || observedReads.get(path) !== previous) {
+            return false;
+          }
+          const snapshot = JSON.stringify(result);
+          if (snapshot === previous.snapshot) {
+            return false;
+          }
+          if (previous.onRevalidated) {
+            const applied = previous.onRevalidated({ data: result.data, error });
+            if (applied !== false) {
+              observedReads.set(path, { ...previous, snapshot });
+            }
+            return false;
+          }
+          return { path, previous, error };
+        }),
+      );
+      if (
+        lifetime.isCurrent(active) &&
+        results.some(
+          (result) =>
+            result &&
+            observedReads.get(result.path) === result.previous &&
+            (result.error || backgroundRefreshHolds.size === 0),
+        )
+      ) {
+        void loadPage();
+      }
+    } catch (error) {
+      if (lifetime.isCurrent(active) && error.name !== "AbortError") {
+        void loadPage();
+      }
+    }
+  };
+  backgroundRefresh = check();
+  try {
+    await backgroundRefresh;
+  } finally {
+    backgroundRefresh = null;
+  }
+}
+
+window.addEventListener("focus", () => {
+  void revalidateVisiblePage();
 });
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden && session && !loggingOut && !app.querySelector("form, dialog[open]")) {
-    void loadPage();
+  if (!document.hidden) {
+    void revalidateVisiblePage();
   }
 });
 window.addEventListener("pagehide", () => {

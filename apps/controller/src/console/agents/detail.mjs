@@ -92,7 +92,20 @@ function createDeploymentStatusPanel(context, path, revisionId) {
     state.error = null;
     render();
     try {
-      state.status = await context.request(`${path}/deployments/${encodeURIComponent(revisionId)}`);
+      state.status = await context.request(
+        `${path}/deployments/${encodeURIComponent(revisionId)}`,
+        {
+          onRevalidated({ data, error }) {
+            if (!context.isCurrent() || state.loading) {
+              return false;
+            }
+            state.status = error ? null : data;
+            state.error = error ?? null;
+            render();
+            return true;
+          },
+        },
+      );
     } catch (error) {
       if (!context.isCurrent()) {
         return;
@@ -272,7 +285,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     content,
   );
   let details;
-  let tabGeneration = 0;
+  let refreshAfterMutation = false;
+  const tabPanels = new Map();
 
   async function loadDetails() {
     const results = await Promise.allSettled([
@@ -427,6 +441,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             onConfigurationChange(configuration) {
               snapshot = configuration;
               values = configuration.values;
+            },
+            onConfigurationSettled() {
+              refreshAfterMutation = true;
             },
           })
         : null;
@@ -612,12 +629,6 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   }
 
   async function renderTab() {
-    context.flushDrafts();
-    const activeTab = ++tabGeneration;
-    const tabContext = {
-      ...context,
-      isCurrent: () => context.isCurrent() && activeTab === tabGeneration,
-    };
     const tab = selectedTab;
     for (const [index, id] of tabsForSelection.entries()) {
       const control = tabs.children[index];
@@ -627,34 +638,44 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         control.removeAttribute("aria-current");
       }
     }
-    content.querySelectorAll('input[type="password"]').forEach((input) => {
-      input.value = "";
-    });
-    // Retain the panel's height during reads so loading does not jump the scroll position.
-    content.style.minHeight = `${content.getBoundingClientRect().height}px`;
-    content.replaceChildren();
-    if (tab === "workspace") {
-      content.append(renderWorkspaceFiles(tabContext, agent, path));
-      content.style.minHeight = "";
+    for (const [id, panel] of tabPanels) {
+      if (id !== tab) {
+        panel.querySelectorAll('input[type="password"]').forEach((input) => {
+          input.value = "";
+        });
+      }
+      panel.hidden = id !== tab;
+    }
+    if (tabPanels.has(tab)) {
       return;
     }
-    content.append(element("p", { role: "status" }, "Loading configuration…"));
+    const panel = element("div");
+    tabPanels.set(tab, panel);
+    content.append(panel);
+    const tabContext = {
+      ...context,
+      isCurrent: () => context.isCurrent() && !deleting && tabPanels.get(tab) === panel,
+    };
+    if (tab === "workspace") {
+      panel.append(renderWorkspaceFiles(tabContext, agent, path));
+      return;
+    }
+    panel.append(element("p", { role: "status" }, "Loading configuration…"));
     const data = await (details ??= loadDetails());
     if (!tabContext.isCurrent() || deleting) {
       return;
     }
-    content.replaceChildren();
+    panel.replaceChildren();
     if (data?.error) {
-      content.append(errorPanel(data.error, tabContext, () => change(selected)));
+      panel.append(errorPanel(data.error, tabContext, () => change(selected)));
     } else if (data) {
-      renderConfigurationTab(tabContext, tab, data);
+      renderConfigurationTab(tabContext, tab, data, panel);
     }
-    content.style.minHeight = "";
   }
 
-  function renderConfigurationTab(context, selectedTab, data) {
+  function renderConfigurationTab(context, tab, data, panel) {
     const { snapshot, values, draft, executionMode, credentials } = data;
-    content.append(
+    panel.append(
       element(
         "p",
         { className: "notice", role: "status" },
@@ -665,7 +686,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             : "Unselected AgentRevision · read-only admitted snapshot. Browsing this snapshot does not change the Agent's selected revision.",
       ),
     );
-    if (selectedTab === "channels") {
+    if (tab === "channels") {
       const channels = renderChannels({
         values,
         executionMode,
@@ -735,7 +756,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             }
             if (context.isCurrent()) {
               context.drafts.forget("channels");
-              change("draft", "channels");
+              if (selectedTab === tab) {
+                change("draft", "channels");
+              } else {
+                refreshAfterMutation = true;
+              }
             }
           } catch (error) {
             if (!context.isCurrent()) {
@@ -761,8 +786,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           }
         },
       });
-      content.append(channels);
-    } else if (selectedTab === "credentials" && draft) {
+      panel.append(channels);
+    } else if (tab === "credentials" && draft) {
       const retained = context.drafts.get("authentication");
       const baseline = retained?.baseline ?? {
         configurationId: agent.configurationId,
@@ -865,7 +890,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           data.setAuthenticationPending(false);
           if (context.isCurrent()) {
             context.drafts.forget("authentication");
-            change("draft", "credentials");
+            if (selectedTab === tab) {
+              change("draft", "credentials");
+            } else {
+              refreshAfterMutation = true;
+            }
           }
         } catch (error) {
           if (!context.isCurrent()) {
@@ -896,9 +925,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           }
         }
       });
-      content.append(form);
+      panel.append(form);
       if (credentials) {
-        content.append(credentials.section);
+        panel.append(credentials.section);
       }
     } else {
       const repositoryBindings = draft
@@ -928,7 +957,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           ["Compute", `${snapshot.compute.id} · ${snapshot.compute.implementation}`],
         );
       }
-      content.append(
+      panel.append(
         element(
           "section",
           { className: "agent-card" },
@@ -1217,6 +1246,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       return false;
     }
     selectedTab = nextTab;
+    if (refreshAfterMutation) {
+      context.navigate(target(selected, nextTab), namespaceId, true);
+      return true;
+    }
     void renderTab();
     return true;
   });

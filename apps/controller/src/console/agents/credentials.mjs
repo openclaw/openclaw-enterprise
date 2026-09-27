@@ -144,6 +144,7 @@ export function createRuntimeCredentialsPanel({
   revisionsLoaded,
   revisionCount,
   onConfigurationChange,
+  onConfigurationSettled,
   onStatusChange,
 }) {
   const endpoint = `${path}/runtime-credentials`;
@@ -441,18 +442,18 @@ export function createRuntimeCredentialsPanel({
       updateControls();
       let mutationStarted = false;
       let configurationSaved = false;
+      const configurationPath = `${namespacePath(context.namespaceId)}/configurations/${encodeURIComponent(
+        state.configuration.id,
+      )}`;
+      const releaseBackgroundRefresh = context.holdBackgroundRefresh();
       try {
         mutationStarted = true;
-        state.configuration = await context.request(
-          `${namespacePath(context.namespaceId)}/configurations/${encodeURIComponent(
-            state.configuration.id,
-          )}`,
-          {
-            method: "PATCH",
-            body: { values: state.values, secretBindings: draft.secretBindings },
-          },
-        );
+        state.configuration = await context.request(configurationPath, {
+          method: "PATCH",
+          body: { values: state.values, secretBindings: draft.secretBindings },
+        });
         configurationSaved = true;
+        context.acknowledgeRead(configurationPath, state.configuration);
         state.values = state.configuration.values;
         onConfigurationChange?.(state.configuration);
         const grantTargets = secretGrantTargets(draft.secretBindings, draft.changedSecrets);
@@ -486,11 +487,15 @@ export function createRuntimeCredentialsPanel({
         status.textContent = "";
         error.textContent = state.saveGrantWarning || credentialError(cause, true);
       } finally {
+        releaseBackgroundRefresh();
         if (context.isCurrent()) {
           state.saving = false;
           updateControls();
           render();
           onStatusChange();
+          if (configurationSaved) {
+            onConfigurationSettled?.();
+          }
         }
       }
     });

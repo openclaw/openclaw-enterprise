@@ -1,7 +1,14 @@
-export function createApiClient({ lifetime, hasSession, onExpired }) {
+export function createApiClient({ lifetime, hasSession, onExpired, onRead = () => {} }) {
   async function request(
     path,
-    { method = "GET", body, signal = lifetime.signal, expectedStatus } = {},
+    {
+      method = "GET",
+      body,
+      signal = lifetime.signal,
+      expectedStatus,
+      observe = true,
+      onRevalidated,
+    } = {},
   ) {
     const active = lifetime.capture();
     const response = await fetch(path, {
@@ -42,7 +49,13 @@ export function createApiClient({ lifetime, hasSession, onExpired }) {
       ) {
         error.requestId = requestId;
       }
+      if (method === "GET" && observe && lifetime.isCurrent(active)) {
+        onRead(path, { status: error.status, code: error.code }, onRevalidated);
+      }
       throw error;
+    }
+    if (method === "GET" && observe && lifetime.isCurrent(active)) {
+      onRead(path, { data: payload.data }, onRevalidated);
     }
     return payload.data;
   }

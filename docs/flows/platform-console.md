@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: 2026-09-27
-last_updated_session: 01a0e099-da9d-78f1-8e79-ea4a919edf7d
+last_updated_session: 01a0e168-b97f-7983-8674-3f04fd09fb86
 ---
 
 # Platform console request flow
@@ -35,6 +35,10 @@ API and IAM authorize resources.
 graph TD
   subgraph Browser["Browser"]
     A["Open console or change page"] --> B["Restore scoped preview or show first-load state"]
+    BF["Return browser focus"] --> BR["Recheck session, Namespace, and reads"]
+    BR -->|unchanged or in-place update| J
+    BR -->|other changed read| B
+    BR -->|session expired| C
     B --> B1["Recheck session and Namespace access"]
     B1 -->|no session| C["Login"]
     B1 -->|authenticated| D["Read readable Namespaces and validate selection"]
@@ -104,19 +108,13 @@ paths return the shell with `404`; API routes retain JSON errors.
 `OCC_BUILD_REVISION` into HTML. With `debug=true`, `shell.mjs:renderShell` displays
 the full commit; invalid or absent metadata remains unknown.
 
-`runtime-images.mjs:renderRuntimeImages` issues at most three concurrent reads for
-readable Agents in the selected Namespace.
-`packages/occ/src/index.ts:OpenClawController.getAgentRuntimeImages` authorizes
-exact Agent read, resolves its active revision, then calls its Compute Driver.
-Docker follows attached immutable images. Kubernetes reads revision-owned Pods
-and binds provenance to Pod/container identity, with a two-second metadata deadline.
-The Dockerfile bakes Enterprise metadata into `build.json`;
-`scripts/build-runtime-assets.mjs` records upstream OpenClaw in `provenance.json`.
-Both live under `/opt/oce/runtime/`; Drivers expose separate commits.
-
-Navigation preserves the flag and rejects stale responses; removing it stops
-these reads. Missing provenance and failures remain explicit. The
-[Compute contract](../reference/drivers/compute.md) defines inspection scope.
+`runtime-images.mjs:renderRuntimeImages` reads at most three Agents concurrently.
+OCC authorizes each exact Agent and calls its Compute Driver. Docker inspects
+immutable images; Kubernetes binds Pod provenance to container identity with a
+two-second deadline. Runtime build metadata lives under `/opt/oce/runtime/`.
+Navigation preserves the flag and rejects stale responses; missing provenance
+and failures remain explicit. The [Compute contract](../reference/drivers/compute.md)
+defines inspection scope.
 
 ### 2. Resolve the session before private reads
 
@@ -176,18 +174,11 @@ Preset Secret takes precedence over an entered token. OCC reads the
 Secret server-side. Pagination is upstream; filtering is local. Selecting a plugin loads tools.
 Credential, provider, and Harness changes clear results and invalidate pending reads.
 
-`create.mjs:MODEL_CHOICES` supplies static provider lists before credentials,
-without discovery requests or account verification. Manual entry remains available;
-Presets retain model/authentication.
-Credential edits preserve selection; Provider/authentication-method changes reset it.
-Model edits preserve transport and Codex plugin settings. Provider/Harness changes
-regenerate them, retaining unrelated JSON; reset restores the starter.
-
-`configurationTemplate` enables Control UI with loopback origins on port 18789.
-Compute supplies gateway authentication; Presets replace the starter unchanged.
-[Native admin access](agent-native-admin.md) owns HTTPS isolation.
-[Agent editing](platform-console/agent-editing.md#4-render-draft-revision-or-channels)
-traces Slack settings, staged bindings, grants, and cancellation effects.
+`create.mjs:MODEL_CHOICES` supplies static, unverified provider lists and manual
+entry. Credential and model edits preserve selection and unrelated JSON; Provider
+or Harness changes reset incompatible choices. `configurationTemplate` enables
+loopback Control UI; Compute supplies gateway authentication. [Native admin
+access](agent-native-admin.md) owns HTTPS isolation.
 
 `GET /namespaces/:namespaceId/agents/repository-options` discovers approved choices.
 Console submits opaque references and an explicit common profile. Read-only and
@@ -197,18 +188,12 @@ other failures block submission. `draftBindings()` captures selections independe
 of discovery results. Failed reads retain them and block creation; successful
 reads filter them against current policy. Retry discovery before provisioning.
 
-Supported Dedicated runtimes with successful repository discovery submit inline
-Configuration, repository bindings, and Secret references to
-[provisioning](agent-provisioning.md). Console polls the job, then opens its Agent
-revision. The worker creates resources and exact Secret grants before deployment
-admission; Console does not duplicate grants.
-
-Ordinary drafts post `{kind: "agent", values, secretBindings}` to
-`POST /namespaces/:namespaceId/configurations`, then submit its ID, plugins,
-`initialWorkspaceFiles`, and `workspaceDefaultsId` to
-`POST /namespaces/:namespaceId/agents`. Success opens `revision=draft`.
-OCC stages all four workspace textareas, including unchanged/empty values, outside
-Agent/Configuration for [workspace setup](workspace-files.md).
+Supported Dedicated runtimes with repository discovery submit inline Configuration,
+bindings, and Secret references to [provisioning](agent-provisioning.md). Console
+polls the job and opens its revision; the worker grants Secret access.
+Ordinary drafts create a Configuration, then submit its ID, plugins, and workspace
+inputs to the Agent route. Success opens `revision=draft`; OCC stages all four
+workspace inputs, including empty values, for [workspace setup](workspace-files.md).
 
 `create.mjs:grantConfigurationSecretAccess` grants exact Secret `operate` through
 Namespace IAM writes for final same-Namespace `env` bindings only. Failure retains
@@ -224,9 +209,8 @@ without fetching values.
 ### 4–6. Edit the Agent and access runtime files
 
 [Console Agent editing and runtime requests](platform-console/agent-editing.md)
-traces draft/revision rendering, channel changes, credential provisioning,
-workspace reads/writes, stopping, and deletion. Each request returns through the
-response-ordering checks below.
+traces rendering, channel and credential changes, workspace access, and lifecycle
+actions. Responses use the ordering checks below.
 
 `apps/controller/src/console/channels/slack.mjs:supportSlack` rejects shapes the
 editor cannot preserve; [Agent editing](platform-console/agent-editing.md#4-render-draft-revision-or-channels)
@@ -240,26 +224,38 @@ the channel block through `kubernetesGatewayConfigurationDocument` into the
 Gateway's `openclaw.json` ConfigMap without adding Slack reply defaults.
 
 `apps/controller/src/console/agents/detail.mjs:renderAgentDetail` registers a
-handler for tab-only navigation with `console.mjs:loadPage`. Within one Agent, Namespace, and revision, tabs and browser history replace only
-tab content. The shell, native-admin panel, and revision controls stay mounted. Configuration and revision reads are shared
-within that detail view; a direct Workspace files URL does not wait for or start
-those reads. Refresh, revision changes, and successful channel or authentication
-edits use the full page read path.
+handler for tab-only navigation with `console.mjs:loadPage`. Within one Agent,
+Namespace, and revision, the first visit mounts a panel and later visits reveal
+the same panel. The shell, native-admin panel, and revision controls remain
+mounted. Configuration and revision reads are shared within that detail view;
+a direct Workspace files URL does not start them. Refresh, revision changes,
+and successful edits use the full page read path.
 
-Each tab render captures its own generation. Late panel reads and form callbacks
-cannot overwrite a newer tab; password values clear while [draft captures](platform-console/agent-editing.md#4-render-draft-revision-or-channels) retain edits. Channel
-Secret saves update the shared draft snapshot used by other tabs and deployment
-preflight. Session expiry still clears the whole private view.
+Pending reads can finish in hidden tabs without replacing the selected tab.
+Password values clear on leaving; other editor state stays mounted. A mutation
+completed in a hidden tab requests a fresh view on the next tab navigation. Plugin
+catalog tabs retain separate filters and selections. Session expiry clears the
+private view.
 
 ### 7. Commit only the current response, or clear the view
 
 `apps/controller/src/console/console.mjs:loadPage`, `logout`
 
-Page/revision navigation, Namespace changes, refocus, and logout invalidate prior
-reads. Generation checks reject late responses. Previews remain during session,
-Namespace, and exact page reads until fresh results arrive. Drafts restore edits
-with their original save baselines. Namespace selection never reuses another
-scope's rows.
+Page/revision navigation, Namespace changes, and logout invalidate prior reads.
+Generation checks reject late responses. Previews remain during session, Namespace,
+and exact page reads until fresh results arrive. Drafts restore edits with their
+original save baselines. Namespace selection never reuses another scope's rows.
+
+On focus or visibility restoration, `revalidateVisiblePage` checks the session,
+readable Namespaces, and observed resources. Identity changes clear private views
+and drafts; unchanged results preserve controls. Native admin, deployment status,
+and workspace files apply changes in place. Workspace drafts survive file changes;
+denied or missing files clear the editor. Other changes reload the page. During a
+Slack Configuration save and Secret grants, successful changes defer reload until
+later revalidation; read failures and session or Namespace changes remain immediate.
+The saved Configuration updates its observed baseline; grant lookup reads are not
+tracked as displayed data, preserving partial-grant warnings for retry. A current
+`401` clears private state; protected reads recheck exact API authorization.
 
 Authorization and dependency failures clear affected content and expose recovery;
 a current protected `401` clears all private state immediately. `pagehide` clears
@@ -268,12 +264,9 @@ a fresh load. Failure views show local reasons and bounded request IDs, never
 backend error text. Backend authorization denial clears every retained preview,
 including other Namespace selections, because the permission is Installation-wide.
 
-The [detail action flow](platform-console/agent-editing.md#stop-agent) traces
-confirmed Stop and Delete requests and their exact permission checks. Acceptance
-is not completed shutdown or deletion. Uncertain outcomes block replay until
-readback; only confirmed absence returns to the Agents list. Deployment resumes
-a stopped Agent through a new revision. The [Agent reference](../reference/agents.md#deletion)
-owns asynchronous cleanup.
+The [detail action flow](platform-console/agent-editing.md#stop-agent) traces Stop
+and Delete admission and recovery. Acceptance does not prove completed shutdown
+or deletion; uncertain outcomes block replay until readback.
 
 Logout first hides private state, then calls the existing sign-out endpoint.
 Confirmed success or session inspection proving absence replaces history with
@@ -285,15 +278,9 @@ this client never infers it from a network error.
 
 ## Deploy the new revision
 
-The **New revision** detail view exposes **Deploy new revision**.
-**Operator-managed credentials** persist `{ "method": "runtime" }` and bypass
-only the managed runtime-credential metadata gate; OCC does not validate host
-credentials. Deployment rereads the Agent and Configuration, checks their loaded
-association and generation, then sends the existing bodyless
-`POST /namespaces/:namespaceId/agents/:agentId/deploy`. The server retains
-authorization and admission checks. The returned revision opens Workspace files;
-subsequent workspace reads check gateway startup and file availability. An
-uncertain response disables replay until refresh and inspection.
+The **New revision** view admits the current Configuration through the Agent
+deploy route after preflight reads. The [Agent editing flow](platform-console/agent-editing.md#4-render-draft-revision-or-channels)
+traces credential checks, revision selection, and recovery for uncertain writes.
 
 ## Debugging and Verification
 
@@ -323,6 +310,8 @@ uncertain response disables replay until refresh and inspection.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-27 06:03: Retain Agent and plugin tab state and revalidate browser focus without replacing unchanged panels. (01a0e168-b97f-7983-8674-3f04fd09fb86 - 7812d81bce78a415b7a47b4e335812304caf98ea)
 
 - 2026-09-27 02:30: Use selected PAT Secrets for discovery. (01a0e099-da9d-78f1-8e79-ea4a919edf7d - ec4e9dc517497afe05be63a320542abcf61e8a55)
 
