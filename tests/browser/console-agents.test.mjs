@@ -7,7 +7,10 @@ import test from "node:test";
 
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
-import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import {
+  CodexPluginDriver,
+  OCCPluginDriver,
+} from "../../apps/controller/src/drivers/plugin/index.ts";
 import {
   WORKSPACE_DEFAULTS,
   WORKSPACE_DEFAULTS_ID,
@@ -2707,7 +2710,7 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
     JSON.stringify({
       "codex-plugin:linear@openai-curated-remote": {
         enabled: true,
-        toolDefaults: { approval: "approve" },
+        toolDefaults: { approval: "none" },
       },
     }),
   );
@@ -2744,7 +2747,7 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   assert.deepEqual(retried.data.plugins, {
     "codex-plugin:linear@openai-curated-remote": {
       enabled: true,
-      toolDefaults: { approval: "approve" },
+      toolDefaults: { approval: "none" },
     },
   });
   for (const request of attempts) {
@@ -3565,7 +3568,9 @@ test("Agent detail saves plugin changes for the next revision without changing a
     resourceId: tokenSecret.id,
   });
   const pluginId = "codex-plugin:linear@openai-curated-remote";
-  const originalPlugins = { [pluginId]: { enabled: true, toolDefaults: { approval: "prompt" } } };
+  const originalPlugins = {
+    [pluginId]: { enabled: true, toolDefaults: { approval: "all_actions" } },
+  };
   await fixture.updateAgent(namespace.id, agent.id, {
     configurationId: agent.configurationId,
     harnessAuth: { method: "codex_pat", source: tokenSecret.ref },
@@ -3706,7 +3711,7 @@ test("Agent detail saves plugin changes for the next revision without changing a
   await dialog.getByLabel(`Enable ${pluginId}`, { exact: true }).uncheck();
   await dialog.getByRole("button", { name: "Done", exact: true }).click();
   const editedPlugins = {
-    [pluginId]: { enabled: false, toolDefaults: { approval: "prompt" } },
+    [pluginId]: { enabled: false, toolDefaults: { approval: "all_actions" } },
     "codex-plugin:calendar@openai-curated-remote": {
       enabled: true,
       tools: { "app_calendar/events%2Flist": { enabled: false } },
@@ -5590,11 +5595,11 @@ test("Agent creation edits Preset plugin policies through the modal and persists
   const plugins = {
     [pluginId]: {
       enabled: false,
-      toolDefaults: { enabled: true, approval: "native", reviewer: "human" },
+      toolDefaults: { enabled: true, approval: "provider_default", reviewer: "human" },
       tools: {
-        "app_knowledge/search": { enabled: false, approval: "native" },
-        "app_knowledge/summarize": { enabled: true, approval: "approve" },
-        "app_knowledge/unknown-tool": { approval: "native" },
+        "app_knowledge/search": { enabled: false, approval: "provider_default" },
+        "app_knowledge/summarize": { enabled: true, approval: "none" },
+        "app_knowledge/unknown-tool": { approval: "provider_default" },
       },
     },
     [removedPluginId]: { enabled: true },
@@ -5639,7 +5644,9 @@ test("Agent creation edits Preset plugin policies through the modal and persists
   await searchTool.locator("summary").click();
   const pluginEnabled = dialog.getByLabel(`Enable ${pluginId}`, { exact: true });
   const toolEnabled = dialog.getByLabel("Enable app_knowledge/search", { exact: true });
-  const toolApproval = dialog.getByLabel("app_knowledge/search approval", { exact: true });
+  const toolApproval = dialog.getByLabel("app_knowledge/search require approval for", {
+    exact: true,
+  });
   const toolToggle = dialog.getByLabel("app_knowledge/search enabled override", { exact: true });
   assert.equal(await toolToggle.isDisabled(), true);
   assert.equal(await toolEnabled.isDisabled(), true);
@@ -5647,7 +5654,7 @@ test("Agent creation edits Preset plugin policies through the modal and persists
   await pluginEnabled.check();
   await dialog.getByLabel(`${pluginId} tools enabled by default`, { exact: true }).selectOption("");
   assert.deepEqual(JSON.parse(await json.inputValue())[pluginId].toolDefaults, {
-    approval: "native",
+    approval: "provider_default",
     reviewer: "human",
   });
   const reviewer = dialog.getByLabel(`${pluginId} default reviewer`, { exact: true });
@@ -5657,33 +5664,38 @@ test("Agent creation edits Preset plugin policies through the modal and persists
   );
   await reviewer.selectOption("");
   assert.deepEqual(JSON.parse(await json.inputValue())[pluginId].toolDefaults, {
-    approval: "native",
+    approval: "provider_default",
   });
   await reviewer.selectOption("auto");
-  await dialog.getByLabel(`${pluginId} default approval`, { exact: true }).selectOption("prompt");
+  const defaultApproval = dialog.getByLabel(`${pluginId} require approval for`, { exact: true });
+  assert.deepEqual(
+    (await optionValues(defaultApproval)).map(({ value }) => value),
+    ["", "provider_default", "all_actions", "write_actions", "none"],
+  );
+  await defaultApproval.selectOption("write_actions");
 
   // Codex advertises plugin-wide reviewers only; tool approval still inherits independently.
   const toolReviewer = dialog.getByLabel("app_knowledge/search reviewer", { exact: true });
   assert.equal(await toolReviewer.count(), 0);
   await searchTool.getByRole("button", { name: "Set reviewer for all tools" }).click();
   assert.equal(await reviewer.evaluate((node) => node === node.ownerDocument.activeElement), true);
-  await toolApproval.selectOption("approve");
+  await toolApproval.selectOption("none");
   await toolEnabled.selectOption("");
   assert.deepEqual(JSON.parse(await json.inputValue())[pluginId].tools["app_knowledge/search"], {
-    approval: "approve",
+    approval: "none",
   });
   // The summary toggle edits only enablement; an omitted override remains visibly inherited.
   await searchTool.locator("summary").click();
   assert.equal(await toolToggle.evaluate((node) => node.indeterminate), true);
   await toolToggle.click();
   assert.deepEqual(JSON.parse(await json.inputValue())[pluginId].tools["app_knowledge/search"], {
-    approval: "approve",
+    approval: "none",
     enabled: true,
   });
   assert.equal(await searchTool.evaluate((node) => node.open), false);
   await toolToggle.click();
   assert.deepEqual(JSON.parse(await json.inputValue())[pluginId].tools["app_knowledge/search"], {
-    approval: "approve",
+    approval: "none",
     enabled: false,
   });
   await searchTool.locator("summary").click();
@@ -5695,14 +5707,16 @@ test("Agent creation edits Preset plugin policies through the modal and persists
     .locator('details.plugin-tool-row[data-tool="app_knowledge/summarize"] > summary')
     .click();
   await dialog.getByLabel("Enable app_knowledge/summarize", { exact: true }).selectOption("");
-  await dialog.getByLabel("app_knowledge/summarize approval", { exact: true }).selectOption("");
+  await dialog
+    .getByLabel("app_knowledge/summarize require approval for", { exact: true })
+    .selectOption("");
   const expected = {
     [pluginId]: {
       enabled: true,
-      toolDefaults: { approval: "prompt", reviewer: "auto" },
+      toolDefaults: { approval: "write_actions", reviewer: "auto" },
       tools: {
         "app_knowledge/search": { enabled: true },
-        "app_knowledge/unknown-tool": { approval: "native" },
+        "app_knowledge/unknown-tool": { approval: "provider_default" },
       },
     },
   };
@@ -5733,6 +5747,72 @@ test("Agent creation edits Preset plugin policies through the modal and persists
   const saved = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${created.id}`);
   assert.equal(saved.status, 200);
   assert.deepEqual(saved.data.plugins, expected);
+});
+
+test("Plugin approval choices explain unsupported provider modes and preserve the draft until corrected", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const driver = new OCCPluginDriver();
+  fixture.controller.registerDriver(driver);
+  fixture.controller.selectDriver("plugin", driver.id);
+  const namespace = await fixture.createNamespace("Unsupported plugin approvals", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Native plugin Agent",
+    nativeValues("policy"),
+  );
+  const { page } = await newPage(t, fixture);
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "plugins");
+  await login(page, fixture, `${url.pathname}${url.search}`);
+  const json = page.locator("#agent-plugins");
+  await page.locator("summary").filter({ hasText: "Plugin selections JSON" }).click();
+  // A copied policy from another provider remains visible so the operator can correct it.
+  const plugins = {
+    "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "write_actions" } },
+  };
+  await json.fill(JSON.stringify(plugins));
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  await dialog.getByRole("button", { name: "Configured plugins", exact: true }).click();
+  await dialog.getByRole("button", { name: "occ-plugin:diffs", exact: true }).click();
+  const approval = dialog.getByLabel("occ-plugin:diffs require approval for", { exact: true });
+  assert.equal(await approval.inputValue(), "write_actions");
+  assert.deepEqual(
+    await approval
+      .locator("option")
+      .evaluateAll((options) => options.map(({ value, disabled }) => [value, disabled])),
+    [
+      ["", false],
+      ["provider_default", false],
+      ["all_actions", true],
+      ["write_actions", true],
+      ["none", false],
+    ],
+  );
+  await dialog
+    .getByText("This plugin provider does not support: Every action, Write actions.", {
+      exact: true,
+    })
+    .waitFor();
+  assert.equal(
+    await approval.locator("option:checked").textContent(),
+    "Write actions (unsupported)",
+  );
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  assert.deepEqual(JSON.parse(await json.inputValue()), plugins);
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  await approval.selectOption("provider_default");
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  const savedResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "PATCH" && response.url().endsWith(`/agents/${agent.id}`),
+  );
+  await page.getByRole("button", { name: "Save plugin selections", exact: true }).click();
+  assert.equal((await savedResponse).status(), 200);
+  const saved = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  assert.deepEqual(saved.data.plugins, {
+    "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "provider_default" } },
+  });
 });
 
 test("API-key Presets keep their credential provider fixed while allowing model and runtime changes", async (t) => {
@@ -5839,7 +5919,7 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   const plugins = {
     "codex-plugin:linear@openai-curated-remote": {
       enabled: true,
-      toolDefaults: { approval: "approve" },
+      toolDefaults: { approval: "none" },
     },
   };
   const secretBindings = { CHANNEL_TOKEN: { source: secret.ref, delivery: { type: "env" } } };

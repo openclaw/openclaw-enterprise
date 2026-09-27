@@ -11,7 +11,7 @@ function openClawRuntime(selection = {}) {
     manifest: {
       kind: "openclaw",
       selections: {
-        "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "approve" }, ...selection },
+        "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "none" }, ...selection },
       },
     },
   };
@@ -118,7 +118,7 @@ test("OpenClaw runtime helper fails before readiness when raw Codex bridge confi
       selections: {
         "codex-plugin:linear@openai-curated-remote": {
           enabled: true,
-          toolDefaults: { approval: "native" },
+          toolDefaults: { approval: "provider_default" },
         },
       },
     },
@@ -274,7 +274,7 @@ test("OpenClaw startup rejects a blocked Codex bridge before readiness", () => {
       selections: {
         "codex-plugin:linear@openai-curated-remote": {
           enabled: true,
-          toolDefaults: { approval: "native" },
+          toolDefaults: { approval: "provider_default" },
         },
       },
     },

@@ -331,8 +331,8 @@ class BundledPluginDriverBase {
 export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDriver {
   static readonly configurationSchema = EMPTY_CONFIGURATION_SCHEMA;
   readonly policyCapabilities: PluginPolicyCapabilities = deepFreeze({
-    toolDefaults: { enabled: true, approval: ["native", "approve"], reviewer: [] },
-    tools: { enabled: true, approval: ["native", "approve"], reviewer: [] },
+    toolDefaults: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
+    tools: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
     driverPolicySchema: EMPTY_CONFIGURATION_SCHEMA,
   });
 
@@ -357,15 +357,19 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
 
 export class CodexPluginDriver extends BundledPluginDriverBase implements PluginDriver {
   static readonly configurationSchema = CODEX_CONFIGURATION_SCHEMA;
-  // TODO: gate prompt on enforceable session constraints before this draft ships.
+  // TODO: gate all_actions/write_actions on enforceable session constraints before this draft ships.
   // A permissive native session can bypass app-level review despite translation.
   readonly policyCapabilities: PluginPolicyCapabilities = deepFreeze({
     toolDefaults: {
       enabled: true,
-      approval: ["native", "prompt", "approve"],
+      approval: ["provider_default", "all_actions", "write_actions", "none"],
       reviewer: ["human", "auto"],
     },
-    tools: { enabled: true, approval: ["native", "prompt", "approve"], reviewer: [] },
+    tools: {
+      enabled: true,
+      approval: ["provider_default", "all_actions", "write_actions", "none"],
+      reviewer: [],
+    },
     driverPolicySchema: CODEX_POLICY_SCHEMA,
   });
 

@@ -268,7 +268,7 @@ export interface ComputeRevisionContext {
 
 export type PluginReviewer = "human" | "auto";
 
-export type PluginApprovalMode = "native" | "prompt" | "approve";
+export type PluginApprovalMode = "provider_default" | "all_actions" | "write_actions" | "none";
 
 export interface PluginDriverIdentity {
   readonly id: string;

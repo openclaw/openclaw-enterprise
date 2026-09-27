@@ -504,9 +504,10 @@ export const UpdateWorkspaceFileBody = Type.Object(
 export const PluginReviewerSchema = Type.Union([Type.Literal("human"), Type.Literal("auto")]);
 
 export const PluginApprovalModeSchema = Type.Union([
-  Type.Literal("native"),
-  Type.Literal("prompt"),
-  Type.Literal("approve"),
+  Type.Literal("provider_default"),
+  Type.Literal("all_actions"),
+  Type.Literal("write_actions"),
+  Type.Literal("none"),
 ]);
 
 export const ERROR_DETAIL_CODES = Object.freeze([

@@ -32,9 +32,10 @@
         "properties": {
           "approval": {
             "anyOf": [
-              { "const": "native", "type": "string" },
-              { "const": "prompt", "type": "string" },
-              { "const": "approve", "type": "string" }
+              { "const": "provider_default", "type": "string" },
+              { "const": "all_actions", "type": "string" },
+              { "const": "write_actions", "type": "string" },
+              { "const": "none", "type": "string" }
             ]
           },
           "enabled": { "type": "boolean" },
@@ -1482,9 +1483,10 @@
                                     "approval": {
                                       "items": {
                                         "anyOf": [
-                                          { "const": "native", "type": "string" },
-                                          { "const": "prompt", "type": "string" },
-                                          { "const": "approve", "type": "string" }
+                                          { "const": "provider_default", "type": "string" },
+                                          { "const": "all_actions", "type": "string" },
+                                          { "const": "write_actions", "type": "string" },
+                                          { "const": "none", "type": "string" }
                                         ]
                                       },
                                       "type": "array"
@@ -1509,9 +1511,10 @@
                                     "approval": {
                                       "items": {
                                         "anyOf": [
-                                          { "const": "native", "type": "string" },
-                                          { "const": "prompt", "type": "string" },
-                                          { "const": "approve", "type": "string" }
+                                          { "const": "provider_default", "type": "string" },
+                                          { "const": "all_actions", "type": "string" },
+                                          { "const": "write_actions", "type": "string" },
+                                          { "const": "none", "type": "string" }
                                         ]
                                       },
                                       "type": "array"
@@ -1701,9 +1704,10 @@
                                     "approval": {
                                       "items": {
                                         "anyOf": [
-                                          { "const": "native", "type": "string" },
-                                          { "const": "prompt", "type": "string" },
-                                          { "const": "approve", "type": "string" }
+                                          { "const": "provider_default", "type": "string" },
+                                          { "const": "all_actions", "type": "string" },
+                                          { "const": "write_actions", "type": "string" },
+                                          { "const": "none", "type": "string" }
                                         ]
                                       },
                                       "type": "array"
@@ -1728,9 +1732,10 @@
                                     "approval": {
                                       "items": {
                                         "anyOf": [
-                                          { "const": "native", "type": "string" },
-                                          { "const": "prompt", "type": "string" },
-                                          { "const": "approve", "type": "string" }
+                                          { "const": "provider_default", "type": "string" },
+                                          { "const": "all_actions", "type": "string" },
+                                          { "const": "write_actions", "type": "string" },
+                                          { "const": "none", "type": "string" }
                                         ]
                                       },
                                       "type": "array"
@@ -6898,9 +6903,10 @@
                             "approval": {
                               "items": {
                                 "anyOf": [
-                                  { "const": "native", "type": "string" },
-                                  { "const": "prompt", "type": "string" },
-                                  { "const": "approve", "type": "string" }
+                                  { "const": "provider_default", "type": "string" },
+                                  { "const": "all_actions", "type": "string" },
+                                  { "const": "write_actions", "type": "string" },
+                                  { "const": "none", "type": "string" }
                                 ]
                               },
                               "type": "array"
@@ -6925,9 +6931,10 @@
                             "approval": {
                               "items": {
                                 "anyOf": [
-                                  { "const": "native", "type": "string" },
-                                  { "const": "prompt", "type": "string" },
-                                  { "const": "approve", "type": "string" }
+                                  { "const": "provider_default", "type": "string" },
+                                  { "const": "all_actions", "type": "string" },
+                                  { "const": "write_actions", "type": "string" },
+                                  { "const": "none", "type": "string" }
                                 ]
                               },
                               "type": "array"

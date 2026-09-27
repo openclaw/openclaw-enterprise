@@ -846,7 +846,7 @@ test("Selected Secret discovery reaches the hosted provider with the current cre
     {
       [details.data.id]: {
         enabled: true,
-        tools: { [details.data.tools[0].id]: { enabled: true, approval: "prompt" } },
+        tools: { [details.data.tools[0].id]: { enabled: true, approval: "all_actions" } },
       },
     },
     [
@@ -1120,7 +1120,7 @@ test("Curated discovery admits Linear without provider I/O and saves its selecti
     { executionMode: "dedicated" },
   );
   const plugins = {
-    [linear.id]: { enabled: true, toolDefaults: { reviewer: "auto" } },
+    [linear.id]: { enabled: true, toolDefaults: { approval: "write_actions", reviewer: "human" } },
     [slack.id]: { enabled: true, toolDefaults: { reviewer: "auto" } },
   };
   const updated = await fixture.updateAgent(namespace.id, agent.id, {

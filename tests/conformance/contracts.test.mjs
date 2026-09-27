@@ -205,8 +205,8 @@ test("an admitted AgentRevision is a detached and deeply immutable deployment sn
       plugins: {
         "codex-plugin:github@openai-curated-remote": {
           enabled: true,
-          toolDefaults: { approval: "prompt", reviewer: "human" },
-          tools: { "repos/list": { enabled: true }, "repos/write": { approval: "approve" } },
+          toolDefaults: { approval: "all_actions", reviewer: "human" },
+          tools: { "repos/list": { enabled: true }, "repos/write": { approval: "none" } },
           driverPolicy: { destructiveEnabled: false },
         },
       },
@@ -260,15 +260,15 @@ test("an admitted AgentRevision is a detached and deeply immutable deployment sn
   mutableRevision.harnessAuth.credential.secretRef.name = "replacement-source";
   mutableRevision.harnessAuth.backendBinding.workspaceId = "replacement-workspace";
   const draftPlugin = mutableRevision.plugins.plugins["codex-plugin:github@openai-curated-remote"];
-  draftPlugin.toolDefaults.approval = "approve";
+  draftPlugin.toolDefaults.approval = "none";
   draftPlugin.toolDefaults.reviewer = "auto";
   draftPlugin.tools["repos/list"].enabled = false;
   draftPlugin.driverPolicy.destructiveEnabled = true;
   // Partial tool policies stay partial in the immutable deployment snapshot.
   assert.deepEqual(admitted.plugins.plugins["codex-plugin:github@openai-curated-remote"], {
     enabled: true,
-    toolDefaults: { approval: "prompt", reviewer: "human" },
-    tools: { "repos/list": { enabled: true }, "repos/write": { approval: "approve" } },
+    toolDefaults: { approval: "all_actions", reviewer: "human" },
+    tools: { "repos/list": { enabled: true }, "repos/write": { approval: "none" } },
     driverPolicy: { destructiveEnabled: false },
   });
   // Draft mutation must not retarget or extend an already admitted repository grant.

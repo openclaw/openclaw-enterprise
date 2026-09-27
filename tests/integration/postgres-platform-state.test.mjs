@@ -1333,7 +1333,7 @@ test(
     const initialPlugins = {
       "occ-plugin:diffs": {
         enabled: true,
-        toolDefaults: { enabled: false, approval: "approve" },
+        toolDefaults: { enabled: false, approval: "none" },
         tools: { diffs: { enabled: true } },
       },
     };
@@ -1489,8 +1489,8 @@ test(
     const replacementPlugins = {
       "occ-plugin:diffs": {
         enabled: true,
-        toolDefaults: { approval: "native" },
-        tools: { diffs: { approval: "approve" } },
+        toolDefaults: { approval: "provider_default" },
+        tools: { diffs: { approval: "none" } },
       },
     };
     const replacedPlugins = await controller.updateAgent(principalId, {

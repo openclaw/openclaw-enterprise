@@ -400,11 +400,11 @@ Get the singleton Installation
 | `data.capabilities.pluginPolicies.driver.implementation` | `string` | Yes | min length: 1 |
 | `data.capabilities.pluginPolicies.driverPolicySchema` | `object<string, any>` | Yes | — |
 | `data.capabilities.pluginPolicies.toolDefaults` | `object` | Yes | — |
-| `data.capabilities.pluginPolicies.toolDefaults.approval` | `array<"native" or "prompt" or "approve">` | Yes | — |
+| `data.capabilities.pluginPolicies.toolDefaults.approval` | `array<"provider_default" or "all_actions" or "write_actions" or "none">` | Yes | — |
 | `data.capabilities.pluginPolicies.toolDefaults.enabled` | `boolean` | Yes | — |
 | `data.capabilities.pluginPolicies.toolDefaults.reviewer` | `array<"human" or "auto">` | Yes | — |
 | `data.capabilities.pluginPolicies.tools` | `object` | Yes | — |
-| `data.capabilities.pluginPolicies.tools.approval` | `array<"native" or "prompt" or "approve">` | Yes | — |
+| `data.capabilities.pluginPolicies.tools.approval` | `array<"provider_default" or "all_actions" or "write_actions" or "none">` | Yes | — |
 | `data.capabilities.pluginPolicies.tools.enabled` | `boolean` | Yes | — |
 | `data.capabilities.pluginPolicies.tools.reviewer` | `array<"human" or "auto">` | Yes | — |
 | `data.createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
@@ -467,11 +467,11 @@ Bootstrap the singleton Installation
 | `data.capabilities.pluginPolicies.driver.implementation` | `string` | Yes | min length: 1 |
 | `data.capabilities.pluginPolicies.driverPolicySchema` | `object<string, any>` | Yes | — |
 | `data.capabilities.pluginPolicies.toolDefaults` | `object` | Yes | — |
-| `data.capabilities.pluginPolicies.toolDefaults.approval` | `array<"native" or "prompt" or "approve">` | Yes | — |
+| `data.capabilities.pluginPolicies.toolDefaults.approval` | `array<"provider_default" or "all_actions" or "write_actions" or "none">` | Yes | — |
 | `data.capabilities.pluginPolicies.toolDefaults.enabled` | `boolean` | Yes | — |
 | `data.capabilities.pluginPolicies.toolDefaults.reviewer` | `array<"human" or "auto">` | Yes | — |
 | `data.capabilities.pluginPolicies.tools` | `object` | Yes | — |
-| `data.capabilities.pluginPolicies.tools.approval` | `array<"native" or "prompt" or "approve">` | Yes | — |
+| `data.capabilities.pluginPolicies.tools.approval` | `array<"provider_default" or "all_actions" or "write_actions" or "none">` | Yes | — |
 | `data.capabilities.pluginPolicies.tools.enabled` | `boolean` | Yes | — |
 | `data.capabilities.pluginPolicies.tools.reviewer` | `array<"human" or "auto">` | Yes | — |
 | `data.createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
@@ -1783,11 +1783,11 @@ Read selected Plugin Driver policy capabilities for an active Agent with caller 
 | `data.driver.implementation` | `string` | Yes | min length: 1 |
 | `data.driverPolicySchema` | `object<string, any>` | Yes | — |
 | `data.toolDefaults` | `object` | Yes | — |
-| `data.toolDefaults.approval` | `array<"native" or "prompt" or "approve">` | Yes | — |
+| `data.toolDefaults.approval` | `array<"provider_default" or "all_actions" or "write_actions" or "none">` | Yes | — |
 | `data.toolDefaults.enabled` | `boolean` | Yes | — |
 | `data.toolDefaults.reviewer` | `array<"human" or "auto">` | Yes | — |
 | `data.tools` | `object` | Yes | — |
-| `data.tools.approval` | `array<"native" or "prompt" or "approve">` | Yes | — |
+| `data.tools.approval` | `array<"provider_default" or "all_actions" or "write_actions" or "none">` | Yes | — |
 | `data.tools.enabled` | `boolean` | Yes | — |
 | `data.tools.reviewer` | `array<"human" or "auto">` | Yes | — |
 | `meta` | `object` | Yes | — |

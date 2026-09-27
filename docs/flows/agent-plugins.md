@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
 updated: 2026-09-27
-last_updated_session: 01a0e176-b1ee-7641-85e8-c167f10c6a66
+last_updated_session: 01a0e3cf-cfd3-7c02-91ac-19a0efbd7645
 ---
 
 # Agent Plugin Deployment Flow
@@ -146,8 +146,8 @@ For embedded OpenClaw, the entrypoint checks selections against the bundled
 catalog and native policy. Generated grants enter nonempty `tools.allow`,
 otherwise `tools.alsoAllow`, preserving denies and profiles. A tool's `enabled`
 override precedes `toolDefaults.enabled`; disabled tools emit native denies.
-Master disable and operator denies prevail; `native` and `approve` add no Diffs
-review step. The revision-private configuration uses `--pin --force --no-enable`
+Master disable and operator denies prevail; `provider_default` and `none` add no
+Diffs review step. The revision-private configuration uses `--pin --force --no-enable`
 to prevent installation from changing enablement or allow/deny lists. Preparation
 refreshes the registry and verifies admitted configuration. The runtime image
 must gain this flag; the pinned release lacks it.
@@ -163,25 +163,22 @@ remote plugins enabled only for nonempty selections. Both states set
 bridge with `codexPlugins.enabled:true`, `allow_all_plugins:false`, and one entry
 per selected plugin. Disabled entries remain selected but cannot execute.
 
-At startup, native `plugin/list` discovers the `openai-curated-remote` marketplace;
-`plugin/read` resolves each selection using the summary's opaque remote identity.
-`runtime-translator.ts:codexRuntimeArtifact` derives policy only from concrete
-`detail.apps` and ignores `appTemplates`; template-only IDs do not receive an
-app grant. See the [bundled Driver limits](../reference/drivers/plugin-bundled.md#selection-and-catalogs).
-`runtime-translator.ts:codexInstallPlan` validates policy and native detail before
-Compute calls `plugin/install` for each enabled selection. Confirmed install
-rejections or missing app authentication produce warnings. For explicit tool policies,
-`readCodexToolStatuses` reads `codex_apps` inventory through `mcpServerStatus/list`.
-`runtime-translator.ts:codexAppToolSettings` binds catalog action IDs to native names
-using connector-matched `_meta._codex_apps.resource_uri` metadata. Native IDs remain
-supported. Unknown, unowned, ambiguous, or duplicate targets fail startup.
+At startup, `plugin/list` discovers the curated marketplace; `plugin/read`
+resolves selected remote IDs. `codexRuntimeArtifact` uses concrete `detail.apps`,
+excluding `appTemplates`; see the [bundled Driver limits](../reference/drivers/plugin-bundled.md#selection-and-catalogs).
+`codexInstallPlan` validates policy and detail before `plugin/install`. Confirmed
+install rejections or missing app authentication warn. Explicit tool policies
+require `codex_apps` inventory from `mcpServerStatus/list`; `codexAppToolSettings`
+binds catalog action IDs to native names through `_meta._codex_apps.resource_uri`.
+Native IDs also work. Unknown, unowned, ambiguous, or duplicate IDs fail startup.
 
-`codexRuntimeArtifact` writes app defaults and supplied tool fields independently;
-it does not expand category rules or copy defaults to every tool. `native` maps to
-Codex `auto`; `driverPolicy.destructiveEnabled` maps to `destructive_enabled`.
-`toolDefaults.reviewer` maps `human`/`auto` to app `approvals_reviewer` values
-`user`/`auto_review`; omission inherits the effective Harness reviewer. Both
-Drivers reject explicit reviewers at unsupported scopes before save.
+`codexRuntimeArtifact` writes app defaults and explicit tools separately:
+`provider_default`/`all_actions`/`write_actions`/`none` map to Codex
+`auto`/`prompt`/`writes`/`approve`. Defaults cover future actions without
+inventory; overrides require observed owned IDs. `driverPolicy.destructiveEnabled`
+maps to `destructive_enabled` independently. `toolDefaults.reviewer` maps
+`human`/`auto` to app `approvals_reviewer` values `user`/`auto_review`;
+omission inherits the Harness reviewer. Unsupported reviewer scopes fail before save.
 `writeCodexAppConfiguration` replaces each managed app
 subtree with `config/batchWrite`, removing stale per-app tool/link settings. It
 then rereads successful installations to check identity, version, and app mapping.
@@ -296,6 +293,8 @@ completed deployment attempt rather than ongoing runtime health.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-27 20:21: Documented approval mapping. (01a0e3cf-cfd3-7c02-91ac-19a0efbd7645 - 0663fa97ed5c0fcabc680241dbe7fbde9fde3562)
 
 - 2026-09-27 06:07: Expanded the curated catalog and marked unsupported releases unavailable. (01a0e176-b1ee-7641-85e8-c167f10c6a66 - eb3d6c4c0b8881e5f7efe17c03cc05357e7c7734)
 

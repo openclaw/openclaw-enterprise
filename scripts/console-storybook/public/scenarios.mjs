@@ -39,10 +39,14 @@ const pluginCapabilities = {
   driver: { id: "codex-plugin", implementation: "occ/codex-plugin" },
   toolDefaults: {
     enabled: true,
-    approval: ["native", "prompt", "approve"],
+    approval: ["provider_default", "all_actions", "write_actions", "none"],
     reviewer: ["human", "auto"],
   },
-  tools: { enabled: true, approval: ["native", "prompt", "approve"], reviewer: [] },
+  tools: {
+    enabled: true,
+    approval: ["provider_default", "all_actions", "write_actions", "none"],
+    reviewer: [],
+  },
   driverPolicySchema: {
     type: "object",
     properties: {
@@ -220,9 +224,9 @@ const pluginSelections = JSON.stringify(
   {
     "codex-plugin:calendar@openai-curated-remote": {
       enabled: true,
-      toolDefaults: { approval: "native", reviewer: "auto" },
+      toolDefaults: { approval: "write_actions", reviewer: "auto" },
       tools: {
-        "app_calendar/create_event": { approval: "prompt" },
+        "app_calendar/create_event": { approval: "all_actions" },
         "app_calendar/delete_event": { enabled: false },
       },
     },
@@ -323,7 +327,7 @@ const devdayCreateCheckpoint = [
       'details.plugin-tool-row[data-tool="asdk_app_69a089a326dc8191b32a3f2553f5be2c/create_issue"] > summary',
     click: true,
   },
-  { selector: 'select[aria-label="Create issue approval"]', value: "prompt" },
+  { selector: 'select[aria-label="Create issue require approval for"]', value: "all_actions" },
   click("Done"),
   { selector: devdayRepositorySelector, click: true },
   { selector: "#repository-profile-git-write", click: true },
@@ -784,7 +788,7 @@ export const scenarios = {
         selector: 'details.plugin-tool-row[data-tool="app_calendar/create_event"] > summary',
         click: true,
       },
-      { selector: 'select[aria-label="Create event approval"]', value: "prompt" },
+      { selector: 'select[aria-label="Create event require approval for"]', value: "all_actions" },
     ],
     description:
       "Add writes an enabled selection to the draft JSON. Plugin defaults and expanded tool overrides update the same JSON, and Done keeps those changes for Agent creation.",
@@ -939,7 +943,8 @@ export const scenarios = {
       "Review the simulated Calendar and Documents logos. Project tracker’s intentionally missing image falls back to its initial. Choose each plugin to check the same logo or fallback in its detail heading.",
       "Filter this page for Documents, then clear the filter and choose Calendar.",
       "Click Add Calendar. Its tool defaults remain omitted until you change them.",
-      "Choose the default tool availability, approval behavior, and reviewer, or keep the runtime defaults.",
+      "Choose Require approval for → Write actions. Reviewer stays separate; choose Human or Automatic review, or inherit the Harness reviewer.",
+      "Click Done and confirm toolDefaults.approval is write_actions. New tools inherit this default without needing entries in tools.",
       "Review the Driver-specific policy fields supplied by the capability descriptor.",
       "Expand Create event, change a tool setting, then click Done and inspect Plugin selections JSON.",
     ],
@@ -947,7 +952,7 @@ export const scenarios = {
   },
   pluginsSelected: {
     group: "Components/Plugins",
-    name: "Selected plugin and tool overrides",
+    name: "Write approval and tool overrides",
     component: "plugins",
     pluginCatalog,
     pluginCapabilities,
@@ -957,11 +962,12 @@ export const scenarios = {
       { selector: 'button[aria-label="Calendar"]', click: true },
     ],
     description:
-      "Calendar uses native approval and automatic review as its tool defaults, with explicit overrides for creating and deleting events. Tool reviewers inherit because this Driver advertises reviewer selection only at the default scope.",
+      "Calendar requires approval for write actions and uses automatic review, with explicit overrides for creating and deleting events. Tool reviewers inherit because this Driver advertises reviewer selection only at the default scope.",
     steps: [
       "Type create into Filter tools one character at a time; only Create event remains. Clear the search to restore the other tools.",
       "Compare Create event's ID beneath its title with its key in Plugin selections JSON after Done.",
-      "Change Calendar's default reviewer to Human, click Done, and inspect toolDefaults.reviewer in Plugin selections JSON.",
+      "Inspect Require approval for: Write actions is selected. Choose Every action, Provider default, or No additional approval to compare the available scopes.",
+      "Change Calendar's default reviewer to Human, click Done, and inspect toolDefaults.approval and toolDefaults.reviewer in Plugin selections JSON.",
       "Choose inheritance to omit the reviewer field without changing default approval or tool overrides.",
       "Use a tool toggle to set enabled or disabled explicitly; Tool policy opens overrides and lets you restore inheritance. Set reviewer for all tools jumps to the plugin default reviewer because this Driver does not support per-tool reviewers.",
     ],
@@ -977,8 +983,8 @@ export const scenarios = {
       {
         "codex-plugin:calendar@openai-curated-remote": {
           enabled: true,
-          toolDefaults: { approval: "native", reviewer: "auto" },
-          tools: { "app_calendar/create_event": { approval: "prompt", reviewer: "auto" } },
+          toolDefaults: { approval: "provider_default", reviewer: "auto" },
+          tools: { "app_calendar/create_event": { approval: "all_actions", reviewer: "auto" } },
         },
       },
       null,
@@ -1095,15 +1101,15 @@ export const scenarios = {
     },
     pluginCapabilities: {
       driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
-      toolDefaults: { enabled: true, approval: ["native", "approve"], reviewer: [] },
-      tools: { enabled: true, approval: ["native", "approve"], reviewer: [] },
+      toolDefaults: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
+      tools: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
       driverPolicySchema: { type: "object", properties: {}, additionalProperties: false },
     },
     pluginSelections: JSON.stringify(
       {
         "occ-plugin:diffs": {
           enabled: true,
-          toolDefaults: { approval: "prompt" },
+          toolDefaults: { approval: "write_actions" },
         },
       },
       null,
@@ -1111,11 +1117,11 @@ export const scenarios = {
     ),
     actions: [click("Configure plugins"), { selector: 'button[aria-label="Diffs"]', click: true }],
     description:
-      "The simulated native Driver advertises native and approve. An existing prompt default remains visible as unsupported, while new choices use only advertised values.",
+      "The simulated native Driver supports Provider default and No additional approval. Every action and Write actions remain visible but disabled, with an explanation. A saved unsupported choice stays selected until the operator changes it.",
     steps: [
-      "Inspect the saved prompt default and the visible unsupported-policy notice.",
-      "Open the default approval control: new policies can use only the advertised choices.",
-      "Change the unsupported default to Native behavior or inherit, then inspect the updated JSON.",
+      "Inspect the selected Write actions (unsupported) value and the provider support explanation.",
+      "Open Require approval for: Every action and Write actions are visible but disabled.",
+      "Click Done and confirm the saved write_actions value remains unchanged. Reopen the modal, choose Provider default or inherit, then inspect the updated JSON.",
     ],
     gap: pluginPreviewGap,
   },

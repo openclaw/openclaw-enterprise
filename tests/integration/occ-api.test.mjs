@@ -410,7 +410,7 @@ const diffsPluginId = "occ-plugin:diffs";
 const linearPluginId = "codex-plugin:linear@openai-curated-remote";
 
 function pluginPolicy(overrides = {}) {
-  return { enabled: true, toolDefaults: { approval: "approve" }, ...overrides };
+  return { enabled: true, toolDefaults: { approval: "none" }, ...overrides };
 }
 
 function assertPolicyOnlyPlugin(selection) {
@@ -1614,19 +1614,19 @@ test("Agent create and update replace policy-only plugin maps and revisions free
   });
   assert.deepEqual(capabilities.toolDefaults, {
     enabled: true,
-    approval: ["native", "approve"],
+    approval: ["provider_default", "none"],
     reviewer: [],
   });
   assert.deepEqual(capabilities.tools, {
     enabled: true,
-    approval: ["native", "approve"],
+    approval: ["provider_default", "none"],
     reviewer: [],
   });
   assert.equal(capabilities.driverPolicySchema.additionalProperties, false);
   assert.deepEqual(capabilities.driverPolicySchema.properties, {});
   const initialPlugins = {
     [diffsPluginId]: pluginPolicy({
-      toolDefaults: { enabled: false, approval: "approve" },
+      toolDefaults: { enabled: false, approval: "none" },
       tools: { diffs: { enabled: true } },
     }),
   };
@@ -1677,8 +1677,8 @@ test("Agent create and update replace policy-only plugin maps and revisions free
 
   const replacementPlugins = {
     [diffsPluginId]: pluginPolicy({
-      toolDefaults: { approval: "native" },
-      tools: { diffs: { approval: "approve" } },
+      toolDefaults: { approval: "provider_default" },
+      tools: { diffs: { approval: "none" } },
     }),
   };
   const replacedPlugins = await controller.request(
@@ -1830,7 +1830,7 @@ test("Agent plugin maps reject structural errors and preserve exact authorizatio
       plugins: {
         [linearPluginId]: {
           enabled: true,
-          toolDefaults: { approval: "native" },
+          toolDefaults: { approval: "provider_default" },
           approvals_reviewer: "auto_review",
         },
       },
@@ -1849,6 +1849,7 @@ test("Agent plugin maps reject structural errors and preserve exact authorizatio
     { [diffsPluginId]: pluginPolicy({ destructiveActions: "never" }) },
     { [diffsPluginId]: pluginPolicy({ writes: "prompt" }) },
     { [diffsPluginId]: pluginPolicy({ tools: { diffs: { approvalMode: "always" } } }) },
+    { [diffsPluginId]: pluginPolicy({ toolDefaults: { approval: "native" } }) },
     { [diffsPluginId]: pluginPolicy({ toolDefaults: { approval: "auto" } }) },
     { [diffsPluginId]: pluginPolicy({ toolDefaults: { reviewer: "user" } }) },
     { [diffsPluginId]: pluginPolicy({ tools: { diffs: { reviewer: null } } }) },
@@ -1867,11 +1868,15 @@ test("Agent plugin maps reject structural errors and preserve exact authorizatio
   // These policies satisfy the shared schema but the selected native driver cannot apply them.
   for (const [policy, message] of [
     [
-      pluginPolicy({ toolDefaults: { approval: "prompt" } }),
+      pluginPolicy({ toolDefaults: { approval: "all_actions" } }),
       "The supplied plugin policies are invalid.",
     ],
     [
-      pluginPolicy({ tools: { diffs: { approval: "prompt" } } }),
+      pluginPolicy({ toolDefaults: { approval: "write_actions" } }),
+      "The supplied plugin policies are invalid.",
+    ],
+    [
+      pluginPolicy({ tools: { diffs: { approval: "all_actions" } } }),
       "The supplied plugin policies are invalid.",
     ],
     [

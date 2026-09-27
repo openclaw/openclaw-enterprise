@@ -16,15 +16,16 @@ configuration.
 ## Current support
 
 Embedded OpenClaw supports the bundled Diffs plugin, including its `diffs` tool,
-plugin/tool enablement, and `native` or `approve` approval. Both approval choices
-use the existing native execution path; neither adds a review step. `prompt` is
-unsupported and rejected before save. Diffs also rejects explicit reviewer
-selection at either scope.
+plugin/tool enablement, and `provider_default` or `none` approval. Both choices
+use the existing native execution path; neither adds a review step.
+`all_actions` and `write_actions` are rejected before save. Diffs also rejects
+explicit reviewer selection at either scope.
 
 Dedicated Codex supports selected concrete apps from the
-`openai-curated-remote` catalog. Its translator accepts `native`, `prompt`, and
-`approve`, independent per-tool enablement/approval overrides, a default reviewer,
-and the Codex destructive default in `driverPolicy`. It rejects per-tool reviewers.
+`openai-curated-remote` catalog. Its translator accepts `provider_default`,
+`all_actions`, `write_actions`, and `none`, independent per-tool
+enablement/approval overrides, a default reviewer, and the Codex destructive
+default in `driverPolicy`. It rejects per-tool reviewers.
 Nothing is selected by default. Scoped tool IDs must match the app's native
 runtime inventory before startup can complete. The internal Codex catalog reader
 currently returns `tools: null`. This policy interface does not provide an HTTP
@@ -32,7 +33,8 @@ catalog discovery endpoint.
 
 These are contract and translation capabilities. Effective enforcement requires
 compatible OpenClaw and Codex runtime versions and session settings that preserve
-requested review. App-level `prompt` alone does not establish every-call review.
+requested review. A review-requiring app default alone does not establish
+effective review.
 The new policy paths still need
 [real Agent verification](../testing/plugins.md#current-proof-notes). There is
 no bundled Claude PluginDriver.
@@ -122,23 +124,24 @@ On Agent create, an absent `plugins` field and `{}` mean no desired user plugins
 On update, omitting `plugins` preserves the existing map, `{}` clears it, and a
 nonempty object replaces the whole map, including nested policies.
 
-| Plugin map value field    | Type                                      | Behavior                                                            |
-| ------------------------- | ----------------------------------------- | ------------------------------------------------------------------- |
-| `enabled`                 | Boolean                                   | Required plugin gate; `false` wins over every tool override.        |
-| `toolDefaults.enabled`    | Optional Boolean                          | Default tool enablement, unless overridden for an individual tool.  |
-| `toolDefaults.approval`   | Optional `native`, `prompt`, or `approve` | Default review behavior.                                            |
-| `toolDefaults.reviewer`   | Optional `human` or `auto`                | Default reviewer; omission inherits the effective Harness reviewer. |
-| `tools.<toolId>.enabled`  | Optional Boolean                          | Override the tool enablement default.                               |
-| `tools.<toolId>.approval` | Optional approval mode                    | Override the approval default independently.                        |
-| `tools.<toolId>.reviewer` | Optional reviewer                         | Override the reviewer default only where the Driver supports it.    |
-| `driverPolicy`            | Optional object                           | Fields owned and validated by the selected Driver.                  |
+| Plugin map value field    | Type                       | Behavior                                                            |
+| ------------------------- | -------------------------- | ------------------------------------------------------------------- |
+| `enabled`                 | Boolean                    | Required plugin gate; `false` wins over every tool override.        |
+| `toolDefaults.enabled`    | Optional Boolean           | Default tool enablement, unless overridden for an individual tool.  |
+| `toolDefaults.approval`   | Optional approval mode     | Default review behavior.                                            |
+| `toolDefaults.reviewer`   | Optional `human` or `auto` | Default reviewer; omission inherits the effective Harness reviewer. |
+| `tools.<toolId>.enabled`  | Optional Boolean           | Override the tool enablement default.                               |
+| `tools.<toolId>.approval` | Optional approval mode     | Override the approval default independently.                        |
+| `tools.<toolId>.reviewer` | Optional reviewer          | Override the reviewer default only where the Driver supports it.    |
+| `driverPolicy`            | Optional object            | Fields owned and validated by the selected Driver.                  |
 
 Each supplied `toolDefaults` or tool override contains at least one of `enabled`,
 `approval`, or `reviewer`. Omission inherits that field's default. The Driver
 validates unsupported fields and combinations even when the plugin or tool is
 disabled. Replace an entry without an optional field to remove its override.
-The approval values `always`, `never`, and `auto`, top-level `approvalMode`, and
-category approval fields are not accepted. Reviewer `auto` is a distinct value.
+The former `native`, `prompt`, and `approve` approval values, top-level
+`approvalMode`, and category approval fields are not accepted. Reviewer `auto`
+is a distinct value.
 
 This example enables Diffs with its tools disabled by default, then enables its
 known `diffs` tool. Use the Agent's current Configuration ID and deploy after
@@ -150,7 +153,7 @@ saving:
   "plugins": {
     "occ-plugin:diffs": {
       "enabled": true,
-      "toolDefaults": { "enabled": false, "approval": "native" },
+      "toolDefaults": { "enabled": false, "approval": "provider_default" },
       "tools": { "diffs": { "enabled": true } }
     }
   }
@@ -228,21 +231,25 @@ executable definitions.
 
 ## Approval policy
 
-| `approval` | Requested behavior                                                                     |
-| ---------- | -------------------------------------------------------------------------------------- |
-| `native`   | Let the Harness decide when review is needed. It does not imply an automatic reviewer. |
-| `prompt`   | Request review for every call through the effective reviewer.                          |
-| `approve`  | Do not add a plugin approval step; authorization and other restrictions still apply.   |
+| `approval`         | Requested behavior                                                                               |
+| ------------------ | ------------------------------------------------------------------------------------------------ |
+| `provider_default` | Let the Harness decide when review is needed. This does not select the automatic reviewer.       |
+| `all_actions`      | Request review for every enabled action through the effective reviewer.                          |
+| `write_actions`    | Request review for write and destructive actions, including actions not identified as read-only. |
+| `none`             | Do not add a plugin approval step; other restrictions still apply.                               |
 
 Resolve enablement, approval, and supported reviewer choices independently.
-An explicit tool field overrides
-its matching `toolDefaults` field. If enablement is omitted at both levels,
-native defaults apply. If approval is omitted at both levels, use `native`.
-An explicit tool `approval:"native"` replaces an inherited approval mode.
+An explicit tool field overrides its matching `toolDefaults` field. If
+enablement is omitted at both levels, native defaults apply. If approval is
+omitted at both levels, use `provider_default`. An explicit tool
+`approval:"provider_default"` replaces an inherited approval mode.
 Reviewer omission inherits the effective Harness reviewer; OCE supplies no
 universal reviewer default. Disabling the plugin is terminal. Native/operator
-denies, managed requirements, and workload controls still apply; an OCE override cannot bypass
-them. There is no configurable precedence switch or category-to-tool expansion.
+denies, managed requirements, and workload controls still apply; an OCE override
+cannot bypass them. There is no configurable precedence switch or
+category-to-tool expansion. Codex writes an app approval default, so newly added
+actions inherit it without a tool inventory; explicit tool overrides still need
+an observed owned tool ID.
 
 ### Reviewer
 
@@ -272,15 +279,14 @@ override it. Do not combine it with an explicit `toolDefaults.enabled`: native
 default tool enablement bypasses category filtering, so the Driver rejects that
 combination. Codex treats unknown destructive annotations as destructive.
 
-This selection fragment requests review on every enabled app tool, chooses the
-automatic reviewer, and disables destructive tools by default. It requires a
-compatible effective session; it is not a complete Agent update:
+This selection fragment asks a human to review Codex actions that are not marked
+read-only. It requires a compatible effective session; it is not a complete Agent
+update:
 
 ```json
 {
   "enabled": true,
-  "toolDefaults": { "approval": "prompt", "reviewer": "auto" },
-  "driverPolicy": { "destructiveEnabled": false }
+  "toolDefaults": { "approval": "write_actions", "reviewer": "human" }
 }
 ```
 
@@ -288,8 +294,10 @@ Codex tool IDs encode both app ownership and the exact native tool name; two app
 can expose the same name without sharing a policy. Runtime discovery verifies
 that each requested tool belongs to the selected plugin. Unknown metadata is
 `tools:null`; `tools:[]` means the observed inventory was empty for that read,
-not that the remote tool set can never change. Destructive/write annotations
-are optional and are not required to express an explicit tool override.
+not that the remote tool set can never change. Destructive/write catalog
+annotations are optional and are not required to express an explicit tool
+override. See the [Codex mapping](drivers/plugin-bundled.md#native-mappings-and-limits)
+for its native review trigger.
 
 ## Failures and boundaries
 
