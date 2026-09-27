@@ -110,7 +110,7 @@ OpenClaw and unsupported-runtime stories retain the draft workflow: provision
 credentials and deploy from Agent detail.
 
 DevDay previews SWE, Community, Q&A, Oncall, and standard presets with models,
-workspace templates, four Slack channels, model Secrets, Linear, and repository
+workspace templates, six Slack channels, model Secrets, Linear, and repository
 choices. The simulated catalog works with any Preset or Secret choice.
 **Plugins Curated** exercises token-free discovery with simulated Driver responses;
 actual access remains unverified. Hosted discovery requires an eligible Codex
