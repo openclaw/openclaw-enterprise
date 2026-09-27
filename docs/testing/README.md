@@ -52,10 +52,11 @@ case and skip counts. Existing suite discovery and CI selection remain available
 ### Run the local installation lane
 
 The `dev-up-k3d` lane selects all three real local installation cases and fails
-on skips. Prepare the tools and build the CLI as described in
-[Local Kubernetes installation](kubernetes.md#local-kubernetes-installation).
-The lane uses Docker and creates its own disposable clusters. Run it with a
-fresh results directory:
+on skips. Install Node.js 24 or newer, the repository-pinned pnpm, the Go
+version from `go.mod`, Docker, k3d, kubectl, and Helm. Then build the CLI as
+described in [Local Kubernetes installation](kubernetes.md#local-kubernetes-installation).
+The lane creates its own disposable clusters. Run it with a fresh results
+directory:
 
 ```sh
 run_dir=$(mktemp -d)
